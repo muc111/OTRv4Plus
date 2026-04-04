@@ -1,4 +1,4 @@
-# OTRv4+
+# Off The Record v4 Plus PQC (OTRv4)
 
 Post-quantum encrypted messaging over IRC. Built for I2P, works everywhere.
 
