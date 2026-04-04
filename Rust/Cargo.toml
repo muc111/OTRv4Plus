@@ -1,0 +1,23 @@
+[package]
+name = "otrv4_core"
+version = "0.1.0"
+edition = "2021"
+description = "OTRv4+ double ratchet core in Rust with PyO3 bindings"
+
+[lib]
+name = "otrv4_core"
+crate-type = ["cdylib"]
+
+[dependencies]
+pyo3 = { version = "0.22", features = ["extension-module"] }
+sha3 = "0.10"
+aes-gcm = "0.10"
+zeroize = { version = "1", features = ["derive"] }
+rand = "0.8"
+hmac = "0.12"
+subtle = "2.5"
+
+[profile.release]
+opt-level = 3
+lto = true
+strip = true
