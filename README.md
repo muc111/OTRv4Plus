@@ -458,6 +458,16 @@ Commercial licensing available for proprietary integration — see [COMMERCIAL-L
 
 ---
 
+## Development
+
+This project was built with AI-assisted development (Claude).
+All cryptographic code has been manually tested across 224 tests,
+verified with live DAKE and SMP exchanges over I2P, and the
+C extensions have been audited for constant-time correctness.
+The Rust ratchet core contains zero unsafe blocks.
+
+---
+
 > *"Arguing that you don't care about the right to privacy because you have nothing to hide is no different than saying you don't care about free speech because you have nothing to say."* — Edward Snowden
 
 > *"If privacy is outlawed, only outlaws will have privacy."* — Phil Zimmermann
