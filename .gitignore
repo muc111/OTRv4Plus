@@ -1,0 +1,11 @@
+# Compiled extensions
+*.so
+*.o
+*.pyc
+__pycache__/
+*.egg-info/
+build/
+dist/
+target/
+.venv/
+*.whl
