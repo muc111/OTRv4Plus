@@ -58,6 +58,15 @@ PYTHONMALLOC=malloc python otrv4+.py -s irc.example.com -p 6667 --no-tls
 
 ---
 
+⚠️ Ratchet backend: Rust is strongly preferred
+This client has two ratchet backends:
+
+· 🦀 Rust (recommended) – All chain keys, root keys, brace keys, message keys, and skip‑keys are stored in Rust structures that implement Drop with the Zeroize trait. Secrets are deterministically overwritten the moment the ratchet is destroyed – independent of Python’s garbage collector.
+
+· 🐍 Python + C extensions (fallback) – Used only if Rust cannot be built on your platform (e.g., some older Termux environments). Secrets are wiped via OPENSSL_cleanse inside __del__, but Python’s GC may delay finalisation. This is less secure than the Rust backend.
+
+Always install the Rust ratchet core if at all possible. The startup banner will show 🦀 Rust (zeroize-on-drop) when it is active. If you see 🐍 Python (C extensions), you are running the fallback.
+
 ## Platform setup
 
 Every platform needs: Python 3.9+, OpenSSL 3.5+, a C compiler, and the `cryptography` and `pysocks` pip packages. On Debian/Ubuntu 23.04+, Arch, and macOS, pip requires a virtual environment — the platform sections below include the venv setup. Termux doesn't have this restriction. The Rust ratchet core is optional but recommended — without it, chain keys are cleaned by Python's garbage collector instead of being deterministically zeroed.
