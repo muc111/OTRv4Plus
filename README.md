@@ -1,4 +1,4 @@
-![OTR v4+ Post-Quantum Logo](otrv4plus_logo.gif)
+![OTR v4+ Post-Quantum Logo](icon.png)
 # Off The Record v4 Plus PQC (OTRv4)
 
 Post-quantum encrypted messaging over IRC. Built for I2P, works everywhere.
