@@ -2,7 +2,7 @@
   <img src="icon.png" width="200" alt="OTRv4+">
 </p>
 
-# Off The Record v4 Plus PQC (OTRv4+)
+# Off The Record v4 Plus PQC (otrv4+)
 
 Post-quantum OTR for IRC. The whole thing runs on a phone over I2P.
 
@@ -198,7 +198,7 @@ This is the part I spent the most time on. Crypto libraries are fine at encrypti
 
 **C extensions** — everything goes through `OPENSSL_cleanse()` after use. The Montgomery ladder in `otr4_ed448_ct.c` uses XOR-based `cswap` so secret scalar bits never hit a branch predictor.
 
-**Python** — X448 private keys live in OpenSSL's C heap (the `cryptography` library holds a pointer, not the bytes). SMP exponents live in Python memory for a few seconds during the handshake — that's the one gap I haven't closed yet.
+**Python** — X448 private keys live in OpenSSL's C heap (the `cryptography` library holds a pointer, not the bytes). SMP exponents are stored in the Rust vault between protocol steps and deterministically zeroed on completion — they only exist as Python ints briefly during each computation step.
 
 **On shutdown** — `/quit` triggers `Zeroize::drop()` on all Rust ratchets, `OPENSSL_cleanse` on C extension secrets, clears the screen, and wipes `~/.otrv4plus/`. No trace left.
 
@@ -249,8 +249,8 @@ pytest -v test_*.py fuzz_harnesses.py -k "not 300k"
 
 The honest list:
 
-- SMP exponents live in Python memory during the handshake (seconds, not minutes — but still GC-dependent)
-- DAKE ephemeral X448 keys briefly exist in Python before being passed to OpenSSL
+- SMP exponents are stored in the Rust vault between protocol steps (deterministic zeroize) but briefly exist as Python ints during computation within each step
+- DAKE DH shared secrets pass through Python briefly before entering the KDF (microseconds — private keys stay in OpenSSL's C heap)
 - Fragment count reveals message type to a local observer (DAKE = 20-25 fragments in a burst)
 - The nick pool is ~11,000 names — reduces but doesn't eliminate cross-session correlation
 - Clearnet exposes your IP in WHOIS until cloaking kicks in (use I2P or Tor)
