@@ -2,7 +2,7 @@
   <img src="icon.png" width="200" alt="OTRv4+">
 </p>
 
-# Off The Record v4 Plus PQC (otrv4+)
+# Off The Record v4 + PQC
 
 Post-quantum OTR for IRC. The whole thing runs on a phone over I2P.
 

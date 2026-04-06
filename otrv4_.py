@@ -3130,7 +3130,11 @@ class SMPEngine:
             pa_over_pb = (self.Pa * inv_Pb) % SMPConstants.MODULUS
             qa_over_qb = (self.Qa * inv_Qb) % SMPConstants.MODULUS
 
-            secrets_match = (pa_over_pb == qa_over_qb)
+            MB = SMPConstants.MODULUS_BYTES
+            secrets_match = hmac.compare_digest(
+                pa_over_pb.to_bytes(MB, 'big'),
+                qa_over_qb.to_bytes(MB, 'big')
+            )
 
             self._ss("r6", self._random_exponent())
             self._ss("r7", self._random_exponent())
@@ -5041,11 +5045,11 @@ class SecureKeyStorage:
             except Exception:
                 pass
 
-        # Derive master key via scrypt
-        salt = b'OTRv4+KeyStorage'  # fixed salt is fine — seed is random
+        # Derive master key via scrypt (n=16384 for Termux memory limits)
+        salt = b'OTRv4+KeyStorage'
         try:
             self._master_key = hashlib.scrypt(
-                seed, salt=salt, n=32768, r=8, p=4, dklen=32
+                seed, salt=salt, n=16384, r=8, p=1, dklen=32
             )
         except Exception:
             self._master_key = None
