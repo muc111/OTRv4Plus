@@ -8,6 +8,7 @@
 pub mod kdf;
 pub mod header;
 pub mod ratchet;
+pub mod smp_vault;
 
 use pyo3::prelude::*;
 use pyo3::exceptions::PyValueError;
@@ -15,6 +16,7 @@ use pyo3::types::PyBytes;
 
 use header::RatchetHeader;
 use ratchet::{DoubleRatchet, EncryptResult};
+use smp_vault::PySMPVault;
 
 // ═══════════════════════════════════════════════════════════════════
 // PyO3 wrapper types
@@ -260,6 +262,7 @@ fn rust_encode_header<'py>(py: Python<'py>, dh_pub: &[u8], prev_chain_len: u32, 
 fn otrv4_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyDoubleRatchet>()?;
     m.add_class::<PyEncryptResult>()?;
+    m.add_class::<PySMPVault>()?;
     m.add_function(wrap_pyfunction!(rust_kdf_1, m)?)?;
     m.add_function(wrap_pyfunction!(rust_decode_header, m)?)?;
     m.add_function(wrap_pyfunction!(rust_encode_header, m)?)?;

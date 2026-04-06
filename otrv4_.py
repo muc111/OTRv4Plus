@@ -2820,6 +2820,13 @@ class SMPStateMachine:
 class SMPEngine:
     """SMP Engine - Orchestrates math, state machine, and protocol codec"""
 
+    # Attribute names whose values are secret exponents
+    _SECRET_ATTRS = frozenset([
+        'a2', 'a3', 'b2', 'b3', 'r2', 'r3', 'r4', 'r5', 'r6', 'r7',
+        'r8', 'r9', 'rpb', 'rpa', 'secret',
+        '_shared_g2', '_shared_g3',
+    ])
+
     def __init__(self, is_initiator: bool, logger: Optional[OTRLogger] = None):
         self.is_initiator = is_initiator
         self.logger = logger or NullLogger()
@@ -2828,29 +2835,42 @@ class SMPEngine:
         self.seen_messages: OrderedDict[bytes, bool] = OrderedDict()
         self.max_seen = 10000
         self.lock = threading.RLock()
+
+        # Rust vault for deterministic secret zeroization
+        try:
+            from otrv4_core import RustSMPVault
+            self._vault = RustSMPVault()
+        except ImportError:
+            self._vault = None
+
         self._clear_math_state()
 
-    def _clear_math_state(self):
-        """Zeroize all SMP intermediate secrets before removing references.
+    def _ss(self, name: str, value: int) -> int:
+        """Store a secret int in the Rust vault and return it.
 
-        Python integers are immutable — we cannot overwrite them in-place.
-        What we CAN do is:
-          1. Overwrite the attribute with 0 before setting it to None.  This
-             ensures the name no longer points at the secret value, making the
-             old object eligible for GC.
-          2. The GC will eventually reclaim the memory, but there is no
-             guarantee about when.  This is the best Python can offer without
-             a C extension; it is still far better than leaving live references.
+        The Python attribute is also set (protocol logic reads it).
+        The vault copy is deterministically zeroed on _clear_math_state()
+        or when the vault is dropped.
         """
-        secret_int_attrs = [
-            'a2', 'a3', 'b2', 'b3', 'r2', 'r3', 'r4', 'r5', 'r6', 'r7',
-            'r8', 'r9', 'rpb', 'rpa', 'secret',
-        ]
-        group_elem_attrs = [
-            '_shared_g2', '_shared_g3',
+        setattr(self, name, value)
+        if self._vault is not None:
+            self._vault.store(name, value.to_bytes(SMPConstants.MODULUS_BYTES, 'big'))
+        return value
+
+    def _clear_math_state(self):
+        """Zeroize all SMP secrets.
+
+        Rust vault: deterministic — every byte overwritten with zeros.
+        Python attributes: best-effort — set to 0 then None for GC.
+        """
+        # Rust vault: deterministic zeroize
+        if self._vault is not None:
+            self._vault.clear()
+
+        # Python: best-effort GC cleanup
+        for attr in list(self._SECRET_ATTRS) + [
             'g2a', 'g3a', 'g2b', 'g3b', 'Pa', 'Qa', 'Pb', 'Qb',
-        ]
-        for attr in secret_int_attrs + group_elem_attrs:
+        ]:
             try:
                 setattr(self, attr, 0)
             except Exception:
@@ -2917,11 +2937,11 @@ class SMPEngine:
 
                 role_tag = b'\x01'
                 h_input = bytearray(role_tag + init_fp + resp_fp + session_id + stretched)
-                self.secret = self._hash_to_subgroup(bytes(h_input))
+                self._ss("secret", self._hash_to_subgroup(bytes(h_input)))
                 _ossl.cleanse(h_input)
                 del h_input
             else:
-                self.secret = self._hash_to_subgroup(stretched)
+                self._ss("secret", self._hash_to_subgroup(stretched))
 
             # Cleanse all intermediates
             _ossl.cleanse(bytearray(stretched))
@@ -2996,10 +3016,10 @@ class SMPEngine:
             self.state_machine.question = question
             self.state_machine.start_time = time.time()
 
-            self.a2 = self._random_exponent()
-            self.a3 = self._random_exponent()
-            self.r2 = self._random_exponent()
-            self.r3 = self._random_exponent()
+            self._ss("a2", self._random_exponent())
+            self._ss("a3", self._random_exponent())
+            self._ss("r2", self._random_exponent())
+            self._ss("r3", self._random_exponent())
 
             self.g2a = _ct_mod_exp(SMPConstants.GENERATOR, self.a2, SMPConstants.MODULUS)
             self.g3a = _ct_mod_exp(SMPConstants.GENERATOR, self.a3, SMPConstants.MODULUS)
@@ -3044,17 +3064,17 @@ class SMPEngine:
                not self._verify_zkp(SMPConstants.GENERATOR, g3a, c3, d3, t3):
                 raise ValueError("ZKP verification failed")
 
-            self.b2 = self._random_exponent()
-            self.b3 = self._random_exponent()
-            self.r4 = self._random_exponent()
-            self.r5 = self._random_exponent()
-            self.rpb = self._random_exponent()
+            self._ss("b2", self._random_exponent())
+            self._ss("b3", self._random_exponent())
+            self._ss("r4", self._random_exponent())
+            self._ss("r5", self._random_exponent())
+            self._ss("rpb", self._random_exponent())
 
             self.g2b = _ct_mod_exp(SMPConstants.GENERATOR, self.b2, SMPConstants.MODULUS)
             self.g3b = _ct_mod_exp(SMPConstants.GENERATOR, self.b3, SMPConstants.MODULUS)
 
-            self._shared_g2 = _ct_mod_exp(g2a, self.b2, SMPConstants.MODULUS)
-            self._shared_g3 = _ct_mod_exp(g3a, self.b3, SMPConstants.MODULUS)
+            self._ss("_shared_g2", _ct_mod_exp(g2a, self.b2, SMPConstants.MODULUS))
+            self._ss("_shared_g3", _ct_mod_exp(g3a, self.b3, SMPConstants.MODULUS))
 
             self.Pb = _ct_mod_exp(self._shared_g3, self.rpb, SMPConstants.MODULUS)
             self.Qb = (_ct_mod_exp(self._shared_g3, self.rpb, SMPConstants.MODULUS) *
@@ -3093,13 +3113,13 @@ class SMPEngine:
                not self._verify_zkp(SMPConstants.GENERATOR, g3b, c5, d5, t5):
                 raise ValueError("SMP2 ZKP verification failed for g2b/g3b")
 
-            self._shared_g2 = _ct_mod_exp(g2b, self.a2, SMPConstants.MODULUS)
-            self._shared_g3 = _ct_mod_exp(g3b, self.a3, SMPConstants.MODULUS)
+            self._ss("_shared_g2", _ct_mod_exp(g2b, self.a2, SMPConstants.MODULUS))
+            self._ss("_shared_g3", _ct_mod_exp(g3b, self.a3, SMPConstants.MODULUS))
 
             if not self._verify_zkp(self._shared_g3, Pb, c_pb, d_pb, t_pb):
                 raise ValueError("SMP2 ZKP verification failed for Pb — Bob cheated on Pb commitment")
 
-            self.rpa = self._random_exponent()
+            self._ss("rpa", self._random_exponent())
 
             self.Pa = _ct_mod_exp(self._shared_g3, self.rpa, SMPConstants.MODULUS)
             self.Qa = (_ct_mod_exp(self._shared_g3, self.rpa, SMPConstants.MODULUS) *
@@ -3112,8 +3132,8 @@ class SMPEngine:
 
             secrets_match = (pa_over_pb == qa_over_qb)
 
-            self.r6 = self._random_exponent()
-            self.r7 = self._random_exponent()
+            self._ss("r6", self._random_exponent())
+            self._ss("r7", self._random_exponent())
 
             c6, d6, t6 = self._compute_zkp(self._shared_g3, self.rpa, self.r6, self.Pa)
             c7, d7, t7 = self._compute_zkp(self._shared_g3, self.rpa, self.r7, self.Pa)
@@ -3161,8 +3181,8 @@ class SMPEngine:
                     qa_over_qb.to_bytes(MB, 'big')
                 )
 
-            self.r8 = self._random_exponent()
-            self.r9 = self._random_exponent()
+            self._ss("r8", self._random_exponent())
+            self._ss("r9", self._random_exponent())
 
             c8, d8, t8 = self._compute_zkp(self._shared_g3, self.rpb, self.r8, self.Pb)
             c9, d9, t9 = self._compute_zkp(self._shared_g3, self.rpb, self.r9, self.Pb)
