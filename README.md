@@ -123,13 +123,15 @@ Then restart i2pd. On Termux: pkill i2pd && i2pd --daemon. On systemd: sudo syst
 Java I2P has SAM enabled by default on port 7656. No config change needed.
 Tor connections still use SOCKS5 — Tor already creates separate circuits per destination, so the shared-destination problem doesn't apply. Clearnet connections go direct with TLS.
 
-### Check your OpenSSL
-
 ```bash
 openssl version
 ```
 
-Needs to rgba(255,255,255,0.384) 3.5.0 or later. ML-KEM-1024 and ML-DSA-87 don't exist in older versions and the C extensions won't compile without them. Termux ships 3.5+ already.
+## Check your OPENSSL
+
+openssl version
+
+Needs to 3.5.0 or later. ML-KEM-1024 and ML-DSA-87 don't exist in older versions and the C extensions won't compile without them. Termux ships 3.5+ already.
 
 ---
 
