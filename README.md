@@ -104,6 +104,8 @@ Tor works too — SOCKS5 on port 9050. The client picks it up automatically from
 
 When connecting to I2P, the client tries the SAM bridge first and falls back to SOCKS5 if SAM isn't available.
 
+SAM v3.1 is used — just the basic stream connection features that both i2pd and Java I2P have supported for years. No dependency on newer SAM versions.
+
 Why this matters: with SOCKS5, every connection you make shares the same local I2P destination. The IRC server, and anyone watching it, sees the same .b32.i2p address every time you connect. If you disconnect and reconnect with a new nick, you're still the same destination. Cross-session tracking is trivial.
 
 SAM creates a fresh transient destination for each session. Every time you launch the client, you get a new I2P identity. There's nothing to correlate between sessions. This is how Tor does it one circuit per target and it's the right way to do it on I2P too.
@@ -121,10 +123,9 @@ address = 127.0.0.1
 port = 7656
 Then restart i2pd. On Termux: pkill i2pd && i2pd --daemon. On systemd: sudo systemctl restart i2pd.
 Java I2P has SAM enabled by default on port 7656. No config change needed.
-Tor connections still use SOCKS5 — Tor already creates separate circuits per destination, so the shared-destination problem doesn't apply. Clearnet connections go direct with TLS.
+Tor connections still use SOCKS5 — Tor already creates separate circuits per destination, so the shared-destination problem doesn't apply. 
 
-```bash
-openssl version
+Clearnet connections go direct with TLS.
 ```
 
 ## Check your OPENSSL
