@@ -655,6 +655,152 @@ class NetworkConstants:
         return NetworkConstants.NET_CLEARNET
     MLOCK_PAGE_SIZE = 4096
 
+    I2P_SAM_HOST = "127.0.0.1"
+    I2P_SAM_PORT = 7656
+
+
+class I2PSAMConnection:
+    """Connect to I2P via the SAM bridge instead of SOCKS5.
+
+    SAM creates a unique transient destination per session. With SOCKS5,
+    all connections share one local destination — an observer at the IRC
+    server can trivially correlate your sessions across reconnects.
+
+    SAM v3.1 is supported by both i2pd and Java I2P.
+    Default port: 7656.
+
+    Usage:
+        sam = I2PSAMConnection()
+        if sam.is_available():
+            sock = sam.connect("irc.postman.i2p")
+            # sock is a raw TCP stream to the IRC server
+    """
+
+    def __init__(self, sam_host: str = None, sam_port: int = None):
+        self.sam_host = sam_host or NetworkConstants.I2P_SAM_HOST
+        self.sam_port = sam_port or NetworkConstants.I2P_SAM_PORT
+        self._session_id = f"otrv4plus_{secrets.token_hex(4)}"
+        self._control_sock = None
+        self._our_destination = None
+
+    def _send_cmd(self, sock, cmd: str) -> str:
+        """Send a SAM command and read the response line."""
+        sock.sendall((cmd + "\n").encode("utf-8"))
+        buf = b""
+        deadline = time.time() + 30
+        while not buf.endswith(b"\n"):
+            if time.time() > deadline:
+                raise ConnectionError("SAM bridge timeout")
+            chunk = sock.recv(4096)
+            if not chunk:
+                raise ConnectionError("SAM bridge closed connection")
+            buf += chunk
+        return buf.decode("utf-8").strip()
+
+    def _parse_reply(self, reply: str, prefix: str) -> dict:
+        """Parse SAM key=value reply."""
+        if not reply.startswith(prefix):
+            raise ConnectionError(f"SAM unexpected: {reply}")
+        parts = reply[len(prefix):].strip().split(" ")
+        result = {}
+        for part in parts:
+            if "=" in part:
+                k, v = part.split("=", 1)
+                result[k] = v
+        return result
+
+    def _handshake(self, sock):
+        """SAM v3.1 handshake on a socket."""
+        reply = self._send_cmd(sock, "HELLO VERSION MIN=3.1 MAX=3.1")
+        parsed = self._parse_reply(reply, "HELLO REPLY ")
+        if parsed.get("RESULT") != "OK":
+            raise ConnectionError(f"SAM handshake failed: {reply}")
+
+    def connect(self, target_host: str, target_port: int = 0) -> 'socket.socket':
+        """Connect to an I2P destination via SAM. Returns a raw socket.
+
+        Creates a transient destination (fresh identity, not saved).
+        The port arg is ignored — I2P destinations don't use ports.
+        """
+        # 1. Resolve hostname → base64 destination
+        resolve_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        resolve_sock.settimeout(30)
+        try:
+            resolve_sock.connect((self.sam_host, self.sam_port))
+            self._handshake(resolve_sock)
+            reply = self._send_cmd(resolve_sock, f"NAMING LOOKUP NAME={target_host}")
+            parsed = self._parse_reply(reply, "NAMING REPLY ")
+            if parsed.get("RESULT") != "OK":
+                raise ConnectionError(f"Cannot resolve {target_host}: {reply}")
+            dest_b64 = parsed["VALUE"]
+        finally:
+            resolve_sock.close()
+
+        # 2. Create session with transient destination
+        self._control_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self._control_sock.settimeout(30)
+        self._control_sock.connect((self.sam_host, self.sam_port))
+        self._handshake(self._control_sock)
+
+        reply = self._send_cmd(
+            self._control_sock,
+            f"SESSION CREATE STYLE=STREAM ID={self._session_id} "
+            f"DESTINATION=TRANSIENT SIGNATURE_TYPE=7"
+        )
+        parsed = self._parse_reply(reply, "SESSION STATUS ")
+        if parsed.get("RESULT") != "OK":
+            self._control_sock.close()
+            raise ConnectionError(f"SAM session failed: {reply}")
+        self._our_destination = parsed.get("DESTINATION", "")
+
+        # 3. Stream connect on new socket
+        stream_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        stream_sock.settimeout(NetworkConstants.TIMEOUT_I2P)
+        stream_sock.connect((self.sam_host, self.sam_port))
+        self._handshake(stream_sock)
+
+        reply = self._send_cmd(
+            stream_sock,
+            f"STREAM CONNECT ID={self._session_id} "
+            f"DESTINATION={dest_b64} SILENT=false"
+        )
+        parsed = self._parse_reply(reply, "STREAM STATUS ")
+        if parsed.get("RESULT") != "OK":
+            stream_sock.close()
+            self._control_sock.close()
+            raise ConnectionError(f"SAM stream connect failed: {reply}")
+
+        # Socket is now raw TCP to the I2P destination
+        stream_sock.settimeout(1.0)
+        return stream_sock
+
+    def close(self):
+        """Close the SAM control session."""
+        try:
+            if self._control_sock:
+                self._control_sock.close()
+                self._control_sock = None
+        except Exception:
+            pass
+        self._our_destination = None
+
+    @staticmethod
+    def is_available(host: str = None, port: int = None) -> bool:
+        """Check if SAM bridge is reachable and speaking SAM v3.1."""
+        host = host or NetworkConstants.I2P_SAM_HOST
+        port = port or NetworkConstants.I2P_SAM_PORT
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(3)
+            sock.connect((host, port))
+            sock.sendall(b"HELLO VERSION MIN=3.1 MAX=3.1\n")
+            reply = sock.recv(256)
+            sock.close()
+            return b"RESULT=OK" in reply
+        except Exception:
+            return False
+
+
 class BinaryReader:
     """Safe structured binary parser with strict bounds checking and specific exceptions."""
     
@@ -1068,7 +1214,7 @@ class OTRv4DataMessage:
             raise ValueError(f"Failed to decode message: {e}")
 
 
-VERSION = "OTRv4+ 10.0"
+VERSION = "OTRv4+ 10.3"
 
 if not hasattr(hashlib, 'sha3_512'):
     raise RuntimeError(
@@ -1486,6 +1632,7 @@ class OTRConfig:
     log_file_path: Optional[str] = None
     test_mode: bool = False
     i2p_proxy: Tuple[str, int] = ("127.0.0.1", 4447)
+    i2p_sam: Tuple[str, int] = ("127.0.0.1", 7656)
     tor_proxy: Tuple[str, int] = ("127.0.0.1", 9050)
     server: str = "irc.postman.i2p"
     port: int = 0               # 0 = auto (6697 TLS clearnet, 6667 otherwise)
@@ -9247,14 +9394,18 @@ class OTRv4IRCClient:
         """Open TCP connection, auto-routing via I2P / Tor / clearnet.
 
         Network type is detected from the server hostname:
-          *.i2p    → I2P SOCKS5 on 127.0.0.1:4447 (no TLS — tunnel encrypted)
+          *.i2p    → I2P SAM bridge (preferred) or SOCKS5 (fallback)
           *.onion  → Tor SOCKS5 on 127.0.0.1:9050 (no TLS — tunnel encrypted)
           anything else → clearnet TCP with TLS on port 6697
+
+        For I2P, SAM is strongly preferred over SOCKS5: SAM creates a
+        unique transient destination per session, while SOCKS5 shares
+        one destination across all connections (trivially correlatable).
 
         IRCv3 CAP negotiation is performed before NICK/USER registration.
         """
         try:
-            net_type = self.setup_proxy()
+            net_type = NetworkConstants.detect(self.server)
 
             timeout_map = {
                 NetworkConstants.NET_CLEARNET: NetworkConstants.TIMEOUT_CLEARNET,
@@ -9273,7 +9424,6 @@ class OTRv4IRCClient:
                 if port == IRCConstants.TLS_PORT:
                     use_tls = True
             else:
-                # I2P/Tor — tunnel provides encryption, no TLS
                 use_tls = False
                 if port == 0:
                     port = IRCConstants.PORT
@@ -9283,17 +9433,47 @@ class OTRv4IRCClient:
                 NetworkConstants.NET_TOR:      "Tor",
                 NetworkConstants.NET_CLEARNET: "clearnet",
             }.get(net_type, net_type)
-            tls_label = " TLS" if use_tls else ""
 
-            self.add_message("system",
-                f"Connecting to {colorize(self.server, 'cyan')}:{port}"
-                f" ({colorize(net_label + tls_label, 'bold_cyan')}, up to {timeout}s)…")
-            self.debug("connect", {"server": self.server, "port": port,
-                                   "net": net_type, "tls": use_tls, "timeout": timeout})
+            # ── I2P: try SAM first, fall back to SOCKS5 ──────────
+            sock = None
+            self._sam_connection = None
 
-            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock.settimeout(float(timeout))
-            sock.connect((self.server, port))
+            if net_type == NetworkConstants.NET_I2P:
+                sam_host, sam_port = self.config.i2p_sam
+                if I2PSAMConnection.is_available(sam_host, sam_port):
+                    try:
+                        self.add_message("system",
+                            f"Connecting to {colorize(self.server, 'cyan')} via "
+                            f"{colorize('SAM bridge', 'green')} (unique destination)…")
+                        self.debug("connect", {"server": self.server, "port": port,
+                                               "net": "i2p-sam", "tls": False,
+                                               "timeout": timeout})
+
+                        sam = I2PSAMConnection(sam_host, sam_port)
+                        sock = sam.connect(self.server, port)
+                        self._sam_connection = sam
+
+                        self.add_message("system",
+                            colorize("🧅 I2P SAM: unique destination per session", "green"))
+                    except Exception as e:
+                        self.debug("sam_failed", {"error": str(e)})
+                        self.add_message("system",
+                            colorize(f"SAM failed ({e}), falling back to SOCKS5…", "yellow"))
+                        sock = None
+
+            if sock is None:
+                # SOCKS5 path (I2P fallback, Tor, clearnet)
+                net_type_actual = self.setup_proxy(net_type)
+                tls_label = " TLS" if use_tls else ""
+                self.add_message("system",
+                    f"Connecting to {colorize(self.server, 'cyan')}:{port}"
+                    f" ({colorize(net_label + tls_label, 'bold_cyan')}, up to {timeout}s)…")
+                self.debug("connect", {"server": self.server, "port": port,
+                                       "net": net_type, "tls": use_tls, "timeout": timeout})
+
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                sock.settimeout(float(timeout))
+                sock.connect((self.server, port))
 
             # ── Wrap in TLS for clearnet ─────────────────────────
             if use_tls:
@@ -9688,7 +9868,7 @@ class OTRv4IRCClient:
                         self._msg_rate: dict = {}
                     _bucket = self._msg_rate.get(sender, (0, 0.0))
                     _count, _window_start = _bucket
-                    if _now - _window_start > 10.0:
+                    if _now - _window_start > 10.3:
                         _count, _window_start = 0, _now
                     _count += 1
                     self._msg_rate[sender] = (_count, _window_start)
@@ -10839,6 +11019,13 @@ class OTRv4IRCClient:
         except Exception:
             pass
         self.sock = None
+        # Close SAM session if active
+        try:
+            if hasattr(self, '_sam_connection') and self._sam_connection:
+                self._sam_connection.close()
+                self._sam_connection = None
+        except Exception:
+            pass
         try:
             self._smp_executor.shutdown(wait=False, cancel_futures=True)
         except TypeError:
@@ -12093,6 +12280,17 @@ def main():
     safe_print(f"Debug   : {colorize('ON' if DEBUG_MODE else 'OFF', 'green' if DEBUG_MODE else 'dim')}")
     _rt_label = "🦀 Rust (zeroize-on-drop)" if RUST_RATCHET_AVAILABLE else "🐍 Python (C extensions)"
     safe_print(f"Ratchet : {colorize(_rt_label, 'green' if RUST_RATCHET_AVAILABLE else 'yellow')}")
+
+    # Show I2P transport method
+    _net_detect = NetworkConstants.detect(config.server)
+    if _net_detect == NetworkConstants.NET_I2P:
+        _sam_host, _sam_port = config.i2p_sam
+        _sam_ok = I2PSAMConnection.is_available(_sam_host, _sam_port)
+        if _sam_ok:
+            safe_print(f"I2P     : {colorize('SAM bridge (unique destination per session)', 'green')}")
+        else:
+            safe_print(f"I2P     : {colorize('SOCKS5 (shared destination — SAM not available)', 'yellow')}")
+
     safe_print(colorize("=" * 50, "dim") + "\n")
 
     if TEST_MODE:

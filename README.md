@@ -100,13 +100,36 @@ macOS: `brew install i2pd && brew services start i2pd`
 
 Tor works too — SOCKS5 on port 9050. The client picks it up automatically from `.onion` hostnames.
 
+### SAM vs SOCKS5
+
+When connecting to I2P, the client tries the SAM bridge first and falls back to SOCKS5 if SAM isn't available.
+
+Why this matters: with SOCKS5, every connection you make shares the same local I2P destination. The IRC server, and anyone watching it, sees the same .b32.i2p address every time you connect. If you disconnect and reconnect with a new nick, you're still the same destination. Cross-session tracking is trivial.
+
+SAM creates a fresh transient destination for each session. Every time you launch the client, you get a new I2P identity. There's nothing to correlate between sessions. This is how Tor does it one circuit per target and it's the right way to do it on I2P too.
+
+The startup banner tells you which one is active:
+I2P     : SAM bridge (unique destination per session)
+or if SAM isn't running:
+I2P     : SOCKS5 (shared destination SAM not available)
+To enable SAM on i2pd, add this to your `i2pd.conf` (usually `~/.i2pd/i2pd.conf` or `/etc/i2pd/i2pd.conf`):
+
+```ini
+[sam]
+enabled = true
+address = 127.0.0.1
+port = 7656
+Then restart i2pd. On Termux: pkill i2pd && i2pd --daemon. On systemd: sudo systemctl restart i2pd.
+Java I2P has SAM enabled by default on port 7656. No config change needed.
+Tor connections still use SOCKS5 — Tor already creates separate circuits per destination, so the shared-destination problem doesn't apply. Clearnet connections go direct with TLS.
+
 ### Check your OpenSSL
 
 ```bash
 openssl version
 ```
 
-Needs to say 3.5.0 or later. ML-KEM-1024 and ML-DSA-87 don't exist in older versions and the C extensions won't compile without them. Termux ships 3.5+ already.
+Needs to rgba(255,255,255,0.384) 3.5.0 or later. ML-KEM-1024 and ML-DSA-87 don't exist in older versions and the C extensions won't compile without them. Termux ships 3.5+ already.
 
 ---
 
@@ -133,7 +156,7 @@ No liboqs. All PQC goes through OpenSSL 3.5+ native providers.
 ```
 OTRv4 IRC Client
 ==================================================
-Version : OTRv4+ 10.0
+Version : OTRv4+ 10.3
 Server  : irc.postman.i2p:6667
 Network : 🧅 I2P (plaintext)
 Auth    : anonymous
