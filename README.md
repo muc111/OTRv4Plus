@@ -2,7 +2,9 @@
   <img src="icon.png" width="200" alt="OTRv4+">
 </p>
 
-# Off The Record v4 + PQC
+# OTRv4+
+
+Off The Record v4 + PQC
 
 Post-quantum OTR for IRC. The whole thing runs on a phone over I2P.
 
@@ -14,12 +16,13 @@ It defaults to `irc.postman.i2p`. Point it at any server and it figures out the 
 
 ## Get it running
 
-You need Python 3.9+, OpenSSL 3.5+ (for ML-KEM and ML-DSA), and a C compiler.
+You need Python 3.9+, OpenSSL 3.5+ (for ML-KEM and ML-DSA), a C compiler, and the Rust ratchet core.
 
 **On Termux (Android):**
+
 ```bash
-pkg install python openssl clang build-essential git
-pip install cryptography pysocks
+pkg install python openssl clang build-essential git rust
+pip install cryptography pysocks argon2-cffi maturin
 
 git clone https://github.com/muc111/OTRv4Plus.git
 cd OTRv4Plus
@@ -27,6 +30,14 @@ python setup_otr4.py build_ext --inplace
 bash build_ed448.sh
 gcc -shared -fPIC -O2 -o otr4_mldsa_ext.so otr4_mldsa_ext.c \
     $(python3-config --includes) $(python3-config --ldflags --embed) -lcrypto
+
+# Build Rust ratchet core (required)
+cd Rust
+cargo test --release
+export ANDROID_API_LEVEL=24
+maturin build --release
+pip install target/wheels/otrv4_core-*.whl --break-system-packages
+cd ..
 
 PYTHONMALLOC=malloc python otrv4+.py
 ```
@@ -34,11 +45,14 @@ PYTHONMALLOC=malloc python otrv4+.py
 That connects to `irc.postman.i2p:6667` through I2P's SOCKS5 proxy on port 4447. You need i2pd or the Java I2P app running.
 
 **On Debian/Ubuntu** (23.04+ blocks pip, so use a venv):
+
 ```bash
 sudo apt install python3 python3-dev python3-venv libssl-dev build-essential git
 python3 -m venv ~/otr-env
 source ~/otr-env/bin/activate
-pip install cryptography pysocks
+pip install cryptography pysocks argon2-cffi maturin
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+source ~/.cargo/env
 
 git clone https://github.com/muc111/OTRv4Plus.git
 cd OTRv4Plus
@@ -47,31 +61,41 @@ bash build_ed448.sh
 gcc -shared -fPIC -O2 -o otr4_mldsa_ext.so otr4_mldsa_ext.c \
     $(python3-config --includes) $(python3-config --ldflags --embed) -lcrypto
 
+cd Rust
+cargo test --release
+maturin build --release
+pip install target/wheels/otrv4_core-*.whl
+cd ..
+
 PYTHONMALLOC=malloc python otrv4+.py -s irc.libera.chat:6697
 ```
 
 Always `source ~/otr-env/bin/activate` before running.
 
 **On Arch:**
+
 ```bash
-sudo pacman -S python python-pip openssl base-devel git
+sudo pacman -S python python-pip openssl base-devel git rust
 python3 -m venv ~/otr-env && source ~/otr-env/bin/activate
-pip install cryptography pysocks
+pip install cryptography pysocks argon2-cffi maturin
 ```
 
 **On macOS:**
+
 ```bash
-brew install python openssl@3 git
+brew install python openssl@3 git rust
 python3 -m venv ~/otr-env && source ~/otr-env/bin/activate
 LDFLAGS="-L$(brew --prefix openssl@3)/lib" CFLAGS="-I$(brew --prefix openssl@3)/include" \
-pip install cryptography pysocks
+pip install cryptography pysocks argon2-cffi maturin
 ```
 
-Then clone, build the C extensions, and run. Same steps as above.
+Then clone, build the C extensions and Rust core, and run. Same steps as above.
 
-### Rust ratchet (optional but recommended)
+---
 
-The double ratchet can run in Rust instead of Python. Same protocol, same wire format, but Rust guarantees all secret keys are zeroed on drop — Python's garbage collector can't promise that.
+## Rust ratchet core (required)
+
+The double ratchet runs entirely in Rust. All per-message encryption, key derivation, chain advancement, skip keys, and replay detection happen in Rust with deterministic secret zeroization. The Python DoubleRatchet class has been removed — there is no fallback. If the Rust module isn't installed, the client refuses to start.
 
 ```bash
 cd Rust
@@ -81,15 +105,25 @@ pip install target/wheels/otrv4_core-*.whl
 cd ..
 ```
 
-On Termux add `export ANDROID_API_LEVEL=24` before `maturin build`. The startup banner tells you which backend is active:
+On Termux add `export ANDROID_API_LEVEL=24` before `maturin build`.
+
+The startup banner confirms Rust is active:
 
 ```
 Ratchet : 🦀 Rust (zeroize-on-drop)
 ```
 
-If you skip this, the client uses Python with C extension crypto. Everything still works.
+If Rust is missing you'll see:
 
-### I2P setup
+```
+❌ FATAL: otrv4_core Rust module not installed.
+```
+
+Zero `unsafe` blocks in the Rust code.
+
+---
+
+## I2P setup
 
 The client expects I2P's SOCKS5 proxy on `127.0.0.1:4447`.
 
@@ -104,35 +138,44 @@ Tor works too — SOCKS5 on port 9050. The client picks it up automatically from
 
 When connecting to I2P, the client tries the SAM bridge first and falls back to SOCKS5 if SAM isn't available.
 
-SAM v3.1 is used — just the basic stream connection features that both i2pd and Java I2P have supported for years. No dependency on newer SAM versions.
+Why this matters: with SOCKS5, every connection you make shares the same local I2P destination. The IRC server, and anyone watching it, sees the same `.b32.i2p` address every time you connect. If you disconnect and reconnect with a new nick, you're still the same destination. Cross-session tracking is trivial.
 
-Why this matters: with SOCKS5, every connection you make shares the same local I2P destination. The IRC server, and anyone watching it, sees the same .b32.i2p address every time you connect. If you disconnect and reconnect with a new nick, you're still the same destination. Cross-session tracking is trivial.
+SAM creates a fresh transient destination for each session. Every time you launch the client, you get a new I2P identity. There's nothing to correlate between sessions. This is how Tor does it — one circuit per target — and it's the right way to do it on I2P too.
 
-SAM creates a fresh transient destination for each session. Every time you launch the client, you get a new I2P identity. There's nothing to correlate between sessions. This is how Tor does it one circuit per target and it's the right way to do it on I2P too.
+SAM v3.1 is used — just the basic stream connection features that both i2pd and Java I2P have supported for years.
 
 The startup banner tells you which one is active:
+
+```
 I2P     : SAM bridge (unique destination per session)
+```
+
 or if SAM isn't running:
-I2P     : SOCKS5 (shared destination SAM not available)
-To enable SAM on i2pd, add this to your `i2pd.conf` (usually `~/.i2pd/i2pd.conf` or `/etc/i2pd/i2pd.conf`):
+
+```
+I2P     : SOCKS5 (shared destination — SAM not available)
+```
+
+To enable SAM on i2pd, add this to your `i2pd.conf`:
 
 ```ini
 [sam]
 enabled = true
 address = 127.0.0.1
 port = 7656
-Then restart i2pd. On Termux: pkill i2pd && i2pd --daemon. On systemd: sudo systemctl restart i2pd.
-Java I2P has SAM enabled by default on port 7656. No config change needed.
-Tor connections still use SOCKS5 — Tor already creates separate circuits per destination, so the shared-destination problem doesn't apply. 
-
-Clearnet connections go direct with TLS.
 ```
 
-## Check your OPENSSL
+Then restart i2pd. Java I2P has SAM enabled by default on port 7656.
 
+Tor connections still use SOCKS5 — Tor already creates separate circuits per destination, so the shared-destination problem doesn't apply. Clearnet connections go direct with TLS.
+
+### Check your OpenSSL
+
+```bash
 openssl version
+```
 
-Needs to 3.5.0 or later. ML-KEM-1024 and ML-DSA-87 don't exist in older versions and the C extensions won't compile without them. Termux ships 3.5+ already.
+Needs to say 3.5.0 or later. ML-KEM-1024 and ML-DSA-87 don't exist in older versions and the C extensions won't compile without them. Termux ships 3.5+ already.
 
 ---
 
@@ -142,13 +185,15 @@ The crypto isn't one trick. Every layer got upgraded:
 
 **Key exchange** — Triple X448 Diffie-Hellman plus ML-KEM-1024 (FIPS 203). The KEM shared secret mixes into the root key, so even if X448 falls to a quantum computer, the session keys are still safe. This happens during a three-message DAKE handshake.
 
-**Authentication** — Ed448 ring signatures give you classical deniability (neither side can prove the other was there). On top of that, ML-DSA-87 (FIPS 204) gives post-quantum authentication — a quantum adversary can't forge your identity. Both run in DAKE3.
+**Authentication** — Ed448 ring signatures give you classical deniability (neither side can prove the other was there). On top of that, ML-DSA-87 (FIPS 204) gives post-quantum authentication — a quantum adversary can't forge your identity. Both run in DAKE3. Strict length validation on all ML-DSA public keys and signatures prevents truncation attacks.
 
-**Ratchet** — Standard double ratchet, but with a brace key that rotates via fresh ML-KEM encapsulation every DH ratchet epoch. Most PQC messaging protocols only do KEM at the handshake. This one self-heals — if an attacker compromises a session, the next DH ratchet restores PQC protection with fresh KEM material.
+**Ratchet** — Rust-only double ratchet with ML-KEM-1024 brace key rotation every DH epoch. Most PQC messaging protocols only do KEM at the handshake. This one self-heals — if an attacker compromises a session, the next DH ratchet restores PQC protection with fresh KEM material. The Python ratchet class has been removed entirely.
 
-**Per-message** — AES-256-GCM, SHAKE-256 KDFs, random 12-byte nonces. Nothing exotic at the symmetric level, just stuff that Grover's algorithm can't halve faster than 128-bit security.
+**Per-message** — AES-256-GCM, SHAKE-256 KDFs, random 12-byte nonces. All running in Rust. Nothing exotic at the symmetric level, just stuff that Grover's algorithm can't halve faster than 128-bit security.
 
-**SMP** — Socialist Millionaires' Protocol for identity verification. Both sides type the same passphrase, the protocol proves they match without revealing it. Uses 3072-bit DH (RFC 3526 Group 15) with zero-knowledge proofs. The passphrase gets stretched through 10,000 rounds of SHAKE-256 so short secrets aren't immediately brute-forceable.
+**SMP** — Socialist Millionaires' Protocol for identity verification. Both sides type the same passphrase (minimum 8 characters, enforced), the protocol proves they match without revealing it. Uses 3072-bit DH (RFC 3526 Group 15) with zero-knowledge proofs. The passphrase gets stretched through 10,000 rounds of SHAKE-256. All secret exponents stored in a Rust vault with deterministic zeroization. Session-bound — secrets include session ID and both fingerprints to prevent cross-session brute-force.
+
+**Secrets at rest** — Argon2id (64MB, 3 iterations, parallelism 4) for key derivation when storing SMP secrets and identity keys to disk. Falls back to scrypt if `argon2-cffi` is not installed.
 
 No liboqs. All PQC goes through OpenSSL 3.5+ native providers.
 
@@ -159,13 +204,14 @@ No liboqs. All PQC goes through OpenSSL 3.5+ native providers.
 ```
 OTRv4 IRC Client
 ==================================================
-Version : OTRv4+ 10.3
+Version : OTRv4+ 10.4
 Server  : irc.postman.i2p:6667
 Network : 🧅 I2P (plaintext)
 Auth    : anonymous
 Channel : #otr
 Debug   : OFF
 Ratchet : 🦀 Rust (zeroize-on-drop)
+I2P     : SAM bridge (unique destination per session)
 ==================================================
 ```
 
@@ -174,11 +220,13 @@ Once connected, `/join #otr` and `/otr somenick` to start an encrypted session. 
 🔴 plaintext — 🟡 encrypted, unverified — 🟢 fingerprint trusted — 🔵 SMP verified
 
 Session established looks like:
+
 ```
 🔒 OTR session with Bob established — Ed448/X448, AES-256-GCM (initiator) [🦀 Rust]
 ```
 
 On `/quit`:
+
 ```
 🦀 2 Rust ratchet(s) zeroized (deterministic memory wipe)
 OTRv4+ terminated — 🦀 Rust memory zeroized — screen cleared
@@ -190,11 +238,13 @@ OTRv4+ terminated — 🦀 Rust memory zeroized — screen cleared
 
 The client inspects the server hostname and does the right thing:
 
-- `*.i2p` → routes through I2P SOCKS5 on 127.0.0.1:4447
+- `*.i2p` → routes through I2P SAM bridge (preferred) or SOCKS5 fallback
 - `*.onion` → routes through Tor SOCKS5 on 127.0.0.1:9050
 - anything else → direct connection with TLS
 
 No flags. `irc.postman.i2p` just works if i2pd is running. `irc.libera.chat:6697` just works over TLS. You can also force things with `-s server:port --no-tls` or `--sasl -n YourNick`.
+
+On disconnect, the client auto-reconnects and rejoins all channels you were in — not just the default channel.
 
 ---
 
@@ -212,7 +262,7 @@ The three C extensions are separate because Python can't inline C. They handle c
 | `otr4_crypto_ext.c` | 1,866 | BN arithmetic, ML-KEM (NTT), ring sigs, mlock |
 | `otr4_ed448_ct.c` | 867 | Constant-time Ed448 scalar multiply (Montgomery ladder) |
 | `otr4_mldsa_ext.c` | 321 | ML-DSA-87 via OpenSSL EVP |
-| `Rust/src/*.rs` | ~800 | Double ratchet with zeroize-on-drop |
+| `Rust/src/*.rs` | ~800 | Double ratchet + SMP vault with zeroize-on-drop |
 
 ---
 
@@ -220,13 +270,35 @@ The three C extensions are separate because Python can't inline C. They handle c
 
 This is the part I spent the most time on. Crypto libraries are fine at encrypting — the hard part is making sure secrets actually disappear from memory when you're done with them.
 
-**Rust ratchet** — all chain keys, root keys, brace keys, message keys, and skipped keys are zeroed on drop. Rust's `Zeroize` trait guarantees this. No "the GC will probably get to it eventually."
+**Rust ratchet** — all chain keys, root keys, brace keys, message keys, and skipped keys are zeroed on drop. Rust's `Zeroize` trait guarantees this. The Python DoubleRatchet class has been removed — there is no fallback path that could leak secrets via the GC.
 
-**C extensions** — everything goes through `OPENSSL_cleanse()` after use. The Montgomery ladder in `otr4_ed448_ct.c` uses XOR-based `cswap` so secret scalar bits never hit a branch predictor.
+**Rust SMP vault** — all SMP secret exponents are stored in the Rust vault between protocol steps and deterministically zeroed on completion. They only exist as Python ints briefly during each computation step.
 
-**Python** — X448 private keys live in OpenSSL's C heap (the `cryptography` library holds a pointer, not the bytes). SMP exponents are stored in the Rust vault between protocol steps and deterministically zeroed on completion — they only exist as Python ints briefly during each computation step.
+**C extensions** — everything goes through `OPENSSL_cleanse()` after use. The Montgomery ladder in `otr4_ed448_ct.c` uses XOR-based `cswap` so secret scalar bits never hit a branch predictor. `SecureMemory.write()` uses `ctypes.memset`.
 
-**On shutdown** — `/quit` triggers `Zeroize::drop()` on all Rust ratchets, `OPENSSL_cleanse` on C extension secrets, clears the screen, and wipes `~/.otrv4plus/`. No trace left.
+**Python** — X448 private keys live in OpenSSL's C heap (the `cryptography` library holds a pointer, not the bytes). DAKE DH shared secrets pass through Python briefly before entering the KDF (microseconds).
+
+**On shutdown** — `/quit` triggers `Zeroize::drop()` on all Rust ratchets and SMP vaults, `OPENSSL_cleanse` on C extension secrets, clears the screen, and wipes `~/.otrv4plus/`. No trace left.
+
+---
+
+## Security audit (v10.4)
+
+Seven vulnerabilities identified and fixed:
+
+1. **Unsafe byte wiping** — `_secure_wipe_bytes` used a dangerous ctypes-into-immutable-bytes hack. Replaced with safe stub; all call sites now use `bytearray` + `_ossl.cleanse()`.
+
+2. **Ratchet key swap** — `RustBackedDoubleRatchet` passed the wrong `is_initiator` flag to Rust, causing AES-GCM auth failure on first message for responders.
+
+3. **SMP cross-session brute-force** — `start_smp()` didn't always bind the secret to the session. Now always includes session ID + both fingerprints.
+
+4. **Weak SMP secrets** — Raised from soft 6-char warning to hard 8-char minimum across all entry points.
+
+5. **Expired session encryption** — `encrypt_with_tlvs()` didn't check session age. Now raises error after 24-hour max.
+
+6. **ML-DSA truncation** — DAKE1/2/3 now validates exact byte lengths for ML-DSA-87 public keys and signatures.
+
+7. **Fragment memory exhaustion** — Hard ceiling of 1,000 fragments regardless of per-sender limit.
 
 ---
 
@@ -264,10 +336,17 @@ This client does ML-KEM at the handshake AND rotates fresh KEM material every DH
 ## Tests
 
 ```bash
-pytest -v test_*.py fuzz_harnesses.py -k "not 300k"
+# Rust tests
+cd Rust && cargo test --release && cd ..
+
+# Python tests
+pytest -v test_harness_audit.py test_otrv4_integration.py test_mlkem_kat.py \
+       test_state_fork_attack.py test_differential.py test_master_protocol_verifier.py \
+       test_final_boss.py test_property.py test_attacks.py test_ratchet_torture.py \
+       fuzz_harnesses.py -k "not 300k"
 ```
 
-224 tests. Double ratchet across 100k messages, state fork attacks, replay resistance, forward secrecy, post-compromise recovery, out-of-order delivery, ML-KEM roundtrips, ML-DSA hybrid verification, ring signature non-malleability, SMP zero-knowledge proofs, DAKE state machine transitions, wire format fuzzing.
+270 tests (259 Python + 11 Rust). Double ratchet across 100k messages, state fork attacks, replay resistance, forward secrecy, post-compromise recovery, out-of-order delivery, ML-KEM roundtrips, ML-DSA hybrid verification, ring signature non-malleability, SMP zero-knowledge proofs, SMP full protocol flow with vault integration, constant-time comparison verification, AES-GCM key storage round-trips, Rust vault zeroization, DAKE state machine transitions, wire format fuzzing.
 
 ---
 
@@ -275,20 +354,20 @@ pytest -v test_*.py fuzz_harnesses.py -k "not 300k"
 
 The honest list:
 
-- SMP exponents are stored in the Rust vault between protocol steps (deterministic zeroize) but briefly exist as Python ints during computation within each step
+- SMP exponents briefly exist as Python ints during each computation step (microseconds) before being stored in the Rust vault
 - DAKE DH shared secrets pass through Python briefly before entering the KDF (microseconds — private keys stay in OpenSSL's C heap)
 - Fragment count reveals message type to a local observer (DAKE = 20-25 fragments in a burst)
 - The nick pool is ~11,000 names — reduces but doesn't eliminate cross-session correlation
 - Clearnet exposes your IP in WHOIS until cloaking kicks in (use I2P or Tor)
 - PQ deniability doesn't exist as a primitive anywhere — when it does, the flag-byte mechanism supports upgrading
 
-None of these are cryptographic breaks. The first two are memory hygiene gaps. The rest are metadata/network issues that apply to every IRC client.
+None of these are cryptographic breaks. The first two are memory hygiene gaps measured in microseconds. The rest are metadata/network issues that apply to every IRC client.
 
 ---
 
 ## Development
 
-This project was built with AI-assisted development (Claude). All cryptographic implementations have been verified through 224 automated tests, live DAKE and SMP exchanges between Termux instances over I2P, and manual review of constant-time properties in the C extensions. The Rust ratchet core contains zero `unsafe` blocks.
+This project was built with AI-assisted development (Claude). All cryptographic implementations have been verified through 270 automated tests, live DAKE and SMP exchanges between Termux instances over I2P, a security audit that identified and fixed 7 vulnerabilities, and manual review of constant-time properties in the C extensions. The Rust ratchet core contains zero `unsafe` blocks.
 
 ---
 
