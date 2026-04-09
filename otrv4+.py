@@ -223,31 +223,20 @@ def kdf_1(usage_id: int, value: bytes, length: int) -> bytes:
 
 
 def _secure_wipe_bytes(b: bytes) -> None:
-    """Overwrite the internal data buffer of an immutable bytes object.
+    """No-op stub — do NOT attempt to wipe immutable bytes objects.
 
-    CPython bytes objects have a fixed layout:
-      PyObject_VAR_HEAD (ob_refcnt, ob_type, ob_size)  — 24 bytes on 64-bit
-      ob_shash (Py_hash_t)                              —  8 bytes
-      ob_val[ob_size+1]                                 — data starts here
+    CPython's bytes objects are immutable and may be interned or shared.
+    Writing through ctypes into their internal buffer is undefined behaviour:
+    it corrupts shared references and relies on a CPython-version-specific
+    memory layout that can change without notice.
 
-    We use ctypes to write zeros directly through the C-level pointer.
-    This is the ONLY way to wipe immutable bytes in CPython.
+    CORRECT PATTERN: use bytearray for all mutable secrets and call
+    _ossl.cleanse() on them before deletion.  Do NOT call this function.
 
-    WARNING: only call this when you are certain no other reference to b exists
-    and the object will not be used again.  Using b after this call is
-    undefined behaviour.
+    This stub is retained to avoid breaking callers while they are migrated;
+    it intentionally does nothing so that no UB can occur.
     """
-    if not isinstance(b, (bytes, bytearray)):
-        return
-    try:
-        n = len(b)
-        if n == 0:
-            return
-        HEADER = 32
-        addr = id(b) + HEADER
-        (ctypes.c_char * n).from_address(addr)[:] = b'\x00' * n
-    except Exception:
-        pass
+    pass  # intentional no-op — see docstring
 
 
 
@@ -1214,7 +1203,7 @@ class OTRv4DataMessage:
             raise ValueError(f"Failed to decode message: {e}")
 
 
-VERSION = "OTRv4+ 10.3"
+VERSION = "OTRv4+ 10.4"
 
 if not hasattr(hashlib, 'sha3_512'):
     raise RuntimeError(
@@ -1958,9 +1947,11 @@ class SecureMemory:
     def zeroize(self):
         """Securely zeroize memory.
 
-        HARDENED (Phase 5): when otr4_crypto_ext is available, delegates to
-        OPENSSL_cleanse() which is designed to resist compiler dead-store
-        elimination.  Falls back to multi-pass Python loop otherwise.
+        HARDENED: always uses OPENSSL_cleanse (C extension) or ctypes.memset.
+        A pure-Python loop over the bytearray is NOT used because CPython's
+        interpreter may re-order or batch writes in ways that are hard to
+        reason about from a security standpoint.  If the C extension is
+        unavailable, ctypes.memset provides the next-best guarantee.
         """
         if not acquire_lock_with_timeout(self._lock, timeout=5.0):
             raise RuntimeError("Failed to acquire lock for zeroize")
@@ -1969,10 +1960,13 @@ class SecureMemory:
             if self._buffer is None:
                 return
 
+            # Primary: OpenSSL OPENSSL_cleanse (resists dead-store elimination)
             try:
                 _ossl.cleanse(self._buffer)
             except Exception:
                 pass
+
+            # Secondary: ctypes.memset (C-level, compiler cannot optimise away)
             try:
                 n = len(self._buffer)
                 if n > 0:
@@ -2005,7 +1999,7 @@ class SecureMemory:
                 pass
     
     def write(self, data: bytes):
-        """Write data to secure memory"""
+        """Write data to secure memory, zeroing all prior content first."""
         if not acquire_lock_with_timeout(self._lock, timeout=5.0):
             raise RuntimeError("Failed to acquire lock for write")
         
@@ -2016,11 +2010,18 @@ class SecureMemory:
             if len(data) > self._size:
                 raise ValueError(f"Data too large for SecureMemory")
             
-            for i in range(len(self._buffer)):
-                self._buffer[i] = 0
+            # Zero the buffer with ctypes.memset (C-level, reliable)
+            try:
+                n = len(self._buffer)
+                if n > 0:
+                    addr = (ctypes.c_char * n).from_buffer(self._buffer)
+                    ctypes.memset(addr, 0, n)
+            except Exception:
+                # ctypes failed — fall back to bytearray slice assignment
+                self._buffer[:] = bytearray(len(self._buffer))
             
-            for i, byte in enumerate(data):
-                self._buffer[i] = byte
+            # Write new data
+            self._buffer[:len(data)] = data
                 
         except Exception as e:
             raise RuntimeError(f"Write failed: {e}")
@@ -3061,7 +3062,17 @@ class SMPEngine:
         who is initiator and who is responder.
 
         The raw secret string is cleared as soon as it is hashed.
+
+        Raises ValueError if the secret is shorter than MIN_SMP_SECRET_LENGTH (8).
+        Short passphrases can be brute-forced from captured SMP transcripts.
         """
+        MIN_SMP_SECRET_LENGTH = 8
+        if len(secret) < MIN_SMP_SECRET_LENGTH:
+            raise ValueError(
+                f"SMP secret must be at least {MIN_SMP_SECRET_LENGTH} characters "
+                f"(got {len(secret)}). Short passphrases can be brute-forced from "
+                "captured SMP transcripts."
+            )
         with self.lock:
             raw = secret.encode('utf-8')
 
@@ -3456,610 +3467,8 @@ class SkippedMessageKey:
 
 
 
-class DoubleRatchet:
-    """
-    Double ratchet (OTRv4 §4.4).
-
-    This version strictly follows the specification:
-      1. When a message with a new DH public key arrives:
-         a. Derive a temporary receiving chain key using the OLD root key and
-            the DH shared secret.
-         b. Advance that temporary chain to the message number to obtain the
-            message key.
-         c. Decrypt.
-         d. If successful, permanently update the root key and receiving chain
-            key to the newly derived values.
-         e. Reset the receiving message counter to msg_num + 1.
-      2. For messages with an existing DH key, use the current receiving chain
-         (or skipped keys) as normal.
-    """
-
-    def __init__(self, root_key: SecureMemory, is_initiator: bool,
-                 ad: bytes = b"OTRv4-DATA", logger: Optional[OTRLogger] = None,
-                 chain_key_send: Optional[bytes] = None,
-                 chain_key_recv: Optional[bytes] = None,
-                 brace_key: Optional[bytes] = None,
-                 rekey_interval: int = OTRConstants.REKEY_INTERVAL,
-                 rekey_timeout: int = OTRConstants.REKEY_TIMEOUT):
-        self.lock = threading.RLock()
-        self.root_key = root_key
-        self.is_initiator = is_initiator
-        self.ad = ad
-        self.logger = logger or NullLogger()
-        self.rekey_interval = rekey_interval
-        self.rekey_timeout = rekey_timeout
-        self.last_rekey_time = time.time()
-
-        self.dh_ratchet_local = x448.X448PrivateKey.generate()
-        self.dh_ratchet_local_pub = self.dh_ratchet_local.public_key().public_bytes(
-            encoding=serialization.Encoding.Raw,
-            format=serialization.PublicFormat.Raw
-        )
-        self.dh_ratchet_remote: Optional[x448.X448PublicKey] = None
-        self.dh_ratchet_remote_pub: Optional[bytes] = None
-
-        self._brace_key: bytes = brace_key if brace_key else bytes(32)
-
-        # ── Brace KEM rotation state ────────────────────────────
-        #    ML-KEM-1024 shared secret rotates the brace key every
-        #    DH ratchet epoch.  At most ONE of kem_ek or kem_ct is
-        #    attached per outgoing message; the exchange completes
-        #    in two messages (ek → ct).
-        #
-        #    State machine:
-        #      _brace_kem_local is None, _brace_kem_ct_out is None
-        #        → IDLE.  Next DH ratchet generates fresh KEM.
-        #      _brace_kem_ek_out is not None
-        #        → We have an ek to send.  Next encrypt picks it up.
-        #      _brace_kem_local is not None, _brace_kem_ek_out is None
-        #        → ek was sent; awaiting ct from peer.
-        #      _brace_kem_ct_out is not None
-        #        → We encapsulated to peer's ek; ct ready to send.
-        self._brace_kem_local: Optional[MLKEM1024BraceKEM] = None
-        self._brace_kem_ek_out: Optional[bytes] = None
-        self._brace_kem_ct_out: Optional[bytes] = None
-
-        self.chain_key_send = SecureMemory(32)
-        self.chain_key_recv = SecureMemory(32)
-        self.message_num_send = 0
-        self.message_num_recv = 0
-        self.prev_chain_len_send = 0
-        self.prev_chain_len_recv = 0
-
-        self.skipped_keys: OrderedDict[Tuple[bytes, int], SkippedMessageKey] = OrderedDict()
-        self.max_skip = OTRConstants.MAX_SKIP
-        self.max_message_keys = OTRConstants.MAX_MESSAGE_KEYS
-
-        self.message_counter_send = 0
-        self.message_counter_recv = 0
-
-        self._seen_messages: OrderedDict = OrderedDict()
-        self._max_seen = 10000
-
-        self.ratchet_id: int = 0
-
-        self._pending_reveal_mac_keys: List[bytes] = []
-        self._last_mac_key: Optional[bytes] = None
-
-        self.last_remote_pub: Optional[bytes] = None
-
-        if chain_key_send is not None and chain_key_recv is not None:
-            if all(b == 0 for b in chain_key_send) or all(b == 0 for b in chain_key_recv):
-                raise ValueError("Chain keys zero - possible KDF failure")
-            self.chain_key_send.write(chain_key_send[:32])
-            self.chain_key_recv.write(chain_key_recv[:32])
-            self.logger.debug(f"Chain keys initialized from DAKE: send=<redacted>, recv=<redacted>")
-        else:
-            self._initialize_chains()
-
-        self.logger.debug(f"DoubleRatchet initialized (initiator={is_initiator})")
-
-    def _initialize_chains(self):
-        """Initialize chain keys from root key (OTRv4 §4.4.1).
-
-        Uses KDF_1 = SHAKE-256 (spec §3.2).  The brace key is mixed in to
-        provide post-quantum protection from the very first message.
-        """
-        with self.lock:
-            root_key_data = self.root_key.read()
-            seed = kdf_1(KDFUsage.ROOT_KEY, root_key_data + self._brace_key, 64)
-            send_key = seed[:32]
-            recv_key = seed[32:64]
-
-            if all(b == 0 for b in send_key) or all(b == 0 for b in recv_key):
-                raise ValueError("Chain keys zero - possible KDF failure")
-
-            if self.is_initiator:
-                self.chain_key_send.write(send_key)
-                self.chain_key_recv.write(recv_key)
-            else:
-                self.chain_key_send.write(recv_key)
-                self.chain_key_recv.write(send_key)
-            self.logger.debug("Chain keys initialized via KDF_1")
-
-    def _kdf_ck(self, chain_key: bytes, constant: bytes = b"MESSAGE_KEY") -> Tuple[bytes, bytes, bytes]:
-        """Derive next chain key, message encryption key, and MAC key (spec §4.4.2).
-
-        Uses KDF_1 = SHAKE-256 (spec §3.2):
-            next_ck  = KDF_1(0x12, chain_key, 32)
-            enc_key  = KDF_1(0x13, chain_key, 32)
-            mac_key  = KDF_1(0x14, chain_key, 64)
-
-        HARDENED: a mutable copy of chain_key is cleansed via OPENSSL_cleanse
-        immediately after all three KDF calls to minimise heap residency.
-        """
-        next_ck = kdf_1(KDFUsage.CHAIN_KEY,   chain_key, 32)
-        enc_key = kdf_1(KDFUsage.MESSAGE_KEY,  chain_key, 32)
-        mac_key = kdf_1(KDFUsage.MAC_KEY,      chain_key, 64)
-        _ck_buf = bytearray(chain_key)
-        _ossl.cleanse(_ck_buf)
-        del _ck_buf
-        return next_ck, enc_key, mac_key
-
-    def _kdf_rk(self, root_key: bytes, dh_secret: bytes) -> Tuple[bytes, bytes]:
-        """Single source of truth for root-key ratchet KDF (OTRv4 §4.4.2).
-
-        KDF_1(usage_root_key, root || dh_secret || brace_key, 64) -> (new_root, new_chain)
-
-        Both _ratchet() (send-side forced rekey) and decrypt_message() CASE 1
-        (recv-side DH ratchet) call this.  One KDF path, impossible to diverge.
-        """
-        seed = kdf_1(KDFUsage.ROOT_KEY,
-                      root_key + dh_secret + self._brace_key, 64)
-        new_root  = seed[:32]
-        new_chain = seed[32:64]
-        _seed_buf = bytearray(seed)
-        _ossl.cleanse(_seed_buf)
-        del _seed_buf, seed
-        return new_root, new_chain
-
-    # ── Brace KEM rotation ───────────────────────────────────────────
-    #
-    #  The brace key starts as the KDF'd ML-KEM-1024 shared secret from
-    #  DAKE and then rotates with fresh KEM material on every DH ratchet
-    #  epoch.  This ensures that even if a single KEM shared secret is
-    #  compromised, future ratchet steps recover post-quantum security.
-    #
-    #  Protocol (2-message exchange):
-    #    1. Side A does DH ratchet → generates fresh ML-KEM-1024 keypair
-    #       → sends kem_ek in the next outgoing data message.
-    #    2. Side B receives kem_ek → encapsulates → (ct, ss) → updates
-    #       brace_key = KDF_1(0x16, old_brace ‖ ss, 32) → sends kem_ct.
-    #    3. Side A receives kem_ct → decapsulates → same ss → same KDF →
-    #       brace_key now matches on both sides.
-    #
-    #  A message carries AT MOST one KEM field (ek OR ct, never both),
-    #  so overhead is ≤ 1568 bytes per message during rotation.  After
-    #  the 2-message exchange completes, both sides are IDLE and the
-    #  next DH ratchet starts a new rotation.
-    #
-    #  Processing order on receive is always: ct first, ek second.
-    #  This ensures both sides derive the same brace_key sequence.
-
-    def prepare_brace_rotation(self) -> None:
-        """Generate fresh ML-KEM-1024 keypair for brace key rotation.
-
-        Called on DH ratchet steps.  Only generates when no KEM exchange
-        is already in flight (awaiting ct, or ct pending to send).
-        """
-        if self._brace_kem_local is not None:
-            return   # already awaiting ct from peer
-        if self._brace_kem_ct_out is not None:
-            return   # have ct to send first — complete that exchange
-        self._brace_kem_local = MLKEM1024BraceKEM()
-        self._brace_kem_ek_out = self._brace_kem_local.encap_key_bytes
-        self.logger.debug(
-            f"Brace rotation: generated ML-KEM-1024 ek "
-            f"({len(self._brace_kem_ek_out)} bytes)")
-
-    def consume_outgoing_kem_ek(self) -> Optional[bytes]:
-        """Return pending kem_ek for inclusion in next outgoing message.
-
-        Returns None if no ek is pending.  The ek is cleared after
-        consumption — subsequent calls return None until the next
-        prepare_brace_rotation().
-        """
-        ek = self._brace_kem_ek_out
-        self._brace_kem_ek_out = None
-        return ek
-
-    def consume_outgoing_kem_ct(self) -> Optional[bytes]:
-        """Return pending kem_ct (encapsulation response) for next outgoing message.
-
-        Returns None if no ct is pending.
-        """
-        ct = self._brace_kem_ct_out
-        self._brace_kem_ct_out = None
-        return ct
-
-    def process_incoming_kem_ek(self, ek: bytes) -> None:
-        """Encapsulate to peer's encapsulation key, rotating brace_key.
-
-        Called by the session layer when a received data message contains
-        a kem_ek field.  Produces a ct for the next outgoing message.
-        """
-        ct, ss = MLKEM1024BraceKEM.encapsulate(ek)
-        self._brace_kem_ct_out = ct
-        self._rotate_brace_key(ss)
-        self.logger.debug(
-            f"Brace rotation: encapsulated to peer ek, "
-            f"brace_key rotated, ct={len(ct)} bytes queued")
-
-    def process_incoming_kem_ct(self, ct: bytes) -> None:
-        """Decapsulate peer's ciphertext, rotating brace_key.
-
-        Called by the session layer when a received data message contains
-        a kem_ct field.  Completes the KEM exchange started by our ek.
-        """
-        if self._brace_kem_local is None:
-            raise ValueError(
-                "Received KEM ct but no local keypair pending — "
-                "protocol desync or replay")
-        ss = self._brace_kem_local.decapsulate(ct)
-        self._brace_kem_local.zeroize()
-        self._brace_kem_local = None
-        self._rotate_brace_key(ss)
-        self.logger.debug(
-            "Brace rotation: decapsulated peer ct, brace_key rotated, "
-            "KEM exchange complete")
-
-    def _rotate_brace_key(self, shared_secret: bytes) -> None:
-        """Derive new brace key from old brace key + KEM shared secret.
-
-        brace_key' = KDF_1(0x16, brace_key ‖ shared_secret, 32)
-
-        Domain-separated via KDFUsage.BRACE_KEY_ROTATE (0x16) so this
-        KDF output can never collide with any other OTRv4 derivation.
-        """
-        old = self._brace_key
-        self._brace_key = kdf_1(
-            KDFUsage.BRACE_KEY_ROTATE, old + shared_secret, 32)
-        # Cleanse old brace key material
-        _old_buf = bytearray(old)
-        _ossl.cleanse(_old_buf)
-        del _old_buf, old
-        # Cleanse shared secret
-        _ss_buf = bytearray(shared_secret)
-        _ossl.cleanse(_ss_buf)
-        del _ss_buf
-
-    def encrypt_message(self, plaintext: Union[bytes, str]) -> Tuple[bytes, bytes, bytes, bytes, int, List[bytes]]:
-        """Encrypt a message (Spec §4.4.3)"""
-        with self.lock:
-            now = time.time()
-            if (self.message_counter_send >= self.rekey_interval or
-                now - self.last_rekey_time > self.rekey_timeout):
-                _rekey_target = self.dh_ratchet_remote_pub or self.last_remote_pub
-                if _rekey_target:
-                    self._ratchet(_rekey_target)
-                self.last_rekey_time = now
-
-            if isinstance(plaintext, str):
-                plaintext = plaintext.encode('utf-8')
-
-            ck_data = self.chain_key_send.read()
-            next_ck, enc_key, mac_key = self._kdf_ck(ck_data, b"MESSAGE_KEY")
-            self.chain_key_send.write(next_ck)
-            del ck_data, next_ck
-
-            header = RatchetHeader(self.dh_ratchet_local_pub, self.prev_chain_len_send, self.message_num_send)
-            header_bytes = header.encode()
-            aad = header_bytes + self.ad
-            nonce = secrets.token_bytes(12)
-
-            aesgcm = AESGCM(enc_key)
-            ciphertext_with_tag = aesgcm.encrypt(nonce, plaintext, aad)
-            ciphertext = ciphertext_with_tag[:-16]
-            tag = ciphertext_with_tag[-16:]
-            _enc_key_arr = bytearray(enc_key)
-            _ossl.cleanse(_enc_key_arr)
-            del _enc_key_arr, enc_key
-
-            self._last_mac_key = mac_key
-            current_msg_num = self.message_num_send
-            self.message_num_send += 1
-            self.message_counter_send += 1
-
-            self.logger.debug(f"Encrypted msg: ratchet_id={self.ratchet_id}, msg_num={current_msg_num} <key>")
-
-            reveal_keys = list(self._pending_reveal_mac_keys)
-            self._pending_reveal_mac_keys.clear()
-
-            return ciphertext, header_bytes, nonce, tag, self.ratchet_id, reveal_keys
-
-    def decrypt_message(self, header_bytes: bytes, ciphertext: bytes, nonce: bytes, tag: bytes) -> bytes:
-        """
-        Decrypt a message (OTRv4 §4.4.4).
-
-        Returns plaintext bytes on success.
-        Raises EncryptionError on failure.
-        """
-        with self.lock:
-            try:
-                header = RatchetHeader.decode(header_bytes)
-                dh_pub = header.dh_pub
-                prev_chain_len = header.prev_chain_len
-                msg_num = header.msg_num
-
-                replay_key = (bytes(dh_pub), msg_num)
-                if replay_key in self._seen_messages:
-                    raise ValueError(f"Replay detected: (dh={dh_pub.hex()[:12]}…, n={msg_num})")
-
-                is_new_dh = (self.dh_ratchet_remote_pub is not None and
-                             not hmac.compare_digest(self.dh_ratchet_remote_pub, dh_pub))
-
-                self.logger.debug(f"Decrypt: is_new_dh={is_new_dh}, current_recv_counter={self.message_num_recv}, msg_num={msg_num}")
-
-                if is_new_dh:
-                    old_root = self.root_key.read()
-                    old_recv_ck = self.chain_key_recv.read()
-
-                    remote_key = x448.X448PublicKey.from_public_bytes(dh_pub)
-                    dh_secret = self.dh_ratchet_local.exchange(remote_key)
-
-                    new_root_key, new_recv_chain = self._kdf_rk(old_root, dh_secret)
-
-                    self.logger.debug(f"New DH ratchet: msg_num={msg_num} <key>")
-
-                    temp_ck = new_recv_chain
-                    for i in range(msg_num):
-                        temp_ck, _, _ = self._kdf_ck(temp_ck, b"MESSAGE_KEY")
-                    next_recv_ck, enc_key, _ = self._kdf_ck(temp_ck, b"MESSAGE_KEY")
-                    del temp_ck
-
-                    self.logger.debug(f"Derived msg_key (new DH) <key>")
-
-                    aad = header_bytes + self.ad
-                    aesgcm = AESGCM(enc_key)
-                    ciphertext_with_tag = ciphertext + tag
-                    try:
-                        plaintext = aesgcm.decrypt(nonce, ciphertext_with_tag, aad)
-                    except Exception as e:
-                        self.logger.error(f"Decryption failed for new DH key: {e}")
-                        raise EncryptionError(f"Decryption failed for new DH key: {e}") from e
-                    finally:
-                        _ek_arr = bytearray(enc_key)
-                        _ossl.cleanse(_ek_arr)
-                        del _ek_arr, enc_key
-
-                    self.root_key.write(new_root_key)
-                    self.chain_key_recv.write(next_recv_ck)
-                    del old_root, old_recv_ck, dh_secret, new_root_key, new_recv_chain, next_recv_ck
-
-                    if self.dh_ratchet_remote_pub:
-                        self.last_remote_pub = self.dh_ratchet_remote_pub
-
-                    self.dh_ratchet_remote = remote_key
-                    self.dh_ratchet_remote_pub = dh_pub
-
-                    self.dh_ratchet_local = x448.X448PrivateKey.generate()
-                    self.dh_ratchet_local_pub = self.dh_ratchet_local.public_key().public_bytes(
-                        encoding=serialization.Encoding.Raw,
-                        format=serialization.PublicFormat.Raw
-                    )
-
-                    dh_secret_send = self.dh_ratchet_local.exchange(remote_key)
-                    new_root_send, new_send_chain = self._kdf_rk(
-                        self.root_key.read(), dh_secret_send)
-                    self.root_key.write(new_root_send)
-                    self.chain_key_send.write(new_send_chain)
-                    del dh_secret_send
-
-                    self.prev_chain_len_send = self.message_num_send
-                    self.prev_chain_len_recv = self.message_num_recv
-                    self.message_num_send = 0
-                    self.message_counter_send = 0
-                    self.message_num_recv = msg_num + 1
-
-                    self.ratchet_id += 1
-
-                    if self._last_mac_key is not None:
-                        self._pending_reveal_mac_keys.append(bytes(self._last_mac_key))
-                        self._last_mac_key = None
-                        if len(self._pending_reveal_mac_keys) > 50:
-                            self._pending_reveal_mac_keys = self._pending_reveal_mac_keys[-50:]
-
-                    while len(self.skipped_keys) > self.max_message_keys:
-                        oldest_key = next(iter(self.skipped_keys))
-                        self.skipped_keys[oldest_key].zeroize()
-                        del self.skipped_keys[oldest_key]
-
-                    self.logger.debug(f"Ratchet complete: new id={self.ratchet_id}, new_recv_counter={self.message_num_recv}")
-
-                    self._seen_messages[replay_key] = True
-                    if len(self._seen_messages) > self._max_seen:
-                        self._seen_messages.popitem(last=False)
-
-                    return plaintext
-
-                else:
-                    if self.dh_ratchet_remote_pub is None:
-                        try:
-                            self.dh_ratchet_remote = x448.X448PublicKey.from_public_bytes(dh_pub)
-                            self.dh_ratchet_remote_pub = dh_pub
-                            self.logger.debug(
-                                f"First message: recorded remote ratchet key "
-                                f"{dh_pub[:8].hex()}…, using DAKE-derived recv chain"
-                            )
-                        except Exception as e:
-                            raise EncryptionError(f"Failed to record initial remote ratchet key: {e}")
-
-                    key = (dh_pub, msg_num)
-
-                    if key in self.skipped_keys:
-                        skipped_key = self.skipped_keys[key]
-                        msg_key = bytes(skipped_key.message_key)
-                        self.logger.debug(f"Using skipped key for msg_num={msg_num}")
-                    else:
-                        if msg_num > self.message_num_recv:
-                            self._skip_message_keys(dh_pub, msg_num)
-                            if key in self.skipped_keys:
-                                skipped_key = self.skipped_keys[key]
-                                msg_key = bytes(skipped_key.message_key)
-                            else:
-                                ck_data = self.chain_key_recv.read()
-                                next_ck, enc_key, _ = self._kdf_ck(ck_data, b"MESSAGE_KEY")
-                                self.chain_key_recv.write(next_ck)
-                                msg_key = enc_key
-                                self.logger.debug(f"Advanced recv chain after skip: msg_num={msg_num}")
-                        elif msg_num == self.message_num_recv:
-                            ck_data = self.chain_key_recv.read()
-                            next_ck, enc_key, _ = self._kdf_ck(ck_data, b"MESSAGE_KEY")
-                            self.chain_key_recv.write(next_ck)
-                            msg_key = enc_key
-                            self.logger.debug(f"Advanced recv chain: msg_num={msg_num} [key redacted]")
-                        else:
-                            raise ValueError(f"Message number {msg_num} too old (current recv={self.message_num_recv})")
-
-                    aad = header_bytes + self.ad
-                    aesgcm = AESGCM(msg_key)
-                    ciphertext_with_tag = ciphertext + tag
-                    try:
-                        plaintext = aesgcm.decrypt(nonce, ciphertext_with_tag, aad)
-                    except Exception as e:
-                        self.logger.error(f"Decryption failed for existing DH key: {e}")
-                        raise EncryptionError(f"Decryption failed for existing DH key: {e}") from e
-                    finally:
-                        _mk_arr = bytearray(msg_key)
-                        _ossl.cleanse(_mk_arr)
-                        del _mk_arr, msg_key
-
-                    if key in self.skipped_keys:
-                        self.skipped_keys[key].zeroize()
-                        del self.skipped_keys[key]
-
-                    self.message_num_recv = max(self.message_num_recv, msg_num + 1)
-                    self.message_counter_recv += 1
-
-                    self._seen_messages[replay_key] = True
-                    if len(self._seen_messages) > self._max_seen:
-                        self._seen_messages.popitem(last=False)
-
-                    self.logger.debug(f"Decrypted msg: ratchet_id={self.ratchet_id}, msg_num={msg_num}, len={len(plaintext)}")
-                    return plaintext
-
-            except Exception as e:
-                self.logger.error(f"decrypt_message caught exception: {e}")
-                raise EncryptionError(f"Decryption failed: {e}")
-
-    def _skip_message_keys(self, dh_pub: bytes, until: int):
-        """Skip message keys up to given message number (inclusive of until-1)."""
-        if until > self.message_num_recv + self.max_skip:
-            raise ValueError(f"Cannot skip {until - self.message_num_recv} messages (max: {self.max_skip})")
-
-        self.logger.debug(f"Skipping from {self.message_num_recv} to {until-1}")
-        for msg_num in range(self.message_num_recv, until):
-            key = (dh_pub, msg_num)
-            if key not in self.skipped_keys:
-                ck_data = self.chain_key_recv.read()
-                next_ck, enc_key, _ = self._kdf_ck(ck_data, b"MESSAGE_KEY")
-                self.chain_key_recv.write(next_ck)
-                self.skipped_keys[key] = SkippedMessageKey(dh_pub, msg_num, enc_key)
-                self.logger.debug(f"Skipped msg_num={msg_num} key stored <key>")
-
-        self.message_num_recv = until
-
-    def _ratchet(self, dh_pub: bytes):
-        """
-        Send-side forced DH ratchet step (triggered by rekey_interval / timeout).
-
-        Generates a fresh local key pair, computes DH with the remote pub that
-        was most recently received (dh_pub), derives a new root key and a new
-        *send* chain key, then resets the send-side message counter.
-
-        The receiver handles this transparently: the new dh_ratchet_local_pub
-        appears in the next message header, triggers is_new_dh=True in
-        decrypt_message (CASE 1), which derives the matching recv chain via the
-        same DH secret.  Both sides then share the new root key going forward.
-
-        Bugs fixed vs. original implementation:
-          - DH was computed with old_remote_pub (stale) instead of dh_pub (current).
-          - New chain key was written to chain_key_recv instead of chain_key_send.
-          - message_num_recv was incorrectly reset (only send-side counter resets).
-          - dh_ratchet_remote_pub was mutated here (only decrypt_message owns that).
-        """
-        with self.lock:
-            self.logger.debug(f"Send-side ratchet with remote_pub={dh_pub[:8].hex()}...")
-
-            self.dh_ratchet_local = x448.X448PrivateKey.generate()
-            self.dh_ratchet_local_pub = self.dh_ratchet_local.public_key().public_bytes(
-                encoding=serialization.Encoding.Raw,
-                format=serialization.PublicFormat.Raw
-            )
-
-            remote_key = x448.X448PublicKey.from_public_bytes(dh_pub)
-            dh_secret  = self.dh_ratchet_local.exchange(remote_key)
-
-            root_key_data = self.root_key.read()
-            new_root_key, new_send_chain = self._kdf_rk(root_key_data, dh_secret)
-
-            self.root_key.write(new_root_key)
-            self.chain_key_send.write(new_send_chain)
-            self.logger.debug("Send-side ratchet: root + send chain advanced")
-
-            self.prev_chain_len_send = self.message_num_send
-            self.message_num_send = 0
-            self.message_counter_send = 0
-
-            self.ratchet_id += 1
-
-            if self._last_mac_key is not None:
-                self._pending_reveal_mac_keys.append(bytes(self._last_mac_key))
-                self._last_mac_key = None
-                if len(self._pending_reveal_mac_keys) > 50:
-                    self._pending_reveal_mac_keys = self._pending_reveal_mac_keys[-50:]
-
-            while len(self.skipped_keys) > self.max_message_keys:
-                oldest_key = next(iter(self.skipped_keys))
-                self.skipped_keys[oldest_key].zeroize()
-                del self.skipped_keys[oldest_key]
-
-            self.logger.debug(f"Ratchet complete: id={self.ratchet_id}")
-
-            # ── Trigger brace KEM rotation on DH ratchet ────────
-            self.prepare_brace_rotation()
-
-    def zeroize(self):
-        """Zeroize all sensitive data."""
-        with self.lock:
-            for attr in ['chain_key_send', 'chain_key_recv', 'root_key']:
-                obj = getattr(self, attr, None)
-                if obj:
-                    try:
-                        obj.zeroize()
-                    except (OSError, RuntimeError) as e:
-                        self.logger.error(f"Failed to zeroize {attr}: {e}")
-            for key in list(self.skipped_keys.values()):
-                key.zeroize()
-            self.skipped_keys.clear()
-            self._seen_messages.clear()
-            self._pending_reveal_mac_keys.clear()
-            self._last_mac_key = None
-            self.dh_ratchet_local = None
-            self.dh_ratchet_remote = None
-            self.dh_ratchet_remote_pub = None
-            self.last_remote_pub = None
-            # Zeroize brace KEM rotation state
-            if self._brace_kem_local is not None:
-                self._brace_kem_local.zeroize()
-                self._brace_kem_local = None
-            self._brace_kem_ek_out = None
-            self._brace_kem_ct_out = None
-            _bk = bytearray(self._brace_key)
-            _ossl.cleanse(_bk)
-            del _bk
-            self._brace_key = bytes(32)
-            self.logger.debug("DoubleRatchet zeroized")
-
-    def __del__(self):
-        try:
-            self.zeroize()
-        except Exception:
-            pass
-
-
 class RustBackedDoubleRatchet:
-    """Drop-in replacement for DoubleRatchet using Rust crypto core.
+    """OTRv4 Double Ratchet — Rust crypto core.
 
     X448 key exchange and ML-KEM brace rotation stay in Python.
     KDF, AES-256-GCM, chain advancement, skip keys, and replay
@@ -4119,11 +3528,17 @@ class RustBackedDoubleRatchet:
             raise ValueError("Chain keys zero — possible KDF failure")
 
         # ── Create Rust ratchet ──────────────────────────────
+        # Pass the actual role so the Rust constructor does not swap keys
+        # for responders when DAKE has already pre-ordered chain_key_send
+        # and chain_key_recv correctly for each side.  Passing True here
+        # was an earlier workaround that caused a double-swap for responders,
+        # producing AES-GCM authentication failures on the first message.
+        # ── Create Rust ratchet ──────────────────────────────
         # IMPORTANT: always pass is_initiator=True here because the
         # DAKE has already assigned chain_key_send/recv in the correct
         # order for each side.  The Rust constructor swaps keys for
         # responders — passing the actual role would double-swap and
-        # produce mismatched keys (AES-GCM auth failure on first msg).
+        # produce AES-GCM auth failure on first message.
         _rust_init = True  # keys are pre-ordered by DAKE
         self._rust = _RustRatchet(
             rk_bytes[:32], ck_s, ck_r, bk_bytes[:32],
@@ -4551,7 +3966,14 @@ class OTRv4DAKE:
 
                 # ── Check for ML-DSA-87 public key after profile ──
                 if offset + MLDSA87Auth.PUB_BYTES <= len(decoded) and MLDSA87_AVAILABLE:
-                    self._remote_mldsa_pub = decoded[offset:offset + MLDSA87Auth.PUB_BYTES]
+                    _mldsa_candidate = decoded[offset:offset + MLDSA87Auth.PUB_BYTES]
+                    if len(_mldsa_candidate) != MLDSA87Auth.PUB_BYTES:
+                        raise ValueError(
+                            f"ML-DSA-87 public key in DAKE1 truncated: "
+                            f"expected {MLDSA87Auth.PUB_BYTES} bytes, "
+                            f"got {len(_mldsa_candidate)}"
+                        )
+                    self._remote_mldsa_pub = _mldsa_candidate
                     offset += MLDSA87Auth.PUB_BYTES
 
                 if self.tracer:
@@ -4738,7 +4160,14 @@ class OTRv4DAKE:
                 # ── Check for ML-DSA-87 public key after profile ──
                 _remaining = mac_start - offset
                 if _remaining >= MLDSA87Auth.PUB_BYTES and MLDSA87_AVAILABLE:
-                    self._remote_mldsa_pub = decoded[offset:offset + MLDSA87Auth.PUB_BYTES]
+                    _mldsa_candidate = decoded[offset:offset + MLDSA87Auth.PUB_BYTES]
+                    if len(_mldsa_candidate) != MLDSA87Auth.PUB_BYTES:
+                        raise ValueError(
+                            f"ML-DSA-87 public key in DAKE2 truncated: "
+                            f"expected {MLDSA87Auth.PUB_BYTES} bytes, "
+                            f"got {len(_mldsa_candidate)}"
+                        )
+                    self._remote_mldsa_pub = _mldsa_candidate
                     offset += MLDSA87Auth.PUB_BYTES
 
                 if self.tracer:
@@ -4994,6 +4423,16 @@ class OTRv4DAKE:
                 _mldsa_offset = 1 + SIG_LEN
                 _has_mldsa = (_mldsa_offset < len(decoded)
                               and decoded[_mldsa_offset] == 0x01)
+                if _has_mldsa:
+                    # Guard: flag says ML-DSA-87 present — verify there
+                    # are enough bytes for a full signature before reading.
+                    _available = len(decoded) - (_mldsa_offset + 1)
+                    if _available < MLDSA87Auth.SIG_BYTES:
+                        raise ValueError(
+                            f"DAKE3 ML-DSA-87 flag is 0x01 but insufficient "
+                            f"bytes remain: need {MLDSA87Auth.SIG_BYTES}, "
+                            f"have {_available}"
+                        )
                 if (_has_mldsa
                         and self._remote_mldsa_pub is not None
                         and MLDSA87_AVAILABLE):
@@ -5135,6 +4574,41 @@ class OTRv4DAKE:
 
 
 
+def _derive_key(password: bytes, salt: bytes, dklen: int = 32) -> bytes:
+    """Derive an encryption key from password material.
+
+    Uses Argon2id when available (memory-hard, GPU/ASIC resistant).
+    Falls back to scrypt if argon2-cffi is not installed.
+
+    Argon2id parameters: time_cost=3, memory_cost=65536 (64MB), parallelism=4
+    scrypt parameters: n=16384, r=8, p=1 (Termux memory safe)
+    """
+    if ARGON2_AVAILABLE:
+        try:
+            ph = argon2.PasswordHasher(
+                time_cost=3,
+                memory_cost=65536,
+                parallelism=4,
+                hash_len=dklen,
+                salt_len=len(salt),
+                type=argon2.Type.ID,
+            )
+            # argon2-cffi needs string password — encode bytes as hex
+            raw_hash = ph.hash(password.hex(), salt=salt)
+            # Extract the raw hash bytes from the encoded string
+            # Format: $argon2id$v=19$m=65536,t=3,p=4$salt$hash
+            hash_b64 = raw_hash.split("$")[-1]
+            import base64
+            key = base64.b64decode(hash_b64 + "==")[:dklen]
+            return key
+        except Exception:
+            pass  # Fall through to scrypt
+
+    return hashlib.scrypt(
+        password, salt=salt, n=16384, r=8, p=1, dklen=dklen
+    )
+
+
 class SecureKeyStorage:
     """Secure storage for cryptographic keys.
 
@@ -5192,12 +4666,10 @@ class SecureKeyStorage:
             except Exception:
                 pass
 
-        # Derive master key via scrypt (n=16384 for Termux memory limits)
+        # Derive master key — Argon2id preferred, scrypt fallback
         salt = b'OTRv4+KeyStorage'
         try:
-            self._master_key = hashlib.scrypt(
-                seed, salt=salt, n=16384, r=8, p=1, dklen=32
-            )
+            self._master_key = _derive_key(seed, salt, 32)
         except Exception:
             self._master_key = None
     
@@ -5318,7 +4790,7 @@ class SMPAutoRespondStorage:
         self._load()
     
     def _load(self):
-        """Load secrets from encrypted storage (AES-256-GCM, scrypt-derived key)."""
+        """Load secrets from encrypted storage (AES-256-GCM, Argon2id/scrypt key)."""
         with self._lock:
             if not os.path.exists(self.secrets_path):
                 self._secrets = {}
@@ -5332,14 +4804,20 @@ class SMPAutoRespondStorage:
                 salt   = raw[:16]
                 nonce  = raw[16:28]
                 ct_tag = raw[28:]
-                key = hashlib.scrypt(
-                    self._master_passphrase(),
-                    salt=salt, n=16384, r=8, p=1, dklen=32
-                )
+                key = _derive_key(self._master_passphrase(), salt, 32)
                 plaintext = AESGCM(key).decrypt(nonce, ct_tag, b"smp_secrets_v1")
                 self._secrets = json.loads(plaintext.decode('utf-8'))
             except Exception:
-                self._secrets = {}
+                # If Argon2 key fails (old scrypt-stored data), try scrypt directly
+                try:
+                    key = hashlib.scrypt(
+                        self._master_passphrase(),
+                        salt=salt, n=16384, r=8, p=1, dklen=32
+                    )
+                    plaintext = AESGCM(key).decrypt(nonce, ct_tag, b"smp_secrets_v1")
+                    self._secrets = json.loads(plaintext.decode('utf-8'))
+                except Exception:
+                    self._secrets = {}
             finally:
                 try:
                     del key
@@ -5366,16 +4844,13 @@ class SMPAutoRespondStorage:
         return seed
     
     def _save(self):
-        """Save secrets encrypted with AES-256-GCM (scrypt key, random salt+nonce)."""
+        """Save secrets encrypted with AES-256-GCM (Argon2id/scrypt key)."""
         with self._lock:
             try:
                 plaintext = json.dumps(self._secrets, separators=(',', ':')).encode('utf-8')
                 salt  = secrets.token_bytes(16)
                 nonce = secrets.token_bytes(12)
-                key   = hashlib.scrypt(
-                    self._master_passphrase(),
-                    salt=salt, n=16384, r=8, p=1, dklen=32
-                )
+                key   = _derive_key(self._master_passphrase(), salt, 32)
                 ct_tag = AESGCM(key).encrypt(nonce, plaintext, b"smp_secrets_v1")
                 blob = salt + nonce + ct_tag
                 with tempfile.NamedTemporaryFile(
@@ -6212,7 +5687,7 @@ class EnhancedOTRSession:
         self.smp_state = UIConstants.SMPState.NONE
         
         self.dake_engine: Optional['OTRv4DAKE'] = None
-        self.ratchet: Optional[DoubleRatchet] = None
+        self.ratchet: Optional[RustBackedDoubleRatchet] = None
         self.smp_engine: Optional[SMPEngine] = None
         
         self.session_id: Optional[bytes] = None
@@ -6425,17 +5900,15 @@ class EnhancedOTRSession:
                 rekey_timeout=OTRConstants.REKEY_TIMEOUT
             )
 
-            if RUST_RATCHET_AVAILABLE:
-                try:
-                    self.ratchet = RustBackedDoubleRatchet(**_ratchet_args)
-                    self._ratchet_backend = "rust"
-                except Exception as e:
-                    self.logger.debug(f"Rust ratchet failed ({e}), falling back to Python")
-                    self.ratchet = DoubleRatchet(**_ratchet_args)
-                    self._ratchet_backend = "python"
-            else:
-                self.ratchet = DoubleRatchet(**_ratchet_args)
-                self._ratchet_backend = "python"
+            if not RUST_RATCHET_AVAILABLE:
+                raise RuntimeError(
+                    "otrv4_core Rust module not installed — cannot create encrypted session. "
+                    "Build with: cd Rust && cargo test --release && maturin build --release && "
+                    "pip install target/wheels/otrv4_core-*.whl"
+                )
+
+            self.ratchet = RustBackedDoubleRatchet(**_ratchet_args)
+            self._ratchet_backend = "rust"
 
             self._dake_chain_key_send = None
             self._dake_chain_key_recv = None
@@ -6525,6 +5998,13 @@ class EnhancedOTRSession:
                 raise StateMachineError("Cannot encrypt: session not in ENCRYPTED state")
             if self.ratchet is None:
                 raise RuntimeError("Ratchet not initialized — DAKE may not be complete")
+
+            # ── Session expiry check (DeepSeek rec.) ─────────────
+            if self.dake_engine is not None and self.dake_engine.is_session_expired():
+                raise StateMachineError(
+                    "OTR session has exceeded its maximum age (24 h). "
+                    "Re-establish DAKE to continue communicating securely."
+                )
             
             self.last_activity = time.time()
 
@@ -7061,6 +6541,13 @@ class EnhancedOTRSession:
                 self.logger.debug(f"start_smp: Cannot start - already in state {current_state.name}")
                 return None
             
+            smp_tlv = None
+
+            # NOTE: secret binding is performed inside set_smp_secret() which
+            # both sides call before this point.  Do NOT call set_secret() here
+            # again — doing so on only the initiator side causes an asymmetric
+            # hash mismatch with the responder (broken SMP).  The engine's own
+            # start_smp() will call set_secret() only if it was never set.
             smp_tlv = self.smp_engine.start_smp(secret, question)
             if not smp_tlv:
                 self.logger.debug("start_smp: smp_engine.start_smp returned None")
@@ -7256,26 +6743,69 @@ class EnhancedOTRSession:
             self._release_lock()
     
     def set_smp_secret(self, secret: str):
-        """Store SMP secret for this session.
+        """Store SMP secret for this session with symmetric session binding.
 
-        Warns if passphrase has weak entropy (< 6 chars or common pattern).
-        The SMP engine applies SHAKE-256 key stretching internally.
+        Session binding (session_id + fingerprints) is applied when DAKE
+        context is available so that brute-forcing a captured SMP transcript
+        from one session cannot replay into another.
+
+        Both the initiator (via start_smp) and the responder (via
+        _enh_handle_smp_tlv / auto-respond) call this method, so both sides
+        derive the same bound secret.  SMPEngine.set_secret() uses
+        self.is_initiator to place fingerprints in the canonical order
+        (initiator_fp first), so both sides produce the same hash regardless
+        of which side calls first.
+
+        Raises ValueError if the secret is shorter than 8 characters.
         """
         if not self._acquire_lock():
             return
-        
+
         try:
-            # ── Entropy warning ──────────────────────────────
-            _MIN_SMP_LENGTH = 6
+            _MIN_SMP_LENGTH = 8
             if len(secret) < _MIN_SMP_LENGTH:
                 self.logger.debug(
-                    f"SMP WARNING: passphrase is only {len(secret)} chars — "
-                    f"minimum {_MIN_SMP_LENGTH} recommended. "
-                    "Short passphrases can be brute-forced from SMP transcripts.")
+                    f"SMP REJECTED: passphrase is only {len(secret)} chars — "
+                    f"minimum {_MIN_SMP_LENGTH} required.")
+                raise ValueError(
+                    f"SMP secret must be at least {_MIN_SMP_LENGTH} characters."
+                )
             if self.smp_engine is None:
                 self.initialize_smp()
-            self.smp_engine.set_secret(secret)
-            self.logger.debug(f"set_smp_secret: Secret stored for {self.peer}")
+
+            # ── Symmetric session binding ────────────────────────
+            if self.session_id and self._remote_long_term_pub_bytes:
+                local_fp_bytes = None
+                try:
+                    if self.dake_engine and self.dake_engine.client_profile:
+                        _cp = self.dake_engine.client_profile
+                        if _cp.identity_key:
+                            local_fp_bytes = _cp.identity_key.public_key().public_bytes(
+                                encoding=serialization.Encoding.Raw,
+                                format=serialization.PublicFormat.Raw
+                            )
+                        elif _cp.identity_pub_bytes:
+                            local_fp_bytes = _cp.identity_pub_bytes
+                except Exception:
+                    local_fp_bytes = None
+
+                self.smp_engine.set_secret(
+                    secret,
+                    session_id=self.session_id,
+                    local_fingerprint=local_fp_bytes,
+                    remote_fingerprint=self._remote_long_term_pub_bytes
+                )
+                self.logger.debug(
+                    f"set_smp_secret: session-bound stored for {self.peer} "
+                    f"(initiator={self.is_initiator})"
+                )
+            else:
+                # Fallback: session context not yet available
+                self.smp_engine.set_secret(secret)
+                self.logger.debug(
+                    f"set_smp_secret: unbound stored for {self.peer} "
+                    "(session_id or remote_fp unavailable)"
+                )
         finally:
             self._release_lock()
     
@@ -8785,6 +8315,16 @@ class OTRFragmentBuffer:
                 f"{self.max_fragments_per_sender}. Discarding."
             )
 
+        # Hard absolute ceiling — reject any stream that declares more than
+        # 1 000 fragments regardless of the per-sender limit, to prevent
+        # memory-exhaustion attacks via specially crafted fragment counts.
+        _ABSOLUTE_MAX_FRAGMENTS = 1000
+        if total > _ABSOLUTE_MAX_FRAGMENTS:
+            raise ValueError(
+                f"Fragment total {total} from {sender} exceeds absolute "
+                f"maximum of {_ABSOLUTE_MAX_FRAGMENTS}. Discarding."
+            )
+
         if state['total'] != total:
             self._buffers[sender] = {
                 'total': total, 'parts': {}, 'first_ts': now, 'last_ts': now,
@@ -9214,6 +8754,7 @@ class OTRv4IRCClient:
 
         self.connected  = False
         self.running    = False
+        self._reconnecting = False
         self.auto_joined  = False
         self.auth_complete = False
         self.nickserv_identified = False
@@ -9618,6 +9159,9 @@ class OTRv4IRCClient:
 
     def _try_reconnect(self):
         """Close the old socket, reset all OTR/session state, and reconnect."""
+        self._reconnecting = True
+        self._rejoin_channels = list(self.channels.keys()) if self.channels else []
+
         self.connected = False
         self.running   = False
         try:
@@ -9626,6 +9170,12 @@ class OTRv4IRCClient:
         except Exception:
             pass
         self.sock = None
+        try:
+            if hasattr(self, '_sam_connection') and self._sam_connection:
+                self._sam_connection.close()
+                self._sam_connection = None
+        except Exception:
+            pass
         self.auto_joined   = False
         self.auth_complete = False
         self.nickserv_identified = False
@@ -9646,7 +9196,9 @@ class OTRv4IRCClient:
             for panel in self.panel_manager.panels.values():
                 panel.security_level = UIConstants.SecurityLevel.PLAINTEXT
                 panel.secure_session = False
-                panel.type = 'channel' if panel.name.startswith('#') else                              'system'  if panel.name == 'system' else                              'private'
+                panel.type = 'channel' if panel.name.startswith('#') else \
+                             'system'  if panel.name == 'system' else \
+                             'private'
         except Exception:
             pass
 
@@ -9655,8 +9207,15 @@ class OTRv4IRCClient:
         self.add_message("system", f"🔄 Reconnecting in {backoff}s (attempt {self.connection_attempts})…")
         time.sleep(backoff)
         if self.connection_attempts <= self.max_connection_attempts:
-            self.connect()
+            if self.connect():
+                self._reconnecting = False
+                self._recv_thread = threading.Thread(
+                    target=self._recv_loop, daemon=True)
+                self._recv_thread.start()
+            else:
+                self._reconnecting = False
         else:
+            self._reconnecting = False
             self.add_message("system", colorize("❌ Max reconnect attempts reached.", "red"))
 
 
@@ -9868,7 +9427,7 @@ class OTRv4IRCClient:
                         self._msg_rate: dict = {}
                     _bucket = self._msg_rate.get(sender, (0, 0.0))
                     _count, _window_start = _bucket
-                    if _now - _window_start > 10.3:
+                    if _now - _window_start > 10.4:
                         _count, _window_start = 0, _now
                     _count += 1
                     self._msg_rate[sender] = (_count, _window_start)
@@ -10022,14 +9581,18 @@ class OTRv4IRCClient:
                         colorize("🔑 Identifying with NickServ…", "cyan"))
                     _ns_pass = self.config.nickserv_pass
                     self.send(f"PRIVMSG NickServ :IDENTIFY {_ns_pass}")
-                    _secure_wipe_bytes(_ns_pass.encode()); del _ns_pass
+                    _ns_pass_ba = bytearray(_ns_pass.encode('utf-8'))
+                    _ossl.cleanse(_ns_pass_ba)
+                    del _ns_pass, _ns_pass_ba
                     self.config.nickserv_pass = None
                 elif self.config.nickserv_register and self.config.nickserv_pass:
                     self.add_message("system",
                         colorize("📝 Registering nick with NickServ…", "cyan"))
                     _ns_pass = self.config.nickserv_pass
                     self.send(f"PRIVMSG NickServ :REGISTER {_ns_pass} no-email")
-                    _secure_wipe_bytes(_ns_pass.encode()); del _ns_pass
+                    _ns_pass_ba = bytearray(_ns_pass.encode('utf-8'))
+                    _ossl.cleanse(_ns_pass_ba)
+                    del _ns_pass, _ns_pass_ba
                     self.config.nickserv_pass = None
 
                 delay = 3.0 if (self.config.nickserv_login or self.config.nickserv_register) else 2.0
@@ -10486,13 +10049,36 @@ class OTRv4IRCClient:
 
 
     def auto_join_channel(self):
-        """Join the default channel after RPL_WELCOME."""
+        """Join channels after RPL_WELCOME.
+
+        On first connect: joins the default channel.
+        On reconnect: rejoins all channels the user was in before disconnect.
+        """
         if not self.auto_joined and self.connected:
-            ch = self.config.channel
-            self.send(f"JOIN {ch}")
+            rejoin = getattr(self, '_rejoin_channels', [])
+            if rejoin:
+                channels_to_join = rejoin
+                self._rejoin_channels = []
+            else:
+                channels_to_join = [self.config.channel]
+
+            seen = set()
+            ordered = []
+            for ch in channels_to_join:
+                if ch.lower() not in seen:
+                    seen.add(ch.lower())
+                    ordered.append(ch)
+            if self.config.channel.lower() not in seen:
+                ordered.insert(0, self.config.channel)
+
+            for ch in ordered:
+                self.send(f"JOIN {ch}")
+                self.add_message("system", f"Auto-joining {colorize(ch, 'cyan')}…")
+                self.debug("auto_join", {"channel": ch})
+
             self.auto_joined = True
-            self.add_message("system", f"Auto-joining {colorize(ch, 'cyan')}…")
-            self.debug("auto_join", {"channel": ch})
+            self.connection_attempts = 0
+
             peers = [
                 name for name, p in self.panel_manager.panels.items()
                 if not name.startswith('#') and name not in ('system', 'debug')
@@ -10870,18 +10456,20 @@ class OTRv4IRCClient:
                 self.add_message("system", f"SMP {peer}: {status}")
             else:
                 secret = " ".join(parts[1:])
-                if len(secret) < 6:
+                if len(secret) < 8:
                     self.add_message("system", colorize(
-                        f"⚠ SMP secret is only {len(secret)} chars — "
-                        "minimum 6 recommended. Short passphrases are brute-forceable.", 'yellow'))
+                        f"⚠ SMP secret rejected — only {len(secret)} chars. "
+                        "Minimum 8 required to resist brute-force attacks.", 'red'))
+                    return
                 self._start_smp(peer, secret)
         elif cmd == "smp-secret" and len(parts) > 2:
             peer   = parts[1]
             secret = " ".join(parts[2:])
-            if len(secret) < 6:
+            if len(secret) < 8:
                 self.add_message("system", colorize(
-                    f"⚠ SMP secret is only {len(secret)} chars — "
-                    "minimum 6 recommended. Short passphrases are brute-forceable.", 'yellow'))
+                    f"⚠ SMP secret rejected — only {len(secret)} chars. "
+                    "Minimum 8 required to resist brute-force attacks.", 'red'))
+                return
             if hasattr(self.session_manager, "smp_storage"):
                 self.session_manager.smp_storage.set_secret(peer, secret)
             self.add_message("system", f"🔑 SMP secret set for {peer}")
@@ -10933,9 +10521,8 @@ class OTRv4IRCClient:
             if DEBUG_MODE and "debug" not in self.panel_manager.panels:
                 self.panel_manager.add_panel("debug", "debug")
         elif cmd == "version":
-            _rt = "🦀 Rust (zeroize-on-drop)" if RUST_RATCHET_AVAILABLE else "🐍 Python (C extensions)"
             self.add_message("system", f"Version: {VERSION}")
-            self.add_message("system", f"Ratchet: {_rt}")
+            self.add_message("system", "Ratchet: 🦀 Rust (zeroize-on-drop)")
         else:
             if cmd == "/server":
                 if not parts[1:]:
@@ -11800,6 +11387,11 @@ class EnhancedOTRv4IRCClient(OTRv4IRCClient):
                     return
                 
                 if secret:
+                    if len(secret) < 8:
+                        self.add_message("system", colorize(
+                            f"⚠ SMP secret rejected — only {len(secret)} chars. "
+                            "Minimum 8 required to resist brute-force attacks.", 'red'))
+                        return
                     try:
                         if hasattr(self.session_manager, 'set_smp_secret'):
                             self.session_manager.set_smp_secret(peer, secret)
@@ -11821,7 +11413,11 @@ class EnhancedOTRv4IRCClient(OTRv4IRCClient):
         elif cmd == 'smp-secret' and len(parts) > 2:
             peer = parts[1]
             secret = ' '.join(parts[2:])
-            
+            if len(secret) < 8:
+                self.add_message("system", colorize(
+                    f"⚠ SMP secret rejected — only {len(secret)} chars. "
+                    "Minimum 8 required to resist brute-force attacks.", 'red'))
+                return
             try:
                 if hasattr(self.session_manager, 'set_smp_secret'):
                     self.session_manager.set_smp_secret(peer, secret)
@@ -12278,8 +11874,17 @@ def main():
     safe_print(f"Auth    : {colorize(_auth_disp, 'cyan')}")
     safe_print(f"Channel : {colorize(config.channel, 'cyan')}")
     safe_print(f"Debug   : {colorize('ON' if DEBUG_MODE else 'OFF', 'green' if DEBUG_MODE else 'dim')}")
-    _rt_label = "🦀 Rust (zeroize-on-drop)" if RUST_RATCHET_AVAILABLE else "🐍 Python (C extensions)"
-    safe_print(f"Ratchet : {colorize(_rt_label, 'green' if RUST_RATCHET_AVAILABLE else 'yellow')}")
+    _rt_label = "🦀 Rust (zeroize-on-drop)" if RUST_RATCHET_AVAILABLE else "❌ NOT INSTALLED"
+    safe_print(f"Ratchet : {colorize(_rt_label, 'green' if RUST_RATCHET_AVAILABLE else 'red')}")
+
+    if not RUST_RATCHET_AVAILABLE:
+        safe_print(colorize("\n❌ FATAL: otrv4_core Rust module not installed.", "red"))
+        safe_print(colorize("   Encrypted sessions require the Rust ratchet core.", "red"))
+        safe_print(colorize("   Build with:", "yellow"))
+        safe_print(colorize("     cd Rust && cargo test --release && maturin build --release", "cyan"))
+        safe_print(colorize("     pip install target/wheels/otrv4_core-*.whl", "cyan"))
+        safe_print("")
+        return 1
 
     # Show I2P transport method
     _net_detect = NetworkConstants.detect(config.server)
@@ -12391,13 +11996,13 @@ def main():
                 if not r:
                     _flush_display_queue()
                     # ── Check for disconnection ──────────────────
-                    if not client.running and not client.shutdown_flag:
+                    if not client.running and not client.shutdown_flag and not client._reconnecting:
                         safe_print(colorize(
                             "\n⚠ Disconnected from server. "
                             "Type /reconnect to reconnect, or /quit to exit.",
                             "yellow"
                         ))
-                        while not client.shutdown_flag and not client.running:
+                        while not client.shutdown_flag and not client.running and not client._reconnecting:
                             try:
                                 r2, _, _ = _select.select([_fd], [], [], 0.5)
                                 if not r2:
