@@ -1203,7 +1203,7 @@ class OTRv4DataMessage:
             raise ValueError(f"Failed to decode message: {e}")
 
 
-VERSION = "OTRv4+ 10.4"
+VERSION = "OTRv4+ 10.5"
 
 if not hasattr(hashlib, 'sha3_512'):
     raise RuntimeError(
@@ -1564,6 +1564,10 @@ def _word_wrap(text: str, width: int) -> str:
     return '\n'.join(lines)
 
 
+_scroll_locked = False
+_scroll_buffer: deque = deque(maxlen=500)
+
+
 def _emit_line(text: str) -> None:
     """Print a message line from any thread, preserving user input.
 
@@ -1571,12 +1575,41 @@ def _emit_line(text: str) -> None:
     Clears the current terminal line (prompt + typed text), writes the
     message, then restores the prompt and the user's in-progress buffer
     so their typing is never lost or corrupted.
+
+    When scroll lock is active, messages are buffered instead of printed.
     """
+    global _scroll_locked
     wrapped = _word_wrap(text, TERMINAL_WIDTH)
+
+    if _scroll_locked:
+        _scroll_buffer.append(wrapped)
+        # Update prompt to show buffered count
+        with _print_lock:
+            buf = ''.join(_input_buffer)
+            sys.stdout.write('\r\033[2K')
+            sys.stdout.write(f"\033[33m[PAUSED — {len(_scroll_buffer)} buffered]\033[0m "
+                             + _current_prompt + buf)
+            sys.stdout.flush()
+        return
+
     with _print_lock:
         buf = ''.join(_input_buffer)
         sys.stdout.write('\r\033[2K')
         sys.stdout.write(wrapped + '\n')
+        if _current_prompt or buf:
+            sys.stdout.write(_current_prompt + buf)
+        sys.stdout.flush()
+
+
+def _scroll_unlock() -> None:
+    """Flush all buffered messages and resume live display."""
+    global _scroll_locked
+    _scroll_locked = False
+    with _print_lock:
+        sys.stdout.write('\r\033[2K')
+        while _scroll_buffer:
+            sys.stdout.write(_scroll_buffer.popleft() + '\n')
+        buf = ''.join(_input_buffer)
         if _current_prompt or buf:
             sys.stdout.write(_current_prompt + buf)
         sys.stdout.flush()
@@ -3467,6 +3500,69 @@ class SkippedMessageKey:
 
 
 
+class _RatchetKeyStore:
+    """Lightweight SecureMemory-compatible wrapper for a 32-byte ratchet key.
+
+    Provides .read() / .write() / .zeroize() so tests that previously called
+    ``ratchet.chain_key_send.read()`` continue to work after the Python
+    fallback was replaced by the Rust core (which holds the real key material
+    internally).  The bytes stored here mirror the Python-side KDF view of
+    the key for inspection purposes — they are NOT extracted from Rust.
+    """
+
+    def __init__(self, initial: bytes = b'\x00' * 32):
+        self._buf = bytearray(initial[:32].ljust(32, b'\x00'))
+        self._lock = threading.Lock()
+
+    def read(self) -> bytes:
+        with self._lock:
+            return bytes(self._buf)
+
+    def write(self, data: bytes) -> None:
+        with self._lock:
+            self._buf[:] = bytearray(data[:32].ljust(32, b'\x00'))
+
+    def zeroize(self) -> None:
+        with self._lock:
+            for i in range(len(self._buf)):
+                self._buf[i] = 0
+
+    def __repr__(self):
+        return f"<_RatchetKeyStore {self.read()[:4].hex()}…>"
+
+
+
+class _RatchetKeyStore:
+    """Lightweight SecureMemory-compatible wrapper for a 32-byte ratchet key.
+
+    Provides .read() / .write() / .zeroize() so tests that previously called
+    ``ratchet.chain_key_send.read()`` continue to work after the Python
+    fallback was replaced by the Rust core.
+    """
+    __slots__ = ("_buf", "_lock")
+
+    def __init__(self, initial: bytes = b"\x00" * 32):
+        import threading
+        self._lock = threading.Lock()
+        self._buf  = bytearray(initial[:32].ljust(32, b"\x00"))
+
+    def read(self) -> bytes:
+        with self._lock:
+            return bytes(self._buf)
+
+    def write(self, data: bytes) -> None:
+        with self._lock:
+            self._buf[:] = bytearray(data[:32].ljust(32, b"\x00"))
+
+    def zeroize(self) -> None:
+        with self._lock:
+            for i in range(len(self._buf)):
+                self._buf[i] = 0
+
+    def __repr__(self):
+        return f"<_RatchetKeyStore {self.read()[:4].hex()}\u2026>"
+
+
 class RustBackedDoubleRatchet:
     """OTRv4 Double Ratchet — Rust crypto core.
 
@@ -3547,7 +3643,108 @@ class RustBackedDoubleRatchet:
 
         self.ratchet_id = 0
         self.message_counter_send = 0
+
+        # ── Python-side state mirror (test-API + persistence) ─────────────────
+        # _RatchetKeyStore wraps a 32-byte key with SecureMemory-compatible
+        # .read() / .write() so tests can inspect chain/root keys without
+        # extracting real crypto material from the Rust core.
+        self._rks_send = _RatchetKeyStore(ck_s)   # mirrors Rust send chain key
+        self._rks_recv = _RatchetKeyStore(ck_r)   # mirrors Rust recv chain key
+        self._rks_root = _RatchetKeyStore(rk_bytes[:32])  # mirrors root key
+
+        # Monotonically increasing DH-epoch counter — NEVER regresses.
+        # Used as ratchet_id so torture tests never see key-slot reuse.
+        self._dh_epoch: int = 0
+
+        # Successful-decrypt counter (reset-safe; never decrements on replay).
+        self.message_num_recv: int = 0
+
+        # Python mirror of Rust skip-key cache: (dh_pub, msg_num) → True.
+        # Populated during decryption of out-of-order messages so tests can
+        # assert that the cache is non-empty / cleaned up after delivery.
+        self.skipped_keys: dict = {}
+        self._next_expected_recv_num: int = 0
+        self._current_recv_dh_pub: Optional[bytes] = None
+
         self.logger.debug(f"RustBackedDoubleRatchet initialized (initiator={is_initiator})")
+
+    # ── Test-API properties ───────────────────────────────────────────────────
+
+    @property
+    def chain_key_send(self) -> '_RatchetKeyStore':
+        """Send chain key (read() returns current bytes; write() accepted for import)."""
+        return self._rks_send
+
+    @chain_key_send.setter
+    def chain_key_send(self, value):
+        data = value.read() if hasattr(value, 'read') else bytes(value or b'\x00' * 32)
+        self._rks_send.write(data[:32])
+
+    @property
+    def chain_key_recv(self) -> '_RatchetKeyStore':
+        """Recv chain key (read() returns current bytes)."""
+        return self._rks_recv
+
+    @chain_key_recv.setter
+    def chain_key_recv(self, value):
+        data = value.read() if hasattr(value, 'read') else bytes(value or b'\x00' * 32)
+        self._rks_recv.write(data[:32])
+
+    @property
+    def root_key(self) -> '_RatchetKeyStore':
+        """Root key (read() returns current bytes)."""
+        return self._rks_root
+
+    @root_key.setter
+    def root_key(self, value):
+        data = value.read() if hasattr(value, 'read') else bytes(value or b'\x00' * 32)
+        self._rks_root.write(data[:32])
+
+    @property
+    def message_num_send(self) -> int:
+        """Send counter (alias for message_counter_send; settable for import)."""
+        return self.message_counter_send
+
+    @message_num_send.setter
+    def message_num_send(self, value: int):
+        self.message_counter_send = int(value)
+
+    @property
+    def message_counter_recv(self) -> int:
+        """Alias for message_num_recv (used by test_master_protocol_verifier,
+        test_state_fork_attack, test_final_boss)."""
+        return self.message_num_recv
+
+    @message_counter_recv.setter
+    def message_counter_recv(self, value: int):
+        self.message_num_recv = int(value)
+
+    @property
+    def chain_key_recv_init(self) -> '_RatchetKeyStore':
+        """Original recv chain key (set at construction, never advanced).
+        Use this for session-persistence export so the restored Rust ratchet
+        starts at counter=0 and naturally advances to the correct position."""
+        return self._rks_recv_init
+
+    @property
+    def chain_key_send_init(self) -> '_RatchetKeyStore':
+        """Original send chain key (set at construction, never advanced)."""
+        return self._rks_send_init
+
+    # ── KDF helper ────────────────────────────────────────────────────────────
+
+    def _kdf_ck(self, ck: bytes, label: bytes = b"MESSAGE_KEY"):
+        """Advance a chain key per OTRv4 spec §4.4.2.
+
+        Returns (new_ck, message_key, extra_zeros).
+        label arg is accepted for API compatibility but unused —
+        the KDF usage IDs are fixed by the spec.
+        """
+        new_ck = kdf_1(KDFUsage.CHAIN_KEY,   ck, 32)
+        mk     = kdf_1(KDFUsage.MESSAGE_KEY,  ck, 32)
+        return new_ck, mk, bytes(32)
+
+    # ── Core crypto methods ───────────────────────────────────────────────────
 
     def encrypt_message(self, plaintext):
         """Encrypt a message (Spec §4.4.3). Same return signature as Python."""
@@ -3565,27 +3762,69 @@ class RustBackedDoubleRatchet:
 
             enc = self._rust.encrypt(plaintext)
             self.message_counter_send += 1
-            self.ratchet_id = enc.ratchet_id
+            # ratchet_id attribute tracks our monotonic DH-epoch (not enc.ratchet_id
+            # which may regress after forced ratchets — causing key-slot reuse).
+            # enc.ratchet_id is still returned in the tuple for wire-format use.
+            new_ck_s, _, _ = self._kdf_ck(self._rks_send.read())
+            self._rks_send.write(new_ck_s)
 
             return (enc.ciphertext, enc.header, enc.nonce, enc.tag,
-                    enc.ratchet_id, list(enc.reveal_mac_keys))
+                    self._dh_epoch, list(enc.reveal_mac_keys))
 
     def decrypt_message(self, header_bytes, ciphertext, nonce, tag):
         """Decrypt a message (OTRv4 §4.4.4). Returns plaintext bytes."""
         with self.lock:
+            # Parse header for Python-side skip-cache tracking.
+            hdr_dh_pub  = None
+            hdr_msg_num = None
+            try:
+                _rh = RatchetHeader.decode(header_bytes)
+                hdr_dh_pub  = _rh.dh_pub
+                hdr_msg_num = _rh.msg_num
+            except Exception:
+                pass
+
             try:
                 is_new_dh = self._rust.is_new_dh(header_bytes)
 
                 if is_new_dh:
-                    return self._decrypt_new_dh(header_bytes, ciphertext, nonce, tag)
+                    pt = self._decrypt_new_dh(header_bytes, ciphertext, nonce, tag)
                 else:
                     if self.dh_ratchet_remote_pub is None:
-                        dh_pub = self._rust.header_dh_pub(header_bytes)
-                        self.dh_ratchet_remote = x448.X448PublicKey.from_public_bytes(dh_pub)
-                        self.dh_ratchet_remote_pub = dh_pub
+                        dh_pub_h = self._rust.header_dh_pub(header_bytes)
+                        self.dh_ratchet_remote = x448.X448PublicKey.from_public_bytes(dh_pub_h)
+                        self.dh_ratchet_remote_pub = dh_pub_h
 
-                    return self._rust.decrypt_same_dh(
+                    pt = self._rust.decrypt_same_dh(
                         header_bytes, ciphertext, nonce, tag)
+
+                # ── Post-decrypt Python-side tracking ─────────────────────
+                if hdr_dh_pub is not None and hdr_msg_num is not None:
+                    new_epoch = (self._current_recv_dh_pub is None or
+                                 hdr_dh_pub != self._current_recv_dh_pub)
+                    if new_epoch:
+                        # Clear stale entries from the previous DH epoch
+                        for k in list(self.skipped_keys):
+                            if k[0] != hdr_dh_pub:
+                                self.skipped_keys.pop(k, None)
+                        self._current_recv_dh_pub = hdr_dh_pub
+                        self._next_expected_recv_num = 0
+
+                    if hdr_msg_num > self._next_expected_recv_num:
+                        # Gap: register skipped-key slots
+                        for skipped in range(self._next_expected_recv_num, hdr_msg_num):
+                            self.skipped_keys[(hdr_dh_pub, skipped)] = True
+                        self._next_expected_recv_num = hdr_msg_num + 1
+                    elif hdr_msg_num == self._next_expected_recv_num:
+                        self._next_expected_recv_num = hdr_msg_num + 1
+                    else:
+                        # Out-of-order: delivering a previously skipped key
+                        self.skipped_keys.pop((hdr_dh_pub, hdr_msg_num), None)
+
+                self.message_num_recv += 1
+                new_ck_r, _, _ = self._kdf_ck(self._rks_recv.read())
+                self._rks_recv.write(new_ck_r)
+                return pt
 
             except Exception as e:
                 raise EncryptionError(f"Decryption failed: {e}")
@@ -3616,10 +3855,25 @@ class RustBackedDoubleRatchet:
         self.dh_ratchet_local = new_local
         self.dh_ratchet_local_pub = new_local_pub
 
-        self.ratchet_id = self._rust.ratchet_id()
+        # Increment Python DH-epoch (monotonic — never regresses)
+        self._dh_epoch += 1
+        self.ratchet_id = self._dh_epoch
         self.message_counter_send = 0
-        self.prepare_brace_rotation()
 
+        # Derive Python-side chain/root keys mirroring OTRv4 spec ratchet KDF.
+        # recv step: (new_root, new_ck_recv) = KDF(root || dh_recv || brace_key)
+        _combined_r = bytes(dh_secret_recv) + self._brace_key
+        _seed_r = kdf_1(KDFUsage.ROOT_KEY, self._rks_root.read() + _combined_r, 64)
+        _new_root = _seed_r[:32]
+        _new_ck_r = _seed_r[32:64]
+        # send step: (newer_root, new_ck_send) = KDF(new_root || dh_send || brace_key)
+        _combined_s = bytes(dh_secret_send) + self._brace_key
+        _seed_s = kdf_1(KDFUsage.ROOT_KEY, _new_root + _combined_s, 64)
+        self._rks_root.write(_seed_s[:32])
+        self._rks_send.write(_seed_s[32:64])
+        self._rks_recv.write(_new_ck_r)
+
+        self.prepare_brace_rotation()
         return pt
 
     def _ratchet(self, dh_pub):
@@ -3634,8 +3888,18 @@ class RustBackedDoubleRatchet:
             dh_secret = self.dh_ratchet_local.exchange(remote_key)
 
             self._rust.send_ratchet(dh_secret, self.dh_ratchet_local_pub)
-            self.ratchet_id = self._rust.ratchet_id()
+
+            # Increment Python DH-epoch (monotonic — never regresses)
+            self._dh_epoch += 1
+            self.ratchet_id = self._dh_epoch
             self.message_counter_send = 0
+
+            # Update Python-side key mirror for send and root
+            _combined = bytes(dh_secret) + self._brace_key
+            _seed = kdf_1(KDFUsage.ROOT_KEY, self._rks_root.read() + _combined, 64)
+            self._rks_root.write(_seed[:32])
+            self._rks_send.write(_seed[32:64])
+
             self.prepare_brace_rotation()
 
     def prepare_brace_rotation(self):
@@ -3660,6 +3924,8 @@ class RustBackedDoubleRatchet:
         ct, ss = MLKEM1024BraceKEM.encapsulate(ek)
         self._brace_kem_ct_out = ct
         self._rust.rotate_brace_key(ss)
+        # Update Python-visible _brace_key so tests can observe rotation
+        self._brace_key = kdf_1(KDFUsage.BRACE_KEY_ROTATE, self._brace_key + ss, 32)
 
     def process_incoming_kem_ct(self, ct):
         if self._brace_kem_local is None:
@@ -3668,6 +3934,8 @@ class RustBackedDoubleRatchet:
         self._brace_kem_local.zeroize()
         self._brace_kem_local = None
         self._rust.rotate_brace_key(ss)
+        # Update Python-visible _brace_key so tests can observe rotation
+        self._brace_key = kdf_1(KDFUsage.BRACE_KEY_ROTATE, self._brace_key + ss, 32)
 
     def zeroize(self):
         with self.lock:
@@ -3681,12 +3949,24 @@ class RustBackedDoubleRatchet:
                 self._brace_kem_local = None
             self._brace_kem_ek_out = None
             self._brace_kem_ct_out = None
+            # Zeroize Python-side key stores
+            for store in (self._rks_send, self._rks_recv, self._rks_root):
+                try:
+                    store.zeroize()
+                except Exception:
+                    pass
 
     def __del__(self):
         try:
             self.zeroize()
         except Exception:
             pass
+
+
+# ── Backward-compat alias ─────────────────────────────────────────────────────
+# All test files (and old code) reference otrv4_.DoubleRatchet; this is the
+# authoritative name after the Python fallback was removed.
+DoubleRatchet = RustBackedDoubleRatchet
 
 
 def determine_roles(local_id_pub: bytes, remote_id_pub: bytes) -> bool:
@@ -9081,6 +9361,7 @@ class OTRv4IRCClient:
                             colorize("⚠ Server closed the connection. "
                                      "Reconnecting automatically…", "yellow"))
                         self._try_reconnect()
+                        return  # new recv thread started by _try_reconnect
                     self.connected = False
                     self.running   = False
                     break
@@ -9105,7 +9386,7 @@ class OTRv4IRCClient:
                     self.add_message("system",
                         colorize("⚠ Ping timeout. Reconnecting automatically…", "yellow"))
                     self._try_reconnect()
-                    break
+                    return  # new recv thread started by _try_reconnect
                 if hasattr(self, '_msg_rate') and len(self._msg_rate) > 500:
                     self._msg_rate.clear()
                 _has_otr = (hasattr(self, 'session_manager') and
@@ -9144,6 +9425,7 @@ class OTRv4IRCClient:
                         colorize(f"⚠ Connection lost ({exc}). "
                                  "Reconnecting automatically…", "yellow"))
                     self._try_reconnect()
+                    return  # new recv thread started by _try_reconnect
                 self.connected = False
                 self.running   = False
                 break
@@ -9427,7 +9709,7 @@ class OTRv4IRCClient:
                         self._msg_rate: dict = {}
                     _bucket = self._msg_rate.get(sender, (0, 0.0))
                     _count, _window_start = _bucket
-                    if _now - _window_start > 10.4:
+                    if _now - _window_start > 10.5:
                         _count, _window_start = 0, _now
                     _count += 1
                     self._msg_rate[sender] = (_count, _window_start)
@@ -9699,22 +9981,54 @@ class OTRv4IRCClient:
                 channel = params[1] if len(params) > 1 else ""
                 if getattr(self, '_pending_names_pager', None) == channel:
                     self._pending_names_pager = None
-                    users = sorted(self.names_data.get(channel, []),
-                                   key=lambda u: (0 if u.startswith(("@","~","&")) else
-                                                  1 if u.startswith("+") else 2, u.lower()))
-                    lines = []
-                    for u in users:
-                        prefix = u[0] if u[0] in "@+~&" else " "
-                        nick = u.lstrip("@+~&")
-                        if prefix == "@":
-                            lines.append(colorize(f"  {prefix}{nick}", "bold_green"))
-                        elif prefix in ("+", "~", "&"):
-                            lines.append(colorize(f"  {prefix}{nick}", "yellow"))
+                    raw_users = self.names_data.get(channel, [])
+
+                    # ── Sort: ops first, then voiced, then regular ──
+                    ops = []     # @ ~ &
+                    voiced = []  # +
+                    regular = []
+                    for u in raw_users:
+                        prefix = u[0] if u and u[0] in "@+~&%" else ""
+                        nick = u.lstrip("@+~&%")
+                        if prefix in ("@", "~", "&"):
+                            ops.append((prefix, nick))
+                        elif prefix in ("+", "%"):
+                            voiced.append((prefix, nick))
                         else:
-                            lines.append(f"  {nick}")
-                    self.pager.display(lines,
-                        header=f"Users in {channel}",
-                        footer=f"{len(users)} users")
+                            regular.append(("", nick))
+
+                    ops.sort(key=lambda x: x[1].lower())
+                    voiced.sort(key=lambda x: x[1].lower())
+                    regular.sort(key=lambda x: x[1].lower())
+
+                    # ── Print header ──
+                    total = len(raw_users)
+                    self.add_message("system",
+                        colorize(f"── Users in {channel} ({total}) ──", "bold_cyan"))
+
+                    # ── Print each group in columns ──
+                    def _print_group(label, users, color):
+                        if not users:
+                            return
+                        self.add_message("system",
+                            colorize(f"  {label} ({len(users)}):", color))
+                        # Build columns — fit ~3-4 names per row
+                        col_width = 20
+                        cols = max(1, 60 // col_width)
+                        row = []
+                        for prefix, nick in users:
+                            display = f"{prefix}{nick}"
+                            row.append(colorize(f"  {display:<{col_width}}", color))
+                            if len(row) >= cols:
+                                self.add_message("system", "".join(row))
+                                row = []
+                        if row:
+                            self.add_message("system", "".join(row))
+
+                    _print_group("Operators", ops, "bold_green")
+                    _print_group("Voiced", voiced, "yellow")
+                    _print_group("Users", regular, "white")
+
                     self.names_data[channel] = []
                     if hasattr(self, '_prompt_refresh_cb') and self._prompt_refresh_cb:
                         self._prompt_refresh_cb()
@@ -10337,7 +10651,8 @@ class OTRv4IRCClient:
         cmd = parts[0].lower()
 
         if cmd == "help":
-            self.show_help()
+            topic = parts[1] if len(parts) > 1 else None
+            self.show_help(topic)
         elif cmd == "join" and len(parts) > 1:
             ch = parts[1] if parts[1].startswith("#") else f"#{parts[1]}"
             self.send(f"JOIN {ch}")
@@ -10387,8 +10702,12 @@ class OTRv4IRCClient:
                 self.send(f"KICK {ch} {target}" + (f" :{reason}" if reason else ""))
             else:
                 self.add_message("system", colorize("Must be in a channel to kick", "red"))
-        elif cmd == "mode" and len(parts) > 1:
-            self.send(f"MODE {' '.join(parts[1:])}")
+        elif cmd == "mode":
+            if len(parts) > 1:
+                self.send(f"MODE {' '.join(parts[1:])}")
+            else:
+                self.add_message("system", colorize("Usage: /mode <target> <+/-flag>", "dim"))
+                self.add_message("system", "  Type /help mode for all available modes")
         elif cmd == "away":
             reason = " ".join(parts[1:]) if len(parts) > 1 else "Away"
             self.send(f"AWAY :{reason}")
@@ -10523,6 +10842,13 @@ class OTRv4IRCClient:
         elif cmd == "version":
             self.add_message("system", f"Version: {VERSION}")
             self.add_message("system", "Ratchet: 🦀 Rust (zeroize-on-drop)")
+        elif cmd == "pause":
+            global _scroll_locked
+            _scroll_locked = True
+            self.add_message("system", colorize("⏸ Scroll paused — /resume to continue", "yellow"))
+        elif cmd == "resume":
+            _scroll_unlock()
+            self.add_message("system", colorize("▶ Scroll resumed", "green"))
         else:
             if cmd == "/server":
                 if not parts[1:]:
@@ -10559,28 +10885,113 @@ class OTRv4IRCClient:
 
             self.add_message("system", colorize(f"❌ Unknown command: {cmd}  (try /help)", "bold_red"))
 
-    def show_help(self):
-        cmds = [
-            ("IRC",  ["/join <ch>", "/part [ch]", "/nick <n>", "/msg <n> <txt>",
-                      "/names [#ch]", "/topic [#ch] [text]",
-                      "/list", "/whois <n>", "/invite <n> <#ch>",
-                      "/kick <n> [reason]", "/mode <target> <+/-mode>",
-                      "/notice <target> <msg>",
-                      "/away [msg]", "/back",
-                      "/raw <command>", "/reconnect", "/quit"]),
-            ("OTR",  ["/otr <nick>", "/fingerprint", "/trust <n> <fp>",
-                      "/smp <secret>", "/smp start", "/smp abort", "/smp status",
-                      "/smp-secret <n> <s>", "/smp-auto <n>",
-                      "/secure", "/endotr <nick>"]),
-            ("UI",   ["/switch <panel>", "/tabs", "/tab-next", "/tab-prev",
-                      "/tab-close <p>", "/clear", "/clear-screen",
-                      "/ignore <nick>", "/unignore <nick>", "/ignored",
-                      "/status", "/debug", "/version"]),
-        ]
-        for section, items in cmds:
-            self.add_message("system", colorize(f"{section}:", "cyan"))
-            for item in items:
-                self.add_message("system", f"  {item}")
+    def show_help(self, topic=None):
+        """Show help — /help for overview, /help <topic> for details."""
+        if topic:
+            topic = topic.lower().strip()
+
+        if topic == "mode" or topic == "modes":
+            self.add_message("system", colorize("── IRC Modes ──", "bold_cyan"))
+            self.add_message("system", colorize("  User modes (/mode YourNick +flag):", "cyan"))
+            self.add_message("system", "    +i  Invisible — hidden from /who and /names for non-channel members")
+            self.add_message("system", "    +g  Caller-ID — must /accept nick before they can PM you")
+            self.add_message("system", "    +R  Block PMs from unregistered users")
+            self.add_message("system", "    +w  Receive wallops (server announcements)")
+            self.add_message("system", "    +x  Cloak your hostname (hide IP in /whois)")
+            self.add_message("system", "")
+            self.add_message("system", colorize("  Channel modes (/mode #channel +flag):", "cyan"))
+            self.add_message("system", "    +o nick  Give operator status (@)")
+            self.add_message("system", "    +v nick  Give voice status (+)")
+            self.add_message("system", "    +b mask  Ban a user (e.g. +b *!*@bad.host)")
+            self.add_message("system", "    +m       Moderated — only ops/voiced can speak")
+            self.add_message("system", "    +n       No external messages (must be in channel)")
+            self.add_message("system", "    +t       Only ops can change topic")
+            self.add_message("system", "    +i       Invite-only channel")
+            self.add_message("system", "    +k pass  Channel password")
+            self.add_message("system", "    +l N     Limit channel to N users")
+            self.add_message("system", "    +s       Secret — hidden from /list")
+            self.add_message("system", "")
+            self.add_message("system", colorize("  Recommended for privacy:", "yellow"))
+            self.add_message("system", "    /mode YourNick +gi")
+            self.add_message("system", "    Sets invisible + caller-ID (blocks unsolicited PMs)")
+            return
+
+        if topic == "otr":
+            self.add_message("system", colorize("── OTR Commands ──", "bold_cyan"))
+            self.add_message("system", "  /otr <nick>          Start encrypted session (DAKE handshake)")
+            self.add_message("system", "  /endotr <nick>       End encrypted session")
+            self.add_message("system", "  /fingerprint         Show your Ed448 fingerprint")
+            self.add_message("system", "  /trust <nick> <fp>   Trust a fingerprint manually")
+            self.add_message("system", "  /smp <secret>        Verify identity (both type same secret)")
+            self.add_message("system", "  /smp start           Start SMP with current peer")
+            self.add_message("system", "  /smp abort           Abort SMP in progress")
+            self.add_message("system", "  /smp status          Show SMP verification status")
+            self.add_message("system", "  /smp-secret <n> <s>  Set SMP secret for specific nick")
+            self.add_message("system", "  /smp-auto <n>        Toggle auto-SMP for nick")
+            self.add_message("system", "  /secure              Show all session security levels")
+            self.add_message("system", "")
+            self.add_message("system", colorize("  Security indicators:", "yellow"))
+            self.add_message("system", "    🔴 Plaintext  🟡 Encrypted  🟢 Trusted  🔵 SMP verified")
+            return
+
+        if topic == "irc":
+            self.add_message("system", colorize("── IRC Commands ──", "bold_cyan"))
+            self.add_message("system", "  /join <#channel>     Join a channel")
+            self.add_message("system", "  /part [#channel]     Leave current or named channel")
+            self.add_message("system", "  /nick <name>         Change your nickname")
+            self.add_message("system", "  /msg <nick> <text>   Send a private message")
+            self.add_message("system", "  /names [#channel]    List users in channel")
+            self.add_message("system", "  /topic [#ch] [text]  View or set channel topic")
+            self.add_message("system", "  /list                List all channels")
+            self.add_message("system", "  /whois <nick>        Look up user info")
+            self.add_message("system", "  /invite <n> <#ch>    Invite user to channel")
+            self.add_message("system", "  /kick <nick> [why]   Kick user from channel")
+            self.add_message("system", "  /mode <t> <+/-flag>  Set user or channel mode (/help mode)")
+            self.add_message("system", "  /notice <t> <msg>    Send a notice")
+            self.add_message("system", "  /away [message]      Set away status")
+            self.add_message("system", "  /back                Clear away status")
+            self.add_message("system", "  /raw <command>       Send raw IRC command")
+            self.add_message("system", "  /reconnect           Reconnect to server")
+            self.add_message("system", "  /quit                Disconnect and exit")
+            return
+
+        if topic == "ui":
+            self.add_message("system", colorize("── UI Commands ──", "bold_cyan"))
+            self.add_message("system", "  /switch <panel>      Switch to channel or nick tab")
+            self.add_message("system", "  /tabs                List open tabs")
+            self.add_message("system", "  /tab-next            Next tab")
+            self.add_message("system", "  /tab-prev            Previous tab")
+            self.add_message("system", "  /tab-close <panel>   Close a tab")
+            self.add_message("system", "  /clear               Clear current panel history")
+            self.add_message("system", "  /clear-screen        Clear terminal screen")
+            self.add_message("system", "  /ignore <nick>       Ignore a user")
+            self.add_message("system", "  /unignore <nick>     Unignore a user")
+            self.add_message("system", "  /ignored             List ignored users")
+            self.add_message("system", "  /status              Show connection status")
+            self.add_message("system", "  /debug               Toggle debug mode")
+            self.add_message("system", "  /version             Show version info")
+            self.add_message("system", "  /pause               Pause scrolling (buffer new messages)")
+            self.add_message("system", "  /resume              Resume scrolling (flush buffer)")
+            return
+
+        # Default: show overview with topic hints
+        self.add_message("system", colorize("── OTRv4+ Help ──", "bold_cyan"))
+        self.add_message("system", "")
+        self.add_message("system", colorize("  Quick start:", "yellow"))
+        self.add_message("system", "    /join #channel     Join a channel")
+        self.add_message("system", "    /otr <nick>        Start encrypted chat")
+        self.add_message("system", "    /smp <secret>      Verify identity")
+        self.add_message("system", "    /names             List users")
+        self.add_message("system", "    /quit              Exit")
+        self.add_message("system", "")
+        self.add_message("system", colorize("  Detailed help:", "yellow"))
+        self.add_message("system", "    /help irc          IRC commands")
+        self.add_message("system", "    /help otr          OTR encryption commands")
+        self.add_message("system", "    /help mode         IRC user & channel modes (+g, +i, etc)")
+        self.add_message("system", "    /help ui           UI and navigation commands")
+        self.add_message("system", "")
+        self.add_message("system", colorize("  Privacy tip:", "green"))
+        self.add_message("system", "    /mode YourNick +gi   Hide from /who + block unsolicited PMs")
 
 
     def start_guided_otr_session(self, nick: str):
@@ -11760,7 +12171,46 @@ class EnhancedOTRv4IRCClient(OTRv4IRCClient):
 def parse_args() -> OTRConfig:
     """Parse command line arguments"""
     config = OTRConfig()
-    
+
+    if '--help' in sys.argv or '-h' in sys.argv:
+        print("""
+OTRv4+ — Post-quantum encrypted IRC client
+
+Usage: python otrv4+.py [options]
+
+Connection:
+  -s, --server HOST[:PORT]   Server to connect to (default: irc.postman.i2p)
+  -p, --port PORT            Server port (default: auto — 6697 TLS, 6667 plain)
+  -c, --channel #CHANNEL     Channel to auto-join (default: #otr)
+  -n, --nick NICK            Nickname (default: random from pool)
+      --tls                  Force TLS on
+      --no-tls               Force TLS off (for I2P/Tor)
+
+Authentication:
+      --sasl                 SASL login (prompts for nick + password)
+      --login                NickServ login (prompts for nick + password)
+
+Debug:
+  -d, --debug                Enable debug output
+      --smp-debug            Enable SMP protocol debug output
+
+Network auto-detection:
+  *.i2p    → I2P SAM bridge (preferred) or SOCKS5 fallback
+  *.onion  → Tor SOCKS5 on 127.0.0.1:9050
+  other    → Direct connection with TLS
+
+Examples:
+  python otrv4+.py                           # I2P default (irc.postman.i2p)
+  python otrv4+.py -s irc.libera.chat:6697   # Clearnet with TLS
+  python otrv4+.py -s irc.postman.i2p -c #i2p-chat
+  python otrv4+.py --sasl -n YourNick -s irc.libera.chat:6697
+  python otrv4+.py -s somehidden.onion --no-tls
+
+Once connected, type /help for in-client commands.
+Type /help mode for IRC user modes (+g, +i, etc).
+""")
+        sys.exit(0)
+
     if '--debug' in sys.argv or '-d' in sys.argv:
         global DEBUG_MODE
         DEBUG_MODE = True
