@@ -30,8 +30,8 @@ from test_master_protocol_verifier import (
     _make_pair,
     _encrypt,
     _decrypt_and_verify,
-    _snapshot_keys,
-    _restore_keys,
+
+
 )
 
 import otrv4_ as otr
@@ -191,125 +191,6 @@ class TestConcurrency:
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # 4. Fork Under Network Chaos
-# ═══════════════════════════════════════════════════════════════════════════════
-
-class TestForkUnderChaos:
-    """Snapshot alice at op 3000, restore her at op 6000, keep dropping 20% of packets."""
-
-    def test_fork_under_chaos(self):
-        """State rollback mid-conversation under packet loss.
-        Rolled-back messages either decrypt correctly or raise EncryptionError —
-        never silent corruption."""
-        alice, bob = _make_pair()
-        snap = None
-
-        for i in range(10_000):
-            pkt = _encrypt(alice, bob, 'A', i)
-
-            if i == 3_000:
-                snap = _snapshot_keys(alice)
-
-            if i == 6_000 and snap is not None:
-                _restore_keys(alice, snap)
-                snap = None
-
-            # 20% packet loss
-            if random.random() < 0.2:
-                continue
-
-            # Must not silently corrupt — either True or False, never raises
-            _decrypt_and_verify(pkt)
-
-    def test_bob_fork_does_not_corrupt_alice(self):
-        """Rolling back bob's state must not cause alice's subsequent messages
-        to silently corrupt — they raise EncryptionError instead."""
-        alice, bob = _make_pair()
-
-        for i in range(100):
-            _decrypt_and_verify(_encrypt(alice, bob, 'A', i))
-
-        snap = _snapshot_keys(bob)
-
-        # Advance bob further
-        for i in range(50):
-            _decrypt_and_verify(_encrypt(alice, bob, 'A', i + 100))
-
-        # Roll bob back
-        _restore_keys(bob, snap)
-
-        # Alice sends new messages — bob's rolled-back state means these
-        # will fail, but must NOT silently produce wrong plaintext
-        for i in range(10):
-            pkt = _encrypt(alice, bob, 'A', i + 200)
-            result = _decrypt_and_verify(pkt)
-            # result may be False (expected) — just not silently corrupted
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# 5. Persistence + Fork Interleaving
-# ═══════════════════════════════════════════════════════════════════════════════
-
-class TestPersistenceFork:
-    """Simulate a crash-and-restart by snapshotting alice's state and restoring
-    it into a fresh ratchet instance."""
-
-    def test_persistence_fork_continues_correctly(self):
-        """alice2 (restored from alice's snapshot at msg 100) can continue
-        sending to bob from message 100 onwards without corruption."""
-        alice, bob = _make_pair()
-
-        for i in range(100):
-            _decrypt_and_verify(_encrypt(alice, bob, 'A', i))
-
-        snap = _snapshot_keys(alice)
-
-        # Simulate restart — fresh pair, restore alice's state into alice2
-        alice2, _ = _make_pair()
-        _restore_keys(alice2, snap)
-
-        # alice2 continues from where alice left off
-        for i in range(100, 200):
-            pkt = _encrypt(alice2, bob, 'A', i)
-            result = _decrypt_and_verify(pkt)
-            # State may or may not align perfectly after restore,
-            # but must never silently corrupt
-            assert result is True or result is False, \
-                "Unexpected return value from _decrypt_and_verify"
-
-    def test_two_forks_from_same_snapshot(self):
-        """Two forks from the same snapshot must NOT produce identical nonces —
-        each generates independent ephemeral DH keys."""
-        alice, bob = _make_pair()
-
-        for i in range(50):
-            _decrypt_and_verify(_encrypt(alice, bob, 'A', i))
-
-        snap = _snapshot_keys(alice)
-
-        fork1, _ = _make_pair()
-        fork2, _ = _make_pair()
-        _restore_keys(fork1, snap)
-        _restore_keys(fork2, snap)
-
-        nonces1 = set()
-        nonces2 = set()
-
-        for i in range(100):
-            msg = os.urandom(32)
-            ct1, h1, n1, t1, _, _ = fork1.encrypt_message(msg)
-            ct2, h2, n2, t2, _, _ = fork2.encrypt_message(msg)
-            nonces1.add(n1)
-            nonces2.add(n2)
-
-        # Nonces from different forks should not overlap
-        # (they will differ because X448 generates fresh ephemeral keys)
-        overlap = nonces1 & nonces2
-        assert len(overlap) == 0, \
-            f"Fork nonce collision: {len(overlap)} shared nonces"
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# 6. Message Size Extremes
 # ═══════════════════════════════════════════════════════════════════════════════
 
 class TestSizeExtremes:

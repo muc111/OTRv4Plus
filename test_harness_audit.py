@@ -57,8 +57,8 @@ class TestSMPProtocolFlow(unittest.TestCase):
         """Both sides use same secret → SUCCEEDED."""
         alice = otr.SMPEngine(is_initiator=True)
         bob = otr.SMPEngine(is_initiator=False)
-        alice.set_secret("quantum")
-        bob.set_secret("quantum")
+        alice.set_secret("quantum1")
+        bob.set_secret("quantum1")
 
         smp1_tlv = alice.start_smp("quantum")
         self.assertIsNotNone(smp1_tlv)
@@ -100,7 +100,7 @@ class TestSMPProtocolFlow(unittest.TestCase):
     def test_03_smp_abort(self):
         """Abort resets state."""
         alice = otr.SMPEngine(is_initiator=True)
-        alice.set_secret("test")
+        alice.set_secret("testpass")
         alice.start_smp("test")
         self.assertNotEqual(alice.get_state(), otr.UIConstants.SMPState.NONE)
         alice.abort_smp()
@@ -110,14 +110,14 @@ class TestSMPProtocolFlow(unittest.TestCase):
         """Same SMP1 message processed twice raises ValueError."""
         alice = otr.SMPEngine(is_initiator=True)
         bob = otr.SMPEngine(is_initiator=False)
-        alice.set_secret("test")
-        bob.set_secret("test")
+        alice.set_secret("testpass")
+        bob.set_secret("testpass")
 
         smp1 = alice.start_smp("test")
         bob.process_smp1(smp1)
 
         bob2 = otr.SMPEngine(is_initiator=False)
-        bob2.set_secret("test")
+        bob2.set_secret("testpass")
         with self.assertRaises(Exception):
             # Either replay or state error
             bob.process_smp1(smp1)
@@ -126,7 +126,7 @@ class TestSMPProtocolFlow(unittest.TestCase):
         """Processing SMP1 without secret set raises."""
         bob = otr.SMPEngine(is_initiator=False)
         alice = otr.SMPEngine(is_initiator=True)
-        alice.set_secret("test")
+        alice.set_secret("testpass")
         smp1 = alice.start_smp("test")
 
         with self.assertRaises(ValueError):
@@ -136,14 +136,14 @@ class TestSMPProtocolFlow(unittest.TestCase):
         """Short and long passphrases produce different secrets."""
         eng1 = otr.SMPEngine(is_initiator=True)
         eng2 = otr.SMPEngine(is_initiator=True)
-        eng1.set_secret("a")
-        eng2.set_secret("ab")
+        eng1.set_secret("aaaaaaaa")
+        eng2.set_secret("bbbbbbbb")
         self.assertNotEqual(eng1.secret, eng2.secret)
 
     def test_07_smp_state_machine_invalid_transitions(self):
         """Can't process SMP2 when not in EXPECT2 state."""
         alice = otr.SMPEngine(is_initiator=True)
-        alice.set_secret("test")
+        alice.set_secret("testpass")
         # Alice hasn't started SMP, she's in NONE state
         with self.assertRaises(ValueError):
             alice.process_smp2(b'\x00\x03\x00\x10' + b'\x00' * 16)
@@ -151,7 +151,7 @@ class TestSMPProtocolFlow(unittest.TestCase):
     def test_08_smp_clear_math_state_zeroizes(self):
         """_clear_math_state sets all secret attrs to None."""
         alice = otr.SMPEngine(is_initiator=True)
-        alice.set_secret("test")
+        alice.set_secret("testpass")
         alice.start_smp("test")
         # a2, a3, r2, r3 should be set
         self.assertIsNotNone(alice.a2)
