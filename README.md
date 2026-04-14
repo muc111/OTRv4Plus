@@ -217,7 +217,10 @@ I2P     : SAM bridge (unique destination per session)
 
 Once connected, `/join #otr` and `/otr somenick` to start an encrypted session. The indicator shows security level:
 
-🔴 plaintext — 🟡 encrypted, unverified — 🟢 fingerprint trusted — 🔵 SMP verified
+🔴 plaintext 
+🟡 encrypted, unverified 
+🟢 fingerprint trusted 
+🔵 SMP verified
 
 Session established looks like:
 
