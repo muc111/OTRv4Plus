@@ -14,6 +14,18 @@ It defaults to `irc.postman.i2p`. Point it at any server and it figures out the 
 
 ---
 
+## Live demo — Termux on Android
+
+*DAKE handshake, fingerprint exchange, and 4-step SMP identity verification over I2P SAM bridge:*
+
+<p align="center">
+  <img src="git_screenshot.png" width="380" alt="OTRv4+ running in Termux — DAKE + SMP over I2P">
+</p>
+
+The screenshot shows a complete session: SAM bridge connection → DAKE3 completing with Ed448 ring signatures → SHA3-512 fingerprint trust → SMP zero-knowledge proof running all four steps → Rust double ratchet session live. Nick is randomised on every launch.
+
+---
+
 ## Get it running
 
 You need Python 3.9+, OpenSSL 3.5+ (for ML-KEM and ML-DSA), a C compiler, and the Rust ratchet core.
@@ -201,6 +213,8 @@ No liboqs. All PQC goes through OpenSSL 3.5+ native providers.
 
 ## How it looks
 
+Startup banner:
+
 ```
 OTRv4 IRC Client
 ==================================================
@@ -214,6 +228,8 @@ Ratchet : 🦀 Rust (zeroize-on-drop)
 I2P     : SAM bridge (unique destination per session)
 ==================================================
 ```
+
+See the [live demo](#live-demo--termux-on-android) above for the full session flow in Termux.
 
 Once connected, `/join #otr` and `/otr somenick` to start an encrypted session. The indicator shows security level:
 
