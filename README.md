@@ -204,7 +204,7 @@ No liboqs. All PQC goes through OpenSSL 3.5+ native providers.
 ```
 OTRv4 IRC Client
 ==================================================
-Version : OTRv4+ 10.4
+Version : OTRv4+ 10.5.2
 Server  : irc.postman.i2p:6667
 Network : 🧅 I2P (plaintext)
 Auth    : anonymous
