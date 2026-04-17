@@ -272,6 +272,7 @@ def _secure_file_destroy(filepath: str) -> None:
         # Encrypt zeros → ciphertext indistinguishable from random
         aesgcm = AESGCM(bytes(key))
         # Pad to at least file size (GCM adds 16-byte tag)
+        # plaintext_len = size - 16 so ciphertext + 16-byte GCM tag = size bytes exactly
         plaintext_len = max(size - 16, 1)
         ct = aesgcm.encrypt(nonce, b'\x00' * plaintext_len, b'wipe')
 
@@ -1262,7 +1263,7 @@ class OTRv4DataMessage:
             raise ValueError(f"Failed to decode message: {e}")
 
 
-VERSION = "OTRv4+ 10.5.1"
+VERSION = "OTRv4+ 10.5.4"
 
 if not hasattr(hashlib, 'sha3_512'):
     raise RuntimeError(
@@ -1296,7 +1297,6 @@ def _sanitise(text: str, max_len: int = 512) -> str:
     Prevents terminal escape injection from malicious servers or peers.
     Keeps: printable ASCII, unicode letters/symbols, common whitespace.
     """
-    import re
     text = re.sub(r'\x1b\[[0-9;]*[A-Za-z]', '', text)
     text = re.sub(r'\x1b[^\[\x1b]', '', text)
     text = re.sub(r'[\x00-\x08\x0b-\x0c\x0e-\x1f\x7f]', '', text)
@@ -2990,6 +2990,19 @@ class SMPStateMachine:
                 UIConstants.SMPState.NONE: [
                     UIConstants.SMPState.EXPECT2,
                     UIConstants.SMPState.EXPECT3,
+                    UIConstants.SMPState.SENT1,
+                    UIConstants.SMPState.FAILED
+                ],
+                UIConstants.SMPState.SENT1: [
+                    UIConstants.SMPState.EXPECT4,
+                    UIConstants.SMPState.FAILED
+                ],
+                UIConstants.SMPState.SENT2: [
+                    UIConstants.SMPState.EXPECT3,
+                    UIConstants.SMPState.FAILED
+                ],
+                UIConstants.SMPState.SENT3: [
+                    UIConstants.SMPState.SUCCEEDED,
                     UIConstants.SMPState.FAILED
                 ],
                 UIConstants.SMPState.EXPECT2: [
@@ -3389,6 +3402,9 @@ class SMPEngine:
             self._ss("r6", self._random_exponent())
             self._ss("r7", self._random_exponent())
 
+            # Both ZKPs prove knowledge of rpa s.t. g3^rpa = Pa.
+            # Verification in process_smp3 MUST use Pa for both checks to match
+            # the challenge hash (base, Pa, t) used here.
             c6, d6, t6 = self._compute_zkp(self._shared_g3, self.rpa, self.r6, self.Pa)
             c7, d7, t7 = self._compute_zkp(self._shared_g3, self.rpa, self.r7, self.Pa)
 
@@ -3417,6 +3433,9 @@ class SMPEngine:
                         "Possible small-subgroup attack."
                     )
 
+            # Both ZKPs were generated with Pa as the public value (see process_smp2).
+            # The challenge c = hash(g3, Pa, t), so verification MUST pass Pa here.
+            # Passing Qa produces a different hash → c mismatch → spurious failure.
             if not self._verify_zkp(self._shared_g3, Pa, c6, d6, t6) or \
                not self._verify_zkp(self._shared_g3, Pa, c7, d7, t7):
                 self.state_machine.failure_reason = "SMP3 ZKP verification failed — Alice cheated on Pa"
@@ -3556,38 +3575,6 @@ class SkippedMessageKey:
     
     def __del__(self):
         self.zeroize()
-
-
-
-class _RatchetKeyStore:
-    """Lightweight SecureMemory-compatible wrapper for a 32-byte ratchet key.
-
-    Provides .read() / .write() / .zeroize() so tests that previously called
-    ``ratchet.chain_key_send.read()`` continue to work after the Python
-    fallback was replaced by the Rust core (which holds the real key material
-    internally).  The bytes stored here mirror the Python-side KDF view of
-    the key for inspection purposes — they are NOT extracted from Rust.
-    """
-
-    def __init__(self, initial: bytes = b'\x00' * 32):
-        self._buf = bytearray(initial[:32].ljust(32, b'\x00'))
-        self._lock = threading.Lock()
-
-    def read(self) -> bytes:
-        with self._lock:
-            return bytes(self._buf)
-
-    def write(self, data: bytes) -> None:
-        with self._lock:
-            self._buf[:] = bytearray(data[:32].ljust(32, b'\x00'))
-
-    def zeroize(self) -> None:
-        with self._lock:
-            for i in range(len(self._buf)):
-                self._buf[i] = 0
-
-    def __repr__(self):
-        return f"<_RatchetKeyStore {self.read()[:4].hex()}…>"
 
 
 
@@ -4924,21 +4911,16 @@ def _derive_key(password: bytes, salt: bytes, dklen: int = 32) -> bytes:
     """
     if ARGON2_AVAILABLE:
         try:
-            ph = argon2.PasswordHasher(
+            from argon2.low_level import hash_secret_raw, Type as _ArgonType
+            key = hash_secret_raw(
+                secret=password,
+                salt=salt,
                 time_cost=3,
                 memory_cost=65536,
                 parallelism=4,
                 hash_len=dklen,
-                salt_len=len(salt),
-                type=argon2.Type.ID,
+                type=_ArgonType.ID,
             )
-            # argon2-cffi needs string password — encode bytes as hex
-            raw_hash = ph.hash(password.hex(), salt=salt)
-            # Extract the raw hash bytes from the encoded string
-            # Format: $argon2id$v=19$m=65536,t=3,p=4$salt$hash
-            hash_b64 = raw_hash.split("$")[-1]
-            import base64
-            key = base64.b64decode(hash_b64 + "==")[:dklen]
             return key
         except Exception:
             pass  # Fall through to scrypt
@@ -5006,7 +4988,8 @@ class SecureKeyStorage:
                 pass
 
         # Derive master key — Argon2id preferred, scrypt fallback
-        salt = b'OTRv4+KeyStorage'
+        # Salt derived from seed so each device seed produces a unique salt
+        salt = hashlib.sha3_256(b'OTRv4+KeyStorage:v1' + seed).digest()
         try:
             self._master_key = _derive_key(seed, salt, 32)
         except Exception:
@@ -6934,9 +6917,9 @@ class EnhancedOTRSession:
             elif tlv_type == OTRv4TLV.SMP_MSG_3:
                 response = self.smp_engine.process_smp3(data)
             elif tlv_type == OTRv4TLV.SMP_MSG_4:
-                success = self.smp_engine.process_smp4(data)
+                self.smp_engine.process_smp4(data)
                 response = None
-                if success:
+                if self.smp_engine.is_verified():
                     self.security_level = UIConstants.SecurityLevel.SMP_VERIFIED
                     self.logger.debug("process_smp_message: SMP verification succeeded!")
             elif tlv_type == OTRv4TLV.SMP_ABORT:
@@ -8713,7 +8696,7 @@ class OTRFragmentBuffer:
         if len(self._buffers) > self.max_total_senders:
             oldest = sorted(self._buffers.items(), key=lambda x: x[1].get('first_ts', 0))
             for sender, _ in oldest[:len(self._buffers) - self.max_total_senders]:
-                self.debug(f"fragment buffer evict: too many senders, dropping {sender}")
+                if DEBUG_MODE: _emit_line(f"[fragment] buffer evict: too many senders, dropping {sender}")
                 del self._buffers[sender]
         cutoff = now - self.timeout
         expired = [
@@ -9374,6 +9357,7 @@ class OTRv4IRCClient:
             # ── IRCv3 state ──────────────────────────────────────
             self._cap_negotiating = True
             self._cap_accepted: set = set()
+            self._cap_end_sent    = False   # reset so reconnect can negotiate caps again
             self._sasl_in_progress = False
 
             self._recv_thread = threading.Thread(
@@ -9465,7 +9449,7 @@ class OTRv4IRCClient:
                                 peer_last = self._last_otr_sent.get(peer, 0)
                                 if now - peer_last >= hb_interval:
                                     try:
-                                        hb = sess.encrypt_message(b'', add_padding=True)
+                                        hb = sess.encrypt_with_tlvs('', [])
                                         if hb:
                                             self.send_otr_message(peer, hb)
                                             self._last_otr_sent[peer] = now
@@ -9542,13 +9526,15 @@ class OTRv4IRCClient:
         self.connection_attempts += 1
         backoff = min(120, 5 * (2 ** min(self.connection_attempts - 1, 4)))
         self.add_message("system", f"🔄 Reconnecting in {backoff}s (attempt {self.connection_attempts})…")
-        time.sleep(backoff)
+        # Shutdown-flag-aware sleep — exits immediately on /quit during reconnect
+        for _ in range(backoff * 10):
+            if getattr(self, 'shutdown_flag', False):
+                return
+            time.sleep(0.1)
         if self.connection_attempts <= self.max_connection_attempts:
             if self.connect():
+                # connect() already starts _recv_thread — do NOT start a second one
                 self._reconnecting = False
-                self._recv_thread = threading.Thread(
-                    target=self._recv_loop, daemon=True)
-                self._recv_thread.start()
             else:
                 self._reconnecting = False
         else:
@@ -9677,13 +9663,14 @@ class OTRv4IRCClient:
 
             # Start SASL if capability was accepted and creds are available
             if ("sasl" in self._cap_accepted
-                    and self.config.sasl_user
-                    and self.config.sasl_pass):
+                    and getattr(self.config, 'sasl_user', None)
+                    and getattr(self.config, 'sasl_pass', None)):
                 self._sasl_in_progress = True
                 self.send_raw("AUTHENTICATE PLAIN")
                 self.add_message("system",
                     colorize("🔑 SASL PLAIN authentication…", "cyan"))
             else:
+                # No SASL — end CAP negotiation immediately so registration completes
                 self._finish_cap_negotiation()
 
         elif sub == "NAK":
@@ -9707,11 +9694,17 @@ class OTRv4IRCClient:
             self.debug("sasl_auth", {"user": user})
 
     def _finish_cap_negotiation(self) -> None:
-        """End CAP negotiation — let the server complete registration."""
-        if getattr(self, '_cap_negotiating', False):
+        """End CAP negotiation — let the server complete registration.
+        Guarded so CAP END is sent at most once per connection even if called
+        from multiple paths (LS empty, ACK no-SASL, NAK, timeout).
+        """
+        if getattr(self, '_cap_end_sent', False):
+            return   # already sent — do not send twice
+        if getattr(self, '_cap_negotiating', True):   # default True = safe to send
             self._cap_negotiating = False
+            self._cap_end_sent    = True
             self.send_raw("CAP END")
-            self.debug("cap_end", {"accepted": list(self._cap_accepted)})
+            self.debug("cap_end", {"accepted": list(getattr(self, '_cap_accepted', set()))})
 
 
     def handle_message(self, line: str):
@@ -9878,6 +9871,10 @@ class OTRv4IRCClient:
         except Exception as exc:
             self.debug(f"handle_message error: {exc}")
 
+    def _handle_unknown_command(self, command: str, params, trailing) -> None:
+        """No-op handler for unrecognised IRC commands — avoids super() AttributeError."""
+        pass
+
     def handle_numeric_reply(self, code: int, params: List[str], trailing: Optional[str]):
         """Handle IRC numeric reply codes."""
         try:
@@ -10013,6 +10010,20 @@ class OTRv4IRCClient:
                         ):
                 return
 
+            if code == 352:
+                # WHO reply: params = [me, channel, user, host, server, nick, status]
+                # trailing = "0 realname" (hopcount + space + gecos)
+                _who_nick = params[5] if len(params) > 5 else ""
+                _who_real = trailing or ""
+                # Strip the leading "0 " hop-count
+                if _who_real and _who_real.startswith("0 "):
+                    _who_real = _who_real[2:]
+                if not hasattr(self, '_otrv4_users'):
+                    self._otrv4_users: Dict[str, bool] = {}
+                if _who_nick:
+                    self._otrv4_users[_who_nick] = ("OTRv4+" in _who_real)
+                return
+
             if code == 332:
                 channel = params[1] if len(params) > 1 else ""
                 topic   = trailing or ""
@@ -10062,6 +10073,8 @@ class OTRv4IRCClient:
                         colorize(f"── Users in {channel} ({total}) ──", "bold_cyan"))
 
                     # ── Print each group in columns ──
+                    _otrv4_map = getattr(self, '_otrv4_users', {})
+
                     def _print_group(label, users, color):
                         if not users:
                             return
@@ -10073,12 +10086,21 @@ class OTRv4IRCClient:
                         row = []
                         for prefix, nick in users:
                             display = f"{prefix}{nick}"
-                            row.append(colorize(f"  {display:<{col_width}}", color))
+                            # Highlight OTRv4+ users in blue with 🔒 indicator
+                            if _otrv4_map.get(nick, False):
+                                row.append(colorize(f"  🔒{display:<{col_width-1}}", "blue"))
+                            else:
+                                row.append(colorize(f"  {display:<{col_width}}", color))
                             if len(row) >= cols:
                                 self.add_message("system", "".join(row))
                                 row = []
                         if row:
                             self.add_message("system", "".join(row))
+
+                    _otr_count = sum(1 for n in [nick for _, nick in ops+voiced+regular] if _otrv4_map.get(n, False))
+                    if _otr_count:
+                        self.add_message("system",
+                            colorize(f"  🔒 = OTRv4+ client ({_otr_count} user(s)) — use /otr <nick> to open encrypted chat", "blue"))
 
                     _print_group("Operators", ops, "bold_green")
                     _print_group("Voiced", voiced, "yellow")
@@ -10728,6 +10750,10 @@ class OTRv4IRCClient:
             ch = parts[1] if len(parts) > 1 else (self.panel_manager.active_panel or "")
             if ch and ch.startswith("#"):
                 self.names_data[ch] = []
+                if not hasattr(self, '_otrv4_users'):
+                    self._otrv4_users: Dict[str, bool] = {}
+                # WHO request to collect realname (gecos) fields for OTRv4+ detection
+                self.send(f"WHO {ch}")
                 self.send(f"NAMES {ch}")
                 self._pending_names_pager = ch
             else:
@@ -11489,7 +11515,9 @@ class EnhancedOTRv4IRCClient(OTRv4IRCClient):
         self.panel_manager.update_smp_progress(peer, 0, 0)
 
         try:
-            if hasattr(self.session_manager, 'sessions'):
+            if hasattr(self.session_manager, 'terminate_session'):
+                self.session_manager.terminate_session(peer, "peer disconnected")
+            elif hasattr(self.session_manager, 'sessions'):
                 self.session_manager.sessions.pop(peer, None)
         except Exception:
             pass
@@ -11538,6 +11566,7 @@ class EnhancedOTRv4IRCClient(OTRv4IRCClient):
             self.logger.network_message("IN", prefix or "SERVER",
                                         command or "?", len(line))
             self.debug("recv", {"cmd": command,
+                                 "params": params[:3],
                                  "trail": (trailing or "")[:120]})
 
             if command == 'PING':
@@ -11554,7 +11583,7 @@ class EnhancedOTRv4IRCClient(OTRv4IRCClient):
 
             sender = (prefix.split('!')[0] if prefix and '!' in prefix
                       else prefix or 'server')
-            if len(sender) > 64 or '\r' in sender or '\n' in sender:
+            if len(sender) > 50 or '\r' in sender or '\n' in sender:
                 return
             if sender in self.ignored_users:
                 return
@@ -11587,7 +11616,11 @@ class EnhancedOTRv4IRCClient(OTRv4IRCClient):
                     f"{colorize_username(sender)}: {message}")
                 return
 
-            super().handle_message(line)
+            # Route all unhandled commands (CAP, AUTHENTICATE, NICK, JOIN, PART,
+            # QUIT, MODE, KICK, TOPIC, NOTICE, ERROR …) through the base-class
+            # dispatcher, which has complete routing for every server-state command.
+            # PING/PONG/numeric/PRIVMSG already returned above — no double-dispatch risk.
+            OTRv4IRCClient.handle_message(self, line)
 
         except Exception as exc:
             self.debug(f"handle_message error: {exc}",
@@ -11634,49 +11667,6 @@ class EnhancedOTRv4IRCClient(OTRv4IRCClient):
         except Exception as exc:
             self.debug(f"process_incoming_otr error: {exc}")
 
-    def _handle_data_message(self, sender: str, payload: str):
-        """Decrypt DATA message. TLV routing is handled inside the session layer."""
-        if not self.session_manager.has_session(sender):
-            return
-
-        try:
-            result = self.session_manager.decrypt_message(sender, payload)
-            if result is None:
-                return
-
-            text = result if isinstance(result, str) else result.decode('utf-8', errors='replace')
-
-            if text.startswith('?OTRv4 '):
-                self.send_otr_message(sender, text)
-                
-                if hasattr(self.session_manager, 'get_smp_status'):
-                    status = self.session_manager.get_smp_status(sender)
-                    if status.get('verified'):
-                        self._on_smp_verified(sender)
-                    elif status.get('failed'):
-                        sec = self.session_manager.get_security_level(sender)
-                        self.add_message(sender,
-                            colorize("❌ SMP verification FAILED — secrets don't match", 'red'), sec)
-                return
-
-            if text.strip():
-                sec = self.session_manager.get_security_level(sender)
-                self.add_message(sender, f"{colorize_username(sender)}: {text}", sec)
-                self.panel_manager.update_panel_security(sender, sec)
-
-            if hasattr(self.session_manager, 'get_smp_progress'):
-                prog = self.session_manager.get_smp_progress(sender)
-                self.panel_manager.update_smp_progress(sender, *prog)
-
-            if hasattr(self.session_manager, 'get_smp_status'):
-                status = self.session_manager.get_smp_status(sender)
-                if status.get('verified'):
-                    self._on_smp_verified(sender)
-
-        except Exception as exc:
-            self.debug(f"_handle_data_message error: {exc}")
-
-
     def handle_chat_message(self, msg: str):
         """
         Intercept chat input.
@@ -11686,7 +11676,7 @@ class EnhancedOTRv4IRCClient(OTRv4IRCClient):
         if self._dispatch_pending_response(msg):
             return
 
-        super().handle_chat_message(msg)
+        OTRv4IRCClient.handle_chat_message(self, msg)
 
 
     def start_guided_otr_session(self, peer: str):
@@ -11921,7 +11911,7 @@ class EnhancedOTRv4IRCClient(OTRv4IRCClient):
                 pass
 
         else:
-            super().handle_command(command)
+            OTRv4IRCClient.handle_command(self, command)
 
     
 
@@ -12166,7 +12156,7 @@ class EnhancedOTRv4IRCClient(OTRv4IRCClient):
         self._secure_wipe_data()
         
         try:
-            super().shutdown()
+            OTRv4IRCClient.shutdown(self)
         except Exception:
             pass
         
@@ -12194,6 +12184,10 @@ class EnhancedOTRv4IRCClient(OTRv4IRCClient):
             self.debug(f"Error clearing screen: {e}")
 
     def _secure_wipe_data(self):
+        # NOTE (intentional design): This wipes ~/.otrv4plus including trust.json.
+        # This is correct behaviour — like Tails OS, OTRv4+ leaves NO trace on quit.
+        # Random ephemeral nicks + ephemeral trust DB = zero persistent identity.
+        # If you want cross-session trust, export fingerprints with /trust export first.
         """Cryptographically destroy all persisted OTR data.
 
         Method: each file is overwritten with AES-256-GCM ciphertext keyed by
@@ -12308,7 +12302,11 @@ Type /help mode for IRC user modes (+g, +i, etc).
         elif arg in ('--nick', '-n') and i + 1 < len(sys.argv):
             config.nickserv_nick = sys.argv[i + 1]
         elif arg in ('--port', '-p') and i + 1 < len(sys.argv):
-            config.port = int(sys.argv[i + 1])
+            _pval = int(sys.argv[i + 1])
+            if not 1 <= _pval <= 65535:
+                print(f"Error: --port must be 1-65535 (got {_pval})")
+                sys.exit(1)
+            config.port = _pval
         elif arg == '--tls':
             config.use_tls = True
         elif arg == '--no-tls':
