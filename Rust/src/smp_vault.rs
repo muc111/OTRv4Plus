@@ -32,9 +32,6 @@ impl SecretInt {
         &self.data
     }
 
-    fn is_zero(&self) -> bool {
-        self.data.iter().all(|&b| b == 0)
-    }
 }
 
 /// Vault holding named SMP secrets.
