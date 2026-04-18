@@ -6,7 +6,7 @@
 
 Off The Record v4 + PQC
 
-Post-quantum OTR for IRC. The whole thing runs on a phone over I2P.
+Post-quantum OTR for IRC. The whole thing runs on a phone over I2P/TOR/Clearnet
 
 I built this because nobody else was going to. The OTRv4 spec has been sitting there for years with zero complete implementations, and meanwhile every messaging protocol is scrambling to bolt on post-quantum crypto before Q-day arrives. So I did both implemented the full OTRv4 spec and added PQC to every layer while I was at it.
 
