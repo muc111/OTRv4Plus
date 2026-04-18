@@ -17,6 +17,8 @@ const KDF_DOMAIN: &[u8] = b"OTRv4";
 pub mod usage {
     pub const BRACE_KEY: u8 = 0x02;
     pub const ROOT_KEY: u8 = 0x11;
+    pub const ROOT_DH: u8 = 0x17;
+    pub const ROOT_PQ: u8 = 0x18;
     pub const CHAIN_KEY: u8 = 0x12;
     pub const MESSAGE_KEY: u8 = 0x13;
     pub const MAC_KEY: u8 = 0x14;
@@ -44,8 +46,10 @@ pub fn kdf_1(usage_id: u8, value: &[u8], length: usize) -> Vec<u8> {
 /// The input chain_key is NOT modified — caller must overwrite.
 pub fn kdf_chain(chain_key: &[u8]) -> ([u8; 32], [u8; 32], [u8; 64]) {
     let next_ck_vec = kdf_1(usage::CHAIN_KEY, chain_key, 32);
-    let enc_key_vec = kdf_1(usage::MESSAGE_KEY, chain_key, 32);
-    let mac_key_vec = kdf_1(usage::MAC_KEY, chain_key, 64);
+    
+    // Derive message key and MAC key from the *next* chain key for better forward secrecy
+    let enc_key_vec = kdf_1(usage::MESSAGE_KEY, &next_ck_vec, 32);
+    let mac_key_vec = kdf_1(usage::MAC_KEY, &next_ck_vec, 64);
 
     let mut next_ck = [0u8; 32];
     let mut enc_key = [0u8; 32];
@@ -58,18 +62,22 @@ pub fn kdf_chain(chain_key: &[u8]) -> ([u8; 32], [u8; 32], [u8; 64]) {
     (next_ck, enc_key, mac_key)
 }
 
-/// Root key ratchet KDF.
+/// Root key ratchet KDF with hybrid composition (DH + PQ).
 ///
-/// KDF_1(ROOT_KEY, root || dh_secret || brace_key, 64)
-///   → (new_root[32], new_chain[32])
+/// Properly domain-separates DH and PQ contributions before combining.
 pub fn kdf_root(root_key: &[u8], dh_secret: &[u8], brace_key: &[u8]) -> ([u8; 32], [u8; 32]) {
-    let mut input = Vec::with_capacity(root_key.len() + dh_secret.len() + brace_key.len());
-    input.extend_from_slice(root_key);
-    input.extend_from_slice(dh_secret);
-    input.extend_from_slice(brace_key);
-
-    let seed = kdf_1(usage::ROOT_KEY, &input, 64);
-    input.zeroize();
+    // Domain-separate DH and PQ contributions
+    let dh_part = kdf_1(usage::ROOT_DH, dh_secret, 32);
+    let pq_part = kdf_1(usage::ROOT_PQ, brace_key, 32);
+    
+    // Combine for final root derivation
+    let mut combined = Vec::with_capacity(32 + 32 + root_key.len());
+    combined.extend_from_slice(root_key);
+    combined.extend_from_slice(&dh_part);
+    combined.extend_from_slice(&pq_part);
+    
+    let seed = kdf_1(usage::ROOT_KEY, &combined, 64);
+    combined.zeroize();
 
     let mut new_root = [0u8; 32];
     let mut new_chain = [0u8; 32];

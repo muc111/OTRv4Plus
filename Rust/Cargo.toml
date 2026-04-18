@@ -13,7 +13,7 @@ pyo3 = { version = "0.22", features = ["extension-module"] }
 sha3 = "0.10"
 aes-gcm = "0.10"
 zeroize = { version = "1", features = ["derive"] }
-rand = "0.8"
+rand = { version = "0.8", features = ["std"] }
 hmac = "0.12"
 subtle = "2.5"
 
