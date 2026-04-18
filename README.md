@@ -422,7 +422,7 @@ pytest -v test_harness_audit.py test_otrv4_integration.py test_mlkem_kat.py \
        test_v10_4_security_fixes.py test_otr.py fuzz_harnesses.py
 ```
 
-294 tests total (283 Python + 11 Rust). Double ratchet across 100k messages, replay resistance, forward secrecy, post-compromise recovery, out-of-order delivery, ML-KEM roundtrips, ML-DSA hybrid verification, ring signature non-malleability, SMP zero-knowledge proofs, SMP full protocol flow with vault integration, constant-time comparison verification, AES-GCM key storage round-trips, Rust vault zeroization, DAKE state machine transitions, wire format fuzzing, v10.4 regression suite, and property-based protocol verification.
+313 tests total (299 Python + 14 Rust). Double ratchet across 100k messages, replay resistance, forward secrecy, post-compromise recovery, out-of-order delivery, ML-KEM roundtrips, ML-DSA hybrid verification, ring signature non-malleability, SMP zero-knowledge proofs, SMP full protocol flow with vault integration, constant-time comparison verification, AES-GCM key storage round-trips, Rust vault zeroization, DAKE state machine transitions, wire format fuzzing, v10.4 regression suite, and property-based protocol verification.
 
 ---
 
