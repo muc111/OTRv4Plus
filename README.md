@@ -8,21 +8,21 @@ Off The Record v4 + PQC
 
 Post-quantum OTR for IRC. The whole thing runs on a phone over I2P.
 
-I built this because nobody else was going to. The OTRv4 spec has been sitting there for years with zero complete implementations, and meanwhile every messaging protocol is scrambling to bolt on post-quantum crypto before Q-day arrives. So I did both — implemented the full OTRv4 spec and added PQC to every layer while I was at it.
+I built this because nobody else was going to. The OTRv4 spec has been sitting there for years with zero complete implementations, and meanwhile every messaging protocol is scrambling to bolt on post-quantum crypto before Q-day arrives. So I did both implemented the full OTRv4 spec and added PQC to every layer while I was at it.
 
-It defaults to `irc.postman.i2p`. Point it at any server and it figures out the network — `.i2p` goes through I2P, `.onion` through Tor, everything else gets TLS. No config files, no setup wizards.
+It defaults to `irc.postman.i2p`. Point it at any server and it figures out the network `.i2p` goes through I2P, `.onion` through Tor, everything else gets TLS. No config files, no setup wizards.
 
 ---
 
 ## Why use this
 
-If you're a journalist, researcher, or just someone who doesn't want their conversations stored forever on some company's server waiting for a quantum computer to decrypt them five years from now — this is for you.
+If you're a journalist, researcher, or just someone who doesn't want their conversations stored forever on some company's server waiting for a quantum computer to decrypt them five years from now this is for you.
 
 Here's what it actually protects against:
 
-**The server sees nothing.** All messages are end-to-end encrypted with OTRv4. The IRC server admin gets ciphertext and metadata — who's talking to who, when, and how much. They cannot read a single word you say.
+**The server sees nothing.** All messages are end-to-end encrypted with OTRv4. The IRC server admin gets ciphertext and metadata who's talking to who, when, and how much. They cannot read a single word you say.
 
-**Quantum computers won't break your old logs.** ML-KEM-1024 at the handshake plus fresh KEM material rotated in with every DH ratchet means even if someone records everything today and throws a quantum computer at it in 2030, the session keys stay safe. Signal only does PQC at the initial handshake — compromise that and the whole session opens up. This one self-heals.
+**Quantum computers won't break your old logs.** ML-KEM-1024 at the handshake plus fresh KEM material rotated in with every DH ratchet means even if someone records everything today and throws a quantum computer at it in 2030, the session keys stay safe. Signal only does PQC at the initial handshake compromise that and the whole session opens up. This one self-heals.
 
 **No persistent identity.** Random nick on every launch. Fresh I2P destination every session when SAM is enabled. No account, no email, no phone number, no username that follows you around. You show up, talk, and disappear. Next time you connect you're a completely different person as far as the network can tell.
 
@@ -196,7 +196,7 @@ Debian: sudo apt install i2pd (starts automatically)
 Arch: sudo pacman -S i2pd && sudo systemctl enable --now i2pd
 macOS: brew install i2pd && brew services start i2pd
 
-Tor works too — SOCKS5 on port 9050. The client picks it up automatically from .onion hostnames.
+Tor works too SOCKS5 on port 9050 or 9150. The client picks it up automatically from .onion hostnames.
 
 SAM vs SOCKS5
 
@@ -204,9 +204,9 @@ When connecting to I2P, the client tries the SAM bridge first and falls back to 
 
 Why this matters: with SOCKS5, every connection you make shares the same local I2P destination. The IRC server, and anyone watching it, sees the same .b32.i2p address every time you connect. If you disconnect and reconnect with a new nick, you're still the same destination. Cross-session tracking is trivial.
 
-SAM creates a fresh transient destination for each session. Every time you launch the client, you get a new I2P identity. There's nothing to correlate between sessions. This is how Tor does it — one circuit per target — and it's the right way to do it on I2P too.
+SAM creates a fresh transient destination for each session. Every time you launch the client, you get a new I2P identity. There's nothing to correlate between sessions. This is how Tor does it one circuit per target and it's the right way to do it on I2P too.
 
-SAM v3.1 is used — just the basic stream connection features that both i2pd and Java I2P have supported for years.
+SAM v3.1 is used just the basic stream connection features that both i2pd and Java I2P have supported for years.
 
 The startup banner tells you which one is active:
 
@@ -231,7 +231,7 @@ port = 7656
 
 Then restart i2pd. Java I2P has SAM enabled by default on port 7656.
 
-Tor connections still use SOCKS5 — Tor already creates separate circuits per destination, so the shared-destination problem doesn't apply. Clearnet connections go direct with TLS.
+Tor connections still use SOCKS5 Tor already creates separate circuits per destination, so the shared-destination problem doesn't apply. Clearnet connections go direct with TLS.
 
 Check your OpenSSL
 
@@ -247,7 +247,7 @@ What's actually in here
 
 The crypto isn't one trick. Every layer got upgraded:
 
-Key exchange — Triple X448 Diffie-Hellman plus ML-KEM-1024 (FIPS 203). The KEM shared secret mixes into the root key, so even if X448 falls to a quantum computer, the session keys are still safe. This happens during a three-message DAKE handshake.
+Key exchange - Triple X448 Diffie-Hellman plus ML-KEM-1024 (FIPS 203). The KEM shared secret mixes into the root key, so even if X448 falls to a quantum computer, the session keys are still safe. This happens during a three-message DAKE handshake.
 
 Authentication — Ed448 ring signatures give you classical deniability (neither side can prove the other was there). On top of that, ML-DSA-87 (FIPS 204) gives post-quantum authentication — a quantum adversary can't forge your identity. Both run in DAKE3. Strict length validation on all ML-DSA public keys and signatures prevents truncation attacks.
 
@@ -270,7 +270,7 @@ Startup banner:
 ```
 OTRv4 IRC Client
 ==================================================
-Version : OTRv4+ 10.5.4
+Version : OTRv4+ 10.5.5
 Server  : irc.postman.i2p:6667
 Network : 🧅 I2P (plaintext)
 Auth    : anonymous
@@ -349,9 +349,9 @@ Rust/src/*.rs ~800 Double ratchet + SMP vault with zeroize-on-drop
 
 Memory security
 
-This is the part I spent the most time on. Crypto libraries are fine at encrypting — the hard part is making sure secrets actually disappear from memory when you're done with them.
+This is the part I spent the most time on. Crypto libraries are fine at encrypting the hard part is making sure secrets actually disappear from memory when you're done with them.
 
-Rust ratchet — all chain keys, root keys, brace keys, message keys, and skipped keys are zeroed on drop. Rust's Zeroize trait guarantees this. The Python DoubleRatchet class has been removed — there is no fallback path that could leak secrets via the GC.
+Rust ratchet — all chain keys, root keys, brace keys, message keys, and skipped keys are zeroed on drop. Rust's Zeroize trait guarantees this. The Python DoubleRatchet class has been removed there is no fallback path that could leak secrets via the GC.
 
 Rust SMP vault — all SMP secret exponents are stored in the Rust vault between protocol steps and deterministically zeroed on completion. They only exist as Python ints briefly during each computation step.
 
@@ -392,7 +392,7 @@ ML-DSA fields use a flag byte — 0x01 present, 0x00 absent. Peers without ML-DS
 
 Signal comparison
 
-Signal's PQXDH adds ML-KEM to the handshake but their own spec says "Authentication in PQXDH is not quantum-secure." They also only do PQC at the initial handshake — after that, the ratchet is classical.
+Signal's PQXDH adds ML-KEM to the handshake but their own spec says "Authentication in PQXDH is not quantum-secure." They also only do PQC at the initial handshake after that, the ratchet is classical.
 
 This client does ML-KEM at the handshake AND rotates fresh KEM material every DH ratchet epoch. Plus ML-DSA-87 for post-quantum authentication. The tradeoff is no async support (both parties need to be online, it's IRC) and no PQ deniability (that's an open research problem — nobody has it).
 
@@ -435,7 +435,7 @@ The honest list:
 · Fragment count reveals message type to a local observer (DAKE = 20-25 fragments in a burst)
 · The nick pool is ~11,000 names — reduces but doesn't eliminate cross-session correlation
 · Clearnet exposes your IP in WHOIS until cloaking kicks in (use I2P or Tor)
-· PQ deniability doesn't exist as a primitive anywhere — when it does, the flag-byte mechanism supports upgrading
+· PQ deniability doesn't exist as a primitive anywhere when it does, the flag-byte mechanism supports upgrading
 
 None of these are cryptographic breaks. The first two are memory hygiene gaps measured in microseconds. The rest are metadata/network issues that apply to every IRC client.
 
@@ -443,7 +443,7 @@ None of these are cryptographic breaks. The first two are memory hygiene gaps me
 
 Development
 
-This project was built with AI-assisted development (Claude). All cryptographic implementations have been verified through 294 automated tests, live DAKE and SMP exchanges between Termux instances over I2P, a security audit that identified and fixed 7 vulnerabilities, and manual review of constant-time properties in the C extensions. The Rust ratchet core contains zero unsafe blocks.
+This project was built with AI-assisted development (Claude). All cryptographic implementations have been verified through 294 automated tests, live DAKE and SMP exchanges between Termux instances over I2P, a security audit that identified and fixed vulnerabilities, and manual review of constant-time properties in the C extensions. The Rust ratchet core contains zero unsafe blocks.
 
 ---
 
