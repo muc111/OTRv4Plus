@@ -662,6 +662,22 @@ class UIConstants:
         'dark_magenta',
     ]
 
+def _probe_socks5(host: str, port: int, timeout: float = 2.0) -> bool:
+    """Return True if a SOCKS5 proxy is accepting connections on host:port.
+
+    Uses a raw TCP connect (not PySocks) so it never mutates the global
+    socket.socket binding that PySocks requires.
+    """
+    import socket as _sock_mod
+    try:
+        with _sock_mod.socket(_sock_mod.AF_INET, _sock_mod.SOCK_STREAM) as s:
+            s.settimeout(timeout)
+            s.connect((host, port))
+        return True
+    except OSError:
+        return False
+
+
 class NetworkConstants:
     """Network Configuration — supports clearnet, Tor, and I2P auto-detected from server hostname."""
 
@@ -1263,7 +1279,7 @@ class OTRv4DataMessage:
             raise ValueError(f"Failed to decode message: {e}")
 
 
-VERSION = "OTRv4+ 10.5.4"
+VERSION = "OTRv4+ 10.5.5"
 
 if not hasattr(hashlib, 'sha3_512'):
     raise RuntimeError(
@@ -9226,15 +9242,41 @@ class OTRv4IRCClient:
 
         if net_type == NetworkConstants.NET_I2P:
             host, port = self.config.i2p_proxy
-            socks.setdefaultproxy(socks.PROXY_TYPE_SOCKS5, host, port)
+            if not _probe_socks5(host, port, timeout=2.0):
+                raise ConnectionError(
+                    f"I2P SOCKS5 proxy not reachable on {host}:{port}.\n"
+                    "  → Ensure i2pd is running (SOCKS5 port 4447)."
+                )
+            socks.setdefaultproxy(socks.PROXY_TYPE_SOCKS5, host, port, rdns=True)
             socket.socket = socks.socksocket
             self.add_message("system",
                 colorize(f"🧅 I2P SOCKS5 proxy: {host}:{port}", "dark_cyan"))
             self.debug("proxy set", {"type": "i2p", "host": host, "port": port})
 
         elif net_type == NetworkConstants.NET_TOR:
-            host, port = self.config.tor_proxy
-            socks.setdefaultproxy(socks.PROXY_TYPE_SOCKS5, host, port)
+            host, _cfg_port = self.config.tor_proxy
+            # Probe candidate ports in order:
+            #   9050 — standard Tor / Orbot (Android & desktop)
+            #   9150 — Tor Browser bundle / Orbot alternative
+            _tor_candidates = [_cfg_port]
+            for _alt in (9050, 9150):
+                if _alt not in _tor_candidates:
+                    _tor_candidates.append(_alt)
+            port = None
+            for _p in _tor_candidates:
+                if _probe_socks5(host, _p, timeout=2.0):
+                    port = _p
+                    break
+            if port is None:
+                tried = ", ".join(str(p) for p in _tor_candidates)
+                raise ConnectionError(
+                    f"Tor SOCKS5 proxy not reachable on {host} "
+                    f"(tried ports: {tried}).\n"
+                    "  → Start Orbot and tap 'Start' before connecting."
+                )
+            # Update config so the chosen port is remembered
+            self.config.tor_proxy = (host, port)
+            socks.setdefaultproxy(socks.PROXY_TYPE_SOCKS5, host, port, rdns=True)
             socket.socket = socks.socksocket
             self.add_message("system",
                 colorize(f"🧅 Tor SOCKS5 proxy: {host}:{port}", "dark_magenta"))
@@ -9266,6 +9308,22 @@ class OTRv4IRCClient:
         try:
             net_type = NetworkConstants.detect(self.server)
 
+            # ── Validate .onion address format before touching the network ──
+            if net_type == NetworkConstants.NET_TOR:
+                _onion_host = self.server
+                if _onion_host.lower().endswith('.onion'):
+                    _onion_label = _onion_host[:-6]  # strip .onion
+                    if len(_onion_label) == 16:
+                        pass  # v2 (deprecated but let Tor handle it)
+                    elif len(_onion_label) != 56:
+                        raise ValueError(
+                            f"Invalid .onion address — label is {len(_onion_label)} chars, "
+                            f"expected 56 (v3) or 16 (v2).\n"
+                            f"  Got:     {_onion_host}\n"
+                            f"  Hint: v3 onion addresses look like "
+                            f"<56-char-base32>.onion"
+                        )
+
             timeout_map = {
                 NetworkConstants.NET_CLEARNET: NetworkConstants.TIMEOUT_CLEARNET,
                 NetworkConstants.NET_TOR:      NetworkConstants.TIMEOUT_TOR,
@@ -9280,7 +9338,21 @@ class OTRv4IRCClient:
             if net_type == NetworkConstants.NET_CLEARNET:
                 if port == 0:
                     port = IRCConstants.TLS_PORT
-                if port == IRCConstants.TLS_PORT:
+                # Modern IRC networks (Libera, OFTC, etc.) require TLS.
+                # Always enable TLS for clearnet regardless of --no-tls.
+                # --no-tls is only meaningful for Tor/I2P (where the tunnel
+                # already provides encryption and TLS is redundant).
+                if port == IRCConstants.PORT and not self.config.use_tls:
+                    # User specified port 6667 explicitly with --no-tls.
+                    # Warn but honour their choice — they may be on a private
+                    # server that genuinely supports plaintext.
+                    self.add_message("system",
+                        colorize("⚠ Plaintext port 6667 — most networks now "
+                                 "require TLS on 6697. Use -p 6697 if reset.",
+                                 "yellow"))
+                    use_tls = False
+                else:
+                    port    = IRCConstants.TLS_PORT
                     use_tls = True
             else:
                 use_tls = False
@@ -9322,17 +9394,121 @@ class OTRv4IRCClient:
 
             if sock is None:
                 # SOCKS5 path (I2P fallback, Tor, clearnet)
-                net_type_actual = self.setup_proxy(net_type)
-                tls_label = " TLS" if use_tls else ""
-                self.add_message("system",
-                    f"Connecting to {colorize(self.server, 'cyan')}:{port}"
-                    f" ({colorize(net_label + tls_label, 'bold_cyan')}, up to {timeout}s)…")
-                self.debug("connect", {"server": self.server, "port": port,
-                                       "net": net_type, "tls": use_tls, "timeout": timeout})
+                if net_type == NetworkConstants.NET_TOR:
+                    # Native SOCKS5 handshake — bypasses pysocks entirely.
+                    # Probe candidate ports: configured first, then 9050 / 9150.
+                    _tor_SOCKS5_ERRORS = {
+                        0x01: "general SOCKS server failure (Tor may not be bootstrapped)",
+                        0x02: "connection not allowed by ruleset",
+                        0x03: "network unreachable",
+                        0x04: "host unreachable (hidden service may be down)",
+                        0x05: "connection refused by destination",
+                        0x06: "TTL expired",
+                        0x07: "command not supported",
+                        0x08: "address type not supported",
+                    }
 
-                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                sock.settimeout(float(timeout))
-                sock.connect((self.server, port))
+                    proxy_host, _cfg_port = self.config.tor_proxy
+                    _candidates = [_cfg_port]
+                    for _alt in (9050, 9150):
+                        if _alt not in _candidates:
+                            _candidates.append(_alt)
+
+                    proxy_port = None
+                    for _p in _candidates:
+                        if _probe_socks5(proxy_host, _p, timeout=2.0):
+                            proxy_port = _p
+                            break
+
+                    if proxy_port is None:
+                        tried = ", ".join(str(p) for p in _candidates)
+                        raise ConnectionError(
+                            f"Tor SOCKS5 not reachable on {proxy_host} "
+                            f"(tried ports: {tried})\n"
+                            "  → Is tor running?  Check: systemctl status tor"
+                        )
+
+                    # Remember the working port for reconnects
+                    self.config.tor_proxy = (proxy_host, proxy_port)
+
+                    self.add_message("system",
+                        f"Connecting to {colorize(self.server, 'cyan')}:{port} via "
+                        f"{colorize('Tor SOCKS5', 'dark_magenta')} ({proxy_host}:{proxy_port})…")
+
+                    def _recvexact(s, n):
+                        """Read exactly n bytes, raising on short read."""
+                        buf = b''
+                        while len(buf) < n:
+                            chunk = s.recv(n - len(buf))
+                            if not chunk:
+                                raise ConnectionError(
+                                    f"SOCKS5: connection closed (got {len(buf)}/{n} bytes)")
+                            buf += chunk
+                        return buf
+
+                    # Connect to SOCKS5 proxy
+                    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                    sock.settimeout(float(timeout))
+                    sock.connect((proxy_host, proxy_port))
+
+                    # 1. Greeting — advertise no-auth (0x00)
+                    sock.send(b'\x05\x01\x00')
+                    auth_resp = _recvexact(sock, 2)
+                    if auth_resp[0] != 5:
+                        raise ConnectionError(
+                            f"SOCKS5 greeting: unexpected version byte {auth_resp[0]:#04x}")
+                    if auth_resp[1] == 0xFF:
+                        raise ConnectionError(
+                            "SOCKS5 greeting: proxy requires authentication "
+                            "(add 'SocksPolicy accept 127.0.0.1' to torrc)")
+                    if auth_resp[1] != 0x00:
+                        raise ConnectionError(
+                            f"SOCKS5 greeting: unsupported auth method {auth_resp[1]:#04x}")
+
+                    # 2. CONNECT — ATYP=0x03 (domain name), includes .onion
+                    # Format: VER CMD RSV ATYP LEN<DOMAIN> PORT
+                    domain = self.server.encode('ascii')
+                    req = (b'\x05\x01\x00\x03'
+                           + bytes([len(domain)]) + domain
+                           + struct.pack('!H', port))
+                    sock.send(req)
+
+                    # 3. Response header (4 bytes)
+                    hdr = _recvexact(sock, 4)
+                    if hdr[0] != 5:
+                        raise ConnectionError(
+                            f"SOCKS5 response: unexpected version byte {hdr[0]:#04x}")
+                    rep = hdr[1]
+                    if rep != 0x00:
+                        err_desc = _tor_SOCKS5_ERRORS.get(rep, f"unknown error code {rep:#04x}")
+                        raise ConnectionError(f"SOCKS5 CONNECT rejected: {err_desc}")
+
+                    # 4. Drain bound-address field so the socket is clean
+                    atyp = hdr[3]
+                    if atyp == 0x01:       # IPv4
+                        _recvexact(sock, 4)
+                    elif atyp == 0x03:     # Domain
+                        _recvexact(sock, ord(_recvexact(sock, 1)))
+                    elif atyp == 0x04:     # IPv6
+                        _recvexact(sock, 16)
+                    _recvexact(sock, 2)    # Bound port
+
+                    self.add_message("system",
+                        colorize("🧅 Tor circuit established", "green"))
+
+                else:
+                    # I2P/clearnet use existing setup_proxy
+                    net_type_actual = self.setup_proxy(net_type)
+                    tls_label = " TLS" if use_tls else ""
+                    self.add_message("system",
+                        f"Connecting to {colorize(self.server, 'cyan')}:{port}"
+                        f" ({colorize(net_label + tls_label, 'bold_cyan')}, up to {timeout}s)…")
+                    self.debug("connect", {"server": self.server, "port": port,
+                                           "net": net_type, "tls": use_tls, "timeout": timeout})
+
+                    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                    sock.settimeout(float(timeout))
+                    sock.connect((self.server, port))
 
             # ── Wrap in TLS for clearnet ─────────────────────────
             if use_tls:
@@ -9460,9 +9636,25 @@ class OTRv4IRCClient:
                 continue
             except OSError as exc:
                 if self.running:
-                    self.add_message("system",
-                        colorize(f"⚠ Connection lost ({exc}). "
-                                 "Reconnecting automatically…", "yellow"))
+                    # Detect immediate reset on clearnet plaintext — server
+                    # rejected the connection because it requires TLS (e.g.
+                    # Libera.chat, OFTC dropped port 6667 plaintext support).
+                    _uptime = time.time() - getattr(self, 'connected_at', 0)
+                    _is_clearnet_plain = (
+                        NetworkConstants.detect(self.server) == NetworkConstants.NET_CLEARNET
+                        and not self.config.use_tls
+                        and self.config.port in (IRCConstants.PORT, 0)
+                    )
+                    if _uptime < 3.0 and _is_clearnet_plain and "104" in str(exc):
+                        self.add_message("system",
+                            colorize("⚠ Server reset plaintext connection — "
+                                     "auto-upgrading to TLS on port 6697…", "yellow"))
+                        self.config.use_tls = True
+                        self.config.port    = IRCConstants.TLS_PORT
+                    else:
+                        self.add_message("system",
+                            colorize(f"⚠ Connection lost ({exc}). "
+                                     "Reconnecting automatically…", "yellow"))
                     self._try_reconnect()
                     return  # new recv thread started by _try_reconnect
                 self.connected = False
@@ -12259,7 +12451,7 @@ Connection:
   -c, --channel #CHANNEL     Channel to auto-join (default: #otr)
   -n, --nick NICK            Nickname (default: random from pool)
       --tls                  Force TLS on
-      --no-tls               Force TLS off (for I2P/Tor)
+      --no-tls               Disable TLS (for Tor/I2P only — clearnet auto-uses TLS)
 
 Authentication:
       --sasl                 SASL login (prompts for nick + password)
@@ -12436,7 +12628,24 @@ def main():
     client = EnhancedOTRv4IRCClient(config)
 
     if not client.connect():
-        safe_print(colorize("Failed to connect — check i2pd is running on port 4447", "red"))
+        _fail_net = NetworkConstants.detect(config.server)
+        _fail_hints = {
+            NetworkConstants.NET_TOR: (
+                "Failed to connect via Tor.\n"
+                "  • Desktop: ensure tor is running  (systemctl start tor)\n"
+                "  • Android: start Orbot and tap 'Start'\n"
+                "  • Tor Browser: make sure it is open (SOCKS5 on 9150)\n"
+                "  Probed ports: 9050, 9150."
+            ),
+            NetworkConstants.NET_I2P: (
+                "Failed to connect via I2P — is i2pd running?\n"
+                "  Check: i2pd SOCKS5 port 4447, SAM port 7656."
+            ),
+            NetworkConstants.NET_CLEARNET: (
+                "Failed to connect — check server address and network."
+            ),
+        }
+        safe_print(colorize(_fail_hints.get(_fail_net, "Failed to connect."), "red"))
         return 1
 
     client.start_auto_smp_monitor()
