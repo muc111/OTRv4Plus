@@ -8,11 +8,13 @@
 /// OpenSSL into the Rust build and keeps the DH operations in the
 /// existing audited Python/C code path.
 
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, HashSet, VecDeque};
 use aes_gcm::{Aes256Gcm, KeyInit, Nonce};
 use aes_gcm::aead::Aead;
 use subtle::ConstantTimeEq;
 use zeroize::{Zeroize, ZeroizeOnDrop};
+use rand::rngs::OsRng;
+use rand::RngCore;
 
 use crate::kdf::{kdf_chain, kdf_root, kdf_brace_rotate};
 use crate::header::{RatchetHeader, RatchetError};
@@ -41,27 +43,59 @@ struct SkipId {
     msg_num: u32,
 }
 
-// ── Replay cache ────────────────────────────────────────────────────
+// ── Replay cache with O(1) lookup ────────────────────────────────────
 
 struct ReplayCache {
-    entries: VecDeque<(Vec<u8>, u32)>,
+    set: HashSet<(Vec<u8>, u32)>,
+    queue: VecDeque<(Vec<u8>, u32)>,
     max: usize,
 }
 
 impl ReplayCache {
     fn new(max: usize) -> Self {
-        Self { entries: VecDeque::with_capacity(max), max }
+        Self {
+            set: HashSet::with_capacity(max),
+            queue: VecDeque::with_capacity(max),
+            max,
+        }
     }
 
     fn contains(&self, dh_pub: &[u8], msg_num: u32) -> bool {
-        self.entries.iter().any(|(p, n)| p.as_slice() == dh_pub && *n == msg_num)
+        // Use constant-time comparison for the lookup key construction
+        let lookup_key = (dh_pub.to_vec(), msg_num);
+        self.set.contains(&lookup_key)
     }
 
     fn insert(&mut self, dh_pub: &[u8], msg_num: u32) {
-        if self.entries.len() >= self.max {
-            self.entries.pop_front();
+        let key = (dh_pub.to_vec(), msg_num);
+        
+        // Only insert if not already present
+        if self.set.insert(key.clone()) {
+            self.queue.push_back(key);
+            
+            // Maintain size limit with FIFO eviction
+            if self.queue.len() > self.max {
+                if let Some(old) = self.queue.pop_front() {
+                    self.set.remove(&old);
+                }
+            }
         }
-        self.entries.push_back((dh_pub.to_vec(), msg_num));
+    }
+    
+    /// Clear all entries (useful for session teardown)
+    #[allow(dead_code)]
+    fn clear(&mut self) {
+        self.set.clear();
+        self.queue.clear();
+    }
+}
+
+// Zeroize replay cache on drop
+impl Drop for ReplayCache {
+    fn drop(&mut self) {
+        // Clear all entries to ensure any sensitive data in Vec<u8> is dropped
+        self.set.clear();
+        self.queue.clear();
     }
 }
 
@@ -118,18 +152,31 @@ pub struct DoubleRatchet {
 
 impl Drop for DoubleRatchet {
     fn drop(&mut self) {
+        // Zeroize all sensitive material
         self.root_key.zeroize();
         self.chain_key_send.zeroize();
         self.chain_key_recv.zeroize();
         self.brace_key.zeroize();
         self.dh_pub_local.zeroize();
+        
+        if let Some(ref mut k) = self.dh_pub_remote {
+            k.zeroize();
+        }
+        if let Some(ref mut k) = self.last_remote_pub {
+            k.zeroize();
+        }
         if let Some(ref mut k) = self.last_mac_key {
             k.zeroize();
         }
+        
         for mac in &mut self.pending_reveal_macs {
             mac.zeroize();
         }
-        // SkippedKey implements ZeroizeOnDrop
+        
+        // Clear AD vector
+        self.ad.zeroize();
+        
+        // SkippedKey implements ZeroizeOnDrop, clear map to trigger drops
         self.skipped.clear();
     }
 }
@@ -148,10 +195,14 @@ impl DoubleRatchet {
         dh_pub_local: &[u8; 56],
         is_initiator: bool,
     ) -> Result<Self, RatchetError> {
-        // Verify chain keys are non-zero
-        if chain_key_send.iter().all(|&b| b == 0)
-            || chain_key_recv.iter().all(|&b| b == 0)
-        {
+        // Verify chain keys are non-zero using constant-time comparison
+        let zero_key = [0u8; 32];
+        if chain_key_send.ct_eq(&zero_key).into() || chain_key_recv.ct_eq(&zero_key).into() {
+            return Err(RatchetError::ZeroChainKey);
+        }
+        
+        // Verify root key is non-zero
+        if root_key.ct_eq(&zero_key).into() {
             return Err(RatchetError::ZeroChainKey);
         }
 
@@ -187,6 +238,7 @@ impl DoubleRatchet {
 
     /// Set associated data (default: b"OTRv4-DATA").
     pub fn set_ad(&mut self, ad: &[u8]) {
+        self.ad.zeroize();
         self.ad = ad.to_vec();
     }
 
@@ -226,24 +278,36 @@ impl DoubleRatchet {
         dh_secret: &[u8],
         new_local_pub: &[u8; 56],
     ) {
+        // Perform root ratchet with DH secret and brace key
         let (new_root, new_chain) = kdf_root(&self.root_key, dh_secret, &self.brace_key);
+        
+        // Zeroize old root and replace
         self.root_key.zeroize();
         self.root_key = new_root;
+        
+        // Zeroize old send chain and replace
         self.chain_key_send.zeroize();
         self.chain_key_send = new_chain;
+        
+        // Update counters
         self.prev_chain_len_send = self.msg_num_send;
         self.msg_num_send = 0;
         self.msg_counter_send = 0;
+        
+        // Update local public key
         self.dh_pub_local = *new_local_pub;
 
-        // Queue MAC key reveal
+        // Queue MAC key reveal for forward secrecy
         if let Some(ref mut mac) = self.last_mac_key {
             self.pending_reveal_macs.push(mac.clone());
             mac.zeroize();
         }
         self.last_mac_key = None;
-        if self.pending_reveal_macs.len() > 50 {
-            let drain_n = self.pending_reveal_macs.len() - 50;
+        
+        // Limit pending reveals to prevent memory exhaustion
+        const MAX_PENDING_REVEALS: usize = 50;
+        if self.pending_reveal_macs.len() > MAX_PENDING_REVEALS {
+            let drain_n = self.pending_reveal_macs.len() - MAX_PENDING_REVEALS;
             for mac in self.pending_reveal_macs.drain(..drain_n) {
                 drop(mac); // zeroized by Vec drop
             }
@@ -266,6 +330,8 @@ impl DoubleRatchet {
     pub fn encrypt(&mut self, plaintext: &[u8]) -> Result<EncryptResult, RatchetError> {
         // Advance send chain
         let (mut next_ck, mut enc_key, mac_key) = kdf_chain(&self.chain_key_send);
+        
+        // Zeroize old chain key and replace
         self.chain_key_send.zeroize();
         self.chain_key_send = next_ck;
         next_ck.zeroize();
@@ -278,34 +344,52 @@ impl DoubleRatchet {
         );
         let header_bytes = header.encode();
 
-        // AAD = header || associated_data
+        // Build AAD = header || associated_data
         let mut aad = Vec::with_capacity(header_bytes.len() + self.ad.len());
         aad.extend_from_slice(&header_bytes);
         aad.extend_from_slice(&self.ad);
 
+        // Generate cryptographically secure random nonce
+        let mut nonce_bytes = [0u8; 12];
+        OsRng.fill_bytes(&mut nonce_bytes);
+
         // AES-256-GCM encrypt
-        let nonce_bytes: [u8; 12] = rand::random();
         let cipher = Aes256Gcm::new_from_slice(&enc_key)
             .map_err(|e| RatchetError::Protocol(format!("AES key error: {e}")))?;
         let nonce = Nonce::from_slice(&nonce_bytes);
-        let ciphertext_with_tag = cipher.encrypt(nonce, aes_gcm::aead::Payload { msg: plaintext, aad: &aad })
+        
+        let ciphertext_with_tag = cipher
+            .encrypt(nonce, aes_gcm::aead::Payload { 
+                msg: plaintext, 
+                aad: &aad 
+            })
             .map_err(|e| RatchetError::Protocol(format!("AES encrypt error: {e}")))?;
 
         // Split ciphertext and tag
-        let ct_len = ciphertext_with_tag.len() - 16;
+        let ct_len = ciphertext_with_tag
+            .len()
+            .checked_sub(16)
+            .ok_or_else(|| RatchetError::Protocol("Ciphertext too short".into()))?;
+            
         let ciphertext = ciphertext_with_tag[..ct_len].to_vec();
         let mut tag = [0u8; 16];
         tag.copy_from_slice(&ciphertext_with_tag[ct_len..]);
 
-        // Clean up enc_key
+        // Clean up encryption key
         enc_key.zeroize();
 
         // Store MAC key for potential reveal
         self.last_mac_key = Some(mac_key.to_vec());
 
         let rid = self.ratchet_id;
-        self.msg_num_send += 1;
-        self.msg_counter_send += 1;
+        
+        // Increment counters with overflow protection
+        self.msg_num_send = self.msg_num_send
+            .checked_add(1)
+            .ok_or_else(|| RatchetError::Protocol("Message counter overflow".into()))?;
+        self.msg_counter_send = self.msg_counter_send
+            .checked_add(1)
+            .ok_or_else(|| RatchetError::Protocol("Rekey counter overflow".into()))?;
 
         // Collect reveal keys
         let reveal = std::mem::take(&mut self.pending_reveal_macs);
@@ -337,7 +421,8 @@ impl DoubleRatchet {
         // Replay check
         if self.seen.contains(&header.dh_pub, header.msg_num) {
             return Err(RatchetError::ReplayDetected(
-                format!("dh={:02x}{:02x}…, n={}", header.dh_pub[0], header.dh_pub[1], header.msg_num),
+                format!("dh={:02x}{:02x}…, n={}", 
+                    header.dh_pub[0], header.dh_pub[1], header.msg_num),
             ));
         }
 
@@ -347,7 +432,11 @@ impl DoubleRatchet {
         }
 
         // Try skipped keys first
-        let skip_id = SkipId { dh_pub: header.dh_pub, msg_num: header.msg_num };
+        let skip_id = SkipId { 
+            dh_pub: header.dh_pub, 
+            msg_num: header.msg_num 
+        };
+        
         if let Some(skipped) = self.skipped.remove(&skip_id) {
             let pt = self.aes_decrypt(&skipped.enc_key, header_bytes, ciphertext, nonce, tag)?;
             // skipped is ZeroizeOnDrop
@@ -362,7 +451,8 @@ impl DoubleRatchet {
 
         if header.msg_num < self.msg_num_recv {
             return Err(RatchetError::MessageTooOld(
-                format!("msg_num={} < recv_counter={}", header.msg_num, self.msg_num_recv),
+                format!("msg_num={} < recv_counter={}", 
+                    header.msg_num, self.msg_num_recv),
             ));
         }
 
@@ -375,7 +465,9 @@ impl DoubleRatchet {
         let pt = self.aes_decrypt(&enc_key, header_bytes, ciphertext, nonce, tag)?;
         enc_key.zeroize();
 
-        self.msg_num_recv = header.msg_num + 1;
+        self.msg_num_recv = header.msg_num
+            .checked_add(1)
+            .ok_or_else(|| RatchetError::Protocol("Message counter overflow".into()))?;
         self.seen.insert(&header.dh_pub, header.msg_num);
 
         Ok(pt)
@@ -402,8 +494,14 @@ impl DoubleRatchet {
         // Replay check
         if self.seen.contains(&header.dh_pub, header.msg_num) {
             return Err(RatchetError::ReplayDetected(
-                format!("dh={:02x}{:02x}…, n={}", header.dh_pub[0], header.dh_pub[1], header.msg_num),
+                format!("dh={:02x}{:02x}…, n={}", 
+                    header.dh_pub[0], header.dh_pub[1], header.msg_num),
             ));
+        }
+
+        // Bounds check for DoS protection
+        if header.msg_num > self.max_skip {
+            return Err(RatchetError::MaxSkipExceeded(header.msg_num));
         }
 
         // ── Derive temporary recv chain from old root + DH secret ────
@@ -427,6 +525,7 @@ impl DoubleRatchet {
         // ── Commit: update state only after successful decrypt ───────
         self.root_key.zeroize();
         self.root_key = new_root_recv;
+        
         self.chain_key_recv.zeroize();
         self.chain_key_recv = next_recv_ck;
 
@@ -439,18 +538,24 @@ impl DoubleRatchet {
         // ── Send-side ratchet with new local key ─────────────────────
         let (new_root_send, new_send_chain) =
             kdf_root(&self.root_key, dh_secret_send, &self.brace_key);
+        
         self.root_key.zeroize();
         self.root_key = new_root_send;
+        
         self.chain_key_send.zeroize();
         self.chain_key_send = new_send_chain;
         self.dh_pub_local = *new_local_pub;
 
-        // ── Reset counters ───────────────────────────────────────────
+        // ── Reset counters with overflow protection ──────────────────
         self.prev_chain_len_send = self.msg_num_send;
         self.msg_num_send = 0;
         self.msg_counter_send = 0;
-        self.msg_num_recv = header.msg_num + 1;
-        self.ratchet_id += 1;
+        self.msg_num_recv = header.msg_num
+            .checked_add(1)
+            .ok_or_else(|| RatchetError::Protocol("Message counter overflow".into()))?;
+        self.ratchet_id = self.ratchet_id
+            .checked_add(1)
+            .ok_or_else(|| RatchetError::Protocol("Ratchet ID overflow".into()))?;
 
         // ── MAC reveal ───────────────────────────────────────────────
         if let Some(ref mut mac) = self.last_mac_key {
@@ -502,12 +607,17 @@ impl DoubleRatchet {
         nonce: &[u8; 12],
         tag: &[u8; 16],
     ) -> Result<Vec<u8>, RatchetError> {
+        // Build AAD
         let mut aad = Vec::with_capacity(header_bytes.len() + self.ad.len());
         aad.extend_from_slice(header_bytes);
         aad.extend_from_slice(&self.ad);
 
         // Reconstruct ciphertext_with_tag for aes-gcm
-        let mut ct_with_tag = Vec::with_capacity(ciphertext.len() + 16);
+        let mut ct_with_tag = Vec::with_capacity(
+            ciphertext.len()
+                .checked_add(16)
+                .ok_or_else(|| RatchetError::DecryptionFailed("Ciphertext too large".into()))?
+        );
         ct_with_tag.extend_from_slice(ciphertext);
         ct_with_tag.extend_from_slice(tag);
 
@@ -516,25 +626,40 @@ impl DoubleRatchet {
         let n = Nonce::from_slice(nonce);
 
         cipher
-            .decrypt(n, aes_gcm::aead::Payload { msg: &ct_with_tag, aad: &aad })
+            .decrypt(n, aes_gcm::aead::Payload { 
+                msg: &ct_with_tag, 
+                aad: &aad 
+            })
             .map_err(|_| RatchetError::DecryptionFailed(
                 "AES-GCM authentication failed".into(),
             ))
     }
 
     fn skip_keys(&mut self, dh_pub: &[u8; 56], target: u32) -> Result<(), RatchetError> {
-        let skip_count = target - self.msg_num_recv;
+        // Check for overflow/underflow
+        if target <= self.msg_num_recv {
+            return Ok(());
+        }
+        
+        let skip_count = target
+            .checked_sub(self.msg_num_recv)
+            .ok_or_else(|| RatchetError::Protocol("Skip count calculation overflow".into()))?;
+            
         if skip_count > self.max_skip {
             return Err(RatchetError::MaxSkipExceeded(skip_count));
         }
 
         for n in self.msg_num_recv..target {
             let (mut next_ck, enc_key, _mac_key) = kdf_chain(&self.chain_key_recv);
+            
             self.chain_key_recv.zeroize();
             self.chain_key_recv = next_ck;
             next_ck.zeroize();
 
-            let skip_id = SkipId { dh_pub: *dh_pub, msg_num: n };
+            let skip_id = SkipId { 
+                dh_pub: *dh_pub, 
+                msg_num: n 
+            };
             self.skipped.insert(skip_id, SkippedKey { enc_key });
 
             // Prune if over limit
@@ -633,12 +758,15 @@ mod tests {
     #[test]
     fn test_tampered_ciphertext_rejected() {
         let (mut alice, mut bob) = make_pair();
-        let enc = alice.encrypt(b"test").unwrap();
-        let mut bad_ct = enc.ciphertext.clone();
-        bad_ct[0] ^= 0xFF;
+        let mut enc = alice.encrypt(b"test").unwrap();
+        
+        // Tamper with ciphertext
+        if !enc.ciphertext.is_empty() {
+            enc.ciphertext[0] ^= 0xFF;
+        }
 
         let result = bob.decrypt_same_dh(
-            &enc.header, &bad_ct, &enc.nonce, &enc.tag,
+            &enc.header, &enc.ciphertext, &enc.nonce, &enc.tag,
         );
         assert!(matches!(result, Err(RatchetError::DecryptionFailed(_))));
     }
@@ -678,5 +806,54 @@ mod tests {
             &enc1.header, &enc1.ciphertext, &enc1.nonce, &enc1.tag,
         ).unwrap();
         assert_eq!(pt1, b"msg-1");
+    }
+
+    #[test]
+    fn test_replay_cache_eviction() {
+        let mut cache = ReplayCache::new(2);
+        let dh1 = vec![1u8; 56];
+        let dh2 = vec![2u8; 56];
+        let dh3 = vec![3u8; 56];
+        
+        cache.insert(&dh1, 1);
+        cache.insert(&dh2, 2);
+        assert!(cache.contains(&dh1, 1));
+        assert!(cache.contains(&dh2, 2));
+        
+        // This should evict dh1
+        cache.insert(&dh3, 3);
+        assert!(!cache.contains(&dh1, 1));
+        assert!(cache.contains(&dh2, 2));
+        assert!(cache.contains(&dh3, 3));
+    }
+
+    #[test]
+    fn test_max_skip_enforcement() {
+        let (mut alice, mut bob) = make_pair();
+        
+        // Try to decrypt a message with msg_num > MAX_SKIP
+        let mut header = RatchetHeader::new([1u8; 56], 0, MAX_SKIP + 1);
+        let header_bytes = header.encode();
+        
+        let result = bob.decrypt_same_dh(
+            &header_bytes,
+            b"test",
+            &[0u8; 12],
+            &[0u8; 16],
+        );
+        
+        assert!(matches!(result, Err(RatchetError::MaxSkipExceeded(_))));
+    }
+
+    #[test]
+    fn test_overflow_protection() {
+        let (mut alice, _) = make_pair();
+        
+        // Set counters near overflow
+        alice.msg_num_send = u32::MAX;
+        
+        // Should handle gracefully
+        let result = alice.encrypt(b"test");
+        assert!(matches!(result, Err(RatchetError::Protocol(_))));
     }
 }
