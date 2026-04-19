@@ -1,11 +1,36 @@
-# Compiled extensions
-*.so
-*.o
-*.pyc
+# ── Built .so files in project root ──────────────────────────────────────────
+# These are compiled locally and differ per device/platform.
+# Distribution binaries go in prebuilt/ instead.
+/*.so
+/*.cpython-*.so
+
+# ── Python ───────────────────────────────────────────────────────────────────
 __pycache__/
+*.pyc
+*.pyo
+*.pyd
 *.egg-info/
-build/
+.eggs/
 dist/
-target/
+build/
+
+# ── Rust ─────────────────────────────────────────────────────────────────────
+Rust/target/
+
+# ── Test / tooling cache ──────────────────────────────────────────────────────
+.pytest_cache/
+.hypothesis/
+
+# ── Editors / OS ─────────────────────────────────────────────────────────────
+.DS_Store
+.vscode/
+.idea/
+*.swp
+
+# ── Virtual environments ──────────────────────────────────────────────────────
+venv/
 .venv/
-*.whl
+otr-env/
+
+# ── Explicitly keep prebuilt/ binaries ───────────────────────────────────────
+!prebuilt/*.so
