@@ -2,41 +2,34 @@
   <img src="icon.png" width="200" alt="OTRv4+">
 </p>
 
-# OTRv4+
+<h1 align="center">OTRv4+</h1>
+<p align="center"><strong>Post-quantum encrypted IRC. Runs on your phone over I2P, Tor, or clearnet. Leaves no trace.</strong></p>
 
-Off The Record v4 + PQC
-
-Post-quantum OTR for IRC. The whole thing runs on a phone over I2P/TOR/Clearnet
-
-I built this because nobody else was going to. The OTRv4 spec has been sitting there for years with zero complete implementations, and meanwhile every messaging protocol is scrambling to bolt on post-quantum crypto before Q-day arrives. So I did both — implemented the full OTRv4 spec and added PQC to every layer while I was at it.
-
-It defaults to `irc.postman.i2p`. Point it at any server and it figures out the network — `.i2p` goes through I2P, `.onion` through Tor, everything else gets TLS. No config files, no setup wizards.
+<p align="center">
+  <a href="#installation">Install</a> ·
+  <a href="#quick-start">Quick start</a> ·
+  <a href="#commands">Commands</a> ·
+  <a href="#security-features">Security</a> ·
+  <a href="#license">License</a>
+</p>
 
 ---
 
-## Why use this
+## One-line install (Android / Termux)
 
-If you're a journalist, researcher, or just someone who doesn't want their conversations stored forever on some company's server waiting for a quantum computer to decrypt them five years from now — this is for you.
+```bash
+git clone https://github.com/muc111/OTRv4Plus.git && cd OTRv4Plus && chmod +x termux_install.sh && ./termux_install.sh && PYTHONMALLOC=malloc python otrv4+.py
+```
 
-Here's what it actually protects against:
+The installer builds all C extensions and the Rust ratchet core, or falls back to prebuilt binaries automatically — no manual compilation needed. For Linux and macOS see [Installation](#installation).
 
-**The server sees nothing.** All messages are end-to-end encrypted with OTRv4. The IRC server admin gets ciphertext and metadata — who's talking to who, when, and how much. They cannot read a single word you say.
+---
 
-**Quantum computers won't break your old logs.** ML-KEM-1024 at the handshake plus fresh KEM material rotated in with every DH ratchet means even if someone records everything today and throws a quantum computer at it in 2030, the session keys stay safe. Signal only does PQC at the initial handshake — compromise that and the whole session opens up. This one self-heals.
+## What is this?
 
-**No persistent identity.** Random nick on every launch. Fresh I2P destination every session when SAM is enabled. No account, no email, no phone number, no username that follows you around. You show up, talk, and disappear. Next time you connect you're a completely different person as far as the network can tell.
+OTRv4+ is a full implementation of the OTRv4 specification with post-quantum cryptography added at every layer — ML-KEM-1024 at the handshake, ML-DSA-87 for authentication, and fresh KEM material rotated with every DH ratchet step. It runs as a single terminal IRC client over I2P, Tor, or clearnet, and wipes all key material on exit.
 
-**Deniable authentication.** Ed448 ring signatures mean neither side can cryptographically prove to a third party that the other person said anything. You know who you're talking to. Nobody else can prove it was them. Standard in OTR, kept intact here.
-
-**SMP verification without revealing secrets.** You can verify you're talking to the right person by typing a shared passphrase. The protocol proves you both know it without sending it over the wire. No attacker can brute-force it after the fact because the exchange is zero-knowledge.
-
-**Everything wipes on exit.** `/quit` zeroizes every Rust ratchet, cleanses every C extension buffer, clears the terminal screen, and deletes `~/.otrv4plus/`. Nothing lingers in swap or temp files. If someone grabs your phone, there's nothing to recover.
-
-**Runs on anything.** One Python file, three C extensions, one Rust library. Works on Linux, macOS, Android via Termux. No Docker, no systemd services, no cloud dependencies. You can audit the whole protocol in one sitting.
-
-**Network agnostic.** Point it at `.i2p` and it routes through I2P. `.onion` goes through Tor. Clearnet IRC servers get TLS. Same client, same crypto, no config changes.
-
-The tradeoff is both parties need to be online at the same time (it's IRC, not Signal) and there's no forward secrecy for stored identity keys (that's what the random nicks and transient I2P destinations are for). If you need async messaging, this isn't it. If you need synchronous, deniable, post-quantum chat that leaves no trace, this is exactly it.
+The OTRv4 spec has existed for years with zero complete, maintained implementations. This fills that gap and adds PQC on top.
 
 ---
 
@@ -52,100 +45,99 @@ The screenshot shows a complete session: SAM bridge connection → DAKE3 complet
 
 ---
 
-## 📱 Termux (Android) — One-Line Install
+## Quick start
 
-One command does everything — clone, build, and run:
+1. Launch: `PYTHONMALLOC=malloc python otrv4+.py`
+2. Join a channel: `/join #otr`
+3. Start an encrypted session with another user: `/otr bob`
+4. Verify their identity: `/smp secret` (both users type the same passphrase — nothing is sent over the wire)
+
+That's it. The client defaults to `irc.postman.i2p` with auto-network detection — `.i2p` routes through I2P, `.onion` through Tor, everything else gets TLS. To connect to a different server: `python otrv4+.py -s irc.libera.chat:6697`
+
+---
+
+## Security features
+
+| | |
+|---|---|
+| 🔐 **Post-quantum handshake** | ML-KEM-1024 + X448 hybrid — quantum-safe session keys from the first message |
+| 🔄 **Post-quantum ratchet** | Fresh ML-KEM encapsulation every DH ratchet step — compromise of one epoch doesn't open others |
+| 🪪 **Deniable authentication** | Ed448 + ML-DSA-87 ring signatures — you know who you're talking to; no third party can prove it |
+| 🧐 **Zero-knowledge identity verify** | SMP protocol — prove you both know a shared secret without sending it |
+| 🧅 **Network agnostic** | Auto-detects I2P / Tor / clearnet — same client, same commands, no config changes |
+| 👤 **No persistent identity** | Random nick every launch; fresh I2P destination every session with SAM |
+| 🧹 **Zero traces on exit** | Rust `Zeroize`, `OPENSSL_cleanse`, NIST SP 800-88r1 file destruction — nothing recoverable after `/quit` |
+| 🔒 **E2E encrypted** | OTRv4 — the IRC server admin sees ciphertext and metadata only |
+| 📱 **Runs on a phone** | Termux on Android, one command install, no root required |
+
+**Honest tradeoffs:** both parties must be online simultaneously (this is IRC, not Signal). No async messaging, no push notifications. If you need async — use Signal. If you need synchronous, deniable, post-quantum chat that leaves no trace, this is it.
+
+---
+
+## Installation
+
+### Android — Termux
 
 ```bash
 git clone https://github.com/muc111/OTRv4Plus.git && cd OTRv4Plus && chmod +x termux_install.sh && ./termux_install.sh && PYTHONMALLOC=malloc python otrv4+.py
 ```
 
-That's it. Paste it into Termux and walk away.
-
-### What `termux_install.sh` does
-
-The script runs five stages automatically:
+<details>
+<summary>What the installer does</summary>
 
 | Stage | What happens |
 |-------|-------------|
 | **[1/5] System deps** | `pkg install python rust openssl clang make binutils` |
 | **[2/5] Python tools** | `pip install maturin setuptools` |
-| **[3/5] Clean** | Removes stale build artefacts so you start fresh |
+| **[3/5] Clean** | Removes stale build artefacts |
 | **[4/5] API level** | Reads your device's Android API level via `getprop` (defaults to 24) |
 | **[5/5] C extensions** | Builds `otr4_crypto_ext`, `otr4_ed448_ct`, `otr4_mldsa_ext` with `setup_otr4.py` |
 | **[6/6] Rust core** | `cargo build --release` → copies `libotrv4_core.so` into the project root |
 
-**Automatic prebuilt fallback:** if any build step fails (no compiler, missing headers, old toolchain), the script copies the prebuilt `.so` files from the `prebuilt/` directory and continues. You get a working install either way.
+**Automatic prebuilt fallback:** if any build step fails (missing compiler, old toolchain), the script copies the prebuilt `.so` files from `prebuilt/` and continues. You get a working install either way.
 
-At the end you'll see:
-
-```
-🎉 OTRv4+ is ready!
-
-Run with:
-  PYTHONMALLOC=malloc python otrv4+.py
-```
-
-### Step-by-step (if you prefer to run things manually)
-
-```bash
-# 1. Clone
-git clone https://github.com/muc111/OTRv4Plus.git
-cd OTRv4Plus
-
-# 2. Run the installer
-chmod +x termux_install.sh
-./termux_install.sh
-
-# 3. Launch
-PYTHONMALLOC=malloc python otrv4+.py
-```
+</details>
 
 > **I2P:** The default server is `irc.postman.i2p`. You need i2pd running:
 > ```bash
 > pkg install i2pd && i2pd --daemon
 > ```
-> Wait ~3 minutes for I2P to bootstrap, then launch OTRv4+. See [I2P setup](#i2p-setup) below.
+> Wait ~3 minutes for I2P to bootstrap, then launch OTRv4+.
 
----
+### Prebuilt binaries
 
-## Get it running — other platforms
+If you're on Termux (aarch64) and don't want to build from source, `prebuilt/` contains ready-to-use `.so` files. Copy them to the project root and skip all build steps.
 
-You need Python 3.9+, OpenSSL 3.5+ (for ML-KEM and ML-DSA), a C compiler, and the Rust ratchet core.
+### Linux / macOS
 
-**If you can't or don't want to build from source:** prebuilt `.so` files for Termux on Android (aarch64) are in the `prebuilt/` directory. Just copy them into your OTRv4Plus folder and skip the C extension and Rust build steps. See [Prebuilt binaries](#prebuilt-binaries) below.
+<details>
+<summary>Manual build instructions</summary>
 
-### Debian / Ubuntu (23.04+)
+**Requirements:** Python 3.9+, OpenSSL 3.5+, C compiler, Rust toolchain.
 
-23.04+ blocks pip outside a venv, so use one:
+#### Debian / Ubuntu (23.04+)
 
 ```bash
 sudo apt install python3 python3-dev python3-venv libssl-dev build-essential git
-python3 -m venv ~/otr-env
-source ~/otr-env/bin/activate
+python3 -m venv ~/otr-env && source ~/otr-env/bin/activate
 pip install cryptography pysocks argon2-cffi maturin
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-source ~/.cargo/env
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh && source ~/.cargo/env
 
-git clone https://github.com/muc111/OTRv4Plus.git
-cd OTRv4Plus
+git clone https://github.com/muc111/OTRv4Plus.git && cd OTRv4Plus
 python setup_otr4.py build_ext --inplace
 bash build_ed448.sh
 gcc -shared -fPIC -O2 -o otr4_mldsa_ext.so otr4_mldsa_ext.c \
     $(python3-config --includes) $(python3-config --ldflags --embed) -lcrypto
 
-cd Rust
-cargo test --release
-maturin build --release
-pip install target/wheels/otrv4_core-*.whl
-cd ..
+cd Rust && cargo test --release && maturin build --release
+pip install target/wheels/otrv4_core-*.whl && cd ..
 
 PYTHONMALLOC=malloc python otrv4+.py -s irc.libera.chat:6697
 ```
 
-Always run `source ~/otr-env/bin/activate` before launching.
+Always `source ~/otr-env/bin/activate` before launching.
 
-### Arch Linux
+#### Arch Linux
 
 ```bash
 sudo pacman -S python python-pip openssl base-devel git rust
@@ -153,268 +145,62 @@ python3 -m venv ~/otr-env && source ~/otr-env/bin/activate
 pip install cryptography pysocks argon2-cffi maturin
 ```
 
-Then clone and follow the same build steps as Debian above.
+Then follow the same build steps as Debian above.
 
-### macOS
+#### macOS
 
 ```bash
 brew install python openssl@3 git rust
 python3 -m venv ~/otr-env && source ~/otr-env/bin/activate
 LDFLAGS="-L$(brew --prefix openssl@3)/lib" CFLAGS="-I$(brew --prefix openssl@3)/include" \
-pip install cryptography pysocks argon2-cffi maturin
+    pip install cryptography pysocks argon2-cffi maturin
 ```
 
-Then clone, build the C extensions and Rust core, and run. Same steps as above.
+Then clone and follow the same build steps.
+
+</details>
 
 ---
 
-## Prebuilt binaries
+## Commands
 
-If you're on Termux (Android, aarch64) and don't want to install a full build toolchain, the `prebuilt/` directory contains compiled `.so` files ready to use:
+**IRC**
+`/join [#channel]` `/part` `/nick [name]` `/msg [nick] [text]` `/names` `/topic` `/list` `/whois [nick]` `/invite` `/kick` `/mode` `/notice` `/away` `/back` `/raw` `/reconnect` `/quit`
 
-| File | Purpose |
-|------|---------|
-| `otr4_crypto_ext.so` | OpenSSL-backed AES-GCM, ChaCha20, HKDF, core dumps suppressed |
-| `otr4_ed448_ct.so` | Constant-time Ed448 scalar multiplication |
-| `otr4_mldsa_ext.so` | ML-DSA-87 (FIPS 204) post-quantum signing — requires OpenSSL ≥ 3.5 |
-| `libotrv4_core.so` | Rust double-ratchet core with zeroize-on-drop key material |
+**OTR / encryption**
+`/otr [nick]` — start encrypted session  
+`/endotr [nick]` — end session  
+`/fingerprint` — show your fingerprint  
+`/trust [nick]` — manually trust a fingerprint  
+`/smp secret` — verify identity by shared secret  
+`/smp start` `/smp abort` `/smp status`  
+`/secure` — show session security status
 
-Copy them into your OTRv4Plus directory and you're done:
+**UI / tabs**
+`/switch [name]` `/tabs` `/tab-next` `/tab-prev` `/tab-close` `/clear` `/ignore` `/unignore` `/ignored` `/status` `/debug` `/version`
 
-```bash
-cp prebuilt/*.so ~/OTRv4Plus/
-```
-
-No C compiler, no Rust toolchain, no maturin. Just Python and the dependencies from pip.
-
-These are compiled for Termux on aarch64. If you're on a different platform (Debian x86_64, macOS arm64, etc.), you'll need to build from source using the instructions above.
+> `/join`, `/switch`, `/part`, `/names` all accept the channel name with or without `#`.
 
 ---
 
-## Rust ratchet core (required)
+## Technical details
 
-The double ratchet runs entirely in Rust. All per-message encryption, key derivation, chain advancement, skip keys, and replay detection happen in Rust with deterministic secret zeroization. The Python `DoubleRatchet` class has been removed — there is no fallback. If the Rust module isn't installed, the client refuses to start.
+<details>
+<summary>🔐 Cryptographic design</summary>
 
-```bash
-cd Rust
-cargo test --release          # 11 tests, 0.01s
-maturin build --release
-pip install target/wheels/otrv4_core-*.whl
-cd ..
-```
+**DAKE (Deniable Authenticated Key Exchange)**
 
-On Termux add `export ANDROID_API_LEVEL=24` before `maturin build` (the installer does this for you automatically).
+- DAKE1: X448 ephemeral + ML-KEM-1024 encapsulation key + client profile + optional ML-DSA-87 public key
+- DAKE2: X448 ephemeral + ML-KEM-1024 ciphertext + client profile + optional ML-DSA-87 public key + MAC
+- DAKE3: Ed448 ring signature + optional ML-DSA-87 signature
 
-The startup banner confirms Rust is active:
+Both peers contribute to the session key via X448 + ML-KEM KEM. ML-DSA fields use a flag byte (`0x01` present / `0x00` absent) — peers without ML-DSA fall back to classical ring signatures only.
 
-```
-Ratchet : 🦀 Rust (zeroize-on-drop)
-```
+**Double ratchet**
 
-If Rust is missing you'll see:
+Pure Rust implementation (`otrv4_core`). Root key, chain keys, and message keys derived via SHAKE-256 KDF with `"OTRv4"` domain separator per spec §3.2. Fresh ML-KEM encapsulation at every DH ratchet epoch. Brace key rotated every `REKEY_INTERVAL` messages. `Zeroize` on drop; no `unsafe` blocks.
 
-```
-❌ FATAL: otrv4_core Rust module not installed.
-```
-
-Zero unsafe blocks in the Rust code.
-
----
-
-## I2P setup
-
-The client expects I2P's SOCKS5 proxy on `127.0.0.1:4447`.
-
-| Platform | Command |
-|----------|---------|
-| Termux | `pkg install i2pd && i2pd --daemon` |
-| Debian | `sudo apt install i2pd` (starts automatically) |
-| Arch | `sudo pacman -S i2pd && sudo systemctl enable --now i2pd` |
-| macOS | `brew install i2pd && brew services start i2pd` |
-
-Tor works too — SOCKS5 on port 9050 or 9150. The client picks it up automatically from `.onion` hostnames.
-
-### SAM vs SOCKS5
-
-When connecting to I2P, the client tries the SAM bridge first and falls back to SOCKS5 if SAM isn't available.
-
-**Why this matters:** with SOCKS5, every connection you make shares the same local I2P destination. The IRC server, and anyone watching it, sees the same `.b32.i2p` address every time you connect. If you disconnect and reconnect with a new nick, you're still the same destination. Cross-session tracking is trivial.
-
-SAM creates a fresh transient destination for each session. Every time you launch the client, you get a new I2P identity. There's nothing to correlate between sessions. This is how Tor does it — one circuit per target — and it's the right way to do it on I2P too.
-
-SAM v3.1 is used — just the basic stream connection features that both i2pd and Java I2P have supported for years.
-
-The startup banner tells you which one is active:
-
-```
-I2P     : SAM bridge (unique destination per session)
-```
-
-or if SAM isn't running:
-
-```
-I2P     : SOCKS5 (shared destination — SAM not available)
-```
-
-To enable SAM on i2pd, add this to your `i2pd.conf`:
-
-```ini
-[sam]
-enabled = true
-address = 127.0.0.1
-port = 7656
-```
-
-Then restart i2pd. Java I2P has SAM enabled by default on port 7656.
-
-Tor connections still use SOCKS5 — Tor already creates separate circuits per destination, so the shared-destination problem doesn't apply. Clearnet connections go direct with TLS.
-
-### Check your OpenSSL
-
-```bash
-openssl version
-```
-
-Needs to say `3.5.0` or later. ML-KEM-1024 and ML-DSA-87 don't exist in older versions and the C extensions won't compile without them. Termux ships 3.5+ already.
-
----
-
-## What's actually in here
-
-The crypto isn't one trick. Every layer got upgraded:
-
-**Key exchange** — Triple X448 Diffie-Hellman plus ML-KEM-1024 (FIPS 203). The KEM shared secret mixes into the root key, so even if X448 falls to a quantum computer, the session keys are still safe. This happens during a three-message DAKE handshake.
-
-**Authentication** — Ed448 ring signatures give you classical deniability (neither side can prove the other was there). On top of that, ML-DSA-87 (FIPS 204) gives post-quantum authentication — a quantum adversary can't forge your identity. Both run in DAKE3. Strict length validation on all ML-DSA public keys and signatures prevents truncation attacks.
-
-**Ratchet** — Rust-only double ratchet with ML-KEM-1024 brace key rotation every DH epoch. Most PQC messaging protocols only do KEM at the handshake. This one self-heals — if an attacker compromises a session, the next DH ratchet restores PQC protection with fresh KEM material. The Python ratchet class has been removed entirely.
-
-**Per-message** — AES-256-GCM, SHAKE-256 KDFs, random 12-byte nonces. All running in Rust. Nothing exotic at the symmetric level, just stuff that Grover's algorithm can't halve faster than 128-bit security.
-
-**SMP** — Socialist Millionaires' Protocol for identity verification. Both sides type the same passphrase (minimum 8 characters, enforced), the protocol proves they match without revealing it. Uses 3072-bit DH (RFC 3526 Group 15) with zero-knowledge proofs. The passphrase gets stretched through 10,000 rounds of SHAKE-256. All secret exponents stored in a Rust vault with deterministic zeroization. Session-bound — secrets include session ID and both fingerprints to prevent cross-session brute-force.
-
-**Secrets at rest** — Argon2id (64MB, 3 iterations, parallelism 4) for key derivation when storing SMP secrets and identity keys to disk. Falls back to scrypt if argon2-cffi is not installed.
-
-No liboqs. All PQC goes through OpenSSL 3.5+ native providers.
-
----
-
-## How it looks
-
-Startup banner:
-
-```
-OTRv4 IRC Client
-==================================================
-Version : OTRv4+ 10.5.5
-Server  : irc.postman.i2p:6667
-Network : 🧅 I2P (plaintext)
-Auth    : anonymous
-Channel : #otr
-Debug   : OFF
-Ratchet : 🦀 Rust (zeroize-on-drop)
-I2P     : SAM bridge (unique destination per session)
-==================================================
-```
-
-See the live demo above for the full session flow in Termux.
-
-Once connected, `/join #otr` and `/otr somenick` to start an encrypted session. The indicator shows security level:
-
-🔴 plaintext  
-🟡 encrypted, unverified  
-🟢 fingerprint trusted  
-🔵 SMP verified
-
-Session established looks like:
-
-```
-🔒 OTR session with Bob established — Ed448/X448, AES-256-GCM (initiator) [🦀 Rust]
-```
-
-### Finding other OTRv4+ users
-
-Type `/names` and it'll show you who else in the channel is running this client. It works by checking the gecos field (the "real name" in IRC) for "OTRv4+". Anyone who has it gets a blue 🔒 prefix in the list:
-
-```
-🔒 alice   🔒 bob    carol   dave
---- 🔒 = OTRv4+ client (2 user(s)) — use /otr <nick> to chat ---
-```
-
-Regular IRC clients don't show the prefix. It's a quick way to spot who you can actually start an OTR session with instead of guessing.
-
-On `/quit`:
-
-```
-🦀 2 Rust ratchet(s) zeroized (deterministic memory wipe)
-OTRv4+ terminated — 🦀 Rust memory zeroized — screen cleared
-```
-
----
-
-## The network thing
-
-The client inspects the server hostname and does the right thing:
-
-- `*.i2p` → routes through I2P SAM bridge (preferred) or SOCKS5 fallback
-- `*.onion` → routes through Tor SOCKS5 on `127.0.0.1:9050`
-- anything else → direct connection with TLS
-
-No flags. `irc.postman.i2p` just works if i2pd is running. `irc.libera.chat:6697` just works over TLS. You can also force things with `-s server:port --no-tls` or `--sasl -n YourNick`.
-
-On disconnect, the client auto-reconnects and rejoins all channels you were in — not just the default channel.
-
----
-
-## Why it's one file
-
-~12,000 lines in a single Python file. I know what you're thinking.
-
-Here's the thing — when you're auditing a crypto protocol, you want to see the whole thing in one place. Not spread across 40 modules with import chains and circular dependencies. You open `otrv4+.py` and the entire protocol is right there: DAKE handshake, double ratchet, SMP, ring signatures, wire format, IRC client, terminal UI. Grep works. Ctrl+F works.
-
-The three C extensions are separate because Python can't inline C. They handle constant-time arithmetic, ML-KEM-1024, ML-DSA-87, and Ed448 scalar multiplication. Everything else is in the one file.
-
-| File | Lines | What it does |
-|------|-------|-------------|
-| `otrv4+.py` | ~12,000 | Everything |
-| `otr4_crypto_ext.c` | 1,866 | BN arithmetic, ML-KEM (NTT), ring sigs, mlock |
-| `otr4_ed448_ct.c` | 867 | Constant-time Ed448 scalar multiply (Montgomery ladder) |
-| `otr4_mldsa_ext.c` | 321 | ML-DSA-87 via OpenSSL EVP |
-| `Rust/src/*.rs` | ~800 | Double ratchet + SMP vault with zeroize-on-drop |
-
----
-
-## Memory security
-
-This is the part I spent the most time on. Crypto libraries are fine at encrypting — the hard part is making sure secrets actually disappear from memory when you're done with them.
-
-**Rust ratchet** — all chain keys, root keys, brace keys, message keys, and skipped keys are zeroed on drop. Rust's `Zeroize` trait guarantees this. The Python `DoubleRatchet` class has been removed — there is no fallback path that could leak secrets via the GC.
-
-**Rust SMP vault** — all SMP secret exponents are stored in the Rust vault between protocol steps and deterministically zeroed on completion. They only exist as Python ints briefly during each computation step.
-
-**C extensions** — everything goes through `OPENSSL_cleanse()` after use. The Montgomery ladder in `otr4_ed448_ct.c` uses XOR-based cswap so secret scalar bits never hit a branch predictor. `SecureMemory.write()` uses `ctypes.memset`.
-
-**Python** — X448 private keys live in OpenSSL's C heap (the cryptography library holds a pointer, not the bytes). DAKE DH shared secrets pass through Python briefly before entering the KDF (microseconds).
-
-**On shutdown** — `/quit` triggers `Zeroize::drop()` on all Rust ratchets and SMP vaults, `OPENSSL_cleanse` on C extension secrets, clears the screen, and wipes `~/.otrv4plus/`. No trace left.
-
----
-
-## Security audit (v10.4)
-
-Seven vulnerabilities identified and fixed:
-
-1. **Unsafe byte wiping** — `_secure_wipe_bytes` used a dangerous ctypes-into-immutable-bytes hack. Replaced with safe stub; all call sites now use `bytearray` + `_ossl.cleanse()`.
-2. **Ratchet key swap** — `RustBackedDoubleRatchet` passed the wrong `is_initiator` flag to Rust, causing AES-GCM auth failure on first message for responders.
-3. **SMP cross-session brute-force** — `start_smp()` didn't always bind the secret to the session. Now always includes session ID + both fingerprints.
-4. **Weak SMP secrets** — Raised from soft 6-char warning to hard 8-char minimum across all entry points.
-5. **Expired session encryption** — `encrypt_with_tlvs()` didn't check session age. Now raises error after 24-hour max.
-6. **ML-DSA truncation** — DAKE1/2/3 now validates exact byte lengths for ML-DSA-87 public keys and signatures.
-7. **Fragment memory exhaustion** — Hard ceiling of 1,000 fragments regardless of per-sender limit.
-
----
-
-## Wire format
+**Wire format**
 
 ```
 DAKE1: 0x35 ‖ X448_eph(56) ‖ MLKEM_ek(1568) ‖ profile(var) [‖ MLDSA_pub(2592)]
@@ -423,107 +209,71 @@ DAKE3: 0x37 ‖ ring_sigma(228) ‖ flag(1) [‖ MLDSA_sig(4627)]
 DATA:  0x00 ‖ 0x04 ‖ 0x03 ‖ header(64) ‖ nonce(12) ‖ ct(var) ‖ tag(16)
 ```
 
-ML-DSA fields use a flag byte — `0x01` present, `0x00` absent. Peers without ML-DSA fall back to classical ring sigs only. Messages are fragmented at 300 bytes for IRC line limits using OTR §4.7 wire format.
+Messages fragment at 300 bytes for IRC line limits using OTR §4.7 wire format.
 
----
+**SMP (Socialist Millionaire Protocol)**
 
-## Signal comparison
+3072-bit safe prime. Secret bound to session ID + both fingerprints to prevent cross-session brute force. Minimum 8-character passphrase enforced. Zero-knowledge — the passphrase never travels the wire.
 
-Signal's PQXDH adds ML-KEM to the handshake but their own spec says "Authentication in PQXDH is not quantum-secure." They also only do PQC at the initial handshake — after that, the ratchet is classical.
+**KDF**
 
-This client does ML-KEM at the handshake AND rotates fresh KEM material every DH ratchet epoch. Plus ML-DSA-87 for post-quantum authentication. The tradeoff is no async support (both parties need to be online, it's IRC) and no PQ deniability (that's an open research problem — nobody has it).
+All key derivation uses `SHAKE-256("OTRv4" ‖ usage_ID ‖ value, size)` per spec §3.2. Usage IDs `0x00–0x1F` are domain-separated to prevent key conflation.
 
----
+</details>
 
-## Commands
+<details>
+<summary>🧠 Memory security</summary>
 
-**IRC:** `/join` `/part` `/nick` `/msg` `/names` `/topic` `/list` `/whois` `/invite` `/kick` `/mode` `/notice` `/away` `/back` `/raw` `/reconnect` `/quit`
+- **Rust ratchet core:** `Zeroize` trait on all key structs; zero `unsafe` blocks
+- **C extensions:** `OPENSSL_cleanse` on all key buffers before deallocation
+- **Python secrets:** `bytearray` + `_ossl.cleanse()` for session keys, SASL credentials, and SMP secrets — never plain `bytes`
+- **Key storage:** AES-256-GCM, Argon2id (64 MB, 3 passes, parallelism 2) for the master key
+- **File destruction:** NIST SP 800-88r1 — AES-256-GCM re-encrypt with ephemeral key, overwrite with zeros and random, then unlink
+- **SMP secrets:** `RustSMPVault` — secrets enter Rust memory immediately, zeroized after use
+- **On `/quit`:** all ratchets zeroized, all C buffers cleansed, `~/.otrv4plus/` deleted, terminal cleared
 
-**OTR:** `/otr nick` `/endotr nick` `/fingerprint` `/trust nick` `/smp secret` `/smp start` `/smp abort` `/smp status` `/secure`
+</details>
 
-**UI:** `/switch` `/tabs` `/tab-next` `/tab-prev` `/tab-close` `/clear` `/ignore` `/unignore` `/ignored` `/status` `/debug` `/version`
+<details>
+<summary>⚖️ Comparison with Signal</summary>
+
+Signal's PQXDH adds ML-KEM to the initial handshake but their own spec notes that "authentication in PQXDH is not quantum-secure." More importantly, after the handshake the ratchet is purely classical — compromise one epoch key and you can decrypt forward.
+
+OTRv4+ adds ML-KEM encapsulation at **every** DH ratchet epoch, so forward secrecy is post-quantum throughout the session, not just at setup. ML-DSA-87 provides post-quantum authentication. The tradeoffs are no async support (both parties online simultaneously), no push notifications, and no PQ deniability — that's an open research problem nobody has solved yet; the flag-byte mechanism supports upgrading when it exists.
+
+</details>
+
+<details>
+<summary>📋 Known issues</summary>
+
+- SMP exponents briefly exist as Python ints during each step (microseconds) before entering the Rust vault
+- DAKE DH shared secrets pass through Python briefly before the KDF (microseconds — private keys stay in OpenSSL's C heap)
+- Fragment count leaks message type to a local observer (DAKE = 20–25 fragments in a burst)
+- The random nick pool (~11,000 names) reduces but doesn't eliminate cross-session correlation
+- Clearnet exposes your IP in WHOIS until cloaking kicks in — use I2P or Tor
+- PQ deniability doesn't exist as a primitive anywhere; it's an open research problem
+
+None of these are cryptographic breaks. The first two are microsecond memory hygiene gaps. The rest are network/metadata issues that apply to all IRC clients.
+
+</details>
 
 ---
 
 ## Tests
 
-### Repository layout
-
-All test files live in `tests/`. The `.so` extensions and the main module live in the project root. The correct way to run everything is from the project root with `PYTHONPATH=.` so Python can see both.
-
-```
-OTRv4Plus/
-├── otrv4+.py               ← main module
-├── otrv4_.py               ← symlink → otrv4+.py  (needed by tests)
-├── otrv4plus.py            ← symlink → otrv4+.py  (needed by tests)
-├── otrv4_testlib.py        ← shared test helper
-├── otr4_crypto_ext.so      ← built C extension
-├── otr4_ed448_ct.so        ← built C extension
-├── otr4_mldsa_ext.so       ← built C extension
-├── otrv4_core.so           ← built Rust extension
-├── fuzz_harnesses.py       ← fuzz entry point
-├── Rust/
-└── tests/
-    ├── test_attacks.py
-    ├── test_differential.py
-    ├── test_final_boss.py
-    ├── test_harness_audit.py
-    ├── test_master_protocol_verifier.py
-    ├── test_mldsa_smoke.py
-    ├── test_mlkem_kat.py
-    ├── test_otr.py
-    ├── test_otrv4_integration.py
-    ├── test_property.py
-    ├── test_ratchet_torture.py
-    ├── test_ring_android.py
-    ├── test_rust_security.py
-    ├── test_rust_security_adversarial.py
-    └── test_v10_4_security_fixes.py
-```
-
-### One-time setup after cloning
-
-`otrv4+.py` can't be imported directly — `+` is illegal in Python module names. Three symlinks are needed:
+313 tests (299 Python + 14 Rust) covering: double ratchet across 100k messages, replay and forgery resistance, ML-KEM-1024 known-answer vectors, ML-DSA-87 smoke tests, ring signature non-malleability, SMP full protocol flow, property-based protocol verification, and v10.4 security regression.
 
 ```bash
-# From the project root
-ln -sf otrv4+.py otrv4_.py           # for: import otrv4_
-ln -sf otrv4+.py otrv4plus.py        # for: import otrv4plus
-ln -sf ../otrv4+.py tests/otrv4+.py  # for: otrv4_testlib's importlib path load
-```
-
-All three should be committed to the repo so a fresh clone works without this step.
-
-### Rust tests
-
-```bash
+# Rust tests
 cd Rust && cargo test --release && cd ..
-```
 
-Expected: `14 passed`.
-
-### Python tests
-
-```bash
+# Python tests
 pip install pytest hypothesis
-
-# Run all tests from the project root
 PYTHONPATH=. pytest tests/ -v
 ```
 
-To run a single file:
-
-```bash
-PYTHONPATH=. pytest tests/test_property.py -v
-```
-
-To run the fuzz harnesses:
-
-```bash
-PYTHONPATH=. python fuzz_harnesses.py
-```
-
-### What each file tests
+<details>
+<summary>Full test file list</summary>
 
 | File | What it covers |
 |------|----------------|
@@ -544,40 +294,63 @@ PYTHONPATH=. python fuzz_harnesses.py
 | `test_attacks.py` | Replay, forgery, and protocol attack resistance |
 | `fuzz_harnesses.py` | Wire format and fragment fuzzing |
 
-313 tests total (299 Python + 14 Rust). Covers: double ratchet across 100k messages, replay resistance, forward secrecy, post-compromise recovery, out-of-order delivery, ML-KEM roundtrips, ML-DSA hybrid verification, ring signature non-malleability, SMP zero-knowledge proofs, SMP full protocol flow with vault integration, constant-time comparison verification, AES-GCM key storage round-trips, Rust vault zeroization, DAKE state machine transitions, wire format fuzzing, v10.4 regression suite, and property-based protocol verification.
+</details>
+
+<details>
+<summary>Test setup (symlinks required)</summary>
+
+`otrv4+.py` can't be imported directly — `+` is illegal in Python module names. Three symlinks are needed:
+
+```bash
+ln -sf otrv4+.py otrv4_.py
+ln -sf otrv4+.py otrv4plus.py
+ln -sf ../otrv4+.py tests/otrv4+.py
+```
+
+All three are committed to the repo so a fresh clone works without this step.
+
+</details>
 
 ---
 
-## Known issues
+## Why use this
 
-The honest list:
+<details>
+<summary>Threat model and use cases</summary>
 
-- SMP exponents briefly exist as Python ints during each computation step (microseconds) before being stored in the Rust vault
-- DAKE DH shared secrets pass through Python briefly before entering the KDF (microseconds — private keys stay in OpenSSL's C heap)
-- Fragment count reveals message type to a local observer (DAKE = 20–25 fragments in a burst)
-- The nick pool is ~11,000 names — reduces but doesn't eliminate cross-session correlation
-- Clearnet exposes your IP in WHOIS until cloaking kicks in (use I2P or Tor)
-- PQ deniability doesn't exist as a primitive anywhere — when it does, the flag-byte mechanism supports upgrading
+**The server sees nothing.** All messages are end-to-end encrypted with OTRv4. The IRC server admin gets ciphertext and metadata — who's talking to who, when, and roughly how much. They cannot read a single word.
 
-None of these are cryptographic breaks. The first two are memory hygiene gaps measured in microseconds. The rest are metadata/network issues that apply to every IRC client.
+**Quantum computers won't break your old logs.** ML-KEM-1024 at the handshake plus fresh KEM material rotated with every DH ratchet means someone who records everything today and throws a quantum computer at it in 2030 can't recover session keys.
 
----
+**No persistent identity.** Random nick on every launch. Fresh I2P destination every session when SAM is enabled. No account, no email, no phone number. You show up, talk, and disappear — next session you're a different person as far as the network is concerned.
 
-## Development
+**Deniable authentication.** Ed448 ring signatures mean neither party can prove to a third party that the other person said anything specific. You know who you're talking to. Nobody else can prove it.
 
-This project was built with AI-assisted development (Claude). All cryptographic implementations have been verified through 294 automated tests, live DAKE and SMP exchanges between Termux instances over I2P, a security audit that identified and fixed vulnerabilities, and manual review of constant-time properties in the C extensions. The Rust ratchet core contains zero unsafe blocks.
+**SMP verification without revealing secrets.** The shared passphrase is never sent over the wire. The protocol proves you both know it via zero-knowledge exchange. Nothing to brute-force after the fact.
+
+**Everything wipes on exit.** `/quit` zeroizes every Rust ratchet, cleanses every C extension buffer, clears the terminal, and deletes `~/.otrv4plus/`. Nothing in swap, nothing in temp files.
+
+Intended for journalists, researchers, activists, and anyone who needs synchronous, deniable, post-quantum chat that leaves no trace. If you need async messaging — Signal is better. This is for sessions where both parties are present and traces are unacceptable.
+
+</details>
 
 ---
 
 ## WeeChat plugin
 
-Same crypto, different frontend. Drop the files into `~/.local/share/weechat/python/` and `/python load weechat_otrv4plus.py` inside WeeChat.
+Same crypto, different frontend. Drop the plugin files into `~/.local/share/weechat/python/` and run `/python load weechat_otrv4plus.py` inside WeeChat.
+
+---
+
+## Development
+
+Built with AI-assisted development (Claude). All cryptographic implementations verified through 313 automated tests, live DAKE and SMP exchanges between Termux instances over I2P, and a full security audit with all findings patched. The Rust ratchet core contains zero `unsafe` blocks.
 
 ---
 
 ## License
 
-GPL-3.0. See LICENSE. Commercial licensing available — see COMMERCIAL-LICENSE.md.
+GPL-3.0 — see `LICENSE`. Commercial licensing available — see `COMMERCIAL-LICENSE.md`.
 
 ---
 
