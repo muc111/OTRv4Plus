@@ -1310,12 +1310,29 @@ except Exception:
 def _sanitise(text: str, max_len: int = 512) -> str:
     """Strip ANSI escape sequences and non-printable control characters from
     untrusted IRC data (nicks, topics, messages, reasons) before display.
-    Prevents terminal escape injection from malicious servers or peers.
-    Keeps: printable ASCII, unicode letters/symbols, common whitespace.
+    Prevents terminal escape injection and OSC title-hijack from malicious
+    servers or peers.
+
+    Strips (in order):
+      1. OSC/DCS/PM/APC sequences  \x1b[P]X^_] ... (BEL or ST terminator)
+      2. CSI sequences              \x1b[ ... final-byte
+      3. Two-char Fe escapes        \x1b <any single char>
+      4. mIRC/IRC colour codes      \x03 [fg[,bg]] … \x03
+      5. Remaining C0/C1 controls   (\x00-\x1f, \x7f, \x80-\x9f)
     """
-    text = re.sub(r'\x1b\[[0-9;]*[A-Za-z]', '', text)
-    text = re.sub(r'\x1b[^\[\x1b]', '', text)
-    text = re.sub(r'[\x00-\x08\x0b-\x0c\x0e-\x1f\x7f]', '', text)
+    # 1. Multi-char OSC/DCS/PM/APC: ESC [ P ] X ^ _ ] ... BEL or ESC backslash
+    text = re.sub(r'\x1b[P\]X\^_][^\x07\x1b]*(?:\x07|\x1b\\)', '', text)
+    # 2. CSI sequences: ESC [ params... final byte (0x40-0x7E)
+    text = re.sub(r'\x1b\[[\x30-\x3f]*[\x20-\x2f]*[\x40-\x7e]', '', text)
+    # 2.5. ISO 2022 three-char escapes: ESC intermediate-byte (0x20-0x2F) final-byte (0x30-0x7E)
+    #      e.g. ESC(B (G0 = ASCII), ESC*@ etc.
+    text = re.sub(r'\x1b[\x20-\x2f][\x30-\x7e]', '', text)
+    # 3. Two-char Fe/Fs/Fp escapes (ESC + any single char that wasn't caught above)
+    text = re.sub(r'\x1b.', '', text, flags=re.DOTALL)
+    # 4. mIRC colour codes: \x03 with optional fg,bg numbers
+    text = re.sub(r'\x03(?:\d{1,2}(?:,\d{1,2})?)?', '', text)
+    # 5. Remaining C0 controls (except \t \n), DEL, and C1 (\x80-\x9f)
+    text = re.sub(r'[\x00-\x08\x0b-\x0c\x0e-\x1f\x7f\x80-\x9f]', '', text)
     return text[:max_len]
 
 def colorize(text: str, color: str) -> str:
@@ -1330,6 +1347,10 @@ def colorize_username(username: str) -> str:
       - Service bots (ChanServ, NickServ, etc.) → dim italic dark_magenta
       - Normal users → one of 12 bright colours based on FNV-1a hash
     """
+    if not username:
+        return ""
+    # Sanitise before any terminal output — nicks come from the network
+    username = _sanitise(username, 64)
     if not username:
         return ""
     R  = UIConstants.COLORS['reset']
@@ -1836,7 +1857,7 @@ class OTRLogger:
         log_file = self.config.log_file_path or os.path.join(log_dir, 'otrv4plus.log')
         if not os.path.exists(log_file):
             try:
-                open(log_file, 'a').close()
+                with open(log_file, 'a'): pass  # create if missing
                 os.chmod(log_file, 0o600)
             except Exception:
                 pass
@@ -5036,6 +5057,22 @@ class SecureKeyStorage:
         aesgcm = AESGCM(self._master_key)
         return aesgcm.decrypt(nonce, ciphertext, b"otrv4+key")
     
+    @staticmethod
+    def _safe_key_component(s: str, max_len: int = 64) -> str:
+        """Validate a key_id or key_type component: alphanumeric + hyphen/underscore only.
+
+        Raises ValueError if the component contains path-traversal characters,
+        spaces, or any character outside [A-Za-z0-9_-].  This prevents a
+        future caller from accidentally constructing a path like
+        '../../../etc/passwd.bin' through key_id injection.
+        """
+        import re as _re_kc
+        if not s or len(s) > max_len:
+            raise ValueError(f"Key component empty or too long: {s!r}")
+        if not _re_kc.match(r'^[A-Za-z0-9_\-]+$', s):
+            raise ValueError(f"Key component contains invalid characters: {s!r}")
+        return s
+
     def store_key(self, key_id: str, key_type: str, key_data: bytes) -> bool:
         """Store a key encrypted with AES-256-GCM."""
         with self._lock:
@@ -5043,6 +5080,8 @@ class SecureKeyStorage:
                 return False
             
             try:
+                key_id   = self._safe_key_component(key_id)
+                key_type = self._safe_key_component(key_type)
                 encrypted = self._encrypt_key(key_data)
                 
                 key_file = os.path.join(self.storage_dir, f"{key_id}.{key_type}.bin")
@@ -5062,6 +5101,11 @@ class SecureKeyStorage:
             if self._master_key is None:
                 return None
             
+            try:
+                key_id   = self._safe_key_component(key_id)
+                key_type = self._safe_key_component(key_type)
+            except ValueError:
+                return None
             key_file = os.path.join(self.storage_dir, f"{key_id}.{key_type}.bin")
             if not os.path.exists(key_file):
                 return None
@@ -5080,6 +5124,11 @@ class SecureKeyStorage:
     def delete_key(self, key_id: str, key_type: str) -> bool:
         """Cryptographically destroy a key file."""
         with self._lock:
+            try:
+                key_id   = self._safe_key_component(key_id)
+                key_type = self._safe_key_component(key_type)
+            except ValueError:
+                return False
             key_file = os.path.join(self.storage_dir, f"{key_id}.{key_type}.bin")
             if os.path.exists(key_file):
                 try:
@@ -5187,21 +5236,24 @@ class SMPAutoRespondStorage:
                 key   = _derive_key(self._master_passphrase(), salt, 32)
                 ct_tag = AESGCM(key).encrypt(nonce, plaintext, b"smp_secrets_v1")
                 blob = salt + nonce + ct_tag
+                _tmp_path = None
                 with tempfile.NamedTemporaryFile(
                     mode='wb',
                     dir=os.path.dirname(self.secrets_path) or '.',
                     delete=False
                 ) as f:
+                    _tmp_path = f.name
                     f.write(blob)
                     f.flush()
                     os.fsync(f.fileno())
-                os.chmod(f.name, 0o600)
-                os.replace(f.name, self.secrets_path)
+                os.chmod(_tmp_path, 0o600)
+                os.replace(_tmp_path, self.secrets_path)
             except Exception:
-                try:
-                    os.unlink(f.name)
-                except Exception:
-                    pass
+                if _tmp_path:
+                    try:
+                        os.unlink(_tmp_path)
+                    except Exception:
+                        pass
             finally:
                 try:
                     del key, plaintext, blob
@@ -5311,24 +5363,27 @@ class TrustDatabase:
                     os.chmod(_db_dir, 0o700)
                 except Exception:
                     pass
+                _tmp_path2 = None
                 with tempfile.NamedTemporaryFile(
                     mode='w',
                     dir=os.path.dirname(self.db_path) or '.',
                     delete=False,
                     encoding='utf-8'
                 ) as f:
+                    _tmp_path2 = f.name
                     json.dump(self._db, f, indent=2, sort_keys=True)
                     f.flush()
                     os.fsync(f.fileno())
-                os.chmod(f.name, 0o600)
-                os.replace(f.name, self.db_path)
+                os.chmod(_tmp_path2, 0o600)
+                os.replace(_tmp_path2, self.db_path)
             except (IOError, OSError, PermissionError) as e:
                 if DEBUG_MODE:
                     print(f"[TrustDatabase] Error saving: {e}")
-                try:
-                    os.unlink(f.name)
-                except Exception:
-                    pass
+                if _tmp_path2:
+                    try:
+                        os.unlink(_tmp_path2)
+                    except Exception:
+                        pass
             except Exception as e:
                 if DEBUG_MODE:
                     print(f"[TrustDatabase] Unexpected error saving: {e}")
@@ -6899,9 +6954,8 @@ class EnhancedOTRSession:
             return encrypted
             
         except Exception as e:
-            self.logger.debug(f"start_smp: Error: {e}")
-            import traceback
-            traceback.print_exc()
+            import traceback as _tb
+            self.logger.debug(f"start_smp: Error: {e}\n{_tb.format_exc()}")
             return None
         finally:
             self._release_lock()
@@ -6953,9 +7007,8 @@ class EnhancedOTRSession:
             return None
             
         except Exception as e:
-            self.logger.debug(f"process_smp_message: Error: {e}")
-            import traceback
-            traceback.print_exc()
+            import traceback as _tb
+            self.logger.debug(f"process_smp_message: Error: {e}\n{_tb.format_exc()}")
             return None
         finally:
             self._release_lock()
@@ -8666,6 +8719,14 @@ class OTRFragmentBuffer:
             state = self._buffers[sender]
 
         if idx not in state['parts']:
+            # Guard against memory exhaustion: cap total accumulated bytes
+            _MAX_REASSEMBLED_BYTES = 1_048_576  # 1 MiB per sender
+            _current_bytes = sum(len(c) for c in state['parts'].values())
+            if _current_bytes + len(chunk) > _MAX_REASSEMBLED_BYTES:
+                self._buffers.pop(sender, None)
+                raise ValueError(
+                    f"Fragment payload from {sender} exceeds 1 MiB limit — discarding."
+                )
             state['parts'][idx] = chunk
             state['last_ts'] = now
 
@@ -9695,6 +9756,26 @@ class OTRv4IRCClient:
 
         try:
             if hasattr(self, 'session_manager'):
+                # Explicitly zeroize each session's ratchet material before
+                # dropping the dict reference — CPython's GC is not guaranteed
+                # to collect immediately and ratchet state contains key material.
+                for _sess in list(self.session_manager.sessions.values()):
+                    try:
+                        if hasattr(_sess, 'ratchet') and _sess.ratchet is not None:
+                            if hasattr(_sess.ratchet, 'zeroize'):
+                                _sess.ratchet.zeroize()
+                        # Null out known key-holding attributes
+                        for _attr in ('root_key', 'chain_key_send', 'chain_key_recv',
+                                      '_chain_key_s', '_chain_key_r',
+                                      'brace_key', '_brace_key'):
+                            if hasattr(_sess, _attr):
+                                _v = getattr(_sess, _attr, None)
+                                if isinstance(_v, (bytes, bytearray)):
+                                    _ba = bytearray(_v)
+                                    _ossl.cleanse(_ba)
+                                setattr(_sess, _attr, None)
+                    except Exception:
+                        pass
                 self.session_manager.sessions.clear()
         except Exception:
             pass
@@ -9721,6 +9802,7 @@ class OTRv4IRCClient:
         # Shutdown-flag-aware sleep — exits immediately on /quit during reconnect
         for _ in range(backoff * 10):
             if getattr(self, 'shutdown_flag', False):
+                self._rejoin_channels = []
                 return
             time.sleep(0.1)
         if self.connection_attempts <= self.max_connection_attempts:
@@ -9874,15 +9956,18 @@ class OTRv4IRCClient:
         """Handle AUTHENTICATE + from server — send SASL PLAIN credentials."""
         if trailing == "+":
             user = self.config.sasl_user or self.nick
-            passwd = self.config.sasl_pass or ""
-            # SASL PLAIN: \0user\0password
+            _pw = self.config.sasl_pass or ""
+            # SASL PLAIN: \0user\0password — build in bytearray so we can wipe it
             import base64 as _b64_sasl
-            token = _b64_sasl.b64encode(
-                f"\x00{user}\x00{passwd}".encode("utf-8")
-            ).decode("ascii")
+            _plain_ba = bytearray(f"\x00{user}\x00{_pw}".encode("utf-8"))
+            token = _b64_sasl.b64encode(bytes(_plain_ba)).decode("ascii")
+            _ossl.cleanse(_plain_ba)
+            del _plain_ba
             self.send_raw(f"AUTHENTICATE {token}")
-            # Wipe password from config after use
+            # Wipe password from config and local var after use
             self.config.sasl_pass = None
+            _pw = None
+            del _pw
             self.debug("sasl_auth", {"user": user})
 
     def _finish_cap_negotiation(self) -> None:
@@ -10608,8 +10693,19 @@ class OTRv4IRCClient:
             self._dispatch_otr_fragment(sender, message)
             return
         panel = target if target.startswith("#") else sender
+        # Sanitise message content — it comes directly from the network
+        _safe_msg = _sanitise(message, 512)
         self.add_message(panel,
-            colorize_username(sender) + colorize(":", "dim") + f" {colorize(message, 'white')}")
+            colorize_username(sender) + colorize(":", "dim") + f" {colorize(_safe_msg, 'white')}")
+        # If this PM landed in a background tab, nudge the user in the active panel
+        if not target.startswith('#'):
+            _active = self.panel_manager.active_panel
+            if _active and _active != panel and _active not in ('system', 'debug'):
+                _hint = colorize(
+                    f"\U0001f4ac PM from {sender} — /switch {sender} to view",
+                    "yellow"
+                )
+                self._emit(_active, _hint)
 
 
     def process_dake1(self, sender: str, payload: str):
@@ -10928,18 +11024,31 @@ class OTRv4IRCClient:
         elif cmd == "part":
             ch = parts[1] if len(parts) > 1 else (self.panel_manager.active_panel or "")
             if ch:
+                # Auto-prepend # so "/part otr" works like "/part #otr"
+                if ch and not ch.startswith('#'):
+                    ch = '#' + ch
                 self.send(f"PART {ch}")
         elif cmd == "nick" and len(parts) > 1:
-            self.send(f"NICK {parts[1]}")
+            _new_nick = _sanitise(parts[1], 64).split()[0] if _sanitise(parts[1], 64).split() else ""
+            if _new_nick:
+                self.send(f"NICK {_new_nick}")
         elif cmd == "msg" and len(parts) > 2:
-            self.send(f"PRIVMSG {parts[1]} :{' '.join(parts[2:])}")
-            self.add_message(parts[1], colorize_username(self.nick) + colorize(": ", "dim") + colorize(' '.join(parts[2:]), "white"))
+            _msg_target = _sanitise(parts[1], 64).split()[0] if _sanitise(parts[1], 64).split() else ""
+            _msg_text   = _sanitise(' '.join(parts[2:]), 490)
+            if _msg_target:
+                self.send(f"PRIVMSG {_msg_target} :{_msg_text}")
+                self.add_message(_msg_target, colorize_username(self.nick) + colorize(": ", "dim") + colorize(_msg_text, "white"))
         elif cmd == "list":
             self.send("LIST")
         elif cmd == "whois" and len(parts) > 1:
-            self.send(f"WHOIS {parts[1]}")
+            _whois_nick = _sanitise(parts[1], 64).split()[0] if _sanitise(parts[1], 64).split() else ""
+            if _whois_nick:
+                self.send(f"WHOIS {_whois_nick}")
         elif cmd == "names":
             ch = parts[1] if len(parts) > 1 else (self.panel_manager.active_panel or "")
+            # Auto-prepend # so "/names otr" works like "/names #otr"
+            if ch and not ch.startswith('#'):
+                ch = '#' + ch
             if ch and ch.startswith("#"):
                 self.names_data[ch] = []
                 if not hasattr(self, '_otrv4_users'):
@@ -10962,22 +11071,34 @@ class OTRv4IRCClient:
             else:
                 self.send(f"TOPIC {ch}")
         elif cmd == "notice" and len(parts) > 2:
-            target = parts[1]
-            text = " ".join(parts[2:])
-            self.send(f"NOTICE {target} :{text}")
+            target = _sanitise(parts[1], 64).split()[0] if _sanitise(parts[1], 64).split() else ""
+            text = _sanitise(" ".join(parts[2:]), 490)
+            if target:
+                self.send(f"NOTICE {target} :{text}")
         elif cmd == "invite" and len(parts) > 2:
-            self.send(f"INVITE {parts[1]} {parts[2]}")
+            _inv_nick = _sanitise(parts[1], 64).split()[0] if _sanitise(parts[1], 64).split() else ""
+            _inv_chan = parts[2] if parts[2].startswith("#") else "#" + parts[2]
+            _inv_chan = _sanitise(_inv_chan, 64).split()[0] if _sanitise(_inv_chan, 64).split() else ""
+            if _inv_nick and _inv_chan:
+                self.send(f"INVITE {_inv_nick} {_inv_chan}")
         elif cmd == "kick" and len(parts) > 1:
             ch = self.panel_manager.active_panel or ""
-            target = parts[1]
-            reason = " ".join(parts[2:]) if len(parts) > 2 else ""
-            if ch.startswith("#"):
+            target = _sanitise(parts[1], 64).split()[0] if _sanitise(parts[1], 64).split() else ""
+            reason = _sanitise(" ".join(parts[2:]), 256) if len(parts) > 2 else ""
+            if ch.startswith("#") and target:
                 self.send(f"KICK {ch} {target}" + (f" :{reason}" if reason else ""))
+            elif not target:
+                self.add_message("system", colorize("Usage: /kick <nick> [reason]", "dim"))
             else:
                 self.add_message("system", colorize("Must be in a channel to kick", "red"))
         elif cmd == "mode":
             if len(parts) > 1:
-                self.send(f"MODE {' '.join(parts[1:])}")
+                # Sanitise each token — no spaces, no control chars
+                _mode_args = [_sanitise(p, 64).split()[0]
+                              for p in parts[1:]
+                              if _sanitise(p, 64).split()]
+                if _mode_args:
+                    self.send(f"MODE {' '.join(_mode_args)}")
             else:
                 self.add_message("system", colorize("Usage: /mode <target> <+/-flag>", "dim"))
                 self.add_message("system", "  Type /help mode for all available modes")
@@ -10991,8 +11112,12 @@ class OTRv4IRCClient:
         elif cmd == "raw" and len(parts) > 1:
             self.send(" ".join(parts[1:]))
         elif cmd in ("switch", "tab") and len(parts) > 1:
-            if not self._switch_panel(parts[1]):
-                self.add_message("system", colorize(f"❌ No panel: {parts[1]}", "red"))
+            _sw_name = parts[1]
+            # Try exact name first, then with '#' prepended (mirrors /join behaviour)
+            if not self._switch_panel(_sw_name):
+                _sw_hashed = '#' + _sw_name if not _sw_name.startswith('#') else _sw_name
+                if not self._switch_panel(_sw_hashed):
+                    self.add_message("system", colorize(f"❌ No panel: {_sw_name}", "red"))
         elif cmd == "tabs":
             self.show_tabs()
         elif cmd == "tab-next":
@@ -11001,8 +11126,11 @@ class OTRv4IRCClient:
             self.switch_to_previous_tab()
         elif cmd == "tab-close" and len(parts) > 1:
             p = parts[1]
-            if p == "system":
+            if p in ("system", "debug"):
                 return
+            # Auto-prepend # so "/tab-close otr" works like "/tab-close #otr"
+            if p not in self.panel_manager.panels and not p.startswith('#'):
+                p = '#' + p
             if p in self.panel_manager.panels:
                 if self.panel_manager.active_panel == p:
                     self._switch_panel("system")
@@ -11650,23 +11778,43 @@ class EnhancedOTRv4IRCClient(OTRv4IRCClient):
 
     def _termux_notify_message(self, panel: str, message: str) -> None:
         """Notify of a new message in a background tab (rate-limited per panel)."""
-        import re as _notif_re
         _now = time.time()
         if not hasattr(self, '_last_notif'):
             self._last_notif = {}
         if _now - self._last_notif.get(panel, 0) < self._NOTIF_COOLDOWN:
             return
         self._last_notif[panel] = _now
-        is_otr = not panel.startswith('#')
-        _notif_body = ('New encrypted message from ' + panel) if is_otr else ('New message in ' + panel)
+        is_channel = panel.startswith('#')
+        # Determine actual security level — never assume PM == encrypted
+        sec_level = UIConstants.SecurityLevel.PLAINTEXT
+        if not is_channel:
+            try:
+                if hasattr(self, 'session_manager') and self.session_manager.has_session(panel):
+                    sec_level = self.session_manager.get_security_level(panel)
+                elif panel in self.panel_manager.panels:
+                    sec_level = self.panel_manager.panels[panel].security_level
+            except Exception:
+                pass
+        is_encrypted = (not is_channel and
+                        sec_level != UIConstants.SecurityLevel.PLAINTEXT)
+        sec_icon = UIConstants.SECURITY_ICONS.get(sec_level, '🔴')
+        if is_channel:
+            _notif_title = panel
+            _notif_body  = 'New message in ' + panel
+        elif is_encrypted:
+            _notif_title = sec_icon + ' ' + panel
+            _notif_body  = 'New encrypted message from ' + panel
+        else:
+            _notif_title = '🔴 ' + panel
+            _notif_body  = 'New plaintext message from ' + panel
         args = [
-            '--title',    ('🔒 ' + panel) if is_otr else panel,
+            '--title',    _notif_title,
             '--content',  _notif_body,
-            '--priority', 'high' if is_otr else 'default',
+            '--priority', 'high' if is_encrypted else 'default',
             '--id',       'otrv4_' + panel.lstrip('#'),
             '--alert-once',
         ]
-        if is_otr:
+        if is_encrypted:
             args += ['--vibrate', '0,200,100,200']
         self._termux_fire(args)
 
