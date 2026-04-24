@@ -31,6 +31,8 @@ Open an issue with the label `enhancement`. Explain the use case and why it fits
 
 Open an issue first to discuss. The single‑file Python design is intentional – new features should be integrated there unless they require a C extension (e.g., new PQ primitive).
 
+Rust migration work is especially welcome – see `ROADMAP.md` for the planned phases. When moving crypto logic to Rust, keep the public PyO3 API identical so Python tests continue to pass.
+
 ## Testing
 
 - Add tests for new functionality in `test_*.py`.

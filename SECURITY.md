@@ -1,53 +1,38 @@
-```
 # Security Policy
 
 ## Supported versions
 
 | Version | Supported |
 |---|---|
-| latest release (v10.2+) | ✅ |
-| older releases | ❌ |
-
-Only the latest stable release receives security updates.
+| v10.5.8+ | ✅ |
+| older    | ❌ |
 
 ## Reporting a vulnerability
 
-**Do not open a public GitHub issue.**
+Use GitHub’s private vulnerability reporting (Security tab → Report a vulnerability).  
+Do not open a public issue.
 
-Use GitHub's private vulnerability reporting:
+Include: description, steps to reproduce, potential impact, suggested fix (if any).  
+Acknowledgment within 48 hours; fix for critical issues within 14 days.
 
-1. Go to the **Security** tab on this repository
-2. Click **Report a vulnerability**
-3. Fill in the details
-
-Please include:
-- A clear description of the issue
-- Steps to reproduce
-- Potential impact
-- Suggested fix (if available)
-
-## What to expect
-
-- Acknowledgment within 48 hours
-- Fix within 14 days for critical issues (key compromise, plaintext recovery)
-- Public disclosure after fix is released, with credit (unless anonymity requested)
-
-## Scope
-
-The following are in scope:
+## In‑scope
 - Cryptographic weaknesses (DAKE, ratchet, SMP, ring signatures)
 - Key material leaks (memory, disk, network)
 - Authentication bypasses
-- Plaintext recovery attacks
+- Plaintext recovery
 
-The following are out of scope:
+## Out‑of‑scope
 - Endpoint compromise (rooted device, malware)
-- I2P/Tor network-level attacks
+- I2P/Tor network‑level attacks
 - Social engineering
 
-## Responsible disclosure
+## Memory‑safety status (v10.5.8)
 
-Please do not test on live IRC networks without permission.
-If you find a vulnerability in a dependency (OpenSSL, cryptography),
-report it to them first.
-```
+| Component       | Secret storage | Zeroization |
+|-----------------|----------------|-------------|
+| Double ratchet  | Rust `Zeroize` | Deterministic on drop/`zeroize()` |
+| SMP exponents   | Python `int` during computation → Rust vault afterwards | Vault zeroized on session end |
+| DAKE DH secrets | Python `bytes` during KDF | Cleansed by `_ossl.cleanse` |
+| Identity keys   | Python OpenSSL objects | No zeroization (OpenSSL heap) |
+
+See `ROADMAP.md` for the plan to move all secrets into Rust with `Zeroize`.
