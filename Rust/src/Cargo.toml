@@ -13,7 +13,7 @@ crate-type = ["cdylib"]
 [features]
 default  = ["pyo3/extension-module"]
 pq-rust  = ["num-bigint", "num-traits", "lazy_static",
-            "pqcrypto-kyber", "pqcrypto-dilithium", "pqcrypto-traits", "x448", "getrandom"]
+            "ml-kem", "ml-dsa", "ed448-goldilocks"]
 
 [dependencies]
 pyo3         = { version = "0.21", features = ["extension-module", "abi3-py39"] }
@@ -26,18 +26,15 @@ rand_core    = { version = "0.6"  }
 rand         = { version = "0.8"  }
 dashmap      = { version = "5.5"  }
 thiserror    = { version = "1.0"  }
+signature    = { version = "2.2"  }
 
 # Phase-2 — optional, only with --features pq-rust
-num-bigint    = { version = "0.4",           optional = true, features = ["rand"] }
-num-traits    = { version = "0.2",           optional = true }
-lazy_static   = { version = "1.5",           optional = true }
-getrandom     = { version = "0.2",           optional = true }
-x448          = { version = "0.6",           optional = true }
-
-# Stable post‑quantum crypto
-pqcrypto-kyber     = { version = "0.8", optional = true }
-pqcrypto-dilithium = { version = "0.5", optional = true }
-pqcrypto-traits    = { version = "0.3", optional = true }
+num-bigint       = { version = "0.4",           optional = true }
+num-traits       = { version = "0.2",           optional = true }
+lazy_static      = { version = "1.5",           optional = true }
+ml-kem           = { version = "0.3",           features = ["mlkem1024"],   optional = true }
+ml-dsa           = { version = "=0.1.0-rc.8",  features = ["ml-dsa-87"],   optional = true }
+ed448-goldilocks = { version = "=0.14.0-pre.12", features = ["x448"],       optional = true }
 
 [profile.release]
 opt-level       = 3
