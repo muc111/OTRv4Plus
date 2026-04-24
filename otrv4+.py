@@ -1279,7 +1279,7 @@ class OTRv4DataMessage:
             raise ValueError(f"Failed to decode message: {e}")
 
 
-VERSION = "OTRv4+ 10.5.5"
+VERSION = "OTRv4+ 10.5.8"
 
 if not hasattr(hashlib, 'sha3_512'):
     raise RuntimeError(
@@ -9147,20 +9147,50 @@ class OTRv4IRCClient:
             self.nick = TwentySevenClubNick.generate()
             self.realname = TwentySevenClubNick.real_name(self.nick)
 
-        self.connected  = False
-        self.running    = False
+        # threading.Event objects — cross-thread visibility guaranteed
+        self._running_event   = threading.Event()
+        self._shutdown_event  = threading.Event()
+        self._connected_event = threading.Event()
+
         self._reconnecting = False
         self.auto_joined  = False
         self.auth_complete = False
         self.nickserv_identified = False
         self.shutting_down = False
-        self.shutdown_flag = False
 
         self.sock: Optional[socket.socket] = None
         self._recv_thread: Optional[threading.Thread] = None
         self._recv_buf = ""
         self._sock_lock = threading.Lock()
 
+        # Complete remaining attribute initialisation
+        self._init_state()
+
+    # ── Thread-safe bool shims ────────────────────────────────────────────────
+    @property
+    def running(self) -> bool:
+        return self._running_event.is_set()
+    @running.setter
+    def running(self, value: bool) -> None:
+        self._running_event.set() if value else self._running_event.clear()
+
+    @property
+    def connected(self) -> bool:
+        return self._connected_event.is_set()
+    @connected.setter
+    def connected(self, value: bool) -> None:
+        self._connected_event.set() if value else self._connected_event.clear()
+
+    @property
+    def shutdown_flag(self) -> bool:
+        return self._shutdown_event.is_set()
+    @shutdown_flag.setter
+    def shutdown_flag(self, value: bool) -> None:
+        self._shutdown_event.set() if value else self._shutdown_event.clear()
+    # ─────────────────────────────────────────────────────────────────────────
+
+    def _init_state(self) -> None:
+        """Complete __init__ attribute setup — called after threading.Event properties."""
         self.last_ping = time.time()
         self.connection_healthy = True
         self.connection_attempts = 0
@@ -9311,7 +9341,7 @@ class OTRv4IRCClient:
             socks.setdefaultproxy(socks.PROXY_TYPE_SOCKS5, host, port, rdns=True)
             socket.socket = socks.socksocket
             self.add_message("system",
-                colorize(f"🧅 I2P SOCKS5 proxy: {host}:{port}", "dark_cyan"))
+                colorize(f"🧅 I2P SOCKS5 proxy: {_sanitise(str(host),64)}:{port}", "dark_cyan"))
             self.debug("proxy set", {"type": "i2p", "host": host, "port": port})
 
         elif net_type == NetworkConstants.NET_TOR:
@@ -10053,7 +10083,7 @@ class OTRv4IRCClient:
                         self.panel_manager.add_panel(channel, "channel")
                     self._switch_panel(channel)
                     self.channels[channel] = {"users": set(), "topic": ""}
-                    self.add_message(channel, colorize(f"✅ Joined {channel}", "green"))
+                    self.add_message(channel, colorize(f"✅ Joined {_sanitise(channel,64)}", "green"))
                 else:
                     if channel in self.channels:
                         self.channels[channel]["users"].add(sender)
@@ -10063,7 +10093,7 @@ class OTRv4IRCClient:
                 channel = params[0] if params else ""
                 reason  = trailing or ""
                 if sender == self.nick:
-                    self.add_message("system", f"Left {channel}")
+                    self.add_message("system", f"Left {_sanitise(channel,64)}")
                 else:
                     if channel in self.channels:
                         self.channels[channel]["users"].discard(sender)
@@ -10105,7 +10135,7 @@ class OTRv4IRCClient:
             if command == "MODE":
                 ch = params[0] if params else ""
                 if ch.startswith("#"):
-                    self.add_message(ch, f"Mode: {' '.join(params[1:])}")
+                    self.add_message(ch, f"Mode: {_sanitise(' '.join(params[1:]), 128)}")
                 return
             if command == "NOTICE":
                 target  = params[0] if params else ""
@@ -10129,8 +10159,8 @@ class OTRv4IRCClient:
                             colorize("❌ NickServ: authentication failed", "red"))
                 elif sender_lower in ("chanserv", "memoserv", "operserv"):
                     self.add_message("system",
-                        colorize(sender, "dim") + colorize(": ", "dim") +
-                        colorize(message, "dim"))
+                        colorize(_sanitise(sender,64), "dim") + colorize(": ", "dim") +
+                        colorize(_sanitise(message,512), "dim"))
                 else:
                     if message and not message.startswith("***"):
                         self.add_message("system",
@@ -10347,7 +10377,7 @@ class OTRv4IRCClient:
                     # ── Print header ──
                     total = len(raw_users)
                     self.add_message("system",
-                        colorize(f"── Users in {channel} ({total}) ──", "bold_cyan"))
+                        colorize(f"── Users in {_sanitise(channel,64)} ({total}) ──", "bold_cyan"))
 
                     # ── Print each group in columns ──
                     _otrv4_map = getattr(self, '_otrv4_users', {})
@@ -10401,9 +10431,9 @@ class OTRv4IRCClient:
                 self.add_message("system",
                     f"  Nick     : {colorize_username(target)}")
                 self.add_message("system",
-                    f"  User     : {user}@{host}")
+                    f"  User     : {_sanitise(user,64)}@{_sanitise(host,128)}")
                 self.add_message("system",
-                    f"  Name     : {display_real}")
+                    f"  Name     : {_sanitise(display_real,128)}")
                 return
 
             if code == 312:
@@ -10411,7 +10441,7 @@ class OTRv4IRCClient:
                 server = params[2] if len(params) > 2 else ""
                 info   = trailing or ""
                 self.add_message("system",
-                    f"  Server   : {server}" + (f" ({info})" if info else ""))
+                    f"  Server   : {_sanitise(server,128)}" + (f" ({_sanitise(info,256)})" if info else ""))
                 return
 
             if code == 313:
@@ -10424,7 +10454,7 @@ class OTRv4IRCClient:
                 target = params[1] if len(params) > 1 else ""
                 chans  = trailing or ""
                 self.add_message("system",
-                    f"  Channels : {chans}")
+                    f"  Channels : {_sanitise(chans,512)}")
                 return
 
             if code == 317:
@@ -10448,7 +10478,7 @@ class OTRv4IRCClient:
                 target = params[1] if len(params) > 1 else ""
                 away   = trailing or ""
                 self.add_message("system",
-                    f"  Away     : {colorize(away, 'yellow')}")
+                    f"  Away     : {colorize(_sanitise(away,256), 'yellow')}")
                 return
 
             if code == 671:
@@ -10461,7 +10491,7 @@ class OTRv4IRCClient:
                 target  = params[1] if len(params) > 1 else ""
                 account = params[2] if len(params) > 2 else ""
                 self.add_message("system",
-                    f"  Account  : {account}")
+                    f"  Account  : {_sanitise(account,64)}")
                 return
 
             if code == 318:
@@ -10474,9 +10504,9 @@ class OTRv4IRCClient:
             elif code == 322:
                 if len(params) >= 3:
                     self.channel_list.append({
-                        "channel": params[1],
+                        "channel": _sanitise(params[1], 64),
                         "users": int(params[2]) if params[2].isdigit() else 0,
-                        "topic": (trailing or "")[:60]
+                        "topic": _sanitise((trailing or "")[:60], 60)
                     })
             elif code == 323:
                 lines = [
@@ -10494,7 +10524,7 @@ class OTRv4IRCClient:
                         self._401_handled.add(target)
                         self._on_peer_disconnected(target, "nick no longer on server")
                 elif trailing:
-                    self.add_message("system", colorize(f"⚠ {trailing}", "dim"))
+                    self.add_message("system", colorize(f"⚠ {_sanitise(trailing,512)}", "dim"))
 
             elif trailing:
                 self.add_message("system", colorize(trailing, "dim"))
@@ -10710,7 +10740,7 @@ class OTRv4IRCClient:
 
     def process_dake1(self, sender: str, payload: str):
         active = self.panel_manager.active_panel
-        alert = colorize(f"🔑 OTR request from {sender} — switching to their tab…", "cyan")
+        alert = colorize(f"🔑 OTR request from {_sanitise(sender,64)} — switching to their tab…", "cyan")
         if active:
             self.add_message(active, alert)
         else:
@@ -12508,13 +12538,11 @@ class EnhancedOTRv4IRCClient(OTRv4IRCClient):
             
             print("\n" * 100)
             
-            if IS_TERMUX:
-                os.system('clear')
-            else:
-                try:
-                    os.system('clear')
-                except OSError:
-                    pass
+            try:
+                import subprocess as _subp
+                _subp.run(['clear'], check=False)
+            except Exception:
+                pass
             
             _wipe_msg = "🦀 Rust memory zeroized" if RUST_RATCHET_AVAILABLE else "Memory cleared"
             print(colorize(f"\nOTRv4+ terminated — {_wipe_msg} — screen cleared", "green"))
@@ -12561,10 +12589,16 @@ class EnhancedOTRv4IRCClient(OTRv4IRCClient):
                 for fpath in glob.glob(os.path.join(otrv4plus_dir, "**", "*"), recursive=True):
                     if os.path.isfile(fpath):
                         try:
+                            _real = os.path.realpath(fpath)
+                            _base = os.path.realpath(otrv4plus_dir)
+                            if not _real.startswith(_base + os.sep) and _real != _base:
+                                continue
+                        except Exception:
+                            continue
+                        try:
                             _secure_file_destroy(fpath)
                             wiped += 1
                         except Exception:
-                            # Fallback: simple unlink if crypto overwrite fails
                             try:
                                 os.remove(fpath)
                             except Exception:
