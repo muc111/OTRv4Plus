@@ -29,7 +29,7 @@ What is this?
 
 OTRv4+ is a complete implementation of the OTRv4 specification with post‑quantum cryptography at every layer.
 Key exchange: ML‑KEM‑1024 (Kyber1024) hybridised with X448.
-Authentication: ML‑DSA‑87 (Dilithium5) added to the Ed448 ring signatures.
+Authentication: ML‑DSA‑87 (ML-DSA-87, FIPS 204) added to the Ed448 ring signatures.
 Ratchet: Fresh ML‑KEM encapsulation at every DH ratchet step, keeping forward secrecy quantum‑resistant throughout the session.
 
 It runs as a single terminal IRC client over I2P, Tor, or clearnet, and wipes all key material on exit.
@@ -40,7 +40,7 @@ The OTRv4 spec has existed for years with zero complete, maintained implementati
 
 v10.5.8 – Stable post‑quantum backend
 
-This release migrates from the old ml‑kem/ml‑dsa pre‑release RC crates (which had unstable APIs and dependency conflicts) to the stable, audited pqcrypto‑kyber (v0.8) and pqcrypto‑dilithium (v0.5) crates.
+This release migrates from the old ml‑kem/ml‑dsa pre‑release RC crates (which had unstable APIs and dependency conflicts) to the stable, audited pqcrypto‑kyber (v0.8) and pqcrypto‑mldsa (v0.1.2) crates.
 
 · No more RC dependencies – production‑ready PQ libraries.
 · No crypto‑common version conflicts – clean compilation.
@@ -239,7 +239,7 @@ All key derivation uses SHAKE‑256("OTRv4" ‖ usage_ID ‖ value, size) per sp
 
 Post‑quantum backend (v10.5.8)
 
-The Rust core now uses the stable pqcrypto‑kyber (v0.8) and pqcrypto‑dilithium (v0.5) crates, replacing the previous ml‑kem/ml‑dsa pre‑release versions. This eliminates dependency conflicts and guarantees a consistent, production‑ready API. The cryptographic parameters are identical – ML‑KEM‑1024 and ML‑DSA‑87 – so there is no change in security.
+The Rust core now uses the stable pqcrypto‑kyber (v0.8) and pqcrypto‑mldsa (v0.1.2) crates, replacing the previous ml‑kem/ml‑dsa pre‑release versions. This eliminates dependency conflicts and guarantees a consistent, production‑ready API. The cryptographic parameters are identical – ML‑KEM‑1024 and ML‑DSA‑87 – so there is no change in security.
 
 </details>
 

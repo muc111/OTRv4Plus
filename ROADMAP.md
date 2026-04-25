@@ -1,5 +1,9 @@
 # OTRv4+ Development Roadmap
 
+## Phase 0 – Migrate to actively maintained ML-DSA crate ✅ (done v10.5.8)
+- Replaced deprecated `pqcrypto-dilithium` with `pqcrypto-mldsa` (FIPS 204).
+- Same algorithm, same API pattern, zero crypto changes.
+
 ## Phase 1 – Rust Double Ratchet ✅ (shipped in v10.5.8)
 - All ratchet operations (chain keys, message keys, AES‑256‑GCM, skip keys, replay cache) are inside `otrv4_core`.
 - Keys are `Zeroize`ed on drop; no unsafe blocks.
