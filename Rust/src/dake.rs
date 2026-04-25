@@ -243,22 +243,22 @@ impl DakeState {
     // ── ML‑DSA‑87 (Dilithium5) ────────────────────────────────────
 
     fn mldsa_sign(priv_key: &[u8], message: &[u8]) -> Result<Vec<u8>> {
-        use pqcrypto_dilithium::dilithium5;
+        use pqcrypto_mldsa::mldsa87;
         use pqcrypto_traits::sign::{SecretKey, DetachedSignature};
-        let sk = dilithium5::SecretKey::from_bytes(priv_key)
+        let sk = mldsa87::SecretKey::from_bytes(priv_key)
             .map_err(|_| OtrError::MlDsa)?;
-        let sig = dilithium5::detached_sign(message, &sk);
+        let sig = mldsa87::detached_sign(message, &sk);
         Ok(sig.as_bytes().to_vec())
     }
 
     fn mldsa_verify(pub_key: &[u8], message: &[u8], sig_bytes: &[u8]) -> Result<()> {
-        use pqcrypto_dilithium::dilithium5;
+        use pqcrypto_mldsa::mldsa87;
         use pqcrypto_traits::sign::{PublicKey, DetachedSignature};
-        let pk = dilithium5::PublicKey::from_bytes(pub_key)
+        let pk = mldsa87::PublicKey::from_bytes(pub_key)
             .map_err(|_| OtrError::MlDsa)?;
-        let sig = dilithium5::DetachedSignature::from_bytes(sig_bytes)
+        let sig = mldsa87::DetachedSignature::from_bytes(sig_bytes)
             .map_err(|_| OtrError::MlDsa)?;
-        dilithium5::verify_detached_signature(&sig, message, &pk)
+        mldsa87::verify_detached_signature(&sig, message, &pk)
             .map_err(|_| OtrError::SignatureInvalid)
     }
 
