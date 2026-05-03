@@ -489,40 +489,7 @@ class DAKEState(IntEnum):
     ESTABLISHED = 4
     FAILED = 5
 
-class SMPConstants:
-    """SMP group constants — 3072-bit safe prime (RFC 3526 Group 15).
-
-    3072-bit MODP gives ~128-bit discrete-log security, matching the
-    GCM-mode bound on AES-256-GCM (128-bit). The key exchange layers
-    (Ed448/X448) give 224-bit security, so SMP group strength is the
-    right match for the symmetric layer without wasted CPU on mobile.
-    """
-    MODULUS = int(
-        "FFFFFFFFFFFFFFFFC90FDAA22168C234C4C6628B80DC1CD1"
-        "29024E088A67CC74020BBEA63B139B22514A08798E3404DD"
-        "EF9519B3CD3A431B302B0A6DF25F14374FE1356D6D51C245"
-        "E485B576625E7EC6F44C42E9A637ED6B0BFF5CB6F406B7ED"
-        "EE386BFB5A899FA5AE9F24117C4B1FE649286651ECE45B3D"
-        "C2007CB8A163BF0598DA48361C55D39A69163FA8FD24CF5F"
-        "83655D23DCA3AD961C62F356208552BB9ED529077096966D"
-        "670C354E4ABC9804F1746C08CA18217C32905E462E36CE3B"
-        "E39E772C180E86039B2783A2EC07A28FB5C55DF06F4C52C9"
-        "DE2BCBF6955817183995497CEA956AE515D2261898FA0510"
-        "15728E5A8AAAC42DAD33170D04507A33A85521ABDF1CBA64"
-        "ECFB850458DBEF0A8AEA71575D060C7DB3970F85A6E1E4C7"
-        "ABF5AE8CDB0933D71E8C94E04A25619DCEE3D2261AD2EE6B"
-        "F12FFA06D98A0864D87602733EC86A64521F2B18177B200C"
-        "BBE117577A615D6C770988C0BAD946E208E24FA074E5AB31"
-        "43DB5BFCE0FD108E4B82D120A93AD2CAFFFFFFFFFFFFFFFF", 16)
-
-    GENERATOR = 2
-    MODULUS_BYTES = 384
-    MODULUS_MINUS_ONE = MODULUS - 1
-
-    MESSAGE_TIMEOUT = 180
-    SESSION_TIMEOUT = 300
-    RETRY_DELAY     = 30
-    CLEANUP_DELAY   = 120
+# [REMOVED] SMPConstants — replaced by Rust SMP (otrv4_core.RustSMP)
 
 class IRCConstants:
     """IRC Protocol Constants"""
@@ -1279,7 +1246,7 @@ class OTRv4DataMessage:
             raise ValueError(f"Failed to decode message: {e}")
 
 
-VERSION = "OTRv4+ 10.5.8"
+VERSION = "OTRv4+ 10.5.10"
 
 if not hasattr(hashlib, 'sha3_512'):
     raise RuntimeError(
@@ -2260,178 +2227,7 @@ def _ct_rand_range(mod: int) -> int:
 
 
 
-class SMPMath:
-    """Mathematical operations for SMP zero-knowledge proofs.
-
-    All modular exponentiation uses _ct_mod_exp() which routes through
-    OpenSSL's BN_mod_exp_mont_consttime. No Python fallback exists.
-    gmpy2 is not used anywhere.
-    """
-
-    @staticmethod
-    def mod_exp(base: Any, exponent: Any, modulus: Any) -> Any:
-        """Constant-time modular exponentiation (Phase 3 — OpenSSL backend)."""
-        try:
-            return _ct_mod_exp(int(base), int(exponent), int(modulus))
-        except (TypeError, ValueError, ArithmeticError) as e:
-            raise ValueError(f"mod_exp failed: {e}")
-        except Exception as e:
-            raise RuntimeError(f"Unexpected error in mod_exp: {e}")
-
-    @staticmethod
-    def mod_mul(a: Any, b: Any, modulus: Any) -> Any:
-        """Modular multiplication (not secret-dependent; uses Python)."""
-        try:
-            return (int(a) * int(b)) % int(modulus)
-        except (TypeError, ValueError, ArithmeticError) as e:
-            raise ValueError(f"mod_mul failed: {e}")
-        except Exception as e:
-            raise RuntimeError(f"Unexpected error in mod_mul: {e}")
-
-    @staticmethod
-    def mod_inv(a: Any, modulus: Any) -> Any:
-        """Modular inverse via OpenSSL BN_mod_inverse (Phase 3)."""
-        try:
-            return _ct_mod_inv(int(a), int(modulus))
-        except (TypeError, ValueError, ArithmeticError) as e:
-            raise ValueError(f"mod_inv failed: {e}")
-        except Exception as e:
-            raise RuntimeError(f"Unexpected error in mod_inv: {e}")
-
-    @staticmethod
-    def random_exponent(modulus_minus_one: Any) -> Any:
-        """Generate random exponent 1 <= x < modulus-1 via OpenSSL BN_rand_range (Phase 3)."""
-        try:
-            mod = int(modulus_minus_one)
-            result = _ct_rand_range(mod)
-            if result <= 0 or result >= mod:
-                raise ValueError("Random exponent out of range")
-            return result
-        except (TypeError, ValueError, ArithmeticError) as e:
-            raise ValueError(f"random_exponent failed: {e}")
-        except Exception as e:
-            raise RuntimeError(f"Unexpected error in random_exponent: {e}")
-
-    @staticmethod
-    def int_to_bytes(value: Any, length: int) -> bytes:
-        """Convert integer to big-endian bytes of exactly n bytes, left-padded."""
-        try:
-            return int(value).to_bytes(length, 'big')
-        except (TypeError, ValueError, OverflowError) as e:
-            raise ValueError(f"int_to_bytes failed: {e}")
-        except Exception as e:
-            raise RuntimeError(f"Unexpected error in int_to_bytes: {e}")
-
-    @staticmethod
-    def bytes_to_int(data: bytes) -> Any:
-        """Convert bytes to integer."""
-        try:
-            if not isinstance(data, bytes):
-                raise TypeError(f"Expected bytes, got {type(data)}")
-            return int.from_bytes(data, 'big')
-        except (TypeError, ValueError) as e:
-            raise ValueError(f"bytes_to_int failed: {e}")
-        except Exception as e:
-            raise RuntimeError(f"Unexpected error in bytes_to_int: {e}")
-
-    @staticmethod
-    def hash_to_int(*args: Any, modulus: Any = SMPConstants.MODULUS) -> Any:
-        """Hash arguments to integer modulo modulus for ZKP (Spec §5.4.2) — SHA3-512 strict"""
-        try:
-            h = hashlib.sha3_512()
-            for arg in args:
-                if arg is None:
-                    h.update(b'')
-                elif isinstance(arg, int):
-                    int_val = int(arg)
-                    h.update(int_val.to_bytes(SMPConstants.MODULUS_BYTES, 'big'))
-                elif isinstance(arg, bytes):
-                    h.update(arg)
-                else:
-                    h.update(str(arg).encode('utf-8'))
-            digest = int.from_bytes(h.digest(), 'big')
-            return digest % int(modulus)
-        except (TypeError, ValueError, AttributeError) as e:
-            raise ValueError(f"hash_to_int failed: {e}")
-        except Exception as e:
-            raise RuntimeError(f"Unexpected error in hash_to_int: {e}")
-
-    @staticmethod
-    def zkp_challenge(base: Any, public_value: Any, commitment: Any, modulus: Any) -> Any:
-        """Generate ZKP challenge using Fiat-Shamir heuristic (Spec §5.4.2) — SHA3-512 strict"""
-        try:
-            h = hashlib.sha3_512()
-            for val in [base, public_value, commitment]:
-                if val is None:
-                    h.update(b'')
-                elif isinstance(val, int):
-                    h.update(int(val).to_bytes(SMPConstants.MODULUS_BYTES, 'big'))
-                elif isinstance(val, bytes):
-                    h.update(val)
-                else:
-                    h.update(str(val).encode('utf-8'))
-            return int.from_bytes(h.digest(), 'big') % int(modulus)
-        except (TypeError, ValueError, AttributeError) as e:
-            raise ValueError(f"zkp_challenge failed: {e}")
-        except Exception as e:
-            raise RuntimeError(f"Unexpected error in zkp_challenge: {e}")
-
-    @staticmethod
-    def verify_zkp(base: Any, public_value: Any, c: Any, s: Any, commitment: Any, modulus: Any) -> bool:
-        """Verify ZKP: base^s == commitment * public_value^c (mod N) (Spec §5.4.3)
-
-        HARDENED (Phase 3): both exponentiations use _ct_mod_exp (constant-time).
-        """
-        try:
-            left = SMPMath.mod_exp(base, s, modulus)
-            public_value_pow_c = SMPMath.mod_exp(public_value, c, modulus)
-            right = SMPMath.mod_mul(commitment, public_value_pow_c, modulus)
-            left_bytes  = SMPMath.int_to_bytes(left,  SMPConstants.MODULUS_BYTES)
-            right_bytes = SMPMath.int_to_bytes(right, SMPConstants.MODULUS_BYTES)
-            return hmac.compare_digest(left_bytes, right_bytes)
-        except (TypeError, ValueError, ArithmeticError):
-            return False
-        except Exception:
-            return False
-
-    @staticmethod
-    def validate_smp_value(value: Any, modulus: Any) -> bool:
-        """Validate SMP group element — full subgroup membership check.
-
-        HARDENED (Phase 3): the order check uses _ct_mod_exp (constant-time).
-        """
-        if value is None:
-            return False
-        try:
-            val_int = int(value)
-            mod_int = int(modulus)
-            if not (2 <= val_int <= mod_int - 2):
-                return False
-            q = (mod_int - 1) // 2
-            order_check = _ct_mod_exp(val_int, q, mod_int)
-            return order_check == 1
-        except (TypeError, ValueError, ArithmeticError):
-            return False
-        except Exception:
-            return False
-    
-    @staticmethod
-    def validate_mod_exponent(exponent: Any, modulus_minus_one: Any) -> bool:
-        """Validate exponent is in correct range for modular exponentiation"""
-        if exponent is None:
-            return False
-        
-        try:
-            exp_int = int(exponent)
-            
-            return 1 <= exp_int < int(modulus_minus_one)
-        except (TypeError, ValueError):
-            return False
-        except Exception:
-            return False
-
-
-
+# [REMOVED] SMPMath — replaced by Rust SMP (otrv4_core.RustSMP)
 
 class ClientProfile:
     """OTRv4 Client Profile (spec §4.1). Handles encoding, decoding, and expiry."""
@@ -2755,824 +2551,11 @@ class TLVHandler:
 
 
 
-class SMPProtocolCodec:
-    """SMP protocol codec — fixed-width big-endian TLV encoding per spec §5."""
-    
-    @staticmethod
-    def encode_smp1(g2a: Any, g3a: Any, c2: Any, c3: Any, d2: Any, d3: Any, 
-                   t2: Any, t3: Any, question: Optional[str] = None) -> bytes:
-        """Encode SMP1 TLV. Each group element is MODULUS_BYTES wide."""
-        data = (
-            SMPMath.int_to_bytes(g2a, SMPConstants.MODULUS_BYTES) +
-            SMPMath.int_to_bytes(g3a, SMPConstants.MODULUS_BYTES) +
-            SMPMath.int_to_bytes(c2, SMPConstants.MODULUS_BYTES) +
-            SMPMath.int_to_bytes(c3, SMPConstants.MODULUS_BYTES) +
-            SMPMath.int_to_bytes(d2, SMPConstants.MODULUS_BYTES) +
-            SMPMath.int_to_bytes(d3, SMPConstants.MODULUS_BYTES) +
-            SMPMath.int_to_bytes(t2, SMPConstants.MODULUS_BYTES) +
-            SMPMath.int_to_bytes(t3, SMPConstants.MODULUS_BYTES)
-        )
-        
-        expected_len = 8 * SMPConstants.MODULUS_BYTES
-        if len(data) != expected_len:
-            raise ValueError(f"SMP1 encoding error: expected {expected_len} bytes, got {len(data)}")
-        
-        if question:
-            question_bytes = question.encode('utf-8')
-            if len(question_bytes) > 65535:
-                raise ValueError("Question too long")
-            data = struct.pack('!H', len(question_bytes)) + question_bytes + data
-            tlv_type = OTRConstants.TLV_TYPE_SMP_MESSAGE_1Q
-        else:
-            tlv_type = OTRConstants.TLV_TYPE_SMP_MESSAGE_1
-        
-        return TLVHandler.encode_tlv(tlv_type, data)
-    
-    @staticmethod
-    def decode_smp1(data: bytes, has_question: bool = False) -> Tuple[Optional[str], Any, Any, Any, Any, Any, Any, Any, Any]:
-        """Decode SMP1 TLV.
-        If has_question is True, expects a question prefix.
-        """
-        offset = 0
-        question = None
-        
-        if has_question:
-            if len(data) < 2:
-                raise ValueError("SMP1Q message too short for question length")
-            q_len = struct.unpack('!H', data[:2])[0]
-            offset += 2
-            if len(data) < offset + q_len:
-                raise ValueError(f"SMP1Q question truncated: need {q_len} bytes, have {len(data)-offset}")
-            question = data[offset:offset + q_len].decode('utf-8', errors='ignore')
-            offset += q_len
-        
-        expected_data_len = 8 * SMPConstants.MODULUS_BYTES
-        actual_data_len = len(data) - offset
-        if actual_data_len != expected_data_len:
-            raise ValueError(f"SMP1 data length incorrect: expected {expected_data_len} bytes after offset, got {actual_data_len}")
-        
-        g2a = SMPMath.bytes_to_int(data[offset:offset + SMPConstants.MODULUS_BYTES])
-        offset += SMPConstants.MODULUS_BYTES
-        g3a = SMPMath.bytes_to_int(data[offset:offset + SMPConstants.MODULUS_BYTES])
-        offset += SMPConstants.MODULUS_BYTES
-        c2 = SMPMath.bytes_to_int(data[offset:offset + SMPConstants.MODULUS_BYTES])
-        offset += SMPConstants.MODULUS_BYTES
-        c3 = SMPMath.bytes_to_int(data[offset:offset + SMPConstants.MODULUS_BYTES])
-        offset += SMPConstants.MODULUS_BYTES
-        d2 = SMPMath.bytes_to_int(data[offset:offset + SMPConstants.MODULUS_BYTES])
-        offset += SMPConstants.MODULUS_BYTES
-        d3 = SMPMath.bytes_to_int(data[offset:offset + SMPConstants.MODULUS_BYTES])
-        offset += SMPConstants.MODULUS_BYTES
-        t2 = SMPMath.bytes_to_int(data[offset:offset + SMPConstants.MODULUS_BYTES])
-        offset += SMPConstants.MODULUS_BYTES
-        t3 = SMPMath.bytes_to_int(data[offset:offset + SMPConstants.MODULUS_BYTES])
-        
-        return question, g2a, g3a, c2, c3, d2, d3, t2, t3
-    
-    @staticmethod
-    def encode_smp2(g2b: Any, g3b: Any, c4: Any, c5: Any, d4: Any, d5: Any,
-                   t4: Any, t5: Any, Pb: Any, Qb: Any,
-                   c_pb: Any = None, d_pb: Any = None, t_pb: Any = None) -> bytes:
-        """Encode SMP2 TLV — 13 fixed-width integers (10 original + Pb/Qb ZKP triple).
+# [REMOVED] SMPProtocolCodec — replaced by Rust SMP (otrv4_core.RustSMP)
 
-        The three extra fields (c_pb, d_pb, t_pb) prove knowledge of rpb such
-        that Pb = shared_g3^rpb, preventing Bob from cheating on his Pb commitment
-        (audit finding H-2).  They default to zero for backward compatibility
-        when generating but zero-checking during decode signals a missing ZKP.
-        """
-        MB = SMPConstants.MODULUS_BYTES
-        _int = lambda v: v if v is not None else 0
-        data = (
-            SMPMath.int_to_bytes(_int(g2b), MB) +
-            SMPMath.int_to_bytes(_int(g3b), MB) +
-            SMPMath.int_to_bytes(_int(c4), MB) +
-            SMPMath.int_to_bytes(_int(c5), MB) +
-            SMPMath.int_to_bytes(_int(d4), MB) +
-            SMPMath.int_to_bytes(_int(d5), MB) +
-            SMPMath.int_to_bytes(_int(t4), MB) +
-            SMPMath.int_to_bytes(_int(t5), MB) +
-            SMPMath.int_to_bytes(_int(Pb), MB) +
-            SMPMath.int_to_bytes(_int(Qb), MB) +
-            SMPMath.int_to_bytes(_int(c_pb), MB) +
-            SMPMath.int_to_bytes(_int(d_pb), MB) +
-            SMPMath.int_to_bytes(_int(t_pb), MB)
-        )
+# [REMOVED] SMPStateMachine — replaced by Rust SMP (otrv4_core.RustSMP)
 
-        expected_len = 13 * MB
-        if len(data) != expected_len:
-            raise ValueError(f"SMP2 encoding error: expected {expected_len} bytes, got {len(data)}")
-
-        return TLVHandler.encode_tlv(OTRConstants.TLV_TYPE_SMP_MESSAGE_2, data)
-    
-    @staticmethod
-    def decode_smp2(data: bytes) -> Tuple[Any, Any, Any, Any, Any, Any, Any, Any, Any, Any, Any, Any, Any]:
-        """Decode SMP2 message — 13 fixed-width integers (10 original + Pb/Qb ZKP).
-
-        Returns: g2b, g3b, c4, c5, d4, d5, t4, t5, Pb, Qb, c_pb, d_pb, t_pb
-        The final three (c_pb, d_pb, t_pb) are the ZKP for Pb.  Callers MUST
-        verify this proof before accepting Pb and Qb (audit H-2).
-        """
-        MB = SMPConstants.MODULUS_BYTES
-        expected_len = 13 * MB
-        if len(data) != expected_len:
-            raise ValueError(f"SMP2 data length incorrect: expected {expected_len} bytes, got {len(data)}")
-
-        offset = 0
-        g2b = SMPMath.bytes_to_int(data[offset:offset + MB]); offset += MB
-        g3b = SMPMath.bytes_to_int(data[offset:offset + MB]); offset += MB
-        c4  = SMPMath.bytes_to_int(data[offset:offset + MB]); offset += MB
-        c5  = SMPMath.bytes_to_int(data[offset:offset + MB]); offset += MB
-        d4  = SMPMath.bytes_to_int(data[offset:offset + MB]); offset += MB
-        d5  = SMPMath.bytes_to_int(data[offset:offset + MB]); offset += MB
-        t4  = SMPMath.bytes_to_int(data[offset:offset + MB]); offset += MB
-        t5  = SMPMath.bytes_to_int(data[offset:offset + MB]); offset += MB
-        Pb  = SMPMath.bytes_to_int(data[offset:offset + MB]); offset += MB
-        Qb  = SMPMath.bytes_to_int(data[offset:offset + MB]); offset += MB
-        c_pb = SMPMath.bytes_to_int(data[offset:offset + MB]); offset += MB
-        d_pb = SMPMath.bytes_to_int(data[offset:offset + MB]); offset += MB
-        t_pb = SMPMath.bytes_to_int(data[offset:offset + MB])
-
-        return g2b, g3b, c4, c5, d4, d5, t4, t5, Pb, Qb, c_pb, d_pb, t_pb
-    
-    @staticmethod
-    def encode_smp3(Pa: Any, Qa: Any, c6: Any, c7: Any, d6: Any, d7: Any,
-                   t6: Any, t7: Any) -> bytes:
-        """Encode SMP3 TLV."""
-        data = (
-            SMPMath.int_to_bytes(Pa, SMPConstants.MODULUS_BYTES) +
-            SMPMath.int_to_bytes(Qa, SMPConstants.MODULUS_BYTES) +
-            SMPMath.int_to_bytes(c6, SMPConstants.MODULUS_BYTES) +
-            SMPMath.int_to_bytes(c7, SMPConstants.MODULUS_BYTES) +
-            SMPMath.int_to_bytes(d6, SMPConstants.MODULUS_BYTES) +
-            SMPMath.int_to_bytes(d7, SMPConstants.MODULUS_BYTES) +
-            SMPMath.int_to_bytes(t6, SMPConstants.MODULUS_BYTES) +
-            SMPMath.int_to_bytes(t7, SMPConstants.MODULUS_BYTES)
-        )
-        
-        expected_len = 8 * SMPConstants.MODULUS_BYTES
-        if len(data) != expected_len:
-            raise ValueError(f"SMP3 encoding error: expected {expected_len} bytes, got {len(data)}")
-        
-        return TLVHandler.encode_tlv(OTRConstants.TLV_TYPE_SMP_MESSAGE_3, data)
-    
-    @staticmethod
-    def decode_smp3(data: bytes) -> Tuple[Any, Any, Any, Any, Any, Any, Any, Any]:
-        """Decode SMP3 message - FIXED LENGTH CHECKING: 192 bytes per integer"""
-        expected_len = 8 * SMPConstants.MODULUS_BYTES
-        if len(data) != expected_len:
-            raise ValueError(f"SMP3 data length incorrect: expected {expected_len} bytes, got {len(data)}")
-        
-        offset = 0
-        Pa = SMPMath.bytes_to_int(data[offset:offset + SMPConstants.MODULUS_BYTES])
-        offset += SMPConstants.MODULUS_BYTES
-        Qa = SMPMath.bytes_to_int(data[offset:offset + SMPConstants.MODULUS_BYTES])
-        offset += SMPConstants.MODULUS_BYTES
-        c6 = SMPMath.bytes_to_int(data[offset:offset + SMPConstants.MODULUS_BYTES])
-        offset += SMPConstants.MODULUS_BYTES
-        c7 = SMPMath.bytes_to_int(data[offset:offset + SMPConstants.MODULUS_BYTES])
-        offset += SMPConstants.MODULUS_BYTES
-        d6 = SMPMath.bytes_to_int(data[offset:offset + SMPConstants.MODULUS_BYTES])
-        offset += SMPConstants.MODULUS_BYTES
-        d7 = SMPMath.bytes_to_int(data[offset:offset + SMPConstants.MODULUS_BYTES])
-        offset += SMPConstants.MODULUS_BYTES
-        t6 = SMPMath.bytes_to_int(data[offset:offset + SMPConstants.MODULUS_BYTES])
-        offset += SMPConstants.MODULUS_BYTES
-        t7 = SMPMath.bytes_to_int(data[offset:offset + SMPConstants.MODULUS_BYTES])
-        
-        return Pa, Qa, c6, c7, d6, d7, t6, t7
-    
-    @staticmethod
-    def encode_smp4(c8: Any, c9: Any, d8: Any, d9: Any, t8: Any, t9: Any) -> bytes:
-        """Encode SMP4 TLV."""
-        data = (
-            SMPMath.int_to_bytes(c8, SMPConstants.MODULUS_BYTES) +
-            SMPMath.int_to_bytes(c9, SMPConstants.MODULUS_BYTES) +
-            SMPMath.int_to_bytes(d8, SMPConstants.MODULUS_BYTES) +
-            SMPMath.int_to_bytes(d9, SMPConstants.MODULUS_BYTES) +
-            SMPMath.int_to_bytes(t8, SMPConstants.MODULUS_BYTES) +
-            SMPMath.int_to_bytes(t9, SMPConstants.MODULUS_BYTES)
-        )
-        
-        expected_len = 6 * SMPConstants.MODULUS_BYTES
-        if len(data) != expected_len:
-            raise ValueError(f"SMP4 encoding error: expected {expected_len} bytes, got {len(data)}")
-        
-        return TLVHandler.encode_tlv(OTRConstants.TLV_TYPE_SMP_MESSAGE_4, data)
-    
-    @staticmethod
-    def decode_smp4(data: bytes) -> Tuple[Any, Any, Any, Any, Any, Any]:
-        """Decode SMP4 message - FIXED LENGTH CHECKING: 192 bytes per integer"""
-        expected_len = 6 * SMPConstants.MODULUS_BYTES
-        if len(data) != expected_len:
-            raise ValueError(f"SMP4 data length incorrect: expected {expected_len} bytes, got {len(data)}")
-        
-        offset = 0
-        c8 = SMPMath.bytes_to_int(data[offset:offset + SMPConstants.MODULUS_BYTES])
-        offset += SMPConstants.MODULUS_BYTES
-        c9 = SMPMath.bytes_to_int(data[offset:offset + SMPConstants.MODULUS_BYTES])
-        offset += SMPConstants.MODULUS_BYTES
-        d8 = SMPMath.bytes_to_int(data[offset:offset + SMPConstants.MODULUS_BYTES])
-        offset += SMPConstants.MODULUS_BYTES
-        d9 = SMPMath.bytes_to_int(data[offset:offset + SMPConstants.MODULUS_BYTES])
-        offset += SMPConstants.MODULUS_BYTES
-        t8 = SMPMath.bytes_to_int(data[offset:offset + SMPConstants.MODULUS_BYTES])
-        offset += SMPConstants.MODULUS_BYTES
-        t9 = SMPMath.bytes_to_int(data[offset:offset + SMPConstants.MODULUS_BYTES])
-        
-        return c8, c9, d8, d9, t8, t9
-    
-    @staticmethod
-    def encode_abort() -> bytes:
-        """Encode SMP abort message"""
-        return TLVHandler.encode_tlv(OTRConstants.TLV_TYPE_SMP_ABORT, b"")
-
-
-class SMPStateMachine:
-    """SMP State Machine - Manages state transitions and timeouts only"""
-
-    def __init__(self, is_initiator: bool):
-        self.is_initiator = is_initiator
-        self.lock = threading.RLock()
-        self.state = UIConstants.SMPState.NONE
-        self.verified = False
-        self.failed = False
-        self.failure_reason = ""
-        self.retry_count = 0
-        self.max_retries = 3
-        self.backoff_until = 0.0
-        self.session_id = secrets.token_bytes(32)
-        self.start_time = 0.0
-        self.last_activity = 0.0
-        self.timeout = SMPConstants.SESSION_TIMEOUT
-        self.secret_set = False
-        self.question: Optional[str] = None
-
-    def reset(self):
-        with self.lock:
-            self.state = UIConstants.SMPState.NONE
-            self.verified = False
-            self.failed = False
-            self.failure_reason = ""
-            self.secret_set = False
-            self.question = None
-            self.start_time = 0.0
-            self.last_activity = 0.0
-
-    def transition(self, new_state: UIConstants.SMPState):
-        """Transition to new state – allowed transitions are enforced."""
-        with self.lock:
-            old_state = self.state
-
-            allowed = {
-                UIConstants.SMPState.NONE: [
-                    UIConstants.SMPState.EXPECT2,
-                    UIConstants.SMPState.EXPECT3,
-                    UIConstants.SMPState.SENT1,
-                    UIConstants.SMPState.FAILED
-                ],
-                UIConstants.SMPState.SENT1: [
-                    UIConstants.SMPState.EXPECT4,
-                    UIConstants.SMPState.FAILED
-                ],
-                UIConstants.SMPState.SENT2: [
-                    UIConstants.SMPState.EXPECT3,
-                    UIConstants.SMPState.FAILED
-                ],
-                UIConstants.SMPState.SENT3: [
-                    UIConstants.SMPState.SUCCEEDED,
-                    UIConstants.SMPState.FAILED
-                ],
-                UIConstants.SMPState.EXPECT2: [
-                    UIConstants.SMPState.EXPECT4,
-                    UIConstants.SMPState.FAILED
-                ],
-                UIConstants.SMPState.EXPECT3: [
-                    UIConstants.SMPState.SUCCEEDED,
-                    UIConstants.SMPState.FAILED
-                ],
-                UIConstants.SMPState.EXPECT4: [
-                    UIConstants.SMPState.SUCCEEDED,
-                    UIConstants.SMPState.FAILED
-                ],
-                UIConstants.SMPState.SUCCEEDED: [],
-                UIConstants.SMPState.FAILED: [],
-            }
-
-            if new_state not in allowed.get(old_state, []):
-                raise StateMachineError(f"Invalid SMP transition: {old_state.name} → {new_state.name}")
-
-            self.state = new_state
-            self.last_activity = time.time()
-
-            if new_state == UIConstants.SMPState.SUCCEEDED:
-                self.verified = True
-                self.failed = False
-            elif new_state == UIConstants.SMPState.FAILED:
-                self.failed = True
-                self.verified = False
-
-    def mark_retry(self):
-        with self.lock:
-            if self.failed and self.retry_count < self.max_retries:
-                self.retry_count += 1
-                backoff_secs = 5 * (3 ** (self.retry_count - 1))
-                self.backoff_until = time.time() + backoff_secs
-                self.failed = False
-                self.failure_reason = ""
-                self.reset()
-                return True
-            return False
-
-    def is_expired(self) -> bool:
-        with self.lock:
-            if self.start_time == 0:
-                return False
-            return time.time() - self.start_time > self.timeout
-
-    def can_retry(self) -> bool:
-        with self.lock:
-            if not self.failed or self.retry_count >= self.max_retries:
-                return False
-            return time.time() >= self.backoff_until
-
-    def get_state(self) -> UIConstants.SMPState:
-        with self.lock:
-            return self.state
-
-    def is_verified(self) -> bool:
-        with self.lock:
-            return self.verified
-
-    def has_failed(self) -> bool:
-        with self.lock:
-            return self.failed
-
-class SMPEngine:
-    """SMP Engine - Orchestrates math, state machine, and protocol codec"""
-
-    # Attribute names whose values are secret exponents
-    _SECRET_ATTRS = frozenset([
-        'a2', 'a3', 'b2', 'b3', 'r2', 'r3', 'r4', 'r5', 'r6', 'r7',
-        'r8', 'r9', 'rpb', 'rpa', 'secret',
-        '_shared_g2', '_shared_g3',
-    ])
-
-    def __init__(self, is_initiator: bool, logger: Optional[OTRLogger] = None):
-        self.is_initiator = is_initiator
-        self.logger = logger or NullLogger()
-        self.state_machine = SMPStateMachine(is_initiator)
-        self.protocol_codec = SMPProtocolCodec()
-        self.seen_messages: OrderedDict[bytes, bool] = OrderedDict()
-        self.max_seen = 10000
-        self.lock = threading.RLock()
-
-        # Rust vault for deterministic secret zeroization
-        try:
-            from otrv4_core import RustSMPVault
-            self._vault = RustSMPVault()
-        except ImportError:
-            self._vault = None
-
-        self._clear_math_state()
-
-    def _ss(self, name: str, value: int) -> int:
-        """Store a secret int in the Rust vault and return it.
-
-        The Python attribute is also set (protocol logic reads it).
-        The vault copy is deterministically zeroed on _clear_math_state()
-        or when the vault is dropped.
-        """
-        setattr(self, name, value)
-        if self._vault is not None:
-            self._vault.store(name, value.to_bytes(SMPConstants.MODULUS_BYTES, 'big'))
-        return value
-
-    def _clear_math_state(self):
-        """Zeroize all SMP secrets.
-
-        Rust vault: deterministic — every byte overwritten with zeros.
-        Python attributes: best-effort — set to 0 then None for GC.
-        """
-        # Rust vault: deterministic zeroize
-        if self._vault is not None:
-            self._vault.clear()
-
-        # Python: best-effort GC cleanup
-        for attr in list(self._SECRET_ATTRS) + [
-            'g2a', 'g3a', 'g2b', 'g3b', 'Pa', 'Qa', 'Pb', 'Qb',
-        ]:
-            try:
-                setattr(self, attr, 0)
-            except Exception:
-                pass
-            setattr(self, attr, None)
-
-    def _random_exponent(self):
-        """Generate random exponent uniformly in [1, q-1] where q = (p-1)//2.
-
-        HARDENED (Phase 3): uses OpenSSL BN_rand_range via _ct_rand_range when
-        the C extension is available.  Falls back to secrets.randbelow().
-        """
-        q = (SMPConstants.MODULUS - 1) // 2
-        while True:
-            rand_int = _ct_rand_range(q)
-            if 1 <= rand_int < q:
-                return rand_int
-
-    def _hash_to_subgroup(self, data: bytes) -> int:
-        """Hash data to an integer in [1, q-1]."""
-        q = (SMPConstants.MODULUS - 1) // 2
-        h = int.from_bytes(hashlib.sha3_512(data).digest(), 'big') % (q - 1) + 1
-        return h
-
-    def set_secret(self, secret: str,
-                   session_id: Optional[bytes] = None,
-                   local_fingerprint: Optional[bytes] = None,
-                   remote_fingerprint: Optional[bytes] = None):
-        """Store the SMP shared secret, hashed with session context per OTRv4 §5.2.
-
-        The spec mandates (both sides must produce the same value):
-            SMP_secret = H(0x01 || initiator_fp || responder_fp || ssid || user_secret)
-
-        Key stretching: the raw passphrase is first run through 10,000
-        iterations of SHAKE-256 to make offline brute-force harder.
-        Both sides apply the same stretching, so the shared secret matches.
-
-        The canonical ordering — initiator_fp first, then responder_fp — is
-        determined by ``self.is_initiator`` so that callers never need to pass
-        a role flag.  Both sides produce the same hash as long as they agree on
-        who is initiator and who is responder.
-
-        The raw secret string is cleared as soon as it is hashed.
-
-        Raises ValueError if the secret is shorter than MIN_SMP_SECRET_LENGTH (8).
-        Short passphrases can be brute-forced from captured SMP transcripts.
-        """
-        MIN_SMP_SECRET_LENGTH = 8
-        if len(secret) < MIN_SMP_SECRET_LENGTH:
-            raise ValueError(
-                f"SMP secret must be at least {MIN_SMP_SECRET_LENGTH} characters "
-                f"(got {len(secret)}). Short passphrases can be brute-forced from "
-                "captured SMP transcripts."
-            )
-        with self.lock:
-            raw = secret.encode('utf-8')
-
-            # ── Key stretching: SHAKE-256 × 10,000 iterations ────
-            #    Makes brute-force of short passphrases ~10,000× slower.
-            #    Domain separator "OTRv4+SMP" ensures this doesn't collide
-            #    with any other use of SHAKE-256 in the protocol.
-            SMP_KDF_ROUNDS = 10000
-            stretched = hashlib.shake_256(
-                b"OTRv4+SMP\x00" + raw
-            ).digest(64)
-            for _ in range(SMP_KDF_ROUNDS - 1):
-                stretched = hashlib.shake_256(stretched).digest(64)
-
-            if session_id and local_fingerprint and remote_fingerprint:
-                if self.is_initiator:
-                    init_fp, resp_fp = local_fingerprint, remote_fingerprint
-                else:
-                    init_fp, resp_fp = remote_fingerprint, local_fingerprint
-
-                role_tag = b'\x01'
-                h_input = bytearray(role_tag + init_fp + resp_fp + session_id + stretched)
-                self._ss("secret", self._hash_to_subgroup(bytes(h_input)))
-                _ossl.cleanse(h_input)
-                del h_input
-            else:
-                self._ss("secret", self._hash_to_subgroup(stretched))
-
-            # Cleanse all intermediates
-            _ossl.cleanse(bytearray(stretched))
-            raw_arr = bytearray(raw)
-            _ossl.cleanse(raw_arr)
-            del raw_arr, stretched
-            self.state_machine.secret_set = True
-
-    def _compute_zkp(self, base: int, exponent: int, random_val: int, public_value: int):
-        """Compute a Fiat-Shamir ZKP: prove knowledge of exponent such that base^exponent = public_value.
-
-        HARDENED (Phase 3): t = base^random_val mod p uses _ct_mod_exp
-        (OpenSSL BN_mod_exp_mont_consttime) so random_val never leaks via timing.
-        Hash input uses fixed-width big-endian encoding (SMPConstants.MODULUS_BYTES each).
-        """
-        MB = SMPConstants.MODULUS_BYTES
-        t = _ct_mod_exp(base, random_val, SMPConstants.MODULUS)
-        encoded = (
-            b'\x01' +
-            base.to_bytes(MB, 'big') +
-            public_value.to_bytes(MB, 'big') +
-            t.to_bytes(MB, 'big')
-        )
-        c = self._hash_to_subgroup(encoded)
-        q = (SMPConstants.MODULUS - 1) // 2
-        s = (random_val + c * exponent) % q
-        return c, s, t
-
-    def _verify_zkp(self, base: int, public_value: int, c: int, s: int, t: int) -> bool:
-        """Verify a Fiat-Shamir ZKP with fixed-width encoding.
-
-        HARDENED (Phase 3): both exponentiations use _ct_mod_exp.
-        """
-        MB = SMPConstants.MODULUS_BYTES
-        encoded = (
-            b'\x01' +
-            base.to_bytes(MB, 'big') +
-            public_value.to_bytes(MB, 'big') +
-            t.to_bytes(MB, 'big')
-        )
-        c_exp = self._hash_to_subgroup(encoded)
-        if c != c_exp:
-            return False
-        left  = _ct_mod_exp(base, s, SMPConstants.MODULUS)
-        right = (_ct_mod_exp(public_value, c, SMPConstants.MODULUS) * t) % SMPConstants.MODULUS
-        MB = SMPConstants.MODULUS_BYTES
-        return hmac.compare_digest(left.to_bytes(MB, 'big'), right.to_bytes(MB, 'big'))
-
-    def _check_replay(self, data):
-        h = hashlib.sha3_256(data).digest()
-        if h in self.seen_messages:
-            raise ValueError("Replay attack detected")
-        self.seen_messages[h] = True
-        if len(self.seen_messages) > self.max_seen:
-            self.seen_messages.popitem(last=False)
-
-    def start_smp(self, secret: str, question: str = None) -> Optional[bytes]:
-        """Begin SMP as initiator.
-
-        If ``set_secret()`` was already called with session binding (M-1 fix),
-        this method preserves that session-bound secret rather than overwriting
-        it with an unbound hash.  Callers that have not pre-set the secret will
-        have it hashed here without session binding (call set_secret() first to bind).
-        """
-        with self.lock:
-            if self.state_machine.get_state() != UIConstants.SMPState.NONE:
-                raise ValueError("SMP already in progress")
-            self.is_initiator = True
-            self.state_machine.is_initiator = True
-            if not self.state_machine.secret_set or self.secret is None:
-                self.set_secret(secret)
-            self.state_machine.question = question
-            self.state_machine.start_time = time.time()
-
-            self._ss("a2", self._random_exponent())
-            self._ss("a3", self._random_exponent())
-            self._ss("r2", self._random_exponent())
-            self._ss("r3", self._random_exponent())
-
-            self.g2a = _ct_mod_exp(SMPConstants.GENERATOR, self.a2, SMPConstants.MODULUS)
-            self.g3a = _ct_mod_exp(SMPConstants.GENERATOR, self.a3, SMPConstants.MODULUS)
-
-            c2, d2, t2 = self._compute_zkp(SMPConstants.GENERATOR, self.a2, self.r2, self.g2a)
-            c3, d3, t3 = self._compute_zkp(SMPConstants.GENERATOR, self.a3, self.r3, self.g3a)
-
-            tlv = self.protocol_codec.encode_smp1(self.g2a, self.g3a, c2, c3, d2, d3, t2, t3, question)
-            self.state_machine.transition(UIConstants.SMPState.EXPECT2)
-            return tlv
-
-    def process_smp1(self, data: bytes) -> Optional[bytes]:
-        with self.lock:
-            self._check_replay(data)
-            if self.state_machine.get_state() != UIConstants.SMPState.NONE:
-                raise ValueError("Invalid state for SMP1")
-
-            if not self.state_machine.secret_set or self.secret is None:
-                raise ValueError(
-                    "SMP secret not set — call set_secret() before processing SMP1. "
-                    "Peer may be attempting to trigger a comparison with a null secret."
-                )
-
-            self.is_initiator = False
-            self.state_machine.is_initiator = False
-
-            tlv_type, value, _ = TLVHandler.decode_tlv(data)
-            has_q = (tlv_type == OTRConstants.TLV_TYPE_SMP_MESSAGE_1Q)
-            question, g2a, g3a, c2, c3, d2, d3, t2, t3 = self.protocol_codec.decode_smp1(value, has_q)
-            self.g2a, self.g3a = g2a, g3a
-            self.state_machine.question = question
-            self.state_machine.start_time = time.time()
-
-            for val, name in [(g2a, 'g2a'), (g3a, 'g3a')]:
-                if not SMPMath.validate_smp_value(val, SMPConstants.MODULUS):
-                    raise ValueError(
-                        f"SMP1 rejected: {name} is not a valid group element. "
-                        "Possible small-subgroup attack."
-                    )
-
-            if not self._verify_zkp(SMPConstants.GENERATOR, g2a, c2, d2, t2) or \
-               not self._verify_zkp(SMPConstants.GENERATOR, g3a, c3, d3, t3):
-                raise ValueError("ZKP verification failed")
-
-            self._ss("b2", self._random_exponent())
-            self._ss("b3", self._random_exponent())
-            self._ss("r4", self._random_exponent())
-            self._ss("r5", self._random_exponent())
-            self._ss("rpb", self._random_exponent())
-
-            self.g2b = _ct_mod_exp(SMPConstants.GENERATOR, self.b2, SMPConstants.MODULUS)
-            self.g3b = _ct_mod_exp(SMPConstants.GENERATOR, self.b3, SMPConstants.MODULUS)
-
-            self._ss("_shared_g2", _ct_mod_exp(g2a, self.b2, SMPConstants.MODULUS))
-            self._ss("_shared_g3", _ct_mod_exp(g3a, self.b3, SMPConstants.MODULUS))
-
-            self.Pb = _ct_mod_exp(self._shared_g3, self.rpb, SMPConstants.MODULUS)
-            self.Qb = (_ct_mod_exp(self._shared_g3, self.rpb, SMPConstants.MODULUS) *
-                       _ct_mod_exp(self._shared_g2, self.secret, SMPConstants.MODULUS)) % SMPConstants.MODULUS
-
-            c4, d4, t4 = self._compute_zkp(SMPConstants.GENERATOR, self.b2, self.r4, self.g2b)
-            c5, d5, t5 = self._compute_zkp(SMPConstants.GENERATOR, self.b3, self.r5, self.g3b)
-
-            r_pb_zkp = self._random_exponent()
-            c_pb, d_pb, t_pb = self._compute_zkp(self._shared_g3, self.rpb, r_pb_zkp, self.Pb)
-
-            tlv = self.protocol_codec.encode_smp2(self.g2b, self.g3b, c4, c5, d4, d5, t4, t5,
-                                                  self.Pb, self.Qb, c_pb, d_pb, t_pb)
-            self.state_machine.transition(UIConstants.SMPState.EXPECT3)
-            return tlv
-
-    def process_smp2(self, data: bytes) -> Optional[bytes]:
-        with self.lock:
-            self._check_replay(data)
-            if not self.is_initiator or self.state_machine.get_state() != UIConstants.SMPState.EXPECT2:
-                raise ValueError("Invalid state for SMP2")
-
-            tlv_type, value, _ = TLVHandler.decode_tlv(data)
-            g2b, g3b, c4, c5, d4, d5, t4, t5, Pb, Qb, c_pb, d_pb, t_pb = \
-                self.protocol_codec.decode_smp2(value)
-            self.g2b, self.g3b, self.Pb, self.Qb = g2b, g3b, Pb, Qb
-
-            for val, name in [(g2b, 'g2b'), (g3b, 'g3b'), (Pb, 'Pb'), (Qb, 'Qb')]:
-                if not SMPMath.validate_smp_value(val, SMPConstants.MODULUS):
-                    raise ValueError(
-                        f"SMP2 rejected: {name} is not a valid group element. "
-                        "Possible small-subgroup attack."
-                    )
-
-            if not self._verify_zkp(SMPConstants.GENERATOR, g2b, c4, d4, t4) or \
-               not self._verify_zkp(SMPConstants.GENERATOR, g3b, c5, d5, t5):
-                raise ValueError("SMP2 ZKP verification failed for g2b/g3b")
-
-            self._ss("_shared_g2", _ct_mod_exp(g2b, self.a2, SMPConstants.MODULUS))
-            self._ss("_shared_g3", _ct_mod_exp(g3b, self.a3, SMPConstants.MODULUS))
-
-            if not self._verify_zkp(self._shared_g3, Pb, c_pb, d_pb, t_pb):
-                raise ValueError("SMP2 ZKP verification failed for Pb — Bob cheated on Pb commitment")
-
-            self._ss("rpa", self._random_exponent())
-
-            self.Pa = _ct_mod_exp(self._shared_g3, self.rpa, SMPConstants.MODULUS)
-            self.Qa = (_ct_mod_exp(self._shared_g3, self.rpa, SMPConstants.MODULUS) *
-                       _ct_mod_exp(self._shared_g2, self.secret, SMPConstants.MODULUS)) % SMPConstants.MODULUS
-
-            inv_Pb = _ct_mod_inv(self.Pb, SMPConstants.MODULUS)
-            inv_Qb = _ct_mod_inv(self.Qb, SMPConstants.MODULUS)
-            pa_over_pb = (self.Pa * inv_Pb) % SMPConstants.MODULUS
-            qa_over_qb = (self.Qa * inv_Qb) % SMPConstants.MODULUS
-
-            MB = SMPConstants.MODULUS_BYTES
-            secrets_match = hmac.compare_digest(
-                pa_over_pb.to_bytes(MB, 'big'),
-                qa_over_qb.to_bytes(MB, 'big')
-            )
-
-            self._ss("r6", self._random_exponent())
-            self._ss("r7", self._random_exponent())
-
-            # Both ZKPs prove knowledge of rpa s.t. g3^rpa = Pa.
-            # Verification in process_smp3 MUST use Pa for both checks to match
-            # the challenge hash (base, Pa, t) used here.
-            c6, d6, t6 = self._compute_zkp(self._shared_g3, self.rpa, self.r6, self.Pa)
-            c7, d7, t7 = self._compute_zkp(self._shared_g3, self.rpa, self.r7, self.Pa)
-
-            tlv = self.protocol_codec.encode_smp3(self.Pa, self.Qa, c6, c7, d6, d7, t6, t7)
-            self.state_machine.transition(UIConstants.SMPState.EXPECT4)
-            return tlv
-
-    def process_smp3(self, data: bytes) -> Optional[bytes]:
-        with self.lock:
-            self._check_replay(data)
-            if self.is_initiator or self.state_machine.get_state() != UIConstants.SMPState.EXPECT3:
-                raise ValueError("Invalid state for SMP3")
-
-            if self.state_machine.is_expired():
-                self.state_machine.transition(UIConstants.SMPState.FAILED)
-                raise ValueError("SMP session expired before SMP3 received")
-
-            tlv_type, value, _ = TLVHandler.decode_tlv(data)
-            Pa, Qa, c6, c7, d6, d7, t6, t7 = self.protocol_codec.decode_smp3(value)
-            self.Pa, self.Qa = Pa, Qa
-
-            for val, name in [(Pa, 'Pa'), (Qa, 'Qa')]:
-                if not SMPMath.validate_smp_value(val, SMPConstants.MODULUS):
-                    raise ValueError(
-                        f"SMP3 rejected: {name} is not a valid group element. "
-                        "Possible small-subgroup attack."
-                    )
-
-            # Both ZKPs were generated with Pa as the public value (see process_smp2).
-            # The challenge c = hash(g3, Pa, t), so verification MUST pass Pa here.
-            # Passing Qa produces a different hash → c mismatch → spurious failure.
-            if not self._verify_zkp(self._shared_g3, Pa, c6, d6, t6) or \
-               not self._verify_zkp(self._shared_g3, Pa, c7, d7, t7):
-                self.state_machine.failure_reason = "SMP3 ZKP verification failed — Alice cheated on Pa"
-                self.state_machine.transition(UIConstants.SMPState.FAILED)
-                raise ValueError("SMP3 rejected: ZKP verification failed")
-
-            secrets_match = False
-            if self.state_machine.secret_set:
-                inv_Pb = _ct_mod_inv(self.Pb, SMPConstants.MODULUS)
-                inv_Qb = _ct_mod_inv(self.Qb, SMPConstants.MODULUS)
-                pa_over_pb = (self.Pa * inv_Pb) % SMPConstants.MODULUS
-                qa_over_qb = (self.Qa * inv_Qb) % SMPConstants.MODULUS
-                MB = SMPConstants.MODULUS_BYTES
-                secrets_match = hmac.compare_digest(
-                    pa_over_pb.to_bytes(MB, 'big'),
-                    qa_over_qb.to_bytes(MB, 'big')
-                )
-
-            self._ss("r8", self._random_exponent())
-            self._ss("r9", self._random_exponent())
-
-            c8, d8, t8 = self._compute_zkp(self._shared_g3, self.rpb, self.r8, self.Pb)
-            c9, d9, t9 = self._compute_zkp(self._shared_g3, self.rpb, self.r9, self.Pb)
-
-            tlv = self.protocol_codec.encode_smp4(c8, c9, d8, d9, t8, t9)
-
-            if secrets_match:
-                self.state_machine.transition(UIConstants.SMPState.SUCCEEDED)
-            else:
-                self.state_machine.failure_reason = "Secrets don't match"
-                self.state_machine.transition(UIConstants.SMPState.FAILED)
-
-            return tlv
-
-    def process_smp4(self, data: bytes) -> None:
-        with self.lock:
-            self._check_replay(data)
-            if not self.is_initiator or self.state_machine.get_state() != UIConstants.SMPState.EXPECT4:
-                raise ValueError("Invalid state for SMP4")
-
-            tlv_type, value, _ = TLVHandler.decode_tlv(data)
-            c8, c9, d8, d9, t8, t9 = self.protocol_codec.decode_smp4(value)
-
-            if not self._verify_zkp(self._shared_g3, self.Pb, c8, d8, t8) or \
-               not self._verify_zkp(self._shared_g3, self.Pb, c9, d9, t9):
-                self.state_machine.failure_reason = "ZKP verification failed in SMP4"
-                self.state_machine.transition(UIConstants.SMPState.FAILED)
-                return
-
-            inv_Pb = _ct_mod_inv(self.Pb, SMPConstants.MODULUS)
-            inv_Qb = _ct_mod_inv(self.Qb, SMPConstants.MODULUS)
-            pa_over_pb = (self.Pa * inv_Pb) % SMPConstants.MODULUS
-            qa_over_qb = (self.Qa * inv_Qb) % SMPConstants.MODULUS
-
-            MB = SMPConstants.MODULUS_BYTES
-            if not hmac.compare_digest(pa_over_pb.to_bytes(MB, 'big'),
-                                       qa_over_qb.to_bytes(MB, 'big')):
-                self.state_machine.failure_reason = "Secrets don't match (Alice re-check in SMP4)"
-                self.state_machine.transition(UIConstants.SMPState.FAILED)
-                return
-
-            self.state_machine.transition(UIConstants.SMPState.SUCCEEDED)
-
-    def abort_smp(self) -> bytes:
-        with self.lock:
-            self.state_machine.reset()
-            self._clear_math_state()
-            return self.protocol_codec.encode_abort()
-
-    def reset(self):
-        with self.lock:
-            self.state_machine.reset()
-            self._clear_math_state()
-
-    def get_state(self) -> UIConstants.SMPState:
-        return self.state_machine.get_state()
-
-    def is_verified(self) -> bool:
-        return self.state_machine.is_verified()
-
-    def has_failed(self) -> bool:
-        return self.state_machine.has_failed()
-
-    def can_retry(self) -> bool:
-        return self.state_machine.can_retry()
-
-    def mark_retry(self):
-        self.state_machine.mark_retry()
-
-    def is_expired(self) -> bool:
-        return self.state_machine.is_expired()
-
-    def has_question(self) -> bool:
-        return self.state_machine.question is not None
-
-    def get_question(self) -> Optional[str]:
-        return self.state_machine.question
-
-
-
+# [REMOVED] SMPEngine — replaced by Rust SMP (otrv4_core.RustSMP)
 
 class RatchetHeader:
     """Ratchet header for Double Ratchet (Spec §4.4)"""
@@ -3735,6 +2718,13 @@ class RustBackedDoubleRatchet:
         self._rks_recv = _RatchetKeyStore(ck_r)   # mirrors Rust recv chain key
         self._rks_root = _RatchetKeyStore(rk_bytes[:32])  # mirrors root key
 
+        # Initial (construction-time) chain keys — never advanced.
+        # Used by chain_key_recv_init / chain_key_send_init properties for
+        # session-persistence export so a restored Rust ratchet can start at
+        # counter=0 and advance naturally to the correct position.
+        self._rks_recv_init = _RatchetKeyStore(ck_r)
+        self._rks_send_init = _RatchetKeyStore(ck_s)
+
         # Monotonically increasing DH-epoch counter — NEVER regresses.
         # Used as ratchet_id so torture tests never see key-slot reuse.
         self._dh_epoch: int = 0
@@ -3851,8 +2841,8 @@ class RustBackedDoubleRatchet:
             new_ck_s, _, _ = self._kdf_ck(self._rks_send.read())
             self._rks_send.write(new_ck_s)
 
-            return (enc.ciphertext, enc.header, enc.nonce, enc.tag,
-                    self._dh_epoch, list(enc.reveal_mac_keys))
+            return (enc["ciphertext"], enc["header"], enc["nonce"], enc["tag"],
+                    self._dh_epoch, list(enc["reveal_mac_keys"]))
 
     def decrypt_message(self, header_bytes, ciphertext, nonce, tag):
         """Decrypt a message (OTRv4 §4.4.4). Returns plaintext bytes."""
@@ -3870,18 +2860,47 @@ class RustBackedDoubleRatchet:
             try:
                 is_new_dh = self._rust.is_new_dh(header_bytes)
 
-                if is_new_dh:
+                # ── DH-ratchet routing ────────────────────────────────────────
+                # is_new_dh returns True when Rust has no stored remote pub (first
+                # message ever) OR when the header pub differs from the stored one
+                # (genuine ratchet step).
+                #
+                # Critical: the FIRST message received always uses the initial
+                # recv chain key derived from DAKE — there is NO DH ratchet on
+                # the recv side for the first message.  The sender encrypted with
+                # ck_a (initiator's send chain from DAKE key derivation), so the
+                # responder must decrypt with that same chain key via
+                # decrypt_same_dh.  Calling _decrypt_new_dh here would
+                # compute kdf_root(root, DH_secret) → a completely different
+                # chain key → AES-GCM authentication failure.
+                #
+                # A genuine DH ratchet step only occurs when is_new_dh is True
+                # AND we have already seen at least one message (dh_ratchet_remote_pub
+                # is not None).
+                if is_new_dh and self.dh_ratchet_remote_pub is not None:
+                    # Genuine ratchet: new DH pub after at least one prior message.
                     pt = self._decrypt_new_dh(header_bytes, ciphertext, nonce, tag)
                 else:
+                    # First message ever (or same DH epoch): use initial / current
+                    # recv chain key.  Record remote pub on first encounter so that
+                    # subsequent is_new_dh checks work correctly.
                     if self.dh_ratchet_remote_pub is None:
                         dh_pub_h = self._rust.header_dh_pub(header_bytes)
-                        self.dh_ratchet_remote = x448.X448PublicKey.from_public_bytes(dh_pub_h)
-                        self.dh_ratchet_remote_pub = dh_pub_h
+                        if dh_pub_h is not None:
+                            try:
+                                self.dh_ratchet_remote = x448.X448PublicKey.from_public_bytes(
+                                    dh_pub_h)
+                                self.dh_ratchet_remote_pub = dh_pub_h
+                            except Exception:
+                                pass
 
                     pt = self._rust.decrypt_same_dh(
                         header_bytes, ciphertext, nonce, tag)
 
                 # ── Post-decrypt Python-side tracking ─────────────────────
+                _did_dh_ratchet_recv = (is_new_dh and
+                                        self.dh_ratchet_remote_pub is not None and
+                                        pt is not None)
                 if hdr_dh_pub is not None and hdr_msg_num is not None:
                     new_epoch = (self._current_recv_dh_pub is None or
                                  hdr_dh_pub != self._current_recv_dh_pub)
@@ -3913,7 +2932,16 @@ class RustBackedDoubleRatchet:
                 raise EncryptionError(f"Decryption failed: {e}")
 
     def _decrypt_new_dh(self, header_bytes, ciphertext, nonce, tag):
-        """Handle decrypt with DH ratchet step."""
+        """Handle decrypt with DH ratchet step.
+
+        Called only when is_new_dh=True AND dh_ratchet_remote_pub is not None
+        (i.e. a genuine second or later DH epoch, not the first message).
+
+        Rust kdf_root signature:  kdf_1(ROOT_KEY, root_key || dh_secret, 64)
+        The Python-side mirror must use the SAME inputs so the two stay in
+        sync.  A previous version erroneously appended self._brace_key to
+        the KDF input, which diverged from Rust after the first ratchet step.
+        """
         dh_pub = self._rust.header_dh_pub(header_bytes)
         remote_key = x448.X448PublicKey.from_public_bytes(dh_pub)
 
@@ -3943,18 +2971,25 @@ class RustBackedDoubleRatchet:
         self.ratchet_id = self._dh_epoch
         self.message_counter_send = 0
 
-        # Derive Python-side chain/root keys mirroring OTRv4 spec ratchet KDF.
-        # recv step: (new_root, new_ck_recv) = KDF(root || dh_recv || brace_key)
-        _combined_r = bytes(dh_secret_recv) + self._brace_key
-        _seed_r = kdf_1(KDFUsage.ROOT_KEY, self._rks_root.read() + _combined_r, 64)
-        _new_root = _seed_r[:32]
-        _new_ck_r = _seed_r[32:64]
-        # send step: (newer_root, new_ck_send) = KDF(new_root || dh_send || brace_key)
-        _combined_s = bytes(dh_secret_send) + self._brace_key
-        _seed_s = kdf_1(KDFUsage.ROOT_KEY, _new_root + _combined_s, 64)
-        self._rks_root.write(_seed_s[:32])
-        self._rks_send.write(_seed_s[32:64])
-        self._rks_recv.write(_new_ck_r)
+        # ── Python-side chain/root key mirror ─────────────────────────────
+        # Mirror MUST use the identical KDF inputs as Rust kdf_root:
+        #   kdf_1(ROOT_KEY, root_key || dh_secret, 64) → (new_root, new_chain)
+        #
+        # recv step
+        _cur_root = self._rks_root.read()
+        _seed_r = kdf_1(KDFUsage.ROOT_KEY,
+                         _cur_root + bytes(dh_secret_recv), 64)
+        _new_root_r  = _seed_r[:32]
+        _new_ck_recv = _seed_r[32:64]
+        # send step  (uses new_root from recv step)
+        _seed_s = kdf_1(KDFUsage.ROOT_KEY,
+                         _new_root_r + bytes(dh_secret_send), 64)
+        _new_root_s  = _seed_s[:32]
+        _new_ck_send = _seed_s[32:64]
+
+        self._rks_root.write(_new_root_s)
+        self._rks_send.write(_new_ck_send)
+        self._rks_recv.write(_new_ck_recv)
 
         self.prepare_brace_rotation()
         return pt
@@ -6077,7 +5112,8 @@ class EnhancedOTRSession:
         
         self.dake_engine: Optional['OTRv4DAKE'] = None
         self.ratchet: Optional[RustBackedDoubleRatchet] = None
-        self.smp_engine: Optional[SMPEngine] = None
+        self.rust_smp  = None   # RustSMP — initialized lazily
+        self.smp_vault = None   # RustSMPVault — holds session SMP passphrase bytes
         
         self.session_id: Optional[bytes] = None
         self.root_key: Optional[SecureMemory] = None
@@ -6103,7 +5139,9 @@ class EnhancedOTRSession:
         self._extra_sym_key_cb                    = None
         self._queued_smp_response: Optional[str]  = None
 
-        self.auto_smp_secret: str    = ""
+        # True when a secret has been stored in smp_vault for this session.
+        # NOT the plaintext — the actual bytes live in Rust-owned memory.
+        self.auto_smp_secret: bool   = False
         self.auto_smp_scheduled: bool = False
         self.auto_smp_started: bool  = False
         self.auto_smp_completed: bool = False
@@ -6309,22 +5347,16 @@ class EnhancedOTRSession:
             self._release_lock()
     
     def initialize_smp(self):
-        """Initialize SMP engine"""
-        if not self._acquire_lock():
-            raise RuntimeError("Failed to acquire lock for SMP initialization")
-        
-        try:
-            if self.smp_engine is not None:
-                raise RuntimeError("SMP engine already initialized")
-            
-            self.smp_engine = SMPEngine(
-                is_initiator=self.is_initiator,
-                logger=self.logger
-            )
-            
-            self.tracer.trace(self.peer, "SMP", None, "READY", "SMP engine initialized")
-        finally:
-            self._release_lock()
+        """Initialize the Rust SMP engine and secret vault (lazy, idempotent)."""
+        if self.rust_smp is None:
+            try:
+                from otrv4_core import RustSMP, RustSMPVault
+                self.rust_smp  = RustSMP(self.is_initiator)
+                self.smp_vault = RustSMPVault()
+                self.tracer.trace(self.peer, "SMP", None, "READY", "Rust SMP engine initialized")
+            except Exception as e:
+                self.logger.debug(f"initialize_smp FAILED: {e}")
+                raise RuntimeError(f"Failed to initialize Rust SMP engine: {e}") from e
     
     
     
@@ -6603,24 +5635,30 @@ class EnhancedOTRSession:
                                   f"0x{tlv.type:04x}", str(e)[:80])
 
     def _enh_handle_smp_tlv(self, tlv: 'OTRv4TLV') -> None:
-        """Process an incoming SMP TLV and queue the response for transmission.
+        """Process an incoming SMP TLV and queue the encrypted response.
 
-        Each step begins by refreshing the client ping watchdog (via the
-        _ping_refresh_cb callback) so that the server never sees a stale
-        peer during the slow 3072-bit DH operations.
+        Fully Rust-backed: all exponents and the shared secret reside in
+        Rust memory with ZeroizeOnDrop.  Python only handles the TLV framing.
         """
-        if not self.smp_engine:
-            self.initialize_smp()
+        self.initialize_smp()
         if self._ping_refresh_cb is not None:
             try:
                 self._ping_refresh_cb()
             except Exception:
                 pass
-        raw  = tlv.encode()
-        resp = None
+
+        resp_bytes = None
+        out_type   = None
+
         try:
             if tlv.type in (OTRv4TLV.SMP_MSG_1, OTRv4TLV.SMP_MSG_1Q):
-                if not self.smp_engine.state_machine.secret_set:
+                # Secret pre-load happens in EnhancedSessionManager.decrypt_message()
+                # BEFORE decryption — always in IDLE phase, never mid-run.
+                # We must NOT attempt any rebind here: if phase is no longer IDLE
+                # (e.g. another SMP1 arrived while a run is in progress) a rebind
+                # would replace the secret scalar while a2/a3/b2/b3 exponents are
+                # already committed, making every subsequent ZKP verify fail.
+                if not self.rust_smp.check_secret_set():
                     self.tracer.trace(self.peer, "SMP", "SMP1_RECEIVED", "NO_SECRET",
                                       "SMP1 received but no secret set — aborting")
                     self._queued_smp_response = self.encrypt_with_tlvs(
@@ -6629,79 +5667,99 @@ class EnhancedOTRSession:
                     return
                 self._smp_progress_notify(
                     1, 4,
-                    "Challenge sent — awaiting response (SMP uses ZK proofs, may take a few minutes)…",
+                    "Challenge received — computing response (Rust ZKP, may take a moment)…",
                     color='yellow'
                 )
-                resp = self.smp_engine.process_smp1(raw)
+                resp_bytes = self.rust_smp.process_smp1_generate_smp2(tlv.value)
+                out_type   = OTRv4TLV.SMP_MSG_2
                 self.smp_step = 2
-                self._smp_progress_notify(2, 4, "Challenge received — computing response…", role="responder")
+                self._smp_progress_notify(2, 4, "Response computed — sending…", role="responder")
 
             elif tlv.type == OTRv4TLV.SMP_MSG_2:
                 self.smp_step = 2
-                self._smp_progress_notify(2, 4, "Response received — verifying proof…", role="initiator")
-                resp = self.smp_engine.process_smp2(raw)
+                self._smp_progress_notify(2, 4, "Response received — verifying ZKP…", role="initiator")
+                resp_bytes = self.rust_smp.process_smp2_generate_smp3(tlv.value)
+                out_type   = OTRv4TLV.SMP_MSG_3
                 self.smp_step = 3
                 self._smp_progress_notify(3, 4, "Proof verified — sending confirmation…", role="initiator")
 
             elif tlv.type == OTRv4TLV.SMP_MSG_3:
-                resp = self.smp_engine.process_smp3(raw)
+                resp_bytes = self.rust_smp.process_smp3_generate_smp4(tlv.value)
+                out_type   = OTRv4TLV.SMP_MSG_4
                 self.smp_step = 4
-                self._smp_progress_notify(4, 4, "Response verified — sending final confirmation…", role="responder")
+                self._smp_progress_notify(4, 4, "Final step — sending verdict…", role="responder")
+                # Bob computes equality inside process_smp3_generate_smp4.
+                # Read the Rust verdict immediately so Bob's UI goes blue/red
+                # at the same time as Alice's (who reads it from process_smp4).
+                if self.rust_smp.is_verified():
+                    self.auto_smp_completed = True
+                    self.auto_smp_started   = False
+                    self.security_level     = UIConstants.SecurityLevel.SMP_VERIFIED
+                    self.tracer.trace(self.peer, "SMP", "VERIFIED", "STATE_UPDATED",
+                                      "role=responder")
+                    self._smp_progress_notify(4, 4,
+                        "🔵✅ SMP VERIFIED — identity confirmed!",
+                        role=None, color='blue', final=True)
+                elif self.rust_smp.is_failed():
+                    self.auto_smp_started   = False
+                    self.auto_smp_completed = False
+                    self.smp_step           = 0
+                    self.tracer.trace(self.peer, "SMP", "FAILED", "STATE_UPDATED",
+                                      "secrets did not match (responder)")
+                    self._smp_progress_notify(0, 4,
+                        "🔴❌ SMP FAILED — secrets did not match",
+                        role=None, color='red', final=True)
 
             elif tlv.type == OTRv4TLV.SMP_MSG_4:
-                self.smp_engine.process_smp4(raw)
+                verified = self.rust_smp.process_smp4(tlv.value)
                 self.smp_step = 4
+                if verified:
+                    self.auto_smp_completed = True
+                    self.auto_smp_started   = False
+                    self.security_level     = UIConstants.SecurityLevel.SMP_VERIFIED
+                    self.tracer.trace(self.peer, "SMP", "VERIFIED", "STATE_UPDATED",
+                                      f"role={'initiator' if self.is_initiator else 'responder'}")
+                    self._smp_progress_notify(4, 4,
+                        "🔵✅ SMP VERIFIED — identity confirmed!",
+                        role=None, color='blue', final=True)
+                else:
+                    self.auto_smp_started   = False
+                    self.auto_smp_completed = False
+                    self.smp_step           = 0
+                    self.tracer.trace(self.peer, "SMP", "FAILED", "STATE_UPDATED",
+                                      "secrets did not match")
+                    self._smp_progress_notify(0, 4,
+                        "🔴❌ SMP FAILED — secrets did not match",
+                        role=None, color='red', final=True)
+                return  # No response message for SMP4
 
             elif tlv.type == OTRv4TLV.SMP_ABORT:
-                self.smp_engine.reset()
+                self.rust_smp.abort()
                 self.auto_smp_started   = False
                 self.auto_smp_completed = False
                 self.smp_step           = 0
                 self.tracer.trace(self.peer, "SMP", "ABORTED", "PEER_ABORT",
                                   "Remote peer aborted SMP")
-                self._smp_progress_notify(0, 4, "⚠ SMP aborted by remote peer", role=None, color='red')
+                self._smp_progress_notify(0, 4, "⚠ SMP aborted by remote peer",
+                                          role=None, color='red')
+                return
 
         except Exception as e:
             self.tracer.trace(self.peer, "ERROR", "SMP",
                               f"0x{tlv.type:04x}", str(e)[:120])
-            try:
-                self.smp_engine.reset()
-            except Exception:
-                pass
+            if self.rust_smp:
+                self.rust_smp.abort()
             self.auto_smp_started   = False
             self.auto_smp_completed = False
             self.smp_step           = 0
-            self._smp_progress_notify(0, 4, f"❌ SMP error: {str(e)[:60]}", role=None, color='red')
+            self._smp_progress_notify(0, 4, f"❌ SMP error: {str(e)[:60]}",
+                                      role=None, color='red')
             return
 
-        if self.smp_engine.is_verified():
-            if not self.auto_smp_completed:
-                self.auto_smp_completed = True
-                self.auto_smp_started   = False
-                self.security_level     = UIConstants.SecurityLevel.SMP_VERIFIED
-                self.tracer.trace(self.peer, "SMP", "VERIFIED", "STATE_UPDATED",
-                                  f"role={'initiator' if self.is_initiator else 'responder'}")
-                self._smp_progress_notify(4, 4,
-                    "🔵✅ SMP VERIFIED — identity confirmed!",
-                    role=None, color='blue', final=True)
-        elif self.smp_engine.has_failed():
-            self.auto_smp_started   = False
-            self.auto_smp_completed = False
-            self.smp_step           = 0
-            reason = getattr(self.smp_engine.state_machine, 'failure_reason', 'secrets did not match')
-            self.tracer.trace(self.peer, "SMP", "FAILED", "STATE_UPDATED", reason)
-            self._smp_progress_notify(0, 4,
-                f"🔴❌ SMP FAILED — {reason}",
-                role=None, color='red', final=True)
-            self.smp_progress = (0, 0)
-
-        if resp:
-            rt = struct.unpack_from('!H', resp, 0)[0]
-            rl = struct.unpack_from('!H', resp, 2)[0]
-            rv = resp[4:4 + rl]
+        if resp_bytes is not None and out_type is not None:
             try:
                 self._queued_smp_response = self.encrypt_with_tlvs(
-                    '', [OTRv4TLV(rt, rv)]
+                    '', [OTRv4TLV(out_type, bytes(resp_bytes))]
                 )
             except Exception as e:
                 self.tracer.trace(self.peer, "ERROR", "SMP_RESP", "ENCRYPT", str(e)[:80])
@@ -6855,18 +5913,25 @@ class EnhancedOTRSession:
             if self.ratchet:
                 self.ratchet.zeroize()
                 self.ratchet = None
-            
+
             if self.root_key:
                 self.root_key.zeroize()
                 self.root_key = None
-            
-            if self.smp_engine:
-                self.smp_engine.reset()
-                self.smp_engine = None
-            
+
+            if self.rust_smp is not None:
+                self.rust_smp.abort()
+                self.rust_smp = None
+
+            # Zeroize vault — all secret bytes zeroed in Rust before dealloc
+            if self.smp_vault is not None:
+                self.smp_vault.clear()
+                self.smp_vault = None
+
+            self.auto_smp_secret = False
+
             self.pending_messages.clear()
             self.received_messages.clear()
-            
+
         except Exception as e:
             self.tracer.trace(self.peer, "ERROR", "CLEANUP", "FAILED", str(e))
     
@@ -6907,312 +5972,260 @@ class EnhancedOTRSession:
     
     
     def start_smp(self, secret: str, question: Optional[str] = None) -> Optional[str]:
-        """
-        Start SMP verification - delegates to SMPEngine and encrypts the result.
-        Returns the encrypted OTR message ready to send, or None if cannot start.
+        """Start SMP verification using the Rust SMP engine.
+
+        Generates SMP1, encrypts it, and returns the OTR message ready to send.
+        The secret is bound to the session (session_id + fingerprints) inside Rust.
         """
         if not self._acquire_lock():
-            self.logger.debug("start_smp: Failed to acquire lock")
-            return None
-        
+            raise RuntimeError("start_smp: could not acquire session lock (timeout)")
         try:
             if self.session_state != SessionState.ENCRYPTED:
-                self.logger.debug(f"start_smp: Cannot start SMP - session not encrypted (state: {self.session_state.name})")
-                return None
-            
-            if self.smp_engine is None:
-                self.initialize_smp()
-            
-            current_state = self.smp_engine.get_state()
-            self.logger.debug(f"start_smp: Current SMP state: {current_state.name}")
-            
-            if current_state != UIConstants.SMPState.NONE:
-                self.logger.debug(f"start_smp: Cannot start - already in state {current_state.name}")
-                return None
-            
-            smp_tlv = None
+                raise RuntimeError(
+                    f"start_smp: session not encrypted (state={self.session_state!r})")
+            self.initialize_smp()
+            if self.rust_smp is None:
+                raise RuntimeError("start_smp: RustSMP is None after initialize_smp")
+            phase = self.rust_smp.get_phase()
+            if phase not in ("IDLE", "FAILED"):
+                raise RuntimeError(
+                    f"start_smp: SMP already in progress (phase={phase})")
 
-            # NOTE: secret binding is performed inside set_smp_secret() which
-            # both sides call before this point.  Do NOT call set_secret() here
-            # again — doing so on only the initiator side causes an asymmetric
-            # hash mismatch with the responder (broken SMP).  The engine's own
-            # start_smp() will call set_secret() only if it was never set.
-            smp_tlv = self.smp_engine.start_smp(secret, question)
-            if not smp_tlv:
-                self.logger.debug("start_smp: smp_engine.start_smp returned None")
-                return None
-            
-            self.logger.debug(f"start_smp: Got SMP TLV of length {len(smp_tlv)}")
-            
-            tlv_type = struct.unpack_from('!H', smp_tlv, 0)[0]
-            tlv_len = struct.unpack_from('!H', smp_tlv, 2)[0]
-            tlv_value = smp_tlv[4:4 + tlv_len]
-            
-            encrypted = self.encrypt_with_tlvs('', [OTRv4TLV(tlv_type, tlv_value)])
-            self.logger.debug(f"start_smp: Encrypted message length: {len(encrypted)}")
-            
-            return encrypted
-            
+            # Only call set_smp_secret if the vault path hasn't already bound
+            # the secret (i.e. called from _start_smp which binds before the thread).
+            # If secret is non-empty it came from a direct call path — bind it.
+            if secret:
+                self.set_smp_secret(secret)
+
+            # Verify Rust SMP has the secret
+            if not self.rust_smp.check_secret_set():
+                raise RuntimeError(
+                    "start_smp: secret not set in Rust SMP engine — "
+                    "call set_smp_secret() first or pass secret explicitly")
+
+            smp1_bytes = self.rust_smp.generate_smp1(question)
+            self.smp_step = 1
+            self._smp_progress_notify(1, 4,
+                "Challenge sent — awaiting response (Rust ZKP)…", color='yellow')
+            return self.encrypt_with_tlvs('', [OTRv4TLV(OTRv4TLV.SMP_MSG_1, bytes(smp1_bytes))])
         except Exception as e:
             import traceback as _tb
-            self.logger.debug(f"start_smp: Error: {e}\n{_tb.format_exc()}")
-            return None
+            msg = f"start_smp: Error: {e}"
+            self.logger.debug(msg + "\n" + _tb.format_exc())
+            # Re-raise so the caller surfaces the real error instead of seeing None
+            raise RuntimeError(f"SMP start failed: {e}") from e
         finally:
             self._release_lock()
     
     def process_smp_message(self, data: bytes) -> Optional[str]:
-        """
-        Process incoming SMP TLV bytes and return encrypted response if any.
+        """Process a raw SMP TLV (type+len+value) using the Rust engine.
+
+        Used by the SessionManager-level dispatch path.  For the session-level
+        TLV handler see _enh_handle_smp_tlv.
         """
         if not self._acquire_lock():
-            self.logger.debug("process_smp_message: Failed to acquire lock")
             return None
-        
         try:
-            if self.smp_engine is None:
-                self.initialize_smp()
-            
             if len(data) < 4:
                 return None
-            
+            self.initialize_smp()
             tlv_type = struct.unpack_from('!H', data, 0)[0]
-            self.logger.debug(f"process_smp_message: Processing type {tlv_type}")
-            
-            response = None
-            
+            tlv_len  = struct.unpack_from('!H', data, 2)[0]
+            tlv_val  = data[4:4 + tlv_len]
+            out_type = None
+            resp     = None
             if tlv_type in (OTRv4TLV.SMP_MSG_1, OTRv4TLV.SMP_MSG_1Q):
-                response = self.smp_engine.process_smp1(data)
+                resp     = self.rust_smp.process_smp1_generate_smp2(tlv_val)
+                out_type = OTRv4TLV.SMP_MSG_2
             elif tlv_type == OTRv4TLV.SMP_MSG_2:
-                response = self.smp_engine.process_smp2(data)
+                resp     = self.rust_smp.process_smp2_generate_smp3(tlv_val)
+                out_type = OTRv4TLV.SMP_MSG_3
             elif tlv_type == OTRv4TLV.SMP_MSG_3:
-                response = self.smp_engine.process_smp3(data)
+                resp     = self.rust_smp.process_smp3_generate_smp4(tlv_val)
+                out_type = OTRv4TLV.SMP_MSG_4
+                # Check Rust verdict immediately — Bob must go verified/failed here
+                if self.rust_smp.is_verified():
+                    self.auto_smp_completed = True
+                    self.auto_smp_started   = False
+                    self.security_level     = UIConstants.SecurityLevel.SMP_VERIFIED
+                elif self.rust_smp.is_failed():
+                    self.auto_smp_started   = False
+                    self.auto_smp_completed = False
             elif tlv_type == OTRv4TLV.SMP_MSG_4:
-                self.smp_engine.process_smp4(data)
-                response = None
-                if self.smp_engine.is_verified():
-                    self.security_level = UIConstants.SecurityLevel.SMP_VERIFIED
-                    self.logger.debug("process_smp_message: SMP verification succeeded!")
+                verified = self.rust_smp.process_smp4(tlv_val)
+                if verified:
+                    self.auto_smp_completed = True
+                    self.auto_smp_started   = False
+                    self.security_level     = UIConstants.SecurityLevel.SMP_VERIFIED
+                    self.tracer.trace(self.peer, "SMP", "VERIFIED", "STATE_UPDATED",
+                                      "role=initiator")
+                    self._smp_progress_notify(4, 4,
+                        "🔵✅ SMP VERIFIED — identity confirmed!",
+                        role=None, color='blue', final=True)
+                else:
+                    self.auto_smp_started   = False
+                    self.auto_smp_completed = False
+                    self.smp_step           = 0
+                    self.tracer.trace(self.peer, "SMP", "FAILED", "STATE_UPDATED",
+                                      "secrets did not match (initiator)")
+                    self._smp_progress_notify(0, 4,
+                        "🔴❌ SMP FAILED — secrets did not match",
+                        role=None, color='red', final=True)
+                return None
             elif tlv_type == OTRv4TLV.SMP_ABORT:
-                self.smp_engine.reset()
-                response = None
-            
-            if response:
-                resp_type = struct.unpack_from('!H', response, 0)[0]
-                resp_len = struct.unpack_from('!H', response, 2)[0]
-                resp_value = response[4:4 + resp_len]
-                encrypted = self.encrypt_with_tlvs('', [OTRv4TLV(resp_type, resp_value)])
-                self.logger.debug(f"process_smp_message: Generated encrypted response of length {len(encrypted)}")
-                return encrypted
-            
+                self.rust_smp.abort()
+                return None
+            if resp is not None and out_type is not None:
+                return self.encrypt_with_tlvs('', [OTRv4TLV(out_type, bytes(resp))])
             return None
-            
         except Exception as e:
             import traceback as _tb
-            self.logger.debug(f"process_smp_message: Error: {e}\n{_tb.format_exc()}")
+            self.logger.debug(f"process_smp_message: {e}\n{_tb.format_exc()}")
             return None
         finally:
             self._release_lock()
     
     def get_smp_status(self) -> Dict[str, Any]:
-        """Get SMP status - delegates to smp_engine with proper state mapping."""
+        """Return SMP status from the Rust engine."""
         if not self._acquire_lock():
-            return {
-                'state': 'NONE',
-                'verified': False,
-                'failed': False,
-                'progress': '0/4',
-                'has_question': False,
-                'question': '',
-                'can_start_smp': False,
-                'can_retry': False,
-                'retry_count': 0,
-                'expired': False,
-            }
-        
+            return {'state': 'NONE', 'verified': False, 'failed': False,
+                    'progress': '0/4', 'can_start_smp': False, 'secret_set': False}
         try:
-            if self.smp_engine is None:
+            if self.rust_smp is None:
                 return {
-                    'state': 'NONE',
-                    'verified': False,
-                    'failed': False,
-                    'progress': '0/4',
-                    'has_question': False,
-                    'question': '',
+                    'state': 'NONE', 'verified': False, 'failed': False,
+                    'progress': '0/4', 'has_question': False, 'question': '',
                     'can_start_smp': self.session_state == SessionState.ENCRYPTED,
-                    'can_retry': False,
-                    'retry_count': 0,
-                    'expired': False,
+                    'can_retry': False, 'retry_count': 0, 'expired': False,
+                    'secret_set': False,
                 }
-            
-            engine_state = self.smp_engine.get_state()
-            
-            state_map = {
-                UIConstants.SMPState.NONE: 'NONE',
-                UIConstants.SMPState.EXPECT1: 'EXPECT1',
-                UIConstants.SMPState.SENT1: 'SENT1',
-                UIConstants.SMPState.EXPECT2: 'EXPECT2',
-                UIConstants.SMPState.SENT2: 'SENT2',
-                UIConstants.SMPState.EXPECT3: 'EXPECT3',
-                UIConstants.SMPState.SENT3: 'SENT3',
-                UIConstants.SMPState.EXPECT4: 'EXPECT4',
-                UIConstants.SMPState.SUCCEEDED: 'SUCCEEDED',
-                UIConstants.SMPState.FAILED: 'FAILED',
+            phase    = self.rust_smp.get_phase()
+            verified = self.rust_smp.is_verified()
+            failed   = (phase == "FAILED")
+            step_map = {
+                "IDLE": 0, "AWAITING_MSG2": 1, "AWAITING_MSG3": 2,
+                "AWAITING_MSG4": 3, "VERIFIED": 4, "FAILED": 0,
             }
-            
-            progress_map = {
-                UIConstants.SMPState.NONE: (0, 4),
-                UIConstants.SMPState.EXPECT1: (0, 4),
-                UIConstants.SMPState.SENT1: (1, 4),
-                UIConstants.SMPState.EXPECT2: (1, 4),
-                UIConstants.SMPState.SENT2: (2, 4),
-                UIConstants.SMPState.EXPECT3: (2, 4),
-                UIConstants.SMPState.SENT3: (3, 4),
-                UIConstants.SMPState.EXPECT4: (3, 4),
-                UIConstants.SMPState.SUCCEEDED: (4, 4),
-                UIConstants.SMPState.FAILED: (0, 4),
-            }
-            
-            step, total = progress_map.get(engine_state, (0, 4))
-            
-            result = {
-                'state': state_map.get(engine_state, 'NONE'),
-                'verified': self.auto_smp_completed or self.smp_engine.is_verified(),
-                'failed': self.smp_engine.has_failed(),
-                'failure_reason': getattr(self.smp_engine.state_machine, 'failure_reason', ''),
-                'progress': f"{step}/{total}",
-                'has_question': self.smp_engine.has_question(),
-                'question': self.smp_engine.get_question() or '',
-                'can_start_smp': engine_state == UIConstants.SMPState.NONE and self.session_state == SessionState.ENCRYPTED,
-                'can_retry': self.smp_engine.can_retry() if hasattr(self.smp_engine, 'can_retry') else False,
-                'retry_count': getattr(self.smp_engine.state_machine, 'retry_count', 0),
-                'expired': self.smp_engine.is_expired() if hasattr(self.smp_engine, 'is_expired') else False,
-            }
-            
-            self.logger.debug(f"get_smp_status: Returning {result}")
-            return result
-            
-        except Exception as e:
-            self.logger.debug(f"get_smp_status: Error: {e}")
+            step = step_map.get(phase, 0)
             return {
-                'state': 'NONE',
-                'verified': False,
-                'failed': False,
-                'progress': '0/4',
-                'can_start_smp': self.session_state == SessionState.ENCRYPTED,
+                'state':        phase,
+                'verified':     verified or self.auto_smp_completed,
+                'failed':       failed,
+                'failure_reason': '' if not failed else 'secrets did not match',
+                'progress':     f"{step}/4",
+                'has_question': False,
+                'question':     '',
+                'can_start_smp': phase in ("IDLE", "FAILED") and self.session_state == SessionState.ENCRYPTED,
+                'can_retry':    failed,
+                'retry_count':  0,
+                'expired':      False,
+                'secret_set':   self.rust_smp.check_secret_set(),
             }
+        except Exception as e:
+            self.logger.debug(f"get_smp_status: {e}")
+            return {'state': 'NONE', 'verified': False, 'failed': False,
+                    'progress': '0/4', 'can_start_smp': self.session_state == SessionState.ENCRYPTED}
         finally:
             self._release_lock()
-    
+
     def get_smp_progress(self) -> Tuple[int, int]:
-        """Get SMP progress as (step, total)."""
-        if not self._acquire_lock():
+        """Get SMP progress as (step, total_steps)."""
+        if self.rust_smp is None:
             return (0, 4)
-        
-        try:
-            if self.smp_engine is None:
-                return (0, 4)
-            
-            state = self.smp_engine.get_state()
-            progress_map = {
-                UIConstants.SMPState.NONE: (0, 4),
-                UIConstants.SMPState.EXPECT1: (0, 4),
-                UIConstants.SMPState.SENT1: (1, 4),
-                UIConstants.SMPState.EXPECT2: (1, 4),
-                UIConstants.SMPState.SENT2: (2, 4),
-                UIConstants.SMPState.EXPECT3: (2, 4),
-                UIConstants.SMPState.SENT3: (3, 4),
-                UIConstants.SMPState.EXPECT4: (3, 4),
-                UIConstants.SMPState.SUCCEEDED: (4, 4),
-                UIConstants.SMPState.FAILED: (0, 4),
-            }
-            return progress_map.get(state, (0, 4))
-        finally:
-            self._release_lock()
-    
+        phase = self.rust_smp.get_phase()
+        step_map = {
+            "IDLE": 0, "AWAITING_MSG2": 1, "AWAITING_MSG3": 2,
+            "AWAITING_MSG4": 3, "VERIFIED": 4, "FAILED": 0,
+        }
+        return (step_map.get(phase, 0), 4)
+
     def set_smp_secret(self, secret: str):
-        """Store SMP secret for this session with symmetric session binding.
+        """Bind the SMP secret to the current session via the Rust vault.
 
-        Session binding (session_id + fingerprints) is applied when DAKE
-        context is available so that brute-forcing a captured SMP transcript
-        from one session cannot replay into another.
+        Flow:
+          1. Encode secret to a bytearray (mutable, can be wiped).
+          2. Store bytes in RustSMPVault (Rust-owned, ZeroizeOnDrop).
+          3. Call rust_smp.set_secret_from_vault() — bytes never leave Rust
+             as a Python object on the SHAKE-256/HMAC path.
+          4. Overwrite the bytearray and delete it.
+          5. Set auto_smp_secret = True (flag only — plaintext is NOT stored).
 
-        Both the initiator (via start_smp) and the responder (via
-        _enh_handle_smp_tlv / auto-respond) call this method, so both sides
-        derive the same bound secret.  SMPEngine.set_secret() uses
-        self.is_initiator to place fingerprints in the canonical order
-        (initiator_fp first), so both sides produce the same hash regardless
-        of which side calls first.
-
-        Raises ValueError if the secret is shorter than 8 characters.
+        Raises:
+            ValueError:   secret shorter than 8 characters.
+            RuntimeError: SMP protocol run already active (never rebind mid-run).
         """
+        _MIN_LEN = 8
+        if len(secret) < _MIN_LEN:
+            raise ValueError(f"SMP secret must be at least {_MIN_LEN} characters.")
         if not self._acquire_lock():
             return
-
         try:
-            _MIN_SMP_LENGTH = 8
-            if len(secret) < _MIN_SMP_LENGTH:
-                self.logger.debug(
-                    f"SMP REJECTED: passphrase is only {len(secret)} chars — "
-                    f"minimum {_MIN_SMP_LENGTH} required.")
-                raise ValueError(
-                    f"SMP secret must be at least {_MIN_SMP_LENGTH} characters."
-                )
-            if self.smp_engine is None:
-                self.initialize_smp()
+            # ── CRITICAL: never rebind secret during an active SMP run ──────
+            if self.rust_smp is not None:
+                phase = self.rust_smp.get_phase()
+                if phase not in ('IDLE', 'FAILED', 'VERIFIED', 'ABORTED'):
+                    raise RuntimeError(
+                        f"Cannot rebind SMP secret while SMP is active "
+                        f"(current phase: {phase}). Abort the current run first."
+                    )
+            self.initialize_smp()
+            if self.rust_smp is None or self.smp_vault is None:
+                raise RuntimeError("Rust SMP engine not initialized")
 
-            # ── Symmetric session binding ────────────────────────
-            if self.session_id and self._remote_long_term_pub_bytes:
-                local_fp_bytes = None
-                try:
-                    if self.dake_engine and self.dake_engine.client_profile:
-                        _cp = self.dake_engine.client_profile
-                        if _cp.identity_key:
-                            local_fp_bytes = _cp.identity_key.public_key().public_bytes(
-                                encoding=serialization.Encoding.Raw,
-                                format=serialization.PublicFormat.Raw
-                            )
-                        elif _cp.identity_pub_bytes:
-                            local_fp_bytes = _cp.identity_pub_bytes
-                except Exception:
-                    local_fp_bytes = None
+            # Fingerprints and session binding
+            sid = self.session_id or b''
+            local_fp = b''
+            try:
+                if self.dake_engine and self.dake_engine.client_profile:
+                    cp = self.dake_engine.client_profile
+                    if cp.identity_key:
+                        local_fp = cp.identity_key.public_key().public_bytes(
+                            encoding=serialization.Encoding.Raw,
+                            format=serialization.PublicFormat.Raw)
+                    elif cp.identity_pub_bytes:
+                        local_fp = cp.identity_pub_bytes
+            except Exception:
+                pass
+            remote_fp = self._remote_long_term_pub_bytes or b''
 
-                self.smp_engine.set_secret(
-                    secret,
-                    session_id=self.session_id,
-                    local_fingerprint=local_fp_bytes,
-                    remote_fingerprint=self._remote_long_term_pub_bytes
-                )
-                self.logger.debug(
-                    f"set_smp_secret: session-bound stored for {self.peer} "
-                    f"(initiator={self.is_initiator})"
-                )
-            else:
-                # Fallback: session context not yet available
-                self.smp_engine.set_secret(secret)
-                self.logger.debug(
-                    f"set_smp_secret: unbound stored for {self.peer} "
-                    "(session_id or remote_fp unavailable)"
-                )
+            # Encode to bytearray so we can wipe it after Rust takes ownership
+            raw = bytearray(secret.encode('utf-8'))
+            try:
+                # Store in Rust vault — ZeroizeOnDrop from here on
+                self.smp_vault.store("smp_secret", bytes(raw))
+                # Inject into Rust SMP engine from the vault — bytes never
+                # re-enter Python after this call.
+                ok = self.rust_smp.set_secret_from_vault(
+                    self.smp_vault, "smp_secret", sid, local_fp, remote_fp)
+                if not ok:
+                    raise RuntimeError("Vault key not found after store — internal error")
+            finally:
+                # Overwrite the bytearray before the GC can move it
+                for i in range(len(raw)):
+                    raw[i] = 0
+                del raw
+
+            if not self.rust_smp.check_secret_set():
+                raise RuntimeError("Rust SMP secret not stored after set_secret_from_vault")
+
+            # Flag only — the plaintext is NOT kept in Python memory
+            self.auto_smp_secret = True
         finally:
             self._release_lock()
-    
+
     def can_start_smp(self) -> bool:
         """Check if SMP can be started."""
         if not self._acquire_lock():
             return False
-        
         try:
             if self.session_state != SessionState.ENCRYPTED:
                 return False
-            if self.smp_engine is None:
+            if self.rust_smp is None:
                 return True
-            return self.smp_engine.get_state() == UIConstants.SMPState.NONE
+            phase = self.rust_smp.get_phase()
+            return phase in ("IDLE", "FAILED")
         finally:
             self._release_lock()
-    
-    
-    
-    
     def get_state_summary(self) -> Dict[str, Any]:
         """Get comprehensive state summary"""
         if not self._acquire_lock():
@@ -7233,7 +6246,7 @@ class EnhancedOTRSession:
                 'last_activity': time.ctime(self.last_activity),
                 'queued_messages': len(self.pending_messages),
                 'has_ratchet': self.ratchet is not None,
-                'has_smp': self.smp_engine is not None,
+                'has_smp': self.rust_smp is not None,
                 'is_encrypted': self.session_state == SessionState.ENCRYPTED,
                 'is_active': self.session_state not in [SessionState.FINISHED, SessionState.FAILED],
                 'fingerprint': self.get_fingerprint(),
@@ -8196,7 +7209,13 @@ class EnhancedSessionManager:
                 self.tracer.trace(peer, "ERROR", "RATCHET", "INIT_FAILED", str(e))
     
     def _handle_data_message(self, peer: str, data_msg: str) -> Optional[bytes]:
-        """Decrypt a DATA message and return the human-readable text bytes."""
+        """Decrypt a DATA message and return the human-readable text bytes.
+
+        Ensures the SMP secret is loaded from persistent storage into the
+        active RustSMP instance *before* decryption so that any SMP TLV
+        embedded in the payload (SMP1 in particular) is handled correctly
+        rather than being aborted with NO_SECRET.
+        """
         with self.lock:
             if peer not in self.sessions:
                 self.tracer.trace(peer, "ERROR", "DATA", "NO_SESSION", "")
@@ -8206,6 +7225,23 @@ class EnhancedSessionManager:
                 self.tracer.trace(peer, "ERROR", "DATA", "NOT_ENCRYPTED",
                                   session.session_state.name)
                 return None
+            # Pre-load SMP secret so responder can answer SMP1 without aborting.
+            # Only pays the set_smp_secret cost when (a) a secret is stored, and
+            # (b) it has not already been bound into the Rust SMP engine.
+            try:
+                auto_secret = self.smp_storage.get_secret(peer)
+                if auto_secret and hasattr(session, 'set_smp_secret'):
+                    needs_bind = (
+                        session.rust_smp is None
+                        or not session.rust_smp.check_secret_set()
+                    )
+                    if needs_bind:
+                        session.set_smp_secret(auto_secret)
+                        auto_secret = None  # drop local str ref immediately
+            except Exception as _se:
+                self.logger.debug(
+                    f"_handle_data_message: smp_storage pre-load failed for {peer}: {_se}"
+                )
             try:
                 text_bytes = session.decrypt_message(data_msg)
 
@@ -8233,8 +7269,20 @@ class EnhancedSessionManager:
             if not session.is_encrypted():
                 self.tracer.trace(peer, "ERROR", "SMP", "NOT_ENCRYPTED", "")
                 return None
-            if session.smp_engine is None:
+            if session.rust_smp is None:
                 session.initialize_smp()
+            # Inject SMP secret from persistent storage if the Rust engine
+            # does not already have it bound (mirrors _handle_data_message).
+            try:
+                auto_secret = self.smp_storage.get_secret(peer)
+                if auto_secret and hasattr(session, 'set_smp_secret'):
+                    if not session.rust_smp.check_secret_set():
+                        session.set_smp_secret(auto_secret)
+                        auto_secret = None  # drop local str ref immediately
+            except Exception as _se:
+                self.logger.debug(
+                    f"_handle_smp_message: smp_storage pre-load failed for {peer}: {_se}"
+                )
 
             if len(smp_tlv) < 4:
                 return None
@@ -8430,11 +7478,45 @@ class EnhancedSessionManager:
         IRC client's _handle_data_message sees an '?OTRv4 …' string, detects
         it, and forwards it via send_otr_message.  Without this drain the SMP
         handshake stalls silently after every step.
+
+        SMP pre-load: before decrypting we ensure the Rust SMP engine has the
+        shared secret bound.  This covers the responder path — set_smp_secret
+        persists the secret to disk; if the in-memory Rust binding was lost
+        (new RustSMP instance, restart, etc.) we re-bind from storage now so
+        that any SMP1 TLV embedded in this payload can be answered immediately.
         """
         with self.lock:
             sess = self.sessions.get(peer)
             if not sess:
                 raise EncryptionError(f"No session for {peer}")
+            # Pre-load SMP secret into Rust engine — ONLY when SMP is idle.
+            #
+            # Critical constraint: never call set_smp_secret while a protocol
+            # run is in progress.  Rust may clear the "secret_set" flag after
+            # generate_smp1() so that a fresh secret can be set for a new run;
+            # if we see False here and blindly rebind, we corrupt the in-flight
+            # Rust SMP state machine, causing ZKP verification failures on the
+            # next message.  Gate on get_phase() returning IDLE or FAILED.
+            try:
+                smp_phase = (
+                    sess.rust_smp.get_phase()
+                    if sess.rust_smp is not None
+                    else 'IDLE'
+                )
+                needs_bind = smp_phase in ('IDLE', 'FAILED') and (
+                    sess.rust_smp is None
+                    or not sess.rust_smp.check_secret_set()
+                )
+                if needs_bind:
+                    # auto_smp_secret is now a bool flag — fetch from storage only
+                    auto_secret = self.smp_storage.get_secret(peer) or ''
+                    if auto_secret and hasattr(sess, 'set_smp_secret'):
+                        sess.set_smp_secret(auto_secret)
+                        auto_secret = None  # drop local str ref immediately
+            except Exception as _pe:
+                self.logger.debug(
+                    f"decrypt_message: SMP pre-load failed for {peer}: {_pe}"
+                )
             plaintext = sess.decrypt_message(encrypted_msg)
 
             queued = getattr(sess, '_queued_smp_response', None)
@@ -8471,30 +7553,56 @@ class EnhancedSessionManager:
         with self.lock:
             sess = self.sessions.get(peer)
             if not sess:
-                return None
-            try:
-                return sess.start_smp(secret, question if question else None)
-            except Exception:
-                return None
+                raise RuntimeError(f"start_smp: no session for {peer}")
+            # Let exceptions propagate so the caller sees the real error
+            return sess.start_smp(secret, question if question else None)
 
     def process_smp_message(self, peer: str, data: bytes) -> Optional[str]:
-        """Process incoming SMP TLV."""
-        with self.lock:
-            sess = self.sessions.get(peer)
-            if not sess:
-                return None
-            try:
-                return sess.process_smp_message(data)
-            except Exception:
-                return None
+        """DEAD CODE — do not call.
+
+        SMP ingress runs exclusively through decrypt_message() → sess.decrypt_message()
+        → _enh_route_tlvs() → _enh_handle_smp_tlv().  Calling this method
+        directly would double-advance the Rust SMP state machine and cause
+        guaranteed ZKP verification failures.
+        """
+        raise RuntimeError(
+            "process_smp_message is disabled.  SMP messages are processed "
+            "automatically inside decrypt_message via _enh_handle_smp_tlv."
+        )
 
     def set_smp_secret(self, peer: str, secret: str) -> bool:
-        """Store SMP secret for peer."""
+        """Store SMP secret for peer in persistent storage AND bind it into
+        the active Rust SMP engine so the responder can answer SMP1 correctly.
+
+        Two-layer write:
+          1. smp_storage (file-backed) — survives restarts, read back on every
+             incoming DATA message by decrypt_message's pre-load guard.
+          2. session.set_smp_secret — pushes secret into RustSMP immediately
+             so any SMP1 that arrives before the next DATA message is handled.
+
+        The manager RLock is released before the Rust key-stretch (SHAKE-256
+        × 10k) to avoid blocking recv_loop or any concurrent session op for
+        the several hundred milliseconds the stretch can take.
+        """
+        # Persist to disk first — fast, no crypto.
         try:
             self.smp_storage.set_secret(peer, secret)
-            return True
-        except Exception:
-            return False
+        except Exception as _se:
+            self.logger.debug(f"set_smp_secret: smp_storage write failed for {peer}: {_se}")
+
+        # Extract session reference while holding the manager lock, then
+        # release before calling into Rust so we don't block other sessions.
+        with self.lock:
+            sess = self.sessions.get(peer)
+
+        if sess is not None and hasattr(sess, 'set_smp_secret'):
+            try:
+                sess.set_smp_secret(secret)
+            except Exception as _se:
+                self.logger.debug(
+                    f"set_smp_secret: session bind failed for {peer}: {_se}"
+                )
+        return True
 
     def display_fingerprints(self, peer: str) -> str:
         """Return remote fingerprint string."""
@@ -8619,7 +7727,11 @@ class OTRFragmentBuffer:
     )
 
     def __init__(self, timeout: float = UIConstants.FRAGMENT_TIMEOUT):
-        self._buffers: Dict[str, Dict] = {}
+        # Key: (sender_nick, total_fragments) — allows concurrent in-flight
+        # messages with different fragment counts from the same sender to
+        # coexist without wiping each other.  (e.g. a 10-fragment SMP1 and
+        # a 2-fragment ratchet advance sent simultaneously.)
+        self._buffers: Dict[tuple, Dict] = {}
         self._lock = threading.RLock()
         self.timeout = timeout
         self.max_fragments_per_sender = UIConstants.FRAGMENT_LIMIT
@@ -8672,39 +7784,22 @@ class OTRFragmentBuffer:
 
     def _buffer(self, sender: str, idx: int, total: int,
                 chunk: str, now: float) -> Optional[str]:
-        """Insert chunk into the reassembly buffer and return full message when done."""
-        is_new_sequence = sender not in self._buffers
-        if is_new_sequence:
-            self._buffers[sender] = {
-                'total':    total,
-                'parts':    {},
-                'first_ts': now,
-                'last_ts':  now,
-            }
-            if total > 1 and self.first_fragment_cb is not None:
-                try:
-                    self.first_fragment_cb(sender, total, chunk)
-                except Exception:
-                    pass
+        """Insert chunk into the reassembly buffer and return full message when done.
 
-        state = self._buffers[sender]
+        Buffer key is ``(sender_nick, total)`` so concurrent in-flight messages
+        with different fragment counts (e.g. a 10-frag SMP1 alongside a 2-frag
+        ratchet advance) coexist without corrupting each other.
 
-        if len(state['parts']) >= self.max_fragments_per_sender:
-            self._buffers.pop(sender, None)
-            raise ValueError(
-                f"Fragment flood from {sender}: exceeded {self.max_fragments_per_sender} "
-                "in-flight fragments. Buffer evicted."
-            )
-
+        When fragment 1 of a new sequence arrives for a ``(sender, total)`` slot
+        that already contains a partial assembly, the slot is reset — this safely
+        handles the edge case of two sequential messages with the same total count.
+        """
+        # Validate total / idx before touching any state.
         if total > self.max_fragments_per_sender:
             raise ValueError(
                 f"Fragment total {total} from {sender} exceeds max "
                 f"{self.max_fragments_per_sender}. Discarding."
             )
-
-        # Hard absolute ceiling — reject any stream that declares more than
-        # 1 000 fragments regardless of the per-sender limit, to prevent
-        # memory-exhaustion attacks via specially crafted fragment counts.
         _ABSOLUTE_MAX_FRAGMENTS = 1000
         if total > _ABSOLUTE_MAX_FRAGMENTS:
             raise ValueError(
@@ -8712,11 +7807,30 @@ class OTRFragmentBuffer:
                 f"maximum of {_ABSOLUTE_MAX_FRAGMENTS}. Discarding."
             )
 
-        if state['total'] != total:
-            self._buffers[sender] = {
-                'total': total, 'parts': {}, 'first_ts': now, 'last_ts': now,
+        key = (sender, total)
+
+        # Fragment 1 always starts (or restarts) the slot for this key.
+        if idx == 1 or key not in self._buffers:
+            self._buffers[key] = {
+                'total':    total,
+                'parts':    {},
+                'first_ts': now,
+                'last_ts':  now,
             }
-            state = self._buffers[sender]
+            if total > 1 and idx == 1 and self.first_fragment_cb is not None:
+                try:
+                    self.first_fragment_cb(sender, total, chunk)
+                except Exception:
+                    pass
+
+        state = self._buffers[key]
+
+        if len(state['parts']) >= self.max_fragments_per_sender:
+            self._buffers.pop(key, None)
+            raise ValueError(
+                f"Fragment flood from {sender} (total={total}): exceeded "
+                f"{self.max_fragments_per_sender} in-flight fragments. Buffer evicted."
+            )
 
         if idx not in state['parts']:
             # Guard against memory exhaustion: cap total accumulated bytes
@@ -8737,12 +7851,12 @@ class OTRFragmentBuffer:
             payload_parts = []
             for i in range(1, total + 1):
                 if i not in state['parts']:
-                    self._buffers.pop(sender, None)
+                    self._buffers.pop(key, None)
                     return None
                 payload_parts.append(state['parts'][i])
 
             combined = ''.join(payload_parts)
-            self._buffers.pop(sender, None)
+            self._buffers.pop(key, None)
 
             if DEBUG_MODE:
                     _emit_line(f"[OTRFragment] reassembled {len(combined)} chars from {sender}")
@@ -8753,7 +7867,9 @@ class OTRFragmentBuffer:
 
     def clear_sender(self, sender: str) -> None:
         with self._lock:
-            self._buffers.pop(sender, None)
+            keys = [k for k in self._buffers if k[0] == sender]
+            for k in keys:
+                self._buffers.pop(k, None)
 
     def clear_all(self) -> None:
         with self._lock:
@@ -8764,24 +7880,28 @@ class OTRFragmentBuffer:
             return len(self._buffers)
 
     def get_pending_for(self, sender: str) -> int:
+        """Return total fragment count across all in-progress assemblies for sender."""
         with self._lock:
-            if sender not in self._buffers:
-                return 0
-            return len(self._buffers[sender]['parts'])
+            return sum(
+                len(state['parts'])
+                for (s, _t), state in self._buffers.items()
+                if s == sender
+            )
 
     def _expire(self, now: float) -> None:
         if len(self._buffers) > self.max_total_senders:
             oldest = sorted(self._buffers.items(), key=lambda x: x[1].get('first_ts', 0))
-            for sender, _ in oldest[:len(self._buffers) - self.max_total_senders]:
-                if DEBUG_MODE: _emit_line(f"[fragment] buffer evict: too many senders, dropping {sender}")
-                del self._buffers[sender]
+            for key, _ in oldest[:len(self._buffers) - self.max_total_senders]:
+                if DEBUG_MODE:
+                    _emit_line(f"[fragment] buffer evict: too many senders, dropping {key[0]}/{key[1]}")
+                del self._buffers[key]
         cutoff = now - self.timeout
         expired = [
-            s for s, st in self._buffers.items()
+            k for k, st in self._buffers.items()
             if st.get('last_ts', st['first_ts']) < cutoff
         ]
-        for s in expired:
-            self._buffers.pop(s, None)
+        for k in expired:
+            self._buffers.pop(k, None)
 
     def cleanup_expired(self) -> int:
         with self._lock:
@@ -10829,11 +9949,14 @@ class OTRv4IRCClient:
                  if hasattr(self.session_manager, "smp_storage") else ""
         if not secret:
             return
-        tlv = self.session_manager.start_smp(peer, secret)
-        if tlv:
-            enc = self.session_manager.encrypt_message(peer, "")
-            if enc:
-                self.send_otr_message(peer, enc)
+        try:
+            tlv = self.session_manager.start_smp(peer, secret)
+            if tlv:
+                enc = self.session_manager.encrypt_message(peer, "")
+                if enc:
+                    self.send_otr_message(peer, enc)
+        finally:
+            secret = None  # drop local str ref
 
     def schedule_auto_smp(self, peer: str, delay: float = 2.0):
         if peer not in self.smp_schedule_timers:
@@ -11190,9 +10313,8 @@ class OTRv4IRCClient:
             if not peer:
                 self.add_message("system", colorize("⚠ Switch to a peer panel first", 'yellow'))
             elif sub == "start":
-                session = self.session_manager.sessions.get(peer) if hasattr(self.session_manager, 'sessions') else None
-                stored  = getattr(session, 'auto_smp_secret', '') if session else ''
-                if not stored and hasattr(self.session_manager, 'smp_storage'):
+                stored = ''
+                if hasattr(self.session_manager, 'smp_storage'):
                     stored = self.session_manager.smp_storage.get_secret(peer) or ''
                 if not stored:
                     self.add_message("system", colorize("⚠ No SMP secret stored — use /smp <secret> first", 'yellow'))
@@ -11714,25 +10836,27 @@ class EnhancedOTRv4IRCClient(OTRv4IRCClient):
         self._set_pending('smp_secret', peer,
                           security_level=sec, is_initiator=is_initiator)
 
+    def _ensure_rust_smp(self, peer: str) -> None:
+        """Ensure the Rust SMP engine is initialized for *peer*'s session."""
+        session = (self.session_manager.get_session(peer)
+                   if hasattr(self.session_manager, 'get_session') else None)
+        if session is not None and hasattr(session, 'initialize_smp'):
+            session.initialize_smp()
+
     def _handle_smp_secret_response(self, peer: str, secret: str, action: dict):
-        """Process SMP secret input from user - NO AUTO TIMER."""
+        """Process SMP secret input from user."""
         sec = action.get('security_level', UIConstants.SecurityLevel.ENCRYPTED)
         is_initiator = action.get('is_initiator', False)
 
         if secret and secret.lower() != 'skip':
             try:
+                self._ensure_rust_smp(peer)
                 if hasattr(self.session_manager, 'set_smp_secret'):
                     self.session_manager.set_smp_secret(peer, secret)
-                elif hasattr(self.session_manager, 'smp_storage'):
-                    self.session_manager.smp_storage.set_secret(peer, secret)
-                
-                sess = self.session_manager.get_session(peer)
-                if sess and hasattr(sess, 'set_smp_secret'):
-                    sess.set_smp_secret(secret)
-                
+
                 self.add_message(self._otr_panel(peer),
                     colorize("✅ SMP secret stored", 'green'), sec)
-                
+
                 if is_initiator:
                     self.add_message(self._otr_panel(peer),
                         colorize("🔐 Type  /smp start  to begin verification.", 'cyan'), sec)
@@ -11762,26 +10886,13 @@ class EnhancedOTRv4IRCClient(OTRv4IRCClient):
 
 
     def process_smp_message(self, sender: str, data: bytes):
-        """Handle incoming SMP TLV bytes."""
-        try:
-            if not hasattr(self.session_manager, 'process_smp_message'):
-                return
-            
-            result = self.session_manager.process_smp_message(sender, data)
-            if result:
-                self.debug(f"SMP response of length {len(result)}")
-                self.send_otr_message(sender, result)
+        """DEAD CODE — disabled to prevent duplicate SMP dispatch.
 
-            if hasattr(self.session_manager, 'get_smp_status'):
-                status = self.session_manager.get_smp_status(sender)
-                if status.get('verified'):
-                    self._on_smp_verified(sender)
-                elif status.get('failed'):
-                    sec = self.session_manager.get_security_level(sender)
-                    self.add_message(sender,
-                        colorize("❌ SMP verification FAILED — secrets don't match", 'red'), sec)
-        except Exception as exc:
-            self.debug(f"process_smp_message error: {exc}")
+        SMP is handled exclusively through _handle_data_message →
+        session_manager.decrypt_message → _enh_handle_smp_tlv.
+        This method must never be called directly.
+        """
+        self.debug(f"process_smp_message called for {sender} — ignored (use decrypt_message path)")
 
 
 
@@ -12148,18 +11259,12 @@ class EnhancedOTRv4IRCClient(OTRv4IRCClient):
                 if hasattr(self.session_manager, 'smp_storage'):
                     secret = self.session_manager.smp_storage.get_secret(peer)
                     self.debug(f"Got secret from smp_storage: {bool(secret)}")
-                
-                if not secret:
-                    sess = self.session_manager.get_session(peer)
-                    if sess and hasattr(sess, 'auto_smp_secret') and sess.auto_smp_secret:
-                        secret = sess.auto_smp_secret
-                        self.debug(f"Got secret from session.auto_smp_secret: {bool(secret)}")
-                
+
                 if not secret:
                     self.add_message("system",
                         colorize(f"No SMP secret stored for {peer} - use /smp <peer> <secret> first", 'yellow'))
                     return
-                
+
                 self.debug(f"Starting SMP with secret length: {len(secret)}")
                 self._start_smp(peer, secret)
             
@@ -12288,10 +11393,15 @@ class EnhancedOTRv4IRCClient(OTRv4IRCClient):
     def _start_smp(self, peer: str, secret: str, question: str = ""):
         """Kick off SMP verification with immediate step-1 feedback.
 
-        The ZK proof computation inside smp_engine.start_smp() is expensive
+        The ZK proof computation inside rust_smp.generate_smp1() runs in Rust
         (hundreds of ms on Termux).  We show the step-1 progress bar to the
         user BEFORE starting the computation so they get instant feedback,
         then do the heavy work in a background thread.
+
+        Security: set_smp_secret() is called here (main thread) which stores
+        bytes in the Rust vault and immediately wipes the bytearray.  The
+        background thread calls start_smp() with the already-bound vault —
+        no plaintext string is captured in the closure.
         """
         if not self.session_manager.has_session(peer):
             self.add_message("system",
@@ -12318,8 +11428,12 @@ class EnhancedOTRv4IRCClient(OTRv4IRCClient):
             " · Computing challenge — please wait…", "yellow"), sec)
         self.panel_manager.update_smp_progress(peer, 1, 4)
 
+        # Bind secret into Rust vault NOW, before the thread starts.
+        # After this call the plaintext lives only in Rust-managed memory.
         if hasattr(self.session_manager, 'set_smp_secret'):
             self.session_manager.set_smp_secret(peer, secret)
+        # Drop local reference — vault holds the canonical copy
+        secret = None  # noqa: F841  (intentional wipe of local str)
 
         def _do_smp():
             try:
@@ -12329,7 +11443,16 @@ class EnhancedOTRv4IRCClient(OTRv4IRCClient):
                     return
 
                 self.debug(f"SMP background compute starting for {peer}")
-                encrypted_msg = self.session_manager.start_smp(peer, secret, question)
+                try:
+                    # start_smp uses the already-bound vault secret —
+                    # no plaintext string needed here
+                    encrypted_msg = self.session_manager.start_smp(peer, "", question)
+                except Exception as smp_exc:
+                    self.debug(f"SMP start exception: {smp_exc}")
+                    self.add_message("system",
+                        colorize(f"❌ SMP failed: {str(smp_exc)[:200]}", 'red'))
+                    self.panel_manager.update_smp_progress(peer, 0, 0)
+                    return
                 self.debug(f"SMP compute done: msg={'yes' if encrypted_msg else 'no'}")
 
                 if encrypted_msg and isinstance(encrypted_msg, str) \

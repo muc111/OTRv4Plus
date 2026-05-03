@@ -48,20 +48,24 @@ pub fn kdf_secret<const N: usize>(usage_id: u8, value: &[u8]) -> SecretBytes<N> 
     SecretBytes::new(arr)
 }
 
-// ── Ratchet KDF functions (32-byte keys used by DoubleRatchet) ────────────────
+// ── Ratchet KDF functions (must match Python _kdf_ck exactly) ────────────────
 
 /// Advance a chain key one step.
-/// Returns (next_chain_key, enc_key, mac_key) — all 32 bytes.
-/// KDF("OTRv4" || 0x12 || chain_key, 96) split into 3 × 32.
+/// Returns (next_chain_key, message_key, zeros).
+///
+/// This **mirrors** the Python `_kdf_ck` in otrv4+.py:
+///   new_ck = kdf_1(0x12, ck, 32)    # CHAIN_KEY
+///   mk     = kdf_1(0x13, ck, 32)    # MESSAGE_KEY
+///   return new_ck, mk, bytes(32)    # 32 zero bytes
 pub fn kdf_chain(chain_key: &[u8; 32]) -> ([u8; 32], [u8; 32], [u8; 32]) {
-    let raw = kdf_1(usage::CHAIN_KEY, chain_key, 96);
-    let mut next_ck  = [0u8; 32];
-    let mut enc_key  = [0u8; 32];
-    let mut mac_key  = [0u8; 32];
-    next_ck.copy_from_slice(&raw[  ..32]);
-    enc_key.copy_from_slice(&raw[32..64]);
-    mac_key.copy_from_slice(&raw[64..96]);
-    (next_ck, enc_key, mac_key)
+    let new_ck = kdf_1(usage::CHAIN_KEY, chain_key, 32);
+    let mk     = kdf_1(usage::MESSAGE_KEY, chain_key, 32);
+
+    let mut ck_arr = [0u8; 32];
+    let mut mk_arr = [0u8; 32];
+    ck_arr.copy_from_slice(&new_ck);
+    mk_arr.copy_from_slice(&mk);
+    (ck_arr, mk_arr, [0u8; 32])
 }
 
 /// Derive new root + chain keys from old root key and DH shared secret.

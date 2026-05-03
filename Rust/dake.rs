@@ -1,3 +1,4 @@
+#![cfg(feature = "pq-rust")]
 // src/dake.rs — OTRv4 Deniable Authenticated Key Exchange
 //
 // Fully compliant with OTRv4 spec: extracts peer identity from client profiles,

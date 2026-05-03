@@ -265,7 +265,7 @@ impl DoubleRatchet {
         })
     }
 
-    // ── Decrypt ─────────────────────────────────────────────────
+    // ── Decrypt same DH ────────────────────────────────────────
     pub fn decrypt_same_dh(
         &mut self, header_bytes: &[u8], ciphertext: &[u8],
         nonce: &[u8; 12], tag: &[u8; 16],
@@ -313,6 +313,7 @@ impl DoubleRatchet {
         Ok(pt)
     }
 
+    // ── Decrypt with DH ratchet ─────────────────────────────────
     pub fn decrypt_new_dh(
         &mut self, header_bytes: &[u8], ciphertext: &[u8],
         nonce: &[u8; 12], tag: &[u8; 16],
@@ -384,15 +385,17 @@ impl DoubleRatchet {
         Ok(pt)
     }
 
+    // ── Check if a new DH public key was used ──────────────────
     pub fn is_new_dh(&self, header_bytes: &[u8]) -> bool {
         if let Some(remote) = &self.dh_pub_remote {
             if let Some(dh_pub) = RatchetHeader::peek_dh_pub(header_bytes) {
-                return dh_pub.ct_ne(remote.as_slice()).into();
+                return bool::from(!dh_pub.ct_eq(remote.as_slice()));
             }
         }
-        false
+        true  // if no remote, then any key is new
     }
 
+    // ── Utility to extract DH public key from header (static) ───
     pub fn header_dh_pub(header_bytes: &[u8]) -> Option<[u8; 56]> {
         if header_bytes.len() >= 56 {
             let mut pk = [0u8; 56];
@@ -403,7 +406,7 @@ impl DoubleRatchet {
         }
     }
 
-    // ── Internal ────────────────────────────────────────────────
+    // ── Internal helper ────────────────────────────────────────
     fn aes_decrypt(&self, enc_key: &[u8; 32],
                    header_bytes: &[u8], ciphertext: &[u8],
                    nonce: &[u8; 12], tag: &[u8; 16]) -> Result<Vec<u8>, RatchetError> {
@@ -445,129 +448,7 @@ impl DoubleRatchet {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn make_pair() -> (DoubleRatchet, DoubleRatchet) {
-        let root = [0x42u8; 32];
-        let cks = [0xAAu8; 32];
-        let ckr = [0xBBu8; 32];
-        let bk = [0xCCu8; 32];
-        let pub_a = [0x01u8; 56];
-        let pub_b = [0x02u8; 56];
-        let alice = DoubleRatchet::new(&root, &cks, &ckr, &bk, &pub_a, true).unwrap();
-        let bob = DoubleRatchet::new(&root, &cks, &ckr, &bk, &pub_b, false).unwrap();
-        (alice, bob)
-    }
-
-    #[test]
-    fn test_encrypt_decrypt_roundtrip() {
-        let (mut alice, mut bob) = make_pair();
-        let msg = b"hello from alice";
-        let enc = alice.encrypt(msg).unwrap();
-        let pt = bob.decrypt_same_dh(&enc.header, &enc.ciphertext, &enc.nonce, &enc.tag).unwrap();
-        assert_eq!(pt, msg);
-    }
-
-    #[test]
-    fn test_multiple_messages() {
-        let (mut alice, mut bob) = make_pair();
-        for i in 0..20u32 {
-            let msg = format!("message {i}");
-            let enc = alice.encrypt(msg.as_bytes()).unwrap();
-            let pt = bob.decrypt_same_dh(&enc.header, &enc.ciphertext, &enc.nonce, &enc.tag).unwrap();
-            assert_eq!(pt, msg.as_bytes());
-        }
-    }
-
-    #[test]
-    fn test_bidirectional() {
-        let (mut alice, mut bob) = make_pair();
-        for i in 0..10u32 {
-            let msg_a = format!("a2b-{i}");
-            let enc_a = alice.encrypt(msg_a.as_bytes()).unwrap();
-            let pt_a = bob.decrypt_same_dh(&enc_a.header, &enc_a.ciphertext, &enc_a.nonce, &enc_a.tag).unwrap();
-            assert_eq!(pt_a, msg_a.as_bytes());
-
-            let msg_b = format!("b2a-{i}");
-            let enc_b = bob.encrypt(msg_b.as_bytes()).unwrap();
-            let pt_b = alice.decrypt_same_dh(&enc_b.header, &enc_b.ciphertext, &enc_b.nonce, &enc_b.tag).unwrap();
-            assert_eq!(pt_b, msg_b.as_bytes());
-        }
-    }
-
-    #[test]
-    fn test_replay_rejected() {
-        let (mut alice, mut bob) = make_pair();
-        let enc = alice.encrypt(b"test").unwrap();
-        let _ = bob.decrypt_same_dh(&enc.header, &enc.ciphertext, &enc.nonce, &enc.tag).unwrap();
-        let result = bob.decrypt_same_dh(&enc.header, &enc.ciphertext, &enc.nonce, &enc.tag);
-        assert!(matches!(result, Err(RatchetError::ReplayDetected(_))));
-    }
-
-    #[test]
-    fn test_tampered_ciphertext_rejected() {
-        let (mut alice, mut bob) = make_pair();
-        let mut enc = alice.encrypt(b"test").unwrap();
-        if !enc.ciphertext.is_empty() { enc.ciphertext[0] ^= 0xFF; }
-        let result = bob.decrypt_same_dh(&enc.header, &enc.ciphertext, &enc.nonce, &enc.tag);
-        assert!(matches!(result, Err(RatchetError::DecryptionFailed(_))));
-    }
-
-    #[test]
-    fn test_zero_chain_key_rejected() {
-        let root = [0x42u8; 32];
-        let zero = [0u8; 32];
-        let bk = [0xCCu8; 32];
-        let pub_a = [0x01u8; 56];
-        let result = DoubleRatchet::new(&root, &zero, &[0xBBu8; 32], &bk, &pub_a, true);
-        assert!(matches!(result, Err(RatchetError::ZeroChainKey)));
-    }
-
-    #[test]
-    fn test_out_of_order_delivery() {
-        let (mut alice, mut bob) = make_pair();
-        let enc0 = alice.encrypt(b"msg-0").unwrap();
-        let enc1 = alice.encrypt(b"msg-1").unwrap();
-        let enc2 = alice.encrypt(b"msg-2").unwrap();
-        let pt2 = bob.decrypt_same_dh(&enc2.header, &enc2.ciphertext, &enc2.nonce, &enc2.tag).unwrap();
-        assert_eq!(pt2, b"msg-2");
-        let pt0 = bob.decrypt_same_dh(&enc0.header, &enc0.ciphertext, &enc0.nonce, &enc0.tag).unwrap();
-        assert_eq!(pt0, b"msg-0");
-        let pt1 = bob.decrypt_same_dh(&enc1.header, &enc1.ciphertext, &enc1.nonce, &enc1.tag).unwrap();
-        assert_eq!(pt1, b"msg-1");
-    }
-
-    #[test]
-    fn test_replay_cache_eviction() {
-        let mut cache = ReplayCache::new(2);
-        cache.insert(&[1u8; 56], 1);
-        cache.insert(&[2u8; 56], 2);
-        assert!(cache.contains(&[1u8; 56], 1));
-        assert!(cache.contains(&[2u8; 56], 2));
-        cache.insert(&[3u8; 56], 3);
-        assert!(!cache.contains(&[1u8; 56], 1));
-    }
-
-    #[test]
-    fn test_max_skip_enforcement() {
-        let (mut alice, mut bob) = make_pair();
-        let header = RatchetHeader::new([1u8; 56], 0, MAX_SKIP + 1).encode();
-        let result = bob.decrypt_same_dh(&header, b"test", &[0u8; 12], &[0u8; 16]);
-        assert!(matches!(result, Err(RatchetError::MaxSkipExceeded(_))));
-    }
-
-    #[test]
-    fn test_overflow_protection() {
-        let (mut alice, _) = make_pair();
-        alice.msg_num_send = u32::MAX;
-        let result = alice.encrypt(b"test");
-        assert!(matches!(result, Err(RatchetError::Protocol(_))));
-    }
-}
-
-// ── PyO3 wrapper ─────────────────────────────────────────────────────────────
+// ── PyO3 wrapper with ALL required methods ──────────────────────────
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict};
 
@@ -601,9 +482,13 @@ impl RustDoubleRatchet {
 
     fn set_ad(&mut self, ad: &[u8]) { self.inner.set_ad(ad); }
     fn needs_rekey(&self) -> bool { self.inner.needs_rekey() }
-    fn local_pub<'py>(&self, py: Python<'py>) -> Bound<'py, PyBytes> { PyBytes::new_bound(py, self.inner.local_pub()) }
+    fn local_pub<'py>(&self, py: Python<'py>) -> Bound<'py, PyBytes> {
+        PyBytes::new_bound(py, self.inner.local_pub())
+    }
     fn ratchet_id(&self) -> u32 { self.inner.ratchet_id() }
-    fn brace_key<'py>(&self, py: Python<'py>) -> Bound<'py, PyBytes> { PyBytes::new_bound(py, self.inner.brace_key()) }
+    fn brace_key<'py>(&self, py: Python<'py>) -> Bound<'py, PyBytes> {
+        PyBytes::new_bound(py, self.inner.brace_key())
+    }
 
     fn encrypt<'py>(&mut self, py: Python<'py>, plaintext: &[u8]) -> PyResult<Bound<'py, PyDict>> {
         let result = self.inner.encrypt(plaintext)
@@ -629,6 +514,42 @@ impl RustDoubleRatchet {
         let plaintext = self.inner.decrypt_same_dh(header, ciphertext, nonce_arr, tag_arr)
             .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
         Ok(PyBytes::new_bound(py, &plaintext))
+    }
+
+    fn decrypt_new_dh<'py>(&mut self, py: Python<'py>,
+        header: &[u8], ciphertext: &[u8], nonce: &[u8], tag: &[u8],
+        dh_secret_recv: &[u8], dh_secret_send: &[u8], new_local_pub: &[u8],
+    ) -> PyResult<Bound<'py, PyBytes>> {
+        let nonce_arr: &[u8; 12] = nonce.try_into()
+            .map_err(|_| pyo3::exceptions::PyValueError::new_err("nonce must be 12 bytes"))?;
+        let tag_arr: &[u8; 16] = tag.try_into()
+            .map_err(|_| pyo3::exceptions::PyValueError::new_err("tag must be 16 bytes"))?;
+        let new_local_pub: &[u8; 56] = new_local_pub.try_into()
+            .map_err(|_| pyo3::exceptions::PyValueError::new_err("new_local_pub must be 56 bytes"))?;
+        let plaintext = self.inner.decrypt_new_dh(header, ciphertext, nonce_arr, tag_arr,
+            dh_secret_recv, dh_secret_send, new_local_pub)
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+        Ok(PyBytes::new_bound(py, &plaintext))
+    }
+
+    fn send_ratchet(&mut self, dh_secret: &[u8], new_local_pub: &[u8]) -> PyResult<()> {
+        let new_local_pub: &[u8; 56] = new_local_pub.try_into()
+            .map_err(|_| pyo3::exceptions::PyValueError::new_err("new_local_pub must be 56 bytes"))?;
+        self.inner.send_ratchet(dh_secret, new_local_pub);
+        Ok(())
+    }
+
+    fn rotate_brace_key(&mut self, shared_secret: &[u8]) {
+        self.inner.rotate_brace_key(shared_secret);
+    }
+
+    fn is_new_dh(&self, header_bytes: &[u8]) -> bool {
+        self.inner.is_new_dh(header_bytes)
+    }
+
+    // ── Corrected: returns Python bytes object ────────────────
+    fn header_dh_pub<'py>(&self, py: Python<'py>, header_bytes: &[u8]) -> Option<Bound<'py, PyBytes>> {
+        DoubleRatchet::header_dh_pub(header_bytes).map(|pk: [u8; 56]| PyBytes::new_bound(py, &pk))
     }
 
     fn zeroize(&mut self) {

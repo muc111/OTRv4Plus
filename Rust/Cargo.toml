@@ -1,6 +1,6 @@
 [package]
 name        = "otrv4_core"
-version     = "0.5.0"
+version     = "0.5.1"
 edition     = "2021"
 authors     = ["OTRv4+ contributors"]
 description = "Post-quantum OTRv4 cryptographic core — Rust/PyO3"
@@ -11,9 +11,18 @@ name       = "otrv4_core"
 crate-type = ["cdylib"]
 
 [features]
-default  = ["pyo3/extension-module"]
-pq-rust  = ["num-bigint", "num-traits", "lazy_static",
-            "pqcrypto-kyber", "pqcrypto-mldsa", "pqcrypto-traits", "x448", "getrandom"]
+default  = ["pyo3/extension-module", "pq-rust"]
+pq-rust  = [
+    "num-bigint",
+    "num-traits",
+    "lazy_static",
+    "pqcrypto-kyber",
+    "pqcrypto-mldsa",
+    "pqcrypto-traits",
+    "x448",
+    "getrandom",
+    "ed448-goldilocks-plus",
+]
 
 [dependencies]
 pyo3         = { version = "0.21", features = ["extension-module", "abi3-py39"] }
@@ -26,24 +35,31 @@ rand_core    = { version = "0.6"  }
 rand         = { version = "0.8"  }
 dashmap      = { version = "5.5"  }
 thiserror    = { version = "1.0"  }
+libc         = { version = "0.2"  }        # mlock / munlock
 
-# Phase-2 — optional, only with --features pq-rust
-num-bigint    = { version = "0.4",           optional = true, features = ["rand"] }
-num-traits    = { version = "0.2",           optional = true }
-lazy_static   = { version = "1.5",           optional = true }
-getrandom     = { version = "0.2",           optional = true }
-x448          = { version = "0.6",           optional = true }
+# Optional — pq-rust feature gate
+num-bigint    = { version = "0.4",  optional = true, features = ["rand"] }
+num-traits    = { version = "0.2",  optional = true }
+lazy_static   = { version = "1.5",  optional = true }
+getrandom     = { version = "0.2",  optional = true }
+x448          = { version = "0.6",  optional = true }
 
-# Stable post‑quantum crypto
-pqcrypto-kyber     = { version = "0.8", optional = true }
-pqcrypto-mldsa = { version = "0.1.2", optional = true }
-pqcrypto-traits    = { version = "0.3", optional = true }
+pqcrypto-kyber  = { version = "0.8",   optional = true }
+pqcrypto-mldsa  = { version = "0.1.2", optional = true }
+pqcrypto-traits = { version = "0.3",   optional = true }
+
+ed448-goldilocks-plus = {
+    version          = "0.16",
+    optional         = true,
+    default-features = false,
+    features         = ["alloc"],
+}
 
 [profile.release]
 opt-level       = 3
 lto             = true
 codegen-units   = 1
-panic           = "abort"
+panic           = "abort"      # no unwinding — ZeroizeOnDrop still fires
 overflow-checks = true
 
 [profile.dev]

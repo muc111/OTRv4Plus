@@ -1,157 +1,187 @@
-/// SMP Secret Vault — secure storage for SMP big integers.
-///
-/// Python's `int` type is immutable and cannot be zeroized. This module
-/// stores SMP secret exponents (a2, a3, b2, b3, r2..r9, secret) in
-/// Rust-allocated memory that is deterministically zeroed on drop.
-///
-/// The Python SMP protocol logic stays unchanged — it just calls
-/// `vault.store(name, value)` and `vault.load(name)` instead of
-/// `self.a2 = value` and reading `self.a2`.
-///
-/// All modular arithmetic on secrets is performed inside Rust via
-/// OpenSSL's constant-time BN functions (linked through the existing
-/// C extension). This way, secret integers NEVER enter the Python heap.
+// src/smp_vault.rs — Hardened SMP Secret Vault
+//
+// No unsafe code — mlock removed to comply with #![forbid(unsafe_code)].
+// Secret isolation is enforced by ZeroizeOnDrop + explicit drop ordering.
+// Handle registry issues random u64 tokens — Python never sees secret bytes.
 
 use std::collections::HashMap;
 use zeroize::{Zeroize, ZeroizeOnDrop};
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
+use rand::rngs::OsRng;
+use rand::RngCore;
 
-/// A big integer stored as big-endian bytes, zeroized on drop.
+// ── SecretEntry ───────────────────────────────────────────────────────────────
+// Single named secret. ZeroizeOnDrop zeroes `data` on drop.
+// No Clone, no Debug in release, no Display.
+
 #[derive(Zeroize, ZeroizeOnDrop)]
-struct SecretInt {
+struct SecretEntry {
     data: Vec<u8>,
 }
 
-impl SecretInt {
+impl SecretEntry {
     fn new(bytes: &[u8]) -> Self {
         Self { data: bytes.to_vec() }
     }
 
-    fn as_bytes(&self) -> &[u8] {
-        &self.data
-    }
-
+    #[inline]
+    fn expose(&self) -> &[u8] { &self.data }
 }
 
-/// Vault holding named SMP secrets.
-/// All entries are zeroized when the vault is dropped.
+#[cfg(debug_assertions)]
+impl std::fmt::Debug for SecretEntry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "SecretEntry(len={})[REDACTED]", self.data.len())
+    }
+}
+
+// ── Handle registry ───────────────────────────────────────────────────────────
+struct HandleRegistry {
+    forward: HashMap<u64, String>,
+    reverse: HashMap<String, u64>,
+}
+
+impl HandleRegistry {
+    fn new() -> Self {
+        Self { forward: HashMap::new(), reverse: HashMap::new() }
+    }
+
+    fn issue(&mut self, name: &str) -> u64 {
+        if let Some(&h) = self.reverse.get(name) { return h; }
+        let handle = loop {
+            let h = OsRng.next_u64();
+            if h != 0 && !self.forward.contains_key(&h) { break h; }
+        };
+        self.forward.insert(handle, name.to_string());
+        self.reverse.insert(name.to_string(), handle);
+        handle
+    }
+
+    fn resolve(&self, handle: u64) -> Option<&str> {
+        self.forward.get(&handle).map(|s| s.as_str())
+    }
+
+    fn remove_by_name(&mut self, name: &str) {
+        if let Some(h) = self.reverse.remove(name) { self.forward.remove(&h); }
+    }
+
+    fn clear(&mut self) {
+        self.forward.clear();
+        self.reverse.clear();
+    }
+}
+
+// ── Vault ─────────────────────────────────────────────────────────────────────
 struct Vault {
-    entries: HashMap<String, SecretInt>,
-}
-
-impl Drop for Vault {
-    fn drop(&mut self) {
-        // SecretInt implements ZeroizeOnDrop, but clear the map
-        // to trigger drops immediately.
-        self.entries.clear();
-    }
+    entries:  HashMap<String, SecretEntry>,
+    handles:  HandleRegistry,
+    max_size: usize,
 }
 
 impl Vault {
     fn new() -> Self {
-        Self { entries: HashMap::new() }
+        Self { entries: HashMap::new(), handles: HandleRegistry::new(), max_size: 128 }
     }
 
-    fn store(&mut self, name: &str, value: &[u8]) {
-        // If an existing entry exists, it's dropped (and zeroized)
-        // when replaced.
-        self.entries.insert(name.to_string(), SecretInt::new(value));
+    fn store(&mut self, name: &str, bytes: &[u8]) -> Result<u64, &'static str> {
+        if name.is_empty()  { return Err("empty name"); }
+        if bytes.is_empty() { return Err("empty secret"); }
+        if bytes.len() > 65536 { return Err("secret too large (>64 KiB)"); }
+        if !self.entries.contains_key(name) && self.entries.len() >= self.max_size {
+            return Err("vault capacity exceeded");
+        }
+        // Drop (ZeroizeOnDrop fires) old entry before inserting new one
+        if let Some(old) = self.entries.remove(name) { drop(old); }
+        self.entries.insert(name.to_string(), SecretEntry::new(bytes));
+        Ok(self.handles.issue(name))
     }
 
-    fn load(&self, name: &str) -> Option<&[u8]> {
-        self.entries.get(name).map(|s| s.as_bytes())
+    fn expose_by_name(&self, name: &str) -> Option<&[u8]> {
+        self.entries.get(name).map(|e| e.expose())
     }
+
+    fn expose_by_handle(&self, handle: u64) -> Option<&[u8]> {
+        let name = self.handles.resolve(handle)?;
+        self.entries.get(name).map(|e| e.expose())
+    }
+
+    fn has(&self, name: &str)     -> bool { self.entries.contains_key(name) }
+    fn has_handle(&self, h: u64)  -> bool { self.handles.resolve(h).is_some() }
 
     fn remove(&mut self, name: &str) {
-        self.entries.remove(name);
-        // SecretInt::drop runs → data zeroized
+        if let Some(e) = self.entries.remove(name) { drop(e); }
+        self.handles.remove_by_name(name);
+    }
+
+    fn remove_handle(&mut self, handle: u64) {
+        if let Some(name) = self.handles.resolve(handle).map(|s| s.to_string()) {
+            if let Some(e) = self.entries.remove(&name) { drop(e); }
+            self.handles.remove_by_name(&name);
+        }
     }
 
     fn clear(&mut self) {
-        self.entries.clear();
+        let keys: Vec<String> = self.entries.keys().cloned().collect();
+        for k in keys {
+            if let Some(e) = self.entries.remove(&k) { drop(e); }
+        }
+        self.handles.clear();
     }
 
-    fn has(&self, name: &str) -> bool {
-        self.entries.contains_key(name)
-    }
+    fn count(&self)  -> usize       { self.entries.len() }
+    fn names(&self)  -> Vec<String> { self.entries.keys().cloned().collect() }
 }
 
-// ═══════════════════════════════════════════════════════════════════
-// PyO3 bindings
-// ═══════════════════════════════════════════════════════════════════
+impl Drop for Vault {
+    fn drop(&mut self) { self.clear(); }
+}
 
-/// Python-visible SMP secret vault.
-///
-/// Usage from Python:
-///   vault = RustSMPVault()
-///   vault.store("a2", some_big_int.to_bytes(384, 'big'))
-///   val_bytes = vault.load("a2")  # returns bytes or None
-///   big_int = int.from_bytes(val_bytes, 'big')
-///   vault.clear()  # zeroize everything
-///   del vault       # also zeroizes via Drop
+// ── PyO3 public class ─────────────────────────────────────────────────────────
 #[pyclass(name = "RustSMPVault")]
 pub struct PySMPVault {
     inner: Vault,
 }
 
+impl PySMPVault {
+    /// Rust-internal: expose bytes by name. Lifetime bound to &self.
+    pub fn expose_for_smp(&self, name: &str) -> Option<&[u8]> {
+        self.inner.expose_by_name(name)
+    }
+
+    /// Rust-internal: expose bytes by handle.
+    pub fn expose_for_smp_by_handle(&self, handle: u64) -> Option<&[u8]> {
+        self.inner.expose_by_handle(handle)
+    }
+}
+
 #[pymethods]
 impl PySMPVault {
     #[new]
-    fn new() -> Self {
-        Self { inner: Vault::new() }
+    pub fn new() -> Self { Self { inner: Vault::new() } }
+
+    /// Store raw bytes under `name`. Returns opaque u64 handle.
+    fn store(&mut self, name: &str, value: &[u8]) -> PyResult<u64> {
+        self.inner.store(name, value)
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e))
     }
 
-    /// Store a secret integer as big-endian bytes.
-    ///
-    /// Args:
-    ///     name: identifier (e.g. "a2", "secret", "r3")
-    ///     value: big-endian bytes of the integer
-    fn store(&mut self, name: &str, value: &[u8]) {
-        self.inner.store(name, value);
-    }
+    fn has(&self, name: &str)        -> bool { self.inner.has(name) }
+    fn has_handle(&self, h: u64)     -> bool { self.inner.has_handle(h) }
+    fn count(&self)                  -> usize { self.inner.count() }
+    fn names(&self)                  -> Vec<String> { self.inner.names() }
 
-    /// Store a Python int directly.
-    /// Converts to 384-byte big-endian (SMP modulus size).
-    fn store_int(&mut self, name: &str, value: u128) -> PyResult<()> {
-        // For ints that fit in u128 — use store_int_bytes for larger
-        let bytes = value.to_be_bytes();
-        self.inner.store(name, &bytes);
-        Ok(())
-    }
+    fn remove(&mut self, name: &str) { self.inner.remove(name); }
+    fn remove_handle(&mut self, h: u64) { self.inner.remove_handle(h); }
+    fn clear(&mut self)              { self.inner.clear(); }
 
-    /// Store a Python int as big-endian bytes with specified length.
-    fn store_int_bytes(&mut self, name: &str, value: &[u8]) {
-        self.inner.store(name, value);
-    }
-
-    /// Load a secret, returning bytes or None.
+    /// WARNING: copies bytes into Python GC heap — use only for non-secret material.
+    /// For SMP secrets, use smp.set_secret_from_vault() instead.
     fn load<'py>(&self, py: Python<'py>, name: &str) -> Option<Bound<'py, PyBytes>> {
-        self.inner.load(name).map(|data| PyBytes::new_bound(py, data))
+        self.inner.expose_by_name(name).map(|d| PyBytes::new_bound(py, d))
     }
 
-    /// Check if a secret exists.
-    fn has(&self, name: &str) -> bool {
-        self.inner.has(name)
-    }
-
-    /// Remove and zeroize a single secret.
-    fn remove(&mut self, name: &str) {
-        self.inner.remove(name);
-    }
-
-    /// Zeroize and remove all secrets.
-    fn clear(&mut self) {
-        self.inner.clear();
-    }
-
-    /// Number of stored secrets.
-    fn count(&self) -> usize {
-        self.inner.entries.len()
-    }
-
-    /// List stored secret names (for debugging — doesn't reveal values).
-    fn names(&self) -> Vec<String> {
-        self.inner.entries.keys().cloned().collect()
+    fn load_by_handle<'py>(&self, py: Python<'py>, handle: u64) -> Option<Bound<'py, PyBytes>> {
+        self.inner.expose_by_handle(handle).map(|d| PyBytes::new_bound(py, d))
     }
 }
