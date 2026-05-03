@@ -33,13 +33,13 @@ def create_matching_pair():
 class TestRNGSecurity:
     def test_nonce_uniqueness(self):
         alice, _ = create_matching_pair()
-        nonces = [bytes(alice.encrypt(b"test").nonce) for _ in range(100)]
+        nonces = [bytes(alice.encrypt(b"test")['nonce']) for _ in range(100)]
         assert len(set(nonces)) == 100
         assert len(set(n[0] for n in nonces)) > 50
 
     def test_nonce_not_predictable(self):
         alice, _ = create_matching_pair()
-        nonces = [int.from_bytes(bytes(alice.encrypt(b"test").nonce), 'big') for _ in range(50)]
+        nonces = [int.from_bytes(bytes(alice.encrypt(b"test")['nonce']), 'big') for _ in range(50)]
         diffs = [nonces[i+1] - nonces[i] for i in range(len(nonces)-1)]
         assert len(set(diffs)) > 40
 
@@ -62,7 +62,7 @@ class TestKDFForwardSecrecy:
         alice, _ = create_matching_pair()
         for _ in range(100):
             alice.encrypt(b"test")
-        assert len(bytes(alice.encrypt(b"final").ciphertext)) > 0
+        assert len(bytes(alice.encrypt(b"final")['ciphertext'])) > 0
 
 
 class TestHybridKeyComposition:
@@ -84,7 +84,8 @@ class TestDoSProtection:
     def test_max_skip_enforcement(self):
         alice, bob = create_matching_pair()
         setup = alice.encrypt(b"setup")
-        bob.decrypt_same_dh(bytes(setup.header), bytes(setup.ciphertext), bytes(setup.nonce), bytes(setup.tag))
+        bob.decrypt_same_dh(bytes(setup['header']), bytes(setup['ciphertext']),
+                            bytes(setup['nonce']), bytes(setup['tag']))
         header = rust_encode_header(bytes(alice.local_pub()), 0, 2000)
         with pytest.raises(ValueError, match="max skip"):
             bob.decrypt_same_dh(header, b"fake", secrets.token_bytes(12), secrets.token_bytes(16))
@@ -101,11 +102,10 @@ class TestDoSProtection:
 
     def test_memory_exhaustion_prevention(self):
         alice, bob = create_matching_pair()
-        # Establish connection
         setup = alice.encrypt(b"setup")
-        bob.decrypt_same_dh(bytes(setup.header), bytes(setup.ciphertext), bytes(setup.nonce), bytes(setup.tag))
+        bob.decrypt_same_dh(bytes(setup['header']), bytes(setup['ciphertext']),
+                            bytes(setup['nonce']), bytes(setup['tag']))
         
-        # Send 3000 messages in batches, decrypting the last of each batch to keep Bob's counter near the end
         batch_size = 500
         total = 3000
         all_msgs = []
@@ -113,13 +113,12 @@ class TestDoSProtection:
             batch = []
             for i in range(start, min(start + batch_size, total)):
                 res = alice.encrypt(f"msg{i}".encode())
-                batch.append((bytes(res.header), bytes(res.ciphertext), bytes(res.nonce), bytes(res.tag)))
+                batch.append((bytes(res['header']), bytes(res['ciphertext']),
+                              bytes(res['nonce']), bytes(res['tag'])))
             all_msgs.extend(batch)
-            # Advance Bob's receive chain by decrypting the last message of this batch
             last = batch[-1]
             bob.decrypt_same_dh(last[0], last[1], last[2], last[3])
         
-        # Now decrypt the last 1000 messages in reverse order → forces skipped key storage
         cnt = 0
         for h, c, n, t in reversed(all_msgs[-1000:]):
             try:
@@ -131,20 +130,21 @@ class TestDoSProtection:
                 raise
         
         assert cnt > 0, "No out-of-order messages decrypted"
-        # Verify the ratchet still works (no memory exhaustion)
         final = alice.encrypt(b"final")
-        assert len(bytes(final.ciphertext)) > 0
+        assert len(bytes(final['ciphertext'])) > 0
 
 
 class TestReplayCacheSecurity:
     def test_replay_cache_performance(self):
         alice, bob = create_matching_pair()
         setup = alice.encrypt(b"setup")
-        bob.decrypt_same_dh(bytes(setup.header), bytes(setup.ciphertext), bytes(setup.nonce), bytes(setup.tag))
+        bob.decrypt_same_dh(bytes(setup['header']), bytes(setup['ciphertext']),
+                            bytes(setup['nonce']), bytes(setup['tag']))
         msgs = []
         for _ in range(500):
             res = alice.encrypt(b"test")
-            m = (bytes(res.header), bytes(res.ciphertext), bytes(res.nonce), bytes(res.tag))
+            m = (bytes(res['header']), bytes(res['ciphertext']),
+                 bytes(res['nonce']), bytes(res['tag']))
             msgs.append(m)
             bob.decrypt_same_dh(*m)
         start = time.time()
@@ -156,9 +156,10 @@ class TestReplayCacheSecurity:
     def test_replay_attack_prevention(self):
         alice, bob = create_matching_pair()
         setup = alice.encrypt(b"setup")
-        bob.decrypt_same_dh(bytes(setup.header), bytes(setup.ciphertext), bytes(setup.nonce), bytes(setup.tag))
+        bob.decrypt_same_dh(bytes(setup['header']), bytes(setup['ciphertext']),
+                            bytes(setup['nonce']), bytes(setup['tag']))
         res = alice.encrypt(b"legitimate")
-        h, c, n, t = bytes(res.header), bytes(res.ciphertext), bytes(res.nonce), bytes(res.tag)
+        h, c, n, t = bytes(res['header']), bytes(res['ciphertext']), bytes(res['nonce']), bytes(res['tag'])
         assert bob.decrypt_same_dh(h, c, n, t) == b"legitimate"
         with pytest.raises(ValueError, match="replay"):
             bob.decrypt_same_dh(h, c, n, t)
@@ -166,26 +167,30 @@ class TestReplayCacheSecurity:
     def test_replay_cache_eviction_correctness(self):
         alice, bob = create_matching_pair()
         setup = alice.encrypt(b"setup")
-        bob.decrypt_same_dh(bytes(setup.header), bytes(setup.ciphertext), bytes(setup.nonce), bytes(setup.tag))
+        bob.decrypt_same_dh(bytes(setup['header']), bytes(setup['ciphertext']),
+                            bytes(setup['nonce']), bytes(setup['tag']))
         success = 0
         for i in range(15000):
             res = alice.encrypt(f"msg{i}".encode())
             try:
-                bob.decrypt_same_dh(bytes(res.header), bytes(res.ciphertext), bytes(res.nonce), bytes(res.tag))
+                bob.decrypt_same_dh(bytes(res['header']), bytes(res['ciphertext']),
+                                    bytes(res['nonce']), bytes(res['tag']))
                 success += 1
             except ValueError: continue
         assert success > 10000
         final = alice.encrypt(b"final")
-        assert bob.decrypt_same_dh(bytes(final.header), bytes(final.ciphertext), bytes(final.nonce), bytes(final.tag)) == b"final"
+        assert bob.decrypt_same_dh(bytes(final['header']), bytes(final['ciphertext']),
+                                   bytes(final['nonce']), bytes(final['tag'])) == b"final"
 
 
 class TestCryptographicSanity:
     def test_constant_time_comparison(self):
         alice, bob = create_matching_pair()
         setup = alice.encrypt(b"setup")
-        bob.decrypt_same_dh(bytes(setup.header), bytes(setup.ciphertext), bytes(setup.nonce), bytes(setup.tag))
+        bob.decrypt_same_dh(bytes(setup['header']), bytes(setup['ciphertext']),
+                            bytes(setup['nonce']), bytes(setup['tag']))
         res = alice.encrypt(b"test")
-        h, c, n, t = bytes(res.header), bytes(res.ciphertext), bytes(res.nonce), bytes(res.tag)
+        h, c, n, t = bytes(res['header']), bytes(res['ciphertext']), bytes(res['nonce']), bytes(res['tag'])
         start = time.perf_counter()
         bob.decrypt_same_dh(h, c, n, t)
         t_ok = time.perf_counter() - start
@@ -199,7 +204,7 @@ class TestCryptographicSanity:
 
     def test_zeroization_prevents_key_reuse(self):
         alice, _ = create_matching_pair()
-        cts = [bytes(alice.encrypt(b"test").ciphertext) for _ in range(10)]
+        cts = [bytes(alice.encrypt(b"test")['ciphertext']) for _ in range(10)]
         assert len(set(cts)) == 10
 
 
