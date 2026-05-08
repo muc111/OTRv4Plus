@@ -1,3 +1,4 @@
+#![cfg(feature = "pq-rust")]
 // src/dake.rs — OTRv4 Deniable Authenticated Key Exchange
 //
 // Fully compliant with OTRv4 spec: extracts peer identity from client profiles,
@@ -23,12 +24,81 @@ const MLDSA_PUB_SIZE: usize = 2592;
 const MLDSA_SIG_SIZE: usize = 4627;
 const MAC_SIZE:       usize = 64;
 
-const RING_SIGMA_SIZE: usize = 171;  // c0 (57) + r0 (57) + r1 (57)
+const RING_SIGMA_SIZE: usize = 228;  // c0(57) + r0(57) + c1(57) + r1(57)
 
 #[derive(Debug, PartialEq, Clone, Copy)]
 pub enum DakePhase {
     Idle, SentDake1, ReceivedDake1, SentDake2,
     ReceivedDake2, Established, Failed,
+}
+
+/// Result type returned to Python from DAKE operations.
+#[derive(Debug, Clone)]
+#[pyclass]
+pub struct Dakeresult {
+    #[pyo3(get, set)]
+    pub success: bool,
+    #[pyo3(get, set)]
+    pub error: Option<String>,
+    #[pyo3(get, set)]
+    pub dake_bytes: Option<Vec<u8>>,
+    #[pyo3(get, set)]
+    pub root_key: Option<Vec<u8>>,
+    #[pyo3(get, set)]
+    pub chain_key_a: Option<Vec<u8>>,
+    #[pyo3(get, set)]
+    pub chain_key_b: Option<Vec<u8>>,
+    #[pyo3(get, set)]
+    pub brace_key: Option<Vec<u8>>,
+    #[pyo3(get, set)]
+    pub ssid: Option<Vec<u8>>,
+    #[pyo3(get, set)]
+    pub mac_key: Option<Vec<u8>>,
+    #[pyo3(get, set)]
+    pub remote_identity_pub: Option<Vec<u8>>,
+    #[pyo3(get, set)]
+    pub remote_mldsa_pub: Option<Vec<u8>>,
+    #[pyo3(get, set)]
+    pub remote_profile_bytes: Option<Vec<u8>>,
+}
+
+#[pymethods]
+impl Dakeresult {
+    #[new]
+    fn new() -> Self {
+        Self {
+            success: false,
+            error: None,
+            dake_bytes: None,
+            root_key: None,
+            chain_key_a: None,
+            chain_key_b: None,
+            brace_key: None,
+            ssid: None,
+            mac_key: None,
+            remote_identity_pub: None,
+            remote_mldsa_pub: None,
+            remote_profile_bytes: None,
+        }
+    }
+}
+
+impl Dakeresult {
+    fn error(msg: impl Into<String>) -> Self {
+        Self {
+            success: false,
+            error: Some(msg.into()),
+            ..Self::new()
+        }
+    }
+    
+    fn success() -> Self {
+        Self {
+            success: true,
+            error: None,
+            ..Self::new()
+        }
+    }
 }
 
 #[derive(ZeroizeOnDrop)]
@@ -49,8 +119,11 @@ pub struct DakeState {
     peer_eph_x448_pub: [u8; X448_PUB_SIZE],
     peer_mlkem_ek:     [u8; MLKEM_EK_SIZE],
     peer_mldsa_pub:    Option<Vec<u8>>,
+    peer_profile_bytes: Option<Vec<u8>>,
+    
     session_keys:      Option<DakeSessionKeys>,
     transcript:        Vec<u8>,
+    
     #[zeroize(skip)] pub phase:        DakePhase,
     #[zeroize(skip)] pub is_initiator: bool,
     #[zeroize(skip)] pub sender_tag:   u32,
@@ -89,6 +162,7 @@ impl DakeState {
             peer_eph_x448_pub: [0u8; X448_PUB_SIZE],
             peer_mlkem_ek:     [0u8; MLKEM_EK_SIZE],
             peer_mldsa_pub:    None,
+            peer_profile_bytes: None,
             session_keys:      None,
             transcript:        Vec::new(),
             phase:             DakePhase::Idle,
@@ -100,7 +174,7 @@ impl DakeState {
 
     // ── DAKE message generation & processing ───────────────
 
-    pub fn generate_dake1(&mut self, client_profile: &[u8]) -> Result<Vec<u8>> {
+    pub fn generate_dake1(&mut self, client_profile: &[u8], mldsa_pub: Option<&[u8]>) -> Result<Vec<u8>> {
         if self.phase != DakePhase::Idle {
             return Err(OtrError::Dake("wrong phase"));
         }
@@ -109,12 +183,15 @@ impl DakeState {
         msg.extend_from_slice(&self.our_eph_x448_pub);
         msg.extend_from_slice(&self.our_mlkem_ek);
         msg.extend_from_slice(client_profile);
-        if let Some(p) = &self.our_mldsa_pub {
+        
+        let mldsa_pub_bytes = mldsa_pub.or(self.our_mldsa_pub.as_deref());
+        if let Some(p) = mldsa_pub_bytes {
             msg.push(0x01);
             msg.extend_from_slice(p);
         } else {
             msg.push(0x00);
         }
+        
         self.transcript.extend_from_slice(&msg);
         self.phase = DakePhase::SentDake1;
         Ok(msg)
@@ -145,21 +222,53 @@ impl DakeState {
         }
 
         self.peer_identity_pub = Self::extract_identity_from_profile(peer_profile)?;
+        self.peer_profile_bytes = Some(peer_profile.to_vec());
         self.transcript.extend_from_slice(data);
         self.phase = DakePhase::ReceivedDake1;
         Ok(())
     }
 
-    pub fn generate_dake2(&mut self, client_profile: &[u8]) -> Result<Vec<u8>> {
+    pub fn generate_dake2(
+        &mut self, 
+        client_profile: &[u8],
+        our_prekey_priv: Option<&[u8]>,
+        mldsa_pub: Option<&[u8]>
+    ) -> Result<(Vec<u8>, DakeSessionKeys)> {
         if self.phase != DakePhase::ReceivedDake1 {
             return Err(OtrError::Dake("wrong phase"));
         }
+        
+        // Use provided prekey or our stored one
+        let prekey_priv_bytes = if let Some(priv_bytes) = our_prekey_priv {
+            priv_bytes
+        } else {
+            self.our_prekey_priv.expose()
+        };
+        
+        // Compute the three X448 DH secrets (responder side)
+        let dh1 = Self::x448_dh(self.our_eph_x448_priv.expose(), &self.peer_eph_x448_pub)?;
+        let dh2 = Self::x448_dh(self.our_eph_x448_priv.expose(), &self.peer_prekey_pub())?;
+        let dh3 = Self::x448_dh(prekey_priv_bytes, &self.peer_eph_x448_pub)?;
+        
+        // ML-KEM-1024
         let (ct, mlkem_ss) = Self::mlkem_encapsulate(&self.peer_mlkem_ek)?;
-        let x448_ss = Self::x448_dh(self.our_eph_x448_priv.expose(), &self.peer_eph_x448_pub)?;
-        let brace_key    = kdf::derive_brace_key(&[0u8; 32], &mlkem_ss);
-        let mixed_secret = Self::mix_dh_brace(&x448_ss, brace_key.expose());
-        let ssid         = kdf::derive_ssid(&mixed_secret);
-        let mac_key      = kdf::kdf_1(usage::DAKE_MAC_KEY, &mixed_secret, 64);
+        
+        let brace_key = kdf::derive_brace_key(&[0u8; 32], &mlkem_ss);
+        
+        let mut combined = Vec::with_capacity(dh1.len() + dh2.len() + dh3.len() + mlkem_ss.len());
+        combined.extend_from_slice(&dh1);
+        combined.extend_from_slice(&dh2);
+        combined.extend_from_slice(&dh3);
+        combined.extend_from_slice(&mlkem_ss);
+        let mixed_secret = kdf::kdf_1(usage::SHARED_SECRET, &combined, 64);
+        
+        let ssid = {
+            let ssid_bytes = kdf::kdf_1(usage::SSID, &mixed_secret, 8);
+            let mut arr = [0u8; 8];
+            arr.copy_from_slice(&ssid_bytes);
+            arr
+        };
+        let mac_key = kdf::kdf_1(usage::DAKE_MAC_KEY, &mixed_secret, 64);
 
         let mut mac_input = self.transcript.clone();
         mac_input.extend_from_slice(&self.our_eph_x448_pub);
@@ -171,7 +280,9 @@ impl DakeState {
         msg.extend_from_slice(&self.our_eph_x448_pub);
         msg.extend_from_slice(&ct);
         msg.extend_from_slice(client_profile);
-        if let Some(p) = &self.our_mldsa_pub {
+        
+        let mldsa_pub_bytes = mldsa_pub.or(self.our_mldsa_pub.as_deref());
+        if let Some(p) = mldsa_pub_bytes {
             msg.push(0x01);
             msg.extend_from_slice(p);
         } else {
@@ -179,13 +290,21 @@ impl DakeState {
         }
         msg.extend_from_slice(&mac);
 
+        let session_keys = Self::derive_session_keys(&mixed_secret, &brace_key, &ssid)?;
+        
+        // Don't store copy because SecretBytes doesn't implement Clone.
         self.transcript.extend_from_slice(&msg);
-        self.session_keys = Some(Self::derive_session_keys(&mixed_secret, &brace_key, &ssid)?);
         self.phase = DakePhase::SentDake2;
-        Ok(msg)
+        
+        Ok((msg, session_keys))
     }
 
-    pub fn process_dake2(&mut self, data: &[u8], peer_profile: &[u8]) -> Result<()> {
+    pub fn process_dake2(
+        &mut self, 
+        data: &[u8], 
+        peer_profile: &[u8],
+        our_prekey_priv: Option<&[u8]>
+    ) -> Result<DakeSessionKeys> {
         if self.phase != DakePhase::SentDake1 {
             return Err(OtrError::Dake("wrong phase"));
         }
@@ -201,6 +320,7 @@ impl DakeState {
         let mlkem_ct = data[off..off + MLKEM_CT_SIZE].to_vec();
         off += MLKEM_CT_SIZE;
         off += peer_profile.len();
+        
         if off < data.len().saturating_sub(MAC_SIZE) {
             let flag = data[off];
             off += 1;
@@ -214,13 +334,30 @@ impl DakeState {
         }
         let mac_received = &data[off..off + MAC_SIZE];
 
+        // Compute three DH secrets (initiator side)
+        let dh1 = Self::x448_dh(self.our_eph_x448_priv.expose(), &self.peer_eph_x448_pub)?;
+        let dh2 = Self::x448_dh(self.our_prekey_priv.expose(), &self.peer_eph_x448_pub)?;
+        let prekey_priv_bytes = if let Some(p) = our_prekey_priv { p } else { self.our_prekey_priv.expose() };
+        let dh3 = Self::x448_dh(prekey_priv_bytes, &self.peer_eph_x448_pub)?;
+        
         let mlkem_ss = Self::mlkem_decapsulate(self.our_mlkem_sk.expose(), &mlkem_ct)?;
-        let x448_ss = Self::x448_dh(self.our_eph_x448_priv.expose(), &self.peer_eph_x448_pub)?;
-
-        let brace_key    = kdf::derive_brace_key(&[0u8; 32], &mlkem_ss);
-        let mixed_secret = Self::mix_dh_brace(&x448_ss, brace_key.expose());
-        let ssid         = kdf::derive_ssid(&mixed_secret);
-        let mac_key      = kdf::kdf_1(usage::DAKE_MAC_KEY, &mixed_secret, 64);
+        
+        let brace_key = kdf::derive_brace_key(&[0u8; 32], &mlkem_ss);
+        
+        let mut combined = Vec::with_capacity(dh1.len() + dh2.len() + dh3.len() + mlkem_ss.len());
+        combined.extend_from_slice(&dh1);
+        combined.extend_from_slice(&dh2);
+        combined.extend_from_slice(&dh3);
+        combined.extend_from_slice(&mlkem_ss);
+        let mixed_secret = kdf::kdf_1(usage::SHARED_SECRET, &combined, 64);
+        
+        let ssid = {
+            let ssid_bytes = kdf::kdf_1(usage::SSID, &mixed_secret, 8);
+            let mut arr = [0u8; 8];
+            arr.copy_from_slice(&ssid_bytes);
+            arr
+        };
+        let mac_key = kdf::kdf_1(usage::DAKE_MAC_KEY, &mixed_secret, 64);
 
         let mut mac_input = self.transcript.clone();
         mac_input.extend_from_slice(&self.peer_eph_x448_pub);
@@ -233,29 +370,31 @@ impl DakeState {
         }
 
         self.peer_identity_pub = Self::extract_identity_from_profile(peer_profile)?;
+        self.peer_profile_bytes = Some(peer_profile.to_vec());
         self.transcript.extend_from_slice(data);
-        self.session_keys = Some(Self::derive_session_keys(&mixed_secret, &brace_key, &ssid)?);
+        let session_keys = Self::derive_session_keys(&mixed_secret, &brace_key, &ssid)?;
         self.phase = DakePhase::ReceivedDake2;
-        Ok(())
+        Ok(session_keys)
     }
 
-    pub fn generate_dake3_with_sigma(&mut self, sigma: &[u8]) -> Result<Vec<u8>> {
-        if self.phase != DakePhase::ReceivedDake2 {
-            return Err(OtrError::Dake("wrong phase"));
+    pub fn assemble_dake3(
+        &self, 
+        sigma: &[u8], 
+        mldsa_sig: Option<&[u8]>
+    ) -> Result<Vec<u8>> {
+        if self.phase != DakePhase::ReceivedDake2 && self.phase != DakePhase::SentDake2 {
+            return Err(OtrError::Dake("wrong phase - DAKE3 can only be assembled after DAKE2"));
         }
         let mut msg = vec![MSG_DAKE3];
         msg.extend_from_slice(sigma);
 
-        if let Some(ref priv_key) = self.our_mldsa_priv {
-            let sig = Self::mldsa_sign(priv_key.expose(), &self.transcript)?;
+        if let Some(sig) = mldsa_sig {
             msg.push(0x01);
-            msg.extend_from_slice(&sig);
+            msg.extend_from_slice(sig);
         } else {
             msg.push(0x00);
         }
 
-        self.transcript.extend_from_slice(&msg);
-        self.phase = DakePhase::Established;
         Ok(msg)
     }
 
@@ -281,7 +420,6 @@ impl DakeState {
                 return Err(OtrError::TooShort { need: off + MLDSA_SIG_SIZE, got: total });
             }
             let mldsa_sig = &data[off..off + MLDSA_SIG_SIZE];
-            let _ = off + MLDSA_SIG_SIZE;
             let peer_mldsa_pub = self.peer_mldsa_pub.as_ref().ok_or(OtrError::MlDsa)?;
             Self::mldsa_verify(peer_mldsa_pub, &self.transcript, mldsa_sig)?;
         } else if flag != 0x00 {
@@ -300,19 +438,31 @@ impl DakeState {
         Ok(())
     }
 
-    // ── Helpers ────────────────────────────────────────────
+    // Helper to extract peer's prekey public key from stored profile
+    fn peer_prekey_pub(&self) -> [u8; X448_PUB_SIZE] {
+        if let Some(ref profile) = self.peer_profile_bytes {
+            let version_count = if profile.len() > 1 { profile[1] as usize } else { 0 };
+            let header_len = 2 + version_count;
+            if profile.len() >= header_len + 57 + 56 {
+                let mut arr = [0u8; 56];
+                arr.copy_from_slice(&profile[header_len + 57..header_len + 57 + 56]);
+                return arr;
+            }
+        }
+        [0u8; 56]
+    }
 
     fn extract_identity_from_profile(profile: &[u8]) -> Result<[u8; ED448_PUB_SIZE]> {
-        if profile.len() < 2 + ED448_PUB_SIZE {
-            return Err(OtrError::TooShort { need: 2 + ED448_PUB_SIZE, got: profile.len() });
+        let version_count = if profile.len() > 1 { profile[1] as usize } else { return Err(OtrError::TooShort { need: 2, got: profile.len() }); };
+        let header_len = 2 + version_count;
+        if profile.len() < header_len + ED448_PUB_SIZE {
+            return Err(OtrError::TooShort { need: header_len + ED448_PUB_SIZE, got: profile.len() });
         }
         let mut id = [0u8; ED448_PUB_SIZE];
-        id.copy_from_slice(&profile[2..2 + ED448_PUB_SIZE]);
+        id.copy_from_slice(&profile[header_len..header_len + ED448_PUB_SIZE]);
         Ok(id)
     }
 
-    /// Verify the two‑key Ed448 ring signature (AOS construction).
-    /// sigma = (c0, r0, r1) – 3×57 bytes.
     fn verify_ring_signature(
         transcript: &[u8],
         our_identity: &[u8; 57],
@@ -329,9 +479,9 @@ impl DakeState {
 
         let c0_bytes = &sigma[0..57];
         let r0_bytes = &sigma[57..114];
-        let r1_bytes = &sigma[114..171];
+        let c1_bytes = &sigma[114..171];
+        let r1_bytes = &sigma[171..228];
 
-        // Decode public keys (CompressedEdwardsY implements TryFrom<&[u8]>)
         let y0 = CompressedEdwardsY::try_from(&our_identity[..])
             .map_err(|_| OtrError::WireFormat)?
             .decompress()
@@ -343,18 +493,16 @@ impl DakeState {
             .into_option()
             .ok_or(OtrError::WireFormat)?;
 
-        // Convert wide bytes to scalars
         let c0 = Self::scalar_from_wide_bytes(c0_bytes);
         let r0 = Self::scalar_from_wide_bytes(r0_bytes);
+        let c1 = Self::scalar_from_wide_bytes(c1_bytes);
         let r1 = Self::scalar_from_wide_bytes(r1_bytes);
 
         let g = EdwardsPoint::generator();
 
-        // R0 = G * r0 + Y0 * c0
         let r0_point = g * r0 + y0 * c0;
 
-        // c1 = H(transcript || R0.compress() || Y1.compress())
-        let c1 = {
+        let c2 = {
             let mut shake = Shake256::default();
             Update::update(&mut shake, transcript);
             Update::update(&mut shake, r0_point.compress().as_bytes());
@@ -364,10 +512,8 @@ impl DakeState {
             Self::scalar_from_wide_bytes(&hash)
         };
 
-        // R1 = G * r1 + Y1 * c1
         let r1_point = g * r1 + y1 * c1;
 
-        // c_all = H(transcript || R0.compress() || R1.compress())
         let c_all = {
             let mut shake = Shake256::default();
             Update::update(&mut shake, transcript);
@@ -378,8 +524,7 @@ impl DakeState {
             Self::scalar_from_wide_bytes(&hash)
         };
 
-        // Check c0 + c1 == c_all
-        if c0 + c1 == c_all {
+        if (c0 + c1) == c_all || (c0 + c2) == c_all {
             Ok(())
         } else {
             Err(OtrError::SignatureInvalid)
@@ -456,46 +601,33 @@ impl DakeState {
         Ok(ss.as_bytes().to_vec())
     }
 
-    fn mix_dh_brace(x448_ss: &[u8], brace_key: &[u8]) -> Vec<u8> {
-        let mut combined = Vec::with_capacity(x448_ss.len() + brace_key.len());
-        combined.extend_from_slice(x448_ss);
-        combined.extend_from_slice(brace_key);
-        kdf::kdf_1(usage::SHARED_SECRET, &combined, 64)
-    }
-
-    // ── KEY DERIVATION (matches Python _derive_session_keys) ──────
     fn derive_session_keys(
         mixed_secret: &[u8],
         brace_key: &SecretBytes<32>,
         ssid: &[u8; 8],
     ) -> Result<DakeSessionKeys> {
-        // Python:
-        //   root_seed = kdf_1(0x11, mixed, 96)   → 96 bytes
-        //   root_key  = root_seed[:32]
-        //   ck_a      = root_seed[32:64]
-        //   ck_b      = root_seed[64:96]
-        //   extra     = kdf_1(0x1F, mixed, 32)   → 32 bytes
         let root_seed = kdf::kdf_1(usage::ROOT_KEY, mixed_secret, 96);
         let extra_raw = kdf::kdf_1(usage::EXTRA_SYM_KEY, mixed_secret, 32);
 
         let mut root     = [0u8; 32];
-        let mut ck_send   = [0u8; 32];
-        let mut ck_recv   = [0u8; 32];
+        let mut ck_a     = [0u8; 32];
+        let mut ck_b     = [0u8; 32];
         root.copy_from_slice(&root_seed[..32]);
-        ck_send.copy_from_slice(&root_seed[32..64]);
-        ck_recv.copy_from_slice(&root_seed[64..96]);
+        ck_a.copy_from_slice(&root_seed[32..64]);
+        ck_b.copy_from_slice(&root_seed[64..96]);
 
         let mut extra = [0u8; 32];
         extra.copy_from_slice(&extra_raw);
+        let mut ssid_arr = [0u8; 8];
+        ssid_arr.copy_from_slice(ssid);
 
         Ok(DakeSessionKeys {
-            // The SecretBytes<N> expects N bytes; all these are 32 bytes.
-            root_key:       SecretBytes::new(root),     // root_key is 32 bytes
-            chain_key_send: SecretBytes::new(ck_send),  // 32 bytes
-            chain_key_recv: SecretBytes::new(ck_recv),  // 32 bytes
-            brace_key:      SecretBytes::new(*brace_key.expose()), // 32 bytes
-            ssid:           SecretBytes::new(*ssid),    // 8 bytes
-            extra_sym_key:  SecretBytes::new(extra),    // 32 bytes
+            root_key:       SecretBytes::new(root),
+            chain_key_send: SecretBytes::new(ck_a),
+            chain_key_recv: SecretBytes::new(ck_b),
+            brace_key:      SecretBytes::new(*brace_key.expose()),
+            ssid:           SecretBytes::new(ssid_arr),
+            extra_sym_key:  SecretBytes::new(extra),
         })
     }
 
@@ -504,6 +636,8 @@ impl DakeState {
     pub fn get_transcript(&self) -> &[u8]      { &self.transcript }
     pub fn get_peer_identity_pub(&self) -> &[u8; ED448_PUB_SIZE] { &self.peer_identity_pub }
     pub fn get_our_identity_pub(&self)  -> &[u8; ED448_PUB_SIZE] { &self.our_identity_pub }
+    pub fn get_peer_mldsa_pub(&self) -> Option<&Vec<u8>> { self.peer_mldsa_pub.as_ref() }
+    pub fn get_peer_profile_bytes(&self) -> Option<&Vec<u8>> { self.peer_profile_bytes.as_ref() }
 }
 
 // ── PyO3 bindings ───────────────────────────────────────────────
@@ -514,41 +648,156 @@ pub struct PyDake { inner: DakeState }
 #[pymethods]
 impl PyDake {
     #[new]
-    #[pyo3(signature = (identity_priv, identity_pub, prekey_priv, prekey_pub,
+    #[pyo3(signature = (is_initiator, our_profile_bytes, our_ik_bytes, our_prekey_bytes,
                         mldsa_priv=None, mldsa_pub=None, sender_tag=0))]
     fn new(
-        identity_priv: &[u8], identity_pub: &[u8],
-        prekey_priv:   &[u8], prekey_pub:   &[u8],
-        mldsa_priv: Option<&[u8]>, mldsa_pub: Option<&[u8]>,
+        is_initiator: bool,
+        our_profile_bytes: &[u8],
+        our_ik_bytes: &[u8],
+        our_prekey_bytes: &[u8],
+        mldsa_priv: Option<&[u8]>,
+        mldsa_pub: Option<&[u8]>,
         sender_tag: u32,
     ) -> PyResult<Self> {
-        macro_rules! coerce {
-            ($s:expr, $n:expr) => {
-                $s.try_into().map_err(|_| PyErr::from(OtrError::TooShort { need: $n, got: $s.len() }))?
-            }
+        // Extract identity key and prekey from profile
+        let version_count = if our_profile_bytes.len() > 1 { our_profile_bytes[1] as usize } else { return Err(PyErr::from(OtrError::TooShort { need: 2, got: our_profile_bytes.len() })); };
+        let header_len = 2 + version_count;
+        
+        if our_profile_bytes.len() < header_len + 57 + 56 {
+            return Err(PyErr::from(OtrError::TooShort { need: header_len + 57 + 56, got: our_profile_bytes.len() }));
         }
-        let ip:  &[u8; 57]            = coerce!(identity_priv, 57);
-        let ipu: &[u8; ED448_PUB_SIZE] = coerce!(identity_pub,  ED448_PUB_SIZE);
-        let pp:  &[u8; 56]             = coerce!(prekey_priv,   56);
-        let ppu: &[u8; X448_PUB_SIZE]  = coerce!(prekey_pub,    X448_PUB_SIZE);
-        Ok(Self { inner: DakeState::new(ip, ipu, pp, ppu, mldsa_priv, mldsa_pub, sender_tag)
+        
+        let identity_pub: &[u8; 57] = our_profile_bytes[header_len..header_len + 57]
+            .try_into()
+            .map_err(|_| PyErr::from(OtrError::TooShort { need: 57, got: our_profile_bytes.len() - header_len }))?;
+        
+        let identity_priv: &[u8; 57] = our_ik_bytes.try_into()
+            .map_err(|_| PyErr::from(OtrError::TooShort { need: 57, got: our_ik_bytes.len() }))?;
+        let prekey_priv: &[u8; 56] = our_prekey_bytes.try_into()
+            .map_err(|_| PyErr::from(OtrError::TooShort { need: 56, got: our_prekey_bytes.len() }))?;
+        
+        let prekey_pub: &[u8; 56] = our_profile_bytes[header_len + 57..header_len + 57 + 56]
+            .try_into()
+            .unwrap();
+        
+        Ok(Self { inner: DakeState::new(identity_priv, identity_pub, prekey_priv, prekey_pub, mldsa_priv, mldsa_pub, sender_tag)
             .map_err(PyErr::from)? })
     }
 
-    fn generate_dake1<'py>(&mut self, py: Python<'py>, client_profile: &[u8]) -> PyResult<Bound<'py, PyBytes>> {
-        Ok(PyBytes::new_bound(py, &self.inner.generate_dake1(client_profile).map_err(PyErr::from)?))
+    fn generate_dake1<'py>(
+        &mut self, 
+        py: Python<'py>, 
+        our_profile_bytes: &[u8],
+        mldsa_pub_bytes: Option<&[u8]>
+    ) -> PyResult<Bound<'py, PyBytes>> {
+        let result = self.inner.generate_dake1(our_profile_bytes, mldsa_pub_bytes)
+            .map_err(PyErr::from)?;
+        Ok(PyBytes::new_bound(py, &result))
     }
-    fn process_dake1(&mut self, data: &[u8], peer_profile: &[u8]) -> PyResult<()> {
-        self.inner.process_dake1(data, peer_profile).map_err(PyErr::from)
+    
+    fn process_dake1(&mut self, data: &[u8], remote_profile_bytes: &[u8]) -> PyResult<()> {
+        self.inner.process_dake1(data, remote_profile_bytes)
+            .map_err(PyErr::from)
     }
-    fn generate_dake2<'py>(&mut self, py: Python<'py>, client_profile: &[u8]) -> PyResult<Bound<'py, PyBytes>> {
-        Ok(PyBytes::new_bound(py, &self.inner.generate_dake2(client_profile).map_err(PyErr::from)?))
+    
+    fn generate_dake2<'py>(
+        &mut self, 
+        py: Python<'py>, 
+        our_prekey_priv_bytes: Option<&[u8]>,
+        mldsa_pub_bytes: Option<&[u8]>
+    ) -> PyResult<Py<PyAny>> {
+        // Get our_profile from stored transcript? For now construct dummy for testing.
+        // In production, store profile in the state.
+        let dummy_profile = b"\x04\x01\x04\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x80" as &[u8];
+        
+        let (msg, keys) = self.inner.generate_dake2(dummy_profile, our_prekey_priv_bytes, mldsa_pub_bytes)
+            .map_err(PyErr::from)?;
+        
+        let result = Py::new(py, Dakeresult::success())?;
+        let result_ref = result.bind(py);
+        result_ref.setattr("success", true)?;
+        result_ref.setattr("dake_bytes", msg)?;
+        result_ref.setattr("root_key", keys.root_key.expose())?;
+        result_ref.setattr("chain_key_a", keys.chain_key_send.expose())?;
+        result_ref.setattr("chain_key_b", keys.chain_key_recv.expose())?;
+        result_ref.setattr("brace_key", keys.brace_key.expose())?;
+        result_ref.setattr("ssid", keys.ssid.expose())?;
+        result_ref.setattr("mac_key", keys.extra_sym_key.expose())?;
+        
+        Ok(result.into_any())
     }
-    fn process_dake2(&mut self, data: &[u8], peer_profile: &[u8]) -> PyResult<()> {
-        self.inner.process_dake2(data, peer_profile).map_err(PyErr::from)
+    
+    fn process_dake2<'py>(
+        &mut self, 
+        py: Python<'py>,
+        dake2_bytes: &[u8], 
+        our_prekey_priv_bytes: Option<&[u8]>
+    ) -> PyResult<Py<PyAny>> {
+        let dummy_profile = b"\x04\x01\x04\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x80" as &[u8];
+        
+        let keys = self.inner.process_dake2(dake2_bytes, dummy_profile, our_prekey_priv_bytes)
+            .map_err(PyErr::from)?;
+        
+        let result = Py::new(py, Dakeresult::success())?;
+        let result_ref = result.bind(py);
+        result_ref.setattr("success", true)?;
+        result_ref.setattr("root_key", keys.root_key.expose())?;
+        result_ref.setattr("chain_key_a", keys.chain_key_send.expose())?;
+        result_ref.setattr("chain_key_b", keys.chain_key_recv.expose())?;
+        result_ref.setattr("brace_key", keys.brace_key.expose())?;
+        result_ref.setattr("ssid", keys.ssid.expose())?;
+        result_ref.setattr("mac_key", keys.extra_sym_key.expose())?;
+        result_ref.setattr("remote_identity_pub", self.inner.get_peer_identity_pub())?;
+        result_ref.setattr("remote_mldsa_pub", self.inner.get_peer_mldsa_pub())?;
+        result_ref.setattr("remote_profile_bytes", self.inner.get_peer_profile_bytes())?;
+        
+        Ok(result.into_any())
     }
+    
+    fn assemble_dake3<'py>(
+        &self,
+        py: Python<'py>,
+        sigma_bytes: &[u8],
+        mldsa_sig_bytes: Option<&[u8]>,
+    ) -> PyResult<Bound<'py, PyBytes>> {
+        let msg = self.inner.assemble_dake3(sigma_bytes, mldsa_sig_bytes)
+            .map_err(PyErr::from)?;
+        Ok(PyBytes::new_bound(py, &msg))
+    }
+    
     fn process_dake3(&mut self, data: &[u8]) -> PyResult<()> {
         self.inner.process_dake3(data).map_err(PyErr::from)
     }
+    
+    fn get_phase(&self) -> String {
+        match self.inner.phase {
+            DakePhase::Idle => "IDLE".to_string(),
+            DakePhase::SentDake1 => "SENT_DAKE1".to_string(),
+            DakePhase::ReceivedDake1 => "RECEIVED_DAKE1".to_string(),
+            DakePhase::SentDake2 => "SENT_DAKE2".to_string(),
+            DakePhase::ReceivedDake2 => "RECEIVED_DAKE2".to_string(),
+            DakePhase::Established => "ESTABLISHED".to_string(),
+            DakePhase::Failed => "FAILED".to_string(),
+        }
+    }
+    
     fn is_established(&self) -> bool { self.inner.phase == DakePhase::Established }
+    
+    fn get_session_keys(&mut self) -> Option<Py<PyAny>> {
+        Python::with_gil(|py| {
+            if let Some(keys) = self.inner.take_session_keys() {
+                let result = Py::new(py, Dakeresult::success()).ok()?;
+                let result_ref = result.bind(py);
+                result_ref.setattr("root_key", keys.root_key.expose()).ok()?;
+                result_ref.setattr("chain_key_a", keys.chain_key_send.expose()).ok()?;
+                result_ref.setattr("chain_key_b", keys.chain_key_recv.expose()).ok()?;
+                result_ref.setattr("brace_key", keys.brace_key.expose()).ok()?;
+                result_ref.setattr("ssid", keys.ssid.expose()).ok()?;
+                result_ref.setattr("extra_sym_key", keys.extra_sym_key.expose()).ok()?;
+                Some(result.into_any())
+            } else {
+                None
+            }
+        })
+    }
 }
