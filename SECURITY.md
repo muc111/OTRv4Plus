@@ -4,107 +4,116 @@
 
 | Version | Supported |
 |---|---|
-| v10.5.10+ | ✅ |
-| v10.5.8–v10.5.9 | ⚠️ SMP responder did not transition to verified state |
+| v10.6.2 | ✅ recommended |
+| v10.6.0 – v10.6.1 | ⚠️ audit hardening present but Rust DAKE silently falls back to Python.  Upgrade recommended. |
+| v10.5.10 | ⚠️ Rust SMP working; DAKE path is Python-only. |
+| v10.5.8 – v10.5.9 | ❌ SMP responder did not transition to verified state |
 | older | ❌ |
 
 ## Reporting a vulnerability
 
-Use GitHub's private vulnerability reporting (Security tab → Report a vulnerability).
-Do not open a public issue.
+Use GitHub's private vulnerability reporting (Security tab → Report a
+vulnerability).  Do not open a public issue.
 
-Include: description, steps to reproduce, potential impact, suggested fix (if any).
-Acknowledgment within 48 hours; fix for critical issues within 14 days.
+Include: description, steps to reproduce, potential impact, suggested
+fix (if any).  Acknowledgment within 48 hours; fix for critical issues
+within 14 days.
 
-## In‑scope
+## In-scope
 
 - Cryptographic weaknesses (DAKE, ratchet, SMP, ring signatures)
 - Key material leaks (memory, disk, network)
 - Authentication bypasses
 - Plaintext recovery
-- Secret material crossing the Rust/Python boundary
+- Secret material crossing the Rust/Python boundary unintentionally
 
-## Out‑of‑scope
+## Out-of-scope
 
 - Endpoint compromise (rooted device, malware on the device)
-- I2P/Tor network‑level attacks
-- Social engineering
+- I2P / Tor network-level attacks
+- Social engineering of users into accepting fingerprints
+
+## Known limitations (read before deploying)
+
+OTRv4+ is a research prototype.  No third-party audit has been
+performed.  The following are documented and tracked:
+
+### Critical Exposure Window for session keys
+
+After DAKE2 completes, session keys (root key, chain keys, brace key,
+MAC key) exist briefly as Python `bytes` in the Python heap until
+`RustDoubleRatchet.from_dakeresult(...)` consumes them.  Window
+duration is microseconds to single-digit milliseconds under normal
+load; can extend to seconds under debugger / GC pause / signal
+handler interrupt.
+
+Mitigations in place (v10.6.1+):
+
+- `Dakeresult.consumed` flag prevents post-consumption access via getters
+- `from_dakeresult()` aggressively zeroes the `Vec<u8>` backing memory
+  (overwrite → `clear()` → `shrink_to_fit()`)
+- Adapter calls `from_dakeresult()` synchronously on the same Python
+  thread that received the Dakeresult — no thread-boundary or
+  long-lived reference
+
+Full closure requires `DakeOutput` opaque handle — see ROADMAP Phase 4.
+
+Threat model: an attacker with process-memory read capability
+(debugger, core dump, `/proc/<pid>/mem`, ptrace) active during the
+window can recover session keys.  An attacker who reads memory after
+the window has closed cannot.
+
+### No formal audit, no formal model
+
+313 automated tests including 100k-message ratchet gauntlets, KEM
+known-answer vectors, ring-signature non-malleability checks, SMP
+full-protocol flows, and property-based fuzzing via Hypothesis.  No
+third-party security review.  No ProVerif or EasyCrypt model.
+
+### No post-quantum deniability
+
+Ed448 ring signatures provide deniable authentication in DAKE3.  ML-DSA
+signatures are non-repudiable.  When ML-DSA is enabled (the default),
+the post-quantum branch of authentication breaks the deniability
+property that the classical branch provides.  Documented limitation.
+
+### Metadata visible to IRC server
+
+Who talks to whom, when, and fragment sizes.  I2P / Tor hide IP but
+not timing or fragment-count patterns.  DAKE produces more fragments
+(~24 per message) than chat (1 fragment for short messages).  No
+padding at the fragment layer.
+
+### Long handshake on I2P
+
+Total `/otr` → 🔵 verified is ~6m 37s.  Cryptographic compute is
+under 1 second.  Everything else is I2P tunnel latency.  This is a
+usability concern, not a security one — if it's faster you should be
+suspicious.
+
+### Endpoint trust
+
+The OTR threat model assumes both endpoints are trusted.  A rooted
+device, malware on the device, ptrace by another local process, or a
+debugger attached to the OTRv4+ process all defeat OTR's protections.
+This is universal to OTR-class systems and not specific to v4+.
+
+### C extensions handle some crypto
+
+`otr4_ed448_ct.c`, `otr4_crypto_ext.c`, `otr4_mldsa_ext.c` use
+OpenSSL 3.5+ primitives with `BN_mod_exp_mont_consttime`,
+`OPENSSL_cleanse`, and `mlock` where available.  Constant-time helpers
+are in place but no independent timing audit has been performed.
+ROADMAP Phase 6 ports these to pure Rust.
 
 ---
 
-## Memory‑safety status (v10.5.10)
+## Disclosure policy
 
-The primary goal of v10.5.10 is that the Python GC cannot reach any SMP secret. This is now achieved.
+We follow standard responsible disclosure: report privately, allow
+~14 days for critical fixes, then public disclosure with attribution.
+For findings that need a longer fix horizon we will negotiate the
+disclosure date with the reporter.
 
-| Component | Secret storage | Zeroization | Python exposure |
-|---|---|---|---|
-| **Double ratchet** | Rust `SecretBytes<N>` / `SecretVec` | Deterministic on drop / `zeroize()` | None — Python holds an opaque handle |
-| **SMP passphrase** | `RustSMPVault` — Rust `Vec<u8>`, `ZeroizeOnDrop` | On `vault.clear()` or session end | Opaque `u64` handle only |
-| **SMP exponents** | `SmpState` — all fields are `SecretVec`, `ZeroizeOnDrop` | Immediate via `destroy()` on abort; `ZeroizeOnDrop` on session end | None |
-| **SMP transit window** | Python `bytearray` between `encode()` and `vault.store()` | Byte-by-byte overwrite in `finally` block | Microseconds — mutable, not interned |
-| **DAKE DH secrets** | OpenSSL C heap during KDF | `OPENSSL_cleanse` after use | Brief `bytes` during KDF — microseconds |
-| **Identity keys (Ed448/X448)** | Python OpenSSL objects (cryptography library) | No deterministic zeroization (OpenSSL heap) | Whole session lifetime — planned for Phase 4 |
-
-### How Python is kept blind to SMP secrets
-
-```
-User types secret
-        ↓
-bytearray raw = secret.encode('utf-8')          ← mutable, will be wiped
-        ↓
-vault.store("smp_secret", bytes(raw))            ← copied into Rust Vec<u8>, ZeroizeOnDrop
-        ↓
-for i in range(len(raw)): raw[i] = 0            ← overwrite before GC can copy
-del raw                                           ← Python ref dropped
-        ↓
-rust_smp.set_secret_from_vault(vault, ...)       ← SHAKE-256 + HMAC runs in Rust
-        ↓
-SmpState.secret: SecretVec                        ← only copy, Rust-owned
-        ↓
-On session end: vault.clear() → ZeroizeOnDrop fires per entry
-                rust_smp.destroy() → all SecretVec fields zeroed immediately
-```
-
-Python never holds the stretched/derived secret. The stretched value is computed in Rust and stays in `SecretVec`. The KDF output never crosses the PyO3 boundary.
-
----
-
-## SMP security properties (v10.5.10)
-
-### Zero‑knowledge proof
-
-The SMP exchange proves that both parties know a shared secret without revealing it. The four‑message Schnorr ZKP protocol (OTRv4 §5) runs entirely inside Rust using `num_bigint` and `sha3`. No Python integer holds any exponent at any point.
-
-### Brute-force resistance
-
-The passphrase is processed through 50,000 rounds of SHAKE‑256 before being bound to the session via HMAC‑SHA3‑512. An attacker who captures a transcript must invert this KDF for every candidate passphrase. At 50k rounds on Termux-class hardware this takes approximately 3 seconds per candidate — offline brute-force of an 8-character passphrase from a printable character set (~95^8 ≈ 6.6 × 10^15 candidates) is infeasible.
-
-### Replay prevention
-
-Every SMP session uses a running HMAC‑SHA3‑512 transcript accumulator keyed to the session ID. An SMP message from session A cannot be replayed into session B because the transcript MAC will not verify. Additionally `SmpState` enforces strict phase transitions — a message received out of order triggers `fail_and_zeroize()`.
-
-### Rate limiting
-
-After 3 failed SMP attempts the `SmpState` is permanently destroyed (`Aborted`). A new session must be established to retry. A 30-second cooldown between retries prevents rapid cycling.
-
-### Both sides turn blue
-
-Prior to v10.5.10 only the initiator (Alice) transitioned to `SMP_VERIFIED`. The responder (Bob) sent the SMP4 verdict but remained on the yellow security icon because Python did not check `is_verified()` after `process_smp3_generate_smp4()`. This is fixed — Rust sets the phase to `Verified` internally during SMP3 processing, and Python reads it immediately, so both sides transition to 🔵 simultaneously.
-
----
-
-## Cryptographic primitives
-
-| Primitive | Algorithm | Standard | Implementation |
-|---|---|---|---|
-| Key encapsulation | ML‑KEM‑1024 | FIPS 203 | `pqcrypto-kyber` (Rust) |
-| Digital signatures | ML‑DSA‑87 | FIPS 204 | `pqcrypto-mldsa` (Rust) |
-| Classical DH | X448 | RFC 7748 | OpenSSL EVP (C) |
-| Identity signatures | Ed448 | RFC 8032 | C extension (constant-time) |
-| Ring signatures | OR-proof Schnorr | OTRv4 §4.3 | C extension |
-| Symmetric encryption | AES‑256‑GCM | NIST SP 800-38D | Rust `aes-gcm` |
-| Hash / KDF | SHAKE‑256 / SHA3‑512 | FIPS 202 | Rust `sha3` |
-| SMP ZKP hash | SHA3‑512 | FIPS 202 | Rust `sha3` |
-| HMAC | HMAC‑SHA3‑512 | FIPS 198‑1 | Rust `hmac` |
-| Zeroization | `Zeroize` + `ZeroizeOnDrop` | — | Rust `zeroize` crate |
-| Constant-time eq | `ConstantTimeEq` | — | Rust `subtle` crate |
+Public security advisories are published in GitHub's Security tab
+once a fix has shipped.

@@ -1,8 +1,15 @@
-// src/kdf.rs — OTRv4 Key Derivation Functions
-//
-// All KDF calls go through this module.  Every usage_id is domain-separated
-// per OTRv4 spec §3.2:
-//   KDF(usage_id || value, size) = SHAKE-256("OTRv4" || usage_id || value, size)
+//! OTRv4 Key Derivation Functions.
+//!
+//! All KDF calls go through this module.  Every usage_id is domain-separated
+//! per OTRv4 spec §3.2:
+//!     KDF(usage_id || value, size) = SHAKE-256("OTRv4" || usage_id || value, size)
+//!
+//! Hardening:
+//!   * `kdf_1_py` PyO3 export is gated behind `test-only-kdf` feature.
+//!     Production builds (`--features pq-rust` only) do not expose the KDF.
+//!   * No `expect()` on attacker-controlled inputs.  Internal invariants
+//!     (HMAC-SHA3-512 always accepts any key length) use `expect()` guarded
+//!     by the type system.
 
 use sha3::{Shake256, digest::{Update, ExtendableOutput, XofReader}};
 use crate::secure_mem::SecretBytes;
@@ -44,19 +51,28 @@ pub fn kdf_1(usage_id: u8, value: &[u8], output_len: usize) -> Vec<u8> {
 pub fn kdf_secret<const N: usize>(usage_id: u8, value: &[u8]) -> SecretBytes<N> {
     let raw = kdf_1(usage_id, value, N);
     let mut arr = [0u8; N];
+    // Length is N by construction of kdf_1; copy_from_slice is safe.
     arr.copy_from_slice(&raw);
     SecretBytes::new(arr)
 }
 
-// ── Ratchet KDF functions (must match Python _kdf_ck exactly) ────────────────
+// ── PyO3 bridge — TEST ONLY ──────────────────────────────────────────────────
+#[cfg(feature = "test-only-kdf")]
+#[pyo3::pyfunction]
+#[pyo3(name = "kdf_1")]
+pub fn kdf_1_py(usage_id: u8, value: &[u8], output_len: usize) -> pyo3::PyResult<Vec<u8>> {
+    if output_len == 0 {
+        return Err(pyo3::exceptions::PyValueError::new_err("output_len must be > 0"));
+    }
+    if output_len > (1 << 20) {
+        return Err(pyo3::exceptions::PyValueError::new_err("output_len too large"));
+    }
+    Ok(kdf_1(usage_id, value, output_len))
+}
 
-/// Advance a chain key one step.
-/// Returns (next_chain_key, message_key, zeros).
-///
-/// This **mirrors** the Python `_kdf_ck` in otrv4+.py:
-///   new_ck = kdf_1(0x12, ck, 32)    # CHAIN_KEY
-///   mk     = kdf_1(0x13, ck, 32)    # MESSAGE_KEY
-///   return new_ck, mk, bytes(32)    # 32 zero bytes
+// ── Ratchet KDF ──────────────────────────────────────────────────────────────
+
+/// Advance a chain key one step. Returns (next_ck, message_key, zeros).
 pub fn kdf_chain(chain_key: &[u8; 32]) -> ([u8; 32], [u8; 32], [u8; 32]) {
     let new_ck = kdf_1(usage::CHAIN_KEY, chain_key, 32);
     let mk     = kdf_1(usage::MESSAGE_KEY, chain_key, 32);
@@ -68,8 +84,6 @@ pub fn kdf_chain(chain_key: &[u8; 32]) -> ([u8; 32], [u8; 32], [u8; 32]) {
     (ck_arr, mk_arr, [0u8; 32])
 }
 
-/// Derive new root + chain keys from old root key and DH shared secret.
-/// KDF("OTRv4" || 0x11 || root_key || dh_output, 64) split into 2 × 32.
 pub fn kdf_root(root_key: &[u8; 32], dh_output: &[u8]) -> ([u8; 32], [u8; 32]) {
     let mut input = Vec::with_capacity(32 + dh_output.len());
     input.extend_from_slice(root_key);
@@ -83,8 +97,6 @@ pub fn kdf_root(root_key: &[u8; 32], dh_output: &[u8]) -> ([u8; 32], [u8; 32]) {
     (new_root, new_chain)
 }
 
-/// Rotate the brace key using an ML-KEM shared secret.
-/// KDF("OTRv4" || 0x16 || brace_key || mlkem_ss, 32)
 pub fn kdf_brace_rotate(brace_key: &[u8; 32], mlkem_ss: &[u8]) -> [u8; 32] {
     let mut input = Vec::with_capacity(32 + mlkem_ss.len());
     input.extend_from_slice(brace_key);
@@ -96,7 +108,7 @@ pub fn kdf_brace_rotate(brace_key: &[u8; 32], mlkem_ss: &[u8]) -> [u8; 32] {
     out
 }
 
-// ── 64-byte key variants (used by DAKE / phase-2 modules) ────────────────────
+// ── 64-byte variants ─────────────────────────────────────────────────────────
 
 pub fn derive_ratchet_keys(
     root_key: &[u8; 64],
@@ -130,13 +142,14 @@ pub fn derive_ssid(shared_secret: &[u8]) -> [u8; 8] {
     out
 }
 
-// ── MAC / fingerprint ─────────────────────────────────────────────────────────
+// ── MAC / fingerprint ────────────────────────────────────────────────────────
 
 pub fn hmac_sha3_512(key: &[u8], data: &[u8]) -> [u8; 64] {
     use hmac::{Hmac, Mac};
     use sha3::Sha3_512;
+    // HMAC accepts any key length; this expect cannot fire.
     let mut mac = <Hmac<Sha3_512> as Mac>::new_from_slice(key)
-        .expect("HMAC-SHA3-512: key length invariant violated");
+        .expect("HMAC-SHA3-512 NewFromSlice is infallible by construction");
     Mac::update(&mut mac, data);
     let result = mac.finalize().into_bytes();
     let mut out = [0u8; 64];

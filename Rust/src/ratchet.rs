@@ -232,10 +232,10 @@ impl DoubleRatchet {
 
         let cipher = Aes256Gcm::new_from_slice(&enc_key)
             .map_err(|e| RatchetError::Protocol(format!("AES key error: {e}")))?;
-        let nonce = Nonce::from_slice(&nonce_bytes);
+        let nonce = Nonce::from(nonce_bytes);
 
         let ciphertext_with_tag = cipher
-            .encrypt(nonce, aes_gcm::aead::Payload { msg: plaintext, aad: &aad })
+            .encrypt(&nonce, aes_gcm::aead::Payload { msg: plaintext, aad: &aad })
             .map_err(|e| RatchetError::Protocol(format!("AES encrypt error: {e}")))?;
 
         let ct_len = ciphertext_with_tag.len().checked_sub(16)
@@ -419,7 +419,7 @@ impl DoubleRatchet {
 
         let cipher = Aes256Gcm::new_from_slice(enc_key)
             .map_err(|e| RatchetError::DecryptionFailed(format!("AES key error: {e}")))?;
-        cipher.decrypt(Nonce::from_slice(nonce), aes_gcm::aead::Payload { msg: &ct_with_tag, aad: &aad })
+        cipher.decrypt(&Nonce::from(*nonce), aes_gcm::aead::Payload { msg: &ct_with_tag, aad: &aad })
             .map_err(|_| RatchetError::DecryptionFailed("AES‑GCM authentication failed".into()))
     }
 
@@ -480,15 +480,143 @@ impl RustDoubleRatchet {
         Ok(Self { inner })
     }
 
+    /// SECURITY (audit C2 partial — Patch-1, hardened in Patch-2): consume a
+    /// `Dakeresult` directly into a ratchet.
+    ///
+    /// Patch-2 hardening:
+    ///   §2  — Aggressive zeroization: every secret Vec<u8> has its contents
+    ///         overwritten, then `clear()` + `shrink_to_fit()` to drop backing
+    ///         capacity so the allocator may immediately reuse the memory.
+    ///   §3  — Sets `result.consumed = true` BEFORE returning, so any
+    ///         subsequent attempt to read `result.root_key` etc. raises
+    ///         `Dakeresult has been consumed` from Python.
+    ///   §4  — One flag covers the whole object: no partial reuse.
+    ///   §7  — Defensive precondition assertion: refuses to consume a
+    ///         Dakeresult that is already consumed (returns PyValueError;
+    ///         no panic).
+    ///
+    /// Python adapter pattern:
+    ///   ratchet = RustDoubleRatchet.from_dakeresult(dake_result, dh_pub_local, is_initiator)
+    ///   # dake_result.consumed == True; reading any secret field raises.
+    #[staticmethod]
+    fn from_dakeresult(
+        result:       &Bound<'_, pyo3::PyAny>,
+        dh_pub_local: &[u8],
+        is_initiator: bool,
+    ) -> PyResult<Self> {
+        use pyo3::exceptions::PyValueError;
+        use crate::dake::Dakeresult;
+
+        // §7 — defensive precondition: refuse already-consumed.
+        // PyO3 0.21+ idiom: downcast directly to `Bound<Dakeresult>`, then
+        // `borrow_mut()` returns a `PyRefMut<Dakeresult>` (PyCell is deprecated).
+        let cell: &pyo3::Bound<'_, Dakeresult> = result.downcast::<Dakeresult>()
+            .map_err(|_| PyValueError::new_err(
+                "from_dakeresult: argument must be a Dakeresult instance",
+            ))?;
+        let mut bound: pyo3::PyRefMut<'_, Dakeresult> = cell.borrow_mut();
+
+        if bound.consumed {
+            return Err(PyValueError::new_err(
+                "Dakeresult has been consumed — cannot consume twice",
+            ));
+        }
+
+        // Helper closure: take Vec<u8> out of an Option, validate length,
+        // copy into [u8; 32], zero the original Vec aggressively
+        // (overwrite + clear + shrink_to_fit), then set the slot to None.
+        // Patch-2 §2 implementation.
+        fn take_aggressive(
+            slot: &mut Option<Vec<u8>>,
+            field_name: &'static str,
+            need: usize,
+        ) -> PyResult<[u8; 32]> {
+            let mut v = slot.take().ok_or_else(|| PyValueError::new_err(
+                format!("Dakeresult.{field_name} is None — DAKE failed or already consumed"),
+            ))?;
+            if v.len() != need {
+                // Wipe before drop even on the error path.
+                for b in v.iter_mut() { *b = 0u8; }
+                v.clear();
+                v.shrink_to_fit();
+                return Err(PyValueError::new_err(format!(
+                    "Dakeresult.{field_name}: expected {need} bytes, got {}", v.len(),
+                )));
+            }
+            let mut arr = [0u8; 32];
+            arr.copy_from_slice(&v);
+
+            // §2 — aggressive zero: overwrite contents, clear length, free capacity.
+            for b in v.iter_mut() { *b = 0u8; }
+            v.clear();
+            v.shrink_to_fit();
+            drop(v);
+
+            Ok(arr)
+        }
+
+        // Get a single &mut Dakeresult from the PyRefMut so all field
+        // accesses below go through one well-typed borrow.
+        let dr: &mut Dakeresult = &mut *bound;
+
+        let root_key    = take_aggressive(&mut dr.root_key,    "root_key",    32)?;
+        let chain_key_a = take_aggressive(&mut dr.chain_key_a, "chain_key_a", 32)?;
+        let chain_key_b = take_aggressive(&mut dr.chain_key_b, "chain_key_b", 32)?;
+        let brace_key   = take_aggressive(&mut dr.brace_key,   "brace_key",   32)?;
+
+        // mac_key — secret, but not consumed by the ratchet constructor itself.
+        // Aggressively zero it anyway so it does not linger after this call.
+        // Explicit type annotation on the binding so PyRefMut's deref doesn't
+        // confuse the compiler about the closure body's iter_mut element type.
+        let mac_key_taken: Option<Vec<u8>> = dr.mac_key.take();
+        if let Some(mut v) = mac_key_taken {
+            for b in v.iter_mut() { *b = 0u8; }
+            v.clear();
+            v.shrink_to_fit();
+            drop(v);
+        }
+
+        // §3 + §4 — mark whole object consumed.  Idempotent guard: even though
+        // we already drained the Vecs above, calling mark_consumed_and_zero
+        // ensures consumed=true and any residual fields (mac_key was already
+        // taken; this catches future-added secret fields automatically).
+        dr.mark_consumed_and_zero();
+
+        // Drop the borrow before constructing the ratchet so PyO3 doesn't
+        // hold the Dakeresult locked.
+        drop(bound);
+
+        let pub_local: &[u8; 56] = dh_pub_local.try_into()
+            .map_err(|_| PyValueError::new_err("dh_pub_local must be 56 bytes"))?;
+
+        let inner = DoubleRatchet::new(
+            &root_key, &chain_key_a, &chain_key_b, &brace_key, pub_local, is_initiator,
+        ).map_err(|e| PyValueError::new_err(e.to_string()))?;
+
+        // §8 (optional) — Force drop of temporary key arrays.  These are
+        // [u8; 32] on the stack; once they go out of scope at the end of
+        // this function they cannot be accessed.  We do not zero them here
+        // because `DoubleRatchet::new` has already copied them into its own
+        // ZeroizeOnDrop-managed fields, and these stack arrays are about
+        // to be popped.  An attacker with stack-read primitive between this
+        // line and function return would see them, but at that level of
+        // capability the attacker can also read the ratchet itself.
+        let _ = (root_key, chain_key_a, chain_key_b, brace_key);
+
+        Ok(Self { inner })
+    }
+
     fn set_ad(&mut self, ad: &[u8]) { self.inner.set_ad(ad); }
     fn needs_rekey(&self) -> bool { self.inner.needs_rekey() }
     fn local_pub<'py>(&self, py: Python<'py>) -> Bound<'py, PyBytes> {
         PyBytes::new_bound(py, self.inner.local_pub())
     }
     fn ratchet_id(&self) -> u32 { self.inner.ratchet_id() }
-    fn brace_key<'py>(&self, py: Python<'py>) -> Bound<'py, PyBytes> {
-        PyBytes::new_bound(py, self.inner.brace_key())
-    }
+    // SECURITY (audit C4): brace_key getter REMOVED.
+    // The brace key is a session secret and was previously exposed to Python
+    // as PyBytes.  No production caller needs this — all rotation happens
+    // inside Rust via rotate_brace_key().  Internal Rust accessor preserved
+    // (DoubleRatchet::brace_key) for use by Rust code only.
 
     fn encrypt<'py>(&mut self, py: Python<'py>, plaintext: &[u8]) -> PyResult<Bound<'py, PyDict>> {
         let result = self.inner.encrypt(plaintext)

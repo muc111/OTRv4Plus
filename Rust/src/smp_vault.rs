@@ -1,20 +1,23 @@
-// src/smp_vault.rs — Hardened SMP Secret Vault
-//
-// No unsafe code — mlock removed to comply with #![forbid(unsafe_code)].
-// Secret isolation is enforced by ZeroizeOnDrop + explicit drop ordering.
-// Handle registry issues random u64 tokens — Python never sees secret bytes.
+//! Hardened SMP Secret Vault.
+//!
+//! Security model:
+//!   * Secrets stored in `Vec<u8>` wrapped in `ZeroizeOnDrop`.
+//!   * No `unsafe` (mlock removed; lib.rs has `#![forbid(unsafe_code)]`).
+//!   * Handles are random `u64` tokens issued by `OsRng` — no enumeration.
+//!   * `load*` methods are gated behind `test-only-kdf` so production builds
+//!     CANNOT extract secrets to Python.  Set-secret-from-vault is the only
+//!     production path: secrets flow into `RustSMP` / `RustDAKE` via Rust-
+//!     internal `expose_for_smp()` and never cross the PyO3 boundary outbound.
 
 use std::collections::HashMap;
 use zeroize::{Zeroize, ZeroizeOnDrop};
 use pyo3::prelude::*;
+#[cfg(feature = "test-only-kdf")]
 use pyo3::types::PyBytes;
 use rand::rngs::OsRng;
 use rand::RngCore;
 
-// ── SecretEntry ───────────────────────────────────────────────────────────────
-// Single named secret. ZeroizeOnDrop zeroes `data` on drop.
-// No Clone, no Debug in release, no Display.
-
+// ── SecretEntry ──────────────────────────────────────────────────────────────
 #[derive(Zeroize, ZeroizeOnDrop)]
 struct SecretEntry {
     data: Vec<u8>,
@@ -36,7 +39,7 @@ impl std::fmt::Debug for SecretEntry {
     }
 }
 
-// ── Handle registry ───────────────────────────────────────────────────────────
+// ── Handle registry ──────────────────────────────────────────────────────────
 struct HandleRegistry {
     forward: HashMap<u64, String>,
     reverse: HashMap<String, u64>,
@@ -72,22 +75,29 @@ impl HandleRegistry {
     }
 }
 
-// ── Vault ─────────────────────────────────────────────────────────────────────
+// ── Vault ────────────────────────────────────────────────────────────────────
 struct Vault {
     entries:  HashMap<String, SecretEntry>,
     handles:  HandleRegistry,
     max_size: usize,
+    max_value_bytes: usize,
 }
 
 impl Vault {
     fn new() -> Self {
-        Self { entries: HashMap::new(), handles: HandleRegistry::new(), max_size: 128 }
+        Self {
+            entries: HashMap::new(),
+            handles: HandleRegistry::new(),
+            max_size: 128,
+            max_value_bytes: 65536,  // 64 KiB
+        }
     }
 
     fn store(&mut self, name: &str, bytes: &[u8]) -> Result<u64, &'static str> {
         if name.is_empty()  { return Err("empty name"); }
         if bytes.is_empty() { return Err("empty secret"); }
-        if bytes.len() > 65536 { return Err("secret too large (>64 KiB)"); }
+        if name.len() > 256 { return Err("name too long"); }
+        if bytes.len() > self.max_value_bytes { return Err("secret too large (>64 KiB)"); }
         if !self.entries.contains_key(name) && self.entries.len() >= self.max_size {
             return Err("vault capacity exceeded");
         }
@@ -137,7 +147,7 @@ impl Drop for Vault {
     fn drop(&mut self) { self.clear(); }
 }
 
-// ── PyO3 public class ─────────────────────────────────────────────────────────
+// ── PyO3 public class ────────────────────────────────────────────────────────
 #[pyclass(name = "RustSMPVault")]
 pub struct PySMPVault {
     inner: Vault,
@@ -145,6 +155,7 @@ pub struct PySMPVault {
 
 impl PySMPVault {
     /// Rust-internal: expose bytes by name. Lifetime bound to &self.
+    /// **Never call from PyO3 paths that copy to PyBytes.**
     pub fn expose_for_smp(&self, name: &str) -> Option<&[u8]> {
         self.inner.expose_by_name(name)
     }
@@ -175,12 +186,15 @@ impl PySMPVault {
     fn remove_handle(&mut self, h: u64) { self.inner.remove_handle(h); }
     fn clear(&mut self)              { self.inner.clear(); }
 
-    /// WARNING: copies bytes into Python GC heap — use only for non-secret material.
-    /// For SMP secrets, use smp.set_secret_from_vault() instead.
+    /// SECURITY: `load` and `load_by_handle` are gated behind `test-only-kdf`.
+    /// Production builds cannot extract secrets via PyO3 — secrets flow only
+    /// from `store()` → Rust internals via `expose_for_smp()`.
+    #[cfg(feature = "test-only-kdf")]
     fn load<'py>(&self, py: Python<'py>, name: &str) -> Option<Bound<'py, PyBytes>> {
         self.inner.expose_by_name(name).map(|d| PyBytes::new_bound(py, d))
     }
 
+    #[cfg(feature = "test-only-kdf")]
     fn load_by_handle<'py>(&self, py: Python<'py>, handle: u64) -> Option<Bound<'py, PyBytes>> {
         self.inner.expose_by_handle(handle).map(|d| PyBytes::new_bound(py, d))
     }

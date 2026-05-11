@@ -8,7 +8,7 @@
 //   5. No unsafe code — mlock removed entirely (was blocked by #![forbid(unsafe_code)])
 
 use pyo3::prelude::*;
-use pyo3::types::PyBytes;
+use pyo3::types::{PyBytes, PyByteArray};
 use zeroize::{Zeroize, ZeroizeOnDrop};
 use sha3::{Sha3_512, Digest};
 use sha3::digest::Update;
@@ -700,6 +700,61 @@ impl PySmp {
 
     fn set_secret(&mut self, raw_secret: &[u8], session_id: &[u8], our_fp: &[u8], peer_fp: &[u8]) {
         self.inner.set_secret(raw_secret, session_id, our_fp, peer_fp);
+    }
+
+    /// SECURITY (audit C5 + Patch-2 §1): preferred secret-input path.
+    ///
+    /// Takes a Python `bytearray` (mutable buffer), copies its contents into
+    /// Rust-owned memory, derives the SMP secret, **then zeroes the Python
+    /// bytearray's backing buffer in-place via the safe `set_item` API**.
+    /// No `unsafe` is used — works under `#![forbid(unsafe_code)]`.
+    ///
+    /// After this method returns:
+    ///   * Rust holds the only authoritative copy (in `SmpState`'s SecretVec,
+    ///     `Zeroize`-bounded)
+    ///   * The caller's bytearray contains all zero bytes
+    ///   * No Python `bytes` object was ever created from the secret
+    ///
+    /// Caller MAY still wipe the bytearray after the call as defense-in-depth,
+    /// but is not required to — Rust has already done it.
+    ///
+    /// Python usage:
+    ///   raw = bytearray(passphrase.encode("utf-8"))
+    ///   rust_smp.set_secret_from_bytearray(raw, session_id, our_fp, peer_fp)
+    ///   # raw is already all zeros after this call.
+    fn set_secret_from_bytearray(
+        &mut self,
+        secret:     &Bound<'_, PyByteArray>,
+        session_id: &[u8],
+        our_fp:     &[u8],
+        peer_fp:    &[u8],
+    ) -> PyResult<()> {
+        // Step 1: snapshot the bytearray contents into a Rust-owned Vec.
+        // `to_vec()` is the safe path; never creates a Python `bytes`.
+        let mut snapshot: Vec<u8> = secret.to_vec();
+
+        // Step 2: derive SMP secret in the state machine.  Internally this
+        // runs the KDF and stores only the derivative; `snapshot` is no
+        // longer needed after this call returns.
+        self.inner.set_secret(&snapshot, session_id, our_fp, peer_fp);
+
+        // Step 3: zero the Rust-side snapshot before drop.
+        // (Patch-2 §2: aggressive zeroization — clear + shrink_to_fit so the
+        // backing capacity memory cannot retain residue.)
+        for b in snapshot.iter_mut() { *b = 0; }
+        snapshot.clear();
+        snapshot.shrink_to_fit();
+        drop(snapshot);
+
+        // Step 4: zero the Python bytearray's backing buffer in-place via the
+        // safe `set_item` PyO3 API.  Loops under the GIL; no unsafe required.
+        // This satisfies Patch-2 §1: caller discipline is no longer required.
+        let n = secret.len();
+        for i in 0..n {
+            secret.set_item(i, 0u8)?;
+        }
+
+        Ok(())
     }
 
     fn set_secret_from_vault(

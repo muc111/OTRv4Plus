@@ -1260,7 +1260,7 @@ class OTRv4DataMessage:
             raise ValueError(f"Failed to decode message: {e}")
 
 
-VERSION = "OTRv4+ 10.6.2"
+VERSION = "OTRv4+ 10.6.1"
 
 if not hasattr(hashlib, 'sha3_512'):
     raise RuntimeError(
@@ -4046,8 +4046,8 @@ class RustDAKEAdapter:
 
         if RUST_DAKE_AVAILABLE and _RustDAKE is not None:
             try:
-                # Public profile (sent on the wire) — used so Rust knows our
-                # identity_pub / prekey_pub.
+                # Public profile/key bytes for the constructor.  Public material
+                # only — private keys are passed per-message into generate/process.
                 _profile_bytes = self.client_profile.encode()
 
                 # The encode() call populates identity_pub_bytes / prekey_pub_bytes
@@ -4063,79 +4063,28 @@ class RustDAKEAdapter:
                             encoding=serialization.Encoding.Raw,
                             format=serialization.PublicFormat.Raw)
 
-                # ── CRITICAL FIX (v10.6.2): Pass PRIVATE key bytes, not public.
-                #
-                # The Rust PyO3 constructor (PyDake::new in dake.rs) declares:
-                #     our_ik_bytes:     &[u8;57]  — Ed448 PRIVATE seed
-                #     our_prekey_bytes: &[u8;56]  — X448  PRIVATE scalar
-                # Public Ed448 / X448 keys are ALSO 57 / 56 bytes long, so the
-                # type-cast did not fail — Rust silently treated public bytes
-                # as private bytes, making all subsequent X448 DH operations
-                # produce garbage shared secrets.  The peer's MAC over the
-                # transcript would never match, and DAKE failed every time.
-                # Extract the raw private bytes from the cryptography library
-                # PrivateKey objects.
-                _ik_priv_bytes = self.client_profile.identity_key.private_bytes(
-                    encoding         = serialization.Encoding.Raw,
-                    format           = serialization.PrivateFormat.Raw,
-                    encryption_algorithm = serialization.NoEncryption(),
-                )
-                _prekey_priv_bytes = self.client_profile.prekey.private_bytes(
-                    encoding         = serialization.Encoding.Raw,
-                    format           = serialization.PrivateFormat.Raw,
-                    encryption_algorithm = serialization.NoEncryption(),
-                )
-
-                # Sanity check sizes before crossing the FFI boundary.
-                if len(_ik_priv_bytes) != 57:
-                    raise ValueError(
-                        f"identity_key private bytes wrong length: {len(_ik_priv_bytes)}"
-                    )
-                if len(_prekey_priv_bytes) != 56:
-                    raise ValueError(
-                        f"prekey private bytes wrong length: {len(_prekey_priv_bytes)}"
-                    )
-
-                # ML-DSA-87 keys: Level 5 PQ signature is mandatory for OTRv4+.
-                # The constructor's mldsa_priv / mldsa_pub kwargs are optional —
-                # at adapter __init__ time we don't yet have the MLDSA87Auth
-                # instance (it's lazy-created later).  Pass None here; Rust
-                # can use mldsa_pub_bytes per-message from generate_dake1.
-                _mldsa_priv = None
-                _mldsa_pub  = None
+                _ik_bytes     = self.client_profile.identity_pub_bytes or b''
+                _prekey_bytes = self.client_profile.prekey_pub_bytes   or b''
 
                 # Try positional first (matches PyO3 [pyo3(signature=(...))] convention)
                 try:
                     self._rust = _RustDAKE(
                         explicit_initiator,
                         _profile_bytes,
-                        _ik_priv_bytes,
-                        _prekey_priv_bytes,
-                        _mldsa_priv,
-                        _mldsa_pub,
+                        _ik_bytes,
+                        _prekey_bytes,
                     )
                 except TypeError:
-                    # Older build may use kwargs or fewer params
-                    try:
-                        self._rust = _RustDAKE(
-                            is_initiator      = explicit_initiator,
-                            our_profile_bytes = _profile_bytes,
-                            our_ik_bytes      = _ik_priv_bytes,
-                            our_prekey_bytes  = _prekey_priv_bytes,
-                            mldsa_priv        = _mldsa_priv,
-                            mldsa_pub         = _mldsa_pub,
-                        )
-                    except TypeError:
-                        # Fall back to no-mldsa form for ancient builds
-                        self._rust = _RustDAKE(
-                            explicit_initiator,
-                            _profile_bytes,
-                            _ik_priv_bytes,
-                            _prekey_priv_bytes,
-                        )
+                    # Older build may use kwargs
+                    self._rust = _RustDAKE(
+                        is_initiator      = explicit_initiator,
+                        our_profile_bytes = _profile_bytes,
+                        our_ik_bytes      = _ik_bytes,
+                        our_prekey_bytes  = _prekey_bytes,
+                    )
                 self._use_rust = True
                 if logger:
-                    logger.debug("RustDAKEAdapter: using Rust DAKE backend (priv keys passed correctly)")
+                    logger.debug("RustDAKEAdapter: using Rust DAKE backend")
             except Exception as _rust_err:
                 # Rust constructor failed — fall back to Python silently
                 if logger:
@@ -4269,7 +4218,7 @@ class RustDAKEAdapter:
             raise
 
     def process_dake1(self, dake1_msg: str, peer_key: str = "unknown") -> bool:
-        """Process DAKE1 as responder. Rust parses everything."""
+        """Process DAKE1 as responder. Rust: parses wire, stores remote ephemeral."""
         if not self._use_rust:
             return self._py_fallback.process_dake1(dake1_msg, peer_key)
 
@@ -4283,8 +4232,23 @@ class RustDAKEAdapter:
             raw = OTRv4DAKE._safe_b64decode(dake1_msg[7:].strip())
             self._raw_dake1_bytes = raw
 
-            # Rust parses the whole DAKE1, including profile and optional ML‑DSA.
-            result = self._rust.process_dake1(raw)
+            # Extract the peer's profile bytes from the raw DAKE1 wire message.
+            # Wire format: type(1) || X448_pub(56) || ML-KEM EK(1568) || profile(var) || ...
+            off = 1 + 56 + 1568  # skip: message type byte, X448 ephemeral pub, ML-KEM encapsulation key
+            if off + 3 > len(raw):
+                return self._fail("process_dake1: message too short for profile")
+            num_versions = raw[off + 1]
+            if num_versions < 1 or num_versions > 8:
+                return self._fail(f"process_dake1: invalid profile version count {num_versions}")
+            # Profile wire size: type(1) + version_count(1) + versions(num_versions)
+            #   + Ed448_pub(57) + X448_pub(56) + expiry_unix(8) + Ed448_sig(114)
+            prof_size = 1 + 1 + num_versions + 57 + 56 + 8 + 114
+            if off + prof_size > len(raw):
+                return self._fail("process_dake1: profile truncated in wire message")
+            remote_profile_bytes = raw[off:off + prof_size]
+
+            # Rust parses, validates profile, stores remote ephemeral + KEM ek
+            result = self._rust.process_dake1(raw, remote_profile_bytes)
             if not result.success:
                 return self._fail(f"process_dake1: {result.error}")
 
@@ -4365,7 +4329,11 @@ class RustDAKEAdapter:
 
     def process_dake2(self, dake2_msg: str) -> bool:
         """
-        Process DAKE2 as initiator. Rust parses everything.
+        Process DAKE2 as initiator.
+        Rust path:
+          - decodes wire, verifies MAC
+          - performs dh1/dh2/dh3 + ML-KEM decaps in Rust
+          - derives session keys in Rust
         """
         if not self._use_rust:
             return self._py_fallback.process_dake2(dake2_msg)
@@ -4379,8 +4347,27 @@ class RustDAKEAdapter:
             our_prekey_priv_bytes = self.client_profile.prekey_priv_bytes if hasattr(
                 self.client_profile, 'prekey_priv_bytes') else None
 
-            # Rust does all parsing.
-            result = self._rust.process_dake2(raw, our_prekey_priv_bytes)
+            # Extract the peer's (Bob's) profile bytes from the raw DAKE2 wire message.
+            # Wire format: type(1) || X448_pub(56) || ML-KEM CT(1568) || profile(var)
+            #   || [ML-DSA pub(2592)] || MAC(64)
+            off = 1 + 56 + 1568  # skip: message type byte, X448 ephemeral pub, ML-KEM ciphertext
+            if off + 3 > len(raw):
+                return self._fail("process_dake2: message too short for profile")
+            num_versions = raw[off + 1]
+            if num_versions < 1 or num_versions > 8:
+                return self._fail(f"process_dake2: invalid profile version count {num_versions}")
+            # Profile wire size: type(1) + version_count(1) + versions(num_versions)
+            #   + Ed448_pub(57) + X448_pub(56) + expiry_unix(8) + Ed448_sig(114)
+            prof_size = 1 + 1 + num_versions + 57 + 56 + 8 + 114
+            if off + prof_size > len(raw):
+                return self._fail("process_dake2: profile truncated in wire message")
+            peer_profile_bytes = raw[off:off + prof_size]
+
+            result = self._rust.process_dake2(
+                dake2_bytes           = raw,
+                peer_profile_bytes    = peer_profile_bytes,
+                our_prekey_priv_bytes = our_prekey_priv_bytes,
+            )
             if not result.success:
                 return self._fail(f"process_dake2: {result.error}")
 
@@ -10274,48 +10261,10 @@ class OTRv4IRCClient:
 
             elif code == 401:
                 target = params[1] if len(params) > 1 else (params[0] if params else "")
-                # ── v10.6.2 fix: do NOT treat 401 (ERR_NOSUCHNICK) as a fatal
-                # session-ending event when DAKE is still in progress.  Over
-                # I2P, peers' nicks routinely flicker in and out of the IRC
-                # server's view during long (~30s) DAKE handshakes — we send
-                # ~23 fragments and the server can briefly NOT see the nick
-                # between sends even when the peer is genuinely there and
-                # responding.  Killing the session on the first 401 means
-                # DAKE2 can never arrive: by the time the peer's response
-                # comes back, our session has been torn down.
-                #
-                # Only treat 401 as a real disconnect if:
-                #   (a) the session is past DAKE (i.e. already ENCRYPTED or
-                #       further) — in that case 401 really does mean the
-                #       peer is gone, OR
-                #   (b) we have received 5+ consecutive 401s for the same
-                #       peer with no traffic from them — strong signal of
-                #       genuine disconnect even mid-DAKE.
                 if target and self.session_manager.has_session(target):
-                    sess = self.session_manager.get_session(target)
-                    state = getattr(sess, 'session_state', None) if sess else None
-                    # Lazy-create dedup / counter dicts
-                    if not hasattr(self, '_401_count'):
-                        self._401_count = {}
-                    if not hasattr(self, '_401_handled'):
-                        self._401_handled = set()
-
-                    self._401_count[target] = self._401_count.get(target, 0) + 1
-
-                    # State enum comparison via str repr is brittle; compare via name
-                    state_name = getattr(state, 'name', str(state)) if state is not None else ''
-                    is_dake_phase = state_name in ('DAKE_IN_PROGRESS', 'CREATED', 'PLAINTEXT')
-
-                    if is_dake_phase and self._401_count[target] < 5:
-                        # Soft-ignore — peer's nick is briefly invisible on the
-                        # IRC server but DAKE may still complete.  Drop a quiet
-                        # debug breadcrumb but DO NOT terminate the session.
-                        self.debug("401 during DAKE", {
-                            "peer": target,
-                            "state": state_name,
-                            "count": self._401_count[target],
-                        })
-                    elif target not in self._401_handled:
+                    if not getattr(self, '_401_handled', set()).__contains__(target):
+                        if not hasattr(self, '_401_handled'):
+                            self._401_handled = set()
                         self._401_handled.add(target)
                         self._on_peer_disconnected(target, "nick no longer on server")
                 elif trailing:
@@ -11272,9 +11221,9 @@ class OTRv4IRCClient:
 class EnhancedOTRv4IRCClient(OTRv4IRCClient):
     """
     Full OTRv4 IRC client with:
-      - Complete DAKE handshake (DAKE1/2/3)      🦀 Rust
-      - Double ratchet encryption                  🦀 Rust
-      - SMP verification with auto-respond         🦀 Rust
+      - Complete DAKE handshake (DAKE1/2/3)
+      - Double ratchet encryption
+      - SMP verification with auto-respond
       - Fingerprint trust database
       - Traffic-light security indicator (🔴🟡🟢🔵)
       - All prompts IN-CHAT (no blocking input() calls)
@@ -11420,19 +11369,22 @@ class EnhancedOTRv4IRCClient(OTRv4IRCClient):
 
             role = "initiator" if is_initiator else "responder"
 
-            # Detect backends for display
+            # Detect ratchet backend for display
             _session = self.session_manager.get_session(peer) if hasattr(self.session_manager, 'get_session') else None
             _backend = getattr(_session, '_ratchet_backend', 'python') if _session else 'python'
-            _ratchet_tag = "🦀 Rust" if _backend == "rust" else "🐍 Python"
+            _backend_tag = "🦀 Rust" if _backend == "rust" else "🐍 Python"
+
+            # DAKE always runs through RustDAKEAdapter when otrv4_core is present;
+            # SMP always runs through RustSMP when otrv4_core is present.
             _dake_engine = getattr(_session, 'dake_engine', None)
-            _dake_tag = "🦀 Rust" if (_dake_engine is not None and getattr(_dake_engine, '_use_rust', False)) else "🐍 Python"
-            _smp_tag = "🦀 Rust" if (getattr(_session, 'rust_smp', None) is not None) else "🐍 Python"
+            _dake_tag  = "🦀 Rust" if (_dake_engine is not None and getattr(_dake_engine, '_use_rust', False)) else "🐍 Python"
+            _smp_tag   = "🦀 Rust" if (getattr(_session, 'rust_smp', None) is not None) else "🐍 Python"
 
             if channel_panel:
                 self.add_message(channel_panel,
                                  f"🔒 OTR session with {colorize_username(peer)} established"
                                  f" — Ed448/X448, AES-256-GCM ({role})"
-                                 f" [DAKE {_dake_tag} | Ratchet {_ratchet_tag} | SMP {_smp_tag}]",
+                                 f" [DAKE {_dake_tag} | Ratchet {_backend_tag} | SMP {_smp_tag}]",
                                  sec)
 
             local_fp = self._get_local_fp()
@@ -11507,7 +11459,7 @@ class EnhancedOTRv4IRCClient(OTRv4IRCClient):
         self.panel_manager.update_panel_security(peer, sec)
 
         self.add_message(peer, colorize("─"*50, 'dim'), sec)
-        self.add_message(peer, colorize("🔐 SMP VERIFICATION SETUP (🦀 Rust SMP)", 'blue'), sec)
+        self.add_message(peer, colorize("🔐 SMP VERIFICATION SETUP", 'blue'), sec)
         self.add_message(peer,
             "Type your shared secret (both sides must use the same).", sec)
         self.add_message(peer,
@@ -11536,7 +11488,7 @@ class EnhancedOTRv4IRCClient(OTRv4IRCClient):
                     self.session_manager.set_smp_secret(peer, secret)
 
                 self.add_message(self._otr_panel(peer),
-                    colorize("✅ SMP secret stored (🦀 Rust vault)", 'green'), sec)
+                    colorize("✅ SMP secret stored", 'green'), sec)
 
                 if is_initiator:
                     self.add_message(self._otr_panel(peer),
@@ -11558,13 +11510,9 @@ class EnhancedOTRv4IRCClient(OTRv4IRCClient):
         """Show final help after session is fully set up."""
         _session = self.session_manager.get_session(peer) if hasattr(self.session_manager, 'get_session') else None
         _backend = getattr(_session, '_ratchet_backend', 'python') if _session else 'python'
-        _ratchet_tag = "🦀 Rust" if _backend == "rust" else "🐍 Python"
-        _dake_engine = getattr(_session, 'dake_engine', None)
-        _dake_tag = "🦀 Rust" if (_dake_engine is not None and getattr(_dake_engine, '_use_rust', False)) else "🐍 Python"
-        _smp_tag = "🦀 Rust" if (getattr(_session, 'rust_smp', None) is not None) else "🐍 Python"
+        _backend_tag = "🦀 Rust" if _backend == "rust" else "🐍 Python"
         self.add_message(peer, colorize("─"*50, 'dim'), sec)
-        self.add_message(peer,
-            colorize(f"✅ Session ready! — DAKE {_dake_tag} | Ratchet {_ratchet_tag} | SMP {_smp_tag}", 'green'), sec)
+        self.add_message(peer, colorize(f"✅ Session ready! — Ratchet: {_backend_tag}", 'green'), sec)
         self.add_message("system",
             f"{colorize('Commands:', 'cyan')} "
             f"/fingerprint  /smp <secret>  /smp start  /trust <nick>  /secure")
@@ -11713,7 +11661,7 @@ class EnhancedOTRv4IRCClient(OTRv4IRCClient):
         self.panel_manager.update_panel_security(peer, sec)
         self.panel_manager.update_smp_progress(peer, 0, 0)
         self.add_message(self._otr_panel(peer),
-            colorize("🔵 SMP VERIFIED — identity confirmed by shared secret! (🦀 Rust SMP)", 'blue'), sec)
+            colorize("🔵 SMP VERIFIED — identity confirmed by shared secret!", 'blue'), sec)
         self.add_message("system",
             f"{colorize('🔵 SMP verified with', 'blue')} {colorize_username(peer)}")
         self._termux_fire([
@@ -11764,14 +11712,6 @@ class EnhancedOTRv4IRCClient(OTRv4IRCClient):
                 self.check_auto_reply(sender, target, message)
 
                 if '?OTRv4' in message:
-                    # Peer is alive (sent us OTR traffic) — clear any stale
-                    # 401-count so we don't tear down their session if the
-                    # IRC server briefly stops seeing their nick again.
-                    if hasattr(self, '_401_count'):
-                        self._401_count.pop(sender, None)
-                    if hasattr(self, '_401_handled'):
-                        self._401_handled.discard(sender)
-
                     if sender not in self.fragment_buffers:
                         self.fragment_buffers[sender] = OTRFragmentBuffer(
                             timeout=self.config.fragment_timeout)
@@ -12024,7 +11964,7 @@ class EnhancedOTRv4IRCClient(OTRv4IRCClient):
                         
                         sec_level = self.session_manager.get_security_level(peer)
                         self.add_message(self._otr_panel(peer),
-                            colorize("✅ SMP secret stored (🦀 Rust vault)", 'green'), sec_level)
+                            colorize("✅ SMP secret stored", 'green'), sec_level)
                         self.add_message(self._otr_panel(peer),
                             colorize("🔐 Type  /smp start  to begin verification.", 'cyan'), sec_level)
                     except Exception as exc:
@@ -12117,7 +12057,7 @@ class EnhancedOTRv4IRCClient(OTRv4IRCClient):
 
         sec = self.session_manager.get_security_level(peer)
         self.add_message(peer, colorize(
-            "🔐 SMP [███ ░░░ ░░░ ░░░] step 1/4 (🦀 Rust SMP)"
+            "🔐 SMP [███ ░░░ ░░░ ░░░] step 1/4"
             " · Computing challenge — please wait…", "yellow"), sec)
         self.panel_manager.update_smp_progress(peer, 1, 4)
 
@@ -12153,7 +12093,7 @@ class EnhancedOTRv4IRCClient(OTRv4IRCClient):
                     if self.send_otr_message(peer, encrypted_msg):
                         s = self.session_manager.get_security_level(peer)
                         self.add_message(peer, colorize(
-                            "🔐 SMP [███ ░░░ ░░░ ░░░] step 1/4 (🦀 Rust SMP)"
+                            "🔐 SMP [███ ░░░ ░░░ ░░░] step 1/4"
                             " · Challenge sent — awaiting response…", "yellow"), s)
                     else:
                         self.add_message("system",
@@ -12286,14 +12226,8 @@ class EnhancedOTRv4IRCClient(OTRv4IRCClient):
             sec = getattr(sess, 'security_level', UIConstants.SecurityLevel.PLAINTEXT)
             icon = UIConstants.SECURITY_ICONS.get(sec, "")
             name = UIConstants.SECURITY_NAMES.get(sec, sec.name)
-            _dake_engine = getattr(sess, 'dake_engine', None)
-            _dake_tag = "🦀R" if (_dake_engine is not None and getattr(_dake_engine, '_use_rust', False)) else "🐍Py"
-            _ratchet_backend = getattr(sess, '_ratchet_backend', 'python')
-            _ratchet_tag = "🦀R" if _ratchet_backend == "rust" else "🐍Py"
-            _smp_tag = "🦀R" if getattr(sess, 'rust_smp', None) is not None else "🐍Py"
             self.add_message("system",
-                f"  {icon} {colorize_username(peer):<20} {colorize(name, 'yellow')}  "
-                f"[DAKE {_dake_tag} | Ratchet {_ratchet_tag} | SMP {_smp_tag}]")
+                f"  {icon} {colorize_username(peer):<20} {colorize(name, 'yellow')}")
 
     def _show_session_info(self, peer: str):
         if not self.session_manager.has_session(peer):
@@ -12313,10 +12247,8 @@ class EnhancedOTRv4IRCClient(OTRv4IRCClient):
         
         if hasattr(self.session_manager, 'get_smp_status'):
             status = self.session_manager.get_smp_status(peer)
-            _sess = self.session_manager.get_session(peer)
-            _smp_tag = "🦀 Rust" if (getattr(_sess, 'rust_smp', None) is not None) else "🐍 Python"
             self.add_message("system",
-                f"SMP {colorize_username(peer)} [{_smp_tag}]: {status}")
+                f"SMP {colorize_username(peer)}: {status}")
 
 
     def shutdown(self):
@@ -12605,11 +12537,6 @@ def main():
     safe_print(f"Ratchet : {colorize(_rt_label, 'green' if RUST_RATCHET_AVAILABLE else 'red')}")
     _dake_label = "🦀 Rust (DH secrets never Python)" if RUST_DAKE_AVAILABLE else "🐍 Python (C extensions)"
     safe_print(f"DAKE    : {colorize(_dake_label, 'green' if RUST_DAKE_AVAILABLE else 'yellow')}")
-    # SMP is bound to the Rust ratchet module — if the ratchet is available,
-    # so is RustSMP and RustSMPVault.  The KDF/Pb/Qb ZKPs and 50k-round
-    # passphrase derivation all run in Rust with ZeroizeOnDrop.
-    _smp_label = "🦀 Rust (ZeroizeOnDrop, 50k-round Argon2-class KDF)" if RUST_RATCHET_AVAILABLE else "🐍 Python (C extensions)"
-    safe_print(f"SMP     : {colorize(_smp_label, 'green' if RUST_RATCHET_AVAILABLE else 'yellow')}")
 
     if not RUST_RATCHET_AVAILABLE:
         safe_print(colorize("\n❌ FATAL: otrv4_core Rust module not installed.", "red"))

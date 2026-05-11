@@ -198,12 +198,15 @@ pytest -v test_*.py fuzz_harnesses.py                 # full (~8h)
 
 ---
 
-## 8. Rust Migration Status (v10.5.10)
+## 8. Rust Migration Status (v10.6.2)
 
 | Component | Secret storage | Zeroization | Status |
 |---|---|---|---|
 | **Double ratchet** | Rust `SecretBytes<N>` / `SecretVec` | `ZeroizeOnDrop` — no Python exposure | ✅ Complete (v10.5.8) |
 | **SMP state machine** | Rust `SmpState` — all exponents are `SecretVec` | `ZeroizeOnDrop` + explicit `destroy()` | ✅ Complete (v10.5.10) |
 | **SMP vault** | Rust `RustSMPVault` — `SecretEntry` per slot | `ZeroizeOnDrop` per entry; `clear()` drains individually | ✅ Complete (v10.5.10) |
-| **DAKE DH secrets** | Python `bytes` during KDF | `OPENSSL_cleanse` after use | 🔜 Phase 3 |
-| **Identity keys (Ed448/X448)** | Python OpenSSL objects | No deterministic zeroization | 🔜 Phase 4 |
+| **SMP passphrase entry** | Rust copies bytearray, wipes caller's buffer | `ZeroizeOnDrop` on Rust side | ✅ Complete (v10.6.1) |
+| **DAKE DH secrets (`dh1`/`dh2`/`dh3`, `mlkem_ss`)** | Rust `Vec<u8>` inside `DakeState`; never crosses FFI | `Drop` zeroizes (kdf-1 input scope) | ✅ Complete (v10.6.2) |
+| **DAKE session keys** (root, chain×2, brace, mac) | Rust → PyBytes (window) → Rust ratchet | aggressive zero + `consumed` flag | ⚠️ Window remains; full close in Phase 4 |
+| **Identity keys (Ed448 / X448)** | Python `cryptography` objects; private bytes copied into Rust at session start | Python lib lifecycle + OpenSSL cleanse | 🔜 Phase 5 |
+
