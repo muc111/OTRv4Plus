@@ -1260,7 +1260,7 @@ class OTRv4DataMessage:
             raise ValueError(f"Failed to decode message: {e}")
 
 
-VERSION = "OTRv4+ 10.6.2"
+VERSION = "OTRv4+ 10.6.3"
 
 if not hasattr(hashlib, 'sha3_512'):
     raise RuntimeError(
@@ -2754,6 +2754,150 @@ class RustBackedDoubleRatchet:
         self._current_recv_dh_pub: Optional[bytes] = None
 
         self.logger.debug(f"RustBackedDoubleRatchet initialized (initiator={is_initiator})")
+
+    # ── Phase 4 (v10.6.3): construct from an opaque DakeOutput handle ─────────
+    @classmethod
+    def from_dake_output(cls, dake_output, is_initiator: bool,
+                        ad: bytes = b"OTRv4-DATA", logger=None,
+                        rekey_interval: int = None,
+                        rekey_timeout: int = None) -> 'RustBackedDoubleRatchet':
+        """Construct a ratchet from a DakeOutput without ever materialising
+        the session keys as Python bytes.
+
+        The session keys (root, chain_send, chain_recv, brace) move directly
+        from Rust's DakeOutput.inner: RefCell<Option<DakeSessionKeys>> into
+        the RustDoubleRatchet's owned SecretBytes fields via
+        output.consume_into_ratchet().  At no point are they marshalled into
+        PyBytes.
+
+        This closes audit findings C2 and C3 (Critical Exposure Window)
+        completely: the session keys never become accessible to Python code,
+        the GC, or anything that can dump Python heap.
+
+        The DakeOutput is consumed by this call.  After return, the
+        DakeOutput's secret-key slots are taken; its public fields
+        (ssid, remote_identity_pub, etc.) remain readable but
+        `output.consumed` becomes True.
+
+        Test-API mirrors (`_rks_send`, `_rks_recv`, `_rks_root`) are set
+        to zero placeholders because real key bytes are no longer
+        accessible from Python.  Production crypto does not touch these
+        mirrors; only the test suite and the session-persistence export
+        read them.  Persistence export from a Phase-4 ratchet requires a
+        Rust-side serialization API (planned for v10.6.4).
+        """
+        if rekey_interval is None:
+            rekey_interval = OTRConstants.REKEY_INTERVAL
+        if rekey_timeout is None:
+            rekey_timeout = OTRConstants.REKEY_TIMEOUT
+        if dake_output is None:
+            raise ValueError("from_dake_output: dake_output is None")
+        if getattr(dake_output, 'consumed', False):
+            raise ValueError("from_dake_output: DakeOutput already consumed")
+
+        # Allocate without running normal __init__ — we'll wire fields up
+        # manually so the Rust ratchet is constructed from the DakeOutput
+        # instead of from raw byte parameters.
+        self = cls.__new__(cls)
+        self.lock = threading.RLock()
+        self.is_initiator = is_initiator
+        self.ad = ad
+        self.logger = logger or NullLogger()
+        self.rekey_interval = rekey_interval
+        self.rekey_timeout = rekey_timeout
+        self.last_rekey_time = time.time()
+
+        # ── X448 keys (Python — Phase 5 will move into Rust) ──
+        self.dh_ratchet_local = x448.X448PrivateKey.generate()
+        self.dh_ratchet_local_pub = self.dh_ratchet_local.public_key().public_bytes(
+            encoding=serialization.Encoding.Raw,
+            format=serialization.PublicFormat.Raw
+        )
+        self.dh_ratchet_remote = None
+        self.dh_ratchet_remote_pub = None
+        self.last_remote_pub = None
+
+        # ── Brace KEM rotation state (Python — uses C extension) ──
+        self._brace_kem_local = None
+        self._brace_kem_ek_out = None
+        self._brace_kem_ct_out = None
+        # We do not have the brace_key as Python bytes anymore — Rust owns
+        # it inside the ratchet.  Python-side _brace_key cache is only used
+        # during rotation; on first rotation Rust generates a new one
+        # internally.  Keep a 32-zero placeholder so any code that reads
+        # _brace_key sees something stable.
+        self._brace_key = bytes(32)
+
+        # ── Move keys into Rust ratchet via consume_into_ratchet ──
+        # This is the security-critical line: session keys transit from
+        # the Rust DakeOutput's private RefCell directly into the
+        # ratchet's owned SecretBytes.  Python never sees them.
+        if not RUST_RATCHET_AVAILABLE:
+            raise RuntimeError(
+                "otrv4_core Rust module not installed — Phase-4 ratchet "
+                "requires the Rust core."
+            )
+
+        # IMPORTANT (FIXED v10.6.3 patch): pass the ACTUAL is_initiator
+        # to consume_into_ratchet, NOT hardcoded True.
+        #
+        # The legacy v10.6.2 path pre-swapped chain_key_a/chain_key_b in
+        # Python (_unpack_session_keys: "ck_a if is_initiator else ck_b")
+        # and then passed is_initiator=True to _RustRatchet to skip Rust's
+        # internal swap.  That worked because Python could pre-swap the
+        # bytes.
+        #
+        # The Phase-4 path CANNOT pre-swap in Python because Python never
+        # sees the keys — they live only in Rust.  Therefore we must let
+        # the Rust DoubleRatchet::new do the role-based swap by passing
+        # the actual is_initiator.  Rust's swap: if is_initiator, keep
+        # (ck_a, ck_b) as (send, recv); if responder, swap to (ck_b, ck_a).
+        # This produces matched send↔recv pairs across the two peers.
+        #
+        # An earlier draft of this code passed True here, which caused
+        # BOTH sides to use the same send and recv assignments and
+        # produced AES-GCM auth failures on every data message after DAKE.
+        self._rust = dake_output.consume_into_ratchet(
+            ad,
+            self.dh_ratchet_local_pub,
+            is_initiator,  # actual role — Rust DoubleRatchet::new will swap if responder
+        )
+
+        self.ratchet_id = 0
+        self.message_counter_send = 0
+
+        # ── Test-API mirrors — set to ZERO placeholders ─────────────
+        # The legacy __init__ initialises _rks_send / _rks_recv / _rks_root
+        # with the real chain/root keys for test-API and persistence-export
+        # access.  Phase 4 cannot do this because the keys never exist as
+        # Python bytes.  Production crypto does not touch these mirrors;
+        # only the test suite and session-persistence export read them.
+        # The test suite must be updated to recognise the Phase-4 ratchet
+        # (e.g. via hasattr(ratchet, '_dake_output_consumed')) and skip
+        # mirror-based assertions when present.
+        _placeholder = b'\x00' * 32
+        self._rks_send = _RatchetKeyStore(_placeholder)
+        self._rks_recv = _RatchetKeyStore(_placeholder)
+        self._rks_root = _RatchetKeyStore(_placeholder)
+        self._rks_recv_init = _RatchetKeyStore(_placeholder)
+        self._rks_send_init = _RatchetKeyStore(_placeholder)
+
+        self._dh_epoch = 0
+        self.message_num_recv = 0
+        self.skipped_keys = {}
+        self._next_expected_recv_num = 0
+        self._current_recv_dh_pub = None
+
+        # Marker so test code and session-persistence export can detect
+        # this ratchet was built from a DakeOutput and the Python mirrors
+        # are placeholders, not real keys.
+        self._dake_output_consumed = True
+
+        self.logger.debug(
+            f"RustBackedDoubleRatchet.from_dake_output (initiator={is_initiator}) "
+            f"— Phase 4 path: session keys live ONLY in Rust"
+        )
+        return self
 
     # ── Test-API properties ───────────────────────────────────────────────────
 
@@ -4336,18 +4480,50 @@ class RustDAKEAdapter:
             our_prekey_priv_bytes = self.client_profile.prekey_priv_bytes if hasattr(
                 self.client_profile, 'prekey_priv_bytes') else None
 
-            result = self._rust.generate_dake2(
-                our_prekey_priv_bytes = our_prekey_priv_bytes,
-                mldsa_pub_bytes       = self._mldsa_auth.pub_bytes if self._mldsa_auth else None,
-            )
-            if not result.success:
-                return self._fail_str(f"generate_dake2: {result.error}")
+            # ── Phase 4 (v10.6.3): prefer generate_dake2_output which returns
+            # a DakeOutput opaque handle.  Secret session keys never become
+            # PyBytes on the new path — they transit from Rust DakeState into
+            # the RustDoubleRatchet via output.consume_into_ratchet().
+            #
+            # If the .so build lacks generate_dake2_output (older binary), fall
+            # back to v10.6.2 path silently.  Both Rust paths run identical
+            # crypto; they differ only in how session keys reach the ratchet.
+            use_output_api = hasattr(self._rust, 'generate_dake2_output')
 
-            raw = bytes(result.dake2_bytes)
-            self._raw_dake2_bytes = raw
+            if use_output_api:
+                output = self._rust.generate_dake2_output(
+                    our_prekey_priv_bytes = our_prekey_priv_bytes,
+                    mldsa_pub_bytes       = self._mldsa_auth.pub_bytes if self._mldsa_auth else None,
+                )
+                raw = bytes(output.dake2_bytes)
+                self._raw_dake2_bytes = raw
 
-            # Store session keys — no DH secrets cross this boundary
-            self._session_keys = self._unpack_session_keys(result, is_initiator=False)
+                # Stash the DakeOutput on the adapter.  Session-manager handoff
+                # will copy it onto session._dake_output; _initialize_ratchet
+                # then calls RustBackedDoubleRatchet.from_dake_output(...) which
+                # invokes output.consume_into_ratchet(...) to move session keys
+                # from Rust → Rust without ever materialising as PyBytes.
+                self._session_keys = {
+                    '_dake_output':       output,
+                    'session_id':         bytes(output.ssid) + b'\x00' * 24,
+                    'is_initiator':       False,
+                    'peer_long_term_pub': self.remote_identity_pub_bytes,
+                    'peer_long_term_key': self.remote_identity_key,
+                }
+            else:
+                # Legacy v10.6.2 path — secret keys cross FFI as PyBytes briefly.
+                result = self._rust.generate_dake2(
+                    our_prekey_priv_bytes = our_prekey_priv_bytes,
+                    mldsa_pub_bytes       = self._mldsa_auth.pub_bytes if self._mldsa_auth else None,
+                )
+                if not result.success:
+                    return self._fail_str(f"generate_dake2: {result.error}")
+
+                raw = bytes(result.dake2_bytes)
+                self._raw_dake2_bytes = raw
+
+                # Store session keys — no DH secrets cross this boundary
+                self._session_keys = self._unpack_session_keys(result, is_initiator=False)
 
             self._state = DAKEState.SENT_DAKE2
             self._trace("DAKE", "STATE", "RECEIVED_DAKE1", "SENT_DAKE2", "generated DAKE2 (Auth-R)")
@@ -4379,30 +4555,68 @@ class RustDAKEAdapter:
             our_prekey_priv_bytes = self.client_profile.prekey_priv_bytes if hasattr(
                 self.client_profile, 'prekey_priv_bytes') else None
 
-            # Rust does all parsing.
-            result = self._rust.process_dake2(raw, our_prekey_priv_bytes)
-            if not result.success:
-                return self._fail(f"process_dake2: {result.error}")
+            # ── Phase 4 (v10.6.3): prefer the DakeOutput-returning API.  See
+            # generate_dake2 above for the same pattern.  When DakeOutput is in
+            # use, secret session keys never become PyBytes; they transit from
+            # Rust DakeState → DakeOutput.inner → consume_into_ratchet() →
+            # RustDoubleRatchet's owned SecretBytes fields.
+            use_output_api = hasattr(self._rust, 'process_dake2_output')
 
-            self.remote_identity_pub_bytes = bytes(result.remote_identity_pub) if result.remote_identity_pub else None
-            self._remote_mldsa_pub = bytes(result.remote_mldsa_pub) if result.remote_mldsa_pub else None
+            if use_output_api:
+                output = self._rust.process_dake2_output(raw, our_prekey_priv_bytes)
 
-            if self.remote_identity_pub_bytes:
-                try:
-                    from cryptography.hazmat.primitives.asymmetric import ed448 as _ed448
-                    self.remote_identity_key = _ed448.Ed448PublicKey.from_public_bytes(
-                        self.remote_identity_pub_bytes)
-                except Exception:
-                    self.remote_identity_key = None
+                # Read PUBLIC material only from the DakeOutput.
+                self.remote_identity_pub_bytes = bytes(output.remote_identity_pub) if output.remote_identity_pub else None
+                self._remote_mldsa_pub = bytes(output.remote_mldsa_pub) if output.remote_mldsa_pub else None
 
-            if result.remote_profile_bytes:
-                try:
-                    self.remote_profile = ClientProfile.decode(bytes(result.remote_profile_bytes))
-                except Exception:
-                    self.remote_profile = None
+                if self.remote_identity_pub_bytes:
+                    try:
+                        from cryptography.hazmat.primitives.asymmetric import ed448 as _ed448
+                        self.remote_identity_key = _ed448.Ed448PublicKey.from_public_bytes(
+                            self.remote_identity_pub_bytes)
+                    except Exception:
+                        self.remote_identity_key = None
 
-            # Session keys derived in Rust, no DH bytes returned
-            self._session_keys = self._unpack_session_keys(result, is_initiator=True)
+                if output.remote_profile_bytes:
+                    try:
+                        self.remote_profile = ClientProfile.decode(bytes(output.remote_profile_bytes))
+                    except Exception:
+                        self.remote_profile = None
+
+                # Stash the DakeOutput.  Session keys live ONLY in Rust until
+                # _initialize_ratchet calls consume_into_ratchet().
+                self._session_keys = {
+                    '_dake_output':       output,
+                    'session_id':         bytes(output.ssid) + b'\x00' * 24,
+                    'is_initiator':       True,
+                    'peer_long_term_pub': self.remote_identity_pub_bytes,
+                    'peer_long_term_key': self.remote_identity_key,
+                }
+            else:
+                # Legacy v10.6.2 path — secret keys cross FFI as PyBytes briefly.
+                result = self._rust.process_dake2(raw, our_prekey_priv_bytes)
+                if not result.success:
+                    return self._fail(f"process_dake2: {result.error}")
+
+                self.remote_identity_pub_bytes = bytes(result.remote_identity_pub) if result.remote_identity_pub else None
+                self._remote_mldsa_pub = bytes(result.remote_mldsa_pub) if result.remote_mldsa_pub else None
+
+                if self.remote_identity_pub_bytes:
+                    try:
+                        from cryptography.hazmat.primitives.asymmetric import ed448 as _ed448
+                        self.remote_identity_key = _ed448.Ed448PublicKey.from_public_bytes(
+                            self.remote_identity_pub_bytes)
+                    except Exception:
+                        self.remote_identity_key = None
+
+                if result.remote_profile_bytes:
+                    try:
+                        self.remote_profile = ClientProfile.decode(bytes(result.remote_profile_bytes))
+                    except Exception:
+                        self.remote_profile = None
+
+                # Session keys derived in Rust, no DH bytes returned
+                self._session_keys = self._unpack_session_keys(result, is_initiator=True)
 
             self._state = DAKEState.ESTABLISHED
             self._session_created_at = time.time()
@@ -5758,6 +5972,11 @@ class EnhancedOTRSession:
         self._dake_chain_key_send: Optional[bytes] = None
         self._dake_chain_key_recv: Optional[bytes] = None
         self._dake_brace_key:      Optional[bytes] = None
+        # Phase 4 (v10.6.3): opaque DakeOutput handle.  When present, holds
+        # session keys exclusively in Rust until _initialize_ratchet consumes
+        # it via output.consume_into_ratchet().  Mutually exclusive with the
+        # byte fields above — only one path populates at a time.
+        self._dake_output = None
         
         self.pending_messages: List[str] = []
         self.received_messages: List[bytes] = []
@@ -5941,6 +6160,12 @@ class EnhancedOTRSession:
         Falls back to deriving from the root key via _initialize_chains() when those
         are not available — both paths produce symmetric keys, but they differ in KDF
         inputs so mixing them between the two peers would break decryption.
+
+        Phase 4 (v10.6.3+): when self._dake_output is set (DakeOutput from Rust),
+        the ratchet is constructed via RustBackedDoubleRatchet.from_dake_output(),
+        which moves session keys directly from Rust DakeOutput → RustDoubleRatchet
+        without ever materialising them as Python bytes.  This closes audit
+        findings C2 and C3 (Critical Exposure Window) fully.
         """
         if not self._acquire_lock():
             raise RuntimeError("Failed to acquire lock for ratchet initialization")
@@ -5948,10 +6173,38 @@ class EnhancedOTRSession:
         try:
             if self.ratchet is not None:
                 raise RuntimeError("Ratchet already initialized")
-            
+
+            if not RUST_RATCHET_AVAILABLE:
+                raise RuntimeError(
+                    "otrv4_core Rust module not installed — cannot create encrypted session. "
+                    "Build with: cd Rust && cargo test --release && maturin build --release && "
+                    "pip install target/wheels/otrv4_core-*.whl"
+                )
+
+            # ── Phase 4 fast path: DakeOutput → consume_into_ratchet ──
+            dake_output = getattr(self, '_dake_output', None)
+            if dake_output is not None and not getattr(dake_output, 'consumed', True):
+                self.ratchet = RustBackedDoubleRatchet.from_dake_output(
+                    dake_output  = dake_output,
+                    is_initiator = self.is_initiator,
+                    ad           = b"OTRv4-DATA",
+                    logger       = self.logger,
+                    rekey_interval = OTRConstants.REKEY_INTERVAL,
+                    rekey_timeout  = OTRConstants.REKEY_TIMEOUT,
+                )
+                self._ratchet_backend = "rust"
+                # DakeOutput consumed; clear the reference so a future
+                # _initialize_ratchet retry will fail loudly rather than
+                # try to re-consume.
+                self._dake_output = None
+                _backend_label = "Rust (Phase-4 opaque handle; keys never in Python)"
+                self.tracer.trace(self.peer, "RATCHET", None, "ACTIVE", f"ratchet: {_backend_label}")
+                return
+
+            # ── Legacy v10.6.2 path: byte fields → RustBackedDoubleRatchet.__init__ ──
             if self.root_key is None:
                 raise RuntimeError("Root key not available")
-            
+
             _ratchet_args = dict(
                 root_key=self.root_key,
                 is_initiator=self.is_initiator,
@@ -5964,21 +6217,14 @@ class EnhancedOTRSession:
                 rekey_timeout=OTRConstants.REKEY_TIMEOUT
             )
 
-            if not RUST_RATCHET_AVAILABLE:
-                raise RuntimeError(
-                    "otrv4_core Rust module not installed — cannot create encrypted session. "
-                    "Build with: cd Rust && cargo test --release && maturin build --release && "
-                    "pip install target/wheels/otrv4_core-*.whl"
-                )
-
             self.ratchet = RustBackedDoubleRatchet(**_ratchet_args)
             self._ratchet_backend = "rust"
 
             self._dake_chain_key_send = None
             self._dake_chain_key_recv = None
             self._dake_brace_key      = None
-            
-            _backend_label = "Rust (zeroize-on-drop)" if self._ratchet_backend == "rust" else "Python (C extensions)"
+
+            _backend_label = "Rust (zeroize-on-drop; legacy v10.6.2 path)"
             self.tracer.trace(self.peer, "RATCHET", None, "ACTIVE", f"ratchet: {_backend_label}")
         finally:
             self._release_lock()
@@ -7712,6 +7958,11 @@ class EnhancedSessionManager:
                 session._dake_chain_key_send = session_keys.get('chain_key_send')
                 session._dake_chain_key_recv = session_keys.get('chain_key_recv')
                 session._dake_brace_key      = session_keys.get('brace_key')
+                # Phase 4 (v10.6.3): DakeOutput opaque handle.  Present only
+                # when the Rust .so exposes process_dake2_output /
+                # generate_dake2_output; _initialize_ratchet checks for this
+                # and prefers consume_into_ratchet() over byte-field path.
+                session._dake_output         = session_keys.get('_dake_output')
 
                 pub_key_data = session_keys.get('peer_long_term_pub')
                 if isinstance(pub_key_data, bytes):
@@ -7772,6 +8023,8 @@ class EnhancedSessionManager:
                 session._dake_chain_key_send = session_keys.get('chain_key_send')
                 session._dake_chain_key_recv = session_keys.get('chain_key_recv')
                 session._dake_brace_key      = session_keys.get('brace_key')
+                # Phase 4 (v10.6.3): see _handle_dake2 for the same pattern.
+                session._dake_output         = session_keys.get('_dake_output')
 
                 pub_key_data = session_keys.get('peer_long_term_pub')
                 if isinstance(pub_key_data, bytes):

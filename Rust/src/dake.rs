@@ -20,16 +20,6 @@ use crate::error::{OtrError, Result};
 use crate::kdf::{self, usage};
 use crate::secure_mem::{SecretBytes, SecretVec, DakeSessionKeys};
 
-// ── DIAGNOSTIC: append-write to /tmp/otr_dake.log ─────────────────────────
-// Writes appear here regardless of stderr handling.  Remove before production.
-fn diag_log(line: &str) {
-    use std::io::Write;
-    use std::fs::OpenOptions;
-    if let Ok(mut f) = OpenOptions::new().create(true).append(true).open("/tmp/otr_dake.log") {
-        let _ = writeln!(f, "{}", line);
-    }
-}
-
 
 
 const MSG_DAKE1: u8 = 0x35;
@@ -151,6 +141,130 @@ pub enum DakePhase {
     ReceivedDake2, Established, Failed,
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+//  DakeOutput — Phase 4 opaque session-key handle
+//
+//  Replaces Dakeresult's `Vec<u8>` PyO3 getter-set fields with a private
+//  RefCell<Option<DakeSessionKeys>>.  Python NEVER sees the secret key bytes
+//  as PyBytes — they are moved directly into a RustDoubleRatchet via
+//  consume_into_ratchet(), without crossing the FFI boundary.
+//
+//  This closes audit findings C2 and C3 (Critical Exposure Window) when the
+//  caller uses generate_dake2_output / process_dake2_output instead of the
+//  legacy generate_dake2 / process_dake2 PyO3 methods.
+//
+//  The legacy Dakeresult path remains available for backward compatibility
+//  during the Python adapter migration; once the migration is complete in
+//  v10.6.3+, Dakeresult and its associated PyO3 methods will be removed.
+// ─────────────────────────────────────────────────────────────────────────────
+
+use std::cell::RefCell;
+
+#[pyclass]
+pub struct DakeOutput {
+    // Secret material — private, no PyO3 getter.  Consumed by
+    // consume_into_ratchet().  Wrapped in Option so we can .take() it out
+    // when consuming; wrapped in RefCell so consume_into_ratchet can take
+    // &self (PyO3 method receiver) rather than &mut self.
+    inner: RefCell<Option<DakeSessionKeys>>,
+
+    // Public material — exposed via #[pyo3(get)].  These are NOT secrets:
+    //   ssid is a session identifier (8 bytes) public to both parties
+    //   remote_identity_pub is the peer's Ed448 long-term identity key
+    //   remote_mldsa_pub is the peer's optional ML-DSA-87 long-term key
+    //   remote_profile_bytes is the peer's signed client profile blob
+    //   dake2_bytes is the wire message to send (only populated on generate)
+    #[pyo3(get)] pub ssid:                 [u8; 8],
+    #[pyo3(get)] pub remote_identity_pub:  Vec<u8>,
+    #[pyo3(get)] pub remote_mldsa_pub:     Option<Vec<u8>>,
+    #[pyo3(get)] pub remote_profile_bytes: Vec<u8>,
+    #[pyo3(get)] pub dake2_bytes:          Option<Vec<u8>>,
+}
+
+#[pymethods]
+impl DakeOutput {
+    /// True after consume_into_ratchet has moved the secret keys into a
+    /// ratchet.  Subsequent calls to consume_into_ratchet will raise.
+    #[getter]
+    fn consumed(&self) -> bool { self.inner.borrow().is_none() }
+
+    /// Move the secret session keys into a new RustDoubleRatchet.
+    /// The keys NEVER become PyBytes — they transit from the private
+    /// RefCell<Option<DakeSessionKeys>> directly into the ratchet's owned
+    /// SecretBytes fields via DoubleRatchet::new().
+    ///
+    /// Calling consume_into_ratchet a second time raises PyValueError.
+    /// After a successful call, self.consumed becomes True and all secret
+    /// material has either been moved into the returned ratchet or
+    /// zeroized.
+    ///
+    /// Parameters:
+    ///   - `ad`: associated-data bytes for AES-256-GCM in the ratchet
+    ///     (e.g. b"OTRv4-DATA")
+    ///   - `dh_pub_local`: 56-byte X448 public key for the ratchet's
+    ///     local DH side.  The Python adapter generates the X448
+    ///     keypair (via cryptography library) and supplies the public
+    ///     bytes here.  Phase 5 moves X448 keypair generation into Rust
+    ///     and removes this parameter.
+    ///   - `is_initiator`: matches the caller's role from DAKE; the
+    ///     ratchet swaps chain_key_send/recv internally based on this
+    ///     flag.
+    #[pyo3(signature = (ad, dh_pub_local, is_initiator))]
+    fn consume_into_ratchet(
+        &self,
+        ad:           &[u8],
+        dh_pub_local: &[u8],
+        is_initiator: bool,
+    ) -> PyResult<crate::ratchet::RustDoubleRatchet> {
+        use pyo3::exceptions::PyValueError;
+
+        if dh_pub_local.len() != 56 {
+            return Err(PyValueError::new_err(format!(
+                "dh_pub_local must be 56 bytes (X448 public key), got {}",
+                dh_pub_local.len(),
+            )));
+        }
+        let mut dh_pub_local_arr = [0u8; 56];
+        dh_pub_local_arr.copy_from_slice(dh_pub_local);
+
+        // Take the session keys out of the RefCell, consuming them.
+        let keys = self.inner.borrow_mut().take().ok_or_else(|| {
+            PyValueError::new_err(
+                "DakeOutput has already been consumed — cannot consume twice",
+            )
+        })?;
+
+        // Move keys directly into a RustDoubleRatchet via the from_dake_keys
+        // constructor (added in ratchet.rs).  This path NEVER allocates
+        // PyBytes for the secret material.
+        crate::ratchet::RustDoubleRatchet::from_dake_keys(
+            keys, ad, &dh_pub_local_arr, is_initiator,
+        ).map_err(|e| PyValueError::new_err(e.to_string()))
+    }
+}
+
+impl DakeOutput {
+    /// Internal constructor — only the Rust DakeState may build a DakeOutput.
+    /// Python cannot construct one directly (no `#[new]` method).
+    pub(crate) fn from_keys_and_public(
+        keys:                  DakeSessionKeys,
+        remote_identity_pub:   Vec<u8>,
+        remote_mldsa_pub:      Option<Vec<u8>>,
+        remote_profile_bytes:  Vec<u8>,
+        dake2_bytes:           Option<Vec<u8>>,
+    ) -> Self {
+        let ssid = *keys.ssid.expose();
+        Self {
+            inner: RefCell::new(Some(keys)),
+            ssid,
+            remote_identity_pub,
+            remote_mldsa_pub,
+            remote_profile_bytes,
+            dake2_bytes,
+        }
+    }
+}
+
 #[derive(ZeroizeOnDrop)]
 pub struct DakeState {
     our_identity_priv: SecretBytes<57>,
@@ -260,21 +374,11 @@ impl DakeState {
         if self.phase != DakePhase::ReceivedDake1 { return Err(OtrError::Dake("wrong phase")); }
         let prekey_priv_bytes = our_prekey_priv.unwrap_or(self.our_prekey_priv.expose());
 
-        diag_log(&format!("[DH-RESP] our_eph_priv first4   = {:02x?}", &self.our_eph_x448_priv.expose()[..4]));
-        diag_log(&format!("[DH-RESP] our_eph_pub  first4   = {:02x?}", &self.our_eph_x448_pub[..4]));
-        diag_log(&format!("[DH-RESP] our_prekey_priv first4= {:02x?}", &prekey_priv_bytes[..4]));
-        diag_log(&format!("[DH-RESP] our_prekey_pub  first4= {:02x?}", &self.our_prekey_pub[..4]));
-        diag_log(&format!("[DH-RESP] peer_eph_pub  first4  = {:02x?}", &self.peer_eph_x448_pub[..4]));
-        diag_log(&format!("[DH-RESP] peer_prekey_pub first4= {:02x?}", &self.peer_prekey_pub()[..4]));
 
         let dh1 = Self::x448_dh(self.our_eph_x448_priv.expose(), &self.peer_eph_x448_pub)?;
         let dh2 = Self::x448_dh(self.our_eph_x448_priv.expose(), &self.peer_prekey_pub())?;
         let dh3 = Self::x448_dh(prekey_priv_bytes, &self.peer_eph_x448_pub)?;
-        diag_log(&format!("[DH-RESP] dh1 first4 = {:02x?}", &dh1[..4]));
-        diag_log(&format!("[DH-RESP] dh2 first4 = {:02x?}", &dh2[..4]));
-        diag_log(&format!("[DH-RESP] dh3 first4 = {:02x?}", &dh3[..4]));
         let (ct, mlkem_ss) = Self::mlkem_encapsulate(&self.peer_mlkem_ek)?;
-        diag_log(&format!("[DH-RESP] mlkem_ss first4 = {:02x?}", &mlkem_ss[..4]));
         let brace_key = kdf::derive_brace_key(&[0u8; 32], &mlkem_ss);
 
         let mut combined = Vec::new();
@@ -283,7 +387,6 @@ impl DakeState {
         let mixed_secret = kdf::kdf_1(usage::SHARED_SECRET, &combined, 64);
         let ssid = { let mut a = [0u8; 8]; a.copy_from_slice(&kdf::kdf_1(usage::SSID, &mixed_secret, 8)); a };
         let mac_key = kdf::kdf_1(usage::DAKE_MAC_KEY, &mixed_secret, 64);
-        diag_log(&format!("[DH-RESP] mac_key first8 = {:02x?}", &mac_key[..8]));
 
         // Build the wire BEFORE computing MAC, so the MAC covers exactly what
         // will be sent.  The parser (process_dake2) MACs over data[..off]
@@ -299,7 +402,6 @@ impl DakeState {
         if let Some(p) = mldsa_to_send {
             wire_body.extend_from_slice(p);
         }
-        diag_log(&format!("[DH-RESP] wire_body.len() = {}", wire_body.len()));
 
         // ── CRITICAL FIX (Patch-3.5): MAC over the actual wire body bytes ──
         // The previous version MACed over (transcript || eph_pub || ct ||
@@ -307,7 +409,6 @@ impl DakeState {
         // parser MACs over data[..off] which IS the full wire body.  These
         // disagreed and caused MAC verification to fail.
         let mac = kdf::hmac_sha3_512(&mac_key, &wire_body);
-        diag_log(&format!("[DH-RESP] computed MAC first8 = {:02x?}", &mac[..8]));
 
         // Assemble final message = wire_body || MAC
         let mut msg = wire_body;
@@ -379,21 +480,11 @@ impl DakeState {
         // ── Cryptography (initiator side) ──────────────────────
         let prekey_priv_bytes = our_prekey_priv.unwrap_or(self.our_prekey_priv.expose());
 
-        diag_log(&format!("[DH-INIT] our_eph_priv first4   = {:02x?}", &self.our_eph_x448_priv.expose()[..4]));
-        diag_log(&format!("[DH-INIT] our_eph_pub  first4   = {:02x?}", &self.our_eph_x448_pub[..4]));
-        diag_log(&format!("[DH-INIT] our_prekey_priv first4= {:02x?}", &prekey_priv_bytes[..4]));
-        diag_log(&format!("[DH-INIT] our_prekey_pub  first4= {:02x?}", &self.our_prekey_pub[..4]));
-        diag_log(&format!("[DH-INIT] peer_eph_pub  first4  = {:02x?}", &self.peer_eph_x448_pub[..4]));
-        diag_log(&format!("[DH-INIT] peer_prekey_pub first4= {:02x?}", &self.peer_prekey_pub()[..4]));
 
         let dh1 = Self::x448_dh(self.our_eph_x448_priv.expose(), &self.peer_eph_x448_pub)?;
         let dh2 = Self::x448_dh(prekey_priv_bytes, &self.peer_eph_x448_pub)?;
         let dh3 = Self::x448_dh(self.our_eph_x448_priv.expose(), &self.peer_prekey_pub())?;
-        diag_log(&format!("[DH-INIT] dh1 first4 = {:02x?}", &dh1[..4]));
-        diag_log(&format!("[DH-INIT] dh2 first4 = {:02x?}", &dh2[..4]));
-        diag_log(&format!("[DH-INIT] dh3 first4 = {:02x?}", &dh3[..4]));
         let mlkem_ss = Self::mlkem_decapsulate(self.our_mlkem_sk.expose(), &mlkem_ct)?;
-        diag_log(&format!("[DH-INIT] mlkem_ss first4 = {:02x?}", &mlkem_ss[..4]));
         let brace_key = kdf::derive_brace_key(&[0u8; 32], &mlkem_ss);
 
         let mut combined = Vec::new();
@@ -402,12 +493,8 @@ impl DakeState {
         let mixed_secret = kdf::kdf_1(usage::SHARED_SECRET, &combined, 64);
         let ssid = { let mut a = [0u8; 8]; a.copy_from_slice(&kdf::kdf_1(usage::SSID, &mixed_secret, 8)); a };
         let mac_key = kdf::kdf_1(usage::DAKE_MAC_KEY, &mixed_secret, 64);
-        diag_log(&format!("[DH-INIT] mac_key first8 = {:02x?}", &mac_key[..8]));
-        diag_log(&format!("[DH-INIT] message_body.len() = {}", message_body.len()));
 
         let expected_mac = kdf::hmac_sha3_512(&mac_key, message_body);
-        diag_log(&format!("[DH-INIT] expected MAC first8 = {:02x?}", &expected_mac[..8]));
-        diag_log(&format!("[DH-INIT] received MAC first8 = {:02x?}", &mac_received[..8]));
 
         if !crate::secure_mem::ct_eq(mac_received, &expected_mac) {
             // MAC failed: clear the prematurely-stored profile so a later
@@ -609,6 +696,35 @@ impl PyDake {
         Ok(robj.into_any())
     }
 
+    /// Phase 4: generate DAKE2 and return a DakeOutput opaque handle.
+    /// Unlike generate_dake2, the secret session keys NEVER become PyBytes.
+    /// Call output.consume_into_ratchet(ad, is_initiator) to move the keys
+    /// into a RustDoubleRatchet.  This closes the Critical Exposure Window
+    /// for callers that use this path instead of generate_dake2.
+    fn generate_dake2_output(
+        &mut self,
+        our_prekey_priv_bytes: Option<&[u8]>,
+        mldsa_pub_bytes:       Option<&[u8]>,
+    ) -> PyResult<DakeOutput> {
+        if self.inner.our_profile_bytes.is_empty() {
+            return Err(PyErr::from(OtrError::Internal));
+        }
+        let profile = self.inner.our_profile_bytes.clone();
+        let (msg, keys) = self.inner.generate_dake2(
+            &profile, our_prekey_priv_bytes, mldsa_pub_bytes,
+        ).map_err(PyErr::from)?;
+        // We do not have the peer's public material in generate_dake2 unless
+        // it was set during process_dake1.  Pull what we have.
+        let remote_identity_pub  = self.inner.get_peer_identity_pub().to_vec();
+        let remote_mldsa_pub     = self.inner.get_peer_mldsa_pub().cloned();
+        let remote_profile_bytes = self.inner.get_peer_profile_bytes().cloned()
+            .unwrap_or_default();
+        Ok(DakeOutput::from_keys_and_public(
+            keys, remote_identity_pub, remote_mldsa_pub,
+            remote_profile_bytes, Some(msg),
+        ))
+    }
+
     /// Process DAKE2 – parsing done in Rust, no profile bytes needed.
     fn process_dake2<'py>(&mut self, py: Python<'py>, dake2_bytes: &[u8], our_prekey_priv_bytes: Option<&[u8]>) -> PyResult<Py<PyAny>> {
         let keys = self.inner.process_dake2(dake2_bytes, our_prekey_priv_bytes).map_err(PyErr::from)?;
@@ -623,6 +739,29 @@ impl PyDake {
         rb.setattr("remote_mldsa_pub", self.inner.get_peer_mldsa_pub().cloned())?;
         rb.setattr("remote_profile_bytes", self.inner.get_peer_profile_bytes().cloned())?;
         Ok(robj.into_any())
+    }
+
+    /// Phase 4: process DAKE2 and return a DakeOutput opaque handle.
+    /// Unlike process_dake2, the secret session keys NEVER become PyBytes.
+    /// Call output.consume_into_ratchet(ad, is_initiator) to move the keys
+    /// into a RustDoubleRatchet.  This closes the Critical Exposure Window
+    /// for callers that use this path instead of process_dake2.
+    fn process_dake2_output(
+        &mut self,
+        dake2_bytes:           &[u8],
+        our_prekey_priv_bytes: Option<&[u8]>,
+    ) -> PyResult<DakeOutput> {
+        let keys = self.inner.process_dake2(
+            dake2_bytes, our_prekey_priv_bytes,
+        ).map_err(PyErr::from)?;
+        let remote_identity_pub  = self.inner.get_peer_identity_pub().to_vec();
+        let remote_mldsa_pub     = self.inner.get_peer_mldsa_pub().cloned();
+        let remote_profile_bytes = self.inner.get_peer_profile_bytes().cloned()
+            .unwrap_or_default();
+        Ok(DakeOutput::from_keys_and_public(
+            keys, remote_identity_pub, remote_mldsa_pub,
+            remote_profile_bytes, None,  // process_dake2 doesn't generate wire
+        ))
     }
 
     fn assemble_dake3<'py>(&self, py: Python<'py>, sigma_bytes: &[u8], mldsa_sig_bytes: Option<&[u8]>) -> PyResult<Bound<'py, PyBytes>> {

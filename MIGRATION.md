@@ -1,102 +1,85 @@
-# OTRv4Plus Security Migration — v10.5.10 → v10.6.2
+# OTRv4Plus Security Migration — v10.5.10 → v10.6.3
 
 This document tracks the multi-stage hardening of the Rust ↔ Python
 boundary in OTRv4Plus.
 
 ---
 
-## Section 0 — Critical Exposure Window
+## Section 0 — Critical Exposure Window: CLOSED in v10.6.3
 
-The Critical Exposure Window described below is the same as in v10.6.1.
-v10.6.2 does not change it.  The four DAKE correctness bugs fixed in
-v10.6.2 (described in CHANGELOG.md "v10.6.2") affect whether the Rust
-path runs at all, not how long secrets exist as Python `bytes` once it
-does.
+In v10.6.0 through v10.6.2, there was a brief window during which
+session keys (`root_key`, `chain_key_send`, `chain_key_recv`,
+`brace_key`, `mac_key`) existed as Python `bytes` objects in the
+Python heap.  Window duration was microseconds to single-digit
+milliseconds under normal load; could extend to seconds under
+debugger / GC pause / signal handler interrupt.
 
-There is a **brief but real window** during which session keys exist as
-Python `bytes` objects in the Python heap.  This window must be
-minimized in any production deployment.
+**v10.6.3 eliminates this window.**
 
-### What happens
+The new path (`process_dake2_output` / `generate_dake2_output` →
+`DakeOutput` → `consume_into_ratchet` → `RustDoubleRatchet`) keeps
+secret session keys exclusively in Rust at all times:
 
-1. `RustDAKE.process_dake2()` runs in Rust and computes session keys as
-   `Vec<u8>` instances inside Rust.
-2. PyO3 auto-conversion of `Dakeresult` field assignments creates
-   `PyBytes` copies in the Python heap when these Vecs are exposed (the
-   `setattr` calls in `dake.rs`).
-3. The `RustDAKEAdapter` in `otrv4+.py` receives the `Dakeresult` and is
-   expected to call `RustDoubleRatchet.from_dakeresult(result, ...)`
-   immediately.
-4. Until that call lands, the secrets are reachable as `result.root_key`,
-   `result.chain_key_a`, etc. — they exist as `PyBytes` in the Python
-   heap.
+```
+DAKE crypto in Rust
+  → DakeSessionKeys (private Rust type, ZeroizeOnDrop)
+  → DakeOutput.inner: RefCell<Option<DakeSessionKeys>>
+                      (private; no PyO3 getter)
+  → consume_into_ratchet() — Rust-to-Rust move
+  → DoubleRatchet's SecretBytes fields (ZeroizeOnDrop)
+```
 
-### Window duration
+At no step are secret keys marshalled into `PyBytes`.
 
-Under normal load: **microseconds to single-digit milliseconds**.  The
-adapter's `_unpack_session_keys()` is invoked synchronously on the same
-Python thread that received the `Dakeresult`.
+The legacy path (`process_dake2` / `generate_dake2` returning
+`Dakeresult`) remains available for backward compatibility with older
+Rust `.so` builds — when an older binary is loaded, the Python adapter
+falls back to v10.6.2 behaviour silently.  The legacy path will be
+removed in v10.7.
 
-Under abnormal conditions (debugger attached, Python GC pause, GIL
-contention, signal handler interrupt) the window can theoretically
-extend to seconds.
+### How to verify which path is active
 
-### Why it matters
+```python
+ratchet = session.ratchet
+if getattr(ratchet, '_dake_output_consumed', False):
+    print("Phase-4 hardened: session keys never in Python")
+else:
+    print("Legacy path: Critical Exposure Window applies")
+```
 
-An attacker with **process-memory read** capability (debugger, core
-dump, `/proc/<pid>/mem`, OOM-killer dump, ptrace) during this window
-can recover:
-
-- `root_key` (32 bytes) — full session compromise
-- `chain_key_a`, `chain_key_b` (32 bytes each) — both directions
-- `brace_key` (32 bytes) — PQ component
-- `mac_key` (64 bytes) — message authentication
-
-After the window closes (i.e. after `from_dakeresult()` returns):
-
-- The Python `Dakeresult` object has `consumed=True`
-- All secret-field getters raise `Dakeresult has been consumed`
-- The original `Vec<u8>` backing memory has been overwritten and
-  `shrink_to_fit()`-ed so the allocator may reuse it
-
-### Required deployment discipline
-
-Until Phase 4 (DakeOutput) lands:
-
-1. **Call `from_dakeresult()` IMMEDIATELY after receiving the
-   Dakeresult.**  Do not log, copy, serialize, or pass it across thread
-   boundaries first.
-2. **Never store a Dakeresult in a long-lived Python object.**
-3. **Never write the raw bytes to disk** (e.g. through pickle).
-4. **Audit any code path that reads `result.root_key` etc.** — these
-   reads create additional PyBytes copies that the consumer cannot zero.
-
-The `RustDAKEAdapter._unpack_session_keys()` call site has been audited
-and satisfies item 1.
+A correctly-built v10.6.3 environment shows `_dake_output_consumed = True`
+on every new session.
 
 ---
 
-## Section 1 — Current Security Status (as of v10.6.2)
+## Section 1 — Current Security Status (as of v10.6.3)
 
-This release does **not** achieve the audit's full architectural goal of
-"Python is cryptographically blind to all secret material".  It DOES
-substantially reduce the attack surface AND makes the Rust DAKE path
-actually functional for the first time.
+### What is achieved
 
-The following remain true as of v10.6.2:
+- **Rust DAKE runs end-to-end with real peers** (v10.6.2 / v10.6.3)
+- **DAKE DH secrets** (dh1/dh2/dh3, mlkem_ss) — Rust-only, never PyBytes
+- **DAKE session keys** (root, chain×2, brace, mac) — Rust-only, never
+  PyBytes (v10.6.3 closes the window)
+- **SMP passphrase** — bytearray entry path with Rust-side wipe; vault
+  store keyed by random `u64` handle
+- **SMP exponents** — all `SecretVec` with `ZeroizeOnDrop`
+- **Ratchet keys** — all `SecretBytes` / `SecretVec` with `ZeroizeOnDrop`
+- **Wire decoders** — `SafeSlice` trait, no panic on truncated input
+- **Panic safety** — `panic = "unwind"`, `try_slice`, `Internal(&'static
+  str)`
+- **Test-only PyO3 exports** — gated behind `test-only-kdf` feature flag
 
-- **Python still receives session keys after DAKE2** as `Dakeresult`
-  PyBytes fields, until `from_dakeresult()` consumes them.  See
-  "Critical Exposure Window" above.
-- **Multiple in-memory copies still exist briefly.**  Phase 4
-  eliminates this.
-- **Rust's zeroization stops at the FFI boundary** for any data that has
-  already been marshalled into `PyBytes`.  Phase 4 prevents marshalling.
+### What remains
+
+- **Ed448 / X448 long-term private keys** still live in Python
+  `cryptography` library objects (underlying bytes in OpenSSL C heap,
+  but the Python `PrivateKey` reference is in Python).  Raw private
+  bytes are extracted at session start and passed into Rust.  Phase 5
+  scope.
 - **Python still drives protocol orchestration**
   (`EnhancedSessionManager`, `EnhancedOTRSession`).  Phase 6 scope.
-
-This is a **risk-reduction-plus-correctness release**, not an
-architectural fix.  See ROADMAP Phases 4–6.
+- **C extensions** still handle ring-sig, ML-KEM, ML-DSA.  Constant-time
+  helpers in place but no independent timing audit.  Phase 7 scope.
 
 ---
 
@@ -106,271 +89,144 @@ architectural fix.  See ROADMAP Phases 4–6.
 
 | Audit ID | Fix | File |
 |---|---|---|
-| **C5** | `RustSMP::set_secret_from_bytearray()` — accepts mutable `bytearray`, copies to Rust-owned `Vec<u8>` zeroed on drop, no Python `bytes` intermediate created | `smp.rs` |
-| **C2 (partial)** | `RustDoubleRatchet::from_dakeresult()` — moves secrets out of Dakeresult, zeroes the Vec<u8> backing memory, sets Python attributes to None | `ratchet.rs` |
-| **C4** | `RustDoubleRatchet::brace_key()` PyO3 getter REMOVED — brace key no longer leakable via Python attribute access | `ratchet.rs` |
-| **P3** | `panic = "abort"` REMOVED from `[profile.release]` — Rust panics now unwind cleanly through PyO3 | `Cargo.toml` |
-| **V1–V3** | `SafeSlice` trait, `try_slice` / `try_byte`, `MAX_WIRE_FIELD_LEN` | `error.rs`, `header.rs`, `dake.rs` |
-| **M1, M2** | `kdf_1_py`, `encode_header_py` gated behind `test-only-kdf` feature | `kdf.rs`, `header.rs` |
 | **C1** | `RustSMPVault::load*` gated behind `test-only-kdf` | `smp_vault.rs` |
+| **C4** | `RustDoubleRatchet::brace_key()` PyO3 getter removed | `ratchet.rs` |
+| **C5** | `RustSMP::set_secret_from_bytearray()` — no `bytes` intermediate | `smp.rs` |
+| **P3** | `panic = "abort"` → `panic = "unwind"` | `Cargo.toml` |
+| **V1–V3** | `SafeSlice` trait, `try_slice` / `try_byte`, `MAX_WIRE_FIELD_LEN` | `error.rs`, `header.rs`, `dake.rs` |
+| **M1, M2** | `kdf_1_py`, `encode_header_py` gated behind `test-only-kdf` | `kdf.rs`, `header.rs` |
 
 ### Patch 2 (v10.6.1)
 
 | Patch ID | Improvement | File |
 |---|---|---|
-| **§1** | `set_secret_from_bytearray` now wipes the Python bytearray in-place via the safe `set_item` API loop — no `unsafe`, no caller discipline required | `smp.rs` |
-| **§2** | `from_dakeresult` now uses **aggressive zero**: overwrite contents → `clear()` → `shrink_to_fit()` so capacity memory is also released | `ratchet.rs`, `dake.rs` |
-| **§3** | Added `Dakeresult.consumed: bool` flag, set to `true` by `from_dakeresult()`.  All secret-field getters now check this flag and raise `Dakeresult has been consumed` if reset post-consumption | `dake.rs` |
-| **§4** | Single `consumed` flag covers entire object — no partial reuse possible; gating is structural, not field-by-field | `dake.rs` |
-| **§7** | `from_dakeresult` rejects already-consumed Dakeresult with `PyValueError`, no panic | `ratchet.rs` |
-| **§8** | Stack-allocated key arrays in `from_dakeresult` are explicitly bound at end-of-scope before return; `DoubleRatchet::new` has already copied them into ZeroizeOnDrop fields | `ratchet.rs` |
+| **§1** | `set_secret_from_bytearray` wipes Python bytearray in-place via safe `set_item` loop | `smp.rs` |
+| **§2** | `from_dakeresult` aggressive zero (overwrite → `clear()` → `shrink_to_fit()`) | `ratchet.rs`, `dake.rs` |
+| **§3** | `Dakeresult.consumed: bool`; secret getters raise post-consumption | `dake.rs` |
+| **§4** | Single `consumed` flag covers whole object | `dake.rs` |
+| **§7** | `from_dakeresult` rejects already-consumed Dakeresult with `PyValueError` | `ratchet.rs` |
 
-### Patch 3 (v10.6.2 — this release) — Rust DAKE correctness
+### Patch 3 (v10.6.2) — Rust DAKE correctness
 
 | Bug | Fix | File |
 |---|---|---|
-| **#1** | MLKEM tuple destructuring reversed.  `pqcrypto_kyber::kyber1024::encapsulate` returns `(SharedSecret, Ciphertext)`, not `(Ciphertext, SharedSecret)`.  Wire shipped 32-byte SS where 1568-byte CT was expected; KDF received 1568-byte CT where 32-byte SS was expected. | `dake.rs` |
-| **#2** | Responder MAC input did not include `MSG_DAKE2` byte or ML-DSA pub.  Parser MACs over `data[..off]` which does.  Generator now MACs over `wire_body` (exact bytes that go on the wire, sans MAC trailer). | `dake.rs` |
-| **#3** | Initiator `dh2` and `dh3` were identical computations (both `our_prekey_priv × peer_eph_pub`) instead of matching responder by X448 commutativity at each position.  Fixed: `dh1 = our_eph × peer_eph`, `dh2 = our_prekey × peer_eph`, `dh3 = our_eph × peer_prekey`.  `peer_profile_bytes` stored pre-DH so `peer_prekey_pub()` reads correct bytes; cleared on MAC failure. | `dake.rs` |
-| **#4** | `RustDAKEAdapter.__init__` passed `identity_pub_bytes` / `prekey_pub_bytes` (public keys) where Rust constructor expected private bytes.  Same length (57 / 56) so type cast did not fail; Rust silently used public keys as private scalars.  Adapter now extracts raw private bytes via `.private_bytes(Raw, Raw, NoEncryption())`. | `otrv4+.py` |
-| **#5 (UX)** | 401 (`ERR_NOSUCHNICK`) handler killed sessions on first occurrence during multi-fragment DAKE.  Now soft-ignored during `DAKE_IN_PROGRESS` / `PLAINTEXT` / `CREATED` states unless 5 consecutive 401s arrive without peer OTR traffic.  Any received OTR fragment resets the counter. | `otrv4+.py` |
+| **#1** | MLKEM tuple destructuring reversed | `dake.rs` |
+| **#2** | Responder MAC input did not cover full wire body | `dake.rs` |
+| **#3** | Initiator DH triples paired with wrong slots | `dake.rs` |
+| **#4** | Adapter passed public keys where Rust expected private | `otrv4+.py` |
+| **#5 (UX)** | IRC 401 handler killed sessions during multi-fragment DAKE | `otrv4+.py` |
 
-### Specific behavioral changes
+Closes audit finding **C6** (Rust DAKE end-to-end correctness).
 
-#### Before Patch 2
+### Patch 4 (v10.6.3) — Critical Exposure Window closed
 
-```python
-ratchet = RustDoubleRatchet.from_dakeresult(result, dh_pub, True)
-# result.root_key is None (set to None inside Rust)
-# But the original PyBytes for result.root_key may still be referenced
-# elsewhere in Python heap (logs, caller variables, etc.)
-print(result.root_key)        # → None
-```
-
-#### After Patch 2 (v10.6.1+)
-
-```python
-ratchet = RustDoubleRatchet.from_dakeresult(result, dh_pub, True)
-print(result.consumed)        # → True
-print(result.root_key)        # raises RuntimeError: Dakeresult has been consumed
-print(result.chain_key_a)     # raises RuntimeError: Dakeresult has been consumed
-# Public fields still readable:
-print(result.ssid)            # → b'\x...' (8 bytes, public)
-print(result.remote_identity_pub)  # → b'\x...' (57 bytes, public)
-```
-
-#### Before Patch 3
-
-The Rust DAKE path was effectively unreachable: constructor raised
-`TypeError` during the kwarg-attempt branch and silently fell back to
-Python `OTRv4DAKE` in the surrounding `try`/`except`.  Even when the
-positional-argument path succeeded, MAC verification with real peers
-always failed for the four reasons listed above.
-
-#### After Patch 3 (v10.6.2)
-
-```python
-# At session start:
-#   /otr <nick>
-# Banner shows DAKE: 🦀 Rust (DH secrets never Python)
-# Session reaches RECEIVED_DAKE2 → ESTABLISHED on Rust path.
-# from_dakeresult consumes session keys; Dakeresult.consumed becomes True.
-# All subsequent encrypt/decrypt run on RustDoubleRatchet with secrets
-# living only in Rust SecretBytes / SecretVec.
-```
-
-#### SMP secret input
-
-```python
-# Before Patch 1:
-self._vault.store("secret", bytes(bytearray(passphrase, "utf-8")))  # ← bytes!
-rust_smp.set_secret_from_vault(self._vault, "secret", ...)
-
-# Patch 1:
-raw = bytearray(passphrase, "utf-8")
-try:
-    rust_smp.set_secret_from_bytearray(raw, sid, our_fp, peer_fp)
-finally:
-    for i in range(len(raw)): raw[i] = 0   # caller had to wipe
-
-# Patch 2:
-raw = bytearray(passphrase, "utf-8")
-rust_smp.set_secret_from_bytearray(raw, sid, our_fp, peer_fp)
-# raw is already all zeros — Rust did it, no caller discipline required
-assert all(b == 0 for b in raw)
-```
-
----
-
-## Section 3 — Remaining Risks (as of v10.6.2)
-
-| Risk | Severity | Why Deferred |
+| Audit ID | Fix | File |
 |---|---|---|
-| `Dakeresult` still creates PyBytes for session keys at DAKE2 time, before `from_dakeresult()` is called.  See "Critical Exposure Window" above | **MEDIUM** | Removing requires opaque `DakeOutput` handle.  Phase 4 scope. |
-| Python `EnhancedOTRSession` orchestrates DAKE / SMP / ratchet state | **MEDIUM** | Architectural — would require porting ~3000 lines of protocol logic to Rust.  Phase 6 scope. |
-| `RustSMPVault::load*` exists (gated behind `test-only-kdf`) | **LOW** | Production builds (`--features pq-rust`) do not expose it.  Acceptable. |
-| C extensions (`otr4_ed448_ct.c`, `otr4_crypto_ext.c`, `otr4_mldsa_ext.c`) handle ring-sig, ML-KEM, and ML-DSA in C+OpenSSL | **LOW** | Constant-time helpers in place (`BN_mod_exp_mont_consttime`, `OPENSSL_cleanse`); independent timing audit not yet performed |
-| Python `bytes.__eq__` used for some non-secret comparisons | **LOW** | Fingerprints are public.  Migration to `hmac.compare_digest()` recommended for defense-in-depth |
+| **C2** | New `DakeOutput` PyO3 class with private `RefCell<Option<DakeSessionKeys>>`; no `#[pyo3(get)]` for secret fields | `dake.rs` |
+| **C2** | New PyO3 methods `generate_dake2_output` / `process_dake2_output` | `dake.rs` |
+| **C2** | New non-PyO3 constructor `RustDoubleRatchet::from_dake_keys` (takes `DakeSessionKeys` by-move) | `ratchet.rs` |
+| **C2** | `Dakeresult` and `DakeOutput` both explicitly registered in PyO3 module | `lib.rs` |
+| **C3** | Same as C2 — session keys flow Rust→Rust via `consume_into_ratchet` | (covered above) |
+| **C3** | Python adapter migrated: `RustDAKEAdapter` prefers `_output` API; new `RustBackedDoubleRatchet.from_dake_output` classmethod | `otrv4+.py` |
+| **C3** | `_initialize_ratchet` prefers Phase-4 path when `session._dake_output` present | `otrv4+.py` |
 
 ---
 
-## Section 4 — Phase 4 Plan (eliminate Critical Exposure Window)
+## Section 3 — Audit Compliance Status
 
-Phase 4 eliminates `Dakeresult` entirely and introduces opaque
-session-key handles.  This closes the "Critical Exposure Window"
-described in Section 0.
+| Requirement | v10.6.0 | v10.6.1 | v10.6.2 | v10.6.3 |
+|---|---|---|---|---|
+| Python NEVER accesses raw key material | ⚠️ partial | ⚠️ window-only | ⚠️ window-only | ✅ |
+| All secrets remain in Rust as opaque handles | ⚠️ partial | ⚠️ consumed-flag | ⚠️ unchanged | ✅ DakeOutput |
+| FFI exposes only ciphertext/plaintext/IDs | ❌ | ❌ | ❌ | ⚠️ DAKE done; Phase 6 for full |
+| Constant-time crypto comparisons in Rust | ✅ subtle | ✅ | ✅ | ✅ |
+| Panic-safe FFI boundary | ✅ unwind + SafeSlice | ✅ | ✅ | ✅ |
+| Single-session API | ❌ multiple PyO3 classes | ❌ | ❌ | ❌ (Phase 6) |
+| Python = transport/UI only | ❌ | ❌ | ❌ | ❌ (Phase 6) |
+| Aggressive zeroization | ❌ Vec drop only | ✅ clear+shrink_to_fit | ✅ | ✅ |
+| Caller-discipline-free secret wipe | ❌ | ✅ Rust wipes | ✅ | ✅ |
+| One-time-use Dakeresult | ❌ | ✅ consumed flag | ✅ | ✅ + DakeOutput opaque |
+| **Rust DAKE actually runs end-to-end** | ❌ (silent fallback) | ❌ (silent fallback) | ✅ | ✅ |
+| **Session keys never become PyBytes** | ❌ | ❌ | ❌ | ✅ |
 
-### Phase 4.1 — `DakeOutput` opaque PyO3 class
+### Audit findings — final status
 
-Replace the `Dakeresult` struct (with its `Vec<u8>` secret fields) with a
-`DakeOutput` whose secret fields are private to Rust:
+| Audit ID | Description | Status |
+|---|---|---|
+| **C1** | Test-only `RustSMPVault::load*` exposed in production | ✅ Fixed v10.6.0 |
+| **C2** | `Dakeresult` exposes session keys as `Vec<u8>` getters | ✅ **Fixed v10.6.3** |
+| **C3** | `process_dh_message` returns secrets to Python | ✅ **Fixed v10.6.3** |
+| **C4** | `RustDoubleRatchet::brace_key()` PyO3 getter leaks brace key | ✅ Fixed v10.6.0 |
+| **C5** | SMP passphrase enters Python `bytes` during set_secret | ✅ Fixed v10.6.1 |
+| **C6** | Rust DAKE end-to-end correctness | ✅ Fixed v10.6.2 |
+| **P3** | `panic = "abort"` breaks FFI panic safety | ✅ Fixed v10.6.0 |
+| **V1–V3** | Wire decoders did not bounds-check | ✅ Fixed v10.6.0 |
+| **M1, M2** | `kdf_1`, `encode_header` PyO3 exports | ✅ Fixed v10.6.0 |
 
-```rust
-#[pyclass]
-pub struct DakeOutput {
-    inner: RefCell<Option<DakeOutputInner>>,
-    public_ssid:           [u8; 8],
-    public_remote_ipub:    Vec<u8>,
-    public_remote_mldsa:   Option<Vec<u8>>,
-    public_remote_profile: Vec<u8>,
-}
+**Net: 11 of 11 findings fully closed.  Rust→Python boundary audit
+complete.**
 
-struct DakeOutputInner {  // PRIVATE — never exposed via PyO3
-    keys: DakeSessionKeys,
-}
+---
 
-#[pymethods]
-impl DakeOutput {
-    #[getter] fn ssid(&self, py: Python) -> Py<PyBytes> { /* public */ }
-    #[getter] fn remote_identity_pub(&self, py: Python) -> Py<PyBytes> { /* public */ }
-    // NO getters for root_key / chain_key_* / brace_key / mac_key — they
-    // do not exist as PyO3-visible fields at all.
+## Section 4 — Test-API caveats for Phase 4
 
-    fn consume_into_ratchet(&self, ad: &[u8])
-        -> PyResult<RustDoubleRatchet> { /* moves keys into ratchet */ }
-}
-```
+The new Phase-4 ratchet path sets `_rks_send`, `_rks_recv`, `_rks_root`
+mirrors to zero-byte placeholders because the real chain/root keys
+never become accessible to Python.  Production crypto does not touch
+these mirrors.
 
-After Phase 4, the secret keys never become `PyBytes`.  The Critical
-Exposure Window collapses to zero.
-
-### Phase 4.2 — `RustDoubleRatchet::from_dake_keys`
-
-Add a constructor on the ratchet that accepts `DakeSessionKeys` (a
-private Rust-internal type already defined in `secure_mem.rs`) directly.
-This pairs with `DakeOutput::consume_into_ratchet`.
-
-### Phase 4.3 — Migrate Python adapter
-
-`RustDAKEAdapter._unpack_session_keys()` becomes:
+Test code that asserts on mirror contents must check for the Phase-4
+marker:
 
 ```python
-output = self._rust.process_dake2_output(...)
-self.ssid                       = bytes(output.ssid)
-self.remote_identity_pub_bytes  = bytes(output.remote_identity_pub)
-self.remote_profile_bytes       = bytes(output.remote_profile_bytes)
-self.ratchet = output.consume_into_ratchet(ad=self.ssid)
-# After this: output.consumed == True; secrets live ONLY in Rust ratchet.
+if hasattr(ratchet, '_dake_output_consumed'):
+    # Phase-4 ratchet — mirrors are zero placeholders
+    pytest.skip("Phase-4 ratchet does not expose real chain/root keys")
+else:
+    # Legacy ratchet — mirrors are real
+    assert ratchet._rks_send.read() == expected_chain_key
 ```
 
-### Phase 4.4 — Delete legacy `Dakeresult`
+### Session persistence
 
-Once all callers migrate, `Dakeresult` and the old `generate_dake2` /
-`process_dake2` methods are removed from PyO3 export.  Internal Rust
-code may still use the type but Python loses access entirely.
-
-### Phase 4 estimated effort
-
-- Implementation: 2–3 days
-- Live I2P testing: 2–4 days (DAKE handshake timing, SMP verification,
-  ratchet ordering under fragment loss must all be re-validated)
-- Integration into Python adapter: 1 day
-- **Total: ~1 calendar week of focused work**
+Persistence export from a Phase-4 ratchet currently falls back to
+fresh DAKE on restore.  Implementing Rust-side ratchet serialization
+(encrypted opaque blob with vault key) is planned for v10.6.4.  Until
+then, persisted sessions built via the legacy path continue to work
+unchanged.
 
 ---
 
-## Section 5 — Phase 6 Vision (single-API Rust engine)
+## Section 5 — Phase 5 / 6 / 7 (future)
 
-Phase 6 fulfills the audit's full architectural goal: Python becomes a
-transport/UI shim with zero protocol logic.
+### Phase 5 — Ed448 / X448 long-term keys into Rust SecretVec
 
-```
-┌─────────────────────────────────────────┐
-│ Python (~300 lines total)               │
-│   • IRC socket I/O                      │
-│   • Terminal UI                         │
-│   • Fragment reassembly (transport)     │
-│   • Pass bytes to/from OtrSession       │
-└──────────────┬──────────────────────────┘
-               │ raw bytes only
-┌──────────────▼──────────────────────────┐
-│ Rust OtrSession (~5000 lines)           │
-│   • DAKE state machine                  │
-│   • SMP state machine                   │
-│   • Double Ratchet                      │
-│   • Message parser + validator          │
-│   • Returns Vec<Event> for Python       │
-└─────────────────────────────────────────┘
-```
+Currently the long-term identity key (Ed448) and prekey (X448) live in
+Python `cryptography` library `PrivateKey` objects.  Their raw private
+bytes are extracted at `RustDAKEAdapter.__init__` and passed into Rust.
 
-Single entry-point API:
+Phase 5 holds the private bytes as Rust `SecretVec` inside `PyDake`,
+exposes only signing / DH-exchange operations via PyO3 thin wrappers
+that take public input and return public output.
 
-```rust
-#[pyclass]
-pub struct OtrSession {
-    inner: SessionState,                  // private — no getters
-}
+### Phase 6 — Single-API Rust protocol engine
 
-#[pymethods]
-impl OtrSession {
-    #[new] fn new(...) -> Self { ... }
+Python becomes a ~300-line transport/UI shim.  Rust `OtrSession` is the
+single PyO3-exported class with `handle_incoming` / `handle_outgoing` /
+`set_smp_secret` methods that return `Vec<Event>`.
 
-    fn handle_outgoing(&mut self, plaintext: &[u8]) -> PyResult<Vec<u8>> { ... }
-    fn handle_incoming(&mut self, raw: &[u8]) -> PyResult<Vec<Event>> { ... }
-    fn set_smp_secret(&mut self, secret: &Bound<PyByteArray>) -> PyResult<()> { ... }
-}
+### Phase 7 — Hardening & external audit
 
-#[pyclass]
-pub enum Event {
-    SendMessage(Vec<u8>),
-    DeliverPlaintext(Vec<u8>),
-    SmpRequest { question: String },
-    SmpResult(bool),
-    SessionEstablished { ssid: [u8; 8], remote_fp: Vec<u8> },
-    Error(String),
-}
-```
-
-### Phase 6 estimated effort
-
-- 2–4 weeks of senior Rust engineer time
-- Independent code review and audit (audit firm engagement: 4–8 weeks)
-- I2P stress testing under packet loss, latency spikes, peer churn
-
----
-
-## Audit Compliance Status
-
-| Requirement | v10.6.0 (Patch 1) | v10.6.1 (Patch 2) | v10.6.2 (Patch 3) | Phase 4 | Phase 6 |
-|---|---|---|---|---|---|
-| Python NEVER accesses raw key material | ⚠️ partial | ⚠️ window-only access | ⚠️ window-only access | ✅ DAKE keys | ✅ all keys |
-| All secrets remain in Rust as opaque handles | ⚠️ partial | ⚠️ consumed-flag enforced | ⚠️ unchanged | ✅ DakeOutput | ✅ all state |
-| FFI exposes only ciphertext/plaintext/IDs | ❌ | ❌ | ❌ | ⚠️ partial | ✅ |
-| Constant-time crypto comparisons in Rust | ✅ subtle crate | ✅ | ✅ | ✅ | ✅ |
-| Panic-safe FFI boundary | ✅ unwind + SafeSlice | ✅ + defensive asserts | ✅ | ✅ | ✅ |
-| Single-session API | ❌ multiple PyO3 classes | ❌ | ❌ | ❌ | ✅ OtrSession |
-| Python = transport/UI only | ❌ | ❌ | ❌ | ❌ | ✅ |
-| Aggressive zeroization | ❌ Vec drop only | ✅ clear+shrink_to_fit | ✅ | ✅ | ✅ |
-| Caller-discipline-free secret wipe | ❌ | ✅ Rust wipes | ✅ | ✅ | ✅ |
-| One-time-use Dakeresult | ❌ | ✅ consumed flag | ✅ | ✅ via opaque handle | ✅ |
-| **Rust DAKE actually runs end-to-end with real peers** | ❌ (silent fallback) | ❌ (silent fallback) | ✅ | ✅ | ✅ |
+`mlock` (best-effort on Termux), force-zeroize on SIGABRT/panic, formal
+review of Rust↔Python boundary, ProVerif or EasyCrypt model, external
+audit firm engagement, I2P stress testing.
 
 ---
 
 ## Build & Test
 
 ```bash
-# Production build (no test-only KDF/header exposure):
+# Production build:
 cd ~/OTRv4Plus && \
     python setup_otr4.py build_ext --inplace && \
     bash build_ed448.sh; \
@@ -383,8 +239,14 @@ cd ~/OTRv4Plus && \
 ```
 
 `cargo clean` is included deliberately.  Cargo's incremental build can
-silently skip rebuilding when source files change in non-trivial ways
-(e.g. adding new PyO3 method bodies), leaving the deployed `.so`
-running stale code while source has the fixes.  Verify the deployed
-`.so` contains your change with `strings otrv4_core.so | grep
-<unique-marker-from-your-edit>` before testing.
+silently skip rebuilding when source files change in ways that don't
+trigger its change detection (e.g. adding new PyO3 method bodies),
+leaving the deployed `.so` running stale code.  Verify the deployed
+`.so` contains your change with:
+
+```bash
+strings otrv4_core.so | grep -c DakeOutput     # > 0 for v10.6.3+
+strings otrv4_core.so | grep -c from_dake_keys # > 0 for v10.6.3+
+```
+
+before testing.

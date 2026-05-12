@@ -688,3 +688,69 @@ impl RustDoubleRatchet {
         drop(old);
     }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Phase 4 — non-PyO3 constructor for DakeOutput.consume_into_ratchet
+//
+// This impl block is intentionally OUTSIDE the #[pymethods] block because
+// PyO3 cannot expose a method that takes a non-PyO3 Rust type
+// (DakeSessionKeys here).  The method is callable from Rust code only —
+// specifically from dake::DakeOutput::consume_into_ratchet — and accepts
+// the secret session keys by-move, never crossing the FFI boundary.
+//
+// Closes audit findings C2 and C3 (Critical Exposure Window) for the
+// Phase 4 path: the keys move from DakeState's local Vec/SecretBytes
+// (inside generate_dake2 / process_dake2) → into DakeSessionKeys
+// (private Rust type) → into DakeOutput's RefCell<Option<...>> (private
+// to Rust; no PyO3 getter) → into this from_dake_keys constructor →
+// into DoubleRatchet's owned SecretBytes fields (ZeroizeOnDrop).  At no
+// point are they marshalled into PyBytes.
+// ─────────────────────────────────────────────────────────────────────────────
+impl RustDoubleRatchet {
+    /// Construct a RustDoubleRatchet by consuming a DakeSessionKeys bundle
+    /// directly.  The keys are moved into the ratchet's owned SecretBytes
+    /// fields via DoubleRatchet::new().  After this call, the input
+    /// DakeSessionKeys has been moved (Rust ownership) and dropped; its
+    /// ZeroizeOnDrop impl wipes the original storage automatically.
+    ///
+    /// `ad` is the associated-data bytes used for AES-256-GCM in the
+    /// ratchet (e.g. b"OTRv4-DATA").  `is_initiator` matches the role
+    /// from DAKE; DoubleRatchet::new swaps chain_key_send/recv based on
+    /// this flag.
+    ///
+    /// Returns RatchetError::ZeroChainKey if any of root_key,
+    /// chain_key_send, chain_key_recv contained all zero bytes (KDF
+    /// failure indicator).  Otherwise infallible.
+    pub fn from_dake_keys(
+        keys:         crate::secure_mem::DakeSessionKeys,
+        ad:           &[u8],
+        dh_pub_local: &[u8; 56],
+        is_initiator: bool,
+    ) -> Result<Self, RatchetError> {
+        // Move keys into local stack arrays.  DoubleRatchet::new copies
+        // them into its own SecretBytes fields, so the temporary arrays
+        // on this stack frame are short-lived.
+        let root_key       = *keys.root_key.expose();
+        let chain_key_send = *keys.chain_key_send.expose();
+        let chain_key_recv = *keys.chain_key_recv.expose();
+        let brace_key      = *keys.brace_key.expose();
+
+        let mut inner = DoubleRatchet::new(
+            &root_key, &chain_key_send, &chain_key_recv, &brace_key,
+            dh_pub_local, is_initiator,
+        )?;
+        inner.set_ad(ad);
+
+        // Drop the keys explicitly.  ZeroizeOnDrop on DakeSessionKeys
+        // wipes root_key / chain_key_send / chain_key_recv / brace_key /
+        // ssid / extra_sym_key in their original locations.  The copies
+        // we made for DoubleRatchet::new are now inside `inner` and
+        // managed by its own ZeroizeOnDrop.  The temporary arrays on
+        // this stack frame are about to be popped; we explicitly bind
+        // them to `_` to signal end-of-life.
+        drop(keys);
+        let _ = (root_key, chain_key_send, chain_key_recv, brace_key);
+
+        Ok(Self { inner })
+    }
+}

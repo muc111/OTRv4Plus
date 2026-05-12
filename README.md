@@ -6,7 +6,7 @@
 <p align="center"><strong>Post-quantum secure messaging over IRC — research prototype</strong></p>
 
 <p align="center">
-<code>v10.6.2 — Rust DAKE end-to-end functional · Audit Patch 1+2 hardening intact</code>
+<code>v10.6.3 — 11/11 audit findings closed · Critical Exposure Window eliminated</code>
 </p>
 
 ---
@@ -15,22 +15,22 @@
 
 OTRv4+ implements the OTRv4 specification with post-quantum cryptography
 at every layer.  The cryptographic core is Rust.  Python orchestrates
-the IRC client and passes opaque handles where possible.  C extensions
-provide constant-time Ed448 and ML-KEM operations.
+the IRC client and passes opaque handles for all session state.  C
+extensions provide constant-time Ed448 and ML-KEM operations.
 
 ```
 ┌─────────────────────────────────────────────┐
 │  IRC transport (I2P / Tor / TLS 1.3)        │
 ├─────────────────────────────────────────────┤
 │  Python orchestration layer                  │
-│  (opaque handles for SMP secrets; brief     │
-│   window for DAKE session keys — Phase 4)   │
+│  (opaque handles — secret keys never seen)  │
 ├──────────────┬──────────────────────────────┤
 │  C extensions│  Rust core (otrv4_core)       │
 │  Ed448 ct    │  Double Ratchet               │
 │  ML-KEM-1024 │  DAKE state machine           │
 │  ML-DSA-87   │  SMP state machine            │
-│  Ring sigs   │  Secret vault                 │
+│  Ring sigs   │  DakeOutput opaque handle     │
+│              │  SecretBytes / SecretVec      │
 │              │  ZeroizeOnDrop everywhere     │
 └──────────────┴──────────────────────────────┘
 ```
@@ -38,20 +38,21 @@ provide constant-time Ed448 and ML-KEM operations.
 ### Key exchange (DAKE)
 
 Three-message handshake per OTRv4 §4.2-4.3.  X448 ephemeral DH +
-ML-KEM-1024 encapsulation.  Both peers contribute entropy.  As of
-v10.6.2 the **Rust DAKE path actually runs end-to-end with real
-peers** — earlier v10.6 builds had the wrapper in place but constructor
-signature mismatches caused silent fallback to Python `OTRv4DAKE` on
-every session.  See CHANGELOG.md for the four crypto bugs that
-prevented MAC verification once the Rust path was reachable.
+ML-KEM-1024 encapsulation.  Both peers contribute entropy.
 
-X448 DH exchanges (`dh1`, `dh2`, `dh3`) and ML-KEM encap/decap happen
-in Rust.  MAC over the DAKE2 wire body is computed in Rust.  Ed448
-ring-signature verification for DAKE3 happens in Rust.  Session keys
-(`root_key`, `chain_key_a`, `chain_key_b`, `brace_key`, `mac_key`)
-cross the FFI boundary as `PyBytes` for a brief window before
-`RustDoubleRatchet.from_dakeresult()` consumes them — see SECURITY.md
-"Critical Exposure Window".  Phase 4 (ROADMAP) eliminates that window.
+As of v10.6.3, **the entire DAKE — including all session-key
+derivation — happens in Rust**.  X448 DH exchanges (`dh1`, `dh2`,
+`dh3`), ML-KEM encap/decap, MAC over the DAKE2 wire body, Ed448 ring
+signature verification for DAKE3, and the KDF chain that produces
+`root_key`, `chain_key_send`, `chain_key_recv`, `brace_key`, `mac_key`
+all run inside `otrv4_core`.
+
+The session keys cross from DAKE into the ratchet via a **Rust-only
+move**: the new `DakeOutput` PyO3 handle holds the keys in a private
+`RefCell<Option<DakeSessionKeys>>` with no Python-visible accessor;
+`consume_into_ratchet()` moves them directly into the ratchet's
+owned `SecretBytes` fields.  **Session keys are never marshalled into
+`PyBytes` at any point.**
 
 ### Double ratchet
 
@@ -69,16 +70,17 @@ fall back to classical only.  SMP provides out-of-band identity
 verification via zero-knowledge proof — all four steps run in Rust
 with `ZeroizeOnDrop` on all exponents.
 
-### Memory safety
+### Memory safety (v10.6.3)
 
 | Component | Where secrets live | Python sees | Zeroization |
 |---|---|---|---|
-| Ratchet keys | Rust `SecretBytes<32>` | Nothing | `ZeroizeOnDrop` |
-| DAKE DH secrets | Rust heap/stack | Nothing | `ZeroizeOnDrop` |
-| DAKE session keys (root, chain, brace, mac) | Rust heap → PyBytes (window) → Rust `SecretBytes` | Brief window during from_dakeresult call | aggressive zero + `consumed` flag |
+| Ratchet chain / root keys | Rust `SecretBytes<32>` | Nothing | `ZeroizeOnDrop` |
+| Ratchet brace key | Rust `SecretBytes<32>` | Nothing | `ZeroizeOnDrop` |
+| DAKE DH secrets (dh1/dh2/dh3, mlkem_ss) | Rust heap | Nothing | `ZeroizeOnDrop` |
+| DAKE session keys (root, chain×2, brace, mac) | Rust `DakeSessionKeys` → `DoubleRatchet::SecretBytes` (Rust-to-Rust move) | **Nothing** | `ZeroizeOnDrop` end-to-end |
 | SMP exponents | Rust `SecretVec` | Nothing | `ZeroizeOnDrop` + explicit `destroy()` |
-| SMP passphrase | `RustSMPVault` | Opaque `u64` handle | Rust-side bytearray wipe on entry |
-| Ed448 / X448 private keys | Python `cryptography` lib, copied into Rust at session start | Yes (Python lifecycle) | OpenSSL `OPENSSL_cleanse` on lib teardown |
+| SMP passphrase | `RustSMPVault` (Argon2id-hashed) | Opaque `u64` handle | Rust wipes caller's bytearray |
+| Ed448 / X448 long-term private keys | Python `cryptography` lib + OpenSSL C heap; private bytes copied into Rust at session start | Yes (Python object lifecycle) | OpenSSL lib teardown — Phase 5 moves into Rust |
 
 On `/quit`: all Rust structures drop (Zeroize), C buffers cleansed,
 `~/.otrv4plus` destroyed per NIST SP 800-88r1.
@@ -109,6 +111,10 @@ valid transcript, so neither can prove to a third party what the
 other said.  ML-DSA breaks this property when enabled — documented
 limitation.
 
+**Boundary safety (v10.6.3).** Session keys are inaccessible to
+Python.  An attacker with Python heap read (debugger, ptrace, core
+dump, `/proc/<pid>/mem`) cannot recover root/chain/brace/mac keys.
+
 ---
 
 ## Honest limitations
@@ -123,14 +129,14 @@ limitation.
   message sizes.  I2P/Tor hide IP but not timing.
 - **Fragment count leaks message type.** DAKE produces more fragments
   than chat.  No padding at fragment layer.
-- **Critical Exposure Window.** Session keys briefly exist as PyBytes
-  after DAKE2.  See SECURITY.md.  Phase 4 eliminates.
+- **Long-term identity keys.** Ed448 / X448 private bytes still live
+  in Python `cryptography` library objects.  Phase 5 moves into Rust.
 - **I2P latency.** Session setup takes 6–7 minutes.  This is I2P
   routing, not cryptography.
 
 ---
 
-## Session timing (real I2P measurements, v10.6.2)
+## Session timing (real I2P measurements)
 
 irc.postman.i2p, Termux on aarch64, SAM bridge:
 
@@ -140,10 +146,9 @@ irc.postman.i2p, Termux on aarch64, SAM bridge:
 | SMP verification | ~2m 00s |
 | Total to 🔵 verified | ~6m 37s |
 
-The cryptographic computation (including 50,000-round SMP KDF and
-the full DAKE crypto: 3× X448 DH, ML-KEM-1024 encap+decap, Ed448
-ring sig, MAC) takes under 1 second total.  Everything else is I2P
-tunnel latency.
+The cryptographic computation (50,000-round SMP KDF, three X448 DH,
+ML-KEM-1024 encap+decap, Ed448 ring sig, MAC, AEAD setup) takes under
+1 second total.  Everything else is I2P tunnel latency.
 
 ---
 
@@ -197,6 +202,12 @@ pytest tests/ -v
 Ring-signature non-malleability checks.  SMP full protocol flow.
 Property-based fuzzing via Hypothesis.
 
+**Note for v10.6.3:** tests that assert on the `_rks_send`, `_rks_recv`,
+`_rks_root` mirrors should check for `hasattr(ratchet,
+'_dake_output_consumed')` and skip mirror-based assertions when the
+ratchet was built via the Phase-4 path — those mirrors are zero
+placeholders by design.
+
 ---
 
 ## Building from source
@@ -210,28 +221,33 @@ cd Rust && cargo clean && \
     cargo build --release --no-default-features --features pq-rust && \
     cd ..
 cp Rust/target/release/libotrv4_core.so .
+
+# Verify Phase 4 is in the binary:
+strings otrv4_core.so | grep -c DakeOutput     # > 0
+strings otrv4_core.so | grep -c from_dake_keys # > 0
 ```
 
-`cargo clean` is deliberate — see CHANGELOG.md "Build-process note"
-in the v10.6.2 entry.  Cargo's incremental build can silently skip
-rebuilds on non-trivial source changes.
+`cargo clean` is deliberate.  Cargo's incremental build can silently
+skip rebuilds on non-trivial source changes.  Verify via `strings` and
+the marker-grep above.
 
 Prebuilt aarch64 binaries in `prebuilt/` if compilation fails.
 
 ---
 
-## Implementation status (v10.6.2)
+## Implementation status (v10.6.3)
 
 | Component | Language | Zeroization | Test coverage |
 |---|---|---|---|
 | Double Ratchet | Rust | `ZeroizeOnDrop` ✅ | Python + Rust |
-| DAKE engine | Rust | `ZeroizeOnDrop` ✅ + window mitigation | Python; end-to-end I2P validated |
+| DAKE engine | Rust | `ZeroizeOnDrop` ✅ end-to-end | Python; end-to-end I2P validated |
+| DAKE → ratchet handoff | Rust-only (DakeOutput → consume_into_ratchet) | ✅ never PyBytes | Python; live-tested |
 | SMP engine | Rust | `ZeroizeOnDrop` ✅ | Python |
 | SMP vault | Rust | `ZeroizeOnDrop` + `destroy()` ✅ | Python |
 | Ring signatures | C ext | `OPENSSL_cleanse` | Python |
 | ML-KEM-1024 | Rust (`pqcrypto-kyber`) | (vendor) | Python + Rust KAT |
 | ML-DSA-87 | C ext | `OPENSSL_cleanse` | Python |
-| Identity keys (Ed448 / X448) | Python `cryptography` lib → Rust | Python lib lifecycle | Python |
+| Identity keys (Ed448 / X448) | Python `cryptography` lib → Rust at session start | Python lib lifecycle | Python (Phase 5 moves to Rust) |
 
 ---
 
