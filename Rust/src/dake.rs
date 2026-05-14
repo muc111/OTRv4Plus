@@ -5,7 +5,7 @@
 // natively so that optional ML‑DSA‑87 fields are processed correctly.
 
 use pyo3::prelude::*;
-use pyo3::types::PyBytes;
+use pyo3::types::{PyBytes, PyByteArray};
 use zeroize::ZeroizeOnDrop;
 
 use pqcrypto_traits::kem::{
@@ -657,6 +657,281 @@ impl PyDake {
         inner.is_initiator = is_initiator;
         inner.our_profile_bytes = our_profile_bytes.to_vec();
         Ok(Self { inner })
+    }
+
+    /// Phase 5.2 (v10.6.5): construct a RustDAKE from bytearrays and wipe
+    /// the source Python-side bytearrays in-place after copying into Rust
+    /// SecretBytes.
+    ///
+    /// Differs from `new` in two ways:
+    ///   1. `our_ik_bytes` and `our_prekey_bytes` are `&Bound<PyByteArray>`
+    ///      (mutable Python buffers), not `&[u8]` (read-only bytes objects).
+    ///      Rust grabs the bytes via PyByteArray::to_vec(), copies into
+    ///      SecretBytes inside DakeState::new, then wipes the bytearray
+    ///      in-place via the safe PyByteArray::set_item API.
+    ///   2. The intermediate Vec<u8> we copy through is wrapped in
+    ///      SecretVec so that even if anything goes wrong between the
+    ///      to_vec() call and DakeState::new(), the temporary
+    ///      heap-allocated copy is zeroized on drop.
+    ///
+    /// After this call returns successfully, the Python-side bytearrays
+    /// referenced by `our_ik_bytes` and `our_prekey_bytes` contain
+    /// all-zero bytes.  The caller does not need to wipe them again,
+    /// though doing so is harmless.
+    ///
+    /// On error, the bytearrays MAY be partially wiped or unwiped
+    /// depending on which step failed.  Callers should treat them as
+    /// untrusted after a failed call and wipe defensively.
+    ///
+    /// Closes audit-adjacent finding for long-term identity key
+    /// exposure: with this constructor, the only Python-side
+    /// representation of the private bytes is the bytearray we wipe,
+    /// not an immutable bytes object that lingers in the heap until
+    /// GC.
+    #[staticmethod]
+    #[pyo3(signature = (is_initiator, our_profile_bytes, our_ik_bytes, our_prekey_bytes, mldsa_priv=None, mldsa_pub=None, sender_tag=0))]
+    fn new_from_bytearrays<'py>(
+        is_initiator: bool,
+        our_profile_bytes: &[u8],
+        our_ik_bytes: &Bound<'py, PyByteArray>,
+        our_prekey_bytes: &Bound<'py, PyByteArray>,
+        mldsa_priv: Option<&[u8]>,
+        mldsa_pub: Option<&[u8]>,
+        sender_tag: u32,
+    ) -> PyResult<Self> {
+        use pyo3::exceptions::PyValueError;
+
+        // ── Length sanity (fail before copying) ──
+        if our_ik_bytes.len() != 57 {
+            return Err(PyValueError::new_err(format!(
+                "our_ik_bytes must be a bytearray of length 57 (Ed448 private), got {}",
+                our_ik_bytes.len()
+            )));
+        }
+        if our_prekey_bytes.len() != 56 {
+            return Err(PyValueError::new_err(format!(
+                "our_prekey_bytes must be a bytearray of length 56 (X448 private), got {}",
+                our_prekey_bytes.len()
+            )));
+        }
+
+        // ── Parse the (public) profile ──
+        let vc = if our_profile_bytes.len() > 1 {
+            our_profile_bytes[1] as usize
+        } else {
+            return Err(PyErr::from(OtrError::TooShort{need:2, got:our_profile_bytes.len()}));
+        };
+        let hl = 2 + vc;
+        if our_profile_bytes.len() < hl + 57 + 56 {
+            return Err(PyErr::from(OtrError::TooShort{need:hl+57+56, got:our_profile_bytes.len()}));
+        }
+        let ipub: &[u8;57] = our_profile_bytes[hl..hl+57]
+            .try_into()
+            .map_err(|_| PyErr::from(OtrError::TooShort{need:57, got:our_profile_bytes.len()-hl}))?;
+        let ppub: &[u8;56] = our_profile_bytes[hl+57..hl+57+56]
+            .try_into()
+            .map_err(|_| PyErr::from(OtrError::TooShort{need:56, got:our_profile_bytes.len().saturating_sub(hl+57)}))?;
+
+        // ── Copy private bytes from bytearrays into SecretVec wrappers ──
+        // SecretVec wraps the temporary heap allocation in ZeroizeOnDrop.
+        // If anything between here and DakeState::new() panics or returns
+        // early, the temporary copies still get wiped automatically.
+        let ipriv_secret = crate::secure_mem::SecretVec::new(our_ik_bytes.to_vec());
+        let ppriv_secret = crate::secure_mem::SecretVec::new(our_prekey_bytes.to_vec());
+
+        let ipriv_arr: &[u8;57] = ipriv_secret.expose()
+            .try_into()
+            .map_err(|_| PyValueError::new_err("internal: identity copy wrong length"))?;
+        let ppriv_arr: &[u8;56] = ppriv_secret.expose()
+            .try_into()
+            .map_err(|_| PyValueError::new_err("internal: prekey copy wrong length"))?;
+
+        // ── Construct DakeState (copies bytes into SecretBytes<N>) ──
+        let mut inner = DakeState::new(
+            ipriv_arr, ipub, ppriv_arr, ppub,
+            mldsa_priv, mldsa_pub, sender_tag,
+        ).map_err(PyErr::from)?;
+        inner.is_initiator = is_initiator;
+        inner.our_profile_bytes = our_profile_bytes.to_vec();
+
+        // ── Wipe the source bytearrays in-place ──
+        // PyByteArray::set_item is the safe API; no unsafe needed.
+        // After this loop, the Python-side bytearray that the caller
+        // passed in contains all zeros — wherever Python is keeping that
+        // memory, it is now zeroed.
+        for i in 0..57 {
+            our_ik_bytes.set_item(i, 0u8)?;
+        }
+        for i in 0..56 {
+            our_prekey_bytes.set_item(i, 0u8)?;
+        }
+
+        // ipriv_secret and ppriv_secret drop here; ZeroizeOnDrop wipes them.
+
+        Ok(Self { inner })
+    }
+
+    /// Phase 5.3a (v10.6.6, Option A2): construct a RustDAKE and ALSO
+    /// produce the Ed448 signature over the unsigned profile body in
+    /// one FFI call.
+    ///
+    /// This eliminates the `client_profile.identity_key.sign(...)` call
+    /// in Python: the Ed448 identity private bytes go to Rust once,
+    /// where (a) they're used to sign the unsigned profile body, (b)
+    /// they're stored in DakeState's SecretBytes<57>, and (c) the
+    /// source bytearrays are wiped in-place.
+    ///
+    /// The 114-byte Ed448 signature (RFC 8032 §5.2 pure Ed448, empty
+    /// context) is returned to Python for appending to the unsigned
+    /// profile body.  Output is byte-identical to what the Python
+    /// `cryptography` library's `Ed448PrivateKey.sign(msg)` would
+    /// produce for the same private bytes and the same message —
+    /// callers MUST validate this with a startup self-check before
+    /// trusting this path in production, because an implementation
+    /// difference between `ed448-goldilocks-plus` and OpenSSL's Ed448
+    /// would silently break compatibility with peers running v10.6.5
+    /// or earlier.
+    ///
+    /// Returns: (RustDAKE, 114-byte Ed448 signature) as a Python tuple.
+    /// The signature is a Py<PyBytes>.
+    ///
+    /// On any error (length mismatch, signing failure, etc.) returns
+    /// PyValueError.  On error, the source bytearrays MAY be partially
+    /// wiped; callers should treat them as untrusted and wipe
+    /// defensively.
+    #[staticmethod]
+    #[pyo3(signature = (is_initiator, our_profile_bytes, unsigned_body, our_ik_bytes, our_prekey_bytes, mldsa_priv=None, mldsa_pub=None, sender_tag=0))]
+    fn sign_profile_body_and_construct<'py>(
+        py: Python<'py>,
+        is_initiator: bool,
+        our_profile_bytes: &[u8],
+        unsigned_body: &[u8],
+        our_ik_bytes: &Bound<'py, PyByteArray>,
+        our_prekey_bytes: &Bound<'py, PyByteArray>,
+        mldsa_priv: Option<&[u8]>,
+        mldsa_pub: Option<&[u8]>,
+        sender_tag: u32,
+    ) -> PyResult<(Self, Py<PyBytes>)> {
+        use pyo3::exceptions::PyValueError;
+        use ed448_goldilocks_plus::SigningKey;
+        use std::convert::TryFrom;
+
+        // ── Length sanity ──
+        if our_ik_bytes.len() != 57 {
+            return Err(PyValueError::new_err(format!(
+                "our_ik_bytes must be a bytearray of length 57 (Ed448 private), got {}",
+                our_ik_bytes.len()
+            )));
+        }
+        if our_prekey_bytes.len() != 56 {
+            return Err(PyValueError::new_err(format!(
+                "our_prekey_bytes must be a bytearray of length 56 (X448 private), got {}",
+                our_prekey_bytes.len()
+            )));
+        }
+        if unsigned_body.is_empty() {
+            return Err(PyValueError::new_err("unsigned_body must not be empty"));
+        }
+
+        // ── Parse the (public) profile for ipub/ppub ──
+        let vc = if our_profile_bytes.len() > 1 {
+            our_profile_bytes[1] as usize
+        } else {
+            return Err(PyErr::from(OtrError::TooShort{need:2, got:our_profile_bytes.len()}));
+        };
+        let hl = 2 + vc;
+        if our_profile_bytes.len() < hl + 57 + 56 {
+            return Err(PyErr::from(OtrError::TooShort{need:hl+57+56, got:our_profile_bytes.len()}));
+        }
+        let ipub: &[u8;57] = our_profile_bytes[hl..hl+57]
+            .try_into()
+            .map_err(|_| PyErr::from(OtrError::TooShort{need:57, got:our_profile_bytes.len()-hl}))?;
+        let ppub: &[u8;56] = our_profile_bytes[hl+57..hl+57+56]
+            .try_into()
+            .map_err(|_| PyErr::from(OtrError::TooShort{need:56, got:our_profile_bytes.len().saturating_sub(hl+57)}))?;
+
+        // ── Copy private bytes from bytearrays into SecretVec wrappers ──
+        let ipriv_secret = crate::secure_mem::SecretVec::new(our_ik_bytes.to_vec());
+        let ppriv_secret = crate::secure_mem::SecretVec::new(our_prekey_bytes.to_vec());
+
+        let ipriv_arr: &[u8;57] = ipriv_secret.expose()
+            .try_into()
+            .map_err(|_| PyValueError::new_err("internal: identity copy wrong length"))?;
+        let ppriv_arr: &[u8;56] = ppriv_secret.expose()
+            .try_into()
+            .map_err(|_| PyValueError::new_err("internal: prekey copy wrong length"))?;
+
+        // ── Ed448 sign the unsigned profile body ──
+        // RFC 8032 §5.2 pure Ed448 (empty context).  Matches what
+        // Python `cryptography` lib's Ed448PrivateKey.sign(msg) produces
+        // — caller must verify with a startup self-check before
+        // trusting this path in production.
+        let signing_key = SigningKey::try_from(ipriv_secret.expose())
+            .map_err(|e| PyValueError::new_err(format!("Ed448 SigningKey construction failed: {:?}", e)))?;
+        let signature = signing_key.sign_raw(unsigned_body);
+        let sig_bytes_arr: [u8; 114] = signature.to_bytes();
+        let sig_py = PyBytes::new_bound(py, &sig_bytes_arr).unbind();
+
+        // ── Construct DakeState (copies bytes into SecretBytes<N>) ──
+        let mut inner = DakeState::new(
+            ipriv_arr, ipub, ppriv_arr, ppub,
+            mldsa_priv, mldsa_pub, sender_tag,
+        ).map_err(PyErr::from)?;
+        inner.is_initiator = is_initiator;
+        inner.our_profile_bytes = our_profile_bytes.to_vec();
+
+        // ── Wipe source bytearrays in-place ──
+        for i in 0..57 {
+            our_ik_bytes.set_item(i, 0u8)?;
+        }
+        for i in 0..56 {
+            our_prekey_bytes.set_item(i, 0u8)?;
+        }
+
+        // ipriv_secret, ppriv_secret, signing_key all drop here.
+        // SecretVec wipes via ZeroizeOnDrop.  SigningKey's internal
+        // SecretKey field SHOULD wipe on drop (the crate documents
+        // zeroize on drop for keys), but we do not rely on this.
+        // The key bytes will eventually be reclaimed by the allocator;
+        // the most sensitive copies (in our SecretVec) are wiped.
+
+        Ok((Self { inner }, sig_py))
+    }
+
+    /// Phase 5.3a self-check helper: Ed448-sign a test message using
+    /// the same code path as sign_profile_body_and_construct, so the
+    /// Python adapter can verify byte-identical output with the
+    /// `cryptography` library before trusting Rust signing in
+    /// production.
+    ///
+    /// Inputs:
+    ///   - test_priv: 57-byte Ed448 private key
+    ///   - test_msg: arbitrary message
+    /// Returns: 114-byte Ed448 signature
+    ///
+    /// Intended ONLY for startup compatibility verification.  Do not
+    /// use this for production signing.
+    #[staticmethod]
+    fn ed448_sign_test<'py>(
+        py: Python<'py>,
+        test_priv: &[u8],
+        test_msg: &[u8],
+    ) -> PyResult<Py<PyBytes>> {
+        use pyo3::exceptions::PyValueError;
+        use ed448_goldilocks_plus::SigningKey;
+        use std::convert::TryFrom;
+
+        if test_priv.len() != 57 {
+            return Err(PyValueError::new_err(format!(
+                "test_priv must be 57 bytes (Ed448 private), got {}",
+                test_priv.len()
+            )));
+        }
+        let signing_key = SigningKey::try_from(test_priv)
+            .map_err(|e| PyValueError::new_err(format!("Ed448 SigningKey construction failed: {:?}", e)))?;
+        let signature = signing_key.sign_raw(test_msg);
+        let sig_bytes_arr: [u8; 114] = signature.to_bytes();
+        Ok(PyBytes::new_bound(py, &sig_bytes_arr).unbind())
     }
 
     #[pyo3(signature = (our_profile_bytes = None, mldsa_pub_bytes = None))]
