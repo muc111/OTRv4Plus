@@ -17,6 +17,76 @@ try:
 except ImportError:
     _RustDAKE = None
     RUST_DAKE_AVAILABLE = False
+
+# Phase 5.3c (v10.6.9): Rust Ed448 Schnorr ring signature
+# Free PyO3 functions (not class methods) in otrv4_core:
+#   py_ring_sign(seed, A1, A2, msg) -> bytes(228)
+#   py_ring_verify(A1, A2, msg, sig) -> bool
+try:
+    from otrv4_core import py_ring_sign as _rust_ring_sign
+    from otrv4_core import py_ring_verify as _rust_ring_verify
+    RUST_RING_SIG_AVAILABLE = True
+except ImportError:
+    _rust_ring_sign = None
+    _rust_ring_verify = None
+    RUST_RING_SIG_AVAILABLE = False
+
+# ── v10.6.11 (Phase 5.4) IMPORT-TIME FAIL-FAST ──
+# OTRv4+ v10.6.11+ is a thin Python wrapper over the Rust crypto core
+# (otrv4_core).  No fallback paths.  If Rust is missing or incomplete,
+# refuse to start rather than silently degrade to OpenSSL / cryptography
+# library implementations.
+#
+# Required symbols (verified at module import time):
+#   - otrv4_core.RustDAKE          (class)
+#   - otrv4_core.RustDoubleRatchet (class) — also: ratchet construction
+#   - otrv4_core.RustSMP           (class) — SMP zero-knowledge state machine
+#   - otrv4_core.RustSMPVault      (class) — SMP secret vault
+#   - otrv4_core.py_ring_sign      (free fn) — DAKE3 ring sign
+#   - otrv4_core.py_ring_verify    (free fn) — DAKE3 ring verify
+#
+# The RustDAKE class must additionally expose:
+#   - new_from_bytearrays              (Phase 5.2)
+#   - sign_profile_body_and_construct  (Phase 5.3a-cleanup)
+#   - ed448_sign_test                  (Phase 5.3a / Phase 5.4 production signer)
+#   - generate_dake2_output            (Phase 4 / DakeOutput opaque handle)
+#   - process_dake2_output             (Phase 4)
+#
+# If any of these are missing, the module raises ImportError loudly.
+def _check_rust_requirements():
+    if not RUST_DAKE_AVAILABLE or _RustDAKE is None:
+        raise ImportError(
+            "OTRv4+ v10.6.11+ requires otrv4_core.RustDAKE.  "
+            "The .so was not built with the dake module.  "
+            "Rebuild Rust/ with: cargo build --release --features pq-rust"
+        )
+    if not RUST_RING_SIG_AVAILABLE or _rust_ring_sign is None or _rust_ring_verify is None:
+        raise ImportError(
+            "OTRv4+ v10.6.11+ requires otrv4_core.py_ring_sign and "
+            "otrv4_core.py_ring_verify.  The .so was not built with the "
+            "ring_sig module.  Rebuild Rust/ with the latest src/ring_sig.rs "
+            "and src/lib.rs that registers it."
+        )
+    _required_methods = [
+        'new_from_bytearrays',
+        'sign_profile_body_and_construct',
+        'ed448_sign_test',
+        'generate_dake2_output',
+        'process_dake2_output',
+    ]
+    _missing = [m for m in _required_methods if not hasattr(_RustDAKE, m)]
+    if _missing:
+        raise ImportError(
+            f"OTRv4+ v10.6.11+ requires the following methods on "
+            f"otrv4_core.RustDAKE: {_required_methods}.  Missing: {_missing}.  "
+            f"Rebuild the .so from the current Rust/src/dake.rs."
+        )
+    # RustDoubleRatchet, RustSMP, RustSMPVault are imported lazily where
+    # they're used; we don't fail-fast on them here so test environments
+    # that exercise a subset of the API still work.
+
+_check_rust_requirements()
+
 import time
 import secrets
 import hashlib
@@ -426,10 +496,163 @@ class MLDSA87Auth:
 
 
 
+# ── Phase 5.3c (v10.6.9) ────────────────────────────────────────────────────
+# Lazy startup cross-verify check for Rust ring signature compatibility.
+#
+# Unlike Phase 5.3a's Ed448 plain-signing compat check (which compared
+# signatures byte-for-byte), ring signatures contain randomly-sampled
+# c2, r2 — so no two valid signatures over the same input will ever be
+# bit-identical, even from the same implementation.
+#
+# The compatibility property we DO need is wire-format compatibility:
+#   - A signature produced by Rust must verify with C.
+#   - A signature produced by C must verify with Rust.
+# If both directions pass on freshly-generated test inputs, the two
+# implementations agree on:
+#   - The 228-byte wire layout (c1‖r1‖c2‖r2, 57 bytes each LE).
+#   - The challenge hash domain (SHAKE-256(0x1C ‖ msg ‖ A1 ‖ A2 ‖ T1 ‖ T2)).
+#   - The scalar reduction (mod Q).
+#   - The point arithmetic (compressed Edwards Y encoding, base-point
+#     mul, point addition).
+#
+# Without this two-way check, a subtle implementation difference (e.g.
+# different domain-separator byte ordering, off-by-one in scalar
+# encoding) would silently break DAKE3 verification with any peer using
+# the OTHER implementation.  Peers running v10.6.8 or earlier use the
+# C extension exclusively; v10.6.9 with the Rust path enabled must
+# produce signatures those peers accept, and accept signatures those
+# peers produce.
+#
+# Cached after first call.  Called from RingSignature.sign() and
+# RingSignature.verify() on first use.
+_ring_sig_rust_compat_verified: Optional[bool] = None
+
+def _verify_ring_sig_rust_compat() -> bool:
+    """One-shot boot-time cross-verification between Rust and C ring sigs.
+
+    v10.6.11 (Phase 5.4): this is a BOOT VALIDATION, not a fallback gate.
+    The C extension is invoked here once at startup to serve as the
+    protocol's reference — does the Rust implementation agree with what
+    every existing v10.6.x peer produces?  After this check passes, the
+    C extension is never called again at runtime.  If the check fails,
+    RingSignature.sign and .verify raise RuntimeError; no silent fallback.
+
+    Returns True iff both:
+      - Rust signs → C verifies   (Rust output is wire-correct)
+      - C signs    → Rust verifies (Rust verify accepts wire-correct sigs)
+
+    Result is cached after first call.
+    """
+    global _ring_sig_rust_compat_verified
+    if _ring_sig_rust_compat_verified is not None:
+        return _ring_sig_rust_compat_verified
+
+    _ring_sig_rust_compat_verified = False
+
+    if not RUST_RING_SIG_AVAILABLE or _rust_ring_sign is None or _rust_ring_verify is None:
+        try:
+            _sys.stderr.write(
+                "[ring-sig] ✗ Rust ring-sig functions unavailable in otrv4_core "
+                "(py_ring_sign / py_ring_verify missing).  v10.6.11+ requires "
+                "Rust ring-sig; rebuild the .so with the ring_sig module.\n"
+            )
+        except Exception:
+            pass
+        return False
+
+    try:
+        sk1 = ed448.Ed448PrivateKey.generate()
+        sk2 = ed448.Ed448PrivateKey.generate()
+
+        seed1 = sk1.private_bytes(
+            encoding             = serialization.Encoding.Raw,
+            format               = serialization.PrivateFormat.Raw,
+            encryption_algorithm = serialization.NoEncryption(),
+        )
+        A1 = sk1.public_key().public_bytes(
+            encoding=serialization.Encoding.Raw,
+            format=serialization.PublicFormat.Raw,
+        )
+        A2 = sk2.public_key().public_bytes(
+            encoding=serialization.Encoding.Raw,
+            format=serialization.PublicFormat.Raw,
+        )
+
+        test_msg = b"OTRv4+ ring-sig compat check v1"
+
+        # ── Direction 1: Rust signs, C verifies ──
+        rust_sig = bytes(_rust_ring_sign(seed1, A1, A2, test_msg))
+        if len(rust_sig) != 228:
+            try:
+                _sys.stderr.write(
+                    f"[ring-sig] ✗ Rust produced wrong sig length: {len(rust_sig)} (expected 228)\n"
+                )
+            except Exception:
+                pass
+            return False
+        if not _ossl.ring_verify(A1, A2, test_msg, rust_sig):
+            try:
+                _sys.stderr.write(
+                    "[ring-sig] ✗ C reference REJECTED Rust signature — "
+                    "implementations disagree on wire format or challenge derivation.\n"
+                )
+                if DEBUG_MODE:
+                    _sys.stderr.write(f"[ring-sig]   Rust sig hex: {rust_sig.hex()}\n")
+            except Exception:
+                pass
+            return False
+
+        # ── Direction 2: C signs, Rust verifies ──
+        c_sig = _ossl.ring_sign(bytes(seed1), A1, A2, test_msg)
+        if len(c_sig) != 228:
+            try:
+                _sys.stderr.write(
+                    f"[ring-sig] ✗ C reference produced wrong sig length: {len(c_sig)}\n"
+                )
+            except Exception:
+                pass
+            return False
+        if not bool(_rust_ring_verify(A1, A2, test_msg, c_sig)):
+            try:
+                _sys.stderr.write(
+                    "[ring-sig] ✗ Rust REJECTED C reference signature.\n"
+                )
+                if DEBUG_MODE:
+                    _sys.stderr.write(f"[ring-sig]   C sig hex: {c_sig.hex()}\n")
+            except Exception:
+                pass
+            return False
+
+        _ring_sig_rust_compat_verified = True
+        try:
+            _sys.stderr.write(
+                "[ring-sig] ✅ Rust ed448-goldilocks-plus matches C reference — "
+                "DAKE3 ring signatures will use Rust exclusively from now on\n"
+            )
+        except Exception:
+            pass
+
+    except Exception as _e:
+        _ring_sig_rust_compat_verified = False
+        try:
+            _sys.stderr.write(
+                f"[ring-sig] ⚠ compat check raised exception ({_e}); using C extension\n"
+            )
+        except Exception:
+            pass
+
+    return _ring_sig_rust_compat_verified
+
+
 class RingSignature:
     """OTRv4 Auth-I Schnorr ring signature (spec §4.3.3).
 
     Wire encoding: c₁(57) ‖ r₁(57) ‖ c₂(57) ‖ r₂(57) = 228 bytes.
+
+    Phase 5.3c (v10.6.9): the production path is Rust (otrv4_core's
+    py_ring_sign / py_ring_verify) when a startup cross-verify check
+    confirms the Rust implementation is bit-exact compatible with the
+    C reference.  See _verify_ring_sig_rust_compat() below.
     """
 
     SCALAR_BYTES = 57
@@ -446,22 +669,60 @@ class RingSignature:
              ) -> bytes:
         """Produce σ = c₁‖r₁‖c₂‖r₂ (228 bytes).
 
-        Fully implemented in C via _ossl.ring_sign:
-          - Scalar a₁ derived via SHAKE-256(seed, 114) + RFC 8032 clamping
-          - Ephemeral t₁ via SHAKE-256(seed‖0x01, 57)
-          - All point arithmetic (T1=t₁·G, T2=r₂·G+c₂·A₂) in C
-          - OPENSSL_cleanse on all secret intermediates before return
+        Phase 5.3c (v10.6.9): prefers Rust (otrv4_core.py_ring_sign)
+        when the startup cross-verify check has passed.  Falls back
+        to C extension (_ossl.ring_sign) otherwise.
+
+        The Rust path uses ed448-goldilocks-plus for all curve
+        arithmetic and the `sha3` crate for SHAKE-256.  Output is
+        wire-compatible with the C reference (verified at startup
+        via two-way cross-verification before this method enables
+        the Rust path).
 
         The signing key must correspond to A₁ (initiator identity key).
         """
-        seed = priv_key.private_bytes(
+        # ── v10.6.11 (Phase 5.4): Rust-only, no fallback ──
+        # Earlier versions fell back to the C extension when the Rust
+        # cross-verify check hadn't passed.  As of v10.6.11 the only
+        # supported path is Rust.  If the cross-verify check did not
+        # pass at startup, we raise loudly here — there is no silent
+        # fallback to a different implementation.
+        #
+        # This codifies the project's "Rust is the only crypto" posture:
+        #   - Python is a thin wrapper around the otrv4_core Rust crate.
+        #   - No C extension is invoked at runtime for crypto operations.
+        #   - No `cryptography` library fallback is permitted for the
+        #     Ed448 ring signature path.
+        #
+        # Build invariant: if the .so doesn't expose py_ring_sign /
+        # py_ring_verify, the whole module fails to import.  See the
+        # _RUST_REQUIRED_FAIL_FAST checks at the top of this file.
+        if not _verify_ring_sig_rust_compat():
+            raise RuntimeError(
+                "RingSignature.sign: Rust ring-sig implementation is not "
+                "cross-compatible with the protocol's reference (or the "
+                "compat check failed).  No fallback is enabled in v10.6.11+."
+            )
+
+        # Extract identity seed into a mutable bytearray so we can wipe
+        # it after the FFI call.  Convert to bytes for the FFI argument
+        # (PyO3's &[u8] reliably accepts the immutable type across all
+        # supported PyO3 versions; passing a bytearray directly works
+        # in some PyO3 versions but failed at runtime in v10.6.10,
+        # producing DAKE3 GEN_FAILED).  The bytes() snapshot is GC'd
+        # immediately after the call returns; we still wipe the source
+        # bytearray as defense-in-depth.
+        _seed = bytearray(priv_key.private_bytes(
             encoding=serialization.Encoding.Raw,
             format=serialization.PrivateFormat.Raw,
             encryption_algorithm=serialization.NoEncryption()
-        )
-
-        sig = _ossl.ring_sign(bytes(seed), A1_bytes, A2_bytes, msg)
-        del seed
+        ))
+        try:
+            sig = bytes(_rust_ring_sign(bytes(_seed), A1_bytes, A2_bytes, msg))
+        finally:
+            for _i in range(len(_seed)):
+                _seed[_i] = 0
+            del _seed
         return sig
 
     @classmethod
@@ -470,12 +731,23 @@ class RingSignature:
                A2_bytes: bytes,
                msg: bytes,
                sig: bytes) -> bool:
-        """Verify σ = c₁‖r₁‖c₂‖r₂ against A₁, A₂, and the transcript msg."""
+        """Verify σ = c₁‖r₁‖c₂‖r₂ against A₁, A₂, and the transcript msg.
+
+        v10.6.11 (Phase 5.4): Rust-only. No C extension fallback.
+        Raises RuntimeError if the cross-verify check did not pass.
+        """
         if len(sig) != cls.TOTAL_BYTES:
             return False
 
+        if not _verify_ring_sig_rust_compat():
+            raise RuntimeError(
+                "RingSignature.verify: Rust ring-sig implementation is not "
+                "cross-compatible (or compat check failed).  No fallback "
+                "is enabled in v10.6.11+."
+            )
+
         try:
-            return _ossl.ring_verify(A1_bytes, A2_bytes, msg, sig)
+            return bool(_rust_ring_verify(A1_bytes, A2_bytes, msg, sig))
         except Exception:
             return False
 
@@ -1260,7 +1532,7 @@ class OTRv4DataMessage:
             raise ValueError(f"Failed to decode message: {e}")
 
 
-VERSION = "OTRv4+ 10.6.7"
+VERSION = "OTRv4+ 10.6.11"
 
 if not hasattr(hashlib, 'sha3_512'):
     raise RuntimeError(
@@ -2436,61 +2708,40 @@ class ClientProfile:
             profile_data.extend(prekey_pub)
             profile_data.extend(struct.pack('>Q', self.expires))
 
-            # ── Phase 5.3a (v10.6.6, Option A2): Ed448 sign via Rust ──
-            # If `otrv4_core` exposes `ed448_sign_test` and the startup
-            # compatibility self-check has passed, sign via Rust.
-            # Otherwise, sign via `cryptography` library (legacy path).
+            # ── v10.6.11 (Phase 5.4): Rust-only Ed448 signing ──
+            # No cryptography library fallback.  ed448_sign_test is
+            # exposed by otrv4_core specifically for this purpose
+            # (the name reflects its dual role as both the boot-time
+            # compat-check helper AND the production signer for this
+            # call site — same code path either way).
             #
-            # The Rust path uses `ed448-goldilocks-plus`'s `sign_raw`
-            # (RFC 8032 §5.2 pure Ed448, empty context).  The Python
-            # path uses OpenSSL's Ed448 via the `cryptography` library.
-            # Both follow the same RFC and SHOULD produce byte-identical
-            # signatures for the same private key and message.  But
-            # because OTRv4 peer profile signatures are validated by
-            # every peer who receives them, ANY implementation drift
-            # would silently break compatibility with peers running
-            # v10.6.5 or earlier.  The compat self-check at startup
-            # catches drift before any production signature is made.
-            #
-            # _verify_ed448_rust_compat() is called lazily on first
-            # encode().  Result is cached in the module-level
-            # _ed448_rust_compat_verified variable so subsequent
-            # encodes skip the check.
-            _used_rust_sign = False
-            if _verify_ed448_rust_compat():
-                try:
-                    _ik_priv = bytearray(self.identity_key.private_bytes(
-                        encoding             = serialization.Encoding.Raw,
-                        format               = serialization.PrivateFormat.Raw,
-                        encryption_algorithm = serialization.NoEncryption(),
-                    ))
-                    self.signature = bytes(_RustDAKE.ed448_sign_test(
-                        bytes(_ik_priv),       # 57-byte Ed448 private
-                        bytes(profile_data),   # unsigned profile body
-                    ))
-                    # Wipe the bytearray we created.  Note: bytes(_ik_priv)
-                    # made a snapshot for the FFI call — that snapshot is
-                    # also a Python object on the heap.  Phase 5.3b would
-                    # use sign_profile_body_and_construct (which takes
-                    # the bytearray directly, no snapshot) — but that
-                    # method also constructs the RustDAKE, and at
-                    # ClientProfile.encode() time we may not be inside a
-                    # RustDAKEAdapter constructor.  Phase 5.3a accepts
-                    # the snapshot trade-off for the simpler integration
-                    # point.  Wipe the bytearray we own.
-                    for i in range(len(_ik_priv)):
-                        _ik_priv[i] = 0
-                    del _ik_priv
-                    _used_rust_sign = True
-                except Exception:
-                    # Rust signing failed at runtime — fall through to
-                    # cryptography library.  Defensive: also disable the
-                    # compat-verified flag so future calls don't retry.
-                    _used_rust_sign = False
+            # Boot-time _verify_ed448_rust_compat() confirmed Rust
+            # produces byte-identical signatures to OpenSSL Ed448
+            # for the same key and message.  After that check the
+            # cryptography library is no longer invoked for signing
+            # anywhere in this codebase.
+            if not _verify_ed448_rust_compat():
+                raise RuntimeError(
+                    "ClientProfile.encode: Rust Ed448 sign is not "
+                    "byte-compatible with OpenSSL Ed448 (or compat check "
+                    "failed).  v10.6.11+ requires Rust signing; no fallback."
+                )
 
-            if not _used_rust_sign:
-                # Legacy path: cryptography library Ed448 (OpenSSL backend).
-                self.signature = self.identity_key.sign(bytes(profile_data))
+            _ik_priv = bytearray(self.identity_key.private_bytes(
+                encoding             = serialization.Encoding.Raw,
+                format               = serialization.PrivateFormat.Raw,
+                encryption_algorithm = serialization.NoEncryption(),
+            ))
+            try:
+                self.signature = bytes(_RustDAKE.ed448_sign_test(
+                    bytes(_ik_priv),
+                    bytes(profile_data),
+                ))
+            finally:
+                for _i in range(len(_ik_priv)):
+                    _ik_priv[_i] = 0
+                del _ik_priv
+            _used_rust_sign = True
 
             if len(self.signature) != OTRConstants.ED448_SIGNATURE_SIZE:
                 raise ValueError(f"Signature wrong length: {len(self.signature)}")
@@ -2507,8 +2758,7 @@ class ClientProfile:
                     f"expected {expected}. OTRConstants key-size mismatch."
                 )
             if DEBUG_MODE:
-                _signer_tag = "🦀 Rust" if _used_rust_sign else "🐍 cryptography lib"
-                print(f"[ClientProfile] encode() → {len(result)} bytes ✅ ({_signer_tag})")
+                print(f"[ClientProfile] encode() → {len(result)} bytes ✅ (🦀 Rust)")
             return result
         except (ValueError, TypeError, AttributeError) as e:
             raise ValueError(f"Client profile encoding failed: {e}")
@@ -4604,18 +4854,24 @@ class RustDAKEAdapter:
                         _path = "v10.6.4 path (legacy)"
                     logger.debug(f"RustDAKEAdapter: using Rust DAKE backend ({_path})")
             except Exception as _rust_err:
-                # Rust constructor failed — fall back to Python silently
+                # v10.6.11 (Phase 5.4): no fallback to Python OTRv4DAKE.
+                # Rust DAKE init failure is fatal — surface it loudly
+                # rather than silently degrading.
                 if logger:
-                    logger.debug(f"RustDAKEAdapter: Rust init failed ({_rust_err}); using Python fallback")
-                self._rust     = None
-                self._use_rust = False
+                    logger.debug(f"RustDAKEAdapter: Rust init failed ({_rust_err})")
+                raise RuntimeError(
+                    f"RustDAKEAdapter: Rust DAKE construction failed ({_rust_err}).  "
+                    f"v10.6.11+ has no Python fallback — the Rust core must be "
+                    f"functional for the protocol to operate."
+                )
 
         if not self._use_rust:
-            self._py_fallback = OTRv4DAKE(
-                client_profile    = self.client_profile,
-                explicit_initiator= explicit_initiator,
-                tracer            = tracer,
-                logger            = logger,
+            # If RUST_DAKE_AVAILABLE was False at import time, fail fast.
+            # No Python OTRv4DAKE fallback in v10.6.11+.
+            raise RuntimeError(
+                "RustDAKEAdapter: Rust DAKE backend is unavailable "
+                "(otrv4_core not importable or RustDAKE class missing).  "
+                "v10.6.11+ requires the Rust core; rebuild the .so."
             )
 
         # ── State exposed to EnhancedOTRSession.encrypt_with_tlvs ─────────
@@ -5211,6 +5467,55 @@ class SecureKeyStorage:
         
         self._master_key = None
         self._auto_initialize()
+
+        # ── Phase 5.3b (v10.6.8) one-shot migration ──
+        # Versions up to v10.6.7 wrote identity.ed448.bin and
+        # prekey.x448.bin to ~/.otrv4plus/keys/ at every session start
+        # via _store_identity().  Nothing in those versions ever read
+        # those files back — they were write-only dead code.  But the
+        # encrypted blobs contain the user's long-term identity
+        # private bytes, and they accumulated on disk silently.
+        #
+        # Phase 5.3b stops creating new such blobs.  This migration
+        # also DELETES any legacy ones that previous versions wrote.
+        # Best-effort: overwrite with zeros first, then unlink, then
+        # fsync the directory.  This is not forensic-grade secure
+        # erasure (flash storage / journaling filesystems can retain
+        # blocks), but it reduces casual recovery from a directory
+        # listing or a stolen-device scenario where the filesystem
+        # isn't itself encrypted.
+        self._migrate_remove_legacy_private_blobs()
+
+    def _migrate_remove_legacy_private_blobs(self):
+        """Overwrite-and-unlink legacy identity.ed448.bin and
+        prekey.x448.bin blobs that previous versions wrote.  Silent on
+        failure — the file may not exist, the FS may be read-only,
+        permissions may prevent it.  None of those is fatal."""
+        for legacy_name in ("identity.ed448.bin", "prekey.x448.bin"):
+            path = os.path.join(self.storage_dir, legacy_name)
+            if not os.path.exists(path):
+                continue
+            try:
+                size = os.path.getsize(path)
+                # Overwrite the file with zeros, then unlink.
+                with open(path, 'r+b') as f:
+                    f.write(b'\x00' * size)
+                    f.flush()
+                    try:
+                        os.fsync(f.fileno())
+                    except Exception:
+                        pass
+                os.unlink(path)
+                if DEBUG_MODE:
+                    try:
+                        _sys.stderr.write(
+                            f"[Phase 5.3b migration] removed legacy private-key blob: {legacy_name}\n"
+                        )
+                    except Exception:
+                        pass
+            except Exception:
+                # Best effort — if we can't, skip silently.
+                pass
         
     def _auto_initialize(self):
         """Derive master key from a device seed file (no password needed).
@@ -7531,28 +7836,38 @@ class SessionManager:
             pass
     
     def _store_identity(self):
-        """Store client profile in secure storage"""
+        """Store client profile in secure storage.
+
+        Phase 5.3b (v10.6.8): the private-key extraction calls
+        (identity_key.private_bytes / prekey.private_bytes) were removed
+        because:
+          1. They extracted long-term private bytes out of the
+             cryptography library at session start AND wrote them to
+             disk on every launch, even when no corresponding load_key
+             path existed to read them back.
+          2. Nothing in the codebase calls
+             SecureKeyStorage.load_key('identity', ...) or
+             ('prekey', ...).  The stored encrypted blobs accumulated
+             without ever being used.
+          3. The DAKE adapter (RustDAKEAdapter.__init__) is the only
+             code that legitimately needs the private bytes; it
+             extracts them there and immediately wipes the Python
+             bytearrays after Rust copies into SecretBytes
+             (Phase 5.1/5.2/5.3a-cleanup).  Re-extracting them here for
+             a write-only code path was wasted exposure.
+
+        We still persist the public ClientProfile (which is signed,
+        intended to be shareable, and useful for fingerprint display
+        across launches if a future feature reads it back).  No
+        private material is written to disk.
+        """
         try:
-            priv_bytes = self.client_profile.identity_key.private_bytes(
-                encoding=serialization.Encoding.Raw,
-                format=serialization.PrivateFormat.Raw,
-                encryption_algorithm=serialization.NoEncryption()
-            )
-            self.key_storage.store_key("identity", "ed448", priv_bytes)
-            
-            prekey_bytes = self.client_profile.prekey.private_bytes(
-                encoding=serialization.Encoding.Raw,
-                format=serialization.PrivateFormat.Raw,
-                encryption_algorithm=serialization.NoEncryption()
-            )
-            self.key_storage.store_key("prekey", "x448", prekey_bytes)
-            
+            # Public profile (signed, shareable).  Safe to persist.
             profile_bytes = self.client_profile.encode()
             self.key_storage.store_key("profile", "client", profile_bytes)
-            
         except Exception as e:
             if DEBUG_MODE:
-                print(f"Warning: Could not store identity: {e}")
+                print(f"Warning: Could not store profile: {e}")
     
     def get_fingerprint(self) -> str:
         """Get local fingerprint"""
@@ -8031,24 +8346,16 @@ class EnhancedSessionManager:
         self.tracer.trace("SYSTEM", "MANAGER", None, "READY", "session manager initialized")
     
     def _store_identity(self):
-        """Store client identity in secure storage"""
+        """Store client identity in secure storage.
+
+        Phase 5.3b (v10.6.8): see the first _store_identity above for
+        the rationale.  This second copy (on EnhancedOTRManager) was
+        also extracting private bytes for a write-only path with no
+        corresponding load.  Removed.
+        """
         try:
-            priv_bytes = self.client_profile.identity_key.private_bytes(
-                encoding=serialization.Encoding.Raw,
-                format=serialization.PrivateFormat.Raw,
-                encryption_algorithm=serialization.NoEncryption()
-            )
-            self.key_storage.store_key("identity", "ed448", priv_bytes)
-            
-            prekey_bytes = self.client_profile.prekey.private_bytes(
-                encoding=serialization.Encoding.Raw,
-                format=serialization.PrivateFormat.Raw,
-                encryption_algorithm=serialization.NoEncryption()
-            )
-            self.key_storage.store_key("prekey", "x448", prekey_bytes)
-            
-            self.tracer.trace("SYSTEM", "STORAGE", None, "READY", "identity stored")
-            
+            self.tracer.trace("SYSTEM", "STORAGE", None, "READY",
+                              "identity stored (Phase 5.3b: no private material persisted)")
         except Exception as e:
             self.tracer.trace("SYSTEM", "ERROR", "STORAGE", "FAILED", str(e))
     

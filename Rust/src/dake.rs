@@ -1,4 +1,5 @@
 #![cfg(feature = "pq-rust")]
+#![allow(deprecated)]  // upstream generic-array 0.x deprecation in ed448-goldilocks-plus 0.16; see ring_sig.rs for full rationale
 // src/dake.rs — OTRv4 Deniable Authenticated Key Exchange
 //
 // All secret material stays inside Rust.  Wire parsing of DAKE1/2 is handled
