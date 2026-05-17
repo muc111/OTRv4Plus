@@ -1,91 +1,86 @@
-# OTRv4+ Feature Reference
+# Features
 
-## 1. Core OTRv4 Protocol (Spec Compliant)
+What's implemented as of v10.6.13.
 
-| Feature | Implementation |
-|---|---|
-| **DAKE** | DAKE1 (Identity), DAKE2 (Auth-R), DAKE3 (Auth-I) per OTRv4 §4.2–4.3. Initiator/responder roles. Over I2P SAM: ~2m 44s handshake time. |
-| **Ed448 & X448** | Long-term Ed448 identity keys (57-byte public) + ephemeral X448 keys (56-byte public). 224-bit classical security. |
-| **Double Ratchet** | Chain key advancement, message key derivation, AES-256-GCM encrypt/decrypt, skipped key management, and replay detection run inside the Rust `otrv4_core` crate. Keys are `ZeroizeOnDrop` — no Python memory exposure at any point. |
-| **Message encryption** | AES-256-GCM with 12-byte nonces. MAC key derived via SHA3-512. |
-| **Session ID & SSID** | 8-byte SSID derived from KDF_1 (usage 0x01), used for SMP session binding. |
-| **Client Profiles** | Encoded and signed Ed448+X448 keys with expiry timestamp. Strict verification — no unsigned or expired profiles accepted. |
-| **Ring Signatures** | Auth-I / Auth-R Schnorr ring signatures (228 bytes) for deniable authentication. Implemented in C extension with constant-time arithmetic. |
-| **Instance Tags** | Random 32-bit tags (≥ 0x100) for multi-session discrimination per peer. |
-| **TLV Handling** | All OTRv4 TLVs: PADDING (0x00), DISCONNECTED (0x01), SMP messages (0x02–0x07), EXTRA_SYMMETRIC_KEY (0x09). |
-| **Fragmentation** | IRC-aware fragmenter using spec format `?OTRv4\|stag\|rtag\|k\|n\|data.` with reassembly buffer (timeout 120s, max 50 fragments, SMP elevated to 100). |
-| **Rekeying** | Automatic DH ratchet after 100 messages or 86400 seconds (configurable). |
-| **Disconnect notification** | Sends DISCONNECTED TLV before session termination. |
+## Cryptography
 
----
+### Primitives
 
-## 2. Post-Quantum Cryptography (NIST Level 5)
-
-| Component | Algorithm | NIST Level | Integration |
-|---|---|---|---|
-| **ML-KEM-1024** (FIPS 203) | Module-Lattice Key Encapsulation | Level 5 (~256-bit PQ security) | Brace KEM — rotates brace key on every DH ratchet epoch. Used in DAKE (ek in DAKE1, ct in DAKE2) and the Double Ratchet for ongoing PQ protection. |
-| **ML-DSA-87** (FIPS 204) | Module-Lattice Digital Signature | Level 5 | Hybrid PQ authentication in DAKE3. Appended after Ed448 ring signature (flag byte). Provides post-quantum authentication. |
-
-**Brace KEM rotation protocol:**
-
-[content continues from previous version — only Section 8 changes in this update]
-
----
-
-## 8. Rust Migration Status (v10.6.3)
-
-| Component | Secret storage | Zeroization | Status |
-|---|---|---|---|
-| **Double ratchet** | Rust `SecretBytes<N>` / `SecretVec` | `ZeroizeOnDrop` — no Python exposure | ✅ Complete (v10.5.8) |
-| **SMP state machine** | Rust `SmpState` — all exponents are `SecretVec` | `ZeroizeOnDrop` + explicit `destroy()` | ✅ Complete (v10.5.10) |
-| **SMP vault** | Rust `RustSMPVault` — `SecretEntry` per slot | `ZeroizeOnDrop` per entry; `clear()` drains individually | ✅ Complete (v10.5.10) |
-| **SMP passphrase entry** | Rust copies bytearray, wipes caller's buffer | `ZeroizeOnDrop` on Rust side | ✅ Complete (v10.6.1) |
-| **DAKE DH secrets** (`dh1`/`dh2`/`dh3`, `mlkem_ss`) | Rust `Vec<u8>` inside `DakeState`; never crosses FFI | `Drop` zeroizes (kdf-1 input scope) | ✅ Complete (v10.6.2) |
-| **DAKE session keys** (root, chain×2, brace, mac) | Rust `DakeSessionKeys` → `DakeOutput.inner: RefCell<Option<...>>` → `DoubleRatchet::SecretBytes` (Rust-to-Rust move) | `ZeroizeOnDrop` end-to-end; never `PyBytes` | ✅ **Complete (v10.6.3)** |
-| **Identity keys (Ed448 / X448)** | Python `cryptography` library objects; private bytes copied into Rust at session start | Python lib lifecycle + OpenSSL cleanse | 🔜 Phase 5 |
-
----
-
-## 9. Audit findings status (v10.6.3)
-
-| Audit ID | Description | Status |
+| Primitive | Purpose | Implementation |
 |---|---|---|
-| **C1** | Test-only `RustSMPVault::load*` exposed in production | ✅ Fixed v10.6.0 |
-| **C2** | `Dakeresult` exposes session keys as `Vec<u8>` getters | ✅ Fixed v10.6.3 (DakeOutput opaque handle) |
-| **C3** | `process_dh_message` returns secrets to Python | ✅ Fixed v10.6.3 (consume_into_ratchet path) |
-| **C4** | `RustDoubleRatchet::brace_key()` PyO3 getter leaks brace key | ✅ Fixed v10.6.0 |
-| **C5** | SMP passphrase enters Python `bytes` during set_secret | ✅ Fixed v10.6.1 |
-| **C6** | Rust DAKE end-to-end correctness | ✅ Fixed v10.6.2 |
-| **P3** | `panic = "abort"` breaks FFI panic safety | ✅ Fixed v10.6.0 |
-| **V1–V3** | Wire decoders did not bounds-check | ✅ Fixed v10.6.0 |
-| **M1, M2** | `kdf_1`, `encode_header` PyO3 exports | ✅ Fixed v10.6.0 |
+| Ed448 | Long-term identity signing | `ed448-goldilocks-plus` 0.16 (pure Rust) |
+| X448 | Ephemeral DH (DAKE and ratchet) | `x448` 0.6 (pure Rust) |
+| ML-KEM-1024 | Post-quantum KEM (DAKE brace key, ratchet rekey) | `pqcrypto-kyber` 0.8 (round-3 NIST Kyber) |
+| ML-DSA-87 | Post-quantum signature (hybrid auth) | `pqcrypto-mldsa` 0.1.2 |
+| SHAKE-256 | KDF, ring sig challenge, transcript hash | `sha3` 0.10 |
+| AES-256-GCM | Message encryption | `aes-gcm` 0.10 |
+| Argon2id | SMP secret vault KDF | C extension wrapper |
+| SHA3-512 | Fingerprint hash | `hashlib` (Python stdlib) |
 
-**Net: 11 of 11 audit findings fully closed.  The Rust→Python boundary
-audit from v10.5.10 is complete.**
+### Higher-level protocols
 
----
+| Protocol | Implementation | Notes |
+|---|---|---|
+| OTRv4 DAKE | Rust (`src/dake.rs`) | Three-message handshake. Pure Rust state machine. |
+| OTRv4 double ratchet | Rust (`src/ratchet.rs`) | DH ratchet at 100-message or 24-hour boundary. ML-KEM-1024 rekey at every DH step. |
+| OTRv4 ring signature | Rust (`src/ring_sig.rs`) | Schnorr ring sig over three Ed448 keys. Pure Rust port of the C reference. |
+| OTRv4 SMP | Rust (`src/smp.rs`, `src/smp_vault.rs`) | Four-step ZKP. MODP-2048 group. ZeroizeOnDrop on every exponent. |
+| Ed448 / X448 long-term keys | Rust (`src/key_handles.rs`) | Opaque PyO3 handles. Private bytes never leave Rust. |
 
-## 10. Verification commands
+## Transport
 
-After building v10.6.3+, verify Phase 4 is active:
+| Transport | Status |
+|---|---|
+| Plain IRC over TCP | Yes |
+| IRC over TLS 1.3 | Yes (default) |
+| IRC over I2P SAM bridge | Yes (default on Termux) |
+| IRC over Tor | Possible via `socat` or `torsocks`. Native onion transport on roadmap. |
 
-```bash
-# Rust binary contains Phase 4 symbols
-strings otrv4_core.so | grep -E "DakeOutput|from_dake_keys|consume_into_ratchet"
+## Client
 
-# Python can import DakeOutput
-python3 -c "
-import otrv4_core
-print('DakeOutput class:', hasattr(otrv4_core, 'DakeOutput'))
-print('PyDake.generate_dake2_output:', hasattr(otrv4_core.RustDAKE, 'generate_dake2_output'))
-"
-# Expected: both True
-```
+| Feature | Status |
+|---|---|
+| Terminal UI with tabs | Yes |
+| Multi-session (one tab per peer) | Yes |
+| Protected input box (no leaking to scrollback) | Yes |
+| `/otr <nick>` opportunistic DAKE start | Yes |
+| `/smp <secret>` and `/smp start` SMP flow | Yes |
+| `/trust <nick>` and `y` / `n` fingerprint trust | Yes |
+| `/fingerprint` shows yours and theirs | Yes |
+| OTRv4 message fragmentation | Yes (260 chars per fragment on I2P) |
+| Out-of-order message handling | Yes (up to 1000 skipped keys cached) |
+| Session resume after disconnect | No (each connect produces fresh DAKE) |
+| Stable identity across launches | No (planned, see ROADMAP Phase 5.3g) |
 
-At runtime, after a DAKE handshake completes:
+## Memory safety guarantees
 
-```python
-ratchet = session.ratchet
-print('Phase-4 ratchet:', getattr(ratchet, '_dake_output_consumed', False))
-# Expected: True on a correctly-built v10.6.3 environment
-```
+| Surface | Guarantee |
+|---|---|
+| DAKE DH secrets | Live in Rust `SecretBytes`. ZeroizeOnDrop. |
+| DAKE session keys | Rust-to-Rust move via `DakeOutput` handle. Never marshalled to `PyBytes`. |
+| Ratchet chain and root keys | Rust `SecretBytes<32>`. ZeroizeOnDrop. |
+| Long-term Ed448 identity | Rust `SecretBytes<57>` inside `Ed448KeyHandle`. Public bytes only exposed. |
+| Long-term X448 prekey | Rust `SecretBytes<56>` inside `X448KeyHandle`. Public bytes only exposed. |
+| Per-message keys | Derived inside Rust, used once, dropped. ZeroizeOnDrop. |
+| Skipped message keys | Rust `HashMap` with `SecretBytes` values. Cleared on session close. |
+| SMP secret | Rust `SecretVec` inside `RustSMPVault`. ZeroizeOnDrop. |
+| SMP exponents | Rust `Scalar` wrappers. ZeroizeOnDrop. |
+
+No long-term private key material appears on the Python heap as `bytes` or `bytearray` during normal session operation.
+
+## Build target
+
+- Termux on Android (aarch64), Rust 1.94 or newer
+- Python 3.11+
+- OpenSSL 3.x (build-time only, not runtime after Phase 5.3f)
+
+Desktop Linux works the same way. macOS not tested. Windows not supported.
+
+## Out of scope
+
+- File transfer
+- Voice or video
+- Group chat (OMEMO, MLS, Signal groups)
+- Mobile push notifications
+- Cross-device sync
+- Identity recovery

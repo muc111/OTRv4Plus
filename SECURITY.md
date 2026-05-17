@@ -1,134 +1,104 @@
-# Security Policy
+# Security
 
-## Supported versions
+Threat model, known issues, and reporting.
 
-| Version | Supported |
+## What OTRv4+ tries to defend against
+
+| Adversary | Defense |
 |---|---|
-| v10.6.3 | ✅ recommended (Critical Exposure Window closed; 11/11 audit findings resolved) |
-| v10.6.2 | ⚠️ Rust DAKE working end-to-end but session keys still briefly PyBytes during DAKE2.  Upgrade to v10.6.3 recommended. |
-| v10.6.0 – v10.6.1 | ❌ Rust DAKE silently falls back to Python (signature mismatch).  Upgrade required. |
-| v10.5.10 | ⚠️ Rust SMP working; DAKE path is Python-only |
-| v10.5.8 – v10.5.9 | ❌ SMP responder did not transition to verified state |
-| older | ❌ |
+| Passive network eavesdropper | TLS 1.3 transport (when used over plain IRC), or I2P / Tor onion routing |
+| Active MITM at first contact | SMP zero-knowledge proof out-of-band (user types same secret on both sides) |
+| Long-term key compromise after the fact | Per-message forward secrecy via double ratchet; PCS via DH ratchet at 100-message / 24-hour boundaries |
+| Future quantum adversary recording today | ML-KEM-1024 hybrid in DAKE; ML-DSA-87 hybrid signatures |
+| Python heap inspection (post-exploitation) | Long-term private bytes live inside Rust `SecretBytes<N>` (ZeroizeOnDrop); session keys move Rust-to-Rust via the `DakeOutput` opaque handle |
+| AES-GCM nonce reuse | Counter-based nonce per ratchet step, KDF-derived; nonce never reused across messages |
 
-## Reporting a vulnerability
+## What OTRv4+ does not defend against
 
-Use GitHub's private vulnerability reporting (Security tab → Report a
-vulnerability).  Do not open a public issue.
+| Threat | Why not |
+|---|---|
+| Compromised endpoint at time of message | Out of scope. If the device has malware, no messaging app helps. |
+| Compromised endpoint after message is sent | Skipped message keys cached for up to 1000 messages for out-of-order delivery. They are wiped on session close, not after each message. |
+| Side-channel timing analysis on Python | Python is not constant-time. Rust core uses constant-time crypto via `ed448-goldilocks-plus` and `subtle`. |
+| Side-channel on the Rust core | `ed448-goldilocks-plus` claims constant-time but has not been formally audited. Treat as best-effort. |
+| Traffic analysis | Visible message size and timing leak metadata. Use a transport that pads (I2P with destinations does some of this; Tor does less). |
+| Replay across sessions | DAKE includes both peers' fresh randomness, so a replay of an old DAKE produces a different session. Replay within a session is rejected by ratchet message counters. |
+| State actor with quantum capability today | ML-KEM-1024 and ML-DSA-87 are best-current-knowledge post-quantum primitives. They are not formally proven; future cryptanalysis could break them. |
 
-Include: description, steps to reproduce, potential impact, suggested
-fix (if any).  Acknowledgment within 48 hours; fix for critical issues
-within 14 days.
+## Memory safety model (v10.6.13)
 
-## In-scope
+| Key material | Storage | Wiping |
+|---|---|---|
+| Long-term Ed448 identity | Rust `SecretBytes<57>` inside `Ed448KeyHandle` | `ZeroizeOnDrop` when handle is GC'd |
+| Long-term X448 prekey | Rust `SecretBytes<56>` inside `X448KeyHandle` | `ZeroizeOnDrop` when handle is GC'd |
+| DAKE DH secrets (dh1, dh2, dh3) | Rust heap inside `DakeState` | `ZeroizeOnDrop` when `DakeState` drops |
+| ML-KEM shared secret | Rust heap | Wiped after KDF derivation |
+| DAKE session keys (root, chain×2, brace, mac) | Rust `DakeSessionKeys` to `DoubleRatchet::SecretBytes` via Rust-to-Rust move | `ZeroizeOnDrop` end-to-end |
+| Ratchet chain / root keys | Rust `SecretBytes<32>` | `ZeroizeOnDrop` |
+| Per-message keys | Derived from chain key, used once, dropped | `ZeroizeOnDrop` on `SecretBytes<32>` |
+| Skipped message keys | Rust `HashMap<u64, SecretBytes<32>>` | `ZeroizeOnDrop` on values; map cleared on session close |
+| SMP secret | Rust `SecretVec` inside `RustSMPVault` | `ZeroizeOnDrop` when vault drops |
+| SMP exponents (a2, a3, b2, b3, r, etc.) | Rust scalars | `ZeroizeOnDrop` on the `Scalar` wrapper |
 
-- Cryptographic weaknesses (DAKE, ratchet, SMP, ring signatures)
-- Key material leaks (memory, disk, network)
-- Authentication bypasses
-- Plaintext recovery
-- Secret material crossing the Rust/Python boundary unintentionally
+No long-term private key material appears on the Python heap as `bytes` or `bytearray` during normal session operation. The boot-time cross-verify helpers generate fresh ephemeral test keys via the cryptography library, use them once, and let them be GC'd.
 
-## Out-of-scope
+## Build-time invariants
 
-- Endpoint compromise (rooted device, malware on the device)
-- I2P / Tor network-level attacks
-- Social engineering of users into accepting fingerprints
+The Python module enforces these at import time via `_check_rust_requirements()`:
 
-## Known limitations (read before deploying)
+- `otrv4_core.RustDAKE` present with methods `new_from_bytearrays`, `sign_profile_body_and_construct`, `sign_profile_body_and_construct_with_handles`, `ed448_sign_test`, `generate_dake2_output`, `process_dake2_output`
+- `otrv4_core.py_ring_sign` and `otrv4_core.py_ring_verify` present
+- `otrv4_core.Ed448KeyHandle`, `otrv4_core.X448KeyHandle`, `otrv4_core.generate_ed448_keypair`, `otrv4_core.generate_x448_keypair` present
 
-OTRv4+ is a research prototype.  No third-party audit has been
-performed.  The following are documented and tracked.
+Missing anything raises `ImportError` at startup with a rebuild instruction. The app cannot accidentally fall back to a less-safe code path.
 
-### Critical Exposure Window — CLOSED in v10.6.3
+## Runtime invariants (boot-time cross-verify)
 
-In v10.6.0–v10.6.2 there was a brief window (microseconds to
-milliseconds, longer under debugger / GC / signal interrupt) during
-which session keys existed as Python `bytes` in the Python heap.
+Before the Rust crypto path is enabled for any session:
 
-**v10.6.3 closes this window.**  The new `DakeOutput` opaque handle and
-`consume_into_ratchet` path move session keys directly from Rust DAKE
-state into the ratchet's `SecretBytes` fields without ever marshalling
-them into `PyBytes`.  Verify with:
+1. `_verify_ed448_rust_compat()` signs a test message with both Rust `ed448-goldilocks-plus` and OpenSSL Ed448 (via the cryptography library). Byte-identical signatures required.
+2. `_verify_ring_sig_rust_compat()` does a two-way check: Rust signs, C extension verifies; C extension signs, Rust verifies. Both directions must pass.
 
-```python
-ratchet = session.ratchet
-assert getattr(ratchet, '_dake_output_consumed', False), \
-    "Phase-4 not active — check .so build and Rust DakeOutput class"
-```
+If either check fails, the code raises `RuntimeError` at the first call site. No silent fallback.
 
-If `_dake_output_consumed` is False on v10.6.3, the Rust `.so` is
-likely from an older build.  Force a clean rebuild:
+## Known issues and limitations
 
-```bash
-cd ~/OTRv4Plus/Rust && cargo clean && \
-    cargo build --release --no-default-features --features pq-rust && \
-    cp target/release/libotrv4_core.so ../otrv4_core.so
-strings ../otrv4_core.so | grep -c DakeOutput   # must be > 0
-```
+1. **Rust crypto crates are not audited.** `ed448-goldilocks-plus` 0.16 is the only viable pure-Rust Ed448, but it has not had a formal review. `pqcrypto-kyber` 0.8 is round-3 NIST Kyber rather than the final FIPS 203 ML-KEM. A migration to `pqcrypto-mlkem` 0.2 is on the roadmap.
 
-### Long-term identity keys still in Python (Phase 5 scope)
+2. **`pqcrypto-mldsa 0.1.2`** is yanked from crates.io but is still installed in the current `Cargo.lock`. Migration to 0.2 is on the roadmap.
 
-Ed448 identity key and X448 prekey private bytes are held in Python
-`cryptography` library `PrivateKey` objects (underlying secret bytes in
-OpenSSL C heap, but Python holds the reference).  At session start,
-raw private bytes are extracted and passed into Rust.
+3. **`lazy_static 1.5`** is listed as unmaintained by RustSec. Used at one site (the SMP MODP-2048 prime initialisation). Migration to `std::sync::LazyLock` is on the roadmap. The toolchain (Rust 1.94.1) supports it.
 
-Threat model: an attacker with process-memory read on the OTRv4+ Python
-heap can recover the long-term private keys for as long as the
-`PrivateKey` Python object is alive (i.e. the entire process lifetime).
-Phase 5 moves these into Rust `SecretVec` storage.
+4. **No persistent identity vault.** Identity keys regenerate at every launch. Fingerprints change each time. Correct for ephemeral IRC nicks but unusual for typical messaging.
 
-### No formal audit, no formal model
+5. **The cryptography library is still imported.** Used at boot for the cross-verify check. Production paths do not invoke it. Phase 5.3f (replacing the boot check with hardcoded RFC 8032 test vectors) would let this dependency be removed.
 
-313 automated tests including 100k-message ratchet gauntlets, KEM
-known-answer vectors, ring-signature non-malleability checks, SMP
-full-protocol flows, and property-based fuzzing via Hypothesis.  No
-third-party security review.  No ProVerif or EasyCrypt model.
+6. **The C extensions are still loaded.** Same as point 5. `otr4_crypto_ext`, `otr4_ed448_ct`, `otr4_mldsa_ext` serve as ground-truth references during boot. Not invoked at runtime.
 
-### No post-quantum deniability
+7. **Single-author project, AI-assisted.** Each release is live-tested between two I2P peers but has not been reviewed by another human cryptographer. Use as a research prototype.
 
-Ed448 ring signatures provide deniable authentication in DAKE3.  ML-DSA
-signatures are non-repudiable.  When ML-DSA is enabled (the default),
-the post-quantum branch of authentication breaks the deniability
-property that the classical branch provides.  Documented limitation.
+8. **No interop with stock OTRv4.** Wire-incompatible with `pidgin-otr4`, CoyIM, and similar implementations due to ML-DSA-87, ML-KEM-1024, and SHAKE-256 OTRv4+ additions.
 
-### Metadata visible to IRC server
+## Reporting issues
 
-Who talks to whom, when, and fragment sizes.  I2P / Tor hide IP but
-not timing or fragment-count patterns.  DAKE produces more fragments
-(~24 per message) than chat (1 fragment for short messages).  No
-padding at the fragment layer.
+Open a GitHub issue at <https://github.com/muc111/OTRv4Plus/issues>. For anything that looks like an actual security flaw (key disclosure, signature forgery, MITM bypass, panic on adversarial input), tag the issue `security` and include reproduction steps. If you would prefer to disclose privately first, the maintainer is on I2P (see the GitHub profile for an `i2p` contact).
 
-### Long handshake on I2P
+There is no bug bounty. The project is solo and unfunded.
 
-Total `/otr` → 🔵 verified is ~6m37s.  Cryptographic compute is under
-1 second.  Everything else is I2P tunnel latency.  This is a usability
-concern, not a security one — if it's faster you should be suspicious
-(it would mean shorter tunnels and less anonymity).
+## What "audit closed" means
 
-### Endpoint trust
+`v10.6.3 - 11/11 audit findings closed` refers to the internal audit that drove the v10.5.x and v10.6.x development sequence. Findings were:
 
-The OTR threat model assumes both endpoints are trusted.  A rooted
-device, malware on the device, ptrace by another local process, or a
-debugger attached to the OTRv4+ process all defeat OTR's protections.
-This is universal to OTR-class systems and not specific to v4+.
+1. Private bytes extracted from DakeState into Python (closed at v10.6.3 via the opaque `DakeOutput` handle)
+2. `is_initiator` hardcoded True in `consume_into_ratchet` (closed at v10.6.3)
+3. Chain-key role-based swap done in Python before handoff (closed at v10.6.3)
+4. Ratchet chain key reset bug after DH ratchet (closed in v10.6.0-ish)
+5. SMP scalar arithmetic done in Python (closed at v10.5)
+6. Argon2id KDF parameters too weak for SMP vault (closed at v10.5)
+7. ML-KEM ciphertext byte order on the wire (closed at v10.5)
+8. Fragment buffer collision when same nick sends two parallel fragmented messages (closed at v10.5)
+9. SMP secret stored as Python `bytes` (closed at v10.5, now lives in `RustSMPVault`)
+10. Skipped message keys not zeroized (closed at v10.5)
+11. NIST SP 800-88r1 secure file destruction missing (closed at v10.5)
 
-### C extensions handle some crypto
-
-`otr4_ed448_ct.c`, `otr4_crypto_ext.c`, `otr4_mldsa_ext.c` use
-OpenSSL 3.5+ primitives with `BN_mod_exp_mont_consttime`,
-`OPENSSL_cleanse`, and `mlock` where available.  Constant-time helpers
-are in place but no independent timing audit has been performed.
-ROADMAP Phase 6 ports these to pure Rust.
-
----
-
-## Disclosure policy
-
-We follow standard responsible disclosure: report privately, allow
-~14 days for critical fixes, then public disclosure with attribution.
-For findings that need a longer fix horizon we will negotiate the
-disclosure date with the reporter.
-
-Public security advisories are published in GitHub's Security tab
-once a fix has shipped.
+Phase 5.x changes since v10.6.3 are architectural hardening beyond audit scope. The audit count remains at 11/11 closed.

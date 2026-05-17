@@ -13,9 +13,11 @@ except ImportError:
 
 try:
     from otrv4_core import RustDAKE as _RustDAKE
+    import otrv4_core as _RustDAKE_module  # Phase 5.3e: access to Ed448KeyHandle, X448KeyHandle, generate_*_keypair
     RUST_DAKE_AVAILABLE = True
 except ImportError:
     _RustDAKE = None
+    _RustDAKE_module = None
     RUST_DAKE_AVAILABLE = False
 
 # Phase 5.3c (v10.6.9): Rust Ed448 Schnorr ring signature
@@ -70,6 +72,7 @@ def _check_rust_requirements():
     _required_methods = [
         'new_from_bytearrays',
         'sign_profile_body_and_construct',
+        'sign_profile_body_and_construct_with_handles',  # Phase 5.3e
         'ed448_sign_test',
         'generate_dake2_output',
         'process_dake2_output',
@@ -80,6 +83,22 @@ def _check_rust_requirements():
             f"OTRv4+ v10.6.11+ requires the following methods on "
             f"otrv4_core.RustDAKE: {_required_methods}.  Missing: {_missing}.  "
             f"Rebuild the .so from the current Rust/src/dake.rs."
+        )
+
+    # Phase 5.3e (v10.6.12): Rust-owned identity key handles
+    _required_module_symbols = [
+        'Ed448KeyHandle',
+        'X448KeyHandle',
+        'generate_ed448_keypair',
+        'generate_x448_keypair',
+    ]
+    _missing_mod = [s for s in _required_module_symbols if not hasattr(_RustDAKE_module, s)]
+    if _missing_mod:
+        raise ImportError(
+            f"OTRv4+ v10.6.12+ requires the following on the otrv4_core "
+            f"module: {_required_module_symbols}.  Missing: {_missing_mod}.  "
+            f"Rebuild the .so from the current Rust/src/key_handles.rs and "
+            f"Rust/src/lib.rs."
         )
     # RustDoubleRatchet, RustSMP, RustSMPVault are imported lazily where
     # they're used; we don't fail-fast on them here so test environments
@@ -662,68 +681,29 @@ class RingSignature:
 
     @classmethod
     def sign(cls,
-             priv_key: 'ed448.Ed448PrivateKey',
+             handle,  # Ed448KeyHandle (Rust-owned) — typed loosely for cross-version compat
              A1_bytes: bytes,
              A2_bytes: bytes,
              msg: bytes
              ) -> bytes:
         """Produce σ = c₁‖r₁‖c₂‖r₂ (228 bytes).
 
-        Phase 5.3c (v10.6.9): prefers Rust (otrv4_core.py_ring_sign)
-        when the startup cross-verify check has passed.  Falls back
-        to C extension (_ossl.ring_sign) otherwise.
+        v10.6.12 (Phase 5.3e): the signing key is now passed as an
+        Ed448KeyHandle (Rust-owned).  The handle's .ring_sign() method
+        performs the OTRv4 Schnorr ring signature internally using the
+        stored seed; the seed never appears in Python.
 
-        The Rust path uses ed448-goldilocks-plus for all curve
-        arithmetic and the `sha3` crate for SHAKE-256.  Output is
-        wire-compatible with the C reference (verified at startup
-        via two-way cross-verification before this method enables
-        the Rust path).
-
-        The signing key must correspond to A₁ (initiator identity key).
+        Prerequisite: _verify_ring_sig_rust_compat() must have passed
+        at startup, proving Rust ed448-goldilocks-plus agrees with the
+        C reference on wire format and challenge derivation.
         """
-        # ── v10.6.11 (Phase 5.4): Rust-only, no fallback ──
-        # Earlier versions fell back to the C extension when the Rust
-        # cross-verify check hadn't passed.  As of v10.6.11 the only
-        # supported path is Rust.  If the cross-verify check did not
-        # pass at startup, we raise loudly here — there is no silent
-        # fallback to a different implementation.
-        #
-        # This codifies the project's "Rust is the only crypto" posture:
-        #   - Python is a thin wrapper around the otrv4_core Rust crate.
-        #   - No C extension is invoked at runtime for crypto operations.
-        #   - No `cryptography` library fallback is permitted for the
-        #     Ed448 ring signature path.
-        #
-        # Build invariant: if the .so doesn't expose py_ring_sign /
-        # py_ring_verify, the whole module fails to import.  See the
-        # _RUST_REQUIRED_FAIL_FAST checks at the top of this file.
         if not _verify_ring_sig_rust_compat():
             raise RuntimeError(
                 "RingSignature.sign: Rust ring-sig implementation is not "
                 "cross-compatible with the protocol's reference (or the "
-                "compat check failed).  No fallback is enabled in v10.6.11+."
+                "compat check failed).  No fallback in v10.6.11+."
             )
-
-        # Extract identity seed into a mutable bytearray so we can wipe
-        # it after the FFI call.  Convert to bytes for the FFI argument
-        # (PyO3's &[u8] reliably accepts the immutable type across all
-        # supported PyO3 versions; passing a bytearray directly works
-        # in some PyO3 versions but failed at runtime in v10.6.10,
-        # producing DAKE3 GEN_FAILED).  The bytes() snapshot is GC'd
-        # immediately after the call returns; we still wipe the source
-        # bytearray as defense-in-depth.
-        _seed = bytearray(priv_key.private_bytes(
-            encoding=serialization.Encoding.Raw,
-            format=serialization.PrivateFormat.Raw,
-            encryption_algorithm=serialization.NoEncryption()
-        ))
-        try:
-            sig = bytes(_rust_ring_sign(bytes(_seed), A1_bytes, A2_bytes, msg))
-        finally:
-            for _i in range(len(_seed)):
-                _seed[_i] = 0
-            del _seed
-        return sig
+        return bytes(handle.ring_sign(A1_bytes, A2_bytes, msg))
 
     @classmethod
     def verify(cls,
@@ -1532,7 +1512,7 @@ class OTRv4DataMessage:
             raise ValueError(f"Failed to decode message: {e}")
 
 
-VERSION = "OTRv4+ 10.6.11"
+VERSION = "OTRv4+ 10.6.13"
 
 if not hasattr(hashlib, 'sha3_512'):
     raise RuntimeError(
@@ -2615,6 +2595,22 @@ class ClientProfile:
                  prekey: x448.X448PrivateKey = None):
         """Create a fresh OTRv4 ClientProfile with ephemeral Ed448+X448 keys.
 
+        v10.6.12 (Phase 5.3e): identity keys are now Rust-owned by default.
+        Both `self.identity_key` and `self.prekey` are
+        `otrv4_core.Ed448KeyHandle` / `X448KeyHandle` objects whose private
+        bytes live inside Rust SecretBytes (ZeroizeOnDrop) for the session
+        lifetime.  Python receives only public bytes through the handle's
+        `.public_bytes()` method.
+
+        For backward compatibility (test code that constructs a ClientProfile
+        with specific cryptography library keypairs), the legacy
+        `Ed448PrivateKey` / `X448PrivateKey` parameters are still accepted.
+        When provided, they are converted to Rust handles by extracting the
+        raw bytes via the `from_seed_bytes` / `from_priv_bytes` static
+        constructors.  This conversion path does touch the Python heap
+        briefly (the bytearray we pass in is wiped after handle construction),
+        but is only exercised by test code.
+
         Keys are ALWAYS generated fresh — no saved profile file is consulted.
         This is intentional and correct for random/ephemeral IRC nicks: each
         session gets brand-new cryptographic identity.  The profile is signed
@@ -2625,25 +2621,62 @@ class ClientProfile:
             + Ed448_pub(57) + X448_pub(56) + expires(8) + Ed448_sig(114)
             = 238 bytes exactly.
         """
+        # ── v10.6.12 (Phase 5.3e): construct Rust handles ──
+        # If the caller supplied legacy cryptography library keypairs,
+        # convert them to Rust handles.  Otherwise generate fresh in Rust.
         if identity_key is None:
-            identity_key = ed448.Ed448PrivateKey.generate()
-        if prekey is None:
-            prekey = x448.X448PrivateKey.generate()
+            self.identity_key = _RustDAKE_module.generate_ed448_keypair()
+        elif isinstance(identity_key, ed448.Ed448PrivateKey):
+            # Legacy/test path: convert cryptography lib key to Rust handle.
+            # The bytearray we use for the FFI argument is wiped after
+            # the Rust constructor copies the bytes into SecretBytes.
+            _seed = bytearray(identity_key.private_bytes(
+                encoding=serialization.Encoding.Raw,
+                format=serialization.PrivateFormat.Raw,
+                encryption_algorithm=serialization.NoEncryption(),
+            ))
+            try:
+                self.identity_key = _RustDAKE_module.Ed448KeyHandle.from_seed_bytes(bytes(_seed))
+            finally:
+                for _i in range(len(_seed)):
+                    _seed[_i] = 0
+                del _seed
+        else:
+            # Already an Ed448KeyHandle (test code passing one in directly).
+            self.identity_key = identity_key
 
-        self.identity_key = identity_key
-        self.prekey = prekey
+        if prekey is None:
+            self.prekey = _RustDAKE_module.generate_x448_keypair()
+        elif isinstance(prekey, x448.X448PrivateKey):
+            _priv = bytearray(prekey.private_bytes(
+                encoding=serialization.Encoding.Raw,
+                format=serialization.PrivateFormat.Raw,
+                encryption_algorithm=serialization.NoEncryption(),
+            ))
+            try:
+                self.prekey = _RustDAKE_module.X448KeyHandle.from_priv_bytes(bytes(_priv))
+            finally:
+                for _i in range(len(_priv)):
+                    _priv[_i] = 0
+                del _priv
+        else:
+            self.prekey = prekey
+
         self.versions = [OTRConstants.PROTOCOL_VERSION]
         self.created = int(time.time())
         self.expires = self.created + 365 * 24 * 3600
         self.signature = None
 
-        self.identity_pub_bytes = None
-        self.prekey_pub_bytes = None
+        # Cache public bytes from the handles — these are what
+        # encode_unsigned()/encode() and the adapter need.
+        self.identity_pub_bytes = bytes(self.identity_key.public_bytes())
+        self.prekey_pub_bytes   = bytes(self.prekey.public_bytes())
 
         if DEBUG_MODE:
             import sys as _sys
             _sys.stderr.write(
-                f"[ClientProfile] Fresh keys — expires {time.ctime(self.expires)}\n"
+                f"[ClientProfile] Fresh Rust-owned identity keys — "
+                f"expires {time.ctime(self.expires)}\n"
             )
 
     def encode_unsigned(self) -> bytes:
@@ -2660,14 +2693,10 @@ class ClientProfile:
         produce the full signed profile and assigns it to
         self.signature.
         """
-        identity_pub = self.identity_key.public_key().public_bytes(
-            encoding=serialization.Encoding.Raw,
-            format=serialization.PublicFormat.Raw
-        )
-        prekey_pub = self.prekey.public_key().public_bytes(
-            encoding=serialization.Encoding.Raw,
-            format=serialization.PublicFormat.Raw
-        )
+        # v10.6.12: public bytes come from the Rust handles, cached at
+        # ClientProfile.__init__ time.  No cryptography library calls.
+        identity_pub = self.identity_pub_bytes
+        prekey_pub   = self.prekey_pub_bytes
         if len(identity_pub) != OTRConstants.ED448_PUBLIC_KEY_SIZE:
             raise ValueError(f"Identity key wrong length: {len(identity_pub)}")
         if len(prekey_pub) != OTRConstants.X448_PUBLIC_KEY_SIZE:
@@ -2685,14 +2714,10 @@ class ClientProfile:
 
     def encode(self) -> bytes:
         try:
-            identity_pub = self.identity_key.public_key().public_bytes(
-                encoding=serialization.Encoding.Raw,
-                format=serialization.PublicFormat.Raw
-            )
-            prekey_pub = self.prekey.public_key().public_bytes(
-                encoding=serialization.Encoding.Raw,
-                format=serialization.PublicFormat.Raw
-            )
+            # v10.6.12: public bytes come from the Rust handles, cached at
+            # ClientProfile.__init__ time.  No cryptography library calls.
+            identity_pub = self.identity_pub_bytes
+            prekey_pub   = self.prekey_pub_bytes
 
             if len(identity_pub) != OTRConstants.ED448_PUBLIC_KEY_SIZE:
                 raise ValueError(f"Identity key wrong length: {len(identity_pub)}")
@@ -2727,21 +2752,10 @@ class ClientProfile:
                     "failed).  v10.6.11+ requires Rust signing; no fallback."
                 )
 
-            _ik_priv = bytearray(self.identity_key.private_bytes(
-                encoding             = serialization.Encoding.Raw,
-                format               = serialization.PrivateFormat.Raw,
-                encryption_algorithm = serialization.NoEncryption(),
-            ))
-            try:
-                self.signature = bytes(_RustDAKE.ed448_sign_test(
-                    bytes(_ik_priv),
-                    bytes(profile_data),
-                ))
-            finally:
-                for _i in range(len(_ik_priv)):
-                    _ik_priv[_i] = 0
-                del _ik_priv
-            _used_rust_sign = True
+            # v10.6.12: Sign via the Rust handle's .sign() method.  Private
+            # bytes never appear in Python — the handle holds them in
+            # Rust SecretBytes and signs internally.
+            self.signature = bytes(self.identity_key.sign(bytes(profile_data)))
 
             if len(self.signature) != OTRConstants.ED448_SIGNATURE_SIZE:
                 raise ValueError(f"Signature wrong length: {len(self.signature)}")
@@ -2758,7 +2772,7 @@ class ClientProfile:
                     f"expected {expected}. OTRConstants key-size mismatch."
                 )
             if DEBUG_MODE:
-                print(f"[ClientProfile] encode() → {len(result)} bytes ✅ (🦀 Rust)")
+                print(f"[ClientProfile] encode() → {len(result)} bytes ✅ (🦀 Rust handle)")
             return result
         except (ValueError, TypeError, AttributeError) as e:
             raise ValueError(f"Client profile encoding failed: {e}")
@@ -2882,13 +2896,15 @@ class ClientProfile:
         Fingerprint is returned as 128 uppercase hex chars in 10 groups of 8.
         """
         try:
-            if self.identity_key:
-                identity_pub = self.identity_key.public_key().public_bytes(
-                    encoding=serialization.Encoding.Raw,
-                    format=serialization.PublicFormat.Raw
-                )
-            else:
+            # v10.6.13: with Rust handle, just call .public_bytes() directly.
+            # Falls back to cached identity_pub_bytes if no handle (shouldn't
+            # happen in v10.6.12+ but defensive).
+            if self.identity_pub_bytes:
                 identity_pub = self.identity_pub_bytes
+            elif self.identity_key:
+                identity_pub = bytes(self.identity_key.public_bytes())
+            else:
+                return ""
             if identity_pub is None:
                 return ""
             fp_bytes = hashlib.sha3_512(identity_pub).digest()
@@ -2919,13 +2935,13 @@ class ClientProfile:
     def get_prekey_fingerprint(self) -> str:
         """Compute X448 prekey fingerprint as SHA3-512 per OTRv4 spec §4.1."""
         try:
-            if self.prekey:
-                prekey_pub = self.prekey.public_key().public_bytes(
-                    encoding=serialization.Encoding.Raw,
-                    format=serialization.PublicFormat.Raw
-                )
-            else:
+            # v10.6.13: handle path.
+            if self.prekey_pub_bytes:
                 prekey_pub = self.prekey_pub_bytes
+            elif self.prekey:
+                prekey_pub = bytes(self.prekey.public_bytes())
+            else:
+                return ""
             if prekey_pub is None:
                 return ""
             fp_bytes = hashlib.sha3_512(prekey_pub).digest()
@@ -4285,9 +4301,7 @@ class OTRv4DAKE:
                     raise ValueError("Local Ed448 identity key not available")
 
                 A1_bytes = (self.client_profile.identity_pub_bytes
-                            or identity_key.public_key().public_bytes(
-                                encoding=serialization.Encoding.Raw,
-                                format=serialization.PublicFormat.Raw))
+                            or bytes(identity_key.public_bytes()))
                 if self.remote_profile is None:
                     raise ValueError("Remote ClientProfile not stored")
                 A2_bytes = self.remote_profile.identity_pub_bytes
@@ -4399,9 +4413,7 @@ class OTRv4DAKE:
                     raise ValueError("Remote ClientProfile not stored — cannot verify DAKE3")
                 A1_bytes = self.remote_profile.identity_pub_bytes
                 A2_bytes = (self.client_profile.identity_pub_bytes
-                            or self.client_profile.identity_key.public_key().public_bytes(
-                                encoding=serialization.Encoding.Raw,
-                                format=serialization.PublicFormat.Raw))
+                            or bytes(self.client_profile.identity_key.public_bytes()))
                 if A1_bytes is None:
                     raise ValueError("Remote identity_pub_bytes not available")
 
@@ -4634,14 +4646,10 @@ class RustDAKEAdapter:
                 # if they were None.  Re-read them defensively.
                 if self.client_profile.identity_pub_bytes is None and self.client_profile.identity_key is not None:
                     self.client_profile.identity_pub_bytes = \
-                        self.client_profile.identity_key.public_key().public_bytes(
-                            encoding=serialization.Encoding.Raw,
-                            format=serialization.PublicFormat.Raw)
+                        bytes(self.client_profile.identity_key.public_bytes())
                 if self.client_profile.prekey_pub_bytes is None and self.client_profile.prekey is not None:
                     self.client_profile.prekey_pub_bytes = \
-                        self.client_profile.prekey.public_key().public_bytes(
-                            encoding=serialization.Encoding.Raw,
-                            format=serialization.PublicFormat.Raw)
+                        bytes(self.client_profile.prekey.public_bytes())
 
                 # ── CRITICAL FIX (v10.6.2): Pass PRIVATE key bytes, not public.
                 #
@@ -4671,188 +4679,63 @@ class RustDAKEAdapter:
                 # Rust receives this as &[u8] and copies into SecretBytes<N>
                 # at construction; the bytearray we hand it is independent
                 # storage that we own and can wipe.
-                _ik_priv_bytes = bytearray(self.client_profile.identity_key.private_bytes(
-                    encoding         = serialization.Encoding.Raw,
-                    format           = serialization.PrivateFormat.Raw,
-                    encryption_algorithm = serialization.NoEncryption(),
-                ))
-                _prekey_priv_bytes = bytearray(self.client_profile.prekey.private_bytes(
-                    encoding         = serialization.Encoding.Raw,
-                    format           = serialization.PrivateFormat.Raw,
-                    encryption_algorithm = serialization.NoEncryption(),
-                ))
-
-                # Sanity check sizes before crossing the FFI boundary.
-                if len(_ik_priv_bytes) != 57:
-                    raise ValueError(
-                        f"identity_key private bytes wrong length: {len(_ik_priv_bytes)}"
-                    )
-                if len(_prekey_priv_bytes) != 56:
-                    raise ValueError(
-                        f"prekey private bytes wrong length: {len(_prekey_priv_bytes)}"
-                    )
-
-                # ML-DSA-87 keys: Level 5 PQ signature is mandatory for OTRv4+.
-                # The constructor's mldsa_priv / mldsa_pub kwargs are optional —
-                # at adapter __init__ time we don't yet have the MLDSA87Auth
-                # instance (it's lazy-created later).  Pass None here; Rust
-                # can use mldsa_pub_bytes per-message from generate_dake1.
+                # ── v10.6.12 (Phase 5.3e): use Rust key handles directly ──
+                # client_profile.identity_key and .prekey are now Rust-owned
+                # Ed448KeyHandle / X448KeyHandle objects.  No Python-side
+                # bytearray extraction is needed; the Rust handles already
+                # hold the private bytes in SecretBytes.  sign_profile_body_and_construct_with_handles
+                # reads from the handles inside Rust to construct DakeState
+                # and sign the profile in a single FFI call.  No private bytes
+                # ever traverse the Python heap.
                 _mldsa_priv = None
                 _mldsa_pub  = None
 
-                # ── Phase 5.3a-cleanup (v10.6.7): prefer sign_profile_body_and_construct ──
-                # Single FFI call: Rust signs the unsigned profile body
-                # AND constructs DakeState, returning (RustDAKE, signature).
-                # The Ed448 private bytearray is wiped in-place by Rust.
-                # No bytes(...) snapshot is ever created on the Python side.
-                #
-                # This is the strictest path: at no point during adapter
-                # construction does an immutable Python `bytes` object
-                # exist holding the identity private bytes.  The bytearray
-                # we created at the top of __init__ goes to Rust, gets
-                # consumed, comes back as all zeros.
-                #
-                # If the .so build lacks sign_profile_body_and_construct
-                # or the compat self-check has not verified Rust Ed448
-                # signing is byte-identical to cryptography lib, fall
-                # back to Phase 5.2 (new_from_bytearrays + separate
-                # Python-side signing via encode()).
-                _used_phase5_3a_cleanup = False
-                if (hasattr(_RustDAKE, 'sign_profile_body_and_construct')
-                        and _verify_ed448_rust_compat()):
-                    try:
-                        # Get the UNSIGNED profile body.  Rust will sign it
-                        # using the identity bytearray we pass.
-                        _unsigned_body = self.client_profile.encode_unsigned()
+                if not _verify_ed448_rust_compat():
+                    raise RuntimeError(
+                        "RustDAKEAdapter: Rust Ed448 sign not byte-compatible "
+                        "with OpenSSL reference.  v10.6.12 requires Rust signing; "
+                        "no fallback."
+                    )
 
-                        # Single FFI call: sign + construct.
-                        self._rust, _sig_py = _RustDAKE.sign_profile_body_and_construct(
-                            explicit_initiator,
-                            _profile_bytes,        # full signed profile (for storage in DakeState)
-                            _unsigned_body,        # body to sign
-                            _ik_priv_bytes,        # bytearray — Rust wipes in-place
-                            _prekey_priv_bytes,    # bytearray — Rust wipes in-place
-                            _mldsa_priv,
-                            _mldsa_pub,
-                        )
+                _unsigned_body = self.client_profile.encode_unsigned()
 
-                        # Sanity check the returned signature.
-                        _sig = bytes(_sig_py)
-                        if len(_sig) != OTRConstants.ED448_SIGNATURE_SIZE:
-                            raise ValueError(
-                                f"sign_profile_body_and_construct returned signature "
-                                f"of wrong length: {len(_sig)} (expected "
-                                f"{OTRConstants.ED448_SIGNATURE_SIZE})"
-                            )
+                self._rust, _sig_py = _RustDAKE.sign_profile_body_and_construct_with_handles(
+                    explicit_initiator,
+                    _profile_bytes,                  # full signed profile for DakeState storage
+                    _unsigned_body,                  # body to sign
+                    self.client_profile.identity_key,  # Ed448KeyHandle (Rust-owned)
+                    self.client_profile.prekey,        # X448KeyHandle  (Rust-owned)
+                    _mldsa_priv,
+                    _mldsa_pub,
+                )
 
-                        # The profile we encoded earlier in __init__ used
-                        # ClientProfile.encode() which ran its OWN sign
-                        # (either Rust or Python depending on
-                        # _verify_ed448_rust_compat).  If the compat
-                        # check passed, encode() used Rust sign_raw —
-                        # which is the SAME code path as
-                        # sign_profile_body_and_construct's signing
-                        # step.  So the two signatures will be IDENTICAL
-                        # (Ed448 is deterministic).
-                        #
-                        # Verify this invariant to catch any drift
-                        # between the two FFI surfaces:
-                        if self.client_profile.signature != _sig:
-                            # Drift detected.  This SHOULDN'T happen given
-                            # both paths call sign_raw on the same private
-                            # bytes with the same message.  If it does,
-                            # fall back rather than ship an inconsistent
-                            # adapter state.
-                            raise ValueError(
-                                "sign_profile_body_and_construct produced "
-                                "different signature than ClientProfile.encode() — "
-                                "rejecting Phase 5.3a-cleanup path"
-                            )
+                _sig = bytes(_sig_py)
+                if len(_sig) != OTRConstants.ED448_SIGNATURE_SIZE:
+                    raise ValueError(
+                        f"sign_profile_body_and_construct_with_handles returned "
+                        f"signature of wrong length: {len(_sig)} "
+                        f"(expected {OTRConstants.ED448_SIGNATURE_SIZE})"
+                    )
 
-                        _used_phase5_3a_cleanup = True
-                    except (TypeError, AttributeError, ValueError) as _e:
-                        # Static method present but signature mismatch?
-                        # Compat drift?  Fall through to Phase 5.2 path.
-                        _used_phase5_3a_cleanup = False
-                        if logger:
-                            logger.debug(f"sign_profile_body_and_construct failed ({_e}); falling back to new_from_bytearrays")
-
-                # ── Phase 5.2 (v10.6.5) fallback: prefer new_from_bytearrays ──
-                # The static method RustDAKE.new_from_bytearrays takes
-                # `Bound<PyByteArray>` (not `bytes`) for the private key
-                # parameters.  Rust copies into SecretBytes<N> via a
-                # SecretVec intermediate (ZeroizeOnDrop), then wipes the
-                # source bytearrays in-place via PyByteArray::set_item.
-                _used_phase5_2 = False
-                if not _used_phase5_3a_cleanup and hasattr(_RustDAKE, 'new_from_bytearrays'):
-                    try:
-                        self._rust = _RustDAKE.new_from_bytearrays(
-                            explicit_initiator,
-                            _profile_bytes,
-                            _ik_priv_bytes,       # bytearray — Rust will wipe in-place
-                            _prekey_priv_bytes,   # bytearray — Rust will wipe in-place
-                            _mldsa_priv,
-                            _mldsa_pub,
-                        )
-                        _used_phase5_2 = True
-                    except (TypeError, AttributeError):
-                        # Static method present but signature mismatch?  Fall through
-                        # to the v10.6.4 path.
-                        _used_phase5_2 = False
-
-                if not _used_phase5_3a_cleanup and not _used_phase5_2:
-                    # ── v10.6.4 fallback path ──
-                    # Try positional first (matches PyO3 [pyo3(signature=(...))] convention)
-                    try:
-                        self._rust = _RustDAKE(
-                            explicit_initiator,
-                            _profile_bytes,
-                            bytes(_ik_priv_bytes),        # Rust copies into SecretBytes<57>
-                            bytes(_prekey_priv_bytes),    # Rust copies into SecretBytes<56>
-                            _mldsa_priv,
-                            _mldsa_pub,
-                        )
-                    except TypeError:
-                        # Older build may use kwargs or fewer params
-                        try:
-                            self._rust = _RustDAKE(
-                                is_initiator      = explicit_initiator,
-                                our_profile_bytes = _profile_bytes,
-                                our_ik_bytes      = bytes(_ik_priv_bytes),
-                                our_prekey_bytes  = bytes(_prekey_priv_bytes),
-                                mldsa_priv        = _mldsa_priv,
-                                mldsa_pub         = _mldsa_pub,
-                            )
-                        except TypeError:
-                            # Fall back to no-mldsa form for ancient builds
-                            self._rust = _RustDAKE(
-                                explicit_initiator,
-                                _profile_bytes,
-                                bytes(_ik_priv_bytes),
-                                bytes(_prekey_priv_bytes),
-                            )
-
-                # ── Wipe Python-side copies ──
-                # On Phase 5.3a-cleanup and Phase 5.2 paths the bytearrays
-                # are already zero (Rust wiped them).  On the v10.6.4
-                # fallback path the bytearrays still contain the private
-                # bytes — wipe them here.  Loops are safe and idempotent.
-                for i in range(len(_ik_priv_bytes)):
-                    _ik_priv_bytes[i] = 0
-                for i in range(len(_prekey_priv_bytes)):
-                    _prekey_priv_bytes[i] = 0
-                del _ik_priv_bytes
-                del _prekey_priv_bytes
+                # Consistency invariant: ClientProfile.encode() already ran
+                # Rust Ed448 sign via the handle on the same message and the
+                # same key.  Ed448 is deterministic.  The two signatures MUST
+                # be identical.  Any drift here indicates a code bug, not an
+                # implementation issue.
+                if self.client_profile.signature != _sig:
+                    raise ValueError(
+                        "sign_profile_body_and_construct_with_handles produced "
+                        "a different signature than ClientProfile.encode() — "
+                        "Ed448 determinism violated, refusing to construct adapter"
+                    )
 
                 self._use_rust = True
                 if logger:
-                    if _used_phase5_3a_cleanup:
-                        _path = "Phase 5.3a-cleanup (sign+construct, no Python bytes() snapshot)"
-                    elif _used_phase5_2:
-                        _path = "Phase 5.2 (Rust-wiped bytearrays)"
-                    else:
-                        _path = "v10.6.4 path (legacy)"
-                    logger.debug(f"RustDAKEAdapter: using Rust DAKE backend ({_path})")
+                    logger.debug(
+                        "RustDAKEAdapter: using Rust DAKE backend "
+                        "(Phase 5.3e: Rust-owned identity key handles, "
+                        "single-call sign+construct, no Python-heap private bytes)"
+                    )
             except Exception as _rust_err:
                 # v10.6.11 (Phase 5.4): no fallback to Python OTRv4DAKE.
                 # Rust DAKE init failure is fatal — surface it loudly
@@ -5244,9 +5127,7 @@ class RustDAKEAdapter:
                 raise ValueError("Local Ed448 identity key not available")
 
             A1_bytes = self.client_profile.identity_pub_bytes or \
-                identity_key.public_key().public_bytes(
-                    encoding=serialization.Encoding.Raw,
-                    format=serialization.PublicFormat.Raw)
+                bytes(identity_key.public_bytes())
 
             if self.remote_profile is None:
                 raise ValueError("Remote profile not stored")
@@ -5330,9 +5211,7 @@ class RustDAKEAdapter:
                 return self._fail("Remote profile not stored")
             A1_bytes = self.remote_profile.identity_pub_bytes
             A2_bytes = self.client_profile.identity_pub_bytes or \
-                self.client_profile.identity_key.public_key().public_bytes(
-                    encoding=serialization.Encoding.Raw,
-                    format=serialization.PublicFormat.Raw)
+                bytes(self.client_profile.identity_key.public_bytes())
             if A1_bytes is None:
                 return self._fail("Remote identity_pub_bytes not available")
 
@@ -7699,12 +7578,13 @@ class EnhancedOTRSession:
             try:
                 if self.dake_engine and self.dake_engine.client_profile:
                     cp = self.dake_engine.client_profile
-                    if cp.identity_key:
-                        local_fp = cp.identity_key.public_key().public_bytes(
-                            encoding=serialization.Encoding.Raw,
-                            format=serialization.PublicFormat.Raw)
-                    elif cp.identity_pub_bytes:
+                    # v10.6.13: identity_pub_bytes is cached at __init__ from
+                    # the Rust handle.  Use it directly.  Fall back to the
+                    # handle's .public_bytes() method.
+                    if cp.identity_pub_bytes:
                         local_fp = cp.identity_pub_bytes
+                    elif cp.identity_key:
+                        local_fp = bytes(cp.identity_key.public_bytes())
             except Exception:
                 pass
             remote_fp = self._remote_long_term_pub_bytes or b''

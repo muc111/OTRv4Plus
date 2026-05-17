@@ -1,287 +1,145 @@
-# OTRv4+ Changelog
+# Changelog
 
-## v10.6.3 — Critical Exposure Window closed (Phase 4 complete)
-
-This release closes the Critical Exposure Window that has existed since
-v10.6.0.  DAKE session keys (`root_key`, `chain_key_send`, `chain_key_recv`,
-`brace_key`, `mac_key`) **no longer transit through Python `bytes` at any
-point**.  They flow:
-
-```
-DAKE crypto in Rust  →  DakeSessionKeys (private Rust type)
-                     →  DakeOutput.inner: RefCell<Option<DakeSessionKeys>>
-                     →  consume_into_ratchet() — Rust-to-Rust move
-                     →  DoubleRatchet's owned SecretBytes fields
-                                                (ZeroizeOnDrop)
-```
-
-At no step are the secret keys marshalled into `PyBytes`.  Python receives
-only the opaque `DakeOutput` handle (which exposes public material —
-`ssid`, `remote_identity_pub`, `remote_mldsa_pub`, `remote_profile_bytes`,
-`dake2_bytes` — and no getters for any secret field).
-
-This closes audit findings **C2** and **C3**.  Net audit status:
-**11 of 11 findings fully closed.**
-
-### What changed
-
-#### Rust side — `dake.rs`, `ratchet.rs`, `lib.rs`
-
-1. **New PyO3 class `DakeOutput`** in `dake.rs`:
-   - Private `inner: RefCell<Option<DakeSessionKeys>>` holds the secret
-     session keys.  No `#[pyo3(get)]` accessor exists for the inner field.
-   - Public `#[pyo3(get)]` accessors only for `ssid`, `remote_identity_pub`,
-     `remote_mldsa_pub`, `remote_profile_bytes`, `dake2_bytes` (none secret).
-   - `consume_into_ratchet(ad, dh_pub_local, is_initiator) -> RustDoubleRatchet`
-     takes the secret keys out of the `RefCell`, calls the new Rust
-     constructor `RustDoubleRatchet::from_dake_keys(...)`, and returns
-     a fully-initialised ratchet with keys in `SecretBytes` fields.
-     Subsequent calls raise `PyValueError`.
-   - `consumed` getter (bool).
-   - `DakeOutput::from_keys_and_public(...)` is the internal `pub(crate)`
-     constructor — Python cannot build a `DakeOutput` directly (no `#[new]`).
-
-2. **New PyO3 methods on `RustDAKE`** in `dake.rs`:
-   - `generate_dake2_output(our_prekey_priv, mldsa_pub) -> DakeOutput`
-   - `process_dake2_output(dake2_bytes, our_prekey_priv) -> DakeOutput`
-   - Both run the same crypto as `generate_dake2` / `process_dake2`; they
-     differ only in returning a `DakeOutput` instead of a `Dakeresult`.
-
-3. **New non-PyO3 constructor `RustDoubleRatchet::from_dake_keys`** in
-   `ratchet.rs`:
-   - Takes `DakeSessionKeys` by-value, moves the inner 32-byte arrays onto
-     stack, calls `DoubleRatchet::new(...)`, then explicit `drop(keys)` to
-     invoke `ZeroizeOnDrop` on the original storage.
-   - Lives in its own `impl RustDoubleRatchet { ... }` block OUTSIDE the
-     `#[pymethods]` block because PyO3 cannot expose a method that takes a
-     non-PyO3 Rust type (`DakeSessionKeys`).
-   - Called only by `DakeOutput::consume_into_ratchet` from Rust code; not
-     visible to Python.
-
-4. **`lib.rs`** now explicitly registers both `Dakeresult` (legacy) and
-   `DakeOutput` (Phase 4) so Python sees both classes.
-
-#### Python side — `otrv4+.py`
-
-1. **`RustDAKEAdapter.generate_dake2` / `process_dake2`** now probe for
-   `hasattr(self._rust, 'generate_dake2_output')`.  When present (new
-   Rust .so), they call the `_output` variant and stash the `DakeOutput`
-   in `self._session_keys['_dake_output']`.  When absent (older .so),
-   they fall back to the v10.6.2 byte-field path silently.
-
-2. **Session-manager handoff** (`_handle_dake2`, `_handle_dake3`) copies
-   `_dake_output` from the session-keys dict onto `session._dake_output`
-   in addition to (or in place of) the legacy byte fields.
-
-3. **`EnhancedOTRSession.__init__`** initialises `self._dake_output = None`.
-
-4. **`RustBackedDoubleRatchet.from_dake_output(dake_output, is_initiator,
-   ad, ...)`** — new classmethod constructor that calls
-   `dake_output.consume_into_ratchet(ad, dh_pub_local, True)` and wires
-   up the Python wrapper without touching the byte-field code path.
-
-5. **`_initialize_ratchet`** prefers the Phase-4 path: when
-   `session._dake_output` is set and not yet consumed, it calls
-   `RustBackedDoubleRatchet.from_dake_output(...)`.  Otherwise it falls
-   back to the v10.6.2 `RustBackedDoubleRatchet(**args)` path.
-
-6. **Version bump** in banner: v10.6.2 → v10.6.3.
-
-### Backward compatibility
-
-Both code paths coexist.  v10.6.3 with the new Rust .so uses Phase 4.
-v10.6.3 with an older .so (or `otrv4_core` lacking
-`generate_dake2_output`) gracefully falls back to v10.6.2 behaviour.  No
-breaking changes for downstream callers; the public Python API is
-unchanged.
-
-### Test-API caveat
-
-The new Phase 4 ratchet path sets `_rks_send`, `_rks_recv`, `_rks_root`
-mirrors to zero-byte placeholders because the real chain/root keys never
-become accessible to Python.  Production crypto does not touch these
-mirrors.  Test code that asserts on mirror contents should check
-`hasattr(ratchet, '_dake_output_consumed')` and skip mirror-based
-assertions when present.
-
-Session-persistence export from a Phase-4 ratchet requires a Rust-side
-serialization API (planned for v10.6.4); for now, restoring a Phase-4
-session from disk falls back to fresh DAKE handshake.
-
-### Verification
-
-A Phase-4 ratchet exposes `_dake_output_consumed = True`.  Use this from
-Python:
-
-```python
-ratchet = session.ratchet
-if getattr(ratchet, '_dake_output_consumed', False):
-    print("This session is Phase-4 hardened — session keys never in Python.")
-else:
-    print("Legacy v10.6.2 session — Critical Exposure Window applies.")
-```
-
-The Rust `.so` exposes `DakeOutput` and `RustDAKE.generate_dake2_output`
-on a working Phase-4 build:
-
-```bash
-python3 -c "
-import otrv4_core
-print('DakeOutput class:', hasattr(otrv4_core, 'DakeOutput'))
-print('PyDake.generate_dake2_output:', hasattr(otrv4_core.RustDAKE, 'generate_dake2_output'))
-"
-# Expected: both True
-```
-
-### Audit status at v10.6.3
-
-| Audit ID | Description | Status |
-|---|---|---|
-| **C1** | Test-only API `RustSMPVault::load*` exposed in production | ✅ Fixed v10.6.0 |
-| **C2** | `Dakeresult` exposes session keys as `Vec<u8>` `#[pyo3(get,set)]` | ✅ **Fixed v10.6.3** (DakeOutput opaque handle; secrets never become PyBytes) |
-| **C3** | `process_dh_message` returns secrets to Python | ✅ **Fixed v10.6.3** (consume_into_ratchet path) |
-| **C4** | `RustDoubleRatchet::brace_key()` PyO3 getter leaks brace key | ✅ Fixed v10.6.0 (getter removed) |
-| **C5** | SMP passphrase enters Python `bytes` during `set_secret` | ✅ Fixed v10.6.1 (`set_secret_from_bytearray` + Rust-side wipe) |
-| **C6** | Rust DAKE end-to-end correctness | ✅ Fixed v10.6.2 (MLKEM tuple, MAC scope, DH triple, private keys) |
-| **P3** | `panic = "abort"` breaks FFI panic safety | ✅ Fixed v10.6.0 |
-| **V1–V3** | Wire decoders did not bounds-check before slicing | ✅ Fixed v10.6.0 (`SafeSlice`) |
-| **M1, M2** | `kdf_1`, `encode_header` PyO3 exports | ✅ Fixed v10.6.0 (`test-only-kdf` feature gate) |
-
-**Net: 11 of 11 findings fully closed.**  The Rust→Python boundary
-audit identified in v10.5.10 is now complete.  Remaining hardening
-work (Phase 5: Ed448/X448 long-term identity keys into Rust; Phase 6:
-single-API Rust protocol engine) is architectural improvement beyond
-the original audit scope — see ROADMAP.md.
-
-### Files changed
-
-| File | Change |
-|---|---|
-| `Rust/src/dake.rs` | New `DakeOutput` PyO3 class; new `generate_dake2_output` / `process_dake2_output` methods |
-| `Rust/src/ratchet.rs` | New non-PyO3 `RustDoubleRatchet::from_dake_keys` constructor |
-| `Rust/src/lib.rs` | Register `Dakeresult` and `DakeOutput` explicitly |
-| `otrv4+.py` | New `RustBackedDoubleRatchet.from_dake_output` classmethod |
-| `otrv4+.py` | `RustDAKEAdapter.generate_dake2` / `process_dake2` prefer `_output` API |
-| `otrv4+.py` | Session-manager handoff copies `_dake_output` onto session |
-| `otrv4+.py` | `_initialize_ratchet` prefers Phase-4 path when `_dake_output` present |
-| `otrv4+.py` | Version bumped to v10.6.3 |
-
-### Build instructions
-
-```bash
-cd ~/OTRv4Plus
-cp dake.rs ratchet.rs lib.rs Rust/src/
-cp otrv4plus.txt otrv4+.py
-cd Rust && cargo clean && \
-    cargo build --release --no-default-features --features pq-rust && \
-    cp target/release/libotrv4_core.so ../otrv4_core.so
-cd ..
-strings otrv4_core.so | grep -c DakeOutput
-# Expected: > 0
-python3 -c "import otrv4_core; print(hasattr(otrv4_core, 'DakeOutput'))"
-# Expected: True
-PYTHONMALLOC=malloc python otrv4+.py --debug
-# Banner should show: Version : OTRv4+ 10.6.3
-```
-
-### Commit message for this release
-
-```
-v10.6.3 — Phase 4 complete: Critical Exposure Window closed
-
-DAKE session keys (root, chain_send, chain_recv, brace, mac) no longer
-transit through Python bytes at any point.  They move:
-
-  Rust DAKE crypto
-    → DakeSessionKeys (private Rust type, ZeroizeOnDrop)
-    → DakeOutput.inner: RefCell<Option<DakeSessionKeys>>
-                       (private; no PyO3 getter)
-    → consume_into_ratchet() — Rust-to-Rust move
-    → DoubleRatchet's SecretBytes fields (ZeroizeOnDrop)
-
-No PyBytes copy at any step.  Closes audit findings C2 and C3.
-
-Rust changes:
-  - New PyO3 class DakeOutput in dake.rs with RefCell<Option<DakeSessionKeys>>
-    private field.  No #[pyo3(get)] for secrets; only ssid / peer pub /
-    profile / dake2_bytes are exposed.
-  - New PyO3 methods RustDAKE::generate_dake2_output, process_dake2_output.
-  - New non-PyO3 constructor RustDoubleRatchet::from_dake_keys that takes
-    DakeSessionKeys by-value and moves them into the ratchet's owned
-    SecretBytes fields via DoubleRatchet::new.
-  - lib.rs now explicitly registers Dakeresult and DakeOutput.
-
-Python changes:
-  - RustDAKEAdapter.generate_dake2 / process_dake2 probe for the _output
-    PyO3 methods and prefer them when present.  Older .so builds fall back
-    to v10.6.2 byte-field path silently.
-  - Session-manager handoff copies _dake_output onto session object.
-  - New RustBackedDoubleRatchet.from_dake_output classmethod constructs
-    the ratchet by calling output.consume_into_ratchet without ever
-    materialising session keys as Python bytes.
-  - _initialize_ratchet prefers the Phase-4 path when session._dake_output
-    is present; falls back to legacy path otherwise.
-  - Version bumped: v10.6.2 → v10.6.3.
-
-Net audit status: 11 of 11 findings fully closed.  The Rust→Python
-boundary audit from v10.5.10 is now complete.
-
-Remaining hardening work (Phase 5: long-term identity keys; Phase 6:
-single-API Rust engine) is beyond the original audit scope — see
-ROADMAP.md.
-
-Backward compatibility: both paths coexist.  v10.6.3 with new .so uses
-Phase 4; with older .so falls back to v10.6.2 behaviour.  Public Python
-API unchanged.
-
-Test-API caveat: Phase-4 ratchet sets _rks_send / _rks_recv / _rks_root
-mirrors to zero placeholders.  Production crypto does not touch them.
-Tests that assert on mirror contents should check
-hasattr(ratchet, '_dake_output_consumed') and skip those assertions.
-
-Persistence export from a Phase-4 ratchet requires a Rust serialization
-API (planned for v10.6.4).  Until then, restoring a Phase-4 session from
-disk falls back to fresh DAKE.
-```
+OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Each version live-tested between two I2P peers before commit.
 
 ---
 
-## Earlier releases (summary)
+## v10.6.13 (current)
 
-### v10.6.2 — Rust DAKE end-to-end correctness
+**SMP regression fix from v10.6.12.**
 
-Four crypto bugs in the Rust DAKE path that prevented MAC verification:
+v10.6.12 left seven Python call sites using the legacy cryptography library `.public_key().public_bytes(...)` chain on what was now a Rust handle. Handles do not have `.public_key()` (they expose `.public_bytes()` directly), so the chain raised `AttributeError` at runtime.
 
-1. `pqcrypto_kyber::encapsulate` tuple order reversed (32-byte SS on wire
-   where 1568-byte CT expected)
-2. Responder MAC input did not include `MSG_DAKE2` byte or ML-DSA pub
-3. Initiator `dh2` and `dh3` were identical computations
-4. Adapter passed public keys where Rust constructor expected private bytes
+Most of those sites were silenced by surrounding `except` blocks and either fell back to the cached `identity_pub_bytes` (correct path) or did not fire. One site, `EnhancedOTRSession.set_smp_secret`, read the local fingerprint through the broken chain unconditionally and silently fell back to an empty bytes literal as `local_fp`. Both peers then computed `secret_hash = SHA3(b'' || remote_fp || password)`, with each peer's `remote_fp` being the other side's identity bytes. The two hashes diverged. SMP correctly reported "secrets did not match" even with identical passwords.
 
-Plus IRC 401 handler killing sessions during multi-fragment DAKE.
+DAKE was unaffected because `identity_pub_bytes` is cached at `ClientProfile.__init__` and the DAKE path used the cache directly, never falling through to the broken chain.
 
-Closes audit finding C6.
+Sites fixed in v10.6.13:
 
-### v10.6.1 — Boundary hardening Patch 2
+- `ClientProfile.get_fingerprint`
+- `ClientProfile.get_prekey_fingerprint`
+- `EnhancedOTRSession.set_smp_secret` (the actual SMP regression)
+- `RustDAKEAdapter.__init__` defensive identity/prekey pub-bytes refresh (two sites)
+- DAKE3 sign and verify A1/A2 fallback paths (four sites)
 
-`Dakeresult.consumed` flag; aggressive zero (`clear()` + `shrink_to_fit()`)
-in `from_dakeresult`; Rust-side bytearray wipe in
-`set_secret_from_bytearray`; PyO3 0.21 `Bound<...>` migration.
+All converted to `bytes(handle.public_bytes())`. Production paths were already using the cache; the fallback paths now also do the correct thing if the cache is ever invalidated.
 
-### v10.6.0 — Audit Patch 1
+No Rust changes. Wire-compatible with v10.6.12.
 
-`set_secret_from_bytearray`, `from_dakeresult` (move + zero), `brace_key`
-getter removed, `panic = "unwind"`, `SafeSlice` trait, `try_slice` /
-`try_byte`, `MAX_WIRE_FIELD_LEN`, `kdf_1_py` / `encode_header_py` gated
-behind `test-only-kdf`, `RustSMPVault::load*` gated.
+---
 
-### v10.5.10 — Rust SMP engine
+## v10.6.12
 
-Full four-message SMP state machine in Rust with `ZeroizeOnDrop` on all
-exponents.  `RustSMPVault` Rust-owned secret store.  50k-round
-SHAKE-256 + HMAC-SHA3-512 KDF.  Canonical fingerprint ordering.
+**Phase 5.3e: long-term identity keys owned by Rust.**
 
-### v10.5.8 — Rust Double Ratchet, ML-DSA migration
+`ClientProfile.identity_key` and `.prekey` are now `Ed448KeyHandle` and `X448KeyHandle` (opaque PyO3 classes). Their private bytes live inside Rust `SecretBytes<N>` (ZeroizeOnDrop) for the session lifetime. Python receives only public bytes via `handle.public_bytes()`.
 
-Pure-Rust double ratchet.  Switched from `pqcrypto-dilithium` to
-`pqcrypto-mldsa` (FIPS 204).
+This eliminates the cryptography library `Ed448PrivateKey` / `X448PrivateKey` Python objects from all production code paths. After v10.6.12, long-term identity private bytes never appear on the Python heap during normal session operation. The cryptography library remains loaded only for the boot-time compat-check helpers, which use fresh ephemeral test keys discarded immediately.
+
+New Rust file `src/key_handles.rs`:
+
+- `Ed448KeyHandle` with `SecretBytes<57>`, `public_bytes()`, `sign(msg)`, `ring_sign(A1, A2, msg)`
+- `X448KeyHandle` with `SecretBytes<56>`, `public_bytes()`, `dh(peer_pub)`
+- Factory functions `generate_ed448_keypair()` and `generate_x448_keypair()` produce fresh keypairs inside Rust
+- `pub(crate)` accessors for crate-internal use by `dake.rs`
+
+New Rust method `dake::PyDake::sign_profile_body_and_construct_with_handles`. Takes `&Bound<Ed448KeyHandle>` and `&Bound<X448KeyHandle>` instead of `Bound<PyByteArray>` for the private bytes. Reads from the handles inside Rust to construct `DakeState` and sign the profile in a single FFI call. Handles remain alive on `ClientProfile` after the call.
+
+Python changes:
+
+- `ClientProfile.__init__` generates via Rust factories by default. Accepts legacy `ed448.Ed448PrivateKey` / `x448.X448PrivateKey` for test backward compatibility (converts to handles via `from_seed_bytes` / `from_priv_bytes` with bytearray-and-wipe).
+- `encode()` and `encode_unsigned()` use cached `identity_pub_bytes` / `prekey_pub_bytes` set at `__init__` from `handle.public_bytes()`.
+- `encode()` signs via `self.identity_key.sign(profile_data)`. No seed extraction.
+- `RingSignature.sign(handle, A1, A2, msg)` takes a handle and calls `handle.ring_sign(A1, A2, msg)`.
+- `RustDAKEAdapter.__init__` uses `sign_profile_body_and_construct_with_handles` in a single FFI call. No Python-side bytearray extraction.
+- Import-time fail-fast check now requires the new Rust symbols.
+
+Wire-compatible with v10.6.11. No protocol-level changes.
+
+---
+
+## v10.6.11
+
+**Phase 5.4: Rust-only, no fallbacks, regression fix.**
+
+Architectural commitment release. OTRv4+ is now a thin Python wrapper around the `otrv4_core` Rust crate. No production codepath falls back to the C extension or the cryptography library. If the Rust core is missing or incompatible, the module raises at import time.
+
+Regression fix from v10.6.10: v10.6.10's attempt to pass a Python `bytearray` directly to `py_ring_sign` as the FFI argument caused `DAKE3 GEN_FAILED` at runtime. PyO3's `&[u8]` does not reliably accept `bytearray` across versions. v10.6.11 reverts to `bytes(_seed)` as the FFI argument (one immediate snapshot, GC'd after the call). The bytearray is still used as the wipeable source.
+
+Every production crypto site is now Rust-only and raises `RuntimeError` on failure:
+
+- `RingSignature.sign` and `.verify` use `otrv4_core.py_ring_sign` / `py_ring_verify`
+- `ClientProfile.encode` Ed448 signature uses `otrv4_core.RustDAKE.ed448_sign_test`
+- `RustDAKEAdapter.__init__` uses `otrv4_core.RustDAKE` (no `OTRv4DAKE` Python fallback)
+- SMP and ratchet were already Rust-mandatory
+
+New `_check_rust_requirements()` runs at module load. Verifies `otrv4_core` is importable and exposes the required class methods and free functions. Missing anything raises `ImportError` with a specific rebuild instruction.
+
+The boot-time cross-verify helpers (`_verify_ed448_rust_compat`, `_verify_ring_sig_rust_compat`) remain, but they are no longer fallback gates. They are boot validators. The C extension and the cryptography library are invoked once at startup to serve as ground-truth references. After both checks pass, neither is called again for any runtime crypto.
+
+Deliberate consequences (user-accepted):
+
+- v10.6.11 cannot interoperate with any peer that lacks the Rust `ring_sig` module in its `otrv4_core` `.so`. Older v10.6.x peers will fail DAKE3.
+- Missing or stale `.so` means the app refuses to start.
+
+---
+
+## v10.6.10
+
+**Phase 5.3d.** Bytearray + wipe in `RingSignature.sign()`. Removed the Rust signing path from `ClientProfile.encode()` (cryptography library `identity_key.sign(...)` keeps bytes in OpenSSL's C heap, not Python's).
+
+This release contained a regression that broke DAKE3. `_rust_ring_sign` was called with a bare bytearray, which PyO3 rejected at runtime with `GEN_FAILED`. Fixed in v10.6.11.
+
+---
+
+## v10.6.9
+
+**Phase 5.3c: Rust DAKE3 ring signature.** New file `src/ring_sig.rs` (~407 lines) implementing OTRv4 §4.3.3 Schnorr ring signature in pure Rust using `ed448-goldilocks-plus` and `sha3` (SHAKE-256). Direct port of `otr4_crypto_ext.c`'s `py_ring_sign` / `py_ring_verify` / `ring_challenge`.
+
+Two-way cross-verify safeguard at startup: Rust signs, C verifies; C signs, Rust verifies. Both must pass before the Rust path activates.
+
+---
+
+## v10.6.8
+
+**Phase 5.3b: dead-code disk persistence removal.** `_store_identity()` previously wrote encrypted private-key blobs to disk on every session start. Audit revealed nothing ever read them back. Removed the private-bytes extraction; still persists the public profile. Added one-shot migration that overwrites and unlinks legacy `identity.ed448.bin` / `prekey.x448.bin` files at startup.
+
+---
+
+## v10.6.7
+
+**Phase 5.3a-cleanup.** Added `ClientProfile.encode_unsigned()`. `RustDAKEAdapter.__init__` now uses `sign_profile_body_and_construct` in a single FFI call. Eliminated the `bytes(_ik_priv)` snapshot at the constructor boundary.
+
+---
+
+## v10.6.6
+
+**Phase 5.3a (Option A2): Ed448 sign via Rust.** Added `sign_profile_body_and_construct` and `ed448_sign_test` to the Rust DAKE class. Boot-time cross-verify check compares Rust Ed448 signatures against OpenSSL byte-for-byte on a fresh test key.
+
+---
+
+## v10.6.5
+
+**Phase 5.2: `new_from_bytearrays`.** Rust constructor takes `Bound<PyByteArray>` instead of `&[u8]`. Rust copies into `SecretBytes<N>` via a `SecretVec` intermediate, then wipes the source bytearray in-place via `PyByteArray::set_item`. Eliminates the `bytes(...)` snapshot that v10.6.4's `&[u8]` argument created.
+
+---
+
+## v10.6.4
+
+**Phase 5.1.** `RustDAKEAdapter.__init__` extracts identity and prekey private bytes into mutable bytearrays instead of immutable bytes. Wipes the bytearrays in place after Rust copies into `SecretBytes`. Removed the dead per-call `hasattr` probe for `client_profile.prekey_priv_bytes` (always False).
+
+---
+
+## v10.6.3
+
+**Phase 4: DakeOutput opaque handle. 11/11 audit findings closed.**
+
+DAKE session keys never cross the Python heap. The `DakeOutput` PyO3 handle holds them in a private `RefCell<Option<DakeSessionKeys>>` with no Python-visible accessor. `consume_into_ratchet()` moves them directly into the ratchet's owned `SecretBytes` fields.
+
+Critical fix: `consume_into_ratchet` takes the actual `is_initiator` flag instead of hardcoded True. Role-based chain-key swap moved into `DoubleRatchet::new` inside Rust. Python cannot pre-swap chain keys.
+
+---
+
+## Older versions
+
+Earlier v10.6.x and v10.5.x focused on Rust SMP, Rust double ratchet, X448 ratchet bugs, fragment buffer collision fixes, and the C extension constant-time Ed448 path. See git history for detail.

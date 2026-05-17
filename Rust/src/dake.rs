@@ -899,6 +899,112 @@ impl PyDake {
         Ok((Self { inner }, sig_py))
     }
 
+    /// Phase 5.3e (v10.6.12): construct a RustDAKE using `Ed448KeyHandle`
+    /// and `X448KeyHandle` (Rust-owned long-term identity keys) instead
+    /// of `Bound<PyByteArray>` for the private bytes.
+    ///
+    /// Eliminates the last code path that briefly extracts long-term
+    /// private bytes into a Python-side bytearray.  The Rust handles
+    /// already hold the bytes inside their own `SecretBytes` storage;
+    /// this method reads from them once to construct `DakeState` and
+    /// sign the profile, then returns.  Python never sees the bytes.
+    ///
+    /// Output: same as sign_profile_body_and_construct — a tuple
+    /// `(RustDAKE, signature[114])`.
+    ///
+    /// Note that the handle objects passed in remain alive after this
+    /// call.  Python is expected to keep them on the ClientProfile so
+    /// later operations (e.g., ring signing) can use the same key
+    /// material without re-extracting.
+    #[staticmethod]
+    #[pyo3(signature = (is_initiator, our_profile_bytes, unsigned_body, ed448_handle, x448_handle, mldsa_priv=None, mldsa_pub=None, sender_tag=0))]
+    fn sign_profile_body_and_construct_with_handles<'py>(
+        py: Python<'py>,
+        is_initiator: bool,
+        our_profile_bytes: &[u8],
+        unsigned_body: &[u8],
+        ed448_handle: &Bound<'py, crate::key_handles::Ed448KeyHandle>,
+        x448_handle:  &Bound<'py, crate::key_handles::X448KeyHandle>,
+        mldsa_priv: Option<&[u8]>,
+        mldsa_pub: Option<&[u8]>,
+        sender_tag: u32,
+    ) -> PyResult<(Self, Py<PyBytes>)> {
+        use pyo3::exceptions::PyValueError;
+        use ed448_goldilocks_plus::SigningKey;
+        use std::convert::TryFrom;
+
+        // ── Parse the (public) profile for ipub/ppub ──
+        // (Mirrors the validation in sign_profile_body_and_construct.)
+        let vc = if our_profile_bytes.len() > 1 {
+            our_profile_bytes[1] as usize
+        } else {
+            return Err(PyErr::from(OtrError::TooShort{need:2, got:our_profile_bytes.len()}));
+        };
+        let hl = 2 + vc;
+        if our_profile_bytes.len() < hl + 57 + 56 {
+            return Err(PyErr::from(OtrError::TooShort{need:hl+57+56, got:our_profile_bytes.len()}));
+        }
+        let ipub: &[u8;57] = our_profile_bytes[hl..hl+57]
+            .try_into()
+            .map_err(|_| PyErr::from(OtrError::TooShort{need:57, got:our_profile_bytes.len()-hl}))?;
+        let ppub: &[u8;56] = our_profile_bytes[hl+57..hl+57+56]
+            .try_into()
+            .map_err(|_| PyErr::from(OtrError::TooShort{need:56, got:our_profile_bytes.len().saturating_sub(hl+57)}))?;
+
+        if unsigned_body.is_empty() {
+            return Err(PyValueError::new_err("unsigned_body must not be empty"));
+        }
+
+        // ── Borrow handles immutably and read the private bytes ──
+        // The handles own SecretBytes (ZeroizeOnDrop).  We read from
+        // them here without copying out of Rust; the bytes are then
+        // passed to DakeState::new which copies them into its own
+        // SecretBytes fields.
+        let ed448_ref = ed448_handle.borrow();
+        let x448_ref  = x448_handle.borrow();
+
+        let ipriv_slice = ed448_ref.expose_seed_slice();
+        let ppriv_slice = x448_ref.expose_priv_slice();
+
+        if ipriv_slice.len() != 57 {
+            return Err(PyValueError::new_err(format!(
+                "Ed448 seed wrong length in handle: {}", ipriv_slice.len()
+            )));
+        }
+        if ppriv_slice.len() != 56 {
+            return Err(PyValueError::new_err(format!(
+                "X448 private wrong length in handle: {}", ppriv_slice.len()
+            )));
+        }
+        let ipriv_arr: &[u8;57] = ipriv_slice.try_into()
+            .map_err(|_| PyValueError::new_err("Ed448 seed wrong length"))?;
+        let ppriv_arr: &[u8;56] = ppriv_slice.try_into()
+            .map_err(|_| PyValueError::new_err("X448 priv wrong length"))?;
+
+        // ── Sign the unsigned profile body with Ed448 ──
+        let signing_key = SigningKey::try_from(ipriv_slice)
+            .map_err(|e| PyValueError::new_err(format!(
+                "Ed448 SigningKey construction failed: {:?}", e
+            )))?;
+        let signature = signing_key.sign_raw(unsigned_body);
+        let sig_bytes_arr: [u8; 114] = signature.to_bytes();
+        let sig_py = PyBytes::new_bound(py, &sig_bytes_arr).unbind();
+
+        // ── Construct DakeState ──
+        let mut inner = DakeState::new(
+            ipriv_arr, ipub, ppriv_arr, ppub,
+            mldsa_priv, mldsa_pub, sender_tag,
+        ).map_err(PyErr::from)?;
+        inner.is_initiator = is_initiator;
+        inner.our_profile_bytes = our_profile_bytes.to_vec();
+
+        // No bytearray to wipe — the source is Rust-owned SecretBytes
+        // that remains in the handles for future operations.  The
+        // handles are zeroized on drop when Python GC's them.
+
+        Ok((Self { inner }, sig_py))
+    }
+
     /// Phase 5.3a self-check helper: Ed448-sign a test message using
     /// the same code path as sign_profile_body_and_construct, so the
     /// Python adapter can verify byte-identical output with the
