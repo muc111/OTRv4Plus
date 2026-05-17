@@ -4,7 +4,120 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
-## v10.6.13 (current)
+## v10.6.17 (current) — Phase 5.3f-narrow
+
+**Boot-time cross-verify removed; RFC 8032 vectors now build-time gate.**
+
+The Python boot helpers `_verify_ed448_rust_compat()` and `_verify_ring_sig_rust_compat()` are deleted. They previously generated a fresh Ed448 keypair via the cryptography library at every program start, signed a test message with both Rust and OpenSSL, and compared byte-for-byte. The ring-sig helper additionally invoked the C extension's `ring_sign`/`ring_verify` to confirm two-way wire-format compatibility with Rust.
+
+Both functions and all four call sites (in `RingSignature.sign`, `RingSignature.verify`, `ClientProfile.encode`, `RustDAKEAdapter`) are removed. Their guard-clause `RuntimeError` raises are also gone.
+
+Replacement: `Rust/src/test_vectors.rs` contains the RFC 8032 §7.4 "Blank" Ed448 vector as `const` arrays and a `#[cfg(test)]` harness that signs with `ed448-goldilocks-plus::SigningKey` and asserts byte-equality. Before any release:
+
+```
+cargo test --release --no-default-features --features pq-rust
+```
+
+If the test fails, the Rust Ed448 implementation has drifted from RFC 8032 and the build is not safe to ship.
+
+**Boot is faster** (saves ~200ms of keypair-gen + Ed448 sign + ring-sig two-way check). Six obsolete boot-print lines no longer appear.
+
+### Important — what this does NOT change
+
+The C extensions (`otr4_crypto_ext`, `otr4_mldsa_ext`) and the Python `cryptography` library are **still load-bearing in production**. They were not previously dead, contrary to earlier documentation:
+
+- `otr4_crypto_ext` is invoked from 20+ runtime sites (memory wiping, constant-time big-num arithmetic for SMP, ML-KEM keygen/encap/decap in the legacy `MLKEM1024BraceKEM` Python class, `mlock`, `disable_core_dumps`).
+- `otr4_mldsa_ext` is invoked for all ML-DSA-87 keygen/sign/verify.
+- The `cryptography` library is invoked for Ed448 public-key wrapping in three DAKE post-processing sites (UI-side `remote_identity_key` for fingerprint display), and for AES-GCM in the persistent SMP secrets store.
+
+Removing these is multi-phase work tracked as Phase 5.3h, 5.3i, 5.3j, 5.3k on the ROADMAP.
+
+### Files touched
+- `otrv4+.py`: deleted ~150 lines (two helper functions, two globals, two boot comment blocks, four call sites). Updated three docstrings. VERSION → `10.6.17`.
+- `Rust/src/test_vectors.rs`: new file, ~100 lines.
+- `Rust/src/lib.rs`: added `pub mod test_vectors;`.
+- `Rust/Cargo.toml`: version 0.10.16 → 0.10.17.
+- README.md, SECURITY.md, ROADMAP.md: corrected previously-inaccurate claims about C extensions and the cryptography library being "not invoked at runtime".
+
+---
+
+## v10.6.16 — ML-KEM migration
+
+**`pqcrypto-kyber 0.8` (round-3 Kyber) replaced by `pqcrypto-mlkem 0.1.1` (FIPS 203 ML-KEM-1024).**
+
+NIST finalised FIPS 203 in August 2024. The standard differs from round-3 Kyber in the Fujisaki-Okamoto domain-separator constants; algorithms and parameter sizes are otherwise identical (same lattice, same 1568/3168/1568-byte pk/sk/ct, 32-byte shared secret).
+
+The `pqcrypto-mlkem` Rust API is drop-in compatible with `pqcrypto-kyber`:
+
+```rust
+pub fn keypair() -> (PublicKey, SecretKey)
+pub fn encapsulate(pk: &PublicKey) -> (SharedSecret, Ciphertext)
+pub fn decapsulate(ct: &Ciphertext, sk: &SecretKey) -> SharedSecret
+```
+
+The `(SharedSecret, Ciphertext)` return-tuple footgun is preserved; the wrapper in `dake.rs` swaps to `(ct, ss)` for caller convenience as before.
+
+### Cargo.toml carve-out
+
+The `pqcrypto-mlkem` crate defaults to `["avx2", "neon", "std"]` features. On Termux/aarch64, the NEON path caused SIGILL at first `keypair()` call (an ARMv8 instruction extension not universally available). Pinned to `default-features = false, features = ["std"]` to select the portable PQClean C reference. Performance impact is invisible at session scale (ML-KEM runs once per DAKE).
+
+### Wire compatibility
+
+**Wire-incompatible with v10.6.15 and earlier.** Both peers must run v10.6.16+ to DAKE. Acceptable since OTRv4+ has no external users.
+
+### Files touched
+- `Rust/Cargo.toml`: dependency swap, version 0.10.14 → 0.10.16.
+- `Rust/src/dake.rs`: 7 call sites renamed `pqcrypto_kyber::kyber1024::` → `pqcrypto_mlkem::mlkem1024::`.
+
+---
+
+## v10.6.15.5 — Cargo.toml: restore signing+pkcs8 features
+
+**Latent silent build break exposed by `cargo clean`.**
+
+An earlier hardening pass had set `ed448-goldilocks-plus` to `default-features = false, features = ["alloc"]`. This silently dropped the `signing` feature (which gates `SigningKey` export) and `pkcs8` (which `signing` transitively requires via an unconditional `pub use pkcs8;` in `sign.rs`).
+
+Every use of `ed448_goldilocks_plus::SigningKey` in `dake.rs` and `key_handles.rs` would fail to compile. The break was latent because the live `.so` from the previous successful build (pre-change) kept running as long as no `cargo build` was actually forced. `cargo clean` exposed it.
+
+Fix:
+
+```toml
+ed448-goldilocks-plus = {
+    version          = "0.16",
+    optional         = true,
+    default-features = false,
+    features         = ["alloc", "signing", "pkcs8"],
+}
+```
+
+This restored the Phase 5.3e (v10.6.12) Rust handle architecture as genuinely-live for the first time.
+
+---
+
+## v10.6.15 — SMP race fix
+
+**Tie-break by fingerprint when both peers run `/smp start` simultaneously.**
+
+OTRv4 SMP is not symmetric: one side must initiate, the other must respond. If both peers run `/smp start` near-simultaneously, each generates SMP1 locally before either receives the other's SMP1. Each side then receives SMP1 while its own Rust SMP engine is in `AwaitingMsg2`, and the engine correctly rejects with "SMP not in Idle for SMP1".
+
+Resolution: at SMP1 receive, if the engine is in non-Idle phase, compare identity public bytes:
+
+- Lower fingerprint keeps initiator role; ignores incoming SMP1.
+- Higher fingerprint yields: aborts its own `RustSMP`, rebuilds the engine fresh, rebinds the secret from the still-populated `RustSMPVault` (vault is a separate object, holding the secret independently of the SMP state machine), processes the incoming SMP1 as responder.
+
+The vault-based persistence is what makes this clean. No re-prompting for the secret.
+
+---
+
+## v10.6.14 — `lazy_static` → `std::sync::LazyLock`
+
+RustSec lists `lazy_static 1.5` as unmaintained. Replaced with stdlib `LazyLock` (stable since Rust 1.80, August 2024). Three statics in `smp.rs` (`SMP_PRIME`, `SMP_ORDER`, `SMP_GEN`) converted; all 31 call sites unchanged because `LazyLock<T>: Deref<Target=T>` matches the old proxy behaviour exactly.
+
+MSRV raised to 1.80+. Current build uses 1.94.1.
+
+---
+
+## v10.6.13
 
 **SMP regression fix from v10.6.12.**
 

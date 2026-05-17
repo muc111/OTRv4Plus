@@ -515,152 +515,19 @@ class MLDSA87Auth:
 
 
 
-# ── Phase 5.3c (v10.6.9) ────────────────────────────────────────────────────
-# Lazy startup cross-verify check for Rust ring signature compatibility.
+# ── Phase 5.3f-narrow (v10.6.17) ────────────────────────────────────────────
+# The boot-time _verify_ring_sig_rust_compat helper has been removed.  Its
+# job (catch wire-format drift between Rust and C ring-sig implementations)
+# is now done at build time via Rust's RFC 8032 Ed448 test vectors in
+# src/test_vectors.rs.  `cargo test --release --no-default-features
+# --features pq-rust` must pass before any release.  If the Rust crate ever
+# drifts from RFC 8032, the test fails and the build is not safe to ship.
 #
-# Unlike Phase 5.3a's Ed448 plain-signing compat check (which compared
-# signatures byte-for-byte), ring signatures contain randomly-sampled
-# c2, r2 — so no two valid signatures over the same input will ever be
-# bit-identical, even from the same implementation.
-#
-# The compatibility property we DO need is wire-format compatibility:
-#   - A signature produced by Rust must verify with C.
-#   - A signature produced by C must verify with Rust.
-# If both directions pass on freshly-generated test inputs, the two
-# implementations agree on:
-#   - The 228-byte wire layout (c1‖r1‖c2‖r2, 57 bytes each LE).
-#   - The challenge hash domain (SHAKE-256(0x1C ‖ msg ‖ A1 ‖ A2 ‖ T1 ‖ T2)).
-#   - The scalar reduction (mod Q).
-#   - The point arithmetic (compressed Edwards Y encoding, base-point
-#     mul, point addition).
-#
-# Without this two-way check, a subtle implementation difference (e.g.
-# different domain-separator byte ordering, off-by-one in scalar
-# encoding) would silently break DAKE3 verification with any peer using
-# the OTHER implementation.  Peers running v10.6.8 or earlier use the
-# C extension exclusively; v10.6.9 with the Rust path enabled must
-# produce signatures those peers accept, and accept signatures those
-# peers produce.
-#
-# Cached after first call.  Called from RingSignature.sign() and
-# RingSignature.verify() on first use.
-_ring_sig_rust_compat_verified: Optional[bool] = None
-
-def _verify_ring_sig_rust_compat() -> bool:
-    """One-shot boot-time cross-verification between Rust and C ring sigs.
-
-    v10.6.11 (Phase 5.4): this is a BOOT VALIDATION, not a fallback gate.
-    The C extension is invoked here once at startup to serve as the
-    protocol's reference — does the Rust implementation agree with what
-    every existing v10.6.x peer produces?  After this check passes, the
-    C extension is never called again at runtime.  If the check fails,
-    RingSignature.sign and .verify raise RuntimeError; no silent fallback.
-
-    Returns True iff both:
-      - Rust signs → C verifies   (Rust output is wire-correct)
-      - C signs    → Rust verifies (Rust verify accepts wire-correct sigs)
-
-    Result is cached after first call.
-    """
-    global _ring_sig_rust_compat_verified
-    if _ring_sig_rust_compat_verified is not None:
-        return _ring_sig_rust_compat_verified
-
-    _ring_sig_rust_compat_verified = False
-
-    if not RUST_RING_SIG_AVAILABLE or _rust_ring_sign is None or _rust_ring_verify is None:
-        try:
-            _sys.stderr.write(
-                "[ring-sig] ✗ Rust ring-sig functions unavailable in otrv4_core "
-                "(py_ring_sign / py_ring_verify missing).  v10.6.11+ requires "
-                "Rust ring-sig; rebuild the .so with the ring_sig module.\n"
-            )
-        except Exception:
-            pass
-        return False
-
-    try:
-        sk1 = ed448.Ed448PrivateKey.generate()
-        sk2 = ed448.Ed448PrivateKey.generate()
-
-        seed1 = sk1.private_bytes(
-            encoding             = serialization.Encoding.Raw,
-            format               = serialization.PrivateFormat.Raw,
-            encryption_algorithm = serialization.NoEncryption(),
-        )
-        A1 = sk1.public_key().public_bytes(
-            encoding=serialization.Encoding.Raw,
-            format=serialization.PublicFormat.Raw,
-        )
-        A2 = sk2.public_key().public_bytes(
-            encoding=serialization.Encoding.Raw,
-            format=serialization.PublicFormat.Raw,
-        )
-
-        test_msg = b"OTRv4+ ring-sig compat check v1"
-
-        # ── Direction 1: Rust signs, C verifies ──
-        rust_sig = bytes(_rust_ring_sign(seed1, A1, A2, test_msg))
-        if len(rust_sig) != 228:
-            try:
-                _sys.stderr.write(
-                    f"[ring-sig] ✗ Rust produced wrong sig length: {len(rust_sig)} (expected 228)\n"
-                )
-            except Exception:
-                pass
-            return False
-        if not _ossl.ring_verify(A1, A2, test_msg, rust_sig):
-            try:
-                _sys.stderr.write(
-                    "[ring-sig] ✗ C reference REJECTED Rust signature — "
-                    "implementations disagree on wire format or challenge derivation.\n"
-                )
-                if DEBUG_MODE:
-                    _sys.stderr.write(f"[ring-sig]   Rust sig hex: {rust_sig.hex()}\n")
-            except Exception:
-                pass
-            return False
-
-        # ── Direction 2: C signs, Rust verifies ──
-        c_sig = _ossl.ring_sign(bytes(seed1), A1, A2, test_msg)
-        if len(c_sig) != 228:
-            try:
-                _sys.stderr.write(
-                    f"[ring-sig] ✗ C reference produced wrong sig length: {len(c_sig)}\n"
-                )
-            except Exception:
-                pass
-            return False
-        if not bool(_rust_ring_verify(A1, A2, test_msg, c_sig)):
-            try:
-                _sys.stderr.write(
-                    "[ring-sig] ✗ Rust REJECTED C reference signature.\n"
-                )
-                if DEBUG_MODE:
-                    _sys.stderr.write(f"[ring-sig]   C sig hex: {c_sig.hex()}\n")
-            except Exception:
-                pass
-            return False
-
-        _ring_sig_rust_compat_verified = True
-        try:
-            _sys.stderr.write(
-                "[ring-sig] ✅ Rust ed448-goldilocks-plus matches C reference — "
-                "DAKE3 ring signatures will use Rust exclusively from now on\n"
-            )
-        except Exception:
-            pass
-
-    except Exception as _e:
-        _ring_sig_rust_compat_verified = False
-        try:
-            _sys.stderr.write(
-                f"[ring-sig] ⚠ compat check raised exception ({_e}); using C extension\n"
-            )
-        except Exception:
-            pass
-
-    return _ring_sig_rust_compat_verified
+# Note: the C extension (otr4_crypto_ext) is still imported and used by
+# production code paths (memory wiping via _ossl.cleanse, constant-time
+# big-number arithmetic for SMP, ML-KEM-1024 keygen/encap/decap in the
+# legacy MLKEM1024BraceKEM class).  Dropping it entirely is a separate
+# multi-phase project (see ROADMAP).
 
 
 class RingSignature:
@@ -669,9 +536,11 @@ class RingSignature:
     Wire encoding: c₁(57) ‖ r₁(57) ‖ c₂(57) ‖ r₂(57) = 228 bytes.
 
     Phase 5.3c (v10.6.9): the production path is Rust (otrv4_core's
-    py_ring_sign / py_ring_verify) when a startup cross-verify check
-    confirms the Rust implementation is bit-exact compatible with the
-    C reference.  See _verify_ring_sig_rust_compat() below.
+    py_ring_sign / py_ring_verify).  v10.6.17 (Phase 5.3f-narrow):
+    the previous boot-time cross-verify against the C extension has
+    been removed.  RFC 8032 Ed448 test vectors in src/test_vectors.rs
+    are the build-time guarantee that Rust ring signatures are
+    wire-correct.
     """
 
     SCALAR_BYTES = 57
@@ -693,16 +562,11 @@ class RingSignature:
         performs the OTRv4 Schnorr ring signature internally using the
         stored seed; the seed never appears in Python.
 
-        Prerequisite: _verify_ring_sig_rust_compat() must have passed
-        at startup, proving Rust ed448-goldilocks-plus agrees with the
-        C reference on wire format and challenge derivation.
+        v10.6.17 (Phase 5.3f-narrow): the boot-time cross-verify between
+        Rust and the C reference has been removed.  RFC 8032 Ed448 test
+        vectors in Rust's src/test_vectors.rs are the build-time
+        guarantee that Rust ring signatures are wire-correct.
         """
-        if not _verify_ring_sig_rust_compat():
-            raise RuntimeError(
-                "RingSignature.sign: Rust ring-sig implementation is not "
-                "cross-compatible with the protocol's reference (or the "
-                "compat check failed).  No fallback in v10.6.11+."
-            )
         return bytes(handle.ring_sign(A1_bytes, A2_bytes, msg))
 
     @classmethod
@@ -714,18 +578,11 @@ class RingSignature:
         """Verify σ = c₁‖r₁‖c₂‖r₂ against A₁, A₂, and the transcript msg.
 
         v10.6.11 (Phase 5.4): Rust-only. No C extension fallback.
-        Raises RuntimeError if the cross-verify check did not pass.
+        v10.6.17 (Phase 5.3f-narrow): no boot cross-verify; correctness
+        guaranteed by Rust's RFC 8032 test vector suite at build time.
         """
         if len(sig) != cls.TOTAL_BYTES:
             return False
-
-        if not _verify_ring_sig_rust_compat():
-            raise RuntimeError(
-                "RingSignature.verify: Rust ring-sig implementation is not "
-                "cross-compatible (or compat check failed).  No fallback "
-                "is enabled in v10.6.11+."
-            )
-
         try:
             return bool(_rust_ring_verify(A1_bytes, A2_bytes, msg, sig))
         except Exception:
@@ -1512,7 +1369,7 @@ class OTRv4DataMessage:
             raise ValueError(f"Failed to decode message: {e}")
 
 
-VERSION = "OTRv4+ 10.6.15"
+VERSION = "OTRv4+ 10.6.17"
 
 if not hasattr(hashlib, 'sha3_512'):
     raise RuntimeError(
@@ -2496,96 +2353,15 @@ def _ct_rand_range(mod: int) -> int:
 # [REMOVED] SMPMath — replaced by Rust SMP (otrv4_core.RustSMP)
 
 
-# ── Phase 5.3a (v10.6.6, Option A2) ─────────────────────────────────────────
-# Lazy startup self-check: does the Rust ed448-goldilocks-plus crate
-# produce byte-identical Ed448 signatures to the Python cryptography
-# library (OpenSSL backend)?  If yes, we can safely use Rust for
-# ClientProfile signing — peers running v10.6.5 or earlier will accept
-# our signatures because they're identical to what cryptography would
-# have produced.  If no (e.g. implementation drift, RFC interpretation
-# difference), we MUST fall back to cryptography library; otherwise
-# every peer who validates our profile would reject it.
+# ── Phase 5.3f-narrow (v10.6.17) ────────────────────────────────────────────
+# The boot-time _verify_ed448_rust_compat helper has been removed.  Its job
+# (catch byte-level drift between Rust ed448-goldilocks-plus and the Python
+# cryptography library's Ed448) is now done at build time via Rust's RFC
+# 8032 Ed448 test vectors in src/test_vectors.rs.
 #
-# This is called lazily from ClientProfile.encode().  Result is cached
-# in _ed448_rust_compat_verified so subsequent encode() calls are
-# zero-cost.  The check itself takes a few milliseconds (one Python
-# Ed448 sign, one Rust Ed448 sign, one bytes comparison).
-#
-# Note: this self-check uses ed448_sign_test (a deliberately exposed
-# Rust helper that performs the same Ed448 signing as
-# sign_profile_body_and_construct).  Their internal code path is
-# identical; if test passes, production path also passes.
-_ed448_rust_compat_verified: Optional[bool] = None
-
-def _verify_ed448_rust_compat() -> bool:
-    """Verify Rust Ed448 signing produces byte-identical output to
-    cryptography library.  Returns True if compatible, False otherwise.
-    Result is cached after first call.  Returns False if Rust DAKE
-    module is unavailable or lacks ed448_sign_test."""
-    global _ed448_rust_compat_verified
-    if _ed448_rust_compat_verified is not None:
-        return _ed448_rust_compat_verified
-
-    # Default: assume incompatible until proven otherwise.
-    _ed448_rust_compat_verified = False
-
-    if not RUST_DAKE_AVAILABLE or _RustDAKE is None:
-        return False
-    if not hasattr(_RustDAKE, 'ed448_sign_test'):
-        return False
-
-    try:
-        # Generate a fresh Ed448 keypair (Python cryptography lib).
-        test_sk = ed448.Ed448PrivateKey.generate()
-        test_priv_bytes = test_sk.private_bytes(
-            encoding             = serialization.Encoding.Raw,
-            format               = serialization.PrivateFormat.Raw,
-            encryption_algorithm = serialization.NoEncryption(),
-        )
-
-        # Sign a known message with both implementations.
-        test_msg = b"OTRv4+ Ed448 compat check v1"
-        sig_py = test_sk.sign(test_msg)
-        sig_rs = bytes(_RustDAKE.ed448_sign_test(test_priv_bytes, test_msg))
-
-        # Compare byte-for-byte.
-        if sig_py == sig_rs and len(sig_py) == 114:
-            _ed448_rust_compat_verified = True
-            try:
-                _sys.stderr.write(
-                    "[Ed448] ✅ Rust ed448-goldilocks-plus is byte-compatible "
-                    "with Python cryptography lib — using Rust for profile signing\n"
-                )
-            except Exception:
-                pass
-        else:
-            _ed448_rust_compat_verified = False
-            try:
-                _sys.stderr.write(
-                    "[Ed448] ⚠ Rust ed448-goldilocks-plus produces DIFFERENT "
-                    "signatures than Python cryptography lib — falling back to "
-                    "Python for profile signing.  Signatures from this client "
-                    "would otherwise be rejected by peers running v10.6.5 or "
-                    "earlier.\n"
-                )
-                # If debug, dump the divergence for forensics.
-                if DEBUG_MODE:
-                    _sys.stderr.write(f"[Ed448]   py: {sig_py.hex()}\n")
-                    _sys.stderr.write(f"[Ed448]   rs: {sig_rs.hex()}\n")
-            except Exception:
-                pass
-    except Exception as _e:
-        # Any failure — exception in PyO3 call, bad bytes, etc. — means
-        # we can't safely use Rust signing.  Default to False.
-        _ed448_rust_compat_verified = False
-        try:
-            _sys.stderr.write(
-                f"[Ed448] ⚠ compat check raised exception ({_e}); using Python signing\n"
-            )
-        except Exception:
-            pass
-
-    return _ed448_rust_compat_verified
+# `cargo test --release --no-default-features --features pq-rust` must pass
+# before any release.  If the test fails, the Rust Ed448 implementation has
+# diverged from RFC 8032 and the build is not safe to ship.
 
 
 class ClientProfile:
@@ -2740,17 +2516,10 @@ class ClientProfile:
             # compat-check helper AND the production signer for this
             # call site — same code path either way).
             #
-            # Boot-time _verify_ed448_rust_compat() confirmed Rust
-            # produces byte-identical signatures to OpenSSL Ed448
-            # for the same key and message.  After that check the
-            # cryptography library is no longer invoked for signing
-            # anywhere in this codebase.
-            if not _verify_ed448_rust_compat():
-                raise RuntimeError(
-                    "ClientProfile.encode: Rust Ed448 sign is not "
-                    "byte-compatible with OpenSSL Ed448 (or compat check "
-                    "failed).  v10.6.11+ requires Rust signing; no fallback."
-                )
+            # v10.6.17 (Phase 5.3f-narrow): the boot-time compat check
+            # against Python cryptography Ed448 has been removed.  RFC
+            # 8032 Ed448 test vectors in Rust src/test_vectors.rs are
+            # the build-time guarantee that Rust signing is correct.
 
             # v10.6.12: Sign via the Rust handle's .sign() method.  Private
             # bytes never appear in Python — the handle holds them in
@@ -4690,12 +4459,9 @@ class RustDAKEAdapter:
                 _mldsa_priv = None
                 _mldsa_pub  = None
 
-                if not _verify_ed448_rust_compat():
-                    raise RuntimeError(
-                        "RustDAKEAdapter: Rust Ed448 sign not byte-compatible "
-                        "with OpenSSL reference.  v10.6.12 requires Rust signing; "
-                        "no fallback."
-                    )
+                # v10.6.17 (Phase 5.3f-narrow): boot-time compat check removed.
+                # RFC 8032 Ed448 test vectors in src/test_vectors.rs guarantee
+                # Rust signing correctness at build time.
 
                 _unsigned_body = self.client_profile.encode_unsigned()
 

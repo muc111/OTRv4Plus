@@ -18,6 +18,7 @@ pub mod smp_vault;
 pub mod ratchet;
 pub mod ring_sig;
 pub mod key_handles;
+pub mod test_vectors;     // v10.6.17: RFC 8032 Ed448 test vectors (Phase 5.3f-narrow)
 
 use pyo3::prelude::*;
 use pyo3::wrap_pyfunction;

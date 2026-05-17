@@ -40,7 +40,7 @@ Threat model, known issues, and reporting.
 | SMP secret | Rust `SecretVec` inside `RustSMPVault` | `ZeroizeOnDrop` when vault drops |
 | SMP exponents (a2, a3, b2, b3, r, etc.) | Rust scalars | `ZeroizeOnDrop` on the `Scalar` wrapper |
 
-No long-term private key material appears on the Python heap as `bytes` or `bytearray` during normal session operation. The boot-time cross-verify helpers generate fresh ephemeral test keys via the cryptography library, use them once, and let them be GC'd.
+No long-term private key material appears on the Python heap as `bytes` or `bytearray` during normal session operation.
 
 ## Build-time invariants
 
@@ -52,32 +52,45 @@ The Python module enforces these at import time via `_check_rust_requirements()`
 
 Missing anything raises `ImportError` at startup with a rebuild instruction. The app cannot accidentally fall back to a less-safe code path.
 
-## Runtime invariants (boot-time cross-verify)
+## Build-time invariants for Ed448 correctness
 
-Before the Rust crypto path is enabled for any session:
+v10.6.17 (Phase 5.3f-narrow) replaced the previous Python-side boot-time cross-verification with Rust-side RFC 8032 test vectors. The vectors live in `Rust/src/test_vectors.rs` and are exercised by a `#[cfg(test)]` harness.
 
-1. `_verify_ed448_rust_compat()` signs a test message with both Rust `ed448-goldilocks-plus` and OpenSSL Ed448 (via the cryptography library). Byte-identical signatures required.
-2. `_verify_ring_sig_rust_compat()` does a two-way check: Rust signs, C extension verifies; C extension signs, Rust verifies. Both directions must pass.
+Run before every release:
 
-If either check fails, the code raises `RuntimeError` at the first call site. No silent fallback.
+```
+cargo test --release --no-default-features --features pq-rust
+```
+
+If the test fails, the Rust `ed448-goldilocks-plus` crate has diverged from RFC 8032 and the build is not safe to ship. The previous mechanism (boot-time comparison against the cryptography library and the C extension) ran this check on every startup; the new mechanism is a single build-time gate against the RFC document itself.
+
+Two helper functions were removed: `_verify_ed448_rust_compat()` and `_verify_ring_sig_rust_compat()`. The previous comparison against the C extension's `ring_sign` and `ring_verify` is no longer performed; those C entry points remain compiled into `otr4_crypto_ext.so` but are not invoked by current Python code.
 
 ## Known issues and limitations
 
-1. **Rust crypto crates are not audited.** `ed448-goldilocks-plus` 0.16 is the only viable pure-Rust Ed448, but it has not had a formal review. `pqcrypto-kyber` 0.8 is round-3 NIST Kyber rather than the final FIPS 203 ML-KEM. A migration to `pqcrypto-mlkem` 0.2 is on the roadmap.
+1. **Rust crypto crates are not audited.** `ed448-goldilocks-plus` 0.16 is the only viable pure-Rust Ed448, but it has not had a formal review. `pqcrypto-mlkem 0.1.1` (FIPS 203 ML-KEM-1024) and `pqcrypto-mldsa 0.1.2` (ML-DSA-87) are PQClean-derived reference implementations.
 
-2. **`pqcrypto-mldsa 0.1.2`** is yanked from crates.io but is still installed in the current `Cargo.lock`. Migration to 0.2 is on the roadmap.
+2. **No persistent identity vault.** Identity keys regenerate at every launch. Fingerprints change each time. Correct for ephemeral IRC nicks but unusual for typical messaging.
 
-3. **`lazy_static 1.5`** is listed as unmaintained by RustSec. Used at one site (the SMP MODP-2048 prime initialisation). Migration to `std::sync::LazyLock` is on the roadmap. The toolchain (Rust 1.94.1) supports it.
+3. **The cryptography library is still imported and used in production.** Specifically:
+   - `cryptography.hazmat.primitives.asymmetric.ed448.Ed448PublicKey.from_public_bytes` is called at three runtime sites to wrap a remote peer's raw 57-byte identity pub for the UI trust display.
+   - `cryptography.hazmat.primitives.ciphers.aead.AESGCM` is used for the persistent SMP secrets store (encrypted under a key derived from the user passphrase).
+   - `serialization.PrivateFormat.Raw` / `PublicFormat.Raw` is used for byte-level conversion of cryptography key objects.
 
-4. **No persistent identity vault.** Identity keys regenerate at every launch. Fingerprints change each time. Correct for ephemeral IRC nicks but unusual for typical messaging.
+   Replacing these is multi-phase work tracked on the ROADMAP.
 
-5. **The cryptography library is still imported.** Used at boot for the cross-verify check. Production paths do not invoke it. Phase 5.3f (replacing the boot check with hardcoded RFC 8032 test vectors) would let this dependency be removed.
+4. **The C extensions are still loaded and in active use in production.** All three of `otr4_crypto_ext`, `otr4_ed448_ct`, and `otr4_mldsa_ext` are imported, and `otr4_crypto_ext` (aliased `_ossl`) and `otr4_mldsa_ext` (aliased `_mldsa`) are invoked from 20+ runtime sites:
+   - `_ossl.cleanse(buf)` for explicit memory wipe of SMP, ratchet, and identity buffers (11 call sites)
+   - `_ossl.bn_mod_exp_consttime`, `_ossl.bn_mod_inverse`, `_ossl.bn_rand_range` for constant-time SMP big-number arithmetic (`num_bigint` is not constant-time)
+   - `_ossl.mlkem1024_keygen`, `_ossl.mlkem1024_encaps`, `_ossl.mlkem1024_decaps` in the `MLKEM1024BraceKEM` Python class
+   - `_ossl.disable_core_dumps` at boot
+   - `_mldsa.mldsa87_keygen`, `_mldsa.mldsa87_sign`, `_mldsa.mldsa87_verify`
 
-6. **The C extensions are still loaded.** Same as point 5. `otr4_crypto_ext`, `otr4_ed448_ct`, `otr4_mldsa_ext` serve as ground-truth references during boot. Not invoked at runtime.
+   These cannot be removed without significant additional work. The full migration is broken into phases 5.3h through 5.3j on the ROADMAP.
 
-7. **Single-author project, AI-assisted.** Each release is live-tested between two I2P peers but has not been reviewed by another human cryptographer. Use as a research prototype.
+5. **Single-author project, AI-assisted.** Each release is live-tested between two I2P peers but has not been reviewed by another human cryptographer. Use as a research prototype.
 
-8. **No interop with stock OTRv4.** Wire-incompatible with `pidgin-otr4`, CoyIM, and similar implementations due to ML-DSA-87, ML-KEM-1024, and SHAKE-256 OTRv4+ additions.
+6. **No interop with stock OTRv4.** Wire-incompatible with `pidgin-otr4`, CoyIM, and similar implementations due to ML-DSA-87, ML-KEM-1024, and SHAKE-256 OTRv4+ additions.
 
 ## Reporting issues
 

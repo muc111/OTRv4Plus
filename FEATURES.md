@@ -1,6 +1,6 @@
 # Features
 
-What's implemented as of v10.6.13.
+What's implemented as of v10.6.17.
 
 ## Cryptography
 
@@ -10,12 +10,14 @@ What's implemented as of v10.6.13.
 |---|---|---|
 | Ed448 | Long-term identity signing | `ed448-goldilocks-plus` 0.16 (pure Rust) |
 | X448 | Ephemeral DH (DAKE and ratchet) | `x448` 0.6 (pure Rust) |
-| ML-KEM-1024 | Post-quantum KEM (DAKE brace key, ratchet rekey) | `pqcrypto-kyber` 0.8 (round-3 NIST Kyber) |
-| ML-DSA-87 | Post-quantum signature (hybrid auth) | `pqcrypto-mldsa` 0.1.2 |
+| ML-KEM-1024 | Post-quantum KEM (DAKE brace key, ratchet rekey) | `pqcrypto-mlkem` 0.1.1 (FIPS 203) in DAKE; `otr4_crypto_ext` C extension in the legacy `MLKEM1024BraceKEM` Python class |
+| ML-DSA-87 | Post-quantum signature (hybrid auth) | `pqcrypto-mldsa` 0.1.2 in DAKE; `otr4_mldsa_ext` C extension for the standalone `MLDSA87` Python class |
 | SHAKE-256 | KDF, ring sig challenge, transcript hash | `sha3` 0.10 |
-| AES-256-GCM | Message encryption | `aes-gcm` 0.10 |
-| Argon2id | SMP secret vault KDF | C extension wrapper |
+| AES-256-GCM | Message encryption | `aes-gcm` 0.10 (Rust); `cryptography.AESGCM` for the persistent SMP-secrets store |
+| Argon2id | SMP secret vault KDF | `otr4_crypto_ext` C extension wrapper |
+| Constant-time MODP-2048 arithmetic | SMP big-num operations | `otr4_crypto_ext` C extension (`bn_mod_exp_consttime`, etc.) |
 | SHA3-512 | Fingerprint hash | `hashlib` (Python stdlib) |
+| RFC 8032 Ed448 vectors | Build-time correctness gate | `src/test_vectors.rs` (Rust `#[cfg(test)]`) |
 
 ### Higher-level protocols
 
@@ -72,7 +74,7 @@ No long-term private key material appears on the Python heap as `bytes` or `byte
 
 - Termux on Android (aarch64), Rust 1.94 or newer
 - Python 3.11+
-- OpenSSL 3.x (build-time only, not runtime after Phase 5.3f)
+- OpenSSL 3.x — required at build time and at runtime (the C extensions link against `libssl` / `libcrypto` for AES-NI, constant-time bignum, and ML-KEM/ML-DSA primitives)
 
 Desktop Linux works the same way. macOS not tested. Windows not supported.
 
