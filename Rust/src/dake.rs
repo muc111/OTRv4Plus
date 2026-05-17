@@ -582,24 +582,27 @@ impl DakeState {
         let sk = x448::Secret::from(bytes); Ok((SecretBytes::new(bytes), *x448::PublicKey::from(&sk).as_bytes()))
     }
     fn generate_mlkem_keypair() -> Result<(Vec<u8>,Vec<u8>)> {
-        let (pk,sk) = pqcrypto_kyber::kyber1024::keypair(); Ok((pk.as_bytes().to_vec(), sk.as_bytes().to_vec()))
+        // v10.6.16: pqcrypto-kyber 0.8 (round-3 Kyber) replaced by
+        // pqcrypto-mlkem 0.1.1 (FIPS 203 ML-KEM-1024).  API surface
+        // (keypair / encapsulate / decapsulate / from_bytes) is identical;
+        // wire format differs in the domain-separator constants embedded
+        // in the FO transform.  No interop with v10.6.15 or earlier peers.
+        let (pk,sk) = pqcrypto_mlkem::mlkem1024::keypair(); Ok((pk.as_bytes().to_vec(), sk.as_bytes().to_vec()))
     }
     fn mlkem_encapsulate(ek: &[u8]) -> Result<(Vec<u8>,Vec<u8>)> {
-        let pk = pqcrypto_kyber::kyber1024::PublicKey::from_bytes(ek).map_err(|_| OtrError::MlKem)?;
-        // CRITICAL: pqcrypto_kyber::kyber1024::encapsulate returns
-        //   (SharedSecret, Ciphertext)   — NOT (Ciphertext, SharedSecret).
-        // We return (Ciphertext, SharedSecret) to match the caller's
+        let pk = pqcrypto_mlkem::mlkem1024::PublicKey::from_bytes(ek).map_err(|_| OtrError::MlKem)?;
+        // CRITICAL: pqcrypto_mlkem::mlkem1024::encapsulate returns
+        //   (SharedSecret, Ciphertext)   - NOT (Ciphertext, SharedSecret).
+        // Same footgun as the pqcrypto-kyber crate it replaced.  We
+        // return (Ciphertext, SharedSecret) to match the caller's
         // destructuring `let (ct, mlkem_ss) = mlkem_encapsulate(...)`.
-        // Confirmed via diagnostic build: previous order produced 32-byte
-        // "ciphertext" on the wire (the SS) instead of 1568 bytes, causing
-        // remote parser to fail with "Invalid wire format" at MLKEM_CT offset.
-        let (ss, ct) = pqcrypto_kyber::kyber1024::encapsulate(&pk);
+        let (ss, ct) = pqcrypto_mlkem::mlkem1024::encapsulate(&pk);
         Ok((ct.as_bytes().to_vec(), ss.as_bytes().to_vec()))
     }
     fn mlkem_decapsulate(sk: &[u8], ct: &[u8]) -> Result<Vec<u8>> {
-        let sk = pqcrypto_kyber::kyber1024::SecretKey::from_bytes(sk).map_err(|_| OtrError::MlKem)?;
-        let ct = pqcrypto_kyber::kyber1024::Ciphertext::from_bytes(ct).map_err(|_| OtrError::MlKem)?;
-        Ok(pqcrypto_kyber::kyber1024::decapsulate(&ct,&sk).as_bytes().to_vec())
+        let sk = pqcrypto_mlkem::mlkem1024::SecretKey::from_bytes(sk).map_err(|_| OtrError::MlKem)?;
+        let ct = pqcrypto_mlkem::mlkem1024::Ciphertext::from_bytes(ct).map_err(|_| OtrError::MlKem)?;
+        Ok(pqcrypto_mlkem::mlkem1024::decapsulate(&ct,&sk).as_bytes().to_vec())
     }
     fn mldsa_verify(pub_key: &[u8], msg: &[u8], sig: &[u8]) -> Result<()> {
         let pk = pqcrypto_mldsa::mldsa87::PublicKey::from_bytes(pub_key).map_err(|_| OtrError::MlDsa)?;

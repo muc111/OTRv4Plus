@@ -483,7 +483,7 @@ checksum = "c08d65885ee38876c4f86fa503fb49d7b507c2b62552df7c70b2fce627e06381"
 
 [[package]]
 name = "otrv4_core"
-version = "0.10.14"
+version = "0.10.16"
 dependencies = [
  "aes-gcm",
  "dashmap",
@@ -493,8 +493,8 @@ dependencies = [
  "libc",
  "num-bigint",
  "num-traits",
- "pqcrypto-kyber",
  "pqcrypto-mldsa",
+ "pqcrypto-mlkem",
  "pqcrypto-traits",
  "pyo3",
  "rand",
@@ -594,19 +594,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "pqcrypto-kyber"
-version = "0.8.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "15c00293cf898859d0c771455388054fd69ab712263c73fdc7f287a39b1ba000"
-dependencies = [
- "cc",
- "glob",
- "libc",
- "pqcrypto-internals",
- "pqcrypto-traits",
-]
-
-[[package]]
 name = "pqcrypto-mldsa"
 version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -616,6 +603,19 @@ dependencies = [
  "glob",
  "libc",
  "paste",
+ "pqcrypto-internals",
+ "pqcrypto-traits",
+]
+
+[[package]]
+name = "pqcrypto-mlkem"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "eb14d207f3749e8a59a026c22ceaa72d70fff931cfbf4c8d9b08f3fc56dc6e60"
+dependencies = [
+ "cc",
+ "glob",
+ "libc",
  "pqcrypto-internals",
  "pqcrypto-traits",
 ]
