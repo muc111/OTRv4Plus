@@ -1512,7 +1512,7 @@ class OTRv4DataMessage:
             raise ValueError(f"Failed to decode message: {e}")
 
 
-VERSION = "OTRv4+ 10.6.13"
+VERSION = "OTRv4+ 10.6.15"
 
 if not hasattr(hashlib, 'sha3_512'):
     raise RuntimeError(
@@ -7052,6 +7052,75 @@ class EnhancedOTRSession:
 
         try:
             if tlv.type in (OTRv4TLV.SMP_MSG_1, OTRv4TLV.SMP_MSG_1Q):
+                # v10.6.15: tie-break race when both peers ran /smp start.
+                #
+                # If our local SMP engine is already past Idle, both peers
+                # called start_smp() and each sent SMP1.  OTRv4 SMP is NOT
+                # symmetric: one side must initiate, the other must respond.
+                # We resolve deterministically by comparing identity public
+                # bytes.  The side with the LOWER (lex-less) fingerprint
+                # keeps its role as initiator; the other side aborts its
+                # own attempt and processes the incoming SMP1 as responder.
+                phase = self.rust_smp.get_phase()
+                if phase != "IDLE":
+                    # Compute local and remote fingerprints (raw bytes).
+                    local_fp = b''
+                    try:
+                        if self.dake_engine and self.dake_engine.client_profile:
+                            cp = self.dake_engine.client_profile
+                            if cp.identity_pub_bytes:
+                                local_fp = cp.identity_pub_bytes
+                            elif cp.identity_key:
+                                local_fp = bytes(cp.identity_key.public_bytes())
+                    except Exception:
+                        pass
+                    remote_fp = self._remote_long_term_pub_bytes or b''
+
+                    if not local_fp or not remote_fp:
+                        # Cannot tie-break without both fingerprints; abort
+                        # to avoid letting the race produce undefined SMP state.
+                        self.tracer.trace(self.peer, "SMP", "SMP1_RECEIVED",
+                                          f"phase={phase}",
+                                          "race detected, no fingerprints to tie-break — aborting")
+                        try:
+                            self.rust_smp.abort()
+                        except Exception:
+                            pass
+                        self._queued_smp_response = self.encrypt_with_tlvs(
+                            '', [OTRv4TLV(OTRv4TLV.SMP_ABORT, b'')]
+                        )
+                        return
+
+                    if local_fp < remote_fp:
+                        # We win the tie-break.  Keep our SMP1 in flight;
+                        # ignore the incoming SMP1.  Their side will detect
+                        # the same race and abort itself, then process ours.
+                        self.tracer.trace(self.peer, "SMP", "SMP1_RECEIVED",
+                                          f"phase={phase}",
+                                          "race detected, local_fp < remote_fp — keeping our role as initiator")
+                        return
+
+                    # We lost the tie-break.  Abort our outbound attempt,
+                    # rebuild the Rust SMP engine as responder, rebind the
+                    # secret from the still-populated vault, then fall
+                    # through to process the incoming SMP1.
+                    self.tracer.trace(self.peer, "SMP", "SMP1_RECEIVED",
+                                      f"phase={phase}",
+                                      "race detected, local_fp > remote_fp — yielding initiator role")
+                    try:
+                        self.rust_smp.abort()
+                    except Exception:
+                        pass
+                    self.rust_smp = None
+                    self.initialize_smp()
+                    if self.rust_smp is None or self.smp_vault is None:
+                        raise RuntimeError("SMP race-recovery: re-init failed")
+                    sid_recover = self.session_id or b''
+                    ok = self.rust_smp.set_secret_from_vault(
+                        self.smp_vault, "smp_secret", sid_recover, local_fp, remote_fp)
+                    if not ok:
+                        raise RuntimeError("SMP race-recovery: vault rebind failed")
+
                 # Secret pre-load happens in EnhancedSessionManager.decrypt_message()
                 # BEFORE decryption — always in IDLE phase, never mid-run.
                 # We must NOT attempt any rebind here: if phase is no longer IDLE
