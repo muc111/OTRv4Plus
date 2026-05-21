@@ -34,3 +34,9 @@ otr-env/
 
 # ── Explicitly keep prebuilt/ binaries ───────────────────────────────────────
 !prebuilt/*.so
+
+libera.pem
+*.pem
+
+libera.pem
+*.pem

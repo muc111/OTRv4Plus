@@ -1,6 +1,6 @@
 [package]
 name        = "otrv4_core"
-version     = "0.10.17"
+version     = "0.10.19"
 edition     = "2021"
 authors     = ["OTRv4+ contributors"]
 description = "Post-quantum OTRv4 cryptographic core (Rust/PyO3)"
@@ -22,6 +22,17 @@ pq-rust  = [
     "getrandom",
     "ed448-goldilocks-plus",
 ]
+# v10.6.18.1: declared so rustc stops emitting unexpected_cfgs warnings
+# for the #[cfg(feature = "test-only-kdf")] blocks in kdf.rs, header.rs,
+# and smp_vault.rs.  These blocks expose PyO3 entry points to crate
+# internals (raw KDF, ratchet header encoder, vault secret read-back)
+# that are NEVER safe in a production build — they would let Python
+# extract SMP secrets from the vault, breaking the security boundary
+# the gates enforce.  The feature is OFF by default and is opted-in
+# only for Python-side internals tests via:
+#   cargo build --release --features pq-rust,test-only-kdf
+# Do not add this to `default` or `pq-rust`.
+test-only-kdf = []
 
 [dependencies]
 pyo3         = { version = "0.21", features = ["extension-module", "abi3-py39"] }
@@ -48,7 +59,7 @@ getrandom     = { version = "0.2",   optional = true }
 x448          = { version = "0.6",   optional = true }
 
 pqcrypto-mlkem  = { version = "0.1.1", optional = true, default-features = false, features = ["std"] }
-pqcrypto-mldsa  = { version = "0.1.2", optional = true }
+pqcrypto-mldsa  = { version = "0.1.2", optional = true, default-features = false, features = ["std"] }
 pqcrypto-traits = { version = "0.3",   optional = true }
 
 ed448-goldilocks-plus = {

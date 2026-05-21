@@ -86,19 +86,26 @@ def _check_rust_requirements():
         )
 
     # Phase 5.3e (v10.6.12): Rust-owned identity key handles
+    # Phase 5.3j (v10.6.18): Rust ML-DSA-87 PyO3 bindings
+    # Phase 5.3h-B (v10.6.19): Rust AES-256-GCM PyO3 bindings
     _required_module_symbols = [
         'Ed448KeyHandle',
         'X448KeyHandle',
         'generate_ed448_keypair',
         'generate_x448_keypair',
+        'mldsa87_keygen',
+        'mldsa87_sign',
+        'mldsa87_verify',
+        'aes256gcm_encrypt',
+        'aes256gcm_decrypt',
     ]
     _missing_mod = [s for s in _required_module_symbols if not hasattr(_RustDAKE_module, s)]
     if _missing_mod:
         raise ImportError(
-            f"OTRv4+ v10.6.12+ requires the following on the otrv4_core "
+            f"OTRv4+ v10.6.19+ requires the following on the otrv4_core "
             f"module: {_required_module_symbols}.  Missing: {_missing_mod}.  "
-            f"Rebuild the .so from the current Rust/src/key_handles.rs and "
-            f"Rust/src/lib.rs."
+            f"Rebuild the .so from the current Rust/src/key_handles.rs, "
+            f"Rust/src/mldsa.rs, Rust/src/aead.rs, and Rust/src/lib.rs."
         )
     # RustDoubleRatchet, RustSMP, RustSMPVault are imported lazily where
     # they're used; we don't fail-fast on them here so test environments
@@ -145,8 +152,16 @@ import concurrent.futures
 
 try:
     from cryptography.hazmat.primitives.asymmetric import ed448, x448
-    from cryptography.hazmat.primitives import serialization, hashes
-    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+    from cryptography.hazmat.primitives import serialization
+    # v10.6.19 (Phase 5.3h, part B): dropped AESGCM and hashes imports.
+    # AES-256-GCM operations go through otrv4_core.aes256gcm_{encrypt,decrypt}
+    # via the Rust aes-gcm crate.  hashes was never actually used in
+    # production code (confirmed by grep at v10.6.19 audit).
+    #
+    # Remaining cryptography library uses: ed448 (legacy non-Rust DAKE paths
+    # only, never fires in v10.6.11+ production), x448 (still used by ratchet
+    # DH and legacy DAKE), serialization (~20 sites for raw byte conversion).
+    # Dropping these is multi-phase work tracked on the ROADMAP.
     CRYPTO_AVAILABLE = True
 except ImportError:
     print("ERROR: Install cryptography: pip install cryptography")
@@ -186,14 +201,13 @@ if _missing:
     )
 
 # ── ML-DSA-87 (FIPS 204) for hybrid PQ DAKE authentication ──────
-try:
-    import otr4_mldsa_ext as _mldsa
-    MLDSA87_AVAILABLE = True
-except ImportError:
-    print("WARNING: otr4_mldsa_ext not found — DAKE3 will use Ed448 ring sig only (no PQ auth).")
-    print("         Build: gcc -shared -fPIC -O2 -o otr4_mldsa_ext.so otr4_mldsa_ext.c "
-          "$(python3-config --includes) $(python3-config --ldflags --embed) -lcrypto")
-    MLDSA87_AVAILABLE = False
+# v10.6.18 (Phase 5.3j): the otr4_mldsa_ext C extension has been replaced
+# by pure-Rust pqcrypto-mldsa via the otrv4_core PyO3 module.  The
+# MLDSA87_AVAILABLE flag is kept as a hardcoded True so the wire-format
+# guards at lines 3559, 3745, 3939, 4211 continue to work unchanged.
+# Rust is mandatory; if otrv4_core fails to import, the program exits
+# at the top-of-file import check.
+MLDSA87_AVAILABLE = True
 
 
 try:
@@ -366,11 +380,15 @@ def _secure_file_destroy(filepath: str) -> None:
 
     try:
         # Encrypt zeros → ciphertext indistinguishable from random
-        aesgcm = AESGCM(bytes(key))
+        # v10.6.19 (Phase 5.3h-B): now uses Rust otrv4_core.aes256gcm_encrypt
+        # instead of cryptography.AESGCM.  This was the last remaining
+        # AESGCM call site after the SMPAutoRespondStorage and SecureKeyStorage
+        # swaps; dropping it lets us remove the cryptography AESGCM import.
         # Pad to at least file size (GCM adds 16-byte tag)
         # plaintext_len = size - 16 so ciphertext + 16-byte GCM tag = size bytes exactly
         plaintext_len = max(size - 16, 1)
-        ct = aesgcm.encrypt(nonce, b'\x00' * plaintext_len, b'wipe')
+        ct = _RustDAKE_module.aes256gcm_encrypt(
+            bytes(key), nonce, b'\x00' * plaintext_len, b'wipe')
 
         # Overwrite file with ciphertext
         with open(filepath, 'r+b') as f:
@@ -452,7 +470,12 @@ class MLDSA87Auth:
     """ML-DSA-87 (FIPS 204) keypair for hybrid PQ DAKE authentication.
 
     NIST Level 5 (~256-bit post-quantum security).
-    Uses the otr4_mldsa_ext C extension (OpenSSL EVP).
+
+    v10.6.18 (Phase 5.3j): backed by Rust pqcrypto-mldsa 0.1.2 via the
+    otrv4_core PyO3 module.  Previously used the otr4_mldsa_ext C
+    extension (OpenSSL EVP).  Wire format is byte-identical; both
+    implementations are PQClean-derived reference implementations of
+    the same FIPS 204 parameter set.
 
     The ML-DSA-87 signature is appended to the Ed448 ring signature
     in DAKE3, creating a hybrid authentication:
@@ -464,9 +487,9 @@ class MLDSA87Auth:
     signatures are not standardized, and authentication against
     quantum adversaries is the higher priority.
 
-    Key sizes:
+    Key sizes (FIPS 204 §4):
       Public key:  2592 bytes
-      Private key: 4896 bytes (mlock'd bytearray, cleansed on zeroize)
+      Private key: 4896 bytes (mutable bytearray; cleansed on zeroize)
       Signature:   4627 bytes
     """
 
@@ -475,13 +498,8 @@ class MLDSA87Auth:
     SIG_BYTES  = 4627
 
     def __init__(self):
-        """Generate a fresh ML-DSA-87 keypair via C extension."""
-        if not MLDSA87_AVAILABLE:
-            raise RuntimeError(
-                "ML-DSA-87 C extension not available — "
-                "build otr4_mldsa_ext.so first"
-            )
-        pub, priv = _mldsa.mldsa87_keygen()
+        """Generate a fresh ML-DSA-87 keypair via Rust pqcrypto-mldsa."""
+        pub, priv = _RustDAKE_module.mldsa87_keygen()
         self.pub_bytes: bytes = pub
         self._priv: bytearray = priv   # mutable for cleanse
 
@@ -489,19 +507,17 @@ class MLDSA87Auth:
         """Sign a message.  Returns 4627-byte signature."""
         if self._priv is None:
             raise RuntimeError("ML-DSA-87 private key has been zeroized")
-        return _mldsa.mldsa87_sign(bytes(self._priv), msg)
+        return _RustDAKE_module.mldsa87_sign(bytes(self._priv), msg)
 
     @classmethod
     def verify(cls, pub_bytes: bytes, msg: bytes, sig: bytes) -> bool:
         """Verify an ML-DSA-87 signature.  Returns True/False."""
-        if not MLDSA87_AVAILABLE:
-            return False
         if len(pub_bytes) != cls.PUB_BYTES:
             return False
         if len(sig) != cls.SIG_BYTES:
             return False
         try:
-            return _mldsa.mldsa87_verify(pub_bytes, msg, sig)
+            return bool(_RustDAKE_module.mldsa87_verify(pub_bytes, msg, sig))
         except Exception:
             return False
 
@@ -1369,7 +1385,7 @@ class OTRv4DataMessage:
             raise ValueError(f"Failed to decode message: {e}")
 
 
-VERSION = "OTRv4+ 10.6.17"
+VERSION = "OTRv4+ 10.6.19.1"
 
 if not hasattr(hashlib, 'sha3_512'):
     raise RuntimeError(
@@ -3538,7 +3554,13 @@ class OTRv4DAKE:
         self.remote_ephemeral_pub_bytes: Optional[bytes] = None
         
         self.remote_profile: Optional[ClientProfile] = None
-        self.remote_identity_key: Optional[ed448.Ed448PublicKey] = None
+        # v10.6.19 (Phase 5.3h, part C): now stores raw bytes (not a
+        # cryptography.hazmat Ed448PublicKey object).  The Rust DAKE path
+        # at lines 4811 and 4843 sets it directly from
+        # remote_identity_pub_bytes.  Legacy non-Rust DAKE paths (no longer
+        # production since v10.6.11) still assign Ed448PublicKey; type is
+        # widened to accept either for transition compatibility.
+        self.remote_identity_key: Optional[Any] = None
         self.remote_prekey: Optional[x448.X448PublicKey] = None
         
         self.remote_identity_pub_bytes: Optional[bytes] = None
@@ -4665,12 +4687,12 @@ class RustDAKEAdapter:
             self._remote_mldsa_pub = bytes(result.remote_mldsa_pub) if result.remote_mldsa_pub else None
 
             if self.remote_identity_pub_bytes:
-                try:
-                    from cryptography.hazmat.primitives.asymmetric import ed448 as _ed448
-                    self.remote_identity_key = _ed448.Ed448PublicKey.from_public_bytes(
-                        self.remote_identity_pub_bytes)
-                except Exception:
-                    self.remote_identity_key = None
+                # v10.6.19 (Phase 5.3h, part C): remote_identity_key now holds
+                # raw bytes instead of a cryptography.hazmat Ed448PublicKey
+                # object.  Downstream consumers are dead-code session_keys
+                # entries; protocol-level verification happens in Rust via
+                # the ring-signature path during DAKE3.
+                self.remote_identity_key = self.remote_identity_pub_bytes
 
             # Reconstruct remote_profile for ring-sig verification in process_dake3
             if result.remote_profile_bytes:
@@ -4808,12 +4830,9 @@ class RustDAKEAdapter:
                 self._remote_mldsa_pub = bytes(output.remote_mldsa_pub) if output.remote_mldsa_pub else None
 
                 if self.remote_identity_pub_bytes:
-                    try:
-                        from cryptography.hazmat.primitives.asymmetric import ed448 as _ed448
-                        self.remote_identity_key = _ed448.Ed448PublicKey.from_public_bytes(
-                            self.remote_identity_pub_bytes)
-                    except Exception:
-                        self.remote_identity_key = None
+                    # v10.6.19 (Phase 5.3h, part C): raw bytes instead of
+                    # cryptography.hazmat Ed448PublicKey wrapping.
+                    self.remote_identity_key = self.remote_identity_pub_bytes
 
                 if output.remote_profile_bytes:
                     try:
@@ -4840,12 +4859,9 @@ class RustDAKEAdapter:
                 self._remote_mldsa_pub = bytes(result.remote_mldsa_pub) if result.remote_mldsa_pub else None
 
                 if self.remote_identity_pub_bytes:
-                    try:
-                        from cryptography.hazmat.primitives.asymmetric import ed448 as _ed448
-                        self.remote_identity_key = _ed448.Ed448PublicKey.from_public_bytes(
-                            self.remote_identity_pub_bytes)
-                    except Exception:
-                        self.remote_identity_key = None
+                    # v10.6.19 (Phase 5.3h, part C): raw bytes instead of
+                    # cryptography.hazmat Ed448PublicKey wrapping.
+                    self.remote_identity_key = self.remote_identity_pub_bytes
 
                 if result.remote_profile_bytes:
                     try:
@@ -5201,29 +5217,36 @@ class SecureKeyStorage:
             self._master_key = None
     
     def _encrypt_key(self, key_data: bytes) -> bytes:
-        """Encrypt key data with AES-256-GCM."""
+        """Encrypt key data with AES-256-GCM.
+
+        v10.6.19 (Phase 5.3h-B): now uses Rust otrv4_core.aes256gcm_encrypt
+        instead of cryptography.AESGCM.  Wire format unchanged.
+        """
         if self._master_key is None:
             raise RuntimeError("Storage not initialized")
-        
+
         nonce = secrets.token_bytes(12)
-        aesgcm = AESGCM(self._master_key)
-        ciphertext = aesgcm.encrypt(nonce, key_data, b"otrv4+key")
-        
+        ciphertext = _RustDAKE_module.aes256gcm_encrypt(
+            self._master_key, nonce, key_data, b"otrv4+key")
+
         return nonce + ciphertext
-    
+
     def _decrypt_key(self, encrypted_data: bytes) -> bytes:
-        """Decrypt key data with AES-256-GCM."""
+        """Decrypt key data with AES-256-GCM.
+
+        v10.6.19 (Phase 5.3h-B): now uses Rust otrv4_core.aes256gcm_decrypt.
+        """
         if self._master_key is None:
             raise RuntimeError("Storage not initialized")
-        
+
         if len(encrypted_data) < 12:
             raise ValueError("Invalid encrypted data")
-        
+
         nonce = encrypted_data[:12]
         ciphertext = encrypted_data[12:]
-        
-        aesgcm = AESGCM(self._master_key)
-        return aesgcm.decrypt(nonce, ciphertext, b"otrv4+key")
+
+        return _RustDAKE_module.aes256gcm_decrypt(
+            self._master_key, nonce, ciphertext, b"otrv4+key")
     
     @staticmethod
     def _safe_key_component(s: str, max_len: int = 64) -> str:
@@ -5341,7 +5364,13 @@ class SMPAutoRespondStorage:
         self._load()
     
     def _load(self):
-        """Load secrets from encrypted storage (AES-256-GCM, Argon2id/scrypt key)."""
+        """Load secrets from encrypted storage (AES-256-GCM, Argon2id/scrypt key).
+
+        v10.6.19 (Phase 5.3h-B): AES-GCM operations now go through the Rust
+        otrv4_core.aes256gcm_decrypt PyO3 helper instead of the Python
+        cryptography library's AESGCM class.  Wire format unchanged; an
+        encrypted secrets file written by an older build decrypts cleanly.
+        """
         with self._lock:
             if not os.path.exists(self.secrets_path):
                 self._secrets = {}
@@ -5356,7 +5385,8 @@ class SMPAutoRespondStorage:
                 nonce  = raw[16:28]
                 ct_tag = raw[28:]
                 key = _derive_key(self._master_passphrase(), salt, 32)
-                plaintext = AESGCM(key).decrypt(nonce, ct_tag, b"smp_secrets_v1")
+                plaintext = _RustDAKE_module.aes256gcm_decrypt(
+                    key, nonce, ct_tag, b"smp_secrets_v1")
                 self._secrets = json.loads(plaintext.decode('utf-8'))
             except Exception:
                 # If Argon2 key fails (old scrypt-stored data), try scrypt directly
@@ -5365,7 +5395,8 @@ class SMPAutoRespondStorage:
                         self._master_passphrase(),
                         salt=salt, n=16384, r=8, p=1, dklen=32
                     )
-                    plaintext = AESGCM(key).decrypt(nonce, ct_tag, b"smp_secrets_v1")
+                    plaintext = _RustDAKE_module.aes256gcm_decrypt(
+                        key, nonce, ct_tag, b"smp_secrets_v1")
                     self._secrets = json.loads(plaintext.decode('utf-8'))
                 except Exception:
                     self._secrets = {}
@@ -5395,14 +5426,19 @@ class SMPAutoRespondStorage:
         return seed
     
     def _save(self):
-        """Save secrets encrypted with AES-256-GCM (Argon2id/scrypt key)."""
+        """Save secrets encrypted with AES-256-GCM (Argon2id/scrypt key).
+
+        v10.6.19 (Phase 5.3h-B): AES-GCM operations now go through the Rust
+        otrv4_core.aes256gcm_encrypt PyO3 helper.  Wire format unchanged.
+        """
         with self._lock:
             try:
                 plaintext = json.dumps(self._secrets, separators=(',', ':')).encode('utf-8')
                 salt  = secrets.token_bytes(16)
                 nonce = secrets.token_bytes(12)
                 key   = _derive_key(self._master_passphrase(), salt, 32)
-                ct_tag = AESGCM(key).encrypt(nonce, plaintext, b"smp_secrets_v1")
+                ct_tag = _RustDAKE_module.aes256gcm_encrypt(
+                    key, nonce, plaintext, b"smp_secrets_v1")
                 blob = salt + nonce + ct_tag
                 _tmp_path = None
                 with tempfile.NamedTemporaryFile(
@@ -8322,13 +8358,17 @@ class EnhancedSessionManager:
                 pub_key_data = session_keys.get('peer_long_term_pub')
                 if isinstance(pub_key_data, bytes):
                     session._remote_long_term_pub_bytes = pub_key_data
-                    try:
-                        session.remote_long_term_pub = ed448.Ed448PublicKey.from_public_bytes(pub_key_data)
-                        self.tracer.trace(peer, "KEY", "PUBKEY", "PARSED", "Successfully parsed remote pubkey")
-                    except Exception as e:
-                        self.tracer.trace(peer, "ERROR", "PUBKEY", "PARSE_FAILED", str(e))
-                        session.remote_long_term_pub = None
+                    # v10.6.19 (Phase 5.3h, part C): no longer wrap in
+                    # cryptography.Ed448PublicKey.  get_fingerprint() at
+                    # line ~7220 and _get_remote_fp at line ~12860 fall
+                    # through to the bytes path, producing the same
+                    # SHA3-512 fingerprint.
+                    session.remote_long_term_pub = None
+                    self.tracer.trace(peer, "KEY", "PUBKEY", "PARSED", "Successfully parsed remote pubkey (bytes)")
                 elif pub_key_data is not None:
+                    # Legacy non-Rust DAKE: pub_key_data is already an
+                    # Ed448PublicKey object.  Keep the object for legacy
+                    # downstream code; extract bytes for the bytes path.
                     session.remote_long_term_pub = pub_key_data
                     try:
                         session._remote_long_term_pub_bytes = pub_key_data.public_bytes(
@@ -8384,13 +8424,17 @@ class EnhancedSessionManager:
                 pub_key_data = session_keys.get('peer_long_term_pub')
                 if isinstance(pub_key_data, bytes):
                     session._remote_long_term_pub_bytes = pub_key_data
-                    try:
-                        session.remote_long_term_pub = ed448.Ed448PublicKey.from_public_bytes(pub_key_data)
-                        self.tracer.trace(peer, "KEY", "PUBKEY", "PARSED", "Successfully parsed remote pubkey")
-                    except Exception as e:
-                        self.tracer.trace(peer, "ERROR", "PUBKEY", "PARSE_FAILED", str(e))
-                        session.remote_long_term_pub = None
+                    # v10.6.19 (Phase 5.3h, part C): no longer wrap in
+                    # cryptography.Ed448PublicKey.  get_fingerprint() at
+                    # line ~7220 and _get_remote_fp at line ~12860 fall
+                    # through to the bytes path, producing the same
+                    # SHA3-512 fingerprint.
+                    session.remote_long_term_pub = None
+                    self.tracer.trace(peer, "KEY", "PUBKEY", "PARSED", "Successfully parsed remote pubkey (bytes)")
                 elif pub_key_data is not None:
+                    # Legacy non-Rust DAKE: pub_key_data is already an
+                    # Ed448PublicKey object.  Keep the object for legacy
+                    # downstream code; extract bytes for the bytes path.
                     session.remote_long_term_pub = pub_key_data
                     try:
                         session._remote_long_term_pub_bytes = pub_key_data.public_bytes(
@@ -8438,14 +8482,10 @@ class EnhancedSessionManager:
             session.session_state = SessionState.ENCRYPTED
             session.security_level = UIConstants.SecurityLevel.ENCRYPTED
 
-        if session.remote_long_term_pub is None and session._remote_long_term_pub_bytes is not None:
-            try:
-                session.remote_long_term_pub = ed448.Ed448PublicKey.from_public_bytes(
-                    session._remote_long_term_pub_bytes
-                )
-                self.tracer.trace(peer, "KEY", "PUBKEY", "PARSED", "Successfully parsed stored pubkey bytes")
-            except Exception as e:
-                self.tracer.trace(peer, "ERROR", "PUBKEY", "PARSE_FAILED", str(e))
+        # v10.6.19 (Phase 5.3h, part C): removed retry-wrap of bytes into
+        # ed448.Ed448PublicKey.  The bytes path at get_fingerprint() and
+        # _get_remote_fp() handles a None remote_long_term_pub correctly
+        # by falling through to _remote_long_term_pub_bytes.
 
         if session.ratchet is None:
             try:
@@ -9603,6 +9643,17 @@ class OTRv4IRCClient:
                     self.add_message(peer, msg, sec)
                     self.panel_manager.update_smp_progress(
                         peer, *self.session_manager.get_smp_progress(peer))
+                    # v10.6.19.1 bugfix: propagate the session security level
+                    # to the panel so the tab icon repaints immediately on SMP
+                    # completion.  Before this, the SMP TLV handler set
+                    # session.security_level = SMP_VERIFIED but nothing pushed
+                    # it to panel.security_level (the field TabBar.render reads
+                    # for the icon).  The icon only updated on the next inbound
+                    # message, which happens to call update_panel_security.
+                    # get_security_level() reads the session state the SMP
+                    # branch already set, so this also covers the SMP-FAILED
+                    # case (level reverts to ENCRYPTED, icon goes yellow).
+                    self.panel_manager.update_panel_security(peer, sec)
                 except Exception:
                     pass
             return _notify
@@ -13190,6 +13241,47 @@ def main():
     config.fragment_timeout = 120.0
     config.heartbeat_interval = 60
     config.rekey_interval   = 100
+
+    # v10.6.19 (Phase 5.3h, part A2): securely destroy legacy on-disk files
+    # from pre-~/.otrv4plus/ versions.  Older builds wrote SMP secrets and
+    # an identity vault to $HOME directly; the current build writes to
+    # ~/.otrv4plus/ (which _secure_wipe_data destroys at /quit).  Any
+    # remaining $HOME files are stale leftovers — wipe them cryptographically
+    # on startup, once, then they're gone.  No-op for new installs.
+    _legacy_orphan_paths = [
+        os.path.expanduser("~/.otrv4_vault"),
+        os.path.expanduser("~/.otrv4_smp_secrets.json"),
+    ]
+    for _orphan in _legacy_orphan_paths:
+        try:
+            if os.path.exists(_orphan):
+                _secure_file_destroy(_orphan)
+                if DEBUG_MODE:
+                    print(f"[startup] securely destroyed legacy file: {_orphan}")
+        except Exception as _e:
+            if DEBUG_MODE:
+                print(f"[startup] could not destroy legacy file {_orphan}: {_e}")
+    # Also remove the legacy ~/.otrv4_keys directory if it exists (was used
+    # by even older builds; now superseded by ~/.otrv4plus/keys).
+    _legacy_keys_dir = os.path.expanduser("~/.otrv4_keys")
+    try:
+        if os.path.isdir(_legacy_keys_dir):
+            import shutil as _shutil
+            for _root, _dirs, _files in os.walk(_legacy_keys_dir):
+                for _fn in _files:
+                    try:
+                        _secure_file_destroy(os.path.join(_root, _fn))
+                    except Exception:
+                        pass
+            try:
+                _shutil.rmtree(_legacy_keys_dir, ignore_errors=True)
+            except Exception:
+                pass
+            if DEBUG_MODE:
+                print(f"[startup] removed legacy directory: {_legacy_keys_dir}")
+    except Exception as _e:
+        if DEBUG_MODE:
+            print(f"[startup] could not remove legacy keys dir: {_e}")
 
     _net = NetworkConstants.detect(config.server)
     _net_icon = {"i2p": "🧅 I2P", "tor": "🧅 Tor", "clearnet": "🌐 Clearnet"}.get(_net, _net)

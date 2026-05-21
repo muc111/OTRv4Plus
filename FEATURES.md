@@ -1,6 +1,6 @@
 # Features
 
-What's implemented as of v10.6.17.
+What's implemented as of v10.6.19.
 
 ## Cryptography
 
@@ -9,11 +9,11 @@ What's implemented as of v10.6.17.
 | Primitive | Purpose | Implementation |
 |---|---|---|
 | Ed448 | Long-term identity signing | `ed448-goldilocks-plus` 0.16 (pure Rust) |
-| X448 | Ephemeral DH (DAKE and ratchet) | `x448` 0.6 (pure Rust) |
+| X448 | Ephemeral DH (DAKE and ratchet) | `x448` 0.6 (pure Rust) plus `cryptography.hazmat` X448 in the Python ratchet layer (replacement in Phase 5.3h-D) |
 | ML-KEM-1024 | Post-quantum KEM (DAKE brace key, ratchet rekey) | `pqcrypto-mlkem` 0.1.1 (FIPS 203) in DAKE; `otr4_crypto_ext` C extension in the legacy `MLKEM1024BraceKEM` Python class |
-| ML-DSA-87 | Post-quantum signature (hybrid auth) | `pqcrypto-mldsa` 0.1.2 in DAKE; `otr4_mldsa_ext` C extension for the standalone `MLDSA87` Python class |
+| ML-DSA-87 | Post-quantum signature (hybrid auth) | `pqcrypto-mldsa` 0.1.2 (FIPS 204) — pure Rust, both in DAKE and via Python `MLDSA87Auth` (v10.6.18 retired the `otr4_mldsa_ext` C extension) |
 | SHAKE-256 | KDF, ring sig challenge, transcript hash | `sha3` 0.10 |
-| AES-256-GCM | Message encryption | `aes-gcm` 0.10 (Rust); `cryptography.AESGCM` for the persistent SMP-secrets store |
+| AES-256-GCM | Message encryption + SMP-secrets store + secure-file-destroy | `aes-gcm` 0.10 via Rust `Rust/src/aead.rs` PyO3 bindings (v10.6.19 retired the `cryptography.AESGCM` runtime uses) |
 | Argon2id | SMP secret vault KDF | `otr4_crypto_ext` C extension wrapper |
 | Constant-time MODP-2048 arithmetic | SMP big-num operations | `otr4_crypto_ext` C extension (`bn_mod_exp_consttime`, etc.) |
 | SHA3-512 | Fingerprint hash | `hashlib` (Python stdlib) |

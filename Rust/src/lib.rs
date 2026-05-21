@@ -19,6 +19,8 @@ pub mod ratchet;
 pub mod ring_sig;
 pub mod key_handles;
 pub mod test_vectors;     // v10.6.17: RFC 8032 Ed448 test vectors (Phase 5.3f-narrow)
+pub mod mldsa;            // v10.6.18: ML-DSA-87 PyO3 bindings (Phase 5.3j)
+pub mod aead;             // v10.6.19: AES-256-GCM PyO3 bindings (Phase 5.3h, part B)
 
 use pyo3::prelude::*;
 use pyo3::wrap_pyfunction;
@@ -35,6 +37,13 @@ fn otrv4_core(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     // Ring signature (Phase 5.3c)
     m.add_function(wrap_pyfunction!(ring_sig::py_ring_sign,   m)?)?;
     m.add_function(wrap_pyfunction!(ring_sig::py_ring_verify, m)?)?;
+    // ML-DSA-87 (Phase 5.3j, v10.6.18): replaces the otr4_mldsa_ext C extension
+    m.add_function(wrap_pyfunction!(mldsa::mldsa87_keygen, m)?)?;
+    m.add_function(wrap_pyfunction!(mldsa::mldsa87_sign,   m)?)?;
+    m.add_function(wrap_pyfunction!(mldsa::mldsa87_verify, m)?)?;
+    // AES-256-GCM (Phase 5.3h-B, v10.6.19): replaces cryptography.AESGCM
+    m.add_function(wrap_pyfunction!(aead::aes256gcm_encrypt, m)?)?;
+    m.add_function(wrap_pyfunction!(aead::aes256gcm_decrypt, m)?)?;
     // Phase 5.3e (v10.6.12): Rust-owned long-term identity key handles
     m.add_class::<key_handles::Ed448KeyHandle>()?;
     m.add_class::<key_handles::X448KeyHandle>()?;

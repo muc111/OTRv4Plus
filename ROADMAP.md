@@ -4,6 +4,8 @@ What's next for OTRv4+. Ordered roughly by priority, not by ease.
 
 ## Recently shipped
 
+- **v10.6.19** Phase 5.3h, parts A2 + B + C (sub-phase scope correction). Three live AES-256-GCM call sites (in `SMPAutoRespondStorage`, `SecureKeyStorage`, and `_secure_file_destroy` itself) swapped from `cryptography.AESGCM` to `otrv4_core.aes256gcm_{encrypt,decrypt}` via the new `Rust/src/aead.rs` PyO3 module backed by the `aes-gcm` 0.10 crate.  Wire format byte-identical; encrypted SMP-secrets files written by v10.6.18 decrypt cleanly under v10.6.19.  Three Ed448PublicKey wrap sites in the Rust DAKE adapter replaced with raw bytes (`remote_identity_key` attribute now holds bytes; consumers were dead-code session_keys entries).  Top-of-file `cryptography` imports dropped `AESGCM` and `hashes` (the latter was never actually used in production).  Startup migration added: any legacy `~/.otrv4_vault` and `~/.otrv4_smp_secrets.json` files from pre-`~/.otrv4plus/` builds are now securely destroyed via `_secure_file_destroy` (NIST SP 800-88r1 single-pass AES-GCM ciphertext overwrite, key destroyed after use).  Phase 5.3h's remaining scope (x448 ratchet replacement, serialization.Raw byte conversions) is significantly larger and split into 5.3h-D for a later session.
+- **v10.6.18** Phase 5.3j. `otr4_mldsa_ext` C extension retired. ML-DSA-87 keygen, sign, and verify now backed by `pqcrypto-mldsa 0.1.2` via Rust PyO3 bindings in `src/mldsa.rs`. Wire format byte-identical (FIPS 204 ML-DSA-87 parameter set unchanged: 2592-byte pk / 4896-byte sk / 4627-byte sig). Build process no longer requires `otr4_mldsa_ext.so`. `pqcrypto-mldsa` pinned to `default-features = false, features = ["std"]` to avoid the same NEON SIGILL trap that affected `pqcrypto-mlkem` in v10.6.16. Phase 5.3g answered: **ephemeral identity is the design choice** (see below); no persistent vault.
 - **v10.6.17** Phase 5.3f-narrow. Removed Python boot-time cross-verify helpers (`_verify_ed448_rust_compat`, `_verify_ring_sig_rust_compat`). RFC 8032 Ed448 test vectors moved to Rust `src/test_vectors.rs` with a `#[cfg(test)]` harness; `cargo test` is the new release gate for ed448 correctness. C extensions and the cryptography library are still load-bearing in production (see SECURITY.md).
 - **v10.6.16** ML-KEM migration. `pqcrypto-kyber 0.8` (round-3 Kyber) replaced by `pqcrypto-mlkem 0.1.1` (FIPS 203). Drop-in API; wire-incompatible with v10.6.15. Build forces `default-features = false, features = ["std"]` to avoid avx2/neon SIGILL on Termux/aarch64.
 - **v10.6.15** SMP race fix. When both peers run `/smp start` near-simultaneously, the side with the higher fingerprint yields to responder role; the side with the lower fingerprint keeps initiator role. Vault-based secret persistence makes the rebuild clean. Also restored `signing` + `pkcs8` features on `ed448-goldilocks-plus` that had been silently dropped, unblocking the v10.6.12 handle architecture as actually-live for the first time.
@@ -27,15 +29,24 @@ The cryptography library import and the C extension imports are unchanged. They 
 
 ### Phase 5.3h — replace runtime cryptography library uses
 
-Three classes of remaining call site:
+This phase turned out to be larger than a single commit (a pattern that repeated through 5.3f and 5.3j).  Honest split into sub-phases:
 
-1. **`Ed448PublicKey.from_public_bytes`** at three sites in DAKE post-processing (lines ~4903, ~5046, ~5078). Used only to populate `self.remote_identity_key` for UI display. The simplest fix is to delete this attribute entirely and have the UI consume `remote_identity_pub_bytes` directly. The cryptography library `Ed448PublicKey` object provides no operations we need post-DAKE; everything goes through the Rust path.
+#### Phase 5.3h, parts A2 + B + C — shipped in v10.6.19
 
-2. **`AESGCM`** at five sites for the persistent SMP-secrets store. Replace with the `aes-gcm` Rust crate that the Rust core already pulls in. Needs a small PyO3 helper to expose AEAD encrypt/decrypt with associated-data binding.
+- **Part A2 (legacy file cleanup).** Startup migration that securely destroys `~/.otrv4_vault` and `~/.otrv4_smp_secrets.json` orphans from pre-`~/.otrv4plus/` builds, plus the legacy `~/.otrv4_keys/` directory.  Uses the existing `_secure_file_destroy` (NIST SP 800-88r1 single-pass AES-GCM ciphertext overwrite).  No-op for new installs.
+- **Part B (AES-GCM swap).** Three live `AESGCM(key)` call sites swapped from `cryptography.hazmat.primitives.ciphers.aead.AESGCM` to `otrv4_core.aes256gcm_{encrypt,decrypt}` via the new `Rust/src/aead.rs` PyO3 module (wraps `aes-gcm` 0.10 crate).  Wire format identical.  Sites: `SMPAutoRespondStorage._load/_save`, `SecureKeyStorage._encrypt_key/_decrypt_key`, and `_secure_file_destroy` itself.
+- **Part C (Ed448PublicKey wrap removal).** Three `Ed448PublicKey.from_public_bytes` call sites in the Rust DAKE adapter replaced with raw bytes.  `self.remote_identity_key` now holds bytes; consumers were dead-code `session_keys['peer_long_term_key']` entries.
 
-3. **`serialization.Raw`** for byte conversion of cryptography key objects. Becomes dead after items 1 and 2 above.
+#### Phase 5.3h, part D — pending (multi-session)
 
-Scope: maybe 100-150 lines of Python plus a small Rust AEAD helper. One focused session.
+What remains under the "drop the cryptography library" goal:
+
+1. **`ed448.Ed448PublicKey.from_public_bytes(...).verify(...)`** at `ClientProfile.decode()` (line ~2644).  Security-critical: this is the path that verifies an incoming peer's profile signature.  Needs a new Rust PyO3 `verify_ed448_sig(pub_bytes, msg, sig) -> bool` function (the `ed448-goldilocks-plus` crate already supports this; just need a thin wrapper).  One Python edit at line 2644 to swap the call.  Discovered during v10.6.19 audit; deferred for a focused commit with proper test cycle.
+2. **`x448.X448PrivateKey` and `x448.X448PublicKey`** in the ratchet DH path and legacy DAKE.  Needs a new Rust X448 PyO3 binding (`Rust/src/x448_handle.rs` or similar) — the `x448` crate is already a Rust dependency.  Then refactor the ratchet's DH operations and the cryptography-lib X448 sites (~12 production sites).  Multi-session.
+3. **`serialization.Raw` byte conversions** (~20 sites).  Becomes dead after X448 wrapper objects are gone.
+4. **`ed448` legacy DAKE paths** at lines ~3794 and ~3988 plus the `Ed448PrivateKey` ClientProfile constructor (~2386, 2421).  Already gated by `if not self._use_rust:` which is false in v10.6.11+ production.  Pure-deletion when 5.3h-D lands.
+
+Scope: significantly more than a single session.  Estimated 2-3 focused sessions.
 
 ### Phase 5.3i — replace `otr4_crypto_ext` (`_ossl`) uses
 
@@ -53,43 +64,32 @@ Scope: largest sub-phase, probably 200-300 lines plus the constant-time bignum d
 
 ### Phase 5.3j — replace `otr4_mldsa_ext` (`_mldsa`) uses
 
-1. **`_mldsa.mldsa87_keygen`, `mldsa87_sign`, `mldsa87_verify`**. Pure Rust replacement using `pqcrypto-mldsa 0.1.2` (already in tree from the DAKE path). Expose three PyO3 helpers; the C extension entry points become dead code.
-
-Scope: small, one session.
+**Shipped in v10.6.18.** `_mldsa.mldsa87_keygen`, `mldsa87_sign`, and `mldsa87_verify` now run through `pqcrypto-mldsa 0.1.2` via Rust PyO3 bindings in `src/mldsa.rs`.  The C extension entry points are no longer invoked.  `otr4_mldsa_ext.so` is no longer required for the build.
 
 ### Phase 5.3k — delete the C extensions and the cryptography library
 
-After 5.3h through 5.3j land, this is purely deletion: remove the imports, remove the `.c` and `.h` files from the repo (or move to an `archived/` directory), drop the `setup_otr4.py` build target, update SECURITY.md to remove the C-extension caveat.
+After 5.3h and 5.3i land, this is purely deletion: remove the imports, remove the remaining `.c` and `.h` files (`otr4_crypto_ext`, `otr4_ed448_ct`) from the repo (or move to an `archived/` directory), drop the `setup_otr4.py` build target, update SECURITY.md to remove the C-extension caveat.  `otr4_mldsa_ext.c` and `.so` can already be archived; nothing references them after v10.6.18.
 
-## Phase 5.3g: persistent identity vault
+## Phase 5.3g — ephemeral identity by design (DECIDED at v10.6.18)
 
-Currently identity keys regenerate every launch. Fingerprints change. For a research prototype this is acceptable, but it makes SMP trust unbinding pointless across sessions.
+OTRv4+ keeps **ephemeral identities** by design. Fingerprints regenerate at every launch; there is no on-disk identity vault.
 
-**Open question**: is persistent identity actually wanted? Ephemeral-by-design is defensible for a privacy-oriented IRC client. Tor Browser, Cwtch (by default), and Briar (until the user opts in) all keep identities short-lived. A persistent vault introduces:
+Rationale:
 
-- A passphrase the user must remember (Termux has no OS keyring)
-- An on-disk attack surface that did not previously exist
-- A trust assumption that the vault file is not exfiltrated
+- **Threat model fits ephemeral.** OTRv4+ runs over I2P for an IRC channel; the assumption is short-lived sessions, not long-term identity binding.
+- **No on-disk attack surface.** A persistent vault would create a high-value target for offline brute-force.
+- **No passphrase to forget.** Termux has no OS keyring; a vault would require user passphrase prompts at every launch.
+- **Aligns with privacy-oriented messaging norms.** Tor Browser, Cwtch (default), and Briar (before user opt-in) all keep identities short-lived.
 
-If the answer is "ephemeral by design", Phase 5.3g becomes a documentation-only update.
+SMP trust binding is meaningful within a session.  Across sessions, peers must re-verify on each connection.  This is correct behaviour for the project's design intent, not a limitation.
 
-If the answer is "yes, persistent":
-
-- Encrypted disk vault keyed by Argon2id from a user passphrase
-- Vault stores the Ed448 seed and X448 private bytes
-- On startup, vault is decrypted into fresh `Ed448KeyHandle` and `X448KeyHandle` via `Ed448KeyHandle.from_seed_bytes()` and `X448KeyHandle.from_priv_bytes()`
-- If no vault exists, generate fresh (current behaviour)
-- Vault file uses NIST SP 800-88r1 secure destruction on logout
-
-The `from_seed_bytes` and `from_priv_bytes` constructors already exist for test compatibility. The vault wrapper is a new piece.
-
-Scope (if persistent): maybe 200 lines of Python plus a small Rust vault helper. Estimated one to two sessions.
+If a user explicitly wants persistence in the future, the `Ed448KeyHandle.from_seed_bytes()` and `X448KeyHandle.from_priv_bytes()` constructors already support reconstructing a handle from raw bytes — so an external user-managed vault is possible without further code changes in OTRv4+ itself.
 
 ## Other planned work
 
 ### Better trust UX
 
-`/trust` currently asks `y` or `n` after fingerprint display. After Phase 5.3g, a long-term `~/.otrv4plus/trusted_fingerprints` file would survive restarts.
+`/trust` currently asks `y` or `n` after fingerprint display.  Trust decisions do not persist across launches (consistent with the ephemeral-identity choice in 5.3g).
 
 ### Group messaging
 

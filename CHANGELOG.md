@@ -4,7 +4,160 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
-## v10.6.17 (current) — Phase 5.3f-narrow
+## v10.6.19 (current) — Phase 5.3h, parts A2 + B + C
+
+**Three of four production `cryptography` library use-classes retired. New Rust AEAD module. Startup migration for legacy orphan files.**
+
+### Phase 5.3h scope reality check
+
+Phase 5.3h was originally scoped as "one focused session, ~100-150 lines."  Diagnostic showed this estimate was off by an order of magnitude: the `cryptography` library has 4 use classes (AESGCM, Ed448PublicKey, X448PrivateKey/PublicKey, serialization.Raw), totalling 40+ call sites with deep coupling to the ratchet's DH path.
+
+v10.6.19 ships the three smaller sub-phases (A2 + B + C).  The fourth (Part D — drop X448 and serialization.Raw) is multi-session and rescheduled.  See ROADMAP for the corrected split.
+
+### Part A2 — legacy on-disk file cleanup
+
+Startup migration in `main()` securely destroys orphan files from pre-`~/.otrv4plus/` builds:
+
+- `~/.otrv4_vault` (633 bytes, no current code references it)
+- `~/.otrv4_smp_secrets.json` (97 bytes, legacy SMP-secrets file at home root)
+- `~/.otrv4_keys/` (legacy keys directory)
+
+Uses the existing `_secure_file_destroy()` NIST SP 800-88r1 primitive: encrypt zeros with a fresh AES-256-GCM key, overwrite the file with ciphertext + tag, fsync, zeroize the key via `_ossl.cleanse`, then unlink.  No-op for new installs.
+
+This brings the orphan files under the same Tails-mode "no trace on quit" design as `~/.otrv4plus/` itself.
+
+### Part B — AES-256-GCM moved to Rust
+
+New `Rust/src/aead.rs` exposes two PyO3 functions:
+
+- `otrv4_core.aes256gcm_encrypt(key, nonce, plaintext, aad) -> bytes`
+- `otrv4_core.aes256gcm_decrypt(key, nonce, ct_and_tag, aad) -> bytes`
+
+Wraps the `aes-gcm` 0.10 crate (already in `Cargo.toml` for the ratchet path).  Wire-identical to `cryptography.hazmat.primitives.ciphers.aead.AESGCM`: encrypt output is `ciphertext || 16-byte tag`, decrypt accepts the same.
+
+Three live AESGCM call sites swapped:
+
+- `SMPAutoRespondStorage._load` and `_save` (encrypted SMP-secrets persistence)
+- `SecureKeyStorage._encrypt_key` and `_decrypt_key` (encrypted key storage)
+- `_secure_file_destroy` (the secure-wipe primitive itself — last remaining holdout)
+
+Migration compatibility: files written by v10.6.18's `AESGCM(key).encrypt(...)` decrypt cleanly under v10.6.19's `aes256gcm_decrypt(...)`.  Same FIPS 197 AES-256, same NIST SP 800-38D GCM, same byte format.
+
+Three new Rust unit tests (`aead::tests`): roundtrip, wrong-AAD-rejected, tampered-ciphertext-rejected.
+
+### Part C — Ed448PublicKey wrap removed at SIX live sites (RustDAKEAdapter + OTRv4IRCClient)
+
+Six `Ed448PublicKey.from_public_bytes(...)` call sites swapped from cryptography library wrapping to raw bytes (or `None` where the bytes path takes over):
+
+**Three sites in `RustDAKEAdapter`** at the post-DAKE1, post-DAKE2-Rust, and post-DAKE2-legacy paths.  Each wrapped the peer's raw 57-byte identity pub into `Ed448PublicKey` stored as `self.remote_identity_key`.  Diagnostic showed the attribute is only consumed by `session_keys['peer_long_term_key']` dict entries which are never read by any downstream code.  v10.6.19 keeps the attribute name and stores raw bytes; type hint widened from `Optional[ed448.Ed448PublicKey]` to `Optional[Any]`.
+
+**Three sites in `OTRv4IRCClient`** (DAKE2-initiator-establish, DAKE3-responder-establish, post-establish retry).  Each wrapped `session_keys['peer_long_term_pub']` (raw bytes) into `Ed448PublicKey` stored as `session.remote_long_term_pub`.  Used downstream at `get_fingerprint()` (~line 7220) and `_get_remote_fp` (~line 12860) only to call `.public_bytes()` on the object to extract the same bytes back, then SHA3-512 them for fingerprint.  Both call sites already have a fallback path that computes SHA3-512 directly from `_remote_long_term_pub_bytes` if `remote_long_term_pub` is None.
+
+v10.6.19 sets `session.remote_long_term_pub = None` at all three sites; the fallback `_remote_long_term_pub_bytes` path produces an identical SHA3-512 fingerprint without the cryptography library round-trip.  Legacy-non-Rust branch (where `pub_key_data` is already an `Ed448PublicKey` object rather than bytes) is preserved untouched.
+
+The third retry-wrap site (`if remote_long_term_pub is None and bytes is not None: wrap`) is deleted entirely — the comment explains the bytes path handles it.
+
+### `cryptography` library import diet
+
+Top-of-file imports before v10.6.19:
+
+```python
+from cryptography.hazmat.primitives.asymmetric import ed448, x448
+from cryptography.hazmat.primitives import serialization, hashes
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+```
+
+After v10.6.19:
+
+```python
+from cryptography.hazmat.primitives.asymmetric import ed448, x448
+from cryptography.hazmat.primitives import serialization
+```
+
+Dropped: `AESGCM` (replaced by Rust), `hashes` (confirmed unused by grep audit).
+
+**`ed448` import remains** — not removed in v10.6.19 despite the earlier scope estimate.  Reason: `ClientProfile.decode()` at line ~2644 uses `ed448.Ed448PublicKey.from_public_bytes(...).verify(...)` for incoming-profile signature verification.  This is a security-critical code path; replacing it cleanly needs a new Rust PyO3 `verify_ed448_sig(pub, msg, sig) -> bool` function plus a focused test cycle.  Scheduled for Phase 5.3h-D.
+
+What v10.6.19 DID drop with respect to `ed448`:
+- Three `Ed448PublicKey.from_public_bytes` sites in `RustDAKEAdapter` (the `self.remote_identity_key` wraps)
+- Three `Ed448PublicKey.from_public_bytes` sites in `OTRv4IRCClient._handle_dake*` (the `session.remote_long_term_pub` wraps)
+
+Remaining live `ed448` use: one site at ~2644 for ClientProfile signature verification, plus legacy non-Rust DAKE paths at ~3794 and ~3988 (gated by `not self._use_rust`, never fires in v10.6.11+ production).
+
+`x448` (ratchet DH and legacy DAKE), `serialization` (~20 byte-conversion sites): also still present; addressed in 5.3h-D.
+
+### Files touched
+
+- `Rust/src/aead.rs`: new file, ~165 lines including tests
+- `Rust/src/lib.rs`: added `pub mod aead;` and two `add_function` registrations
+- `Rust/Cargo.toml`: version 0.10.18 → 0.10.19 (no new deps; aes-gcm already pulled)
+- `otrv4+.py`:
+   - Top-of-file: dropped `AESGCM` and `hashes` imports
+   - `_secure_file_destroy`: line 383 AESGCM swapped to Rust aead
+   - `SMPAutoRespondStorage._load` (~5360) and `_save` (~5406): AESGCM swapped to Rust aead
+   - `SecureKeyStorage._encrypt_key` (~5210) and `_decrypt_key` (~5226): AESGCM swapped to Rust aead
+   - `RustDAKEAdapter`: three `Ed448PublicKey.from_public_bytes` sites at ~4671, ~4814, ~4846 replaced with raw-bytes assignment
+   - Type hint at line ~3542: `Optional[ed448.Ed448PublicKey]` → `Optional[Any]`
+   - `_check_rust_requirements`: required `aes256gcm_encrypt` and `aes256gcm_decrypt` on otrv4_core module
+   - `main()`: startup migration to securely destroy `~/.otrv4_vault`, `~/.otrv4_smp_secrets.json`, `~/.otrv4_keys/`
+   - VERSION → `10.6.19`
+- `README.md`: chip update; caveat 5 narrowed (cryptography lib subset)
+- `SECURITY.md`: caveat 4 updated to mention v10.6.19's three-class drop
+- `ROADMAP.md`: Phase 5.3h split into A2/B/C (shipped) and D (pending, multi-session)
+- `CHANGELOG.md`: this entry
+- `FEATURES.md`: AES-256-GCM row points to `aes-gcm` Rust crate only
+
+### Build verification
+
+```
+cargo test --release --no-default-features --features pq-rust
+# expected: 12 passed (5 ring_sig + 1 RFC 8032 + 3 mldsa + 3 aead)
+```
+
+Live wire-test still produces `hybrid (ring-sig ✓ + ML-DSA-87 ✓)` on DAKE3 verification.  SMP auto-respond still loads cleanly from a pre-existing encrypted secrets file.
+
+---
+
+## v10.6.18 — Phase 5.3j + Phase 5.3g (ephemeral-by-design decided)
+
+**`otr4_mldsa_ext` C extension retired; ML-DSA-87 now runs entirely on `pqcrypto-mldsa 0.1.2` via Rust PyO3 bindings.**
+
+The Python `MLDSA87Auth` class is unchanged externally — same `PUB_BYTES = 2592`, `SIG_BYTES = 4627`, same wire-format guards across the four parse sites in `EnhancedOTR.{_handle_dake1, _handle_dake2, _handle_dake3_initiator, _handle_dake3_responder}`. Three call sites internal to the class now delegate to `_RustDAKE_module.mldsa87_keygen / mldsa87_sign / mldsa87_verify` instead of the deleted `_mldsa.mldsa87_*` C extension entry points.
+
+The new Rust module `Rust/src/mldsa.rs` is a thin PyO3 wrapper over `pqcrypto-mldsa::mldsa87::{keypair, detached_sign, verify_detached_signature}`. Three unit tests in the same file: round-trip, tampered-message rejection, FIPS 204 byte-size assertions (2592 / 4896 / 4627).
+
+### Wire format
+
+Byte-identical to v10.6.17. Both v10.6.17 and v10.6.18 peers can DAKE with each other — same FIPS 204 ML-DSA-87 parameter set, same PQClean reference implementation underneath. The C extension and the Rust crate are both PQClean-derived; outputs match bit-for-bit.
+
+### Cargo.toml hardening
+
+`pqcrypto-mldsa` is pinned to `default-features = false, features = ["std"]` to disable AVX2 and NEON SIMD code paths. Same trap that hit `pqcrypto-mlkem` in v10.6.16: the NEON path triggers `SIGILL` on Termux/aarch64 at first `mldsa87_keygen()` call. Portable C reference is used.
+
+### Phase 5.3g — ephemeral identity (DECIDED)
+
+After consideration, OTRv4+ keeps ephemeral identities by design. Fingerprints regenerate at every launch; no persistent vault. Rationale documented in ROADMAP.md and SECURITY.md.
+
+### Files touched
+- `Rust/src/mldsa.rs`: new file, ~120 lines including tests
+- `Rust/src/lib.rs`: added `pub mod mldsa;` and three `add_function` registrations
+- `Rust/Cargo.toml`: pqcrypto-mldsa pinned to `default-features = false`, version 0.10.17 → 0.10.18
+- `otrv4+.py`: removed `import otr4_mldsa_ext as _mldsa` block; `MLDSA87_AVAILABLE` reduced to a hardcoded `True` so the four wire-format guards stay structurally unchanged; three `_mldsa.*` calls in `MLDSA87Auth` swapped to `_RustDAKE_module.*`; `_check_rust_requirements` now requires `mldsa87_keygen/sign/verify` on the otrv4_core module; VERSION → `10.6.18`
+- `README.md`: drop `gcc -o otr4_mldsa_ext.so` from Quick start; chip updated; caveats 4/5/7 updated; architecture box mentions FIPS 204 for ML-DSA
+- `SECURITY.md`: caveat 4 (C extensions) updated to two remaining; new caveat 5 documents ephemeral-by-design rationale
+- `ROADMAP.md`: Phase 5.3j marked shipped; Phase 5.3g rewritten as "decided: ephemeral by design" with rationale; Phase 5.3k note updated to mention `otr4_mldsa_ext` can be archived
+- `FEATURES.md`: ML-DSA-87 row points to `pqcrypto-mldsa` only
+
+### Build verification
+
+```
+cargo test --release --no-default-features --features pq-rust
+# expected: 9 passed (5 ring_sig + 1 RFC 8032 + 3 mldsa)
+```
+
+---
+
+## v10.6.17 — Phase 5.3f-narrow
 
 **Boot-time cross-verify removed; RFC 8032 vectors now build-time gate.**
 

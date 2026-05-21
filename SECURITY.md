@@ -79,18 +79,33 @@ Two helper functions were removed: `_verify_ed448_rust_compat()` and `_verify_ri
 
    Replacing these is multi-phase work tracked on the ROADMAP.
 
-4. **The C extensions are still loaded and in active use in production.** All three of `otr4_crypto_ext`, `otr4_ed448_ct`, and `otr4_mldsa_ext` are imported, and `otr4_crypto_ext` (aliased `_ossl`) and `otr4_mldsa_ext` (aliased `_mldsa`) are invoked from 20+ runtime sites:
+4. **Two C extensions remain loaded and in active use in production.** `otr4_crypto_ext` (aliased `_ossl`) is invoked from 20+ runtime sites:
    - `_ossl.cleanse(buf)` for explicit memory wipe of SMP, ratchet, and identity buffers (11 call sites)
    - `_ossl.bn_mod_exp_consttime`, `_ossl.bn_mod_inverse`, `_ossl.bn_rand_range` for constant-time SMP big-number arithmetic (`num_bigint` is not constant-time)
    - `_ossl.mlkem1024_keygen`, `_ossl.mlkem1024_encaps`, `_ossl.mlkem1024_decaps` in the `MLKEM1024BraceKEM` Python class
    - `_ossl.disable_core_dumps` at boot
-   - `_mldsa.mldsa87_keygen`, `_mldsa.mldsa87_sign`, `_mldsa.mldsa87_verify`
 
-   These cannot be removed without significant additional work. The full migration is broken into phases 5.3h through 5.3j on the ROADMAP.
+   `otr4_ed448_ct` is imported as a defensive ground-truth but is no longer invoked by current Python code.
 
-5. **Single-author project, AI-assisted.** Each release is live-tested between two I2P peers but has not been reviewed by another human cryptographer. Use as a research prototype.
+   v10.6.18 retired the third C extension (`otr4_mldsa_ext`); ML-DSA-87 keygen, sign, and verify now run through `pqcrypto-mldsa 0.1.2` via Rust PyO3 bindings.  Wire format is byte-identical.  Build process no longer requires `otr4_mldsa_ext.so`.
 
-6. **No interop with stock OTRv4.** Wire-incompatible with `pidgin-otr4`, CoyIM, and similar implementations due to ML-DSA-87, ML-KEM-1024, and SHAKE-256 OTRv4+ additions.
+   v10.6.19 retired the `AESGCM` and `hashes` uses of the Python `cryptography` library; AES-256-GCM now runs through `aes-gcm` 0.10 via Rust PyO3 bindings (`Rust/src/aead.rs`).  v10.6.19 also added a startup migration that securely destroys any legacy `~/.otrv4_vault` and `~/.otrv4_smp_secrets.json` files left over from pre-`~/.otrv4plus/` builds, using the existing `_secure_file_destroy` NIST SP 800-88r1 ciphertext-overwrite primitive.  Six `Ed448PublicKey.from_public_bytes(...)` wrap sites (in `RustDAKEAdapter` and `OTRv4IRCClient`) were replaced with raw-bytes handling; the SHA3-512 fingerprint computation now goes through the bytes mirror attribute rather than the cryptography library round-trip.
+
+   `ClientProfile.decode()` at line ~2644 still uses `ed448.Ed448PublicKey.from_public_bytes(...).verify(...)` for ClientProfile signature verification on incoming peers.  Replacing this is the next sub-phase (5.3h-D); it needs a new Rust PyO3 `verify_ed448_sig(pub, msg, sig) -> bool` plus a focused test cycle since the path is security-critical.
+
+   Remaining cryptography library uses after v10.6.19: `ed448` (one live verify site, plus legacy paths), `x448` (ratchet DH and legacy DAKE), `serialization` (~20 byte-conversion sites).  Removing the remaining two C extensions and the rest of the cryptography library is multi-phase work, broken into 5.3h-D, 5.3i, and 5.3k on the ROADMAP.
+
+5. **Ephemeral identity is a deliberate design choice, not a missing feature.** OTRv4+ regenerates identity keys at every launch; fingerprints do not persist across sessions.  Rationale:
+   - **Threat model fits ephemeral.** OTRv4+ runs over I2P for an IRC channel; the assumption is short-lived sessions, not long-term identity binding.
+   - **No on-disk attack surface.** A persistent vault would create a high-value target for offline brute-force.
+   - **No passphrase to forget.** Termux has no OS keyring; a vault would require a user passphrase at every launch.
+   - **Aligns with privacy-oriented messaging norms.** Tor Browser, Cwtch (default), and Briar (before user opt-in) all keep identities short-lived.
+
+   SMP trust binding is meaningful within a session.  Across sessions, peers must re-verify.  See ROADMAP Phase 5.3g.
+
+6. **Single-author project, AI-assisted.** Each release is live-tested between two I2P peers but has not been reviewed by another human cryptographer. Use as a research prototype.
+
+7. **No interop with stock OTRv4.** Wire-incompatible with `pidgin-otr4`, CoyIM, and similar implementations due to ML-DSA-87, ML-KEM-1024, and SHAKE-256 OTRv4+ additions.
 
 ## Reporting issues
 

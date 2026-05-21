@@ -32,11 +32,10 @@ use pyo3::exceptions::PyValueError;
 
 use ed448_goldilocks_plus::{
     SigningKey,
-    elliptic_curve::generic_array::GenericArray,
     rand_core::{RngCore, OsRng},
 };
 
-use zeroize::{Zeroize, ZeroizeOnDrop};
+use zeroize::Zeroize;
 use std::convert::TryFrom;
 
 use crate::secure_mem::SecretBytes;
