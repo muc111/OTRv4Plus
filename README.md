@@ -6,7 +6,7 @@
 <p align="center"><strong>Post-quantum secure messaging over IRC. Research prototype.</strong></p>
 
 <p align="center">
-<code>v10.6.19 · Rust crypto core · AES-GCM now pure-Rust · ML-DSA-87 now pure-Rust</code>
+<code>v10.7 · Rust crypto core · Python cryptography library fully removed</code>
 </p>
 
 ---
@@ -15,7 +15,7 @@
 
 OTRv4+ is an IRC client that implements OTRv4 with post-quantum cryptography at every layer. It runs on Termux (Android) over I2P, with a Rust crypto core wrapped by a thin Python orchestration layer.
 
-Single-author research prototype. Not a finished product. The author is not a cryptographer. The Rust crypto crates it depends on (`ed448-goldilocks-plus`, `pqcrypto-mlkem`, `pqcrypto-mldsa`) are not audited. Use it to study or extend it, not because you need a hardened tool today.
+Single-author research prototype. Not a finished product. The author is not a cryptographer. The Rust crypto crates it depends on (`ed448-goldilocks-plus`, `x448`, `pqcrypto-mlkem`, `pqcrypto-mldsa`) are not audited. Use it to study or extend it, not because you need a hardened tool today.
 
 ## Quick start
 
@@ -41,13 +41,12 @@ cargo build --release --no-default-features --features pq-rust
 cp target/release/libotrv4_core.so ../otrv4_core.so
 cd ..
 
-# Build the two remaining C extensions (still required, see caveat 5)
+# Build the two remaining C extensions (still required, see caveat 4)
 gcc -shared -fPIC -O2 -o otr4_crypto_ext.so otr4_crypto_ext.c -lssl -lcrypto
 gcc -shared -fPIC -O2 -o otr4_ed448_ct.so   otr4_ed448_ct.c   -lssl -lcrypto
-
-# Install the one remaining Python dependency
-pip install --break-system-packages cryptography
 ```
+
+As of v10.7 there is no longer a Python `cryptography` dependency to install — every cryptographic operation runs in the Rust core or the C extensions.
 
 ### 3. Verify the build (recommended)
 
@@ -57,7 +56,7 @@ cargo test --release --no-default-features --features pq-rust
 cd ..
 ```
 
-Expected: `test result: ok. 6 passed; 0 failed`. The test that matters most is `test_vectors::tests::ed448_rfc8032_vectors_byte_exact` — if it fails, the Rust Ed448 implementation has drifted from RFC 8032 and the build is not safe to use.
+Expected: `test result: ok. 17 passed; 0 failed`. The tests that matter most are `test_vectors::tests::ed448_rfc8032_vectors_byte_exact` (Rust Ed448 against RFC 8032) and `key_handles::tests::x448_rfc7748_known_answer` (Rust X448 against RFC 7748 §5.2). If either fails, a Rust crypto implementation has drifted from its specification and the build is not safe to use.
 
 ### 4. Run it
 
@@ -105,11 +104,13 @@ After that, the peer tab is green (encrypted + verified) and your typed messages
 │  IRC transport (I2P / Tor / TLS 1.3)        │
 ├─────────────────────────────────────────────┤
 │  Python orchestration layer                 │
-│  (thin wrapper, no secrets on Python heap)  │
+│  (thin wrapper, no secrets on Python heap,  │
+│   no Python cryptography library)           │
 ├─────────────────────────────────────────────┤
 │  Rust core (otrv4_core)                     │
 │  Ed448KeyHandle / X448KeyHandle             │
-│  Double Ratchet                             │
+│  verify_ed448_sig                           │
+│  Double Ratchet (X448 DH in Rust)           │
 │  DAKE state machine                         │
 │  SMP state machine                          │
 │  DakeOutput opaque handle                   │
@@ -117,21 +118,22 @@ After that, the peer tab is green (encrypted + verified) and your typed messages
 │  ZeroizeOnDrop everywhere                   │
 ├─────────────────────────────────────────────┤
 │  Pure-Rust crypto crates                    │
-│  ed448-goldilocks-plus, sha3, aes-gcm,      │
-│  pqcrypto-mlkem (FIPS 203 ML-KEM-1024),     │
-│  pqcrypto-mldsa (FIPS 204 ML-DSA-87)        │
+│  ed448-goldilocks-plus, x448, sha3,         │
+│  aes-gcm, pqcrypto-mlkem (FIPS 203          │
+│  ML-KEM-1024), pqcrypto-mldsa (FIPS 204     │
+│  ML-DSA-87)                                 │
 └─────────────────────────────────────────────┘
 ```
 
-The C extensions (`otr4_crypto_ext`, `otr4_ed448_ct`) load at startup and **remain in use throughout production code**. `otr4_crypto_ext` provides constant-time big-number arithmetic for SMP, memory wiping (`cleanse`), `mlock`, and an alternate ML-KEM-1024 keygen path used by the legacy `MLKEM1024BraceKEM` Python class. The Python `cryptography` library is also imported in production for Ed448 public-key wrapping (UI-side fingerprint display) and AES-GCM (persistent SMP-secrets store). Replacing these with pure-Rust equivalents is the subject of ROADMAP phases 5.3h, 5.3i, and 5.3k and is multi-commit work.
+As of v10.7, the Python `cryptography` library has been **fully removed** from the codebase. Every Ed448, X448, AES-256-GCM, and ML-DSA-87 operation runs inside the Rust `otrv4_core` core. There is no OpenSSL-backed Python crypto in any code path.
 
-v10.6.18 retired `otr4_mldsa_ext` (ML-DSA-87 keygen, sign, verify) in favour of `pqcrypto-mldsa 0.1.2` via the Rust `otrv4_core` module. Wire format and byte sizes are identical.
+Two C extensions (`otr4_crypto_ext`, `otr4_ed448_ct`) still load at startup and remain in use. `otr4_crypto_ext` provides constant-time big-number arithmetic for SMP, memory wiping (`cleanse`), `mlock`, `disable_core_dumps`, and an alternate ML-KEM-1024 keygen path used by the legacy `MLKEM1024BraceKEM` Python class. `otr4_ed448_ct` is loaded as a defensive ground-truth but is no longer invoked. Replacing these with pure-Rust equivalents is the subject of ROADMAP phases 5.3i and 5.3k.
 
 ## Key exchange (DAKE)
 
 Three-message handshake per OTRv4 §4.2 and §4.3. X448 ephemeral DH plus ML-KEM-1024 encapsulation. Both peers contribute entropy.
 
-The entire DAKE, including all session-key derivation, runs in Rust. X448 DH exchanges (`dh1`, `dh2`, `dh3`), ML-KEM encap and decap, MAC over the DAKE2 wire body, Ed448 ring signature verification for DAKE3, and the KDF chain that produces `root_key`, `chain_key_send`, `chain_key_recv`, `brace_key`, and `mac_key` all run inside `otrv4_core`.
+The entire DAKE, including all session-key derivation, runs in Rust. X448 DH exchanges (`dh1`, `dh2`, `dh3`), ML-KEM encap and decap, MAC over the DAKE2 wire body, Ed448 ring signature verification for DAKE3, and the KDF chain that produces `root_key`, `chain_key_send`, `chain_key_recv`, `brace_key`, and `mac_key` all run inside `otrv4_core`. The pure-Python `OTRv4DAKE` fallback that earlier versions carried was deleted in v10.7; the Rust DAKE is the only DAKE implementation.
 
 Session keys cross from DAKE into the ratchet via a Rust-only move. The `DakeOutput` PyO3 handle holds the keys in a private `RefCell<Option<DakeSessionKeys>>` with no Python-visible accessor. `consume_into_ratchet()` moves them directly into the ratchet's owned `SecretBytes` fields. Session keys are never marshalled into `PyBytes` at any point.
 
@@ -145,9 +147,11 @@ When the handle is garbage-collected, Rust's `ZeroizeOnDrop` runs and wipes the 
 
 Chain keys advance per message via SHAKE-256 KDF. DH ratchet at rekey boundaries (100 messages or 24 hours). Fresh ML-KEM-1024 keypair generated and exchanged at every DH ratchet step. Brace key rotated with each KEM shared secret. Skipped message keys cached for out-of-order delivery (max 1000 skip).
 
+As of v10.7, the ratchet's X448 Diffie-Hellman runs entirely in the Rust core via `X448KeyHandle`. The `x448` crate clamps the scalar per RFC 7748 and rejects low-order points, matching OpenSSL byte-for-byte; an RFC 7748 §5.2 known-answer test gates the build.
+
 ## Authentication
 
-Ed448 ring signatures provide deniable authentication in DAKE3. The ring signature is implemented in pure Rust using `ed448-goldilocks-plus` and `sha3` for SHAKE-256. ML-DSA-87 is appended as hybrid post-quantum auth. SMP provides out-of-band identity verification via a four-step zero-knowledge proof, all four steps in Rust with `ZeroizeOnDrop` on every exponent.
+Ed448 ring signatures provide deniable authentication in DAKE3. The ring signature is implemented in pure Rust using `ed448-goldilocks-plus` and `sha3` for SHAKE-256. ML-DSA-87 is appended as hybrid post-quantum auth. ClientProfile signature verification on incoming peers runs through the Rust `verify_ed448_sig` function. SMP provides out-of-band identity verification via a four-step zero-knowledge proof, all four steps in Rust with `ZeroizeOnDrop` on every exponent.
 
 ## Memory safety
 
@@ -164,11 +168,11 @@ Ed448 ring signatures provide deniable authentication in DAKE3. The ring signatu
 
 Every value with `ZeroizeOnDrop` is wiped when its owning Rust object is dropped. No private key material appears on the Python heap during normal session operation.
 
-## RFC 8032 build-time gate (v10.6.17)
+## RFC build-time gates
 
-Earlier versions ran a boot-time cross-verification that signed a test message with Rust Ed448 and the Python `cryptography` library and compared the byte output. v10.6.17 replaced that with hardcoded RFC 8032 §7.4 test vectors in `Rust/src/test_vectors.rs`. The `cargo test` harness signs each vector with `ed448-goldilocks-plus::SigningKey::sign_ctx()` and asserts byte equality with the published signature.
+Earlier versions ran a boot-time cross-verification that signed a test message with Rust Ed448 and the Python `cryptography` library and compared the byte output. v10.6.17 replaced that with hardcoded RFC 8032 §7.4 Ed448 test vectors in `Rust/src/test_vectors.rs`. v10.6.21 added an RFC 7748 §5.2 X448 known-answer vector in `Rust/src/key_handles.rs`. The `cargo test` harness exercises both and asserts byte equality with the published values.
 
-Run `cargo test --release --no-default-features --features pq-rust` before any release. If the test fails, do not ship the build.
+Run `cargo test --release --no-default-features --features pq-rust` before any release. If a vector test fails, the corresponding Rust crate has drifted from its RFC and the build should not ship.
 
 ## Honest caveats
 
@@ -176,11 +180,11 @@ Run `cargo test --release --no-default-features --features pq-rust` before any r
 
 2. **Built with AI assistance (Claude).** The author drove design and testing; the AI helped with implementation. Each substantive change was live-tested between two I2P peers before being committed.
 
-3. **The Rust crypto crates are not audited.** `ed448-goldilocks-plus` 0.16 is the only viable pure-Rust Ed448 implementation but has no formal review. `pqcrypto-mlkem 0.1.1` (FIPS 203 ML-KEM-1024) and `pqcrypto-mldsa 0.1.2` (ML-DSA-87) are PQClean-derived reference implementations.
+3. **The Rust crypto crates are not audited.** `ed448-goldilocks-plus` 0.16 is the only viable pure-Rust Ed448 implementation but has no formal review. `x448` 0.6 is a pure-Rust X448 with no formal review. `pqcrypto-mlkem 0.1.1` (FIPS 203 ML-KEM-1024) and `pqcrypto-mldsa 0.1.2` (ML-DSA-87) are PQClean-derived reference implementations.
 
-4. **Ephemeral identity by design.** Identity keys regenerate at every launch. Fingerprints change on every restart. This is a deliberate threat-model choice for an I2P-based privacy IRC client, not a missing feature. Tor Browser, Cwtch (default), and Briar (before user opt-in) all keep identities short-lived for similar reasons. See ROADMAP Phase 5.3g.
+4. **Two C extensions are still load-bearing in production.** The current build depends on two `.so` C extensions: `otr4_crypto_ext` (constant-time SMP big-number arithmetic, memory wiping, `mlock`, `disable_core_dumps`, and the legacy `MLKEM1024BraceKEM` keygen path) and `otr4_ed448_ct` (loaded as a defensive ground-truth, no longer invoked). Dropping these is the subject of ROADMAP phases 5.3i and 5.3k. The Python `cryptography` library, by contrast, has been **fully removed** as of v10.7 — see the CHANGELOG for the v10.6.18 through v10.7 sequence that retired it.
 
-5. **Two C extensions and a narrower cryptography library use are still load-bearing in production.** Despite the pure-Rust direction, the current build depends on two `.so` C extensions (`otr4_crypto_ext`, `otr4_ed448_ct`) and a subset of the Python `cryptography` library for memory wiping, constant-time SMP arithmetic, X448 ratchet operations, ClientProfile signature verification, and byte-format conversions. Dropping these is the subject of ROADMAP phases 5.3h (in progress), 5.3i, and 5.3k. v10.6.18 retired `otr4_mldsa_ext` (ML-DSA-87 is pure Rust). v10.6.19 retired the `AESGCM` and `hashes` imports from the cryptography library (AES-GCM is pure Rust) and replaced six `Ed448PublicKey.from_public_bytes` wrap sites with raw-bytes handling. Remaining cryptography library uses are `ed448.Ed448PublicKey.from_public_bytes(...).verify(...)` for `ClientProfile.decode()` signature verification (one production site), `x448` (ratchet DH and legacy DAKE), and `serialization` (~20 byte-conversion sites).
+5. **Ephemeral identity by design.** Identity keys regenerate at every launch. Fingerprints change on every restart. This is a deliberate threat-model choice for an I2P-based privacy IRC client, not a missing feature. Tor Browser, Cwtch (default), and Briar (before user opt-in) all keep identities short-lived for similar reasons. See ROADMAP Phase 5.3g.
 
 6. **Wire-incompatible with stock OTRv4.** Implementations such as `pidgin-otr4` and CoyIM cannot talk to OTRv4+. The ML-DSA-87 extension, the ML-KEM-1024 brace key, and the SHAKE-256 transcript hashing are OTRv4+ additions and there is no negotiation path.
 

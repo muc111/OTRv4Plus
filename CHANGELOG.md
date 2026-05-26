@@ -4,15 +4,153 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
-## v10.6.19 (current) — Phase 5.3h, parts A2 + B + C
+## v10.7 (current) — Phase 5.3h-D complete: Python cryptography library fully removed
+
+**The Python `cryptography` library is no longer imported or used in any code path. Every asymmetric and symmetric cryptographic operation runs in the Rust `otrv4_core` core.**
+
+v10.7 is the final stage of Phase 5.3h-D. Stages 1 and 2 (v10.6.20, v10.6.21) moved the last two live cryptography-library uses — Ed448 verification and the X448 ratchet DH — into Rust. v10.7 removes the dead code that still referenced the library and deletes the import.
+
+### What was removed
+
+**The pure-Python `OTRv4DAKE` fallback class — 863 lines.** This class was the original Python DAKE implementation, kept as a fallback for builds without the Rust core. It was already uninstantiable in practice:
+
+- `RustDAKEAdapter.__init__` either succeeds with the Rust backend or raises `RuntimeError`. It never constructs `OTRv4DAKE`. The `_use_rust` flag was always `True` by the time any adapter method ran.
+- The Rust ratchet (`RUST_RATCHET_AVAILABLE`) and Rust SMP have been mandatory since v10.6.11 — a build without the Rust core raises long before any DAKE fallback could matter. The Python DAKE could never actually carry a session to completion.
+
+So `OTRv4DAKE` was ~860 lines of unreachable code plus, in `RustDAKEAdapter`, 12 dead `if not self._use_rust: return self._py_fallback.…` branches. All deleted.
+
+**The `_use_rust` / `_py_fallback` machinery.** 12 dead guard blocks, the `self._use_rust` / `self._py_fallback` field declarations, the dangling end-of-`__init__` fail-fast block, and the `MLDSA87_AVAILABLE and self._use_rust` guard simplified to `MLDSA87_AVAILABLE`. Three debug-tag sites that read `_use_rust` for a "🦀/🐍" label are hardcoded to Rust.
+
+**The cryptography library import.** The top-of-file block
+
+```python
+try:
+    from cryptography.hazmat.primitives.asymmetric import ed448, x448
+    from cryptography.hazmat.primitives import serialization
+    ...
+```
+
+is gone, replaced by a comment recording that all crypto is now Rust-side.
+
+### What was rescued and rewritten
+
+**`_safe_b64decode`** was a `@staticmethod` on `OTRv4DAKE` with five callers (three inside the deleted class, two elsewhere — `_handle` paths around lines 11116 and 12497). It is lifted to a module-level function defined before `class DAKE1RateLimiter:`. All five callers repointed from `OTRv4DAKE._safe_b64decode(...)` to the bare `_safe_b64decode(...)`.
+
+**`ClientProfile.__init__`** previously accepted legacy `ed448.Ed448PrivateKey` / `x448.X448PrivateKey` arguments and converted them to Rust handles via `isinstance` branches (a test-only path). Those branches are deleted (option B1): `ClientProfile` now accepts only `None` (generate a fresh Rust handle) or an already-constructed handle. The cryptography-library type hints on the `__init__` signature are stripped. Every runtime `ClientProfile()` call site constructs with no arguments, so nothing in production is affected.
+
+**Four `serialization.Raw` sites removed.** `remote_long_term_pub` has held raw 57-byte Ed448 public-key bytes since v10.6.19 (Phase 5.3h-C), so the `.public_bytes(encoding=serialization.Encoding.Raw, format=serialization.PublicFormat.Raw)` calls in `get_fingerprint()`, `_get_remote_fp()`, and the two `pub_key_data` extraction sites were operating on raw bytes anyway (their surrounding `try/except` swallowed the `AttributeError`). Replaced with direct `bytes(...)` use. The `remote_long_term_pub` type hint changed from `Optional[ed448.Ed448PublicKey]` to `Optional[bytes]`.
+
+### Net effect
+
+883 lines removed from `otrv4+.py`. No Rust changes — the Rust core was already complete at the v10.6.21 state. The crypto surface of the project is now Rust (`otrv4_core`) plus two C extensions (`otr4_crypto_ext`, `otr4_ed448_ct`) slated for removal in Phase 5.3i / 5.3k. There is no OpenSSL-backed Python crypto anywhere.
+
+### Files touched
+
+- `otrv4+.py`: deleted `OTRv4DAKE` class and `_use_rust`/`_py_fallback` machinery; rescued `_safe_b64decode` to module scope; rewrote `ClientProfile.__init__` (B1); removed four `serialization.Raw` sites; removed the `from cryptography...` import; VERSION → `10.7`
+- `README.md`: chip → v10.7; architecture box notes the library is removed; caveat about the cryptography library replaced; Quick start drops the `pip install cryptography` step
+- `SECURITY.md`: known-issue 3 rewritten — the cryptography library is gone, with the v10.6.18→v10.7 removal sequence documented; memory-safety model updated
+- `ROADMAP.md`: Phase 5.3h-D marked complete; 5.3i is now the largest remaining hardening item
+- `FEATURES.md`: primitive table no longer lists any cryptography-library implementation
+- `CHANGELOG.md`: this entry
+
+### Build verification
+
+```
+cargo test --release --no-default-features --features pq-rust
+# expected: 17 passed (5 ring_sig + 1 RFC 8032 Ed448 + 3 mldsa + 3 aead
+#                      + 3 key_handles Ed448 + 2 X448)
+```
+
+`python otrv4+.py --debug` boots to the connect screen with no `NameError` or `ImportError` — the boot-check that confirms every reference to the deleted class and removed imports was caught. Live: DAKE + SMP verified over I2P.
+
+---
+
+## v10.6.21 — Phase 5.3h-D stage 2: X448 ratchet DH moved to Rust
+
+**The double ratchet's X448 Diffie-Hellman now runs in the Rust core. No Python cryptography-library X448 remains in the message path.**
+
+`RustBackedDoubleRatchet` performed its DH ratchet steps with `cryptography.x448` — `X448PrivateKey.generate()`, `.exchange()`, `X448PublicKey.from_public_bytes()` — running on every message after the first. These now use the Rust `otrv4_core` `X448KeyHandle`.
+
+**No new Rust crypto.** `generate_x448_keypair()` and `X448KeyHandle.dh()` already existed (used by `ClientProfile` since the v10.6.12 handle work) and were already registered in `lib.rs`. Stage 2 was a Python swap plus two Rust test vectors.
+
+### Python changes (seven edits in `RustBackedDoubleRatchet`)
+
+- `__init__` and `from_dake_output`: `dh_ratchet_local` is now an `X448KeyHandle` from `generate_x448_keypair()`; `dh_ratchet_local_pub` from `handle.public_bytes()`.
+- `_decrypt_new_dh`: receive-side and send-side DH via `handle.dh(peer_pub_bytes)`, which takes the raw 56-byte peer key directly.
+- `_ratchet`: send-side forced ratchet step, same swap.
+- The first-message remote-pub record stores raw 56 bytes only; `dh_ratchet_remote` (the object) is set to `None` — it was never read anywhere, every consumer uses `dh_ratchet_remote_pub` (the bytes).
+
+### Correctness
+
+X448 is RFC 7748 and fully deterministic — a given (clamped scalar, u-coordinate) pair has exactly one correct output. The `x448` crate clamps the scalar inside `Secret::from` (RFC 7748: `byte0 &= 252`, `byte55 |= 128`) and rejects low-order points, matching OpenSSL's behaviour. A v10.6.21 peer and an older cryptography-library peer therefore derive byte-identical DH secrets and the ratchet stays in sync.
+
+Two Rust tests added to `key_handles.rs` as the build-time desync guard:
+
+- `x448_rfc7748_known_answer` — the `x448` crate reproduces RFC 7748 §5.2's published X448 test vector. Since OpenSSL also implements RFC 7748, matching the vector means the two agree.
+- `x448_handle_dh_is_symmetric` — two generated handles derive the same shared secret from each other.
+
+### Files touched
+
+- `Rust/src/key_handles.rs`: added `x448_rfc7748_known_answer` and `x448_handle_dh_is_symmetric` tests
+- `Rust/Cargo.toml`: version 0.10.20 → 0.10.21
+- `otrv4+.py`: seven ratchet edits; VERSION → `10.6.21`
+
+### Build verification
+
+```
+cargo test --release --no-default-features --features pq-rust
+# expected: 17 passed (15 prior + 2 X448)
+```
+
+Live: DAKE + sustained multi-message exchange both directions over I2P, across 5+ DH-ratchet epochs (DATA ratchet counter stepped 0→5). Every message decrypted clean — the proof that the Rust X448 swap is byte-correct against a live peer. The test spanned multiple I2P transport disconnects; the ratchet stayed in sync across them.
+
+---
+
+## v10.6.20 — Phase 5.3h-D stage 1: ClientProfile Ed448 verify moved to Rust
+
+**The last security-critical Ed448 operation that used the Python cryptography library now runs in Rust.**
+
+`ClientProfile.decode()` verified incoming-peer profile signatures with `ed448.Ed448PublicKey.from_public_bytes(pub).verify(sig, signed_data)`. It now calls a new Rust PyO3 function, `otrv4_core.verify_ed448_sig(pub_bytes, msg, sig_bytes) -> bool`.
+
+### Correctness
+
+`verify_ed448_sig` wraps `VerifyingKey::verify_raw` — the inherent pure-Ed448 verifier from `ed448-goldilocks-plus` 0.16. This is the exact counterpart of `Ed448KeyHandle::sign`, which calls `SigningKey::sign_raw`. ClientProfile signatures are produced by that same handle's `sign()` method (`encode()`, the `self.identity_key.sign(...)` call), so signer and verifier now use identical RFC 8032 pure-Ed448 framing with an empty context. A profile signed by any v10.6.x build verifies unchanged.
+
+`verify_ed448_sig` returns `False` on a failed verification (bad signature, public key not a valid curve point) and raises `ValueError` only on structurally malformed input (wrong public-key or signature length), so the Python caller can distinguish a forged profile from malformed bytes.
+
+### Crate API note
+
+The `ed448-goldilocks-plus` 0.16 `VerifyingKey` is constructed via `VerifyingKey::from_bytes(&[u8; 57])`, not a `TryFrom<&[u8; 57]>` impl (the `TryFrom<PublicKeyBytes>` impl the compiler suggests is a pkcs8 wrapper). `Signature` is built from a slice via `Signature::try_from(&[u8])`, which checks length internally. Both were confirmed against the installed crate source rather than assumed.
+
+### Files touched
+
+- `Rust/src/key_handles.rs`: added `verify_ed448_sig` PyO3 function, a `#[cfg(test)]` module with three tests (`ed448_sign_then_verify_roundtrip`, `ed448_verify_rejects_tampered_msg`, `ed448_verify_rejects_bad_lengths`), and the `VerifyingKey` / `Signature` imports
+- `Rust/src/lib.rs`: registered `verify_ed448_sig`
+- `Rust/Cargo.toml`: version 0.10.19 → 0.10.20
+- `otrv4+.py`: `ClientProfile.decode()` swaps to `_RustDAKE_module.verify_ed448_sig`; `_check_rust_requirements` requires it; VERSION → `10.6.20`
+
+The `ed448` cryptography-library import was **not** removed at v10.6.20 — the legacy non-Rust DAKE paths still referenced it. It was removed at v10.7 when the dead `OTRv4DAKE` class that contained those paths was deleted.
+
+### Build verification
+
+```
+cargo test --release --no-default-features --features pq-rust
+# expected: 15 passed (12 prior + 3 key_handles Ed448)
+```
+
+Live: DAKE completes; the peer's ClientProfile signature verifies through the Rust path.
+
+---
+
+## v10.6.19 — Phase 5.3h, parts A2 + B + C
 
 **Three of four production `cryptography` library use-classes retired. New Rust AEAD module. Startup migration for legacy orphan files.**
 
 ### Phase 5.3h scope reality check
 
-Phase 5.3h was originally scoped as "one focused session, ~100-150 lines."  Diagnostic showed this estimate was off by an order of magnitude: the `cryptography` library has 4 use classes (AESGCM, Ed448PublicKey, X448PrivateKey/PublicKey, serialization.Raw), totalling 40+ call sites with deep coupling to the ratchet's DH path.
+Phase 5.3h was originally scoped as "one focused session, ~100-150 lines." Diagnostic showed this estimate was off by an order of magnitude: the `cryptography` library has 4 use classes (AESGCM, Ed448PublicKey, X448PrivateKey/PublicKey, serialization.Raw), totalling 40+ call sites with deep coupling to the ratchet's DH path.
 
-v10.6.19 ships the three smaller sub-phases (A2 + B + C).  The fourth (Part D — drop X448 and serialization.Raw) is multi-session and rescheduled.  See ROADMAP for the corrected split.
+v10.6.19 ships the three smaller sub-phases (A2 + B + C). The fourth (Part D — drop Ed448 verify, X448, and serialization.Raw) was multi-session and rescheduled; it shipped across v10.6.20, v10.6.21, and v10.7.
 
 ### Part A2 — legacy on-disk file cleanup
 
@@ -22,9 +160,7 @@ Startup migration in `main()` securely destroys orphan files from pre-`~/.otrv4p
 - `~/.otrv4_smp_secrets.json` (97 bytes, legacy SMP-secrets file at home root)
 - `~/.otrv4_keys/` (legacy keys directory)
 
-Uses the existing `_secure_file_destroy()` NIST SP 800-88r1 primitive: encrypt zeros with a fresh AES-256-GCM key, overwrite the file with ciphertext + tag, fsync, zeroize the key via `_ossl.cleanse`, then unlink.  No-op for new installs.
-
-This brings the orphan files under the same Tails-mode "no trace on quit" design as `~/.otrv4plus/` itself.
+Uses the existing `_secure_file_destroy()` NIST SP 800-88r1 primitive: encrypt zeros with a fresh AES-256-GCM key, overwrite the file with ciphertext + tag, fsync, zeroize the key via `_ossl.cleanse`, then unlink. No-op for new installs.
 
 ### Part B — AES-256-GCM moved to Rust
 
@@ -33,79 +169,23 @@ New `Rust/src/aead.rs` exposes two PyO3 functions:
 - `otrv4_core.aes256gcm_encrypt(key, nonce, plaintext, aad) -> bytes`
 - `otrv4_core.aes256gcm_decrypt(key, nonce, ct_and_tag, aad) -> bytes`
 
-Wraps the `aes-gcm` 0.10 crate (already in `Cargo.toml` for the ratchet path).  Wire-identical to `cryptography.hazmat.primitives.ciphers.aead.AESGCM`: encrypt output is `ciphertext || 16-byte tag`, decrypt accepts the same.
+Wraps the `aes-gcm` 0.10 crate. Wire-identical to `cryptography.hazmat.primitives.ciphers.aead.AESGCM`. Three live AESGCM call sites swapped: `SMPAutoRespondStorage._load/_save`, `SecureKeyStorage._encrypt_key/_decrypt_key`, and `_secure_file_destroy`. Files written by v10.6.18 decrypt cleanly under v10.6.19. Three new Rust unit tests.
 
-Three live AESGCM call sites swapped:
+### Part C — Ed448PublicKey wrap removed at six live sites
 
-- `SMPAutoRespondStorage._load` and `_save` (encrypted SMP-secrets persistence)
-- `SecureKeyStorage._encrypt_key` and `_decrypt_key` (encrypted key storage)
-- `_secure_file_destroy` (the secure-wipe primitive itself — last remaining holdout)
-
-Migration compatibility: files written by v10.6.18's `AESGCM(key).encrypt(...)` decrypt cleanly under v10.6.19's `aes256gcm_decrypt(...)`.  Same FIPS 197 AES-256, same NIST SP 800-38D GCM, same byte format.
-
-Three new Rust unit tests (`aead::tests`): roundtrip, wrong-AAD-rejected, tampered-ciphertext-rejected.
-
-### Part C — Ed448PublicKey wrap removed at SIX live sites (RustDAKEAdapter + OTRv4IRCClient)
-
-Six `Ed448PublicKey.from_public_bytes(...)` call sites swapped from cryptography library wrapping to raw bytes (or `None` where the bytes path takes over):
-
-**Three sites in `RustDAKEAdapter`** at the post-DAKE1, post-DAKE2-Rust, and post-DAKE2-legacy paths.  Each wrapped the peer's raw 57-byte identity pub into `Ed448PublicKey` stored as `self.remote_identity_key`.  Diagnostic showed the attribute is only consumed by `session_keys['peer_long_term_key']` dict entries which are never read by any downstream code.  v10.6.19 keeps the attribute name and stores raw bytes; type hint widened from `Optional[ed448.Ed448PublicKey]` to `Optional[Any]`.
-
-**Three sites in `OTRv4IRCClient`** (DAKE2-initiator-establish, DAKE3-responder-establish, post-establish retry).  Each wrapped `session_keys['peer_long_term_pub']` (raw bytes) into `Ed448PublicKey` stored as `session.remote_long_term_pub`.  Used downstream at `get_fingerprint()` (~line 7220) and `_get_remote_fp` (~line 12860) only to call `.public_bytes()` on the object to extract the same bytes back, then SHA3-512 them for fingerprint.  Both call sites already have a fallback path that computes SHA3-512 directly from `_remote_long_term_pub_bytes` if `remote_long_term_pub` is None.
-
-v10.6.19 sets `session.remote_long_term_pub = None` at all three sites; the fallback `_remote_long_term_pub_bytes` path produces an identical SHA3-512 fingerprint without the cryptography library round-trip.  Legacy-non-Rust branch (where `pub_key_data` is already an `Ed448PublicKey` object rather than bytes) is preserved untouched.
-
-The third retry-wrap site (`if remote_long_term_pub is None and bytes is not None: wrap`) is deleted entirely — the comment explains the bytes path handles it.
+Six `Ed448PublicKey.from_public_bytes(...)` call sites (three in `RustDAKEAdapter`, three in `OTRv4IRCClient`) swapped from cryptography-library wrapping to raw bytes. `remote_identity_key` and `remote_long_term_pub` now hold raw bytes; the SHA3-512 fingerprint path uses the bytes mirror directly.
 
 ### `cryptography` library import diet
 
-Top-of-file imports before v10.6.19:
-
-```python
-from cryptography.hazmat.primitives.asymmetric import ed448, x448
-from cryptography.hazmat.primitives import serialization, hashes
-from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-```
-
-After v10.6.19:
-
-```python
-from cryptography.hazmat.primitives.asymmetric import ed448, x448
-from cryptography.hazmat.primitives import serialization
-```
-
-Dropped: `AESGCM` (replaced by Rust), `hashes` (confirmed unused by grep audit).
-
-**`ed448` import remains** — not removed in v10.6.19 despite the earlier scope estimate.  Reason: `ClientProfile.decode()` at line ~2644 uses `ed448.Ed448PublicKey.from_public_bytes(...).verify(...)` for incoming-profile signature verification.  This is a security-critical code path; replacing it cleanly needs a new Rust PyO3 `verify_ed448_sig(pub, msg, sig) -> bool` function plus a focused test cycle.  Scheduled for Phase 5.3h-D.
-
-What v10.6.19 DID drop with respect to `ed448`:
-- Three `Ed448PublicKey.from_public_bytes` sites in `RustDAKEAdapter` (the `self.remote_identity_key` wraps)
-- Three `Ed448PublicKey.from_public_bytes` sites in `OTRv4IRCClient._handle_dake*` (the `session.remote_long_term_pub` wraps)
-
-Remaining live `ed448` use: one site at ~2644 for ClientProfile signature verification, plus legacy non-Rust DAKE paths at ~3794 and ~3988 (gated by `not self._use_rust`, never fires in v10.6.11+ production).
-
-`x448` (ratchet DH and legacy DAKE), `serialization` (~20 byte-conversion sites): also still present; addressed in 5.3h-D.
+Dropped `AESGCM` (replaced by Rust) and `hashes` (confirmed unused). The `ed448` and `x448` imports remained at v10.6.19; they were removed later in Phase 5.3h-D.
 
 ### Files touched
 
 - `Rust/src/aead.rs`: new file, ~165 lines including tests
 - `Rust/src/lib.rs`: added `pub mod aead;` and two `add_function` registrations
-- `Rust/Cargo.toml`: version 0.10.18 → 0.10.19 (no new deps; aes-gcm already pulled)
-- `otrv4+.py`:
-   - Top-of-file: dropped `AESGCM` and `hashes` imports
-   - `_secure_file_destroy`: line 383 AESGCM swapped to Rust aead
-   - `SMPAutoRespondStorage._load` (~5360) and `_save` (~5406): AESGCM swapped to Rust aead
-   - `SecureKeyStorage._encrypt_key` (~5210) and `_decrypt_key` (~5226): AESGCM swapped to Rust aead
-   - `RustDAKEAdapter`: three `Ed448PublicKey.from_public_bytes` sites at ~4671, ~4814, ~4846 replaced with raw-bytes assignment
-   - Type hint at line ~3542: `Optional[ed448.Ed448PublicKey]` → `Optional[Any]`
-   - `_check_rust_requirements`: required `aes256gcm_encrypt` and `aes256gcm_decrypt` on otrv4_core module
-   - `main()`: startup migration to securely destroy `~/.otrv4_vault`, `~/.otrv4_smp_secrets.json`, `~/.otrv4_keys/`
-   - VERSION → `10.6.19`
-- `README.md`: chip update; caveat 5 narrowed (cryptography lib subset)
-- `SECURITY.md`: caveat 4 updated to mention v10.6.19's three-class drop
-- `ROADMAP.md`: Phase 5.3h split into A2/B/C (shipped) and D (pending, multi-session)
-- `CHANGELOG.md`: this entry
-- `FEATURES.md`: AES-256-GCM row points to `aes-gcm` Rust crate only
+- `Rust/Cargo.toml`: version 0.10.18 → 0.10.19
+- `otrv4+.py`: AESGCM/hashes imports dropped; three AESGCM sites swapped; six Ed448PublicKey wrap sites replaced; `_check_rust_requirements` requires the aead functions; startup orphan-file migration; VERSION → `10.6.19`
+- `README.md`, `SECURITY.md`, `ROADMAP.md`, `CHANGELOG.md`, `FEATURES.md`: updated
 
 ### Build verification
 
@@ -113,8 +193,6 @@ Remaining live `ed448` use: one site at ~2644 for ClientProfile signature verifi
 cargo test --release --no-default-features --features pq-rust
 # expected: 12 passed (5 ring_sig + 1 RFC 8032 + 3 mldsa + 3 aead)
 ```
-
-Live wire-test still produces `hybrid (ring-sig ✓ + ML-DSA-87 ✓)` on DAKE3 verification.  SMP auto-respond still loads cleanly from a pre-existing encrypted secrets file.
 
 ---
 
@@ -128,11 +206,11 @@ The new Rust module `Rust/src/mldsa.rs` is a thin PyO3 wrapper over `pqcrypto-ml
 
 ### Wire format
 
-Byte-identical to v10.6.17. Both v10.6.17 and v10.6.18 peers can DAKE with each other — same FIPS 204 ML-DSA-87 parameter set, same PQClean reference implementation underneath. The C extension and the Rust crate are both PQClean-derived; outputs match bit-for-bit.
+Byte-identical to v10.6.17. Both v10.6.17 and v10.6.18 peers can DAKE with each other — same FIPS 204 ML-DSA-87 parameter set, same PQClean reference implementation underneath.
 
 ### Cargo.toml hardening
 
-`pqcrypto-mldsa` is pinned to `default-features = false, features = ["std"]` to disable AVX2 and NEON SIMD code paths. Same trap that hit `pqcrypto-mlkem` in v10.6.16: the NEON path triggers `SIGILL` on Termux/aarch64 at first `mldsa87_keygen()` call. Portable C reference is used.
+`pqcrypto-mldsa` is pinned to `default-features = false, features = ["std"]` to disable AVX2 and NEON SIMD code paths. Same trap that hit `pqcrypto-mlkem` in v10.6.16: the NEON path triggers `SIGILL` on Termux/aarch64 at first `mldsa87_keygen()` call.
 
 ### Phase 5.3g — ephemeral identity (DECIDED)
 
@@ -142,11 +220,8 @@ After consideration, OTRv4+ keeps ephemeral identities by design. Fingerprints r
 - `Rust/src/mldsa.rs`: new file, ~120 lines including tests
 - `Rust/src/lib.rs`: added `pub mod mldsa;` and three `add_function` registrations
 - `Rust/Cargo.toml`: pqcrypto-mldsa pinned to `default-features = false`, version 0.10.17 → 0.10.18
-- `otrv4+.py`: removed `import otr4_mldsa_ext as _mldsa` block; `MLDSA87_AVAILABLE` reduced to a hardcoded `True` so the four wire-format guards stay structurally unchanged; three `_mldsa.*` calls in `MLDSA87Auth` swapped to `_RustDAKE_module.*`; `_check_rust_requirements` now requires `mldsa87_keygen/sign/verify` on the otrv4_core module; VERSION → `10.6.18`
-- `README.md`: drop `gcc -o otr4_mldsa_ext.so` from Quick start; chip updated; caveats 4/5/7 updated; architecture box mentions FIPS 204 for ML-DSA
-- `SECURITY.md`: caveat 4 (C extensions) updated to two remaining; new caveat 5 documents ephemeral-by-design rationale
-- `ROADMAP.md`: Phase 5.3j marked shipped; Phase 5.3g rewritten as "decided: ephemeral by design" with rationale; Phase 5.3k note updated to mention `otr4_mldsa_ext` can be archived
-- `FEATURES.md`: ML-DSA-87 row points to `pqcrypto-mldsa` only
+- `otrv4+.py`: removed `import otr4_mldsa_ext as _mldsa` block; `MLDSA87_AVAILABLE` reduced to a hardcoded `True`; three `_mldsa.*` calls in `MLDSA87Auth` swapped to `_RustDAKE_module.*`; `_check_rust_requirements` now requires `mldsa87_keygen/sign/verify`; VERSION → `10.6.18`
+- `README.md`, `SECURITY.md`, `ROADMAP.md`, `FEATURES.md`: updated
 
 ### Build verification
 
@@ -161,36 +236,17 @@ cargo test --release --no-default-features --features pq-rust
 
 **Boot-time cross-verify removed; RFC 8032 vectors now build-time gate.**
 
-The Python boot helpers `_verify_ed448_rust_compat()` and `_verify_ring_sig_rust_compat()` are deleted. They previously generated a fresh Ed448 keypair via the cryptography library at every program start, signed a test message with both Rust and OpenSSL, and compared byte-for-byte. The ring-sig helper additionally invoked the C extension's `ring_sign`/`ring_verify` to confirm two-way wire-format compatibility with Rust.
+The Python boot helpers `_verify_ed448_rust_compat()` and `_verify_ring_sig_rust_compat()` are deleted. They previously generated a fresh Ed448 keypair via the cryptography library at every program start, signed a test message with both Rust and OpenSSL, and compared byte-for-byte.
 
-Both functions and all four call sites (in `RingSignature.sign`, `RingSignature.verify`, `ClientProfile.encode`, `RustDAKEAdapter`) are removed. Their guard-clause `RuntimeError` raises are also gone.
+Both functions and all four call sites are removed. Replacement: `Rust/src/test_vectors.rs` contains the RFC 8032 §7.4 "Blank" Ed448 vector as `const` arrays and a `#[cfg(test)]` harness that signs with `ed448-goldilocks-plus::SigningKey` and asserts byte-equality.
 
-Replacement: `Rust/src/test_vectors.rs` contains the RFC 8032 §7.4 "Blank" Ed448 vector as `const` arrays and a `#[cfg(test)]` harness that signs with `ed448-goldilocks-plus::SigningKey` and asserts byte-equality. Before any release:
-
-```
-cargo test --release --no-default-features --features pq-rust
-```
-
-If the test fails, the Rust Ed448 implementation has drifted from RFC 8032 and the build is not safe to ship.
-
-**Boot is faster** (saves ~200ms of keypair-gen + Ed448 sign + ring-sig two-way check). Six obsolete boot-print lines no longer appear.
-
-### Important — what this does NOT change
-
-The C extensions (`otr4_crypto_ext`, `otr4_mldsa_ext`) and the Python `cryptography` library are **still load-bearing in production**. They were not previously dead, contrary to earlier documentation:
-
-- `otr4_crypto_ext` is invoked from 20+ runtime sites (memory wiping, constant-time big-num arithmetic for SMP, ML-KEM keygen/encap/decap in the legacy `MLKEM1024BraceKEM` Python class, `mlock`, `disable_core_dumps`).
-- `otr4_mldsa_ext` is invoked for all ML-DSA-87 keygen/sign/verify.
-- The `cryptography` library is invoked for Ed448 public-key wrapping in three DAKE post-processing sites (UI-side `remote_identity_key` for fingerprint display), and for AES-GCM in the persistent SMP secrets store.
-
-Removing these is multi-phase work tracked as Phase 5.3h, 5.3i, 5.3j, 5.3k on the ROADMAP.
+**Boot is faster** (saves ~200ms). Six obsolete boot-print lines no longer appear.
 
 ### Files touched
-- `otrv4+.py`: deleted ~150 lines (two helper functions, two globals, two boot comment blocks, four call sites). Updated three docstrings. VERSION → `10.6.17`.
+- `otrv4+.py`: deleted ~150 lines. VERSION → `10.6.17`.
 - `Rust/src/test_vectors.rs`: new file, ~100 lines.
 - `Rust/src/lib.rs`: added `pub mod test_vectors;`.
 - `Rust/Cargo.toml`: version 0.10.16 → 0.10.17.
-- README.md, SECURITY.md, ROADMAP.md: corrected previously-inaccurate claims about C extensions and the cryptography library being "not invoked at runtime".
 
 ---
 
@@ -198,25 +254,15 @@ Removing these is multi-phase work tracked as Phase 5.3h, 5.3i, 5.3j, 5.3k on th
 
 **`pqcrypto-kyber 0.8` (round-3 Kyber) replaced by `pqcrypto-mlkem 0.1.1` (FIPS 203 ML-KEM-1024).**
 
-NIST finalised FIPS 203 in August 2024. The standard differs from round-3 Kyber in the Fujisaki-Okamoto domain-separator constants; algorithms and parameter sizes are otherwise identical (same lattice, same 1568/3168/1568-byte pk/sk/ct, 32-byte shared secret).
-
-The `pqcrypto-mlkem` Rust API is drop-in compatible with `pqcrypto-kyber`:
-
-```rust
-pub fn keypair() -> (PublicKey, SecretKey)
-pub fn encapsulate(pk: &PublicKey) -> (SharedSecret, Ciphertext)
-pub fn decapsulate(ct: &Ciphertext, sk: &SecretKey) -> SharedSecret
-```
-
-The `(SharedSecret, Ciphertext)` return-tuple footgun is preserved; the wrapper in `dake.rs` swaps to `(ct, ss)` for caller convenience as before.
+NIST finalised FIPS 203 in August 2024. The standard differs from round-3 Kyber in the Fujisaki-Okamoto domain-separator constants; algorithms and parameter sizes are otherwise identical. The `pqcrypto-mlkem` Rust API is drop-in compatible with `pqcrypto-kyber`.
 
 ### Cargo.toml carve-out
 
-The `pqcrypto-mlkem` crate defaults to `["avx2", "neon", "std"]` features. On Termux/aarch64, the NEON path caused SIGILL at first `keypair()` call (an ARMv8 instruction extension not universally available). Pinned to `default-features = false, features = ["std"]` to select the portable PQClean C reference. Performance impact is invisible at session scale (ML-KEM runs once per DAKE).
+Pinned to `default-features = false, features = ["std"]` to select the portable PQClean C reference — the NEON path caused SIGILL at first `keypair()` call on Termux/aarch64.
 
 ### Wire compatibility
 
-**Wire-incompatible with v10.6.15 and earlier.** Both peers must run v10.6.16+ to DAKE. Acceptable since OTRv4+ has no external users.
+Wire-incompatible with v10.6.15 and earlier. Both peers must run v10.6.16+.
 
 ### Files touched
 - `Rust/Cargo.toml`: dependency swap, version 0.10.14 → 0.10.16.
@@ -228,22 +274,7 @@ The `pqcrypto-mlkem` crate defaults to `["avx2", "neon", "std"]` features. On Te
 
 **Latent silent build break exposed by `cargo clean`.**
 
-An earlier hardening pass had set `ed448-goldilocks-plus` to `default-features = false, features = ["alloc"]`. This silently dropped the `signing` feature (which gates `SigningKey` export) and `pkcs8` (which `signing` transitively requires via an unconditional `pub use pkcs8;` in `sign.rs`).
-
-Every use of `ed448_goldilocks_plus::SigningKey` in `dake.rs` and `key_handles.rs` would fail to compile. The break was latent because the live `.so` from the previous successful build (pre-change) kept running as long as no `cargo build` was actually forced. `cargo clean` exposed it.
-
-Fix:
-
-```toml
-ed448-goldilocks-plus = {
-    version          = "0.16",
-    optional         = true,
-    default-features = false,
-    features         = ["alloc", "signing", "pkcs8"],
-}
-```
-
-This restored the Phase 5.3e (v10.6.12) Rust handle architecture as genuinely-live for the first time.
+An earlier hardening pass had set `ed448-goldilocks-plus` to `default-features = false, features = ["alloc"]`, silently dropping `signing` (which gates `SigningKey`) and `pkcs8`. The break was latent because the live `.so` kept running until a `cargo build` was forced. Fix restored `features = ["alloc", "signing", "pkcs8"]`.
 
 ---
 
@@ -251,22 +282,13 @@ This restored the Phase 5.3e (v10.6.12) Rust handle architecture as genuinely-li
 
 **Tie-break by fingerprint when both peers run `/smp start` simultaneously.**
 
-OTRv4 SMP is not symmetric: one side must initiate, the other must respond. If both peers run `/smp start` near-simultaneously, each generates SMP1 locally before either receives the other's SMP1. Each side then receives SMP1 while its own Rust SMP engine is in `AwaitingMsg2`, and the engine correctly rejects with "SMP not in Idle for SMP1".
-
-Resolution: at SMP1 receive, if the engine is in non-Idle phase, compare identity public bytes:
-
-- Lower fingerprint keeps initiator role; ignores incoming SMP1.
-- Higher fingerprint yields: aborts its own `RustSMP`, rebuilds the engine fresh, rebinds the secret from the still-populated `RustSMPVault` (vault is a separate object, holding the secret independently of the SMP state machine), processes the incoming SMP1 as responder.
-
-The vault-based persistence is what makes this clean. No re-prompting for the secret.
+If both peers run `/smp start` near-simultaneously, each generates SMP1 locally before either receives the other's. Resolution: at SMP1 receive, if the engine is non-Idle, compare identity public bytes — lower fingerprint keeps initiator role, higher fingerprint yields, aborts its own `RustSMP`, rebuilds fresh, rebinds the secret from the `RustSMPVault`, and processes the incoming SMP1 as responder.
 
 ---
 
 ## v10.6.14 — `lazy_static` → `std::sync::LazyLock`
 
-RustSec lists `lazy_static 1.5` as unmaintained. Replaced with stdlib `LazyLock` (stable since Rust 1.80, August 2024). Three statics in `smp.rs` (`SMP_PRIME`, `SMP_ORDER`, `SMP_GEN`) converted; all 31 call sites unchanged because `LazyLock<T>: Deref<Target=T>` matches the old proxy behaviour exactly.
-
-MSRV raised to 1.80+. Current build uses 1.94.1.
+RustSec lists `lazy_static 1.5` as unmaintained. Replaced with stdlib `LazyLock` (stable since Rust 1.80). Three statics in `smp.rs` converted; all 31 call sites unchanged. MSRV raised to 1.80+.
 
 ---
 
@@ -274,23 +296,7 @@ MSRV raised to 1.80+. Current build uses 1.94.1.
 
 **SMP regression fix from v10.6.12.**
 
-v10.6.12 left seven Python call sites using the legacy cryptography library `.public_key().public_bytes(...)` chain on what was now a Rust handle. Handles do not have `.public_key()` (they expose `.public_bytes()` directly), so the chain raised `AttributeError` at runtime.
-
-Most of those sites were silenced by surrounding `except` blocks and either fell back to the cached `identity_pub_bytes` (correct path) or did not fire. One site, `EnhancedOTRSession.set_smp_secret`, read the local fingerprint through the broken chain unconditionally and silently fell back to an empty bytes literal as `local_fp`. Both peers then computed `secret_hash = SHA3(b'' || remote_fp || password)`, with each peer's `remote_fp` being the other side's identity bytes. The two hashes diverged. SMP correctly reported "secrets did not match" even with identical passwords.
-
-DAKE was unaffected because `identity_pub_bytes` is cached at `ClientProfile.__init__` and the DAKE path used the cache directly, never falling through to the broken chain.
-
-Sites fixed in v10.6.13:
-
-- `ClientProfile.get_fingerprint`
-- `ClientProfile.get_prekey_fingerprint`
-- `EnhancedOTRSession.set_smp_secret` (the actual SMP regression)
-- `RustDAKEAdapter.__init__` defensive identity/prekey pub-bytes refresh (two sites)
-- DAKE3 sign and verify A1/A2 fallback paths (four sites)
-
-All converted to `bytes(handle.public_bytes())`. Production paths were already using the cache; the fallback paths now also do the correct thing if the cache is ever invalidated.
-
-No Rust changes. Wire-compatible with v10.6.12.
+v10.6.12 left seven Python call sites using the legacy `.public_key().public_bytes(...)` chain on what was now a Rust handle. One site, `EnhancedOTRSession.set_smp_secret`, read the local fingerprint through the broken chain and silently fell back to an empty bytes literal, diverging the SMP secret hash. All seven sites converted to `bytes(handle.public_bytes())`. No Rust changes.
 
 ---
 
@@ -298,29 +304,7 @@ No Rust changes. Wire-compatible with v10.6.12.
 
 **Phase 5.3e: long-term identity keys owned by Rust.**
 
-`ClientProfile.identity_key` and `.prekey` are now `Ed448KeyHandle` and `X448KeyHandle` (opaque PyO3 classes). Their private bytes live inside Rust `SecretBytes<N>` (ZeroizeOnDrop) for the session lifetime. Python receives only public bytes via `handle.public_bytes()`.
-
-This eliminates the cryptography library `Ed448PrivateKey` / `X448PrivateKey` Python objects from all production code paths. After v10.6.12, long-term identity private bytes never appear on the Python heap during normal session operation. The cryptography library remains loaded only for the boot-time compat-check helpers, which use fresh ephemeral test keys discarded immediately.
-
-New Rust file `src/key_handles.rs`:
-
-- `Ed448KeyHandle` with `SecretBytes<57>`, `public_bytes()`, `sign(msg)`, `ring_sign(A1, A2, msg)`
-- `X448KeyHandle` with `SecretBytes<56>`, `public_bytes()`, `dh(peer_pub)`
-- Factory functions `generate_ed448_keypair()` and `generate_x448_keypair()` produce fresh keypairs inside Rust
-- `pub(crate)` accessors for crate-internal use by `dake.rs`
-
-New Rust method `dake::PyDake::sign_profile_body_and_construct_with_handles`. Takes `&Bound<Ed448KeyHandle>` and `&Bound<X448KeyHandle>` instead of `Bound<PyByteArray>` for the private bytes. Reads from the handles inside Rust to construct `DakeState` and sign the profile in a single FFI call. Handles remain alive on `ClientProfile` after the call.
-
-Python changes:
-
-- `ClientProfile.__init__` generates via Rust factories by default. Accepts legacy `ed448.Ed448PrivateKey` / `x448.X448PrivateKey` for test backward compatibility (converts to handles via `from_seed_bytes` / `from_priv_bytes` with bytearray-and-wipe).
-- `encode()` and `encode_unsigned()` use cached `identity_pub_bytes` / `prekey_pub_bytes` set at `__init__` from `handle.public_bytes()`.
-- `encode()` signs via `self.identity_key.sign(profile_data)`. No seed extraction.
-- `RingSignature.sign(handle, A1, A2, msg)` takes a handle and calls `handle.ring_sign(A1, A2, msg)`.
-- `RustDAKEAdapter.__init__` uses `sign_profile_body_and_construct_with_handles` in a single FFI call. No Python-side bytearray extraction.
-- Import-time fail-fast check now requires the new Rust symbols.
-
-Wire-compatible with v10.6.11. No protocol-level changes.
+`ClientProfile.identity_key` and `.prekey` are now `Ed448KeyHandle` and `X448KeyHandle` opaque PyO3 classes. Private bytes live inside Rust `SecretBytes<N>` (ZeroizeOnDrop). New Rust file `src/key_handles.rs` with `Ed448KeyHandle`, `X448KeyHandle`, `generate_ed448_keypair()`, `generate_x448_keypair()`. New `dake::PyDake::sign_profile_body_and_construct_with_handles` takes the handles directly. Wire-compatible with v10.6.11.
 
 ---
 
@@ -328,71 +312,51 @@ Wire-compatible with v10.6.11. No protocol-level changes.
 
 **Phase 5.4: Rust-only, no fallbacks, regression fix.**
 
-Architectural commitment release. OTRv4+ is now a thin Python wrapper around the `otrv4_core` Rust crate. No production codepath falls back to the C extension or the cryptography library. If the Rust core is missing or incompatible, the module raises at import time.
+OTRv4+ is now a thin Python wrapper around the `otrv4_core` Rust crate. No production codepath falls back to the C extension or the cryptography library for ring sig, Ed448 sign, DAKE, SMP, or ratchet. `_check_rust_requirements()` runs at module load and raises `ImportError` if the Rust core is missing or incomplete.
 
-Regression fix from v10.6.10: v10.6.10's attempt to pass a Python `bytearray` directly to `py_ring_sign` as the FFI argument caused `DAKE3 GEN_FAILED` at runtime. PyO3's `&[u8]` does not reliably accept `bytearray` across versions. v10.6.11 reverts to `bytes(_seed)` as the FFI argument (one immediate snapshot, GC'd after the call). The bytearray is still used as the wipeable source.
-
-Every production crypto site is now Rust-only and raises `RuntimeError` on failure:
-
-- `RingSignature.sign` and `.verify` use `otrv4_core.py_ring_sign` / `py_ring_verify`
-- `ClientProfile.encode` Ed448 signature uses `otrv4_core.RustDAKE.ed448_sign_test`
-- `RustDAKEAdapter.__init__` uses `otrv4_core.RustDAKE` (no `OTRv4DAKE` Python fallback)
-- SMP and ratchet were already Rust-mandatory
-
-New `_check_rust_requirements()` runs at module load. Verifies `otrv4_core` is importable and exposes the required class methods and free functions. Missing anything raises `ImportError` with a specific rebuild instruction.
-
-The boot-time cross-verify helpers (`_verify_ed448_rust_compat`, `_verify_ring_sig_rust_compat`) remain, but they are no longer fallback gates. They are boot validators. The C extension and the cryptography library are invoked once at startup to serve as ground-truth references. After both checks pass, neither is called again for any runtime crypto.
-
-Deliberate consequences (user-accepted):
-
-- v10.6.11 cannot interoperate with any peer that lacks the Rust `ring_sig` module in its `otrv4_core` `.so`. Older v10.6.x peers will fail DAKE3.
-- Missing or stale `.so` means the app refuses to start.
+Note: the pure-Python `OTRv4DAKE` class was retained as nominal fallback code at v10.6.11, but `RustDAKEAdapter` already raised rather than constructing it — it was effectively dead from this version onward. It was formally deleted at v10.7.
 
 ---
 
 ## v10.6.10
 
-**Phase 5.3d.** Bytearray + wipe in `RingSignature.sign()`. Removed the Rust signing path from `ClientProfile.encode()` (cryptography library `identity_key.sign(...)` keeps bytes in OpenSSL's C heap, not Python's).
-
-This release contained a regression that broke DAKE3. `_rust_ring_sign` was called with a bare bytearray, which PyO3 rejected at runtime with `GEN_FAILED`. Fixed in v10.6.11.
+**Phase 5.3d.** Bytearray + wipe in `RingSignature.sign()`. Contained a regression that broke DAKE3 (`_rust_ring_sign` called with a bare bytearray, rejected by PyO3). Fixed in v10.6.11.
 
 ---
 
 ## v10.6.9
 
-**Phase 5.3c: Rust DAKE3 ring signature.** New file `src/ring_sig.rs` (~407 lines) implementing OTRv4 §4.3.3 Schnorr ring signature in pure Rust using `ed448-goldilocks-plus` and `sha3` (SHAKE-256). Direct port of `otr4_crypto_ext.c`'s `py_ring_sign` / `py_ring_verify` / `ring_challenge`.
-
-Two-way cross-verify safeguard at startup: Rust signs, C verifies; C signs, Rust verifies. Both must pass before the Rust path activates.
+**Phase 5.3c: Rust DAKE3 ring signature.** New file `src/ring_sig.rs` (~407 lines) implementing OTRv4 §4.3.3 Schnorr ring signature in pure Rust using `ed448-goldilocks-plus` and `sha3`.
 
 ---
 
 ## v10.6.8
 
-**Phase 5.3b: dead-code disk persistence removal.** `_store_identity()` previously wrote encrypted private-key blobs to disk on every session start. Audit revealed nothing ever read them back. Removed the private-bytes extraction; still persists the public profile. Added one-shot migration that overwrites and unlinks legacy `identity.ed448.bin` / `prekey.x448.bin` files at startup.
+**Phase 5.3b: dead-code disk persistence removal.** `_store_identity()` previously wrote encrypted private-key blobs to disk that nothing read back. Removed; one-shot migration overwrites and unlinks legacy `identity.ed448.bin` / `prekey.x448.bin`.
 
 ---
 
 ## v10.6.7
 
-**Phase 5.3a-cleanup.** Added `ClientProfile.encode_unsigned()`. `RustDAKEAdapter.__init__` now uses `sign_profile_body_and_construct` in a single FFI call. Eliminated the `bytes(_ik_priv)` snapshot at the constructor boundary.
+**Phase 5.3a-cleanup.** Added `ClientProfile.encode_unsigned()`. `RustDAKEAdapter.__init__` uses `sign_profile_body_and_construct` in a single FFI call.
 
 ---
 
 ## v10.6.6
 
-**Phase 5.3a (Option A2): Ed448 sign via Rust.** Added `sign_profile_body_and_construct` and `ed448_sign_test` to the Rust DAKE class. Boot-time cross-verify check compares Rust Ed448 signatures against OpenSSL byte-for-byte on a fresh test key.
+**Phase 5.3a (Option A2): Ed448 sign via Rust.** Added `sign_profile_body_and_construct` and `ed448_sign_test` to the Rust DAKE class.
 
 ---
 
 ## v10.6.5
 
-**Phase 5.2: `new_from_bytearrays`.** Rust constructor takes `Bound<PyByteArray>` instead of `&[u8]`. Rust copies into `SecretBytes<N>` via a `SecretVec` intermediate, then wipes the source bytearray in-place via `PyByteArray::set_item`. Eliminates the `bytes(...)` snapshot that v10.6.4's `&[u8]` argument created.
+**Phase 5.2: `new_from_bytearrays`.** Rust constructor takes `Bound<PyByteArray>`, copies into `SecretBytes<N>`, then wipes the source bytearray in-place.
 
 ---
 
 ## v10.6.4
 
-**Phase 5.1.** `RustDAKEAdapter.__init__` extracts identity and prekey private bytes into mutable bytearrays instead of immutable bytes. Wipes the bytearrays in place after Rust copies into `SecretBytes`. Removed the dead per-call `hasattr` probe for `client_profile.prekey_priv_bytes` (always False).
+**Phase 5.1.** `RustDAKEAdapter.__init__` extracts identity and prekey private bytes into mutable bytearrays, wipes them after Rust copies into `SecretBytes`.
 
 ---
 
@@ -400,9 +364,7 @@ Two-way cross-verify safeguard at startup: Rust signs, C verifies; C signs, Rust
 
 **Phase 4: DakeOutput opaque handle. 11/11 audit findings closed.**
 
-DAKE session keys never cross the Python heap. The `DakeOutput` PyO3 handle holds them in a private `RefCell<Option<DakeSessionKeys>>` with no Python-visible accessor. `consume_into_ratchet()` moves them directly into the ratchet's owned `SecretBytes` fields.
-
-Critical fix: `consume_into_ratchet` takes the actual `is_initiator` flag instead of hardcoded True. Role-based chain-key swap moved into `DoubleRatchet::new` inside Rust. Python cannot pre-swap chain keys.
+DAKE session keys never cross the Python heap. The `DakeOutput` PyO3 handle holds them in a private `RefCell<Option<DakeSessionKeys>>` with no Python-visible accessor. `consume_into_ratchet()` moves them directly into the ratchet's owned `SecretBytes` fields, taking the actual `is_initiator` flag.
 
 ---
 
