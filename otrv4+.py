@@ -88,11 +88,13 @@ def _check_rust_requirements():
     # Phase 5.3e (v10.6.12): Rust-owned identity key handles
     # Phase 5.3j (v10.6.18): Rust ML-DSA-87 PyO3 bindings
     # Phase 5.3h-B (v10.6.19): Rust AES-256-GCM PyO3 bindings
+    # Phase 5.3h-D stage 1 (v10.6.20): Rust Ed448 verify
     _required_module_symbols = [
         'Ed448KeyHandle',
         'X448KeyHandle',
         'generate_ed448_keypair',
         'generate_x448_keypair',
+        'verify_ed448_sig',
         'mldsa87_keygen',
         'mldsa87_sign',
         'mldsa87_verify',
@@ -102,7 +104,7 @@ def _check_rust_requirements():
     _missing_mod = [s for s in _required_module_symbols if not hasattr(_RustDAKE_module, s)]
     if _missing_mod:
         raise ImportError(
-            f"OTRv4+ v10.6.19+ requires the following on the otrv4_core "
+            f"OTRv4+ v10.6.20+ requires the following on the otrv4_core "
             f"module: {_required_module_symbols}.  Missing: {_missing_mod}.  "
             f"Rebuild the .so from the current Rust/src/key_handles.rs, "
             f"Rust/src/mldsa.rs, Rust/src/aead.rs, and Rust/src/lib.rs."
@@ -150,23 +152,18 @@ from datetime import datetime
 from enum import IntEnum
 import concurrent.futures
 
-try:
-    from cryptography.hazmat.primitives.asymmetric import ed448, x448
-    from cryptography.hazmat.primitives import serialization
-    # v10.6.19 (Phase 5.3h, part B): dropped AESGCM and hashes imports.
-    # AES-256-GCM operations go through otrv4_core.aes256gcm_{encrypt,decrypt}
-    # via the Rust aes-gcm crate.  hashes was never actually used in
-    # production code (confirmed by grep at v10.6.19 audit).
-    #
-    # Remaining cryptography library uses: ed448 (legacy non-Rust DAKE paths
-    # only, never fires in v10.6.11+ production), x448 (still used by ratchet
-    # DH and legacy DAKE), serialization (~20 sites for raw byte conversion).
-    # Dropping these is multi-phase work tracked on the ROADMAP.
-    CRYPTO_AVAILABLE = True
-except ImportError:
-    print("ERROR: Install cryptography: pip install cryptography")
-    CRYPTO_AVAILABLE = False
-    sys.exit(1)
+# v10.7 (Phase 5.3h-D): the Python cryptography library has been fully
+# removed.  Every Ed448 / X448 / AES-256-GCM operation now runs inside the
+# Rust otrv4_core core (ed448-goldilocks-plus, x448, aes-gcm crates).  No
+# OpenSSL-backed Python crypto remains in any code path:
+#   - Ed448 sign/verify  -> Ed448KeyHandle / verify_ed448_sig   (v10.6.12, .20)
+#   - X448 keygen + DH    -> X448KeyHandle / generate_x448_keypair (v10.6.21)
+#   - AES-256-GCM         -> aes256gcm_encrypt / aes256gcm_decrypt (v10.6.19)
+#   - ML-DSA-87           -> mldsa87_* via pqcrypto-mldsa          (v10.6.18)
+# The pure-Python OTRv4DAKE fallback that used the cryptography library was
+# deleted; the Rust DAKE is mandatory (it already was in practice, since the
+# Rust ratchet and Rust SMP have been mandatory since v10.6.11).
+CRYPTO_AVAILABLE = True
 
 try:
     import otr4_crypto_ext as _ossl
@@ -1385,7 +1382,7 @@ class OTRv4DataMessage:
             raise ValueError(f"Failed to decode message: {e}")
 
 
-VERSION = "OTRv4+ 10.6.19.1"
+VERSION = "OTRv4+ 10.7"
 
 if not hasattr(hashlib, 'sha3_512'):
     raise RuntimeError(
@@ -2383,8 +2380,7 @@ def _ct_rand_range(mod: int) -> int:
 class ClientProfile:
     """OTRv4 Client Profile (spec §4.1). Handles encoding, decoding, and expiry."""
 
-    def __init__(self, identity_key: ed448.Ed448PrivateKey = None,
-                 prekey: x448.X448PrivateKey = None):
+    def __init__(self, identity_key=None, prekey=None):
         """Create a fresh OTRv4 ClientProfile with ephemeral Ed448+X448 keys.
 
         v10.6.12 (Phase 5.3e): identity keys are now Rust-owned by default.
@@ -2416,41 +2412,19 @@ class ClientProfile:
         # ── v10.6.12 (Phase 5.3e): construct Rust handles ──
         # If the caller supplied legacy cryptography library keypairs,
         # convert them to Rust handles.  Otherwise generate fresh in Rust.
+        # v10.7 (Phase 5.3h-D): identity_key is either None (generate a
+        # fresh Rust Ed448KeyHandle) or an already-constructed Rust handle.
+        # The legacy cryptography-library Ed448PrivateKey conversion branch
+        # was removed along with the Python DAKE fallback.
         if identity_key is None:
             self.identity_key = _RustDAKE_module.generate_ed448_keypair()
-        elif isinstance(identity_key, ed448.Ed448PrivateKey):
-            # Legacy/test path: convert cryptography lib key to Rust handle.
-            # The bytearray we use for the FFI argument is wiped after
-            # the Rust constructor copies the bytes into SecretBytes.
-            _seed = bytearray(identity_key.private_bytes(
-                encoding=serialization.Encoding.Raw,
-                format=serialization.PrivateFormat.Raw,
-                encryption_algorithm=serialization.NoEncryption(),
-            ))
-            try:
-                self.identity_key = _RustDAKE_module.Ed448KeyHandle.from_seed_bytes(bytes(_seed))
-            finally:
-                for _i in range(len(_seed)):
-                    _seed[_i] = 0
-                del _seed
         else:
-            # Already an Ed448KeyHandle (test code passing one in directly).
             self.identity_key = identity_key
 
+        # v10.7 (Phase 5.3h-D): prekey is either None (generate a fresh
+        # Rust X448KeyHandle) or an already-constructed Rust handle.
         if prekey is None:
             self.prekey = _RustDAKE_module.generate_x448_keypair()
-        elif isinstance(prekey, x448.X448PrivateKey):
-            _priv = bytearray(prekey.private_bytes(
-                encoding=serialization.Encoding.Raw,
-                format=serialization.PrivateFormat.Raw,
-                encryption_algorithm=serialization.NoEncryption(),
-            ))
-            try:
-                self.prekey = _RustDAKE_module.X448KeyHandle.from_priv_bytes(bytes(_priv))
-            finally:
-                for _i in range(len(_priv)):
-                    _priv[_i] = 0
-                del _priv
         else:
             self.prekey = prekey
 
@@ -2640,14 +2614,31 @@ class ClientProfile:
             signature = data[offset:offset + OTRConstants.ED448_SIGNATURE_SIZE]
 
             signed_data = data[:offset]
+            # v10.6.20 (Phase 5.3h-D, stage 1): ClientProfile signature
+            # verification now uses the Rust otrv4_core.verify_ed448_sig
+            # function instead of cryptography.Ed448PublicKey.verify().
+            # verify_ed448_sig wraps VerifyingKey::verify_raw — the exact
+            # counterpart of Ed448KeyHandle.sign()'s sign_raw, which is
+            # what produced this class's signatures (see encode(), the
+            # self.identity_key.sign(...) call).  Same key, same message,
+            # same RFC 8032 pure-Ed448 framing on both sides.
             try:
-                identity_pub = ed448.Ed448PublicKey.from_public_bytes(identity_pub_bytes)
-                identity_pub.verify(signature, signed_data)
-            except (ed448.InvalidSignature, ValueError, TypeError) as sig_err:
+                _sig_ok = _RustDAKE_module.verify_ed448_sig(
+                    identity_pub_bytes, signed_data, signature)
+            except ValueError as sig_err:
+                # Structurally malformed pub/sig length — treat as a
+                # rejected profile, same as a failed verification.
                 raise ValueError(
                     f"ClientProfile signature verification FAILED: {sig_err}. "
-                    "Rejecting profile — potential MITM/forged identity (OTRv4 §4.1.2)."
+                    "Rejecting profile — malformed identity key or signature "
+                    "(OTRv4 §4.1.2)."
                 ) from sig_err
+            if not _sig_ok:
+                raise ValueError(
+                    "ClientProfile signature verification FAILED. "
+                    "Rejecting profile — potential MITM/forged identity "
+                    "(OTRv4 §4.1.2)."
+                )
 
             profile = cls.__new__(cls)
             profile.identity_key = None
@@ -2907,12 +2898,14 @@ class RustBackedDoubleRatchet:
         self.rekey_timeout = rekey_timeout
         self.last_rekey_time = time.time()
 
-        # ── X448 keys (Python — uses OpenSSL via cryptography) ──
-        self.dh_ratchet_local = x448.X448PrivateKey.generate()
-        self.dh_ratchet_local_pub = self.dh_ratchet_local.public_key().public_bytes(
-            encoding=serialization.Encoding.Raw,
-            format=serialization.PublicFormat.Raw
-        )
+        # ── X448 ratchet keys (Rust — v10.6.21, Phase 5.3h-D stage 2) ──
+        # Was cryptography.x448.X448PrivateKey.generate().  Now a Rust
+        # X448KeyHandle: the private scalar lives in Rust SecretBytes and
+        # is zeroized on drop.  dh_ratchet_local is a handle object;
+        # .public_bytes() and .dh(peer_pub) replace .public_key().
+        # public_bytes(Raw) and .exchange().
+        self.dh_ratchet_local = _RustDAKE_module.generate_x448_keypair()
+        self.dh_ratchet_local_pub = self.dh_ratchet_local.public_bytes()
         self.dh_ratchet_remote = None
         self.dh_ratchet_remote_pub = None
         self.last_remote_pub = None
@@ -3044,12 +3037,9 @@ class RustBackedDoubleRatchet:
         self.rekey_timeout = rekey_timeout
         self.last_rekey_time = time.time()
 
-        # ── X448 keys (Python — Phase 5 will move into Rust) ──
-        self.dh_ratchet_local = x448.X448PrivateKey.generate()
-        self.dh_ratchet_local_pub = self.dh_ratchet_local.public_key().public_bytes(
-            encoding=serialization.Encoding.Raw,
-            format=serialization.PublicFormat.Raw
-        )
+        # ── X448 ratchet keys (Rust — v10.6.21, Phase 5.3h-D stage 2) ──
+        self.dh_ratchet_local = _RustDAKE_module.generate_x448_keypair()
+        self.dh_ratchet_local_pub = self.dh_ratchet_local.public_bytes()
         self.dh_ratchet_remote = None
         self.dh_ratchet_remote_pub = None
         self.last_remote_pub = None
@@ -3282,12 +3272,14 @@ class RustBackedDoubleRatchet:
                     if self.dh_ratchet_remote_pub is None:
                         dh_pub_h = self._rust.header_dh_pub(header_bytes)
                         if dh_pub_h is not None:
-                            try:
-                                self.dh_ratchet_remote = x448.X448PublicKey.from_public_bytes(
-                                    dh_pub_h)
-                                self.dh_ratchet_remote_pub = dh_pub_h
-                            except Exception:
-                                pass
+                            # v10.6.21 (Phase 5.3h-D stage 2): store the raw
+                            # 56-byte peer pub only.  dh_ratchet_remote (the
+                            # object) is never read anywhere — every consumer
+                            # uses dh_ratchet_remote_pub (the bytes).  The
+                            # Rust X448KeyHandle.dh() takes raw peer-pub
+                            # bytes directly, so no object is needed.
+                            self.dh_ratchet_remote     = None
+                            self.dh_ratchet_remote_pub = dh_pub_h
 
                     pt = self._rust.decrypt_same_dh(
                         header_bytes, ciphertext, nonce, tag)
@@ -3338,16 +3330,20 @@ class RustBackedDoubleRatchet:
         the KDF input, which diverged from Rust after the first ratchet step.
         """
         dh_pub = self._rust.header_dh_pub(header_bytes)
-        remote_key = x448.X448PublicKey.from_public_bytes(dh_pub)
 
-        dh_secret_recv = self.dh_ratchet_local.exchange(remote_key)
+        # v10.6.21 (Phase 5.3h-D stage 2): X448 DH via the Rust
+        # X448KeyHandle.  .dh(peer_pub_bytes) takes the raw 56-byte peer
+        # public key directly and returns the 56-byte shared secret —
+        # RFC 7748 X448, the same operation OpenSSL performed via
+        # cryptography.x448 .exchange().  The x448 crate clamps the
+        # scalar on Secret construction (RFC 7748) and rejects low-order
+        # points, matching the cryptography library's behaviour, so a
+        # v10.6.21 peer and an older peer derive identical secrets.
+        dh_secret_recv = self.dh_ratchet_local.dh(dh_pub)
 
-        new_local = x448.X448PrivateKey.generate()
-        new_local_pub = new_local.public_key().public_bytes(
-            encoding=serialization.Encoding.Raw,
-            format=serialization.PublicFormat.Raw
-        )
-        dh_secret_send = new_local.exchange(remote_key)
+        new_local     = _RustDAKE_module.generate_x448_keypair()
+        new_local_pub = new_local.public_bytes()
+        dh_secret_send = new_local.dh(dh_pub)
 
         pt = self._rust.decrypt_new_dh(
             header_bytes, ciphertext, nonce, tag,
@@ -3356,7 +3352,9 @@ class RustBackedDoubleRatchet:
 
         if self.dh_ratchet_remote_pub is not None:
             self.last_remote_pub = self.dh_ratchet_remote_pub
-        self.dh_ratchet_remote = remote_key
+        # dh_ratchet_remote (object) is unused post-v10.6.21 — keep the
+        # bytes only.  dh_ratchet_local becomes the new handle.
+        self.dh_ratchet_remote = None
         self.dh_ratchet_remote_pub = dh_pub
         self.dh_ratchet_local = new_local
         self.dh_ratchet_local_pub = new_local_pub
@@ -3392,13 +3390,10 @@ class RustBackedDoubleRatchet:
     def _ratchet(self, dh_pub):
         """Send-side forced DH ratchet step."""
         with self.lock:
-            self.dh_ratchet_local = x448.X448PrivateKey.generate()
-            self.dh_ratchet_local_pub = self.dh_ratchet_local.public_key().public_bytes(
-                encoding=serialization.Encoding.Raw,
-                format=serialization.PublicFormat.Raw
-            )
-            remote_key = x448.X448PublicKey.from_public_bytes(dh_pub)
-            dh_secret = self.dh_ratchet_local.exchange(remote_key)
+            # v10.6.21 (Phase 5.3h-D stage 2): X448 keygen + DH via Rust.
+            self.dh_ratchet_local     = _RustDAKE_module.generate_x448_keypair()
+            self.dh_ratchet_local_pub = self.dh_ratchet_local.public_bytes()
+            dh_secret = self.dh_ratchet_local.dh(dh_pub)
 
             self._rust.send_ratchet(dh_secret, self.dh_ratchet_local_pub)
 
@@ -3487,6 +3482,49 @@ def determine_roles(local_id_pub: bytes, remote_id_pub: bytes) -> bool:
     return local_id_pub < remote_id_pub
 
 
+def _safe_b64decode(data: str) -> bytes:
+    """Safely decode base64 with padding.
+
+    v10.7 (Phase 5.3h-D): rescued to module scope from the deleted
+    pure-Python OTRv4DAKE class.  Every caller now uses the bare
+    _safe_b64decode(...) function name.
+    """
+    try:
+        data = str(data).strip()
+        if not data:
+            raise ValueError("Empty base64 data")
+
+        data = ''.join(data.split())
+
+        if '[' in data and ']' in data:
+            end_bracket = data.rfind(']')
+            if end_bracket != -1:
+                data = data[end_bracket + 1:].strip()
+
+        try:
+            padding_needed = (-len(data) % 4)
+            if padding_needed:
+                data = data + '=' * padding_needed
+            return base64.urlsafe_b64decode(data)
+        except Exception:
+            data = data.replace('-', '+').replace('_', '/')
+            padding_needed = (-len(data) % 4)
+            if padding_needed:
+                data = data + '=' * padding_needed
+            return base64.b64decode(data)
+    except Exception as e:
+        try:
+            import re as _re
+            data = _re.sub(r'[^A-Za-z0-9+/=-]', '', data)
+            padding_needed = (-len(data) % 4)
+            if padding_needed:
+                data = data + '=' * padding_needed
+            return base64.b64decode(data)
+        except Exception as e2:
+            raise ValueError(f"Base64 decode failed: {e}, also: {e2}")
+
+
+
 class DAKE1RateLimiter:
     """Per-peer sliding-window rate limiter for DAKE1 (M-4 fix).
 
@@ -3527,874 +3565,13 @@ class DAKE1RateLimiter:
 _dake1_rate_limiter = DAKE1RateLimiter()
 
 
-class OTRv4DAKE:
-    """OTRv4 DAKE implementation - COMPLETE with all methods"""
-    
-    def __init__(self, client_profile: Optional[ClientProfile] = None,
-                 explicit_initiator: bool = False,
-                 tracer: Optional[OTRTracer] = None,
-                 logger: Optional[OTRLogger] = None):
-        self.client_profile = client_profile or ClientProfile()
-        self.explicit_initiator = explicit_initiator
-        self.tracer = tracer
-        self.logger = logger or NullLogger()
-        self.lock = threading.RLock()
-        
-        self.state = DAKEState.IDLE
-        self.is_initiator = explicit_initiator
-        self.start_time: Optional[float] = None
-        self.timeout = UIConstants.DAKE_TIMEOUT
-        self._session_created_at: float = 0.0
-        self._session_max_age:    float = 86400.0
-        self.MAC_LENGTH = 64
-        
-        self.ephemeral_key: Optional[x448.X448PrivateKey] = None
-        self.ephemeral_pub_bytes: Optional[bytes] = None
-        self.remote_ephemeral_pub: Optional[x448.X448PublicKey] = None
-        self.remote_ephemeral_pub_bytes: Optional[bytes] = None
-        
-        self.remote_profile: Optional[ClientProfile] = None
-        # v10.6.19 (Phase 5.3h, part C): now stores raw bytes (not a
-        # cryptography.hazmat Ed448PublicKey object).  The Rust DAKE path
-        # at lines 4811 and 4843 sets it directly from
-        # remote_identity_pub_bytes.  Legacy non-Rust DAKE paths (no longer
-        # production since v10.6.11) still assign Ed448PublicKey; type is
-        # widened to accept either for transition compatibility.
-        self.remote_identity_key: Optional[Any] = None
-        self.remote_prekey: Optional[x448.X448PublicKey] = None
-        
-        self.remote_identity_pub_bytes: Optional[bytes] = None
-        self.remote_prekey_pub_bytes: Optional[bytes] = None
-        
-        self.session_keys: Optional[Dict[str, Any]] = None
 
-        self._raw_dake1_bytes: Optional[bytes] = None
-        self._raw_dake2_bytes: Optional[bytes] = None
-
-        self._brace_kem: MLKEM1024BraceKEM = MLKEM1024BraceKEM()
-        self._remote_brace_ct: Optional[bytes] = None   # peer's KEM ciphertext (DAKE2)
-        self._remote_brace_ek: Optional[bytes] = None   # peer's KEM encapsulation key (DAKE1)
-
-        # ── ML-DSA-87 hybrid PQ authentication ──────────────────
-        self._mldsa_auth: Optional[MLDSA87Auth] = None
-        self._remote_mldsa_pub: Optional[bytes] = None
-        if MLDSA87_AVAILABLE:
-            try:
-                self._mldsa_auth = MLDSA87Auth()
-            except Exception:
-                self._mldsa_auth = None
-        
-        if self.tracer:
-            self.tracer.trace("DAKE", "INIT", None, "IDLE", 
-                              f"DAKE engine initialized, initiator={explicit_initiator}")
-    
-    @staticmethod
-    def _safe_b64decode(data: str) -> bytes:
-        """Safely decode base64 with padding"""
-        try:
-            data = str(data).strip()
-            if not data:
-                raise ValueError("Empty base64 data")
-            
-            data = ''.join(data.split())
-            
-            if '[' in data and ']' in data:
-                end_bracket = data.rfind(']')
-                if end_bracket != -1:
-                    data = data[end_bracket + 1:].strip()
-            
-            try:
-                padding_needed = (-len(data) % 4)
-                if padding_needed:
-                    data = data + '=' * padding_needed
-                return base64.urlsafe_b64decode(data)
-            except Exception:
-                data = data.replace('-', '+').replace('_', '/')
-                padding_needed = (-len(data) % 4)
-                if padding_needed:
-                    data = data + '=' * padding_needed
-                return base64.b64decode(data)
-        except Exception as e:
-            try:
-                import re
-                data = re.sub(r'[^A-Za-z0-9+/=-]', '', data)
-                padding_needed = (-len(data) % 4)
-                if padding_needed:
-                    data = data + '=' * padding_needed
-                return base64.b64decode(data)
-            except Exception as e2:
-                raise ValueError(f"Base64 decode failed: {e}, also: {e2}")
-    
-    def is_session_expired(self) -> bool:
-        """Return True if the established session has exceeded its 24-hour maximum age."""
-        if self.state != DAKEState.ESTABLISHED:
-            return False
-        if self._session_created_at == 0.0:
-            return False
-        return (time.time() - self._session_created_at) > self._session_max_age
-
-    def transition(self, new_state: DAKEState, reason: str = ""):
-        """Transition DAKE state with validation"""
-        with self.lock:
-            old_state = self.state
-            
-            valid_transitions = {
-                DAKEState.IDLE: [DAKEState.SENT_DAKE1, DAKEState.RECEIVED_DAKE1, DAKEState.FAILED],
-                DAKEState.SENT_DAKE1: [DAKEState.ESTABLISHED, DAKEState.FAILED],
-                DAKEState.RECEIVED_DAKE1: [DAKEState.SENT_DAKE2, DAKEState.FAILED],
-                DAKEState.SENT_DAKE2: [DAKEState.ESTABLISHED, DAKEState.FAILED],
-                DAKEState.ESTABLISHED: [],
-                DAKEState.FAILED: []
-            }
-            
-            if new_state not in valid_transitions.get(old_state, []):
-                error_msg = f"Invalid DAKE transition: {old_state.name} → {new_state.name}"
-                if self.tracer:
-                    self.tracer.trace("DAKE", "ERROR", old_state.name, new_state.name, error_msg)
-                raise StateMachineError(error_msg)
-            
-            self.state = new_state
-            if self.tracer:
-                self.tracer.trace("DAKE", "STATE", old_state.name, new_state.name, reason)
-    
-    def generate_dake1(self) -> str:
-        """Generate DAKE1 (Identity Message) as initiator — spec §4.2.1.
-
-        Wire format: type(1=0x35) || X448_eph_pub(56) || MLKEM1024_ek(1568)
-                     || client_profile(var) [|| MLDSA87_pub(2592)]
-
-        The ML-KEM-1024 encapsulation key establishes the post-quantum brace KEM.
-        The responder encapsulates to it and returns the ciphertext in DAKE2.
-        """
-        with self.lock:
-            if self.state != DAKEState.IDLE:
-                raise StateMachineError(f"Cannot generate DAKE1 in state: {self.state.name}")
-            if not self.is_initiator:
-                raise StateMachineError("Only initiator can generate DAKE1")
-
-            self.start_time = time.time()
-
-            self.ephemeral_key = x448.X448PrivateKey.generate()
-            self.ephemeral_pub_bytes = self.ephemeral_key.public_key().public_bytes(
-                encoding=serialization.Encoding.Raw,
-                format=serialization.PublicFormat.Raw
-            )
-
-            profile_bytes = self.client_profile.encode()
-
-            message = bytearray()
-            message.append(OTRConstants.MESSAGE_TYPE_DAKE1)
-            message.extend(self.ephemeral_pub_bytes)
-            message.extend(self._brace_kem.encap_key_bytes)
-            message.extend(profile_bytes)
-
-            # ── Append ML-DSA-87 public key for hybrid PQ auth ───
-            if self._mldsa_auth is not None:
-                message.extend(self._mldsa_auth.pub_bytes)
-
-            raw_bytes = bytes(message)
-            self._raw_dake1_bytes = raw_bytes
-
-            encoded = base64.urlsafe_b64encode(raw_bytes).decode('ascii').rstrip('=')
-            result = f"?OTRv4 {encoded}"
-
-            self.transition(DAKEState.SENT_DAKE1, "generated DAKE1 (Identity)")
-            if self.logger:
-                self.logger.debug(f"Generated DAKE1 (Identity): {len(result)} bytes")
-            return result
-    
-    def process_dake1(self, dake1_msg: str, peer_key: str = "unknown") -> bool:
-        """Process DAKE1 (Identity Message) as responder — spec §4.2.2.
-
-        Wire format: 0x35 || eph_pub(56) || mlkem1024_ek(1568) || profile(var) [|| MLDSA87_pub(2592)]
-        """
-        if not _dake1_rate_limiter.is_allowed(peer_key):
-            if self.logger:
-                self.logger.warning(
-                    f"DAKE1 rate limit exceeded for peer '{peer_key}' — dropping"
-                )
-            return False
-
-        with self.lock:
-            if self.state != DAKEState.IDLE:
-                raise StateMachineError(f"Cannot process DAKE1 in state: {self.state.name}")
-            if self.is_initiator:
-                raise StateMachineError("Initiator cannot process DAKE1")
-
-            self.start_time = time.time()
-
-            try:
-                if not dake1_msg.startswith("?OTRv4 "):
-                    raise ValueError("Not an OTRv4 message")
-
-                payload = dake1_msg[7:].strip()
-                decoded = self._safe_b64decode(payload)
-
-                if len(decoded) < 1:
-                    raise ValueError("Message too short")
-
-                msg_type = decoded[0]
-                if msg_type != OTRConstants.MESSAGE_TYPE_DAKE1:
-                    raise ValueError(f"Not a DAKE1 (Identity) message: 0x{msg_type:02x} "
-                                     f"(expected 0x{OTRConstants.MESSAGE_TYPE_DAKE1:02x})")
-
-                offset = 1
-
-                if len(decoded) < offset + OTRConstants.X448_PUBLIC_KEY_SIZE:
-                    raise ValueError("Ephemeral key missing")
-                remote_ephemeral_pub_bytes = decoded[offset:offset + OTRConstants.X448_PUBLIC_KEY_SIZE]
-                offset += OTRConstants.X448_PUBLIC_KEY_SIZE
-
-                EK_LEN = MLKEM1024BraceKEM.EK_BYTES
-                if len(decoded) < offset + EK_LEN:
-                    raise ValueError("ML-KEM-1024 encapsulation key missing from DAKE1")
-                self._remote_brace_ek = decoded[offset:offset + EK_LEN]
-                offset += EK_LEN
-
-                # ── Parse ClientProfile with known-size extraction ───
-                #    Profile size is deterministic from its wire format:
-                #    1(ver) + 1(n) + n(versions) + 57(Ed448) + 56(X448) + 8(exp) + 114(sig)
-                if len(decoded) < offset + 3:
-                    raise ValueError("Profile header missing")
-                _prof_num_versions = decoded[offset + 1]
-                _prof_size = 1 + 1 + _prof_num_versions + 57 + 56 + 8 + 114
-                if len(decoded) < offset + _prof_size:
-                    raise ValueError(f"Profile truncated: need {_prof_size}, have {len(decoded) - offset}")
-                profile_data = decoded[offset:offset + _prof_size]
-                offset += _prof_size
-
-                # ── Check for ML-DSA-87 public key after profile ──
-                if offset + MLDSA87Auth.PUB_BYTES <= len(decoded) and MLDSA87_AVAILABLE:
-                    _mldsa_candidate = decoded[offset:offset + MLDSA87Auth.PUB_BYTES]
-                    if len(_mldsa_candidate) != MLDSA87Auth.PUB_BYTES:
-                        raise ValueError(
-                            f"ML-DSA-87 public key in DAKE1 truncated: "
-                            f"expected {MLDSA87Auth.PUB_BYTES} bytes, "
-                            f"got {len(_mldsa_candidate)}"
-                        )
-                    self._remote_mldsa_pub = _mldsa_candidate
-                    offset += MLDSA87Auth.PUB_BYTES
-
-                if self.tracer:
-                    self.tracer.trace("DAKE1", "PROFILE", "RECEIVING", "PROCESSING",
-                                      f"profile length: {len(profile_data)}")
-
-                try:
-                    remote_profile = ClientProfile.decode(profile_data)
-                except Exception as e:
-                    if self.tracer:
-                        self.tracer.trace("ERROR", "PROFILE", "DECODE", "FAILED",
-                                         f"ClientProfile validation failed: {e}")
-                    raise ValueError(f"DAKE1 aborted: remote ClientProfile failed strict validation: {e}")
-
-                self.remote_identity_pub_bytes = remote_profile.identity_pub_bytes
-                self.remote_prekey_pub_bytes   = remote_profile.prekey_pub_bytes
-
-                try:
-                    self.remote_identity_key = ed448.Ed448PublicKey.from_public_bytes(
-                        remote_profile.identity_pub_bytes
-                    )
-                except Exception as e:
-                    raise ValueError(f"DAKE1 aborted: remote identity key is invalid: {e}") from e
-
-                try:
-                    self.remote_prekey = x448.X448PublicKey.from_public_bytes(
-                        remote_profile.prekey_pub_bytes
-                    )
-                except Exception as e:
-                    raise ValueError(f"DAKE1 aborted: remote prekey is invalid: {e}") from e
-
-                self.remote_ephemeral_pub      = x448.X448PublicKey.from_public_bytes(
-                    remote_ephemeral_pub_bytes
-                )
-                self.remote_ephemeral_pub_bytes = remote_ephemeral_pub_bytes
-                self.remote_profile            = remote_profile
-
-                self._raw_dake1_bytes = bytes(decoded)
-
-                self.transition(DAKEState.RECEIVED_DAKE1, "received DAKE1 (Identity)")
-                if self.logger:
-                    self.logger.debug("DAKE1 (Identity) processed successfully")
-                return True
-
-            except Exception as e:
-                self.transition(DAKEState.FAILED, f"DAKE1 processing failed: {e}")
-                if self.logger:
-                    self.logger.error(f"DAKE1 processing failed: {e}")
-                return False
-    
-    def generate_dake2(self) -> Optional[str]:
-        """Generate DAKE2 (Auth-R Message) as responder — spec §4.2.3.
-
-        Wire format: 0x36 || eph_pub(56) || mlkem1024_ct(1568)
-                     || profile(var) [|| MLDSA87_pub(2592)] || MAC(64)
-
-        The responder encapsulates to the initiator's ML-KEM-1024 ek received in
-        DAKE1 and includes the ciphertext here.  The initiator decapsulates with
-        its private key to recover brace_shared.
-        """
-        with self.lock:
-            if self.state != DAKEState.RECEIVED_DAKE1:
-                raise StateMachineError(f"Cannot generate DAKE2 in state: {self.state.name}")
-            if self.is_initiator:
-                raise StateMachineError("Initiator cannot generate DAKE2")
-
-            try:
-                our_ephemeral_key = x448.X448PrivateKey.generate()
-                our_ephemeral_pub = our_ephemeral_key.public_key().public_bytes(
-                    encoding=serialization.Encoding.Raw,
-                    format=serialization.PublicFormat.Raw
-                )
-
-                dh1 = our_ephemeral_key.exchange(self.remote_ephemeral_pub)
-                dh2 = our_ephemeral_key.exchange(self.remote_prekey)
-                dh3 = self.client_profile.prekey.exchange(self.remote_ephemeral_pub)
-
-                if not hasattr(self, '_remote_brace_ek') or self._remote_brace_ek is None:
-                    raise ValueError("Remote ML-KEM-1024 encapsulation key not received")
-                brace_ct, brace_shared = MLKEM1024BraceKEM.encapsulate(self._remote_brace_ek)
-
-                session_keys = self._derive_session_keys(
-                    dh1, dh2, dh3, brace_shared, is_initiator=False
-                )
-
-                profile_bytes = self.client_profile.encode()
-
-                message_body = bytearray()
-                message_body.append(OTRConstants.MESSAGE_TYPE_DAKE2)
-                message_body.extend(our_ephemeral_pub)
-                message_body.extend(brace_ct)
-                message_body.extend(profile_bytes)
-
-                # ── Append ML-DSA-87 public key for hybrid PQ auth ───
-                if self._mldsa_auth is not None:
-                    message_body.extend(self._mldsa_auth.pub_bytes)
-
-                mac_key = session_keys.get('mac_key')
-                if mac_key is None:
-                    raise ValueError("MAC key not available")
-                mac = hmac.new(mac_key, bytes(message_body), hashlib.sha3_512).digest()
-                if len(mac) != self.MAC_LENGTH:
-                    raise ValueError(f"MAC length incorrect: {len(mac)}")
-
-                message = bytes(message_body) + mac
-
-                self.ephemeral_key      = our_ephemeral_key
-                self.ephemeral_pub_bytes = our_ephemeral_pub
-                self.session_keys       = session_keys
-                self._raw_dake2_bytes   = message
-
-                encoded = base64.urlsafe_b64encode(message).decode('ascii').rstrip('=')
-                result  = f"?OTRv4 {encoded}"
-
-                self.transition(DAKEState.SENT_DAKE2, "generated DAKE2 (Auth-R)")
-                if self.logger:
-                    self.logger.debug("DAKE2 (Auth-R) generated successfully")
-                return result
-
-            except Exception as e:
-                self.transition(DAKEState.FAILED, f"DAKE2 generation failed: {e}")
-                if self.logger:
-                    self.logger.error(f"DAKE2 generation failed: {e}")
-                return None
-    
-    def process_dake2(self, dake2_msg: str) -> bool:
-        """Process DAKE2 (Auth-R Message) as initiator — spec §4.2.4.
-
-        Wire format: 0x36 || eph_pub(56) || mlkem1024_ct(1568) || profile(var) [|| MLDSA87_pub(2592)] || MAC(64)
-        """
-        with self.lock:
-            if self.state != DAKEState.SENT_DAKE1:
-                raise StateMachineError(f"Cannot process DAKE2 in state: {self.state.name}")
-            if not self.is_initiator:
-                raise StateMachineError("Responder cannot process DAKE2")
-
-            try:
-                if not dake2_msg.startswith("?OTRv4 "):
-                    raise ValueError("Not an OTRv4 message")
-
-                payload = dake2_msg[7:].strip()
-                decoded = self._safe_b64decode(payload)
-
-                if len(decoded) < 1:
-                    raise ValueError("Message too short")
-
-                msg_type = decoded[0]
-                if msg_type != OTRConstants.MESSAGE_TYPE_DAKE2:
-                    raise ValueError(f"Not a DAKE2 (Auth-R) message: 0x{msg_type:02x} "
-                                     f"(expected 0x{OTRConstants.MESSAGE_TYPE_DAKE2:02x})")
-
-                offset = 1
-
-                if len(decoded) < offset + OTRConstants.X448_PUBLIC_KEY_SIZE:
-                    raise ValueError("Ephemeral key missing")
-                remote_ephemeral_pub_bytes = decoded[offset:offset + OTRConstants.X448_PUBLIC_KEY_SIZE]
-                offset += OTRConstants.X448_PUBLIC_KEY_SIZE
-
-                CT_LEN = MLKEM1024BraceKEM.CT_BYTES
-                if len(decoded) < offset + CT_LEN:
-                    raise ValueError("ML-KEM-1024 ciphertext missing from DAKE2")
-                self._remote_brace_ct = decoded[offset:offset + CT_LEN]
-                offset += CT_LEN
-
-                if len(decoded) < offset + self.MAC_LENGTH:
-                    raise ValueError(f"Message too short for profile+MAC")
-
-                mac_start    = len(decoded) - self.MAC_LENGTH
-                mac          = decoded[mac_start:]
-
-                if len(mac) != self.MAC_LENGTH:
-                    raise ValueError(f"Invalid MAC length: expected {self.MAC_LENGTH}, got {len(mac)}")
-
-                # ── Parse profile with known-size extraction ─────
-                if len(decoded) < offset + 3:
-                    raise ValueError("Profile header missing in DAKE2")
-                _prof_num_versions = decoded[offset + 1]
-                _prof_size = 1 + 1 + _prof_num_versions + 57 + 56 + 8 + 114
-                if offset + _prof_size > mac_start:
-                    raise ValueError(f"Profile truncated in DAKE2")
-                profile_data = decoded[offset:offset + _prof_size]
-                offset += _prof_size
-
-                # ── Check for ML-DSA-87 public key after profile ──
-                _remaining = mac_start - offset
-                if _remaining >= MLDSA87Auth.PUB_BYTES and MLDSA87_AVAILABLE:
-                    _mldsa_candidate = decoded[offset:offset + MLDSA87Auth.PUB_BYTES]
-                    if len(_mldsa_candidate) != MLDSA87Auth.PUB_BYTES:
-                        raise ValueError(
-                            f"ML-DSA-87 public key in DAKE2 truncated: "
-                            f"expected {MLDSA87Auth.PUB_BYTES} bytes, "
-                            f"got {len(_mldsa_candidate)}"
-                        )
-                    self._remote_mldsa_pub = _mldsa_candidate
-                    offset += MLDSA87Auth.PUB_BYTES
-
-                if self.tracer:
-                    self.tracer.trace("DAKE2", "PROFILE", "RECEIVING", "PROCESSING",
-                                      f"profile length: {len(profile_data)}")
-
-                try:
-                    remote_profile = ClientProfile.decode(profile_data)
-                except Exception as e:
-                    if self.tracer:
-                        self.tracer.trace("ERROR", "PROFILE", "DECODE", "FAILED",
-                                         f"ClientProfile validation failed: {e}")
-                    raise ValueError(f"DAKE2 aborted: remote ClientProfile failed strict validation: {e}")
-
-                self.remote_identity_pub_bytes = remote_profile.identity_pub_bytes
-                self.remote_prekey_pub_bytes   = remote_profile.prekey_pub_bytes
-
-                try:
-                    self.remote_identity_key = ed448.Ed448PublicKey.from_public_bytes(
-                        remote_profile.identity_pub_bytes
-                    )
-                except Exception as e:
-                    raise ValueError(f"DAKE2 aborted: remote identity key is invalid: {e}") from e
-
-                try:
-                    self.remote_prekey = x448.X448PublicKey.from_public_bytes(
-                        remote_profile.prekey_pub_bytes
-                    )
-                except Exception as e:
-                    raise ValueError(f"DAKE2 aborted: remote prekey is invalid: {e}") from e
-
-                self.remote_ephemeral_pub = x448.X448PublicKey.from_public_bytes(
-                    remote_ephemeral_pub_bytes
-                )
-                self.remote_ephemeral_pub_bytes = remote_ephemeral_pub_bytes
-                self.remote_profile             = remote_profile
-
-                dh1 = self.ephemeral_key.exchange(self.remote_ephemeral_pub)
-                dh2 = self.client_profile.prekey.exchange(self.remote_ephemeral_pub)
-                dh3 = self.ephemeral_key.exchange(self.remote_prekey)
-
-                brace_shared = self._brace_kem.decapsulate(self._remote_brace_ct)
-
-                session_keys = self._derive_session_keys(
-                    dh1, dh2, dh3, brace_shared, is_initiator=True
-                )
-
-                mac_key      = session_keys.get('mac_key')
-                if mac_key is None:
-                    raise ValueError("MAC key not available")
-                message_body = decoded[:mac_start]
-                expected_mac = hmac.new(mac_key, message_body, hashlib.sha3_512).digest()
-
-                if not hmac.compare_digest(mac, expected_mac):
-                    raise ValueError(
-                        "DAKE2 MAC verification failed — possible MITM or replay. Session aborted."
-                    )
-
-                self.session_keys     = session_keys
-                self._raw_dake2_bytes = bytes(decoded)
-
-                self._session_created_at = time.time()
-                self.transition(DAKEState.ESTABLISHED, "DAKE2 (Auth-R) processed successfully")
-                if self.logger:
-                    self.logger.debug("DAKE2 (Auth-R) processed successfully")
-                return True
-
-            except Exception as e:
-                self.transition(DAKEState.FAILED, f"DAKE2 processing failed: {e}")
-                if self.logger:
-                    self.logger.error(f"DAKE2 processing failed: {e}")
-                return False
-    
-    def generate_dake3(self) -> Optional[str]:
-        """Generate DAKE3 (Auth-I Message) as initiator — spec §4.3.3.
-
-        Wire format: 0x37 || σ(228) || flag(1) [|| mldsa_sig(4627)]
-
-        σ = Schnorr ring signature (classical deniability).
-        If ML-DSA-87 is available and peer sent their PQ pub key:
-          flag=0x01, followed by ML-DSA-87 signature over same transcript.
-        Otherwise: flag=0x00 (classical only).
-
-        The ML-DSA-87 signature provides post-quantum authentication.
-        A quantum adversary could verify it (no PQ deniability), but
-        authentication against quantum threats is the higher priority.
-        """
-        with self.lock:
-            if self.state != DAKEState.ESTABLISHED:
-                raise StateMachineError(f"Cannot generate DAKE3 in state: {self.state.name}")
-            if not self.is_initiator:
-                raise StateMachineError("Responder cannot generate DAKE3")
-
-            try:
-                if self.session_keys is None:
-                    raise ValueError("Session keys not available")
-                if self._raw_dake1_bytes is None or self._raw_dake2_bytes is None:
-                    raise ValueError("Raw DAKE transcript bytes missing — cannot build Auth-I")
-
-                if len(self._raw_dake1_bytes) < 57:
-                    raise ValueError(
-                        "DAKE1 transcript blob too short — transcript binding aborted. "
-                        "Minimum 57 bytes (1 type + 56 X448 pub)."
-                    )
-                if len(self._raw_dake2_bytes) < 57:
-                    raise ValueError(
-                        "DAKE2 transcript blob too short — transcript binding aborted."
-                    )
-                if self._raw_dake1_bytes == self._raw_dake2_bytes:
-                    raise ValueError(
-                        "DAKE1 and DAKE2 transcript blobs are identical — "
-                        "possible replay or session confusion. Aborting Auth-I."
-                    )
-
-                transcript_msg = kdf_1(
-                    KDFUsage.AUTH_I_MSG,
-                    self._raw_dake1_bytes + self._raw_dake2_bytes,
-                    64
-                )
-
-                identity_key = self.client_profile.identity_key
-                if identity_key is None:
-                    raise ValueError("Local Ed448 identity key not available")
-
-                A1_bytes = (self.client_profile.identity_pub_bytes
-                            or bytes(identity_key.public_bytes()))
-                if self.remote_profile is None:
-                    raise ValueError("Remote ClientProfile not stored")
-                A2_bytes = self.remote_profile.identity_pub_bytes
-                if A2_bytes is None:
-                    raise ValueError("Remote identity_pub_bytes not available")
-
-                sigma = RingSignature.sign(identity_key, A1_bytes, A2_bytes, transcript_msg)
-
-                message = bytearray([OTRConstants.MESSAGE_TYPE_DAKE3])
-                message.extend(sigma)
-
-                # ── Hybrid PQ authentication: ML-DSA-87 signature ──
-                #    Wire: ring_sigma(228) || 0x01 || mldsa_sig(4627)
-                #    The ML-DSA signature signs the same transcript_msg,
-                #    providing post-quantum authentication alongside the
-                #    classical ring signature's deniability.
-                if (self._mldsa_auth is not None
-                        and self._remote_mldsa_pub is not None):
-                    mldsa_sig = self._mldsa_auth.sign(transcript_msg)
-                    message.append(0x01)
-                    message.extend(mldsa_sig)
-                    if self.logger:
-                        self.logger.debug(
-                            f"DAKE3 hybrid: ring-sig {len(sigma)}B + "
-                            f"ML-DSA-87 {len(mldsa_sig)}B")
-                else:
-                    message.append(0x00)
-                    if self.logger:
-                        self.logger.debug(
-                            f"DAKE3 classical only: ring-sig {len(sigma)}B "
-                            "(ML-DSA-87 not available)")
-
-                encoded = base64.urlsafe_b64encode(
-                    bytes(message)).decode('ascii').rstrip('=')
-                result  = f"?OTRv4 {encoded}"
-
-                if self.logger:
-                    self.logger.debug(f"DAKE3 (Auth-I) generated: {len(message)}B total")
-                return result
-
-            except Exception as e:
-                if self.logger:
-                    self.logger.error("DAKE3 (Auth-I) generation failed: " + str(e))
-                return None
-    
-    def process_dake3(self, dake3_msg: str) -> bool:
-        """Process DAKE3 (Auth-I Message) as responder — spec §4.3.3.
-
-        Wire format: 0x37 || σ(228) || flag(1) [|| mldsa_sig(4627)]
-
-        Classical: verifies Schnorr ring signature σ (deniability).
-        Hybrid PQ: if flag==0x01, also verifies ML-DSA-87 signature
-        over the same transcript (post-quantum authentication).
-        """
-        with self.lock:
-            if self.state != DAKEState.SENT_DAKE2:
-                raise StateMachineError(f"Cannot process DAKE3 in state: {self.state.name}")
-            if self.is_initiator:
-                raise StateMachineError("Initiator cannot process DAKE3")
-
-            try:
-                if not dake3_msg.startswith("?OTRv4 "):
-                    raise ValueError("Not an OTRv4 message")
-
-                payload = dake3_msg[7:].strip()
-                decoded = self._safe_b64decode(payload)
-
-                SIG_LEN      = RingSignature.TOTAL_BYTES
-                expected_len = 1 + SIG_LEN
-                if len(decoded) < expected_len:
-                    raise ValueError(
-                        f"DAKE3 too short: {len(decoded)} < {expected_len} "
-                        f"(ring sig is {SIG_LEN} bytes, not old 114-byte Ed448 sig)"
-                    )
-
-                msg_type = decoded[0]
-                if msg_type != OTRConstants.MESSAGE_TYPE_DAKE3:
-                    raise ValueError(
-                        f"Not a DAKE3 (Auth-I) message: 0x{msg_type:02x} "
-                        f"(expected 0x{OTRConstants.MESSAGE_TYPE_DAKE3:02x})"
-                    )
-
-                sigma = decoded[1:1 + SIG_LEN]
-
-                if self._raw_dake1_bytes is None or self._raw_dake2_bytes is None:
-                    raise ValueError("Raw DAKE transcript bytes missing — cannot verify Auth-I")
-
-                if len(self._raw_dake1_bytes) < 57:
-                    raise ValueError(
-                        "DAKE1 transcript blob too short — transcript binding aborted."
-                    )
-                if len(self._raw_dake2_bytes) < 57:
-                    raise ValueError(
-                        "DAKE2 transcript blob too short — transcript binding aborted."
-                    )
-                if self._raw_dake1_bytes == self._raw_dake2_bytes:
-                    raise ValueError(
-                        "DAKE1 and DAKE2 transcript blobs are identical — "
-                        "possible replay or session confusion. Rejecting Auth-I."
-                    )
-
-                transcript_msg = kdf_1(
-                    KDFUsage.AUTH_I_MSG,
-                    self._raw_dake1_bytes + self._raw_dake2_bytes,
-                    64
-                )
-
-                if self.remote_profile is None:
-                    raise ValueError("Remote ClientProfile not stored — cannot verify DAKE3")
-                A1_bytes = self.remote_profile.identity_pub_bytes
-                A2_bytes = (self.client_profile.identity_pub_bytes
-                            or bytes(self.client_profile.identity_key.public_bytes()))
-                if A1_bytes is None:
-                    raise ValueError("Remote identity_pub_bytes not available")
-
-                if not RingSignature.verify(A1_bytes, A2_bytes, transcript_msg, sigma):
-                    raise ValueError(
-                        "DAKE3 ring signature verification failed — "
-                        "initiator could not prove knowledge of A₁ or A₂"
-                    )
-
-                # ── Verify hybrid ML-DSA-87 signature ────────────
-                _mldsa_offset = 1 + SIG_LEN
-                _has_mldsa = (_mldsa_offset < len(decoded)
-                              and decoded[_mldsa_offset] == 0x01)
-                if _has_mldsa:
-                    # Guard: flag says ML-DSA-87 present — verify there
-                    # are enough bytes for a full signature before reading.
-                    _available = len(decoded) - (_mldsa_offset + 1)
-                    if _available < MLDSA87Auth.SIG_BYTES:
-                        raise ValueError(
-                            f"DAKE3 ML-DSA-87 flag is 0x01 but insufficient "
-                            f"bytes remain: need {MLDSA87Auth.SIG_BYTES}, "
-                            f"have {_available}"
-                        )
-                if (_has_mldsa
-                        and self._remote_mldsa_pub is not None
-                        and MLDSA87_AVAILABLE):
-                    _mldsa_sig = decoded[_mldsa_offset + 1:
-                                         _mldsa_offset + 1 + MLDSA87Auth.SIG_BYTES]
-                    if len(_mldsa_sig) != MLDSA87Auth.SIG_BYTES:
-                        raise ValueError(
-                            "DAKE3 ML-DSA-87 signature truncated — "
-                            f"expected {MLDSA87Auth.SIG_BYTES}, got {len(_mldsa_sig)}"
-                        )
-                    if not MLDSA87Auth.verify(
-                            self._remote_mldsa_pub, transcript_msg, _mldsa_sig):
-                        raise ValueError(
-                            "DAKE3 ML-DSA-87 signature verification failed — "
-                            "post-quantum authentication rejected"
-                        )
-                    _pq_auth = "hybrid (ring-sig ✓ + ML-DSA-87 ✓)"
-                else:
-                    _pq_auth = "classical only (ring-sig ✓)"
-
-                self._session_created_at = time.time()
-                self.transition(DAKEState.ESTABLISHED, f"DAKE3 verified — {_pq_auth}")
-                if self.logger:
-                    self.logger.debug(f"DAKE3 (Auth-I) verified — {_pq_auth}")
-                return True
-
-            except Exception as e:
-                self.transition(DAKEState.FAILED, f"DAKE3 failed: {e}")
-                if self.logger:
-                    self.logger.error(f"DAKE3 (Auth-I) verification failed: {e}")
-                return False
-    
-    def _derive_session_keys(self, dh1: bytes, dh2: bytes, dh3: bytes,
-                             brace_shared: bytes,
-                             is_initiator: bool) -> Dict[str, Any]:
-        """Derive session keys from three X448 + one ML-KEM-1024 agreement (spec §4.3.2).
-
-        Key derivation using KDF_1 = SHAKE-256 (spec §3.2):
-
-            brace_key = KDF_1(0x02, brace_shared, 32)         # KDF'd brace key → carried into ratchet
-            mixed     = KDF_1(0x03, dh1 || dh2 || dh3 || brace_shared, 64)
-            ssid      = KDF_1(0x01, mixed, 8)
-            root_seed = KDF_1(0x11, mixed, 96)
-              → root_key  = root_seed[:32]
-              → ck_a      = root_seed[32:64]
-              → ck_b      = root_seed[64:96]
-            mac_key   = KDF_1(0x15, mixed, 64)
-
-        brace_shared is the 32-byte ML-KEM-1024 shared secret (post-quantum).
-        Shor's algorithm cannot recover it — it is based on Module-LWE.
-        """
-        try:
-            brace_key = kdf_1(KDFUsage.BRACE_KEY, brace_shared, 32)
-
-            mixed = kdf_1(KDFUsage.SHARED_SECRET, dh1 + dh2 + dh3 + brace_shared, 64)
-
-            ssid = kdf_1(KDFUsage.SSID, mixed, 8)
-            session_id = ssid + b'\x00' * 24
-
-            root_seed  = kdf_1(KDFUsage.ROOT_KEY, mixed, 96)
-            root_key   = root_seed[:32]
-            ck_a       = root_seed[32:64]
-            ck_b       = root_seed[64:96]
-
-            mac_key = kdf_1(KDFUsage.DAKE_MAC_KEY, mixed, 64)
-
-            if is_initiator:
-                chain_key_send = ck_a
-                chain_key_recv = ck_b
-            else:
-                chain_key_send = ck_b
-                chain_key_recv = ck_a
-
-            root_key_mem = SecureMemory(32)
-            root_key_mem.write(root_key)
-
-            session_keys = {
-                'root_key':        root_key_mem,
-                'chain_key_send':  chain_key_send,
-                'chain_key_recv':  chain_key_recv,
-                'mac_key':         mac_key,
-                'session_id':      session_id,
-                'brace_key':       brace_key,
-                'is_initiator':    is_initiator,
-                'peer_long_term_pub':  self.remote_identity_pub_bytes,
-                'peer_long_term_key':  self.remote_identity_key,
-            }
-
-            if self.tracer:
-                self.tracer.trace("KEYS", "DERIVED", "KDF_1", "READY",
-                                  f"ssid: {ssid.hex()} brace: {brace_key[:4].hex()}…")
-
-            return session_keys
-
-        except Exception as e:
-            raise EncryptionError(f"Key derivation failed: {e}")
-    
-    def get_session_keys(self) -> Optional[Dict[str, Any]]:
-        """Get derived session keys"""
-        with self.lock:
-            if self.state != DAKEState.ESTABLISHED:
-                return None
-            if self.session_keys is None:
-                return None
-            
-            keys_copy = self.session_keys.copy()
-            
-            if 'root_key' in keys_copy:
-                keys_copy['root_key'] = self.session_keys['root_key']
-            
-            return keys_copy
-    
-    def get_state(self) -> DAKEState:
-        """Get current DAKE state"""
-        with self.lock:
-            return self.state
-    
-    def is_established(self) -> bool:
-        """Check if DAKE is established"""
-        with self.lock:
-            return self.state == DAKEState.ESTABLISHED
-    
-    def has_failed(self) -> bool:
-        """Check if DAKE has failed"""
-        with self.lock:
-            return self.state == DAKEState.FAILED
-    
-    def is_expired(self) -> bool:
-        """Check if DAKE has expired"""
-        with self.lock:
-            if self.start_time is None:
-                return False
-            if self.state in (DAKEState.ESTABLISHED, DAKEState.FAILED):
-                return False
-            return time.time() - self.start_time > self.timeout
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# RustDAKEAdapter — thin Python shim that delegates all DAKE operations to the
-# Rust otrv4_core.RustDAKE implementation when available, falling back to the
-# pure-Python OTRv4DAKE when the Rust build is absent.
-#
-# Security properties (Rust path):
-#   • dh1 / dh2 / dh3 X448 shared secrets are computed and consumed entirely
-#     inside Rust — they are NEVER returned as Python bytes.
-#   • ML-KEM-1024 shared secret (brace_shared) is also kept in Rust.
-#   • Root key, chain keys, MAC key, brace key are derived in Rust via the
-#     same KDF_1 (SHAKE-256) chain as the spec — only the final session key
-#     dict crosses the PyO3 boundary, and root_key is wrapped in SecureMemory
-#     before being handed to the session.
-#   • Ring signature (classical deniability) is still generated on the Python
-#     side via RingSignature.sign() / the otr4_ed448_ct C extension, because
-#     there is no ring-sign primitive in the current Rust build.  The resulting
-#     sigma bytes are passed opaquely to Rust for DAKE3 message assembly.
-#   • ML-DSA-87 signature (PQ authentication) is generated on the Python side
-#     via MLDSA87Auth.sign() and also passed opaquely.
-#
-# The adapter exposes exactly the same public interface as OTRv4DAKE so that
-# every other call site (EnhancedSessionManager, EnhancedOTRSession,
-# test_attacks.py, test_otrv4_integration.py) is unaffected.
-# ══════════════════════════════════════════════════════════════════════════════
 
 class RustDAKEAdapter:
     """
     DAKE engine that uses Rust internals (otrv4_core.RustDAKE) when available.
 
-    The Python OTRv4DAKE remains as the fallback — if otrv4_core is not built
+    v10.7: the Rust otrv4_core.RustDAKE backend is mandatory.  The
     yet, behaviour is identical to the pre-migration version.
 
     When Rust IS available:
@@ -4404,7 +3581,7 @@ class RustDAKEAdapter:
       - KDF_1 session key derivation done in Rust
       - ring signature still generated in Python, embedded as opaque bytes
 
-    Public API mirrors OTRv4DAKE exactly.
+    Rust DAKE is the only DAKE implementation; there is no fallback.
     """
 
     def __init__(self,
@@ -4423,9 +3600,7 @@ class RustDAKEAdapter:
         #    builds of otrv4_core.RustDAKE that the device .so might be using.
         #    On ANY failure, fall back to the Python OTRv4DAKE which is fully
         #    spec-compliant and side-channel hardened.
-        self._use_rust    = False
         self._rust        = None
-        self._py_fallback = None
 
         if RUST_DAKE_AVAILABLE and _RustDAKE is not None:
             try:
@@ -4517,7 +3692,6 @@ class RustDAKEAdapter:
                         "Ed448 determinism violated, refusing to construct adapter"
                     )
 
-                self._use_rust = True
                 if logger:
                     logger.debug(
                         "RustDAKEAdapter: using Rust DAKE backend "
@@ -4536,15 +3710,6 @@ class RustDAKEAdapter:
                     f"functional for the protocol to operate."
                 )
 
-        if not self._use_rust:
-            # If RUST_DAKE_AVAILABLE was False at import time, fail fast.
-            # No Python OTRv4DAKE fallback in v10.6.11+.
-            raise RuntimeError(
-                "RustDAKEAdapter: Rust DAKE backend is unavailable "
-                "(otrv4_core not importable or RustDAKE class missing).  "
-                "v10.6.11+ requires the Rust core; rebuild the .so."
-            )
-
         # ── State exposed to EnhancedOTRSession.encrypt_with_tlvs ─────────
         # When using Rust, we mirror the state ourselves so Python code that
         # reads dake_engine.state / dake_engine.is_session_expired() still works.
@@ -4561,7 +3726,7 @@ class RustDAKEAdapter:
         # MLDSA support — read by generate_dake3
         self._mldsa_auth: Optional['MLDSA87Auth'] = None
         self._remote_mldsa_pub: Optional[bytes]   = None
-        if MLDSA87_AVAILABLE and self._use_rust:
+        if MLDSA87_AVAILABLE:
             try:
                 self._mldsa_auth = MLDSA87Auth()
             except Exception:
@@ -4579,8 +3744,6 @@ class RustDAKEAdapter:
 
     @property
     def state(self) -> DAKEState:
-        if not self._use_rust:
-            return self._py_fallback.state
         return self._state
 
     @property
@@ -4588,18 +3751,12 @@ class RustDAKEAdapter:
         return self._is_initiator
 
     def is_established(self) -> bool:
-        if not self._use_rust:
-            return self._py_fallback.is_established()
         return self._state == DAKEState.ESTABLISHED
 
     def has_failed(self) -> bool:
-        if not self._use_rust:
-            return self._py_fallback.has_failed()
         return self._state == DAKEState.FAILED
 
     def is_session_expired(self) -> bool:
-        if not self._use_rust:
-            return self._py_fallback.is_session_expired()
         if self._state != DAKEState.ESTABLISHED:
             return False
         if self._session_created_at == 0.0:
@@ -4607,8 +3764,6 @@ class RustDAKEAdapter:
         return (time.time() - self._session_created_at) > self._session_max_age
 
     def is_expired(self) -> bool:
-        if not self._use_rust:
-            return self._py_fallback.is_expired()
         return False
 
     def get_state(self) -> DAKEState:
@@ -4645,8 +3800,6 @@ class RustDAKEAdapter:
 
     def generate_dake1(self) -> str:
         """Generate DAKE1 as initiator. Rust path: X448 key generated in Rust."""
-        if not self._use_rust:
-            return self._py_fallback.generate_dake1()
 
         try:
             # Rust returns raw DAKE1 bytes (without ?OTRv4 prefix)
@@ -4664,8 +3817,6 @@ class RustDAKEAdapter:
 
     def process_dake1(self, dake1_msg: str, peer_key: str = "unknown") -> bool:
         """Process DAKE1 as responder. Rust parses everything."""
-        if not self._use_rust:
-            return self._py_fallback.process_dake1(dake1_msg, peer_key)
 
         if not _dake1_rate_limiter.is_allowed(peer_key):
             self._log_debug(f"DAKE1 rate limit for {peer_key}")
@@ -4674,7 +3825,7 @@ class RustDAKEAdapter:
         try:
             if not dake1_msg.startswith("?OTRv4 "):
                 return self._fail("process_dake1: not an OTRv4 message")
-            raw = OTRv4DAKE._safe_b64decode(dake1_msg[7:].strip())
+            raw = _safe_b64decode(dake1_msg[7:].strip())
             self._raw_dake1_bytes = raw
 
             # Rust parses the whole DAKE1, including profile and optional ML‑DSA.
@@ -4723,8 +3874,6 @@ class RustDAKEAdapter:
             where session_keys_dict contains only derived key material
             (root_key, chain_key_send, chain_key_recv, mac_key, brace_key, ssid)
         """
-        if not self._use_rust:
-            return self._py_fallback.generate_dake2()
 
         try:
             # ── Phase 5.1 (v10.6.4) ──────────────────────────────────────
@@ -4801,13 +3950,11 @@ class RustDAKEAdapter:
         """
         Process DAKE2 as initiator. Rust parses everything.
         """
-        if not self._use_rust:
-            return self._py_fallback.process_dake2(dake2_msg)
 
         try:
             if not dake2_msg.startswith("?OTRv4 "):
                 return self._fail("process_dake2: not an OTRv4 message")
-            raw = OTRv4DAKE._safe_b64decode(dake2_msg[7:].strip())
+            raw = _safe_b64decode(dake2_msg[7:].strip())
             self._raw_dake2_bytes = raw
 
             # ── Phase 5.1 (v10.6.4) ──────────────────────────────────────
@@ -4891,8 +4038,6 @@ class RustDAKEAdapter:
         then the sigma + optional ML-DSA sig bytes are passed to Rust for
         canonical wire assembly — or assembled here if Rust doesn't support it.
         """
-        if not self._use_rust:
-            return self._py_fallback.generate_dake3()
 
         try:
             if self._raw_dake1_bytes is None or self._raw_dake2_bytes is None:
@@ -4960,16 +4105,14 @@ class RustDAKEAdapter:
         Process DAKE3 as responder.
         Ring-sig verification done in Python (constant-time C ext),
         ML-DSA-87 verification also in Python, then state transitions.
-        This matches what OTRv4DAKE.process_dake3 does — keeping verification
+        This matches the DAKE3 wire format — keeping verification
         on the Python/C side where we have OpenSSL 3.5+ EVP access.
         """
-        if not self._use_rust:
-            return self._py_fallback.process_dake3(dake3_msg)
 
         try:
             if not dake3_msg.startswith("?OTRv4 "):
                 return self._fail("process_dake3: not an OTRv4 message")
-            decoded = OTRv4DAKE._safe_b64decode(dake3_msg[7:].strip())
+            decoded = _safe_b64decode(dake3_msg[7:].strip())
 
             SIG_LEN = RingSignature.TOTAL_BYTES
             if len(decoded) < 1 + SIG_LEN:
@@ -5060,8 +4203,6 @@ class RustDAKEAdapter:
         }
 
     def get_session_keys(self) -> Optional[Dict[str, Any]]:
-        if not self._use_rust:
-            return self._py_fallback.get_session_keys()
         if self._state != DAKEState.ESTABLISHED:
             return None
         keys = getattr(self, '_session_keys', None)
@@ -6286,7 +5427,7 @@ class EnhancedOTRSession:
         
         self.session_id: Optional[bytes] = None
         self.root_key: Optional[SecureMemory] = None
-        self.remote_long_term_pub: Optional[ed448.Ed448PublicKey] = None
+        self.remote_long_term_pub: Optional[bytes] = None
         self._remote_long_term_pub_bytes: Optional[bytes] = None
         self._dake_chain_key_send: Optional[bytes] = None
         self._dake_chain_key_recv: Optional[bytes] = None
@@ -7219,10 +6360,11 @@ class EnhancedOTRSession:
         try:
             if self.remote_long_term_pub is not None:
                 try:
-                    pub_bytes = self.remote_long_term_pub.public_bytes(
-                        encoding=serialization.Encoding.Raw,
-                        format=serialization.PublicFormat.Raw
-                    )
+                    # v10.7: remote_long_term_pub holds raw 57-byte Ed448
+                    # public key bytes directly (the Rust DAKE stores raw
+                    # bytes there since v10.6.19).  No cryptography-library
+                    # public_bytes() extraction is needed or possible.
+                    pub_bytes = bytes(self.remote_long_term_pub)
                     fp_bytes = hashlib.sha3_512(pub_bytes).digest()
                     return fp_bytes.hex().upper()
                 except Exception:
@@ -8369,12 +7511,12 @@ class EnhancedSessionManager:
                     # Legacy non-Rust DAKE: pub_key_data is already an
                     # Ed448PublicKey object.  Keep the object for legacy
                     # downstream code; extract bytes for the bytes path.
+                    # v10.7: the Rust DAKE delivers pub_key_data as raw
+                    # 57-byte Ed448 public key bytes.  Store the same bytes
+                    # in both attributes; no cryptography-library extraction.
                     session.remote_long_term_pub = pub_key_data
                     try:
-                        session._remote_long_term_pub_bytes = pub_key_data.public_bytes(
-                            encoding=serialization.Encoding.Raw,
-                            format=serialization.PublicFormat.Raw
-                        )
+                        session._remote_long_term_pub_bytes = bytes(pub_key_data)
                     except Exception as e:
                         self.tracer.trace(peer, "ERROR", "PUBKEY", "BYTES_FAILED", str(e))
                         session._remote_long_term_pub_bytes = None
@@ -8435,12 +7577,12 @@ class EnhancedSessionManager:
                     # Legacy non-Rust DAKE: pub_key_data is already an
                     # Ed448PublicKey object.  Keep the object for legacy
                     # downstream code; extract bytes for the bytes path.
+                    # v10.7: the Rust DAKE delivers pub_key_data as raw
+                    # 57-byte Ed448 public key bytes.  Store the same bytes
+                    # in both attributes; no cryptography-library extraction.
                     session.remote_long_term_pub = pub_key_data
                     try:
-                        session._remote_long_term_pub_bytes = pub_key_data.public_bytes(
-                            encoding=serialization.Encoding.Raw,
-                            format=serialization.PublicFormat.Raw
-                        )
+                        session._remote_long_term_pub_bytes = bytes(pub_key_data)
                     except Exception as e:
                         self.tracer.trace(peer, "ERROR", "PUBKEY", "BYTES_FAILED", str(e))
                         session._remote_long_term_pub_bytes = None
@@ -11090,7 +10232,7 @@ class OTRv4IRCClient:
             raw = payload[7:].strip()
             if not raw:
                 return
-            decoded = OTRv4DAKE._safe_b64decode(raw)
+            decoded = _safe_b64decode(raw)
             if not decoded:
                 return
             if (len(decoded) >= 3
@@ -12084,7 +11226,7 @@ class EnhancedOTRv4IRCClient(OTRv4IRCClient):
             _backend = getattr(_session, '_ratchet_backend', 'python') if _session else 'python'
             _ratchet_tag = "🦀 Rust" if _backend == "rust" else "🐍 Python"
             _dake_engine = getattr(_session, 'dake_engine', None)
-            _dake_tag = "🦀 Rust" if (_dake_engine is not None and getattr(_dake_engine, '_use_rust', False)) else "🐍 Python"
+            _dake_tag = "🦀 Rust"
             _smp_tag = "🦀 Rust" if (getattr(_session, 'rust_smp', None) is not None) else "🐍 Python"
 
             if channel_panel:
@@ -12219,7 +11361,7 @@ class EnhancedOTRv4IRCClient(OTRv4IRCClient):
         _backend = getattr(_session, '_ratchet_backend', 'python') if _session else 'python'
         _ratchet_tag = "🦀 Rust" if _backend == "rust" else "🐍 Python"
         _dake_engine = getattr(_session, 'dake_engine', None)
-        _dake_tag = "🦀 Rust" if (_dake_engine is not None and getattr(_dake_engine, '_use_rust', False)) else "🐍 Python"
+        _dake_tag = "🦀 Rust"
         _smp_tag = "🦀 Rust" if (getattr(_session, 'rust_smp', None) is not None) else "🐍 Python"
         self.add_message(peer, colorize("─"*50, 'dim'), sec)
         self.add_message(peer,
@@ -12471,7 +11613,7 @@ class EnhancedOTRv4IRCClient(OTRv4IRCClient):
                 return
 
             try:
-                decoded = OTRv4DAKE._safe_b64decode(raw)
+                decoded = _safe_b64decode(raw)
             except Exception:
                 return
             
@@ -12874,10 +12016,8 @@ class EnhancedOTRv4IRCClient(OTRv4IRCClient):
                 
                 if hasattr(sess, 'remote_long_term_pub') and sess.remote_long_term_pub:
                     try:
-                        pub_bytes = sess.remote_long_term_pub.public_bytes(
-                            encoding=serialization.Encoding.Raw,
-                            format=serialization.PublicFormat.Raw
-                        )
+                        # v10.7: raw 57-byte Ed448 public key bytes.
+                        pub_bytes = bytes(sess.remote_long_term_pub)
                         fp_bytes = hashlib.sha3_512(pub_bytes).digest()
                         fp = fp_bytes.hex().upper()
                         self.debug(f"_get_remote_fp: got from remote_long_term_pub: {fp[:16]}...")
@@ -12946,7 +12086,7 @@ class EnhancedOTRv4IRCClient(OTRv4IRCClient):
             icon = UIConstants.SECURITY_ICONS.get(sec, "")
             name = UIConstants.SECURITY_NAMES.get(sec, sec.name)
             _dake_engine = getattr(sess, 'dake_engine', None)
-            _dake_tag = "🦀R" if (_dake_engine is not None and getattr(_dake_engine, '_use_rust', False)) else "🐍Py"
+            _dake_tag = "🦀R"
             _ratchet_backend = getattr(sess, '_ratchet_backend', 'python')
             _ratchet_tag = "🦀R" if _ratchet_backend == "rust" else "🐍Py"
             _smp_tag = "🦀R" if getattr(sess, 'rust_smp', None) is not None else "🐍Py"

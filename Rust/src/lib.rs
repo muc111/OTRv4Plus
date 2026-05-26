@@ -49,6 +49,7 @@ fn otrv4_core(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<key_handles::X448KeyHandle>()?;
     m.add_function(wrap_pyfunction!(key_handles::generate_ed448_keypair, m)?)?;
     m.add_function(wrap_pyfunction!(key_handles::generate_x448_keypair,  m)?)?;
+    m.add_function(wrap_pyfunction!(key_handles::verify_ed448_sig,        m)?)?;
 
     Ok(())
 }
