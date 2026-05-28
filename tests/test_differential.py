@@ -25,7 +25,7 @@ import hashlib
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import otrv4_testlib as otr
-import otr4_crypto_ext as _ossl
+import otrv4_core as _ossl  # 5.3k: was otr4_crypto_ext (C ext retired)
 
 from cryptography.hazmat.primitives.asymmetric import ed448, x448
 from cryptography.hazmat.primitives import serialization

@@ -8,7 +8,7 @@ No Python fallback — C extension is required.
 import os
 import sys
 import unittest
-import otr4_crypto_ext as _ossl
+import otrv4_core as _ossl  # 5.3k: was otr4_crypto_ext (C ext retired)
 
 # Hard check — no fallback
 _REQUIRED = ('mlkem1024_keygen', 'mlkem1024_encaps', 'mlkem1024_decaps')

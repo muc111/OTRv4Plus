@@ -29,7 +29,32 @@ Run: python -m pytest test_attacks.py -v
 import sys, os, time, gc, secrets, hashlib, struct
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import otrv4_testlib as otr
-import otr4_crypto_ext as _ossl
+# 5.3k: otr4_crypto_ext C extension retired.  otrv4_core provides the
+# ML-KEM-1024 functions; cleanse() is reimplemented here with ctypes.memset
+# (the same dead-store-resistant wipe otrv4+.py uses in _secure_wipe).
+import ctypes as _ctypes
+import otrv4_core as _rust_core
+
+
+class _OsslShim:
+    """Drop-in for the retired otr4_crypto_ext, backed by Rust + ctypes."""
+    mlkem1024_keygen = staticmethod(_rust_core.mlkem1024_keygen)
+    mlkem1024_encaps = staticmethod(_rust_core.mlkem1024_encaps)
+    mlkem1024_decaps = staticmethod(_rust_core.mlkem1024_decaps)
+
+    @staticmethod
+    def cleanse(buf):
+        """Zero a bytearray in place via libc memset (ctypes)."""
+        if buf is None:
+            return
+        n = len(buf)
+        if n == 0:
+            return
+        addr = (_ctypes.c_char * n).from_buffer(buf)
+        _ctypes.memset(addr, 0, n)
+
+
+_ossl = _OsslShim()
 
 import pytest
 from hypothesis import given, settings, assume, HealthCheck

@@ -39,7 +39,7 @@ use pyo3::types::PyBytes;
 use pyo3::exceptions::PyValueError;
 
 use aes_gcm::aead::{Aead, KeyInit, Payload};
-use aes_gcm::{Aes256Gcm, Key, Nonce};
+use aes_gcm::{Aes256Gcm, Nonce};
 
 /// Encrypt with AES-256-GCM.
 ///
@@ -65,11 +65,24 @@ pub fn aes256gcm_encrypt<'py>(
         ));
     }
 
-    let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(key));
-    let n      = Nonce::from_slice(nonce);
+    // v10.7.4 (Phase 5.3i-D): non-deprecated key/nonce construction.
+    // Aes256Gcm::new_from_slice (KeyInit trait) takes &[u8] and length-checks.
+    // For the nonce, GenericArray has no TryFrom<&[u8]>; the non-deprecated
+    // path is &[u8] -> &[u8; 12] (slice TryInto) then Nonce::from(&array).
+    // Key and nonce lengths are already validated above, so both conversions
+    // are infallible here; mapped to ValueError defensively.
+    let cipher = Aes256Gcm::new_from_slice(key)
+        .map_err(|_| PyValueError::new_err(
+            "aes256gcm_encrypt: invalid key length"
+        ))?;
+    let nonce_arr: &[u8; 12] = nonce.try_into()
+        .map_err(|_| PyValueError::new_err(
+            "aes256gcm_encrypt: invalid nonce length"
+        ))?;
+    let n = Nonce::from(*nonce_arr);
 
     let ct_with_tag = cipher
-        .encrypt(n, Payload { msg: plaintext, aad })
+        .encrypt(&n, Payload { msg: plaintext, aad })
         .map_err(|_| PyValueError::new_err(
             "aes256gcm_encrypt: internal encryption failure"
         ))?;
@@ -106,11 +119,19 @@ pub fn aes256gcm_decrypt<'py>(
         ));
     }
 
-    let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(key));
-    let n      = Nonce::from_slice(nonce);
+    // v10.7.4 (Phase 5.3i-D): non-deprecated key/nonce construction.
+    let cipher = Aes256Gcm::new_from_slice(key)
+        .map_err(|_| PyValueError::new_err(
+            "aes256gcm_decrypt: invalid key length"
+        ))?;
+    let nonce_arr: &[u8; 12] = nonce.try_into()
+        .map_err(|_| PyValueError::new_err(
+            "aes256gcm_decrypt: invalid nonce length"
+        ))?;
+    let n = Nonce::from(*nonce_arr);
 
     let plaintext = cipher
-        .decrypt(n, Payload { msg: ct_and_tag, aad })
+        .decrypt(&n, Payload { msg: ct_and_tag, aad })
         .map_err(|_| PyValueError::new_err(
             "aes256gcm_decrypt: authentication failed (wrong key, nonce, aad, or tampered ciphertext)"
         ))?;
@@ -130,10 +151,10 @@ mod tests {
         let pt   = b"OTRv4+ v10.6.19 aead round-trip";
         let aad  = b"smp_secrets_v1";
 
-        let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&key));
-        let ct = cipher.encrypt(Nonce::from_slice(&n),
+        let cipher = Aes256Gcm::new_from_slice(&key).expect("test key is 32 bytes");
+        let ct = cipher.encrypt(&Nonce::from(n),
             Payload { msg: pt, aad }).expect("encrypt");
-        let recovered = cipher.decrypt(Nonce::from_slice(&n),
+        let recovered = cipher.decrypt(&Nonce::from(n),
             Payload { msg: &ct, aad }).expect("decrypt");
         assert_eq!(&recovered[..], &pt[..]);
     }
@@ -144,10 +165,10 @@ mod tests {
         let key  = [0x33u8; 32];
         let n    = [0x44u8; 12];
         let pt   = b"hello";
-        let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&key));
-        let ct = cipher.encrypt(Nonce::from_slice(&n),
+        let cipher = Aes256Gcm::new_from_slice(&key).expect("test key is 32 bytes");
+        let ct = cipher.encrypt(&Nonce::from(n),
             Payload { msg: pt, aad: b"aad1" }).expect("encrypt");
-        let result = cipher.decrypt(Nonce::from_slice(&n),
+        let result = cipher.decrypt(&Nonce::from(n),
             Payload { msg: &ct, aad: b"aad2" });
         assert!(result.is_err(), "wrong aad must reject");
     }
@@ -159,12 +180,12 @@ mod tests {
         let n    = [0x66u8; 12];
         let pt   = b"original";
         let aad  = b"";
-        let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&key));
-        let mut ct = cipher.encrypt(Nonce::from_slice(&n),
+        let cipher = Aes256Gcm::new_from_slice(&key).expect("test key is 32 bytes");
+        let mut ct = cipher.encrypt(&Nonce::from(n),
             Payload { msg: pt, aad }).expect("encrypt");
         // flip a byte in the ciphertext
         ct[0] ^= 0x01;
-        let result = cipher.decrypt(Nonce::from_slice(&n),
+        let result = cipher.decrypt(&Nonce::from(n),
             Payload { msg: &ct, aad });
         assert!(result.is_err(), "tampered ct must reject");
     }

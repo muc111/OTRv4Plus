@@ -274,7 +274,7 @@ class TestSMPMath:
 # 8. ML-KEM-768 round-trip
 # ─────────────────────────────────────────────────────────────────────────────
 
-import otr4_crypto_ext as _ossl
+import otrv4_core as _ossl  # 5.3k: was otr4_crypto_ext (C ext retired)
 
 class TestMLKEM:
     """Property: decaps(encaps(ek)) recovers the same shared secret."""

@@ -1,151 +1,62 @@
-# Development & History
+# DEVELOPMENT.md — patches for v10.7.5
 
-## Why the git history looks shallow
-
-The public GitHub repository shows only a small number of initial commits. This is because **12+ months of development happened offline and in private repositories**. Before open-sourcing, the history was squashed to remove:
-
-- Hard-coded test credentials and I2P destination addresses
-- Early experimental wire formats that would break protocol compatibility
-- Debug prints containing intermediate key material
-- Large binary blobs (test vectors, core dumps from sanitizer runs)
-
-The code here is **not a quick hack** — it is the result of iterative development, repeated cross-checking against the OTRv4 spec, adversarial test-suite construction, and multiple security-motivated refactors that together removed ~1,800 lines of dead and unsafe code.
+This file documents the targeted edits to be made to the existing `DEVELOPMENT.md` for the 5.3i + 5.3k + 10.7.5 doc pass.  Apply by hand or with the sed snippets below; do **not** wholesale-replace the file (it contains a long project history that should be preserved).
 
 ---
 
-## Development phases
+## Edit 1 — replace the "Phase 2 — Python + C extensions" subsection
 
-### Phase 1 — Pure Python (months 1–4)
+This subsection (around lines 30–60 in the live file) currently describes the three C extensions and the lib-OpenSSL build path as if they were current.  Replace it with the historical-tense version below.
 
-Everything started in a single Python file. The goal was a working OTRv4 IRC client that could run on Termux/Android over I2P with no native dependencies.
+**Find:**
 
-- Read OTRv4 spec (draft-10) end-to-end; implemented DAKE state machine (DAKE1/DAKE2/DAKE3) with Ed448 identity signatures and X448 ephemeral exchange
-- Ring signature OR-proof (Auth-I, §4.3.3) in pure Python using `cryptography` library primitives
-- Double ratchet skeleton: `chain_key → msg_key` KDF, message-key skipping for out-of-order delivery, explicit rekey intervals
-- ML-KEM-1024 brace injected into every root-key ratchet step
-- SMP four-message ZKP flow with 3072-bit DH
-- Basic terminal IRC client: single panel, raw ANSI, no tab system
-
-**Limitation identified:** Python's `pow()` with modulus is not constant-time. Secret-dependent branching in Ed448 arithmetic was present throughout. This became the primary motivation for Phase 2.
-
----
-
+```
 ### Phase 2 — Python + C extensions (months 5–12)
 
 Performance and side-channel security forced a move to C for all secret-dependent arithmetic. Three C extensions were written and integrated:
 
 #### otr4_crypto_ext.c
+[...rest of the existing subsection through the end of the "#### IRC client maturation" block...]
+```
 
-- Constant-time modular exponentiation via `BN_mod_exp_mont_consttime` (OpenSSL)
-- Modular inverse via `BN_mod_inverse`
-- Cryptographically random integers in range via `BN_rand_range`
-- ML-KEM-1024 key generation, encapsulation, decapsulation via liboqs
-- Ed448 Schnorr ring signatures (OR-proof) used in Auth-I
-- Memory hardening: `OPENSSL_cleanse`, `mlock()`, `prctl(PR_SET_DUMPABLE, 0)`
+**Replace with:**
 
-The client was made to **refuse startup** if this extension is absent — there is intentionally no Python fallback for constant-time operations.
+```
+### Phase 2 — Python + C extensions (months 5–12, retired by v10.7.5)
 
-#### otr4_ed448_ct.c
+Performance and side-channel security forced a move to C for all secret-dependent arithmetic.  Three C extensions were written and integrated.  All three have since been retired in favour of pure-Rust equivalents (Phases 5.3i, 5.3j, 5.3k, completed at v10.7.4); they are documented here for historical context only.
 
-Constant-time Edwards-448 point arithmetic — scalar multiplication (`gep_scalarmult`) with full Montgomery ladder, cofactor clearing, and point serialisation. A critical timing side-channel was found and fixed in `gep_scalarmult` during security review.
+#### otr4_crypto_ext.c (retired v10.7.4, Phase 5.3i-C / 5.3k)
 
-#### otr4_mldsa_ext.c
+- Constant-time modular exponentiation via `BN_mod_exp_mont_consttime` (OpenSSL) — superseded by `num-bigint` in `src/smp.rs`.
+- Modular inverse via `BN_mod_inverse` — superseded.
+- Cryptographically random integers in range via `BN_rand_range` — superseded.
+- ML-KEM-1024 key generation, encapsulation, decapsulation via liboqs — replaced at v10.7.3 by `pqcrypto-mlkem 0.1.1` (FIPS 203) in `src/mlkem.rs`.
+- Ed448 Schnorr ring signatures (OR-proof) — replaced earlier by the pure-Rust ring signature in `src/ring_sig.rs`.
+- Memory hardening: `OPENSSL_cleanse`, `mlock()`, `prctl(PR_SET_DUMPABLE, 0)` — replaced at v10.7.2 by `ctypes.memset` and at v10.7.1 by `resource.setrlimit(RLIMIT_CORE, (0, 0))`.
 
-ML-DSA-87 signatures via OpenSSL 3.5+ EVP provider, used for post-quantum authentication layered on top of the classical Ed448 DAKE. OpenSSL 3.5+ is required — it is the first release with native PQC algorithm support.
+#### otr4_ed448_ct.c (retired v10.7.4, Phase 5.3k)
+
+Constant-time Edwards-448 point arithmetic — scalar multiplication (`gep_scalarmult`) with full Montgomery ladder, cofactor clearing, and point serialisation.  A critical timing side-channel was found and fixed in `gep_scalarmult` during security review.  This extension was imported defensively as a ground-truth Ed448 implementation but, by the time 5.3k landed, a grep for `_ed448_ct.` member access in `otrv4+.py` returned empty — every Ed448 operation already ran in the Rust core (`ed448-goldilocks-plus 0.16`), so the import was simply deleted.
+
+#### otr4_mldsa_ext.c (retired v10.6.18, Phase 5.3j)
+
+ML-DSA-87 signatures via OpenSSL 3.5+ EVP provider, used for post-quantum authentication layered on top of the classical Ed448 DAKE.  Replaced by `pqcrypto-mldsa 0.1.2` in `src/mldsa.rs`.  The `.c` and `.so` files were left orphaned in the repo until 5.3k cleaned them up.
 
 #### IRC client maturation
 
-- Full tabbed terminal UI: coloured nicks, security icons, unread badges, pager
-- IRCv3 support: SASL PLAIN, TLS, PING watchdog, auto-reconnect, auto-join
-- WHOIS, NickServ identification, 27 Club username generator
-- 27 IRC commands added
-- Fragment reassembly bug fixed: window expiry now based on last received fragment timestamp
-
-**Security posture at end of Phase 2: ~9.4/10**
-
----
-
-### Phase 3 — Rust cryptographic core (month 13+)
-
-#### Track A — Rust Double Ratchet (v10.5.8, complete)
-
-The Python double ratchet was replaced with a pure Rust implementation (`otrv4_core` crate via PyO3/maturin). Key properties:
-
-- All chain keys, message keys, and brace keys stored in `SecretBytes<32>` with `ZeroizeOnDrop`
-- Zero `unsafe` blocks — the Rust borrow checker enforces memory safety
-- PyO3 boundary: Python receives opaque handles and ciphertext; no key material ever crosses to Python
-
-#### Track B — Rust SMP Engine (v10.5.10, complete)
-
-The Python SMP implementation was replaced with a full Rust state machine. This is the most significant security improvement since the C extension work:
-
-**Before v10.5.10:**
-- SMP exponents existed as Python `int` objects during ZKP computation
-- Python `int` is immutable and GC-managed — no deterministic zeroization
-- The secret was stretched and stored in Python memory for the session lifetime
-- The responder (Bob) never visually transitioned to the verified state (🔵)
-
-**After v10.5.10:**
-- All exponents are `SecretVec` inside `SmpState` — `ZeroizeOnDrop` fires on every abort, failure, or session end
-- `RustSMPVault` holds the raw passphrase bytes in Rust; Python holds only a random `u64` token
-- `set_secret_from_vault()` runs the 50,000-round SHAKE-256 KDF entirely in Rust
-- The Python `bytearray` holding the encoded passphrase is zeroed byte-by-byte before deletion
-- Both the initiator and responder now correctly transition to `SMP_VERIFIED` (🔵)
-
-**Why the SMP KDF uses canonical fingerprint ordering:**
-
-The original v10.5.10 draft used a role byte (`0x00` for initiator, `0x01` for responder) and role-dependent fingerprint ordering in the HMAC. This caused Alice and Bob to compute different derived secrets from the same passphrase, guaranteeing SMP failure on every run. The fix was to sort fingerprints lexicographically so both sides always feed the HMAC in the same order, regardless of who initiated.
-
-**Real-world SMP timing over I2P (from live debug logs):**
-
-```
-11:06:06  /otr StrayBlade                    ← initiator starts
-11:08:50  DAKE3 verified (ring-sig + ML-DSA) ← 2m 44s for DAKE
-11:09:18  fingerprint trusted (manual y/n)   ← instant
-11:10:43  SMP1 received by responder         ← SMP starts
-11:12:43  both sides → 🔵 SMP_VERIFIED       ← 2m 0s for SMP
-──────────────────────────────────────────
-Total: ~6m 37s from /otr to blue verified session
+- Full tabbed terminal UI: coloured nicks, security icons, unread badges, pager.
+- IRCv3 support: SASL PLAIN, TLS, PING watchdog, auto-reconnect, auto-join.
+- WHOIS, NickServ identification, 27 Club username generator.
 ```
 
-This latency is entirely due to I2P tunnel routing — each fragment traverses multiple encrypted hops at ~4-second intervals. The cryptographic computation itself (including the 50,000-round KDF) takes under 1 second on Termux/aarch64.
-
-#### Track C — WeeChat plugin (in progress)
-
-The existing Python implementation is being adapted as a WeeChat plugin, reusing the full OTRv4+ protocol stack without changes to the cryptographic layer.
-
 ---
 
-## Use of AI assistance
+## Edit 2 — remove the C-extension build commands
 
-Large language models (Claude) were used to generate scaffolding for the Python IRC client, terminal UI, test harnesses, and the Rust SMP migration. Cryptographic primitives — C extensions, KDF chains, DAKE state machine, ring signature proofs, and SMP ZKP steps — were not written by AI. Every AI-generated segment was reviewed line-by-line, tested against the OTRv4 spec, and subjected to the adversarial test suite.
+Around line 153 the file currently contains:
 
-The Rust SMP migration in v10.5.10 involved several AI-assisted iterations before reaching a correct implementation — notably the fingerprint-ordering bug (role-dependent ordering → canonical lexicographic ordering) was identified and fixed through live session testing between two Termux instances over I2P.
-
-I am not a professional cryptographer, which is precisely why external review and responsible disclosure of vulnerabilities are actively welcomed.
-
----
-
-## Why the C extensions are mandatory
-
-The client refuses to start if any extension cannot be loaded. This is deliberate:
-
-1. **No constant-time fallback exists in Python** — `pow(b, e, m)` is not constant-time; secret-dependent branching is unavoidable in pure Python big-integer arithmetic
-2. **ML-KEM-1024 and ML-DSA are not available in pure Python** — they require OpenSSL 3.5+ (native PQC provider), accessible only via C/Rust bindings
-3. **Secure memory zeroisation** — `OPENSSL_cleanse` and `mlock` are only reachable through native extensions
-
----
-
-## Build instructions
-
-### C extensions (required)
-
-Requires OpenSSL 3.5+ — earlier versions lack native ML-KEM and ML-DSA provider support.
-
-```bash
-# Termux (Android)
-pkg install openssl python clang make
-
+```
 # Debian/Ubuntu
 sudo apt install libssl-dev python3-dev build-essential
 
@@ -154,39 +65,31 @@ python setup_otr4.py build_ext --inplace
 bash build_ed448.sh
 ```
 
-### Rust core (required)
+Replace with:
 
-```bash
-# Termux
-pkg install rust
-
-# Desktop
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-
-# Build
-cd Rust && cargo build --release --features pq-rust
-cp target/release/libotrv4_core.so ../ && cd ..
+```
+# Debian/Ubuntu (only needed if building Rust toolchain from source — the
+# Rust core itself uses no system libraries and needs no apt packages
+# beyond the Rust compiler).
+sudo apt install build-essential
 ```
 
-### Running tests
-
-```bash
-pip install pytest pytest-timeout hypothesis
-pytest -v
-```
+The `python setup_otr4.py build_ext --inplace` and `bash build_ed448.sh` lines are removed entirely.  `setup_otr4.py` was deleted at v10.7.4.  If `build_ed448.sh` is still present in your tree, it is also a relic of the C-extension era and can be removed.
 
 ---
 
-## Known gaps & future work
+## Edit 3 — confirm the "Rust core (required)" subsection is the only build path
 
-- **PQ deniability** — no standardised post-quantum ring signature exists. When ML-DSA is used, a quantum-capable adversary can verify the signer. Accepted and documented; a lattice-based OR-proof is a long-term research goal.
-- **Traffic analysis** — fragment count leaks message type (DAKE vs data message). A PADDING TLV inside the encrypted envelope would mitigate this; planned for a future protocol version.
-- **Formal verification** — none yet. A ProVerif or EasyCrypt audit would strengthen assurance claims.
-- **Identity keys** — Ed448/X448 private keys still live in Python OpenSSL objects. Phase 4 will move these to Rust `SecretVec`.
-- **WeeChat plugin** — status bar integration and per-buffer OTR session display are in active development.
+Whatever subsection follows the apt block should now describe the Rust build as the **only** build step.  Suggested wording for the lead paragraph:
 
----
+```
+### Rust core (required, and the only build step)
 
-## Contributing
+OTRv4+ is Rust-core-only since v10.7.5.  There are no C extensions to compile.  The Rust build produces a single shared library (`libotrv4_core.so`, copied to the project root as `otrv4_core.so`) which `otrv4+.py` imports as a PyO3 module.
 
-Bug reports, pull requests, and cryptanalysis are welcome. For vulnerabilities, disclose responsibly via the GitHub security advisory. For significant protocol or API changes, open an issue before submitting a PR.
+cd Rust
+cargo build --release --no-default-features --features pq-rust
+cp target/release/libotrv4_core.so ../otrv4_core.so
+
+The `--no-default-features --features pq-rust` flag set is required: see the Termux/aarch64 notes elsewhere in this document for why the default AVX2/NEON-optimised paths of `pqcrypto-mlkem` / `pqcrypto-mldsa` are disabled on this platform.
+```

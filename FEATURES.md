@@ -10,17 +10,17 @@ What's implemented as of v10.7.
 |---|---|---|
 | Ed448 | Long-term identity signing + ClientProfile verification | `ed448-goldilocks-plus` 0.16 (pure Rust) |
 | X448 | Ephemeral DH (DAKE and ratchet) | `x448` 0.6 (pure Rust) — both the DAKE and the double-ratchet DH run on this crate as of v10.6.21 |
-| ML-KEM-1024 | Post-quantum KEM (DAKE brace key, ratchet rekey) | `pqcrypto-mlkem` 0.1.1 (FIPS 203) in DAKE; `otr4_crypto_ext` C extension in the legacy `MLKEM1024BraceKEM` Python class |
-| ML-DSA-87 | Post-quantum signature (hybrid auth) | `pqcrypto-mldsa` 0.1.2 (FIPS 204) — pure Rust (v10.6.18 retired the `otr4_mldsa_ext` C extension) |
+| ML-KEM-1024 | Post-quantum KEM (DAKE brace key, ratchet rekey) | `pqcrypto-mlkem` 0.1.1 (FIPS 203) — pure Rust.  v10.7.3 moved `MLKEM1024BraceKEM` off the `otr4_crypto_ext` C extension onto Rust via `src/mlkem.rs`; v10.7.4 (5.3k) deleted the C extension. |
+| ML-DSA-87 | Post-quantum signature (hybrid auth) | `pqcrypto-mldsa` 0.1.2 (FIPS 204) — pure Rust (v10.6.18 retired the `otr4_mldsa_ext` C extension). |
 | SHAKE-256 | KDF, ring sig challenge, transcript hash | `sha3` 0.10 |
-| AES-256-GCM | Message encryption + SMP-secrets store + secure-file-destroy | `aes-gcm` 0.10 via Rust `Rust/src/aead.rs` PyO3 bindings (v10.6.19 retired the `cryptography.AESGCM` runtime uses) |
-| Argon2id | SMP secret vault KDF | `otr4_crypto_ext` C extension wrapper |
-| Constant-time MODP-2048 arithmetic | SMP big-num operations | `otr4_crypto_ext` C extension (`bn_mod_exp_consttime`, etc.) |
+| AES-256-GCM | Message encryption + SMP-secrets store + secure-file-destroy | `aes-gcm` 0.10 via Rust `Rust/src/aead.rs` PyO3 bindings (v10.6.19 retired the `cryptography.AESGCM` runtime uses; v10.7.4 (5.3i-D) moved off the deprecated `from_slice` helper to `new_from_slice`). |
+| Argon2id | SMP secret vault KDF | `argon2` 0.5 (pure Rust) via `src/smp_vault.rs`. |
 | SHA3-512 | Fingerprint hash | `hashlib` (Python stdlib) |
 | RFC 8032 Ed448 vectors | Build-time correctness gate | `src/test_vectors.rs` (Rust `#[cfg(test)]`) |
 | RFC 7748 X448 vector | Build-time correctness gate (ratchet desync guard) | `src/key_handles.rs` (Rust `#[cfg(test)]`) |
+| FIPS 203 ML-KEM-1024 byte-size + roundtrip | Build-time correctness gate (brace KEM) | `src/mlkem.rs` (Rust `#[cfg(test)]`) |
 
-As of v10.7 the Python `cryptography` library is no longer used for any primitive. Every asymmetric and symmetric operation runs in the Rust `otrv4_core` core. The two C extensions still in use (`otr4_crypto_ext` for SMP bignum / memory wiping / legacy ML-KEM, `otr4_ed448_ct` loaded but uninvoked) are tracked for removal in ROADMAP Phase 5.3i / 5.3k.
+As of **v10.7.5 (Phase 5.3k)** OTRv4+ is **Rust-core-only**: every cryptographic primitive runs inside the Rust `otrv4_core` PyO3 module.  All three C extensions (`otr4_crypto_ext`, `otr4_ed448_ct`, `otr4_mldsa_ext`) and `setup_otr4.py` have been removed from the repository.  The Python `cryptography` library was retired earlier at v10.7.  There is no longer a second cryptographic implementation surface inside the project.
 
 ### Higher-level protocols
 

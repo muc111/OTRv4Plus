@@ -21,6 +21,7 @@ pub mod key_handles;
 pub mod test_vectors;     // v10.6.17: RFC 8032 Ed448 test vectors (Phase 5.3f-narrow)
 pub mod mldsa;            // v10.6.18: ML-DSA-87 PyO3 bindings (Phase 5.3j)
 pub mod aead;             // v10.6.19: AES-256-GCM PyO3 bindings (Phase 5.3h, part B)
+pub mod mlkem;            // v10.7.3: ML-KEM-1024 PyO3 bindings (Phase 5.3i-C)
 
 use pyo3::prelude::*;
 use pyo3::wrap_pyfunction;
@@ -44,6 +45,11 @@ fn otrv4_core(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     // AES-256-GCM (Phase 5.3h-B, v10.6.19): replaces cryptography.AESGCM
     m.add_function(wrap_pyfunction!(aead::aes256gcm_encrypt, m)?)?;
     m.add_function(wrap_pyfunction!(aead::aes256gcm_decrypt, m)?)?;
+    // ML-KEM-1024 (Phase 5.3i-C, v10.7.3): replaces the otr4_crypto_ext
+    // mlkem1024_* entry points.  Backs the Python MLKEM1024BraceKEM class.
+    m.add_function(wrap_pyfunction!(mlkem::mlkem1024_keygen, m)?)?;
+    m.add_function(wrap_pyfunction!(mlkem::mlkem1024_encaps, m)?)?;
+    m.add_function(wrap_pyfunction!(mlkem::mlkem1024_decaps, m)?)?;
     // Phase 5.3e (v10.6.12): Rust-owned long-term identity key handles
     m.add_class::<key_handles::Ed448KeyHandle>()?;
     m.add_class::<key_handles::X448KeyHandle>()?;

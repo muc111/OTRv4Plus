@@ -40,13 +40,9 @@ cd Rust
 cargo build --release --no-default-features --features pq-rust
 cp target/release/libotrv4_core.so ../otrv4_core.so
 cd ..
-
-# Build the two remaining C extensions (still required, see caveat 4)
-gcc -shared -fPIC -O2 -o otr4_crypto_ext.so otr4_crypto_ext.c -lssl -lcrypto
-gcc -shared -fPIC -O2 -o otr4_ed448_ct.so   otr4_ed448_ct.c   -lssl -lcrypto
 ```
 
-As of v10.7 there is no longer a Python `cryptography` dependency to install — every cryptographic operation runs in the Rust core or the C extensions.
+As of v10.7.5 the project is **Rust-core-only**: there are no C extensions to compile and no Python `cryptography` dependency.  The Rust core is the single cryptographic surface.
 
 ### 3. Verify the build (recommended)
 
@@ -127,7 +123,7 @@ After that, the peer tab is green (encrypted + verified) and your typed messages
 
 As of v10.7, the Python `cryptography` library has been **fully removed** from the codebase. Every Ed448, X448, AES-256-GCM, and ML-DSA-87 operation runs inside the Rust `otrv4_core` core. There is no OpenSSL-backed Python crypto in any code path.
 
-Two C extensions (`otr4_crypto_ext`, `otr4_ed448_ct`) still load at startup and remain in use. `otr4_crypto_ext` provides constant-time big-number arithmetic for SMP, memory wiping (`cleanse`), `mlock`, `disable_core_dumps`, and an alternate ML-KEM-1024 keygen path used by the legacy `MLKEM1024BraceKEM` Python class. `otr4_ed448_ct` is loaded as a defensive ground-truth but is no longer invoked. Replacing these with pure-Rust equivalents is the subject of ROADMAP phases 5.3i and 5.3k.
+As of v10.7.5 (Phase 5.3k) all C extensions have been retired.  The previous `otr4_crypto_ext`, `otr4_ed448_ct`, and `otr4_mldsa_ext` shared libraries are deleted from the repo and the `setup_otr4.py` build target removed.  Every cryptographic operation now runs inside the Rust `otrv4_core` module: ML-KEM-1024 (FIPS 203), ML-DSA-87 (FIPS 204), Ed448 and X448 (`ed448-goldilocks-plus`), AES-256-GCM (`aes-gcm`), and the Argon2id-class KDF that protects the SMP secret vault.  Memory wiping uses Rust `zeroize::Zeroize` on Rust-owned buffers and `ctypes.memset` for the remaining bytearrays held on the Python side.
 
 ## Key exchange (DAKE)
 
@@ -182,7 +178,7 @@ Run `cargo test --release --no-default-features --features pq-rust` before any r
 
 3. **The Rust crypto crates are not audited.** `ed448-goldilocks-plus` 0.16 is the only viable pure-Rust Ed448 implementation but has no formal review. `x448` 0.6 is a pure-Rust X448 with no formal review. `pqcrypto-mlkem 0.1.1` (FIPS 203 ML-KEM-1024) and `pqcrypto-mldsa 0.1.2` (ML-DSA-87) are PQClean-derived reference implementations.
 
-4. **Two C extensions are still load-bearing in production.** The current build depends on two `.so` C extensions: `otr4_crypto_ext` (constant-time SMP big-number arithmetic, memory wiping, `mlock`, `disable_core_dumps`, and the legacy `MLKEM1024BraceKEM` keygen path) and `otr4_ed448_ct` (loaded as a defensive ground-truth, no longer invoked). Dropping these is the subject of ROADMAP phases 5.3i and 5.3k. The Python `cryptography` library, by contrast, has been **fully removed** as of v10.7 — see the CHANGELOG for the v10.6.18 through v10.7 sequence that retired it.
+4. **Rust-core-only since v10.7.5.**  Every C extension (`otr4_crypto_ext`, `otr4_ed448_ct`, `otr4_mldsa_ext`) has been retired and the Python `cryptography` library was removed at v10.7.  The entire cryptographic surface of the client now lives inside the Rust `otrv4_core` PyO3 module — there is no second crypto implementation to drift against.  See the CHANGELOG v10.6.18 → v10.7.5 sequence for the migration history.
 
 5. **Ephemeral identity by design.** Identity keys regenerate at every launch. Fingerprints change on every restart. This is a deliberate threat-model choice for an I2P-based privacy IRC client, not a missing feature. Tor Browser, Cwtch (default), and Briar (before user opt-in) all keep identities short-lived for similar reasons. See ROADMAP Phase 5.3g.
 

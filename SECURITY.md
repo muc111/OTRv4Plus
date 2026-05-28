@@ -65,9 +65,9 @@ Run before every release:
 cargo test --release --no-default-features --features pq-rust
 ```
 
-Expected: 17 tests pass. If `ed448_rfc8032_vectors_byte_exact` fails, the `ed448-goldilocks-plus` crate has diverged from RFC 8032. If `x448_rfc7748_known_answer` fails, the `x448` crate has diverged from RFC 7748 and the ratchet would desync against any peer — do not ship. Both checks are build-time gates against the RFC documents themselves.
+Expected: **20 tests pass** (17 prior + 3 ML-KEM tests added in v10.7.3 when the brace-KEM moved to Rust).  If `ed448_rfc8032_vectors_byte_exact` fails, the `ed448-goldilocks-plus` crate has diverged from RFC 8032.  If `x448_rfc7748_known_answer` fails, the `x448` crate has diverged from RFC 7748 and the ratchet would desync against any peer — do not ship.  If `mlkem1024_byte_sizes_match_spec` or `mlkem1024_roundtrip_shared_secret_matches` fails, the `pqcrypto-mlkem` crate has diverged from FIPS 203.  All four are build-time gates against the spec documents themselves.
 
-Two helper functions were removed at v10.6.17: `_verify_ed448_rust_compat()` and `_verify_ring_sig_rust_compat()`. The previous comparison against the C extension's `ring_sign` and `ring_verify` is no longer performed; those C entry points remain compiled into `otr4_crypto_ext.so` but are not invoked by current Python code.
+Two helper functions were removed at v10.6.17: `_verify_ed448_rust_compat()` and `_verify_ring_sig_rust_compat()`.  The previous comparison against the C extension's `ring_sign` and `ring_verify` is no longer performed.  As of v10.7.5 the C extension itself has been retired (see caveat 4 below), so these comparison paths are doubly obsolete.
 
 ## Known issues and limitations
 
@@ -82,15 +82,14 @@ Two helper functions were removed at v10.6.17: `_verify_ed448_rust_compat()` and
    - v10.6.21 — the double ratchet's X448 Diffie-Hellman moved from `cryptography.x448` to the Rust `X448KeyHandle`.
    - v10.7 — the dead pure-Python `OTRv4DAKE` fallback class (the last `ed448`/`x448`/`serialization` consumer) was deleted, the four remaining `serialization.Raw` byte-conversion sites were removed, and the `from cryptography...` import was deleted entirely.
 
-4. **Two C extensions remain loaded and in active use in production.** `otr4_crypto_ext` (aliased `_ossl`) is invoked from runtime sites:
-   - `_ossl.cleanse(buf)` for explicit memory wipe of SMP, ratchet, and identity buffers
-   - `_ossl.bn_mod_exp_consttime`, `_ossl.bn_mod_inverse`, `_ossl.bn_rand_range` for constant-time SMP big-number arithmetic (`num_bigint` is not constant-time)
-   - `_ossl.mlkem1024_keygen`, `_ossl.mlkem1024_encaps`, `_ossl.mlkem1024_decaps` in the `MLKEM1024BraceKEM` Python class
-   - `_ossl.disable_core_dumps` at boot
+4. **All C extensions have been retired (v10.7.5, Phase 5.3k).**  Earlier versions of this document listed two C extensions (`otr4_crypto_ext`, `otr4_ed448_ct`) as load-bearing in production.  Both are gone, as is the long-dead `otr4_mldsa_ext` (retired at v10.6.18).  The migration was staged across several sub-phases of 5.3i, each one isolating a single C-extension surface and moving it to Rust before the next was touched:
+   - **v10.7.1 (5.3i-A)** — four dead bignum wrappers (`_ct_mod_exp`, `_ct_mod_inv`, `_ct_rand_range`, `SHA3_512.hash_to_int`) deleted; `disable_core_dumps` moved to Python `resource.setrlimit`.
+   - **v10.7.2 (5.3i-B)** — `_ossl.cleanse` replaced by a module-level `_secure_wipe(bytearray)` using `ctypes.memset` (dead-store-resistant, no DLL surface).
+   - **v10.7.3 (5.3i-C)** — `MLKEM1024BraceKEM.keygen/encaps/decaps` migrated from `_ossl.mlkem1024_*` to Rust `pqcrypto-mlkem` via a new `mlkem.rs` PyO3 module.  After this, `otr4_crypto_ext` had no callers.
+   - **v10.7.4 (5.3i-D)** — `aead.rs` migrated off the deprecated `aes-gcm` `GenericArray::from_slice` helper to `Aes256Gcm::new_from_slice` and `Nonce::from(*&[u8;12])`.  Zero-warning Rust build restored.
+   - **v10.7.4 (5.3k)** — the `otr4_ed448_ct` import was deleted (it had no callers; it was loaded as a defensive ground-truth but every Ed448 operation already ran in Rust).  The `.c`/`.h`/`.so` files and `setup_otr4.py` were removed from the repository.  Seven test files in `tests/` were rewritten onto Rust `otrv4_core` (the C-extension-only `test_otr.py` was deleted; the pre-broken `test_v10_4_security_fixes.py` is unrelated and tracked separately).
 
-   `otr4_ed448_ct` is imported as a defensive ground-truth but is no longer invoked by current Python code.
-
-   Removing the remaining two C extensions is multi-phase work, tracked as Phase 5.3i and 5.3k on the ROADMAP. The third C extension (`otr4_mldsa_ext`) was retired at v10.6.18.
+   The architectural consequence: there is now a **single cryptographic implementation surface** in OTRv4+.  No second backend to drift against, no compile-time conditionals selecting between paths, no "Rust verified against C" comparison checks.  Whatever the Rust core computes is what gets transmitted on the wire; there is nothing else for a reviewer to look at.
 
 5. **Ephemeral identity is a deliberate design choice, not a missing feature.** OTRv4+ regenerates identity keys at every launch; fingerprints do not persist across sessions. Rationale:
    - **Threat model fits ephemeral.** OTRv4+ runs over I2P for an IRC channel; the assumption is short-lived sessions, not long-term identity binding.
@@ -103,6 +102,8 @@ Two helper functions were removed at v10.6.17: `_verify_ed448_rust_compat()` and
 6. **Single-author project, AI-assisted.** Each release is live-tested between two I2P peers but has not been reviewed by another human cryptographer. Use as a research prototype.
 
 7. **No interop with stock OTRv4.** Wire-incompatible with `pidgin-otr4`, CoyIM, and similar implementations due to ML-DSA-87, ML-KEM-1024, and SHAKE-256 OTRv4+ additions.
+
+8. **ClientProfile lifetime: 14 days (v10.7.5).**  Earlier versions used a 365-day expiry, which was incoherent with the ephemeral-identity design (caveat 5).  The OTRv4 spec §4.1 recommends short profile lifetimes; v10.7.5 reduces the validity to 14 days, matching `otr4j`'s default.  Because OTRv4+ regenerates identity keys at every launch, this is an upper bound on how long an *offline* peer will still accept a previously-cached profile — it is not the practical lifetime of any single key, which is hours at most.
 
 ## Reporting issues
 

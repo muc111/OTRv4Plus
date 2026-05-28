@@ -100,6 +100,9 @@ def _check_rust_requirements():
         'mldsa87_verify',
         'aes256gcm_encrypt',
         'aes256gcm_decrypt',
+        'mlkem1024_keygen',
+        'mlkem1024_encaps',
+        'mlkem1024_decaps',
     ]
     _missing_mod = [s for s in _required_module_symbols if not hasattr(_RustDAKE_module, s)]
     if _missing_mod:
@@ -107,7 +110,8 @@ def _check_rust_requirements():
             f"OTRv4+ v10.6.20+ requires the following on the otrv4_core "
             f"module: {_required_module_symbols}.  Missing: {_missing_mod}.  "
             f"Rebuild the .so from the current Rust/src/key_handles.rs, "
-            f"Rust/src/mldsa.rs, Rust/src/aead.rs, and Rust/src/lib.rs."
+            f"Rust/src/mldsa.rs, Rust/src/aead.rs, Rust/src/mlkem.rs, "
+            f"and Rust/src/lib.rs."
         )
     # RustDoubleRatchet, RustSMP, RustSMPVault are imported lazily where
     # they're used; we don't fail-fast on them here so test environments
@@ -165,37 +169,43 @@ import concurrent.futures
 # Rust ratchet and Rust SMP have been mandatory since v10.6.11).
 CRYPTO_AVAILABLE = True
 
+# v10.7.3 (Phase 5.3i-C): the otr4_crypto_ext C extension import has been
+# removed.  As of this version it has no callers: ML-KEM-1024 keygen/
+# encaps/decaps moved to the Rust otrv4_core module (Phase 5.3i-C), memory
+# wiping moved to the pure-Python _secure_wipe / ctypes.memset (5.3i-B),
+# the constant-time bignum wrappers were dead code (5.3i-A), and core-dump
+# suppression moved to resource.setrlimit (5.3i-A, below).  OTRv4+ no
+# longer requires otr4_crypto_ext to be built or present to run.  Phase
+# 5.3k removes the now-orphaned otr4_crypto_ext.c / .h source files and
+# the setup_otr4.py build target.
+
+# v10.7.1 (Phase 5.3i-A): disable core dumps via the Python stdlib
+# resource module.  A core dump of this process would contain key
+# material; RLIMIT_CORE = 0 prevents the kernel from writing one.
+# resource is a stdlib module, also imported below; imported here too so
+# the limit is set as early as possible at boot.
 try:
-    import otr4_crypto_ext as _ossl
-    OTR4_EXT_AVAILABLE = True
-    try:
-        _ossl.disable_core_dumps()
-    except Exception:
-        pass
-except ImportError:
-    print("ERROR: otr4_crypto_ext C extension not found.")
-    print("       Build with:  python setup_otr4.py build_ext --inplace")
-    print("       Side-channel resistance requires the C extension — refusing to run.")
-    sys.exit(1)
+    import resource as _resource
+    _resource.setrlimit(_resource.RLIMIT_CORE, (0, 0))
+except Exception:
+    # Non-fatal: some environments disallow setrlimit.
+    pass
 
 import sys as _sys, os as _os
-try:
-    _sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
-    import otr4_ed448_ct as _ed448_ct
-    ED448_CT_AVAILABLE = True
-except ImportError:
-    print("ERROR: otr4_ed448_ct C extension not found.")
-    print("       Build with:  python setup_otr4.py build_ext --inplace")
-    sys.exit(1)
+_sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
 
+# v10.7.4 (Phase 5.3k): the otr4_ed448_ct C extension import has been
+# removed.  It was imported as a defensive constant-time-Ed448 ground
+# truth but had no callers anywhere in the codebase — every Ed448
+# operation runs in the Rust otrv4_core core (ed448-goldilocks-plus).
+# With this removal OTRv4+ imports no C extensions at all; the project
+# is Rust-core-only.  The otr4_ed448_ct.c / .so and otr4_crypto_ext
+# source files are deleted from the repo in this same phase.
 
-_REQUIRED_MLKEM_SYMS = ('mlkem1024_keygen', 'mlkem1024_encaps', 'mlkem1024_decaps')
-_missing = [s for s in _REQUIRED_MLKEM_SYMS if not hasattr(_ossl, s)]
-if _missing:
-    raise ImportError(
-        f"otr4_crypto_ext is missing ML-KEM-1024 symbols: {_missing}\n"
-        "Rebuild otr4_crypto_ext.c and recompile: python setup_otr4.py build_ext --inplace"
-    )
+# v10.7.3 (Phase 5.3i-C): ML-KEM-1024 keygen/encaps/decaps moved from the
+# otr4_crypto_ext C extension to the Rust otrv4_core module.  The symbol
+# presence check is part of _check_rust_requirements() above (mlkem1024_*
+# in _required_module_symbols).
 
 # ── ML-DSA-87 (FIPS 204) for hybrid PQ DAKE authentication ──────
 # v10.6.18 (Phase 5.3j): the otr4_mldsa_ext C extension has been replaced
@@ -329,6 +339,40 @@ def kdf_1(usage_id: int, value: bytes, length: int) -> bytes:
     return shake.digest(length)
 
 
+def _secure_wipe(buf: bytearray) -> None:
+    """Zero a mutable bytearray in place, resistant to dead-store elimination.
+
+    v10.7.2 (Phase 5.3i-B): replaces _ossl.cleanse() from the
+    otr4_crypto_ext C extension.  Uses ctypes.memset, which is a call into
+    libc's memset — the Python compiler cannot see through it or optimise
+    it away, giving the same dead-store-elimination resistance that
+    OPENSSL_cleanse provided, without any C-extension or FFI dependency.
+    This is the exact technique SecureMemory.zeroize already used as its
+    ctypes-based wipe path.
+
+    Only operates on bytearray (mutable).  Passing bytes is a no-op: bytes
+    objects are immutable and may be interned/shared — see
+    _secure_wipe_bytes.  Silently tolerant of None and empty buffers so
+    call sites do not each need a guard.
+    """
+    if buf is None:
+        return
+    try:
+        n = len(buf)
+        if n == 0:
+            return
+        addr = (ctypes.c_char * n).from_buffer(buf)
+        ctypes.memset(addr, 0, n)
+    except (TypeError, BufferError):
+        # from_buffer raises if buf is not a writable buffer (e.g. bytes).
+        # Fall back to an explicit element-wise zero where possible.
+        try:
+            for _i in range(len(buf)):
+                buf[_i] = 0
+        except (TypeError, IndexError):
+            pass
+
+
 def _secure_wipe_bytes(b: bytes) -> None:
     """No-op stub — do NOT attempt to wipe immutable bytes objects.
 
@@ -338,7 +382,7 @@ def _secure_wipe_bytes(b: bytes) -> None:
     memory layout that can change without notice.
 
     CORRECT PATTERN: use bytearray for all mutable secrets and call
-    _ossl.cleanse() on them before deletion.  Do NOT call this function.
+    _secure_wipe() on them before deletion.  Do NOT call this function.
 
     This stub is retained to avoid breaking callers while they are migrated;
     it intentionally does nothing so that no UB can occur.
@@ -400,13 +444,8 @@ def _secure_file_destroy(filepath: str) -> None:
 
         os.remove(filepath)
     finally:
-        # Zero the ephemeral key
-        try:
-            _ossl.cleanse(key)
-        except Exception:
-            # Manual zero if cleanse unavailable
-            for i in range(len(key)):
-                key[i] = 0
+        # Zero the ephemeral key (v10.7.2: ctypes.memset via _secure_wipe)
+        _secure_wipe(key)
         del key
 
 
@@ -415,8 +454,13 @@ class MLKEM1024BraceKEM:
     """ML-KEM-1024 keypair for the OTRv4 post-quantum brace KEM.
 
     NIST Level 5 (~256-bit post-quantum security).
-    Always uses the C extension (otr4_crypto_ext) — no Python fallback.
-    mlock and OPENSSL_cleanse are applied by the C layer.
+
+    v10.7.3 (Phase 5.3i-C): backed by Rust pqcrypto-mlkem (FIPS 203
+    ML-KEM-1024) via the otrv4_core PyO3 module.  Previously used the
+    otr4_crypto_ext C extension.  This was the last otr4_crypto_ext
+    dependency; after this migration the C extension has no callers.
+    The same pqcrypto-mlkem crate powers the DAKE's ML-KEM in dake.rs,
+    so the brace KEM and the DAKE KEM now run on one code path.
 
     Usage (initiator side):
         kem = MLKEM1024BraceKEM()
@@ -432,8 +476,8 @@ class MLKEM1024BraceKEM:
     SS_BYTES  =   32
 
     def __init__(self):
-        """Generate a fresh ML-KEM-1024 keypair via C extension."""
-        ek, self._dk_handle = _ossl.mlkem1024_keygen()
+        """Generate a fresh ML-KEM-1024 keypair via the Rust core."""
+        ek, self._dk_handle = _RustDAKE_module.mlkem1024_keygen()
         self.encap_key_bytes: bytes = ek
 
     @classmethod
@@ -443,7 +487,10 @@ class MLKEM1024BraceKEM:
             raise ValueError(
                 f"ML-KEM-1024 encap key must be {cls.EK_BYTES} bytes, got {len(ek_bytes)}"
             )
-        ct, ss = _ossl.mlkem1024_encaps(ek_bytes)
+        # Rust mlkem1024_encaps returns (ciphertext, shared_secret) — it
+        # inverts the pqcrypto (SharedSecret, Ciphertext) tuple internally
+        # so this contract matches the retired C extension exactly.
+        ct, ss = _RustDAKE_module.mlkem1024_encaps(ek_bytes)
         return ct, ss
 
     def decapsulate(self, ct_bytes: bytes) -> bytes:
@@ -452,13 +499,13 @@ class MLKEM1024BraceKEM:
             raise ValueError(
                 f"ML-KEM-1024 ciphertext must be {self.CT_BYTES} bytes, got {len(ct_bytes)}"
             )
-        return _ossl.mlkem1024_decaps(ct_bytes, self._dk_handle)
+        return _RustDAKE_module.mlkem1024_decaps(ct_bytes, bytes(self._dk_handle))
 
     def zeroize(self):
-        """Overwrite the private key material via C extension cleanse."""
+        """Overwrite the private key material (v10.7.2: ctypes.memset)."""
         if self._dk_handle is not None:
             if isinstance(self._dk_handle, bytearray):
-                _ossl.cleanse(self._dk_handle)
+                _secure_wipe(self._dk_handle)
             self._dk_handle = None
         self.encap_key_bytes = b'\x00' * self.EK_BYTES
 
@@ -519,9 +566,9 @@ class MLDSA87Auth:
             return False
 
     def zeroize(self):
-        """Overwrite private key material."""
+        """Overwrite private key material (v10.7.2: ctypes.memset)."""
         if self._priv is not None:
-            _ossl.cleanse(self._priv)
+            _secure_wipe(self._priv)
             self._priv = None
         self.pub_bytes = b'\x00' * self.PUB_BYTES
 
@@ -536,11 +583,12 @@ class MLDSA87Auth:
 # --features pq-rust` must pass before any release.  If the Rust crate ever
 # drifts from RFC 8032, the test fails and the build is not safe to ship.
 #
-# Note: the C extension (otr4_crypto_ext) is still imported and used by
-# production code paths (memory wiping via _ossl.cleanse, constant-time
-# big-number arithmetic for SMP, ML-KEM-1024 keygen/encap/decap in the
-# legacy MLKEM1024BraceKEM class).  Dropping it entirely is a separate
-# multi-phase project (see ROADMAP).
+# Note: as of v10.7.3 (Phase 5.3i-C) the otr4_crypto_ext C extension is
+# no longer imported or used anywhere.  Its three former responsibilities
+# were migrated out: ML-KEM-1024 to the Rust otrv4_core module, memory
+# wiping to the pure-Python _secure_wipe (ctypes.memset), and the dead
+# constant-time bignum wrappers deleted.  Phase 5.3k removes the orphaned
+# otr4_crypto_ext.c / .h source and the setup_otr4.py build target.
 
 
 class RingSignature:
@@ -1382,7 +1430,7 @@ class OTRv4DataMessage:
             raise ValueError(f"Failed to decode message: {e}")
 
 
-VERSION = "OTRv4+ 10.7"
+VERSION = "OTRv4+ 10.7.5"
 
 if not hasattr(hashlib, 'sha3_512'):
     raise RuntimeError(
@@ -2192,13 +2240,12 @@ class SecureMemory:
             if self._buffer is None:
                 return
 
-            # Primary: OpenSSL OPENSSL_cleanse (resists dead-store elimination)
-            try:
-                _ossl.cleanse(self._buffer)
-            except Exception:
-                pass
-
-            # Secondary: ctypes.memset (C-level, compiler cannot optimise away)
+            # Zero the buffer via ctypes.memset — a call into libc memset,
+            # which the Python compiler cannot optimise away.  v10.7.2
+            # (Phase 5.3i-B) removed the redundant _ossl.cleanse() call
+            # that preceded this: it wiped the same buffer the line below
+            # already wipes, and depended on the otr4_crypto_ext C
+            # extension being retired.
             try:
                 n = len(self._buffer)
                 if n > 0:
@@ -2329,38 +2376,22 @@ class SHA3_512:
     @staticmethod
     def hmac(key: bytes, data: bytes) -> bytes:
         return hmac.new(key, data, SHA3_512._require()).digest()
-    
-    @staticmethod
-    def hash_to_int(*args) -> int:
-        h = SHA3_512.hash(b''.join([
-            arg if isinstance(arg, bytes) else str(arg).encode('utf-8')
-            for arg in args
-        ]))
-        return int.from_bytes(h, byteorder='big') % SMPConstants.MODULUS
 
 
-
-def _ct_mod_exp(base: int, exp: int, mod: int) -> int:
-    """Constant-time modular exponentiation via OpenSSL BN_mod_exp_mont_consttime (always — no Python fallback)."""
-    mod_bytes  = mod.to_bytes((mod.bit_length() + 7) // 8, 'big')
-    base_bytes = base.to_bytes((mod.bit_length() + 7) // 8, 'big')
-    exp_bytes  = exp.to_bytes((mod.bit_length() + 7) // 8, 'big')
-    return int.from_bytes(_ossl.bn_mod_exp_consttime(base_bytes, exp_bytes, mod_bytes), 'big')
-
-
-def _ct_mod_inv(a: int, mod: int) -> int:
-    """Constant-time modular inverse via OpenSSL BN_mod_inverse (always — no Python fallback)."""
-    mod_bytes = mod.to_bytes((mod.bit_length() + 7) // 8, 'big')
-    a_bytes   = a.to_bytes((mod.bit_length() + 7) // 8, 'big')
-    return int.from_bytes(_ossl.bn_mod_inverse(a_bytes, mod_bytes), 'big')
-
-
-def _ct_rand_range(mod: int) -> int:
-    """Uniform random integer in [1, mod-1] via OpenSSL BN_rand_range."""
-    mod_bytes = mod.to_bytes((mod.bit_length() + 7) // 8, 'big')
-    return int.from_bytes(_ossl.bn_rand_range(mod_bytes), 'big')
-
-
+# [REMOVED v10.7.1, Phase 5.3i-A] SHA3_512.hash_to_int and the three
+# _ct_mod_exp / _ct_mod_inv / _ct_rand_range wrappers.
+#
+# hash_to_int referenced SMPConstants.MODULUS — a class removed when the
+# Python SMP implementation was replaced by the Rust core.  It had zero
+# callers; it was a latent NameError that never fired.
+#
+# _ct_mod_exp / _ct_mod_inv / _ct_rand_range wrapped the otr4_crypto_ext
+# C extension's BN_mod_exp_mont_consttime / BN_mod_inverse / BN_rand_range.
+# They were the Python SMP's constant-time MODP-2048 arithmetic.  The Rust
+# SMP core (src/smp.rs) does its own MODP-2048 arithmetic via num_bigint
+# and never calls these wrappers; they had zero callers after the Python
+# SMPMath class was removed.  Deleting them removes three of the four
+# otr4_crypto_ext bignum entry points from the Python side.
 
 
 # [REMOVED] SMPMath — replaced by Rust SMP (otrv4_core.RustSMP)
@@ -2379,6 +2410,17 @@ def _ct_rand_range(mod: int) -> int:
 
 class ClientProfile:
     """OTRv4 Client Profile (spec §4.1). Handles encoding, decoding, and expiry."""
+
+    # v10.7.5: ClientProfile validity reduced from 365 days to 14 days.
+    # The OTRv4 spec (§4.1) recommends short profile lifetimes (weeks, not
+    # years).  For an ephemeral-identity design like OTRv4+ — where the
+    # long-term identity key is regenerated every session — a long expiry
+    # is incoherent with the threat model: it widens the impersonation
+    # window if a profile-signing key ever leaks without buying anything,
+    # since peers see a fresh profile on every DAKE1 anyway.  14 days
+    # matches otr4j's default and gives offline peers a reasonable cache
+    # window without overstaying the spec.
+    VALIDITY_SECONDS = 14 * 24 * 3600
 
     def __init__(self, identity_key=None, prekey=None):
         """Create a fresh OTRv4 ClientProfile with ephemeral Ed448+X448 keys.
@@ -2430,7 +2472,7 @@ class ClientProfile:
 
         self.versions = [OTRConstants.PROTOCOL_VERSION]
         self.created = int(time.time())
-        self.expires = self.created + 365 * 24 * 3600
+        self.expires = self.created + self.VALIDITY_SECONDS
         self.signature = None
 
         # Cache public bytes from the handles — these are what
@@ -2738,7 +2780,7 @@ class ClientProfile:
     def renew(self):
         try:
             self.created = int(time.time())
-            self.expires = self.created + 365 * 24 * 3600
+            self.expires = self.created + self.VALIDITY_SECONDS
             self.signature = None
         except Exception as e:
             if DEBUG_MODE:
@@ -2830,9 +2872,9 @@ class SkippedMessageKey:
         self.message_key = bytearray(message_key)
     
     def zeroize(self):
-        """Zeroize the message key via OPENSSL_cleanse (Phase 5)."""
+        """Zeroize the message key (v10.7.2: ctypes.memset via _secure_wipe)."""
         if hasattr(self, 'message_key') and self.message_key:
-            _ossl.cleanse(self.message_key)
+            _secure_wipe(self.message_key)
             self.message_key = bytearray()
     
     def __del__(self):
@@ -4483,7 +4525,7 @@ class SecureKeyStorage:
             
             if self._master_key:
                 master_key_ba = bytearray(self._master_key)
-                _ossl.cleanse(master_key_ba)
+                _secure_wipe(master_key_ba)
                 self._master_key = None
 
 
@@ -9360,7 +9402,7 @@ class OTRv4IRCClient:
                                 _v = getattr(_sess, _attr, None)
                                 if isinstance(_v, (bytes, bytearray)):
                                     _ba = bytearray(_v)
-                                    _ossl.cleanse(_ba)
+                                    _secure_wipe(_ba)
                                 setattr(_sess, _attr, None)
                     except Exception:
                         pass
@@ -9549,7 +9591,7 @@ class OTRv4IRCClient:
             import base64 as _b64_sasl
             _plain_ba = bytearray(f"\x00{user}\x00{_pw}".encode("utf-8"))
             token = _b64_sasl.b64encode(bytes(_plain_ba)).decode("ascii")
-            _ossl.cleanse(_plain_ba)
+            _secure_wipe(_plain_ba)
             del _plain_ba
             self.send_raw(f"AUTHENTICATE {token}")
             # Wipe password from config and local var after use
@@ -9781,7 +9823,7 @@ class OTRv4IRCClient:
                     _ns_pass = self.config.nickserv_pass
                     self.send(f"PRIVMSG NickServ :IDENTIFY {_ns_pass}")
                     _ns_pass_ba = bytearray(_ns_pass.encode('utf-8'))
-                    _ossl.cleanse(_ns_pass_ba)
+                    _secure_wipe(_ns_pass_ba)
                     del _ns_pass, _ns_pass_ba
                     self.config.nickserv_pass = None
                 elif self.config.nickserv_register and self.config.nickserv_pass:
@@ -9790,7 +9832,7 @@ class OTRv4IRCClient:
                     _ns_pass = self.config.nickserv_pass
                     self.send(f"PRIVMSG NickServ :REGISTER {_ns_pass} no-email")
                     _ns_pass_ba = bytearray(_ns_pass.encode('utf-8'))
-                    _ossl.cleanse(_ns_pass_ba)
+                    _secure_wipe(_ns_pass_ba)
                     del _ns_pass, _ns_pass_ba
                     self.config.nickserv_pass = None
 

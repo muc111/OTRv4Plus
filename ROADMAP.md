@@ -4,6 +4,11 @@ What's next for OTRv4+. Ordered roughly by priority, not by ease.
 
 ## Recently shipped
 
+- **v10.7.5** ClientProfile validity reduced from 365 days to 14 days, matching the OTRv4 spec §4.1 recommendation and `otr4j`'s default.  The previous 1-year value was incoherent with the ephemeral-identity design.  Implemented as a class-level `VALIDITY_SECONDS` constant so the two assignment sites can't drift again.
+- **v10.7.4** Phase 5.3k + 5.3i-D.  All C extensions retired.  `otr4_ed448_ct` import deleted from `otrv4+.py` (the import was a defensive ground-truth; a grep for `_ed448_ct.` member access was empty — it was never called).  `otr4_crypto_ext.c`, `otr4_ed448_ct.c`, `otr4_mldsa_ext.c`, and `setup_otr4.py` removed via `git rm`.  Seven test files in `tests/` migrated onto `otrv4_core`; the C-extension smoke test `test_otr.py` deleted.  Concurrent fix in `aead.rs`: deprecated `aes-gcm 0.10` `GenericArray::from_slice` helper replaced by `Aes256Gcm::new_from_slice` (KeyInit) and `Nonce::from(*&[u8;12])`.  Cargo build is back to **0 warnings**, **20 tests passing**.  OTRv4+ is now Rust-core-only — the architectural finish line.
+- **v10.7.3** Phase 5.3i-C.  `MLKEM1024BraceKEM` migrated from `_ossl.mlkem1024_*` to Rust `pqcrypto-mlkem` via a new `src/mlkem.rs` PyO3 module.  Three new Rust unit tests for byte sizes, roundtrip, and wrong-key rejection.  After this commit `otr4_crypto_ext` had no remaining callers.
+- **v10.7.2** Phase 5.3i-B.  `_ossl.cleanse()` replaced with a module-level `_secure_wipe(bytearray)` using `ctypes.memset`.  Eight cleanse sites repointed; two redundant ones removed where Rust already zeroizes.
+- **v10.7.1** Phase 5.3i-A.  Four dead bignum wrappers deleted (`_ct_mod_exp`, `_ct_mod_inv`, `_ct_rand_range`, `SHA3_512.hash_to_int`).  `disable_core_dumps` moved to Python `resource.setrlimit(RLIMIT_CORE, (0, 0))`.
 - **v10.7** Phase 5.3h-D complete — the Python `cryptography` library is fully removed from the codebase. Stages 1 and 2 (v10.6.20, v10.6.21) moved Ed448 verification and the X448 ratchet DH into Rust. v10.7 (stage 3) deleted the dead pure-Python `OTRv4DAKE` fallback class (863 lines) and the unreachable `_use_rust` / `_py_fallback` machinery, rescued `_safe_b64decode` to module scope, removed the four remaining `serialization.Raw` byte-conversion sites, deleted the legacy `ed448`/`x448` `isinstance` branches from `ClientProfile`, and removed the `from cryptography...` import entirely. 883 lines net removed. No OpenSSL-backed Python crypto remains in any code path.
 - **v10.6.21** Phase 5.3h-D stage 2. The double ratchet's X448 Diffie-Hellman moved from `cryptography.x448` to the Rust `X448KeyHandle` (`generate_x448_keypair`, `handle.dh`). No new Rust crypto — the handle already existed. The `x448` crate clamps the scalar per RFC 7748 and rejects low-order points, matching OpenSSL byte-for-byte. RFC 7748 §5.2 known-answer vector added to `key_handles.rs` as the build-time desync guard. Verified live across 5+ DH-ratchet epochs.
 - **v10.6.20** Phase 5.3h-D stage 1. `ClientProfile.decode()` Ed448 signature verification moved from `cryptography.Ed448PublicKey.verify` to the Rust `verify_ed448_sig` function (`VerifyingKey::verify_raw`, the exact counterpart of `Ed448KeyHandle::sign`'s `sign_raw`). Three Rust unit tests including a sign-then-verify roundtrip.
@@ -48,27 +53,31 @@ Staged so each piece could be live-tested in isolation before the next began:
 
 ### Phase 5.3i — replace `otr4_crypto_ext` (`_ossl`) uses
 
-This is now the largest remaining hardening item — the cryptography library is done; the C extensions are not.
+**Shipped across v10.7.1 → v10.7.4.**  The original plan estimated this as the largest remaining sub-phase, "200-300 lines plus a constant-time bignum decision, two to three sessions."  It turned out smaller: much of the C extension's bignum surface had already become dead code when the Rust SMP took over (the SMP modular arithmetic now lives entirely in `num-bigint` inside `src/smp.rs`; the open question of `num-bigint`'s non-constant-time `modpow` is filed separately and is unrelated to the C-extension migration).  Sub-phases as shipped:
 
-1. **`_ossl.cleanse(buf)`** at the runtime memory-wipe sites. Replace with a Rust-side `cleanse` exposed via PyO3 that wraps `zeroize::Zeroize`. Bytearrays only; Python `bytes` are immutable.
-
-2. **`_ossl.bn_mod_exp_consttime`, `bn_mod_inverse`, `bn_rand_range`** for SMP. `num-bigint` is not constant-time, so this needs careful work — either a Rust binding around a vetted constant-time bignum crate, or a port of the SMP arithmetic onto a curve-scalar-based variant.
-
-3. **`_ossl.mlkem1024_*`** in the `MLKEM1024BraceKEM` class. Check whether this class is still reachable in production (DAKE itself uses the Rust path now) or whether it is dead code that can be deleted outright.
-
-4. **`_ossl.disable_core_dumps`** at boot. Replace with a Python `resource.setrlimit(RLIMIT_CORE, (0, 0))` or a Rust equivalent.
-
-5. **`_ossl.ring_sign` and `_ossl.ring_verify`** — now genuinely unused; can be removed when the C extension source is next touched.
-
-Scope: largest remaining sub-phase, probably 200-300 lines plus the constant-time bignum decision. Two to three sessions.
+1. **v10.7.1 (5.3i-A)** — four dead bignum wrappers (`_ct_mod_exp`, `_ct_mod_inv`, `_ct_rand_range`, `SHA3_512.hash_to_int`) deleted.  `disable_core_dumps` moved to Python `resource.setrlimit(RLIMIT_CORE, (0, 0))`.  Python-only change; no Rust rebuild.
+2. **v10.7.2 (5.3i-B)** — `_ossl.cleanse(buf)` replaced with a module-level `_secure_wipe(bytearray)` using `ctypes.memset` (dead-store-resistant, no DLL surface, no third-party dependency).  Eight cleanse sites repointed; two redundant ones deleted where Rust already wiped.
+3. **v10.7.3 (5.3i-C)** — `MLKEM1024BraceKEM` migrated from `_ossl.mlkem1024_*` to Rust `pqcrypto-mlkem` via a new `src/mlkem.rs` PyO3 module exposing `mlkem1024_keygen` / `_encaps` / `_decaps`.  The pqcrypto `(SharedSecret, Ciphertext)` tuple is inverted to `(ct, ss)` in the Rust wrapper to match the C-extension contract exactly.  After this commit `otr4_crypto_ext` had **no remaining callers anywhere in the codebase** — it was loaded but never invoked.
+4. **v10.7.4 (5.3i-D)** — `aead.rs` migrated off the deprecated `aes-gcm 0.10` `GenericArray::from_slice` helper to `Aes256Gcm::new_from_slice` (KeyInit trait) and `Nonce::from(*&[u8;12])` for the nonce.  Restored the zero-warning Rust build that v10.6.18 had originally achieved.
+5. **`_ossl.ring_sign` / `_ossl.ring_verify`** — flagged in the original 5.3i plan as "genuinely unused, remove when next touched."  These were eliminated by simple file deletion in 5.3k, not by any code change — once nothing imported the C extension, the entry points were just dead bytes on disk.
 
 ### Phase 5.3j — replace `otr4_mldsa_ext` (`_mldsa`) uses
 
-**Shipped in v10.6.18.** ML-DSA-87 keygen, sign, and verify run through `pqcrypto-mldsa 0.1.2` via Rust PyO3 bindings in `src/mldsa.rs`. `otr4_mldsa_ext.so` is no longer required for the build.
+**Shipped in v10.6.18.**  ML-DSA-87 keygen, sign, and verify run through `pqcrypto-mldsa 0.1.2` via Rust PyO3 bindings in `src/mldsa.rs`.  `otr4_mldsa_ext.so` is no longer required for the build.
 
 ### Phase 5.3k — delete the C extensions
 
-After 5.3i lands, this is purely deletion: remove the imports, remove the remaining `.c` and `.h` files (`otr4_crypto_ext`, `otr4_ed448_ct`) from the repo (or move to an `archived/` directory), drop the `setup_otr4.py` build target, update SECURITY.md and README.md to remove the C-extension caveat. `otr4_mldsa_ext.c` and `.so` can already be archived; nothing references them after v10.6.18. The cryptography-library caveat has already been removed as of v10.7.
+**Shipped in v10.7.4.**  Once 5.3i-C made `otr4_crypto_ext` callerless, 5.3k was pure deletion.  Steps as executed:
+
+- `otr4_ed448_ct` was imported by `otrv4+.py` but a grep for `_ed448_ct.` (member access) was empty — it was a defensive ground-truth import with no live calls.  Both the import block and the `ED448_CT_AVAILABLE` flag were removed.
+- The `.c`, `.h`, and `.so` files for `otr4_crypto_ext`, `otr4_ed448_ct`, and the long-dead `otr4_mldsa_ext` (retired at v10.6.18 but never deleted) were removed via `git rm`.
+- `setup_otr4.py` was removed.
+- Seven test files in `tests/` that imported `otr4_crypto_ext` were migrated to `otrv4_core` via a one-shot script.  `test_attacks.py`, which used `cleanse`, got a small `_OsslShim` providing the Rust ML-KEM functions plus a `ctypes.memset` cleanse.  `test_otr.py` (a smoke test for the C extensions' surface) was deleted as obsolete.
+- All eight documentation files (`README`, `SECURITY`, `ROADMAP`, `CHANGELOG`, `FEATURES`, `DEVELOPMENT`, `MIGRATION`, `CONTRIBUTING`, and the two `prebuilt/` READMEs) were updated to reflect the Rust-core-only state.
+
+### Architectural consequence
+
+After 5.3i + 5.3k, OTRv4+ has **a single cryptographic implementation surface** — the Rust `otrv4_core` PyO3 module.  No second crypto backend, no compile-time conditionals selecting between paths, no "Rust verified against C" comparison checks at boot.  The earlier multi-backend complexity that the audit had to reason about is gone.
 
 ## Phase 5.3g — ephemeral identity by design (DECIDED at v10.6.18)
 
