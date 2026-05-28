@@ -6,7 +6,7 @@
 <p align="center"><strong>Post-quantum secure messaging over IRC. Research prototype.</strong></p>
 
 <p align="center">
-<code>v10.7 · Rust crypto core · Python cryptography library fully removed</code>
+<code>v10.7.5 · Rust crypto core · Python cryptography library fully removed</code>
 </p>
 
 ---
