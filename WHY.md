@@ -18,7 +18,7 @@ What you get at the end of those 7 minutes:
 
 - **Quantum-safe forward secrecy**: ML-KEM-1024 rotated at every ratchet step. Someone who records your traffic today and builds a quantum computer in 2035 cannot decrypt it.
 - **Post-quantum authentication**: ML-DSA-87 alongside Ed448 ring signatures. Your peer's identity is verified against a standard that survives Shor's algorithm.
-- **Zero-knowledge identity proof**: SMP ran four Rust-computed steps over I2P. Your shared passphrase was never sent over the wire. It never left Rust-owned memory. Even if someone compromised the IRC server and captured every fragment, they cannot brute-force your passphrase from the transcript in any reasonable timeframe.
+- **Zero-knowledge identity proof**: SMP ran four Rust-computed steps over I2P. Your shared passphrase was never sent over the wire. It never left Rust-owned memory. Even if someone compromised the IRC server and captured every fragment, they cannot brute-force your passphrase from the transcript in any reasonable timeframe. The modular exponentiation is constant-time, so the timing of those steps does not leak your secret either.
 - **Network anonymity**: Your I2P destination is unique to this session. The server sees a b32.i2p address it has never seen before and will never see again.
 - **Deniability**: Ed448 ring signatures mean neither party can prove to a third party who said what. The transcript is cryptographically repudiable.
 
@@ -35,14 +35,14 @@ No other widely deployable tool gives you all of this simultaneously. Signal is 
 | **OpenBSD** | Native Python — works out of the box |
 | **Raspberry Pi / Steam Deck** | Same as desktop Linux |
 
-The core cryptographic engine is written in **Rust** and **C**, with a thin Python wrapper. If Python becomes unavailable on your platform of choice, the Rust core can be bound to any language with an FFI.
+The core cryptographic engine is written in **Rust**, with a thin Python wrapper. (Earlier versions used C extensions for some primitives; these were retired in 2026 and the entire crypto surface is now pure Rust.) If Python becomes unavailable on your platform of choice, the Rust core can be bound to any language with an FFI.
 
 ## Why this matters for the post-Android world
 
 We are entering an era where **owning your hardware and software** is the only way to guarantee private communication. This project is designed to be:
 
 - **Portable**: The core crypto compiles anywhere `cargo` runs
-- **Auditable**: The security-critical code is in C/Rust, not a black-box app
+- **Auditable**: The security-critical code is in Rust, not a black-box app
 - **Self-hostable**: No central servers — just IRC + I2P
 - **Future-proof**: Post-quantum cryptography is baked in today, not bolted on later
 

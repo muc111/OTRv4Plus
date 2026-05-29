@@ -4,6 +4,7 @@ What's next for OTRv4+. Ordered roughly by priority, not by ease.
 
 ## Recently shipped
 
+- **v10.7.6** Phase 5.4. SMP modular exponentiation made constant-time: `modpow` migrated from `num-bigint` (variable-time) to `crypto-bigint` `DynResidue<48>` (Montgomery-form, constant-time in the exponent). Closes the timing side-channel on the secret SMP exponents (blinding scalars, the SMP secret, ZKP randomisers) — the last open security-hardening item on this roadmap. The 3072-bit group (OTRv4 §5.3) is unchanged, so the wire format and spec compliance are identical; only the exponentiation implementation changed. `crypto-bigint` promoted from transitive to direct dep (no new compile). 6 SMP unit tests added. Verified live over I2P with peer QuartzRoot. Fixed a latent mislabel found during the work: `SMP_PRIME_BYTES` was `256` but the prime is 3072-bit (384 bytes) — corrected (the old `num-bigint` path was unaffected because `fixed_bytes` never truncated).
 - **v10.7.5** ClientProfile validity reduced from 365 days to 14 days, matching the OTRv4 spec §4.1 recommendation and `otr4j`'s default.  The previous 1-year value was incoherent with the ephemeral-identity design.  Implemented as a class-level `VALIDITY_SECONDS` constant so the two assignment sites can't drift again.
 - **v10.7.4** Phase 5.3k + 5.3i-D.  All C extensions retired.  `otr4_ed448_ct` import deleted from `otrv4+.py` (the import was a defensive ground-truth; a grep for `_ed448_ct.` member access was empty — it was never called).  `otr4_crypto_ext.c`, `otr4_ed448_ct.c`, `otr4_mldsa_ext.c`, and `setup_otr4.py` removed via `git rm`.  Seven test files in `tests/` migrated onto `otrv4_core`; the C-extension smoke test `test_otr.py` deleted.  Concurrent fix in `aead.rs`: deprecated `aes-gcm 0.10` `GenericArray::from_slice` helper replaced by `Aes256Gcm::new_from_slice` (KeyInit) and `Nonce::from(*&[u8;12])`.  Cargo build is back to **0 warnings**, **20 tests passing**.  OTRv4+ is now Rust-core-only — the architectural finish line.
 - **v10.7.3** Phase 5.3i-C.  `MLKEM1024BraceKEM` migrated from `_ossl.mlkem1024_*` to Rust `pqcrypto-mlkem` via a new `src/mlkem.rs` PyO3 module.  Three new Rust unit tests for byte sizes, roundtrip, and wrong-key rejection.  After this commit `otr4_crypto_ext` had no remaining callers.
@@ -53,7 +54,7 @@ Staged so each piece could be live-tested in isolation before the next began:
 
 ### Phase 5.3i — replace `otr4_crypto_ext` (`_ossl`) uses
 
-**Shipped across v10.7.1 → v10.7.4.**  The original plan estimated this as the largest remaining sub-phase, "200-300 lines plus a constant-time bignum decision, two to three sessions."  It turned out smaller: much of the C extension's bignum surface had already become dead code when the Rust SMP took over (the SMP modular arithmetic now lives entirely in `num-bigint` inside `src/smp.rs`; the open question of `num-bigint`'s non-constant-time `modpow` is filed separately and is unrelated to the C-extension migration).  Sub-phases as shipped:
+**Shipped across v10.7.1 → v10.7.4.**  The original plan estimated this as the largest remaining sub-phase, "200-300 lines plus a constant-time bignum decision, two to three sessions."  It turned out smaller: much of the C extension's bignum surface had already become dead code when the Rust SMP took over (the SMP modular arithmetic moved entirely into `num-bigint` inside `src/smp.rs`).  The remaining concern — that `num-bigint`'s `modpow` is not constant-time — was addressed separately in **Phase 5.4 (v10.7.6)**, which moved the secret-exponent `modpow` calls onto `crypto-bigint` `DynResidue`.  Sub-phases as shipped:
 
 1. **v10.7.1 (5.3i-A)** — four dead bignum wrappers (`_ct_mod_exp`, `_ct_mod_inv`, `_ct_rand_range`, `SHA3_512.hash_to_int`) deleted.  `disable_core_dumps` moved to Python `resource.setrlimit(RLIMIT_CORE, (0, 0))`.  Python-only change; no Rust rebuild.
 2. **v10.7.2 (5.3i-B)** — `_ossl.cleanse(buf)` replaced with a module-level `_secure_wipe(bytearray)` using `ctypes.memset` (dead-store-resistant, no DLL surface, no third-party dependency).  Eight cleanse sites repointed; two redundant ones deleted where Rust already wiped.
@@ -106,7 +107,7 @@ Out of OTRv4 scope. OMEMO or MLS would be a separate project.
 
 ### Native Android APK
 
-Building a signed `.apk` containing the Python interpreter, the Rust `.so`, and the C extensions has been investigated (see DEVELOPMENT.md). Possible but non-trivial. Termux is the supported dev environment; a native APK is future work.
+Building a signed `.apk` containing the Python interpreter and the Rust `.so` has been investigated (see DEVELOPMENT.md). Possible but non-trivial. Termux is the supported dev environment; a native APK is future work.
 
 ### Tor onion service transport
 
@@ -114,7 +115,7 @@ I2P SAM bridge works today. Adding an alternative Tor `.onion` transport would b
 
 ### Formal review
 
-The crypto path is now small enough to be reviewable: ~3500 lines of Rust across `dake.rs`, `ratchet.rs`, `smp.rs`, `smp_vault.rs`, `ring_sig.rs`, `key_handles.rs`, `mldsa.rs`, `aead.rs`, `secure_mem.rs`, `kdf.rs`. With the Python cryptography library removed as of v10.7, the entire crypto surface is now Rust plus two C extensions slated for removal. A formal third-party review would significantly increase confidence. No funding for this; expression of interest welcome.
+The crypto path is now small enough to be reviewable: ~3500 lines of Rust across `dake.rs`, `ratchet.rs`, `smp.rs`, `smp_vault.rs`, `ring_sig.rs`, `key_handles.rs`, `mldsa.rs`, `mlkem.rs`, `aead.rs`, `secure_mem.rs`, `kdf.rs`. As of v10.7.5 the entire cryptographic surface is Rust — the Python `cryptography` library was removed at v10.7 and all C extensions at v10.7.5 (Phase 5.3k). As of v10.7.6 (Phase 5.4) the SMP modular exponentiation is constant-time via `crypto-bigint`. A formal third-party review would significantly increase confidence. No funding for this; expression of interest welcome.
 
 ## What is not on the roadmap
 

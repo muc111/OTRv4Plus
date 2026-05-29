@@ -486,6 +486,7 @@ name = "otrv4_core"
 version = "0.10.21"
 dependencies = [
  "aes-gcm",
+ "crypto-bigint",
  "dashmap",
  "ed448-goldilocks-plus",
  "getrandom 0.2.17",

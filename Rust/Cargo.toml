@@ -15,6 +15,7 @@ default  = ["pyo3/extension-module", "pq-rust"]
 pq-rust  = [
     "num-bigint",
     "num-traits",
+    "crypto-bigint",
     "pqcrypto-mlkem",
     "pqcrypto-mldsa",
     "pqcrypto-traits",
@@ -55,6 +56,12 @@ libc         = { version = "0.2"  }
 #          format differs in domain-separator constants.
 num-bigint    = { version = "0.4",   optional = true, features = ["rand"] }
 num-traits    = { version = "0.2",   optional = true }
+# v10.7.6 (Phase 5.4): constant-time modular exponentiation for SMP.
+# Already present transitively (pulled in by the pqcrypto stack); promoted to
+# a direct dependency here.  0.5.x is the version already resolved in the
+# tree, so this adds no new compile.  DynResidue gives constant-time modpow,
+# closing the num-bigint modpow timing side-channel in the SMP ZKPs.
+crypto-bigint = { version = "0.5",   optional = true }
 getrandom     = { version = "0.2",   optional = true }
 x448          = { version = "0.6",   optional = true }
 

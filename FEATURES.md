@@ -29,7 +29,7 @@ As of **v10.7.5 (Phase 5.3k)** OTRv4+ is **Rust-core-only**: every cryptographic
 | OTRv4 DAKE | Rust (`src/dake.rs`) | Three-message handshake. Pure Rust state machine. The pure-Python `OTRv4DAKE` fallback was deleted in v10.7. |
 | OTRv4 double ratchet | Rust (`src/ratchet.rs`) | DH ratchet at 100-message or 24-hour boundary. X448 DH and ML-KEM-1024 rekey at every DH step, both in Rust. |
 | OTRv4 ring signature | Rust (`src/ring_sig.rs`) | Schnorr ring sig over three Ed448 keys. Pure Rust port of the C reference. |
-| OTRv4 SMP | Rust (`src/smp.rs`, `src/smp_vault.rs`) | Four-step ZKP. MODP-2048 group. ZeroizeOnDrop on every exponent. |
+| OTRv4 SMP | Rust (`src/smp.rs`, `src/smp_vault.rs`) | Four-step ZKP. 3072-bit MODP group (OTRv4 §5.3). ZeroizeOnDrop on every exponent. Constant-time modular exponentiation via `crypto-bigint` `DynResidue` as of v10.7.6 (Phase 5.4). |
 | Ed448 / X448 long-term keys | Rust (`src/key_handles.rs`) | Opaque PyO3 handles. Private bytes never leave Rust. Includes `verify_ed448_sig` for ClientProfile verification. |
 
 ## Transport
@@ -78,7 +78,7 @@ No long-term private key material appears on the Python heap as `bytes` or `byte
 
 - Termux on Android (aarch64), Rust 1.94 or newer
 - Python 3.11+
-- OpenSSL 3.x — required at build time and at runtime (the two remaining C extensions link against `libssl` / `libcrypto` for constant-time bignum and the legacy ML-KEM keygen path)
+- No OpenSSL dependency — the C extensions that linked `libssl`/`libcrypto` were retired at v10.7.5 (Phase 5.3k); the Rust core uses pure-Rust crypto crates
 - No Python `cryptography` package dependency as of v10.7
 
 Desktop Linux works the same way. macOS not tested. Windows not supported.

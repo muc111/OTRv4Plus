@@ -6,7 +6,7 @@
 <p align="center"><strong>Post-quantum secure messaging over IRC. Research prototype.</strong></p>
 
 <p align="center">
-<code>v10.7.5 · Rust crypto core · Python cryptography library fully removed</code>
+<code>v10.7.6 · Rust crypto core · constant-time SMP · no C extensions</code>
 </p>
 
 ---
@@ -178,7 +178,7 @@ Run `cargo test --release --no-default-features --features pq-rust` before any r
 
 3. **The Rust crypto crates are not audited.** `ed448-goldilocks-plus` 0.16 is the only viable pure-Rust Ed448 implementation but has no formal review. `x448` 0.6 is a pure-Rust X448 with no formal review. `pqcrypto-mlkem 0.1.1` (FIPS 203 ML-KEM-1024) and `pqcrypto-mldsa 0.1.2` (ML-DSA-87) are PQClean-derived reference implementations.
 
-4. **Rust-core-only since v10.7.5.**  Every C extension (`otr4_crypto_ext`, `otr4_ed448_ct`, `otr4_mldsa_ext`) has been retired and the Python `cryptography` library was removed at v10.7.  The entire cryptographic surface of the client now lives inside the Rust `otrv4_core` PyO3 module — there is no second crypto implementation to drift against.  See the CHANGELOG v10.6.18 → v10.7.5 sequence for the migration history.
+4. **Rust-core-only since v10.7.5.**  Every C extension (`otr4_crypto_ext`, `otr4_ed448_ct`, `otr4_mldsa_ext`) has been retired and the Python `cryptography` library was removed at v10.7.  The entire cryptographic surface of the client now lives inside the Rust `otrv4_core` PyO3 module — there is no second crypto implementation to drift against.  As of v10.7.6 (Phase 5.4) the SMP modular exponentiation is constant-time via `crypto-bigint` `DynResidue`, closing a timing side-channel on the secret SMP exponents.  See the CHANGELOG v10.6.18 → v10.7.6 sequence for the migration history.
 
 5. **Ephemeral identity by design.** Identity keys regenerate at every launch. Fingerprints change on every restart. This is a deliberate threat-model choice for an I2P-based privacy IRC client, not a missing feature. Tor Browser, Cwtch (default), and Briar (before user opt-in) all keep identities short-lived for similar reasons. See ROADMAP Phase 5.3g.
 

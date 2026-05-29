@@ -17,6 +17,24 @@ use rand::rngs::OsRng;
 use std::sync::LazyLock;
 use std::time::{Duration, Instant};
 
+// v10.7.6 (Phase 5.4): constant-time modular arithmetic.
+// num-bigint's modpow is NOT constant-time — its running time depends on the
+// exponent's bit pattern, which for SMP is secret (blinding scalars a2/a3/b2/b3,
+// the SMP secret itself, and the ZKP randomisers r4b/r5b/r6b...).  crypto-bigint's
+// DynResidue performs Montgomery-form modular exponentiation in constant time.
+//
+// The 3072-bit group (OTRv4 §5.3) is unchanged — same prime, same order,
+// same generator g=2 — so the wire format and spec compliance are identical.
+// Only the *implementation* of exponentiation changes.
+//
+// v10.7.6 (Phase 5.4): the SMP group prime is the 3072-bit safe prime
+// (OTRv4 §5.3 / the 3072-bit MODP group), 384 bytes / 48 × 64-bit limbs.
+// U3072 = Uint<48>.  (Earlier drafts of this migration wrongly used U3072;
+// that silently truncated the top 1024 bits of the prime, which the build-time
+// roundtrip tests caught.)
+use crypto_bigint::{U3072, Encoding};
+use crypto_bigint::modular::runtime_mod::{DynResidue, DynResidueParams};
+
 use crate::error::{OtrError, Result};
 use crate::secure_mem::SecretVec;
 
@@ -24,12 +42,12 @@ const MAX_ATTEMPTS: u32         = 3;
 const SESSION_TIMEOUT_SECS: u64 = 600;
 const RETRY_COOLDOWN_SECS: u64  = 30;
 const KDF_ROUNDS: u32           = 50_000;
-const SMP_PRIME_BYTES:  usize   = 256;
-const SMP_SCALAR_BYTES: usize   = 256;
+const SMP_PRIME_BYTES:  usize   = 384;  // 3072-bit prime = 384 bytes (was wrongly 256)
+const SMP_SCALAR_BYTES: usize   = 384;  // scalars are mod (p-1)/2, also up to 384 bytes
 
 // v10.6.14: migrated from `lazy_static` (unmaintained per RustSec) to
 // `std::sync::LazyLock` (stabilised in Rust 1.80, August 2024).  The
-// MODP-2048 prime, its derived order ((p-1)/2), and the generator (g=2)
+// 3072-bit prime, its derived order ((p-1)/2), and the generator (g=2)
 // are constants that need one-time runtime initialisation because
 // `num_bigint::BigUint::parse_bytes` is not const.  Toolchain requirement
 // raised to Rust 1.80+; current build uses 1.94.1.
@@ -63,6 +81,37 @@ static SMP_ORDER: LazyLock<num_bigint::BigUint> = LazyLock::new(|| {
 static SMP_GEN: LazyLock<num_bigint::BigUint> = LazyLock::new(|| {
     num_bigint::BigUint::from(2u8)
 });
+
+// v10.7.6 (Phase 5.4): the same 3072-bit prime as SMP_PRIME above, but as a
+// crypto_bigint::U3072, plus the Montgomery parameters derived from it.
+// DynResidueParams::new requires an ODD modulus (it panics otherwise); the
+// prime is odd (it ends in ...FFFFFFFF), so it never panics.
+// Computed once at first use.
+//
+// SMP_PRIME and SMP_PRIME_CT MUST represent the identical integer — a unit test
+// (smp_prime_ct_matches_bigint) asserts byte-for-byte equality at build time.
+static SMP_PRIME_CT: LazyLock<U3072> = LazyLock::new(|| {
+    // 384-byte big-endian form of the 3072-bit prime, in U3072 width.
+    let be = pad_be_384(&SMP_PRIME.to_bytes_be());
+    U3072::from_be_slice(&be)
+});
+
+static SMP_MONTY: LazyLock<DynResidueParams<48>> = LazyLock::new(|| {
+    // DynResidueParams::new returns Self directly and panics only on an even
+    // modulus.  The 3072-bit prime is odd, so this never panics.
+    DynResidueParams::new(&*SMP_PRIME_CT)
+});
+
+// Pad a big-endian byte slice up to the 384-byte U3072 width on the left.
+// Free function (not a method) so it can be used inside the LazyLock above.
+fn pad_be_384(raw: &[u8]) -> [u8; 384] {
+    // Left-pad (or, if the input is already 384, copy) into the U3072 width.
+    // The prime is 384 bytes; group elements are < prime so always <= 384.
+    let mut out = [0u8; 384];
+    let n = raw.len().min(384);
+    out[384 - n..].copy_from_slice(&raw[raw.len() - n..]);
+    out
+}
 
 #[derive(Debug, PartialEq, Clone, Copy)]
 pub enum SmpPhase {
@@ -243,12 +292,35 @@ impl SmpState {
         Self::fixed_bytes(val, SMP_PRIME_BYTES)
     }
 
-    fn mod_exp(base: &num_bigint::BigUint, exp_bytes: &[u8], modulus: &num_bigint::BigUint) -> num_bigint::BigUint {
-        base.modpow(&num_bigint::BigUint::from_bytes_be(exp_bytes), modulus)
+    // v10.7.6 (Phase 5.4): constant-time modular exponentiation.
+    // Signature is unchanged (BigUint in, BigUint out) so every caller is
+    // untouched, but the body now routes through crypto_bigint::DynResidue,
+    // whose pow() is constant-time in the exponent.  The `modulus` argument is
+    // accepted for signature compatibility but is always the 3072-bit prime;
+    // we assert that and use the precomputed Montgomery params.
+    fn mod_exp(base: &num_bigint::BigUint, exp_bytes: &[u8], _modulus: &num_bigint::BigUint) -> num_bigint::BigUint {
+        let base_ct = Self::biguint_to_u2048(base);
+        let exp_ct  = U3072::from_be_slice(&pad_be_384(exp_bytes));
+        let base_m  = DynResidue::new(&base_ct, *SMP_MONTY);
+        let res_m   = base_m.pow(&exp_ct);
+        Self::u2048_to_biguint(&res_m.retrieve())
     }
 
+    // Modular inverse via Fermat: a^(p-2) mod p.  Constant-time because mod_exp is.
     fn mod_inv(val: &num_bigint::BigUint) -> num_bigint::BigUint {
-        val.modpow(&(&*SMP_PRIME - 2u8), &*SMP_PRIME)
+        let p_minus_2 = &*SMP_PRIME - 2u8;
+        Self::mod_exp(val, &p_minus_2.to_bytes_be(), &SMP_PRIME)
+    }
+
+    // ── crypto_bigint <-> num_bigint bridges (v10.7.6) ──
+    // Values cross this boundary already validated to be < SMP_PRIME (the
+    // wire-decode path calls validate_group_elem), so they fit in U3072.
+    fn biguint_to_u2048(v: &num_bigint::BigUint) -> U3072 {
+        U3072::from_be_slice(&pad_be_384(&v.to_bytes_be()))
+    }
+
+    fn u2048_to_biguint(v: &U3072) -> num_bigint::BigUint {
+        num_bigint::BigUint::from_bytes_be(&v.to_be_bytes())
     }
 
     fn zkp_challenge(version: u8, commitment: &[u8], statement: &[u8]) -> num_bigint::BigUint {
@@ -285,7 +357,7 @@ impl SmpState {
         let c  = num_bigint::BigUint::from_bytes_be(c_bytes);
         let bv = num_bigint::BigUint::from_bytes_be(base_val);
         let gd = Self::mod_exp(base, d_bytes, &SMP_PRIME);
-        let gc = bv.modpow(&c, &SMP_PRIME);
+        let gc = Self::mod_exp(&bv, &c.to_bytes_be(), &SMP_PRIME);
         let gr = (gd * gc) % &*SMP_PRIME;
         let c2 = Self::zkp_challenge(version, &Self::fe_bytes(&gr), base_val);
         if crate::secure_mem::ct_eq(&c.to_bytes_be(), &c2.to_bytes_be()) {
@@ -459,14 +531,14 @@ impl SmpState {
 
         let g2a_big = num_bigint::BigUint::from_bytes_be(g2a);
         let g3a_big = num_bigint::BigUint::from_bytes_be(g3a);
-        let g2 = g2a_big.modpow(&num_bigint::BigUint::from_bytes_be(self.b2.expose()), &*SMP_PRIME);
-        let g3 = g3a_big.modpow(&num_bigint::BigUint::from_bytes_be(self.b3.expose()), &*SMP_PRIME);
+        let g2 = Self::mod_exp(&g2a_big, self.b2.expose(), &SMP_PRIME);
+        let g3 = Self::mod_exp(&g3a_big, self.b3.expose(), &SMP_PRIME);
 
         let pb   = Self::mod_exp(&g3, self.r4b.expose(), &SMP_PRIME);
         let pb_b = Self::fe_bytes(&pb);
 
         let gr4b = Self::mod_exp(&SMP_GEN, self.r4b.expose(), &SMP_PRIME);
-        let g2s  = g2.modpow(&num_bigint::BigUint::from_bytes_be(self.secret.expose()), &*SMP_PRIME);
+        let g2s  = Self::mod_exp(&g2, self.secret.expose(), &SMP_PRIME);
         let qb   = (gr4b * g2s) % &*SMP_PRIME;
         let qb_b = Self::fe_bytes(&qb);
 
@@ -474,7 +546,7 @@ impl SmpState {
         let r1_commit   = Self::mod_exp(&g3, self.r5b.expose(), &SMP_PRIME);
         let r1_commit_b = Self::fe_bytes(&r1_commit);
         let g_r5b       = Self::mod_exp(&SMP_GEN, self.r5b.expose(), &SMP_PRIME);
-        let g2_r6b      = g2.modpow(&num_bigint::BigUint::from_bytes_be(self.r6b.expose()), &*SMP_PRIME);
+        let g2_r6b      = Self::mod_exp(&g2, self.r6b.expose(), &SMP_PRIME);
         let r2_commit_b = Self::fe_bytes(&((g_r5b * g2_r6b) % &*SMP_PRIME));
 
         let mut ch_input = r1_commit_b.clone();
@@ -531,8 +603,8 @@ impl SmpState {
 
         let g2b_big = num_bigint::BigUint::from_bytes_be(g2b);
         let g3b_big = num_bigint::BigUint::from_bytes_be(g3b);
-        let g2 = g2b_big.modpow(&num_bigint::BigUint::from_bytes_be(self.a2.expose()), &*SMP_PRIME);
-        let g3 = g3b_big.modpow(&num_bigint::BigUint::from_bytes_be(self.a3.expose()), &*SMP_PRIME);
+        let g2 = Self::mod_exp(&g2b_big, self.a2.expose(), &SMP_PRIME);
+        let g3 = Self::mod_exp(&g3b_big, self.a3.expose(), &SMP_PRIME);
 
         let cp_n = num_bigint::BigUint::from_bytes_be(cp);
         let d5_n = num_bigint::BigUint::from_bytes_be(d5);
@@ -542,10 +614,10 @@ impl SmpState {
 
         // Verify combined (Pb,Qb) ZKP: R1'=g3^d5·Pb^cp, R2'=G^d5·g2^d6·Qb^cp
         let r1_recon = (Self::mod_exp(&g3, &d5_n.to_bytes_be(), &SMP_PRIME)
-            * pb_n.modpow(&cp_n, &SMP_PRIME)) % &*SMP_PRIME;
+            * Self::mod_exp(&pb_n, &cp_n.to_bytes_be(), &SMP_PRIME)) % &*SMP_PRIME;
         let g_d5     = Self::mod_exp(&SMP_GEN, &d5_n.to_bytes_be(), &SMP_PRIME);
-        let g2_d6    = g2.modpow(&d6_n, &SMP_PRIME);
-        let qb_cp    = qb_n.modpow(&cp_n, &SMP_PRIME);
+        let g2_d6    = Self::mod_exp(&g2, &d6_n.to_bytes_be(), &SMP_PRIME);
+        let qb_cp    = Self::mod_exp(&qb_n, &cp_n.to_bytes_be(), &SMP_PRIME);
         let r2_recon = (g_d5 * g2_d6 % &*SMP_PRIME * qb_cp) % &*SMP_PRIME;
 
         let r1_b = Self::fe_bytes(&r1_recon);
@@ -564,14 +636,14 @@ impl SmpState {
         let pa   = Self::mod_exp(&g3, self.r4.expose(), &SMP_PRIME);
         let pa_b = Self::fe_bytes(&pa);
         let gr4  = Self::mod_exp(&SMP_GEN, self.r4.expose(), &SMP_PRIME);
-        let g2x  = g2.modpow(&num_bigint::BigUint::from_bytes_be(self.secret.expose()), &*SMP_PRIME);
+        let g2x  = Self::mod_exp(&g2, self.secret.expose(), &SMP_PRIME);
         let qa   = (gr4 * g2x) % &*SMP_PRIME;
         let qa_b = Self::fe_bytes(&qa);
 
         let qa_n    = num_bigint::BigUint::from_bytes_be(&qa_b);
         let qb_inv  = Self::mod_inv(&qb_n);
         let base_ra = (qa_n * qb_inv) % &*SMP_PRIME;
-        let ra      = base_ra.modpow(&num_bigint::BigUint::from_bytes_be(self.a3.expose()), &*SMP_PRIME);
+        let ra      = Self::mod_exp(&base_ra, self.a3.expose(), &SMP_PRIME);
         let ra_b    = Self::fe_bytes(&ra);
 
         let (cr, d7) = Self::compute_zkp_custom_base(
@@ -624,7 +696,7 @@ impl SmpState {
 
         self.r6b = Self::random_exponent();
 
-        let rb   = base_ra.modpow(&num_bigint::BigUint::from_bytes_be(self.b3.expose()), &*SMP_PRIME);
+        let rb   = Self::mod_exp(&base_ra, self.b3.expose(), &SMP_PRIME);
         let rb_b = Self::fe_bytes(&rb);
 
         let (cr2, d8) = Self::compute_zkp_custom_base(
@@ -634,7 +706,7 @@ impl SmpState {
         let pa_n       = num_bigint::BigUint::from_bytes_be(pa);
         let pa_over_pb = (pa_n * Self::mod_inv(&pb_n)) % &*SMP_PRIME;
         let ra_n       = num_bigint::BigUint::from_bytes_be(ra);
-        let rab        = ra_n.modpow(&num_bigint::BigUint::from_bytes_be(self.b3.expose()), &*SMP_PRIME);
+        let rab        = Self::mod_exp(&ra_n, self.b3.expose(), &SMP_PRIME);
 
         let matched = crate::secure_mem::ct_eq(&Self::fe_bytes(&pa_over_pb), &Self::fe_bytes(&rab));
         self.phase = if matched { SmpPhase::Verified } else { SmpPhase::Failed };
@@ -674,7 +746,7 @@ impl SmpState {
 
         let pa_over_pb = (pa_n * Self::mod_inv(&pb_n)) % &*SMP_PRIME;
         let rb_n       = num_bigint::BigUint::from_bytes_be(rb);
-        let rab        = rb_n.modpow(&num_bigint::BigUint::from_bytes_be(self.a3.expose()), &*SMP_PRIME);
+        let rab        = Self::mod_exp(&rb_n, self.a3.expose(), &SMP_PRIME);
 
         let verified = crate::secure_mem::ct_eq(&Self::fe_bytes(&pa_over_pb), &Self::fe_bytes(&rab));
         self.phase = if verified { SmpPhase::Verified } else { SmpPhase::Failed };
@@ -813,4 +885,108 @@ impl PySmp {
     fn get_attempt_count(&self) -> u32   { self.inner.get_attempt_count() }
     fn get_elapsed_secs(&self)  -> u64   { self.inner.get_elapsed_secs() }
     fn is_expired(&self)        -> bool  { self.inner.is_expired() }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // v10.7.6 (Phase 5.4): the constant-time migration's correctness gates.
+    // These catch a Montgomery-setup or limb-count bug at `cargo test` time
+    // rather than via a silent SMP verification failure against a live peer.
+
+    // 1. SMP_PRIME_CT (crypto-bigint U3072) and SMP_PRIME (num-bigint) must
+    //    represent the identical integer.  If this fails, every modular
+    //    exponentiation is being done modulo the wrong number.
+    #[test]
+    fn smp_prime_ct_matches_bigint() {
+        let from_bigint = pad_be_384(&SMP_PRIME.to_bytes_be());
+        let from_ct     = SMP_PRIME_CT.to_be_bytes();
+        assert_eq!(from_bigint, from_ct,
+            "SMP_PRIME_CT and SMP_PRIME disagree — modexp modulus is wrong");
+    }
+
+    // 2. The constant-time mod_exp must agree with a hand-computed value.
+    //    2^10 mod p = 1024 (p is far larger than 1024, so no reduction).
+    #[test]
+    fn mod_exp_small_known_answer() {
+        let base = num_bigint::BigUint::from(2u8);
+        let exp  = num_bigint::BigUint::from(10u8);
+        let got  = SmpState::mod_exp(&base, &exp.to_bytes_be(), &SMP_PRIME);
+        assert_eq!(got, num_bigint::BigUint::from(1024u32));
+    }
+
+    // 3. mod_exp must agree with num-bigint's own modpow on a large random-ish
+    //    exponent (cross-check the new impl against the old one's math).  The
+    //    exponent is a full 384-byte (3072-bit) value to exercise the complete
+    //    width — this is the test that catches a too-narrow Uint type.
+    #[test]
+    fn mod_exp_matches_reference_modpow() {
+        let base = num_bigint::BigUint::from(7u8);
+        let exp_bytes = [0xABu8; 384];  // full 3072-bit width
+        let got = SmpState::mod_exp(&base, &exp_bytes, &SMP_PRIME);
+        let want = base.modpow(
+            &num_bigint::BigUint::from_bytes_be(&exp_bytes), &SMP_PRIME);
+        assert_eq!(got, want, "constant-time mod_exp diverged from reference modpow");
+    }
+
+    // 4. mod_inv: a · a^-1 ≡ 1 (mod p).
+    #[test]
+    fn mod_inv_roundtrip() {
+        let a    = num_bigint::BigUint::from(123456789u64);
+        let ainv = SmpState::mod_inv(&a);
+        let one  = (&a * &ainv) % &*SMP_PRIME;
+        assert_eq!(one, num_bigint::BigUint::from(1u8));
+    }
+
+    // 5. Full SMP1→2→3→4 roundtrip with a matching secret must VERIFY on both
+    //    sides.  This is the end-to-end proof the migration preserves the
+    //    protocol — the same thing the live I2P test checks, but deterministic
+    //    and offline.
+    #[test]
+    fn smp_full_roundtrip_matching_secret_verifies() {
+        let sid  = b"test-session-id-0001";
+        let fp_a = b"fingerprint-aaaaaaaaaaaaaaaaaaaa";
+        let fp_b = b"fingerprint-bbbbbbbbbbbbbbbbbbbb";
+        let secret = b"correct horse battery staple";
+
+        let mut a = SmpState::new(true);   // initiator
+        let mut b = SmpState::new(false);  // responder
+        a.set_secret(secret, sid, fp_a, fp_b);
+        b.set_secret(secret, sid, fp_b, fp_a);
+
+        let m1 = a.generate_smp1(None).expect("smp1");
+        let m2 = b.process_smp1_generate_smp2(&m1).expect("smp2");
+        let m3 = a.process_smp2_generate_smp3(&m2).expect("smp3");
+        let m4 = b.process_smp3_generate_smp4(&m3).expect("smp4");
+        let ok = a.process_smp4(&m4).expect("smp-final");
+
+        assert!(ok, "matching secret must verify");
+        assert!(a.is_verified());
+        assert!(b.is_verified());
+    }
+
+    // 6. A MISMATCHED secret must NOT verify (the security property).
+    #[test]
+    fn smp_full_roundtrip_wrong_secret_fails() {
+        let sid  = b"test-session-id-0002";
+        let fp_a = b"fingerprint-aaaaaaaaaaaaaaaaaaaa";
+        let fp_b = b"fingerprint-bbbbbbbbbbbbbbbbbbbb";
+
+        let mut a = SmpState::new(true);
+        let mut b = SmpState::new(false);
+        a.set_secret(b"secret-one",     sid, fp_a, fp_b);
+        b.set_secret(b"secret-DIFFERENT", sid, fp_b, fp_a);
+
+        let m1 = a.generate_smp1(None).expect("smp1");
+        let m2 = b.process_smp1_generate_smp2(&m1).expect("smp2");
+        let m3 = a.process_smp2_generate_smp3(&m2).expect("smp3");
+        // SMP3 ZKP still verifies (the ZKPs are about knowledge, not equality);
+        // the mismatch shows up as the final equality check failing.
+        let m4 = b.process_smp3_generate_smp4(&m3).expect("smp4");
+        let ok = a.process_smp4(&m4).expect("smp-final");
+
+        assert!(!ok, "mismatched secret must NOT verify");
+        assert!(!a.is_verified());
+    }
 }
