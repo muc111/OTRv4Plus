@@ -6,8 +6,18 @@
 <p align="center"><strong>Post-quantum secure messaging over IRC. Research prototype.</strong></p>
 
 <p align="center">
-<code>v10.7.6 · Rust crypto core · constant-time SMP · no C extensions</code>
+<code>v10.8.0 · Rust crypto core · constant-time SMP · no C extensions · TUI</code>
 </p>
+
+---
+
+## In action
+
+<p align="center">
+  <img src="example.png" width="680" alt="OTRv4+ TUI — encrypted session with SMP verified">
+</p>
+
+<p align="center"><em>Full OTRv4 DAKE + SMP verification on Libera.chat. Blue 🔵 = identity confirmed.<br>Tab bar at the bottom — switch channels instantly with <code>/switch</code> or <code>/tab-next</code>.<br>Type <code>/tui</code> to toggle the pinned chrome on or off.</em></p>
 
 ---
 
