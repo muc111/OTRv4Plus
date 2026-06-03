@@ -58,7 +58,6 @@ import textwrap
 import atexit
 import gc
 import resource
-import random
 import shutil
 import termios
 import tty
@@ -758,7 +757,7 @@ class OTRv4DataMessage:
             return hmac.compare_digest(self.mac, computed)
         except (TypeError, ValueError) as e:
             if DEBUG_MODE:
-                print(f'[OTRv4DataMessage] MAC verification error: {e}')
+                safe_print(f'[OTRv4DataMessage] MAC verification error: {e}')
             return False
         except Exception:
             return False
@@ -822,7 +821,7 @@ class OTRv4DataMessage:
             return msg
         except (ValueError, struct.error, TypeError) as e:
             raise ValueError(f'Failed to decode message: {e}')
-VERSION = 'OTRv4+ 10.8.0'
+VERSION = 'OTRv4+ 10.8.1'
 if not hasattr(hashlib, 'sha3_512'):
     raise RuntimeError('FATAL: SHA3-512 is required by OTRv4 §3.2 but is unavailable in this Python build.  Please upgrade to Python ≥ 3.6 with SHA3 support.')
 DEBUG_MODE = '--debug' in sys.argv or '-d' in sys.argv
@@ -1009,7 +1008,7 @@ def _set_prompt(prompt: str) -> None:
     with _print_lock:
         buf = ''.join(_input_buffer)
         if _current_prompt or buf:
-            sys.stdout.write('\r\x1b[2K')
+            sys.stdout.write('\x1b[1G\x1b[2K')
         _current_prompt = prompt
         sys.stdout.write(prompt + buf)
         sys.stdout.flush()
@@ -1073,21 +1072,36 @@ _scroll_buffer: deque = deque(maxlen=500)
 def _emit_line(text: str) -> None:
     global _scroll_locked
     wrapped = _word_wrap(text, TERMINAL_WIDTH)
-    if _scroll_locked:
-        _scroll_buffer.append(wrapped)
+    try:
+        if _scroll_locked:
+            _scroll_buffer.append(wrapped)
+            with _print_lock:
+                buf = ''.join(_input_buffer)
+                sys.stdout.write('\r\x1b[2K')
+                sys.stdout.write(f'\x1b[33m[PAUSED — {len(_scroll_buffer)} buffered]\x1b[0m ' + _current_prompt + buf)
+                sys.stdout.flush()
+            return
         with _print_lock:
             buf = ''.join(_input_buffer)
-            sys.stdout.write('\r\x1b[2K')
-            sys.stdout.write(f'\x1b[33m[PAUSED — {len(_scroll_buffer)} buffered]\x1b[0m ' + _current_prompt + buf)
+            # Use live terminal width — keyboard popup on mobile shrinks
+            # the terminal but TERMINAL_WIDTH is set only at startup.
+            try:
+                _cols = max(1, shutil.get_terminal_size(fallback=(80, 24)).columns)
+            except Exception:
+                _cols = max(1, TERMINAL_WIDTH)
+            _pvis = len(_ANSI_RE.sub('', _current_prompt + buf))
+            _extra_rows = max(0, (_pvis - 1) // _cols)
+            if _extra_rows > 0:
+                sys.stdout.write(f'\x1b[{_extra_rows}A')
+            # \x1b[1G = move to column 1; \x1b[2K = erase entire line.
+            # More reliable than \r\x1b[2K across mobile terminal emulators.
+            sys.stdout.write('\x1b[1G\x1b[2K')
+            sys.stdout.write(wrapped + '\n')
+            if _current_prompt or buf:
+                sys.stdout.write(_current_prompt + buf)
             sys.stdout.flush()
-        return
-    with _print_lock:
-        buf = ''.join(_input_buffer)
-        sys.stdout.write('\r\x1b[2K')
-        sys.stdout.write(wrapped + '\n')
-        if _current_prompt or buf:
-            sys.stdout.write(_current_prompt + buf)
-        sys.stdout.flush()
+    except (RuntimeError, ValueError, OSError):
+        pass
 
 def _scroll_unlock() -> None:
     global _scroll_locked
@@ -1116,14 +1130,17 @@ def _flush_display_queue() -> None:
 
 def safe_print(*args, **kwargs):
     kwargs['flush'] = True
-    with _print_lock:
-        buf = ''.join(_input_buffer)
-        if (_current_prompt or buf) and _raw_mode_active:
-            sys.stdout.write('\r\x1b[2K')
-        print(*args, **kwargs)
-        if (_current_prompt or buf) and _raw_mode_active:
-            sys.stdout.write(_current_prompt + buf)
-            sys.stdout.flush()
+    try:
+        with _print_lock:
+            buf = ''.join(_input_buffer)
+            if (_current_prompt or buf) and _raw_mode_active:
+                sys.stdout.write('\r\x1b[2K')
+            print(*args, **kwargs)
+            if (_current_prompt or buf) and _raw_mode_active:
+                sys.stdout.write(_current_prompt + buf)
+                sys.stdout.flush()
+    except (RuntimeError, ValueError, OSError):
+        pass
 
 @dataclass
 class OTRConfig:
@@ -1736,15 +1753,15 @@ class TLVHandler:
     @staticmethod
     def debug_tlv(data: bytes, description: str='') -> None:
         if len(data) < 4:
-            print(f'TLV {description}: Too short ({len(data)} bytes)')
+            safe_print(f'TLV {description}: Too short ({len(data)} bytes)')
             return
         try:
             tlv_type, length = struct.unpack('!HH', data[:4])
-            print(f'TLV {description}: type=0x{tlv_type:04x}, length={length}, data_len={len(data)}')
-            print(f'  Hex: {data[:min(32, len(data))].hex()}...')
+            safe_print(f'TLV {description}: type=0x{tlv_type:04x}, length={length}, data_len={len(data)}')
+            safe_print(f'  Hex: {data[:min(32, len(data))].hex()}...')
         except struct.error as e:
-            print(f'TLV {description}: Unpack error: {e}')
-            print(f'  Hex: {data[:min(32, len(data))].hex()}...')
+            safe_print(f'TLV {description}: Unpack error: {e}')
+            safe_print(f'  Hex: {data[:min(32, len(data))].hex()}...')
 
 class RatchetHeader:
 
@@ -2600,7 +2617,7 @@ class SecureKeyStorage:
                 return True
             except Exception as e:
                 if DEBUG_MODE:
-                    print(f'Failed to store key {key_id}: {e}')
+                    safe_print(f'Failed to store key {key_id}: {e}')
                 return False
 
     def load_key(self, key_id: str, key_type: str) -> Optional[bytes]:
@@ -2621,7 +2638,7 @@ class SecureKeyStorage:
                 return self._decrypt_key(encrypted)
             except Exception as e:
                 if DEBUG_MODE:
-                    print(f'Failed to load key {key_id}: {e}')
+                    safe_print(f'Failed to load key {key_id}: {e}')
                 return None
 
     def delete_key(self, key_id: str, key_type: str) -> bool:
@@ -2813,11 +2830,11 @@ class TrustDatabase:
                 self._db = migrated
             except (json.JSONDecodeError, IOError, OSError) as e:
                 if DEBUG_MODE:
-                    print(f'[TrustDatabase] Error loading: {e}')
+                    safe_print(f'[TrustDatabase] Error loading: {e}')
                 self._db = {}
             except Exception as e:
                 if DEBUG_MODE:
-                    print(f'[TrustDatabase] Unexpected error loading: {e}')
+                    safe_print(f'[TrustDatabase] Unexpected error loading: {e}')
                 self._db = {}
 
     def _save(self):
@@ -2839,7 +2856,7 @@ class TrustDatabase:
                 os.replace(_tmp_path2, self.db_path)
             except (IOError, OSError, PermissionError) as e:
                 if DEBUG_MODE:
-                    print(f'[TrustDatabase] Error saving: {e}')
+                    safe_print(f'[TrustDatabase] Error saving: {e}')
                 if _tmp_path2:
                     try:
                         os.unlink(_tmp_path2)
@@ -2847,7 +2864,7 @@ class TrustDatabase:
                         pass
             except Exception as e:
                 if DEBUG_MODE:
-                    print(f'[TrustDatabase] Unexpected error saving: {e}')
+                    safe_print(f'[TrustDatabase] Unexpected error saving: {e}')
                 try:
                     os.unlink(f.name)
                 except Exception:
@@ -2935,11 +2952,11 @@ class TrustDatabase:
                 return False
             except (KeyError, AttributeError) as e:
                 if DEBUG_MODE:
-                    print(f'[TrustDatabase] Error removing trust: {e}')
+                    safe_print(f'[TrustDatabase] Error removing trust: {e}')
                 return False
             except Exception as e:
                 if DEBUG_MODE:
-                    print(f'[TrustDatabase] Unexpected error removing trust: {e}')
+                    safe_print(f'[TrustDatabase] Unexpected error removing trust: {e}')
                 return False
 
     def get_trusted_fingerprint(self, peer: str) -> str:
@@ -3222,10 +3239,18 @@ class Screen:
             for i, ln in enumerate(shown):
                 out.append(f'\x1b[{1 + i};1H\x1b[K')
                 out.append(ln)
-            # After restore, explicitly move to input row so keystrokes
-            # always echo there regardless of where \x1b7 saved the cursor.
+            # Move to input row and redraw the prompt + typed buffer so
+            # text the user was typing is never lost when a message arrives.
             _input_r = self.rows - len(tabs)
+            _buf = ''.join(_input_buffer)
+            out.append(f'\x1b[{_input_r};1H\x1b[2K')
+            out.append((_current_prompt or '') + _buf)
+            out.append('\x1b8')
             out.append(f'\x1b[{_input_r};1H')
+            # Restore cursor to end of typed buffer
+            _vis = len(_ANSI_RE.sub('', (_current_prompt or '') + _buf))
+            if _vis > 0:
+                out.append(f'\x1b[{_vis + 1}G')
             sys.stdout.write(''.join(out))
             sys.stdout.flush()
 
@@ -4302,7 +4327,7 @@ class SessionManager:
             self.key_storage.store_key('profile', 'client', profile_bytes)
         except Exception as e:
             if DEBUG_MODE:
-                print(f'Warning: Could not store profile: {e}')
+                safe_print(f'Warning: Could not store profile: {e}')
 
     def get_fingerprint(self) -> str:
         return self.client_profile.get_fingerprint()
@@ -4320,7 +4345,7 @@ class SessionManager:
                 return dake1
             except Exception as e:
                 if DEBUG_MODE:
-                    print(f'Failed to start session: {e}')
+                    safe_print(f'Failed to start session: {e}')
                 return None
         finally:
             self._release_lock()
@@ -4338,7 +4363,7 @@ class SessionManager:
                     return dake2
             except Exception as e:
                 if DEBUG_MODE:
-                    print(f'Failed to handle DAKE1: {e}')
+                    safe_print(f'Failed to handle DAKE1: {e}')
             return None
         finally:
             self._release_lock()
@@ -4369,7 +4394,7 @@ class SessionManager:
                     return dake3
             except Exception as e:
                 if DEBUG_MODE:
-                    print(f'Failed to handle DAKE2: {e}')
+                    safe_print(f'Failed to handle DAKE2: {e}')
                 del self.pending_dakes[peer]
             return None
         finally:
@@ -4400,7 +4425,7 @@ class SessionManager:
                     return True
             except Exception as e:
                 if DEBUG_MODE:
-                    print(f'Failed to handle DAKE3: {e}')
+                    safe_print(f'Failed to handle DAKE3: {e}')
                 del self.pending_dakes[peer]
             return False
         finally:
@@ -4425,7 +4450,7 @@ class SessionManager:
             return session.encrypt_message(plaintext)
         except Exception as e:
             if DEBUG_MODE:
-                print(f'Encryption failed: {e}')
+                safe_print(f'Encryption failed: {e}')
             return None
 
     def decrypt_message(self, peer: str, encrypted_msg: str) -> bytes:
@@ -4498,7 +4523,7 @@ class SessionManager:
                 return session.process_smp_message(smp_tlv)
         except Exception as e:
             if DEBUG_MODE:
-                print(f'SMP message processing failed: {e}')
+                safe_print(f'SMP message processing failed: {e}')
         return None
 
     def get_smp_status(self, peer: str) -> Dict[str, Any]:
@@ -4561,7 +4586,7 @@ class SessionManager:
                 return session.process_auto_smp_response(smp_tlv)
         except Exception as e:
             if DEBUG_MODE:
-                print(f'Auto-SMP processing failed: {e}')
+                safe_print(f'Auto-SMP processing failed: {e}')
         return None
 
     def check_and_start_auto_smp(self, peer: str) -> Optional[str]:
@@ -5442,7 +5467,7 @@ class DebugLogger:
         else:
             safe_print(f'[DEBUG] [{component}] {full_message}')
             if data:
-                print(f'  Data: {data}')
+                safe_print(f'  Data: {data}')
 
 def _fmt_duration(seconds: float) -> str:
     s = int(seconds)
@@ -5483,7 +5508,7 @@ class TwentySevenClubNick:
         if base in cls._LOOKUP:
             real, band = cls._LOOKUP[base]
             return f'{real} ({band}) — 27 Club'
-        return f'{nick} — OTRv4+'
+        return f'{nick} — {VERSION}'
 
     @classmethod
     def is_member(cls, nick: str) -> bool:
@@ -6172,6 +6197,19 @@ class OTRv4IRCClient:
                 reason = trailing or ''
                 if sender == self.nick:
                     self.add_message('system', f'Left {_sanitise(channel, 64)}')
+                    # Remove channel from internal state
+                    self.channels.pop(channel, None)
+                    # Remove the panel tab and switch to system if it was active
+                    if channel in self.panel_manager.panels:
+                        was_active = self.panel_manager.active_panel == channel
+                        del self.panel_manager.panels[channel]
+                        if channel in self.panel_manager.panel_order:
+                            self.panel_manager.panel_order.remove(channel)
+                        if was_active:
+                            self._switch_panel('system')
+                        elif getattr(self, '_tui_enabled', False) and self._screen is not None:
+                            self._screen.redraw_full()
+                        self.panel_manager._render_ui()
                 elif channel in self.channels:
                     self.channels[channel]['users'].discard(sender)
                 return
@@ -6201,6 +6239,17 @@ class OTRv4IRCClient:
                 reason = trailing or ''
                 if kicked == self.nick:
                     self.add_message('system', f'❌ Kicked from {_sanitise(channel, 64)}: {_sanitise(reason, 256)}')
+                    self.channels.pop(channel, None)
+                    if channel in self.panel_manager.panels:
+                        was_active = self.panel_manager.active_panel == channel
+                        del self.panel_manager.panels[channel]
+                        if channel in self.panel_manager.panel_order:
+                            self.panel_manager.panel_order.remove(channel)
+                        if was_active:
+                            self._switch_panel('system')
+                        elif getattr(self, '_tui_enabled', False) and self._screen is not None:
+                            self._screen.redraw_full()
+                        self.panel_manager._render_ui()
                 else:
                     self.add_message(channel, f'⚡ {colorize_username(_sanitise(kicked, 64))} kicked: {_sanitise(reason, 256)}')
                 return
@@ -6340,6 +6389,9 @@ class OTRv4IRCClient:
                 return
             if code == 352:
                 _who_nick = params[5] if len(params) > 5 else ''
+                _who_user = params[2] if len(params) > 2 else ''
+                _who_host = params[3] if len(params) > 3 else ''
+                _who_flags = params[6] if len(params) > 6 else ''
                 _who_real = trailing or ''
                 if _who_real and _who_real.startswith('0 '):
                     _who_real = _who_real[2:]
@@ -6347,6 +6399,38 @@ class OTRv4IRCClient:
                     self._otrv4_users: Dict[str, bool] = {}
                 if _who_nick:
                     self._otrv4_users[_who_nick] = 'OTRv4+' in _who_real
+                # Display if user explicitly ran /who
+                if getattr(self, '_who_pending', False):
+                    _wp2 = self.panel_manager.active_panel or 'system'
+                    _otr_mark = colorize(' 🔒', 'blue') if 'OTRv4+' in _who_real else ''
+                    self.add_message(_wp2,
+                        f'  {colorize(_who_nick or "?", "cyan"):<20}'
+                        f'{_sanitise(_who_user + "@" + _who_host, 60):<40}'
+                        f'{_who_flags:<4}'
+                        f'{_sanitise(_who_real, 40)}{_otr_mark}')
+                return
+            if code == 303:
+                _online = trailing or ''
+                _wp5 = self.panel_manager.active_panel or 'system'
+                if _online.strip():
+                    self.add_message(_wp5, colorize(f'ISON online: {_sanitise(_online, 256)}', 'green'))
+                else:
+                    self.add_message(_wp5, colorize('ISON: none of those nicks are online', 'dim'))
+                return
+            if code == 314:
+                _ww_nick = params[1] if len(params) > 1 else '?'
+                _ww_user = params[2] if len(params) > 2 else ''
+                _ww_host = params[3] if len(params) > 3 else ''
+                _ww_real = trailing or ''
+                _wp4 = self.panel_manager.active_panel or 'system'
+                self.add_message(_wp4, colorize('── WHOWAS ───────────────────────────────────', 'dim'))
+                self.add_message(_wp4, f'  Nick: {colorize_username(_ww_nick)}  {_sanitise(_ww_user + "@" + _ww_host, 80)}  {_sanitise(_ww_real, 60)}')
+                return
+            if code == 315:
+                if getattr(self, '_who_pending', False):
+                    _wp3 = self.panel_manager.active_panel or 'system'
+                    self.add_message(_wp3, colorize('────────────────────────────────────────────────────────', 'dim'))
+                    self._who_pending = False
                 return
             if code == 332:
                 channel = params[1] if len(params) > 1 else ''
@@ -6423,25 +6507,28 @@ class OTRv4IRCClient:
                 display_real = TwentySevenClubNick.real_name(target)
                 if display_real == target:
                     display_real = real
-                self.add_message('system', colorize('── WHOIS ─────────────────────────────────', 'dim'))
-                self.add_message('system', f'  Nick     : {colorize_username(target)}')
-                self.add_message('system', f'  User     : {_sanitise(user, 64)}@{_sanitise(host, 128)}')
-                self.add_message('system', f'  Name     : {_sanitise(display_real, 128)}')
+                _wp = self.panel_manager.active_panel or 'system'
+                self._whois_panel = _wp
+                self.add_message(_wp, colorize('── WHOIS ─────────────────────────────────', 'dim'))
+                self.add_message(_wp, f'  Nick     : {colorize_username(target)}')
+                self.add_message(_wp, f'  Client   : {colorize(VERSION, "cyan")}')
+                self.add_message(_wp, f'  User     : {_sanitise(user, 64)}@{_sanitise(host, 128)}')
+                self.add_message(_wp, f'  Name     : {_sanitise(display_real, 128)}')
                 return
             if code == 312:
                 target = params[1] if len(params) > 1 else ''
                 server = params[2] if len(params) > 2 else ''
                 info = trailing or ''
-                self.add_message('system', f'  Server   : {_sanitise(server, 128)}' + (f' ({_sanitise(info, 256)})' if info else ''))
+                self.add_message(getattr(self,'_whois_panel','system'), f'  Server   : {_sanitise(server, 128)}' + (f' ({_sanitise(info, 256)})' if info else ''))
                 return
             if code == 313:
                 target = params[1] if len(params) > 1 else ''
-                self.add_message('system', f'  Status   : {colorize('IRC Operator', 'yellow')}')
+                self.add_message(getattr(self,'_whois_panel','system'), f'  Status   : {colorize('IRC Operator', 'yellow')}')
                 return
             if code == 319:
                 target = params[1] if len(params) > 1 else ''
                 chans = trailing or ''
-                self.add_message('system', f'  Channels : {_sanitise(chans, 512)}')
+                self.add_message(getattr(self,'_whois_panel','system'), f'  Channels : {_sanitise(chans, 512)}')
                 return
             if code == 317:
                 target = params[1] if len(params) > 1 else ''
@@ -6449,29 +6536,29 @@ class OTRv4IRCClient:
                 signon = int(params[3]) if len(params) > 3 and params[3].isdigit() else 0
                 idle_str = _fmt_duration(idle_s)
                 if signon > 0:
-                    from datetime import datetime as _dt
-                    signon_str = _dt.fromtimestamp(signon).strftime('%Y-%m-%d %H:%M:%S')
-                    self.add_message('system', f'  Idle     : {idle_str}')
-                    self.add_message('system', f'  Signon   : {signon_str}')
+                    import datetime as _dtmod
+                    signon_str = _dtmod.datetime.fromtimestamp(signon).strftime('%Y-%m-%d %H:%M:%S')
+                    self.add_message(getattr(self,'_whois_panel','system'), f'  Idle     : {idle_str}')
+                    self.add_message(getattr(self,'_whois_panel','system'), f'  Signon   : {signon_str}')
                 else:
                     self.add_message('system', f'  Idle     : {idle_str}')
                 return
             if code == 301:
                 target = params[1] if len(params) > 1 else ''
                 away = trailing or ''
-                self.add_message('system', f'  Away     : {colorize(_sanitise(away, 256), 'yellow')}')
+                self.add_message(getattr(self,'_whois_panel','system'), f'  Away     : {colorize(_sanitise(away, 256), 'yellow')}')
                 return
             if code == 671:
                 target = params[1] if len(params) > 1 else ''
-                self.add_message('system', f'  Secure   : {colorize('Yes (TLS)', 'green')}')
+                self.add_message(getattr(self,'_whois_panel','system'), f'  Secure   : {colorize('Yes (TLS)', 'green')}')
                 return
             if code == 330:
                 target = params[1] if len(params) > 1 else ''
                 account = params[2] if len(params) > 2 else ''
-                self.add_message('system', f'  Account  : {_sanitise(account, 64)}')
+                self.add_message(getattr(self,'_whois_panel','system'), f'  Account  : {_sanitise(account, 64)}')
                 return
             if code == 318:
-                self.add_message('system', colorize('──────────────────────────────────────────', 'dim'))
+                self.add_message(getattr(self,'_whois_panel','system'), colorize('──────────────────────────────────────────', 'dim'))
                 return
             if code == 321:
                 self.channel_list = []
@@ -6609,6 +6696,12 @@ class OTRv4IRCClient:
         if any((message.startswith(m) for m in _OTR_PROTO_MARKERS)):
             self._dispatch_otr_fragment(sender, message)
             return
+        # Handle CTCP ACTION (/me)
+        if message.startswith('\x01ACTION ') and message.endswith('\x01'):
+            _action_text = _sanitise(message[8:-1], 490)
+            panel = target if target.startswith('#') else sender
+            self.add_message(panel, colorize(f'* {sender} {_action_text}', 'cyan'))
+            return
         panel = target if target.startswith('#') else sender
         _safe_msg = _sanitise(message, 512)
         self.add_message(panel, colorize_username(sender) + colorize(':', 'dim') + f' {colorize(_safe_msg, 'white')}')
@@ -6715,6 +6808,9 @@ class OTRv4IRCClient:
         self._emit(target, message)
         if security_level is not None:
             self.panel_manager.update_panel_security(target, security_level)
+    # Block incoming CTCP requests that leak info or enable attacks.
+    # DCC: IP exposure. VERSION/FINGER/USERINFO: fingerprinting.
+    # PING/TIME: timing/timezone attacks. ACTION is exempted — it's display content.
     _CTCP_BLOCKED = frozenset({'VERSION', 'FINGER', 'USERINFO', 'CLIENTINFO', 'DCC', 'PING', 'TIME', 'SOURCE'})
 
     def is_ctcp_message(self, message: str) -> bool:
@@ -6722,8 +6818,9 @@ class OTRv4IRCClient:
             return False
         if message.startswith('\x01') and message.endswith('\x01'):
             cmd = message[1:-1].split()[0].upper() if message[1:-1].split() else ''
-            if cmd in self._CTCP_BLOCKED:
-                return True
+            # ACTION is display content (/me), not a request — let it through
+            if cmd == 'ACTION':
+                return False
             return True
         return False
 
@@ -6767,17 +6864,33 @@ class OTRv4IRCClient:
         dashes = max(0, width - len(hdr_name))
         left = dashes // 2
         right = dashes - left
-        _emit_line(colorize('─' * left + hdr_name + '─' * right, 'cyan'))
+        # Write the entire history replay atomically under _print_lock so:
+        # 1. The recv thread cannot interleave mid-replay
+        # 2. The prompt is reprinted exactly once at the end, not after
+        #    every line (which caused the prompt to appear mid-screen on
+        #    slow terminals and when switching between busy channels)
+        lines_out = [colorize('─' * left + hdr_name + '─' * right, 'cyan')]
         history = panel.history
         if not history:
-            _emit_line(colorize('  (no messages yet)', 'dim'))
+            lines_out.append(colorize('  (no messages yet)', 'dim'))
         else:
             for entry in history:
                 ts = colorize(time.strftime('%H:%M:%S', time.localtime(entry['timestamp'])), 'dim')
-                _emit_line(f'{ts} {tag} {entry['message']}')
-        _emit_line(colorize('─' * left + ' live ' + '─' * max(0, right - 1), 'dim'))
-        if self._prompt_refresh_cb is not None:
-            self._prompt_refresh_cb()
+                lines_out.append(f'{ts} {tag} {entry["message"]}')
+        lines_out.append(colorize('─' * left + ' live ' + '─' * max(0, right - 1), 'dim'))
+        with _print_lock:
+            try:
+                buf = ''.join(_input_buffer)
+                if _current_prompt or buf:
+                    sys.stdout.write('\x1b[1G\x1b[2K')
+                for ln in lines_out:
+                    wrapped = _word_wrap(ln, shutil.get_terminal_size(fallback=(80,24)).columns)
+                    sys.stdout.write(wrapped + '\n')
+                if _current_prompt or buf:
+                    sys.stdout.write(_current_prompt + buf)
+                sys.stdout.flush()
+            except (RuntimeError, ValueError, OSError):
+                pass
         return True
 
     def get_timestamp(self) -> str:
@@ -6888,8 +7001,15 @@ class OTRv4IRCClient:
                 if self._prompt_refresh_cb is not None:
                     self._prompt_refresh_cb()
         elif cmd == 'join' and len(parts) > 1:
-            ch = parts[1] if parts[1].startswith('#') else f'#{parts[1]}'
-            self.send(f'JOIN {ch}')
+            # Support: /join ch1, ch2, ch3  or  /join ch1 ch2 ch3
+            _raw = ' '.join(parts[1:]).replace(',', ' ')
+            for _ch in _raw.split():
+                _ch = _ch.strip()
+                if not _ch:
+                    continue
+                if not _ch.startswith('#'):
+                    _ch = '#' + _ch
+                self.send(f'JOIN {_ch}')
         elif cmd == 'part':
             ch = parts[1] if len(parts) > 1 else self.panel_manager.active_panel or ''
             if ch:
@@ -6974,6 +7094,121 @@ class OTRv4IRCClient:
             self.add_message('system', colorize('No longer away', 'green'))
         elif cmd == 'raw' and len(parts) > 1:
             self.send(' '.join(parts[1:]))
+        elif cmd == 'who':
+            target = parts[1] if len(parts) > 1 else (self.panel_manager.active_panel or '')
+            if target and not target.startswith('#'):
+                target = '#' + target
+            if target:
+                self.send(f'WHO {target}')
+            else:
+                self.send('WHO')
+            self._who_pending = True
+            _who_header = self.panel_manager.active_panel or 'system'
+            self.add_message(_who_header, colorize('── WHO ──────────────────────────────────────────────────', 'dim'))
+        elif cmd == 'whowas' and len(parts) > 1:
+            _ww = _sanitise(parts[1], 64).split()[0]
+            if _ww:
+                self.send(f'WHOWAS {_ww}')
+        elif cmd == 'ison' and len(parts) > 1:
+            nicks = ' '.join(_sanitise(p, 64) for p in parts[1:])
+            self.send(f'ISON {nicks}')
+        elif cmd == 'userhost' and len(parts) > 1:
+            nicks = ' '.join(_sanitise(p, 64) for p in parts[1:6])
+            self.send(f'USERHOST {nicks}')
+        elif cmd == 'motd':
+            self.send('MOTD')
+        elif cmd == 'time':
+            self.send('TIME')
+        elif cmd == 'me' and len(parts) > 1:
+            _me_text = _sanitise(' '.join(parts[1:]), 490)
+            _me_target = self.panel_manager.active_panel or ''
+            if _me_target and _me_target not in ('system', 'debug'):
+                self.send(f'PRIVMSG {_me_target} :\x01ACTION {_me_text}\x01')
+                self.add_message(_me_target, colorize(f'* {self.nick} {_me_text}', 'cyan'))
+        elif cmd == 'ctcp' and len(parts) > 2:
+            _ctcp_target = _sanitise(parts[1], 64).split()[0]
+            _ctcp_cmd = _sanitise(parts[2], 32).upper()
+            _ctcp_args = (' ' + _sanitise(' '.join(parts[3:]), 400)) if len(parts) > 3 else ''
+            if _ctcp_target:
+                self.send(f'PRIVMSG {_ctcp_target} :\x01{_ctcp_cmd}{_ctcp_args}\x01')
+        elif cmd == 'cycle':
+            _cyc = parts[1] if len(parts) > 1 else self.panel_manager.active_panel or ''
+            if _cyc and not _cyc.startswith('#'):
+                _cyc = '#' + _cyc
+            if _cyc:
+                self.send(f'PART {_cyc} :cycling')
+                import time as _t; _t.sleep(0.5)
+                self.send(f'JOIN {_cyc}')
+        elif cmd == 'op' and len(parts) > 1:
+            _op_ch = self.panel_manager.active_panel or ''
+            _op_nicks = ' '.join(parts[1:])
+            if _op_ch.startswith('#'):
+                _flags = '+' + 'o' * len(parts[1:])
+                self.send(f'MODE {_op_ch} {_flags} {_op_nicks}')
+        elif cmd == 'deop' and len(parts) > 1:
+            _op_ch = self.panel_manager.active_panel or ''
+            _op_nicks = ' '.join(parts[1:])
+            if _op_ch.startswith('#'):
+                _flags = '-' + 'o' * len(parts[1:])
+                self.send(f'MODE {_op_ch} {_flags} {_op_nicks}')
+        elif cmd == 'voice' and len(parts) > 1:
+            _v_ch = self.panel_manager.active_panel or ''
+            _v_nicks = ' '.join(parts[1:])
+            if _v_ch.startswith('#'):
+                _flags = '+' + 'v' * len(parts[1:])
+                self.send(f'MODE {_v_ch} {_flags} {_v_nicks}')
+        elif cmd == 'devoice' and len(parts) > 1:
+            _v_ch = self.panel_manager.active_panel or ''
+            _v_nicks = ' '.join(parts[1:])
+            if _v_ch.startswith('#'):
+                _flags = '-' + 'v' * len(parts[1:])
+                self.send(f'MODE {_v_ch} {_flags} {_v_nicks}')
+        elif cmd == 'ban' and len(parts) > 1:
+            _ban_ch = self.panel_manager.active_panel or ''
+            _ban_mask = _sanitise(parts[1], 128)
+            if _ban_ch.startswith('#'):
+                self.send(f'MODE {_ban_ch} +b {_ban_mask}')
+        elif cmd == 'unban' and len(parts) > 1:
+            _ban_ch = self.panel_manager.active_panel or ''
+            _ban_mask = _sanitise(parts[1], 128)
+            if _ban_ch.startswith('#'):
+                self.send(f'MODE {_ban_ch} -b {_ban_mask}')
+        elif cmd == 'kickban' and len(parts) > 1:
+            _kb_ch = self.panel_manager.active_panel or ''
+            _kb_nick = _sanitise(parts[1], 64).split()[0]
+            _kb_reason = _sanitise(' '.join(parts[2:]), 200) if len(parts) > 2 else 'banned'
+            if _kb_ch.startswith('#') and _kb_nick:
+                self.send(f'MODE {_kb_ch} +b {_kb_nick}!*@*')
+                self.send(f'KICK {_kb_ch} {_kb_nick} :{_kb_reason}')
+        elif cmd == 'accept' and len(parts) > 1:
+            # IRCv3 +g caller-ID: /accept nick or /accept -nick to remove
+            _acc = _sanitise(parts[1], 64)
+            self.send(f'ACCEPT {_acc}')
+        elif cmd == 'monitor' and len(parts) > 1:
+            # IRCv3 MONITOR: /monitor + nick  /monitor - nick  /monitor l (list)
+            _mon_op = parts[1]
+            if _mon_op == 'l':
+                self.send('MONITOR L')
+            elif len(parts) > 2:
+                _mon_nicks = ','.join(_sanitise(p, 64) for p in parts[2:])
+                self.send(f'MONITOR {_mon_op.upper()} {_mon_nicks}')
+        elif cmd == 'setname' and len(parts) > 1:
+            # IRCv3 SETNAME — change displayed realname
+            _sn = _sanitise(' '.join(parts[1:]), 128)
+            self.send(f'SETNAME :{_sn}')
+        elif cmd == 'server' and len(parts) > 1:
+            _srv = _sanitise(parts[1], 256).split()[0]
+            _port_str = parts[2] if len(parts) > 2 else ''
+            try:
+                _p = int(_port_str) if _port_str else self.config.port
+            except ValueError:
+                _p = self.config.port
+            if _srv:
+                self.config.server = _srv
+                self.config.port = _p
+                self.server = _srv
+                self.add_message('system', colorize(f'Switching to {_srv}:{_p}…', 'cyan'))
+                self._request_reconnect()
         elif cmd in ('switch', 'tab') and len(parts) > 1:
             _sw_name = parts[1]
             if not self._switch_panel(_sw_name):
@@ -7211,7 +7446,10 @@ class OTRv4IRCClient:
                 '  /tab-prev            Previous tab',
                 '  /tab-close <panel>   Close tab',
                 '  /clear               Clear panel history',
-                '  /tui                 Toggle TUI mode (pinned chrome)',
+                '  /tui                 Toggle TUI mode (pinned tab bar + input at bottom)',
+                '  /tui on|off          Explicitly enable or disable',
+                '  /names [#channel]    List channel users — pager, q to quit',
+                '  /list                List all channels — pager, q to quit',
                 '  /ignore <nick>       Ignore user',
                 '  /unignore <nick>     Unignore',
                 '  /status              Connection status',
@@ -8280,7 +8518,10 @@ def main():
             smp_inset = colorize(f' {bar} ', 'yellow')
         nick = getattr(client, 'nick', '')
         bracket = f'{type_sym}{icon}{active.name}'
-        prompt = colorize(nick, 'cyan') + colorize(' | ', 'dim') + colorize(f'[{bracket}]', 'green') + smp_inset + ' '
+        prompt = (colorize(nick, 'cyan')
+                  + colorize(' | ', 'dim')
+                  + colorize(f'[{bracket}]', 'green')
+                  + smp_inset + ' ')
         _set_prompt(prompt)
     client._prompt_refresh_cb = _print_prompt
     try:
