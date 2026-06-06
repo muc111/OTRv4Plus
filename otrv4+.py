@@ -1345,7 +1345,7 @@ class OTRv4DataMessage :
         except (ValueError ,struct .error ,TypeError )as e :
             raise ValueError (f"Failed to decode message: {e }")
 
-VERSION ="OTRv4+ 10.8.2"
+VERSION ="OTRv4+ 10.8.3"
 
 if not hasattr (hashlib ,'sha3_512'):
     raise RuntimeError (
@@ -1501,7 +1501,7 @@ def _read_one_char ()->Optional [str ]:
 
 def _consume_escape_seq ()->None :
     """Read ANSI escape sequence; handle arrow/home/end keys."""
-    global _input_pos 
+    global _input_pos ,_scroll_locked ,_scroll_pos 
     try :
         r ,_ ,_ =select .select ([_stdin_fd ],[],[],0.05 )
         if not r :
@@ -1543,6 +1543,16 @@ def _consume_escape_seq ()->None :
                         sys .stdout .write (f'\x1b[{n -_input_pos }C')
                         _input_pos =n 
                         sys .stdout .flush ()
+                elif seq ==b'5~':  # PgUp
+                    _page =max (1 ,shutil .get_terminal_size (fallback =(80 ,20 )).lines -3 )
+                    if not _scroll_locked :_scroll_locked =True 
+                    _scroll_pos =min (_scroll_pos +_page ,len (_scroll_history ))
+                    _show_scrollback (_scroll_pos ,_page )
+                elif seq ==b'6~':  # PgDn
+                    _page =max (1 ,shutil .get_terminal_size (fallback =(80 ,20 )).lines -3 )
+                    _scroll_pos =max (0 ,_scroll_pos -_page )
+                    if _scroll_pos ==0 :_scroll_locked =False ;_scroll_unlock ()
+                    else :_show_scrollback (_scroll_pos ,_page )
     except Exception :
         pass 
 
@@ -1550,7 +1560,7 @@ _EOF_SENTINEL =object ()
 
 def _handle_input_char (ch :str ):
     """Process one keystroke, updating _input_buffer and echoing to stdout."""
-    global _input_pos 
+    global _input_pos ,_scroll_locked ,_scroll_pos 
 
     if ch =='\r'or ch =='\n':
         with _print_lock :
@@ -1603,6 +1613,16 @@ def _handle_input_char (ch :str ):
                 _input_pos -=1 
                 after =''.join (_input_buffer [_input_pos :])
                 sys .stdout .write (f'\x1b[D{after } \x1b[{len (after )+1 }D')
+                sys .stdout .flush ()
+        return None 
+    if ch =='\x13':  # Ctrl+S — scroll lock
+        if _scroll_locked :
+            _scroll_pos =0 ;_scroll_unlock ()
+        else :
+            _scroll_locked =True 
+            with _print_lock :
+                sys .stdout .write ('\r\033[2K')
+                sys .stdout .write ('\x1b[33m[SCROLL LOCKED — PgUp/PgDn scroll, Ctrl+S to resume]\x1b[0m\n')
                 sys .stdout .flush ()
         return None 
 
@@ -1726,6 +1746,8 @@ def _word_wrap (text :str ,width :int )->str :
 
 _scroll_locked =False 
 _scroll_buffer :deque =deque (maxlen =500 )
+_scroll_pos :int =0 
+_scroll_history :list =[]
 
 def _emit_line (text :str )->None :
     """Print a message line from any thread, preserving user input.
@@ -1754,21 +1776,35 @@ def _emit_line (text :str )->None :
     try :
         with _print_lock :
             buf =''.join (_input_buffer )
-            try :
-                _cols =max (1 ,shutil .get_terminal_size (fallback =(80 ,24 )).columns )
-            except Exception :
-                _cols =max (1 ,TERMINAL_WIDTH )
-            _pvis =len (_ANSI_RE .sub ('',_current_prompt +buf ))
-            _extra_rows =max (0 ,(_pvis -1 )//_cols )
-            if _extra_rows >0 :
-                sys .stdout .write (f'\x1b[{_extra_rows }A')
-            sys .stdout .write ('\x1b[1G\x1b[2K')
+            sys .stdout .write ('\r\x1b[2K')
             sys .stdout .write (wrapped +'\n')
+            _scroll_history .append (wrapped )
+            if len (_scroll_history )>500 :_scroll_history .pop (0 )
             if _current_prompt or buf :
                 sys .stdout .write (_current_prompt +buf )
             sys .stdout .flush ()
     except (RuntimeError ,ValueError ,OSError ):
         pass 
+
+def _show_scrollback (pos :int ,page :int )->None :
+    with _print_lock :
+        try :
+            rows =shutil .get_terminal_size (fallback =(80 ,24 )).lines 
+            body_h =max (1 ,rows -3 )
+            total =len (_scroll_history )
+            end =min (total ,max (0 ,total -pos +page ))
+            start =max (0 ,end -body_h )
+            shown =_scroll_history [start :end ]
+            sys .stdout .write ('\033[2J\033[H')
+            for ln in shown :
+                sys .stdout .write (ln +'\n')
+            _pct =int (100 *end /max (1 ,total ))
+            sys .stdout .write (colorize (
+            f"── SCROLL [{_pct }%] PgUp=back PgDn=fwd Ctrl+S=live ──","yellow")+'\n')
+            sys .stdout .write (_current_prompt +''.join (_input_buffer ))
+            sys .stdout .flush ()
+        except Exception :
+            pass 
 
 def _scroll_unlock ()->None :
     """Flush all buffered messages and resume live display."""
@@ -8752,6 +8788,8 @@ class OTRv4IRCClient :
         self .whois_data :Dict [str ,dict ]={}
         self .names_data :Dict [str ,List [str ]]={}
         self ._pending_names_pager :Optional [str ]=None 
+        self ._who_count :int =0       # rows printed by current /who
+        self ._names_limit :int =500   # max nicks collected per /names
         self .auto_reply_config :Dict [str ,dict ]={}
 
         self .otr_fragmenter =OTRMessageFragmenter ()
@@ -9923,6 +9961,7 @@ class OTRv4IRCClient :
                 return 
 
             if code ==352 :
+                _WHO_DISPLAY_MAX =200 
                 _who_nick =params [5 ]if len (params )>5 else ""
                 _who_user =params [2 ]if len (params )>2 else ""
                 _who_host =params [3 ]if len (params )>3 else ""
@@ -9931,9 +9970,18 @@ class OTRv4IRCClient :
                 if not hasattr (self ,'_otrv4_users'):self ._otrv4_users :Dict [str ,bool ]={}
                 if _who_nick :self ._otrv4_users [_who_nick ]=("OTRv4+"in _who_real )
                 if getattr (self ,"_who_pending",False ):
-                    _wp2 =self .panel_manager .active_panel or "system"
-                    _m =colorize (" 🔒","blue")if "OTRv4+"in _who_real else ""
-                    self .add_message (_wp2 ,f"  {colorize (_who_nick or '?','cyan'):<20}{_sanitise (_who_user +'@'+_who_host ,50 ):<40}{_sanitise (_who_real ,40 )}{_m }")
+                    _wc =getattr (self ,"_who_count",0 )
+                    if _wc ==0 :
+                        self ._who_count =0 
+                    if _wc <_WHO_DISPLAY_MAX :
+                        _wp2 =self .panel_manager .active_panel or "system"
+                        _m =colorize (" 🔒","blue")if "OTRv4+"in _who_real else ""
+                        self .add_message (_wp2 ,f"  {colorize (_who_nick or '?','cyan'):<20}{_sanitise (_who_user +'@'+_who_host ,50 ):<40}{_sanitise (_who_real ,40 )}{_m }")
+                        self ._who_count +=1 
+                    elif _wc ==_WHO_DISPLAY_MAX :
+                        _wp2 =self .panel_manager .active_panel or "system"
+                        self .add_message (_wp2 ,colorize (f"  … output capped at {_WHO_DISPLAY_MAX } rows — use /who in a smaller channel","yellow"))
+                        self ._who_count +=1 
                 return 
 
             if code ==303 :
@@ -9958,6 +10006,7 @@ class OTRv4IRCClient :
                     _wp3 =self .panel_manager .active_panel or "system"
                     self .add_message (_wp3 ,colorize ("─"*56 ,"dim"))
                     self ._who_pending =False 
+                    self ._who_count =0 
                 return 
             if code ==332 :
                 channel =params [1 ]if len (params )>1 else ""
@@ -9972,7 +10021,10 @@ class OTRv4IRCClient :
                 users =trailing .split ()if trailing else []
                 if channel not in self .names_data :
                     self .names_data [channel ]=[]
-                self .names_data [channel ].extend (users )
+                _nlim =getattr (self ,"_names_limit",500 )
+                _cur =len (self .names_data [channel ])
+                if _cur <_nlim :
+                    self .names_data [channel ].extend (users [:_nlim -_cur ])
                 if channel in self .channels :
                     for u in users :
                         self .channels [channel ]["users"].add (u .lstrip ("@+&~"))
@@ -10023,6 +10075,11 @@ class OTRv4IRCClient :
                     _grp ("Operators",ops ,"bold_green")
                     _grp ("Voiced",voiced ,"yellow")
                     _grp ("Users",regular ,"white")
+                    _nlim =getattr (self ,"_names_limit",500 )
+                    _was_capped =total >_nlim 
+                    if _was_capped :
+                        _plines .insert (0 ,colorize (
+                        f"  ⚠ Large channel — showing first {_nlim } of {total } nicks (q to quit)","yellow"))
                     self .names_data [channel ]=[]
                     self .pager .display (_plines ,f"Users in {_sanitise (channel ,64 )} ({total })")
                 return 
@@ -10841,7 +10898,8 @@ class OTRv4IRCClient :
             if _t :self .send (f"WHO {_t }")
             else :self .send ("WHO")
             self ._who_pending =True 
-            self .add_message (self .panel_manager .active_panel or "system",colorize ("── WHO ──────────────────────────────────────────────────","dim"))
+            self ._who_count =0 
+            self .add_message (self .panel_manager .active_panel or "system",colorize ("── WHO (max 200 rows) ────────────────────────────────────","dim"))
         elif cmd =="whowas"and len (parts )>1 :
             _w =_sanitise (parts [1 ],64 ).split ()[0 ]
             if _w :self .send (f"WHOWAS {_w }")
@@ -12690,23 +12748,6 @@ def main ():
         +colorize (" | ","dim")
         +colorize (f"[{bracket }]","green")
         +smp_inset +" ")
-        # In scrollback mode print a tab bar line above the prompt so
-        # the user always sees all open tabs and the separator line.
-        if not getattr (client ,'_tui_enabled',False ):
-            try :
-                _pm =client .panel_manager 
-                _bar =TabBar (TERMINAL_WIDTH if TERMINAL_WIDTH >0 else 80 )
-                _tab_lines =_bar .render (_pm .panels ,_pm .active_panel )
-                _tab_str =_tab_lines [0 ] if _tab_lines else ""
-                _sep =colorize ("-"*(TERMINAL_WIDTH if TERMINAL_WIDTH >0 else 80 ),"dim")
-                with _print_lock :
-                    buf ="".join (_input_buffer )
-                    if _current_prompt or buf :
-                        sys .stdout .write ("\x1b[1G\x1b[2K")
-                    sys .stdout .write (_sep +"\n"+_tab_str +"\n")
-                    sys .stdout .flush ()
-            except Exception :
-                pass 
         _set_prompt (prompt )
 
     client ._prompt_refresh_cb =_print_prompt 
