@@ -6,7 +6,7 @@
 <p align="center"><strong>Post-quantum secure messaging over IRC. Research prototype.</strong></p>
 
 <p align="center">
-<code>v10.8.0 · Rust crypto core · constant-time SMP · no C extensions · TUI</code>
+<code>v10.8.4 · Rust crypto core · constant-time SMP · TUI</code>
 </p>
 
 ---
@@ -17,7 +17,7 @@
   <img src="example.png" width="680" alt="OTRv4+ TUI — encrypted session with SMP verified">
 </p>
 
-<p align="center"><em>Full OTRv4 DAKE + SMP verification on Libera.chat. Blue 🔵 = identity confirmed.<br>Tab bar at the bottom — switch channels instantly with <code>/switch</code> or <code>/tab-next</code>.<br>Type <code>/tui</code> to toggle the pinned chrome on or off.</em></p>
+<p align="center"><em>Full OTRv4 DAKE + SMP verification on Libera.chat over TLS — complete in under 3 minutes. Blue 🔵 = identity confirmed by shared secret (SMP zero-knowledge proof).<br>Ctrl+P or Ctrl+S to pause incoming messages and scroll back. Type <code>/tui</code> to toggle pinned chrome.</em></p>
 
 ---
 
@@ -37,7 +37,14 @@ For someone who wants to try it in about ten minutes on Termux (Android, aarch64
 pkg install python rust openssl clang git
 ```
 
-You also need I2P running on the device with the SAM bridge enabled on port 7656. The I2P Android app from F-Droid or Google Play handles this; enable "Use SAM bridge" in its settings.
+For **clearnet/TLS** (fastest, no extra setup):
+```bash
+python otrv4+.py -s irc.libera.chat
+```
+
+For **I2P** (strongest anonymity): you need I2P running with the SAM bridge enabled on port 7656. The I2P Android app from F-Droid or Google Play handles this; enable "Use SAM bridge" in its settings.
+
+For **Tor**: Orbot must be running with SOCKS5 on port 9050.
 
 ### 2. Clone and build
 
@@ -80,9 +87,54 @@ If another user is in `#otr` (their nick is `SomeNick`), type:
 /otr SomeNick
 ```
 
-This starts the OTRv4 DAKE handshake. After about three minutes of fragmenting messages across I2P, fingerprints display. Type `y` to trust. Either side then types a shared SMP secret (anything you have agreed out of band) and runs `/smp start`. SMP completes in another minute or two and you see `✅ SMP VERIFIED` in blue.
+This starts the OTRv4 DAKE handshake. Fingerprints display once the DAKE handshake completes. Type `y` to trust. Either side then types a shared SMP secret (agreed out of band) and runs `/smp start`.
+
+Typical completion times:
+- **TLS clearnet** (e.g. Libera.chat): DAKE + SMP verified in **under 3 minutes**
+- **I2P SAM**: 5–10 minutes depending on tunnel build time
+- **Tor**: 3–6 minutes
+
+You see `✅ SMP VERIFIED` in blue when done.
 
 From that point, messages typed in the peer tab are end-to-end encrypted with post-quantum hybrid security.
+
+## TUI mode
+
+OTRv4+ includes a built-in terminal UI that pins a tab bar and input line at the bottom of the screen, keeping your chat history visible above it — useful on mobile where screen space is limited.
+
+```
+22:11:29 🔵CobaltBear: works
+22:11:30 🔵WildTallow: nice
+22:13:57 🔵WildTallow: ok
+─────────────────────────────────────────────────────────
+WildTallow | [🔵CobaltBear]
+[system🔴(1)] | [debug🔴(6929)] | [#otr🔴(1)] | [CobaltBear🔵]
+```
+
+**Toggle it on or off:**
+
+```
+/tui
+```
+
+Or explicitly:
+
+```
+/tui on
+/tui off
+```
+
+TUI is off by default — the client works as a standard scrollback IRC client without it. Enable it when you want the pinned chrome, especially on Termux where the terminal doesn't scroll cleanly.
+
+**Tab switching** (works with or without TUI):
+
+```
+/switch CobaltBear     # jump to a peer tab by name
+/tab-next              # cycle right
+/tab-prev              # cycle left
+```
+
+Tabs show security level icons — 🔴 plaintext, 🟡 encrypted, 🟢 trusted fingerprint, 🔵 SMP verified. Unread message counts appear in brackets: `[#otr🔴(3)]`.
 
 ## What success looks like
 
@@ -192,7 +244,7 @@ Run `cargo test --release --no-default-features --features pq-rust` before any r
 
 5. **Ephemeral identity by design.** Identity keys regenerate at every launch. Fingerprints change on every restart. This is a deliberate threat-model choice for an I2P-based privacy IRC client, not a missing feature. Tor Browser, Cwtch (default), and Briar (before user opt-in) all keep identities short-lived for similar reasons. See ROADMAP Phase 5.3g.
 
-6. **Wire-incompatible with stock OTRv4.** Implementations such as `pidgin-otr4` and CoyIM cannot talk to OTRv4+. The ML-DSA-87 extension, the ML-KEM-1024 brace key, and the SHAKE-256 transcript hashing are OTRv4+ additions and there is no negotiation path.
+6. **Wire-incompatible with stock OTRv4.** Implementations such as `pidgin-otr4` and CoyIM cannot talk to OTRv4+. The ML-DSA-87 extension, the ML-KEM-1024 brace key, and the SHAKE-256 transcript hashing are OTRv4+ additions and there is no negotiation path. Both peers must run OTRv4+.
 
 7. **Termux/aarch64 specific build flags.** Both `pqcrypto-mlkem` and `pqcrypto-mldsa` are pinned to `default-features = false, features = ["std"]` because their NEON-optimised C paths trigger `SIGILL` on some aarch64 phones. The portable C reference is correct on any platform; the speed difference is invisible at session scale.
 

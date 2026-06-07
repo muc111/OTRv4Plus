@@ -1345,7 +1345,7 @@ class OTRv4DataMessage :
         except (ValueError ,struct .error ,TypeError )as e :
             raise ValueError (f"Failed to decode message: {e }")
 
-VERSION ="OTRv4+ 10.8.3"
+VERSION ="OTRv4+ 10.8.4"
 
 if not hasattr (hashlib ,'sha3_512'):
     raise RuntimeError (
@@ -1615,14 +1615,14 @@ def _handle_input_char (ch :str ):
                 sys .stdout .write (f'\x1b[D{after } \x1b[{len (after )+1 }D')
                 sys .stdout .flush ()
         return None 
-    if ch =='\x13':  # Ctrl+S — scroll lock
+    if ch in ('\x13','\x10'):  # Ctrl+S or Ctrl+P — scroll lock toggle
         if _scroll_locked :
             _scroll_pos =0 ;_scroll_unlock ()
         else :
             _scroll_locked =True 
             with _print_lock :
                 sys .stdout .write ('\r\033[2K')
-                sys .stdout .write ('\x1b[33m[SCROLL LOCKED — PgUp/PgDn scroll, Ctrl+S to resume]\x1b[0m\n')
+                sys .stdout .write ('\x1b[33m[PAUSED — PgUp/PgDn to scroll, Ctrl+P or Ctrl+S to resume]\x1b[0m\n')
                 sys .stdout .flush ()
         return None 
 
@@ -1800,7 +1800,7 @@ def _show_scrollback (pos :int ,page :int )->None :
                 sys .stdout .write (ln +'\n')
             _pct =int (100 *end /max (1 ,total ))
             sys .stdout .write (colorize (
-            f"── SCROLL [{_pct }%] PgUp=back PgDn=fwd Ctrl+S=live ──","yellow")+'\n')
+            f"── SCROLL [{_pct }%] PgUp=back PgDn=fwd Ctrl+P/S=live ──","yellow")+'\n')
             sys .stdout .write (_current_prompt +''.join (_input_buffer ))
             sys .stdout .flush ()
         except Exception :
@@ -10021,6 +10021,8 @@ class OTRv4IRCClient :
                 users =trailing .split ()if trailing else []
                 if channel not in self .names_data :
                     self .names_data [channel ]=[]
+                if not hasattr (self ,"_names_total"):self ._names_total ={}
+                self ._names_total [channel ]=self ._names_total .get (channel ,0 )+len (users )
                 _nlim =getattr (self ,"_names_limit",500 )
                 _cur =len (self .names_data [channel ])
                 if _cur <_nlim :
@@ -10055,7 +10057,8 @@ class OTRv4IRCClient :
                     regular .sort (key =lambda x :x [1 ].lower ())
 
                     
-                    total =len (raw_users )
+                    _real_total =getattr (self ,"_names_total",{}).pop (channel ,len (raw_users ))
+                    total =_real_total 
                     _otrv4_map =getattr (self ,'_otrv4_users',{})
                     _otr_count =sum (1 for _ ,n in ops +voiced +regular if _otrv4_map .get (n ))
                     _plines =[]
@@ -10076,10 +10079,10 @@ class OTRv4IRCClient :
                     _grp ("Voiced",voiced ,"yellow")
                     _grp ("Users",regular ,"white")
                     _nlim =getattr (self ,"_names_limit",500 )
-                    _was_capped =total >_nlim 
-                    if _was_capped :
+                    _shown =len (raw_users )
+                    if total >_shown :
                         _plines .insert (0 ,colorize (
-                        f"  ⚠ Large channel — showing first {_nlim } of {total } nicks (q to quit)","yellow"))
+                        f"  ⚠ {total } users in channel — showing first {_shown } (q to quit, /names for full list)","yellow"))
                     self .names_data [channel ]=[]
                     self .pager .display (_plines ,f"Users in {_sanitise (channel ,64 )} ({total })")
                 return 
@@ -10834,7 +10837,8 @@ class OTRv4IRCClient :
                 self .names_data [ch ]=[]
                 if not hasattr (self ,'_otrv4_users'):
                     self ._otrv4_users :Dict [str ,bool ]={}
-                    
+                if not hasattr (self ,"_names_total"):self ._names_total ={}
+                self ._names_total .pop (ch ,None )
                 self .send (f"WHO {ch }")
                 self .send (f"NAMES {ch }")
                 self ._pending_names_pager =ch 
@@ -11292,6 +11296,12 @@ class OTRv4IRCClient :
         try :
             if self .sock :
                 self .send_raw ("QUIT :OTRv4 client shutting down")
+                import ssl as _ssl 
+                if isinstance (self .sock ,_ssl .SSLSocket ):
+                    try :
+                        self .sock .unwrap ()  # TLS close-notify
+                    except Exception :
+                        pass 
                 self .sock .close ()
         except Exception :
             pass 
@@ -12632,7 +12642,7 @@ def main ():
     _disp_port =config .port if config .port !=0 else (
     IRCConstants .TLS_PORT if _net =="clearnet"else IRCConstants .PORT )
     _tls_disp ="🔒 TLS"if (_net =="clearnet"and _disp_port ==IRCConstants .TLS_PORT )or config .use_tls else "plaintext"
-    _auth_disp ="SASL"if config .sasl_user else ("NickServ"if config .nickserv_login else "anonymous")
+    _auth_disp ="SASL"if config .sasl_user else ("NickServ"if config .nickserv_login else "none")
 
     safe_print (f"\n{colorize ('OTRv4 IRC Client','bold_cyan')}")
     safe_print (colorize ("="*50 ,"dim"))
