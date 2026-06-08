@@ -1345,7 +1345,7 @@ class OTRv4DataMessage :
         except (ValueError ,struct .error ,TypeError )as e :
             raise ValueError (f"Failed to decode message: {e }")
 
-VERSION ="OTRv4+ 10.8.4"
+VERSION ="OTRv4+ 10.9.0"
 
 if not hasattr (hashlib ,'sha3_512'):
     raise RuntimeError (
@@ -6133,7 +6133,7 @@ class EnhancedOTRSession :
                     return 
                 self ._smp_progress_notify (
                 1 ,4 ,
-                "Challenge received — computing response (Rust ZKP, may take a moment)…",
+                "Challenge received — computing response (ML-KEM encaps + ML-DSA-87 + ZKP)…",
                 color ='yellow'
                 )
                 resp_bytes =self .rust_smp .process_smp1_generate_smp2 (tlv .value )
@@ -6143,11 +6143,11 @@ class EnhancedOTRSession :
 
             elif tlv .type ==OTRv4TLV .SMP_MSG_2 :
                 self .smp_step =2 
-                self ._smp_progress_notify (2 ,4 ,"Response received — verifying ZKP…",role ="initiator")
+                self ._smp_progress_notify (2 ,4 ,"Response received — verifying ML-DSA-87 + ZKP…",role ="initiator")
                 resp_bytes =self .rust_smp .process_smp2_generate_smp3 (tlv .value )
                 out_type =OTRv4TLV .SMP_MSG_3 
                 self .smp_step =3 
-                self ._smp_progress_notify (3 ,4 ,"Proof verified — sending confirmation…",role ="initiator")
+                self ._smp_progress_notify (3 ,4 ,"PQ proof verified — sending confirmation (ML-DSA-87 + ZKP)…",role ="initiator")
 
             elif tlv .type ==OTRv4TLV .SMP_MSG_3 :
                 resp_bytes =self .rust_smp .process_smp3_generate_smp4 (tlv .value )
@@ -6164,7 +6164,7 @@ class EnhancedOTRSession :
                     self .tracer .trace (self .peer ,"SMP","VERIFIED","STATE_UPDATED",
                     "role=responder")
                     self ._smp_progress_notify (4 ,4 ,
-                    "🔵✅ SMP VERIFIED — identity confirmed!",
+                    "🔵✅ SMP VERIFIED — identity confirmed! (ML-KEM-1024 + ML-DSA-87 + ZKP)",
                     role =None ,color ='blue',final =True )
                 elif self .rust_smp .is_failed ():
                     self .auto_smp_started =False 
@@ -6186,7 +6186,7 @@ class EnhancedOTRSession :
                     self .tracer .trace (self .peer ,"SMP","VERIFIED","STATE_UPDATED",
                     f"role={'initiator'if self .is_initiator else 'responder'}")
                     self ._smp_progress_notify (4 ,4 ,
-                    "🔵✅ SMP VERIFIED — identity confirmed!",
+                    "🔵✅ SMP VERIFIED — identity confirmed! (ML-KEM-1024 + ML-DSA-87 + ZKP)",
                     role =None ,color ='blue',final =True )
                 else :
                     self .auto_smp_started =False 
@@ -11109,7 +11109,7 @@ class OTRv4IRCClient :
             self .add_message ("system",f"Version: {VERSION }")
             self .add_message ("system","DAKE   : 🦀 Rust (X448 + ML-KEM-1024 + ML-DSA-87)")
             self .add_message ("system","Ratchet: 🦀 Rust (zeroize-on-drop)")
-            self .add_message ("system","SMP    : 🦀 Rust (ML-DSA-87 + ML-KEM-1024, ZeroizeOnDrop)")
+            self .add_message ("system","SMP    : 🦀 Rust (ML-KEM-1024 + ML-DSA-87 hybrid PQC, ZeroizeOnDrop)")
         elif cmd =="pause":
             global _scroll_locked 
             _scroll_locked =True 
@@ -11548,7 +11548,7 @@ class EnhancedOTRv4IRCClient (OTRv4IRCClient ):
         self .panel_manager .update_panel_security (peer ,sec )
 
         self .add_message (peer ,colorize ("─"*50 ,'dim'),sec )
-        self .add_message (peer ,colorize ("🔐 SMP VERIFICATION SETUP (🦀 Rust SMP)",'blue'),sec )
+        self .add_message (peer ,colorize ("🔐 SMP VERIFICATION SETUP (🦀 Hybrid PQC: ML-KEM-1024 + ML-DSA-87 + ZKP)",'blue'),sec )
         self .add_message (peer ,
         "Type your shared secret (both sides must use the same).",sec )
         self .add_message (peer ,
@@ -12135,7 +12135,7 @@ class EnhancedOTRv4IRCClient (OTRv4IRCClient ):
         sec =self .session_manager .get_security_level (peer )
         self .add_message (peer ,colorize (
         "🔐 SMP [███ ░░░ ░░░ ░░░] step 1/4 (🦀 Rust SMP)"
-        " · Computing challenge — please wait…","yellow"),sec )
+        " · Computing challenge (ML-KEM-1024 + ML-DSA-87 + ZKP) — please wait…","yellow"),sec )
         self .panel_manager .update_smp_progress (peer ,1 ,4 )
 
         
@@ -12659,7 +12659,7 @@ def main ():
     
     
     
-    _smp_label ="🦀 Rust (ZeroizeOnDrop, 50k-round Argon2-class KDF)"if RUST_RATCHET_AVAILABLE else "🐍 Python (C extensions)"
+    _smp_label ="🦀 Rust (ML-KEM-1024 + ML-DSA-87 hybrid PQC, ZeroizeOnDrop)"if RUST_RATCHET_AVAILABLE else "🐍 Python (C extensions)"
     safe_print (f"SMP     : {colorize (_smp_label ,'green'if RUST_RATCHET_AVAILABLE else 'yellow')}")
 
     if not RUST_RATCHET_AVAILABLE :

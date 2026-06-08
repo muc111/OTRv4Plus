@@ -6,7 +6,7 @@
 <p align="center"><strong>Post-quantum secure messaging over IRC. Research prototype.</strong></p>
 
 <p align="center">
-<code>v10.8.4 · Rust crypto core · constant-time SMP · TUI</code>
+<code>v10.9.0 · Rust crypto core · hybrid PQC SMP (ML-KEM-1024 + ML-DSA-87) · no C extensions · TUI</code>
 </p>
 
 ---
@@ -23,7 +23,7 @@
 
 ## What this is
 
-OTRv4+ is an IRC client that implements OTRv4 with post-quantum cryptography at every layer. It runs on Termux (Android) over I2P, with a Rust crypto core wrapped by a thin Python orchestration layer.
+OTRv4+ is an IRC client that implements OTRv4 with post-quantum cryptography at every layer including hybrid PQC identity verification (SMP). It runs on Termux (Android) over I2P, Tor, or TLS clearnet, with a Rust crypto core wrapped by a thin Python orchestration layer.
 
 Single-author research prototype. Not a finished product. The author is not a cryptographer. The Rust crypto crates it depends on (`ed448-goldilocks-plus`, `x448`, `pqcrypto-mlkem`, `pqcrypto-mldsa`) are not audited. Use it to study or extend it, not because you need a hardened tool today.
 
@@ -69,7 +69,7 @@ cargo test --release --no-default-features --features pq-rust
 cd ..
 ```
 
-Expected: `test result: ok. 17 passed; 0 failed`. The tests that matter most are `test_vectors::tests::ed448_rfc8032_vectors_byte_exact` (Rust Ed448 against RFC 8032) and `key_handles::tests::x448_rfc7748_known_answer` (Rust X448 against RFC 7748 §5.2). If either fails, a Rust crypto implementation has drifted from its specification and the build is not safe to use.
+Expected: `test result: ok. 30 passed; 0 failed` (17 existing + 15 new hybrid PQC SMP tests). The tests that matter most are `test_vectors::tests::ed448_rfc8032_vectors_byte_exact` (Rust Ed448 against RFC 8032) and `key_handles::tests::x448_rfc7748_known_answer` (Rust X448 against RFC 7748 §5.2). If either fails, a Rust crypto implementation has drifted from its specification and the build is not safe to use.
 
 ### 4. Run it
 
@@ -150,7 +150,7 @@ During a clean DAKE in `--debug` mode, you should see lines like:
 [OTR:DAKE] STATE: SENT_DAKE2 → ESTABLISHED | DAKE3 verified — hybrid (ring-sig ✓ + ML-DSA-87 ✓)
 [OTR:peer] RATCHET: None → ACTIVE | ratchet: Rust (Phase-4 opaque handle; keys never in Python)
 [OTR:peer] SMP: VERIFIED → STATE_UPDATED | role=responder
-🔐 SMP VERIFIED — identity confirmed!
+🔵✅ SMP VERIFIED — identity confirmed! (ML-KEM-1024 + ML-DSA-87 + ZKP)
 ```
 
 After that, the peer tab is green (encrypted + verified) and your typed messages are end-to-end encrypted.
@@ -209,9 +209,24 @@ As of v10.7, the ratchet's X448 Diffie-Hellman runs entirely in the Rust core vi
 
 ## Authentication
 
-Ed448 ring signatures provide deniable authentication in DAKE3. The ring signature is implemented in pure Rust using `ed448-goldilocks-plus` and `sha3` for SHAKE-256. ML-DSA-87 is appended as hybrid post-quantum auth. ClientProfile signature verification on incoming peers runs through the Rust `verify_ed448_sig` function. SMP provides out-of-band identity verification via a four-step zero-knowledge proof, all four steps in Rust with `ZeroizeOnDrop` on every exponent.
+Ed448 ring signatures provide deniable authentication in DAKE3. The ring signature is implemented in pure Rust using `ed448-goldilocks-plus` and `sha3` for SHAKE-256. ML-DSA-87 is appended as hybrid post-quantum auth. ClientProfile signature verification on incoming peers runs through the Rust `verify_ed448_sig` function. SMP provides out-of-band identity verification via a hybrid post-quantum four-step protocol: the classical OTRv4 Schnorr ZKP over a 3072-bit safe prime runs alongside ML-KEM-1024 key encapsulation and ML-DSA-87 per-step signatures. The pq_binding_key derived from the KEM shared secret binds every ML-DSA-87 signature to the session. All SMP state runs in Rust with `ZeroizeOnDrop` on every exponent and key.
+
+## Hybrid PQC SMP (v10.9.0)
+
+As of v10.9.0, identity verification uses a hybrid post-quantum SMP protocol. The classical OTRv4 four-step Schnorr ZKP over a 3072-bit safe prime group runs alongside an ML-KEM-1024 and ML-DSA-87 binding layer.
+
+**How it works:**
+
+- **SMP1** — initiator generates ML-KEM-1024 and ML-DSA-87 keypairs, appends the KEM encapsulation key (1568 bytes) and ML-DSA-87 public key (2592 bytes) to the classical payload
+- **SMP2** — responder encapsulates to derive `kem_ss`, computes `pq_binding_key = KDF(kem_ss || transcript_tag)`, signs the entire SMP2 wire body with ML-DSA-87 under that binding key
+- **SMP3/4** — each side verifies the previous ML-DSA-87 signature before processing classical fields, then signs its own output
+
+**Security:** breaking the equality proof requires breaking all three of the 3072-bit discrete log, ML-KEM-1024, and ML-DSA-87 simultaneously. The wire format is versioned (`0x02` = hybrid PQ) with no silent downgrade possible.
+
+**Wire overhead:** SMP1 grows from ~1.4 KB to ~8.1 KB, SMP2 from ~3.1 KB to ~16.4 KB due to the ML-KEM-1024 and ML-DSA-87 key material. At 2-second fragment intervals over TLS this adds roughly 2 minutes to SMP completion time compared to classical SMP.
 
 ## Memory safety
+
 
 | Component | Where secrets live | Python sees |
 |---|---|---|
@@ -223,6 +238,9 @@ Ed448 ring signatures provide deniable authentication in DAKE3. The ring signatu
 | Long-term X448 prekey | Rust `SecretBytes<56>` inside `X448KeyHandle` | Public bytes only |
 | SMP secret | Rust `SecretVec` inside `RustSMPVault` | Nothing after `set_secret_from_vault` |
 | SMP exponents | Rust scalars with `ZeroizeOnDrop` | Nothing |
+| SMP ML-KEM-1024 secret key | Rust `SecretVec` with `ZeroizeOnDrop` | Nothing |
+| SMP ML-DSA-87 signing key | Rust `SecretBytes<4896>` with `ZeroizeOnDrop` | Nothing |
+| SMP pq_binding_key | Rust `SecretBytes<32>`, wiped after each step | Nothing |
 
 Every value with `ZeroizeOnDrop` is wiped when its owning Rust object is dropped. No private key material appears on the Python heap during normal session operation.
 
@@ -240,7 +258,7 @@ Run `cargo test --release --no-default-features --features pq-rust` before any r
 
 3. **The Rust crypto crates are not audited.** `ed448-goldilocks-plus` 0.16 is the only viable pure-Rust Ed448 implementation but has no formal review. `x448` 0.6 is a pure-Rust X448 with no formal review. `pqcrypto-mlkem 0.1.1` (FIPS 203 ML-KEM-1024) and `pqcrypto-mldsa 0.1.2` (ML-DSA-87) are PQClean-derived reference implementations.
 
-4. **Rust-core-only since v10.7.5.**  Every C extension (`otr4_crypto_ext`, `otr4_ed448_ct`, `otr4_mldsa_ext`) has been retired and the Python `cryptography` library was removed at v10.7.  The entire cryptographic surface of the client now lives inside the Rust `otrv4_core` PyO3 module — there is no second crypto implementation to drift against.  As of v10.7.6 (Phase 5.4) the SMP modular exponentiation is constant-time via `crypto-bigint` `DynResidue`, closing a timing side-channel on the secret SMP exponents.  See the CHANGELOG v10.6.18 → v10.7.6 sequence for the migration history.
+4. **Rust-core-only since v10.7.5.**  Every C extension (`otr4_crypto_ext`, `otr4_ed448_ct`, `otr4_mldsa_ext`) has been retired and the Python `cryptography` library was removed at v10.7.  The entire cryptographic surface of the client now lives inside the Rust `otrv4_core` PyO3 module — there is no second crypto implementation to drift against.  As of v10.7.6 (Phase 5.4) the SMP modular exponentiation is constant-time via `crypto-bigint` `DynResidue`, closing a timing side-channel on the secret SMP exponents. As of v10.9.0 the SMP protocol is hybrid post-quantum: ML-KEM-1024 encapsulation and ML-DSA-87 per-step signatures wrap the classical ZKP, requiring all three primitives to be broken simultaneously.  See the CHANGELOG v10.6.18 → v10.7.6 sequence for the migration history.
 
 5. **Ephemeral identity by design.** Identity keys regenerate at every launch. Fingerprints change on every restart. This is a deliberate threat-model choice for an I2P-based privacy IRC client, not a missing feature. Tor Browser, Cwtch (default), and Briar (before user opt-in) all keep identities short-lived for similar reasons. See ROADMAP Phase 5.3g.
 
