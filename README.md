@@ -6,7 +6,7 @@
 <p align="center"><strong>Post-quantum secure messaging over IRC. Research prototype.</strong></p>
 
 <p align="center">
-<code>v10.9.0 · Rust crypto core · hybrid PQC SMP (ML-KEM-1024 + ML-DSA-87) · no C extensions · TUI</code>
+<code>v10.9.1 · Rust crypto core · hybrid PQC SMP (ML-KEM-1024 + ML-DSA-87) · I2P SAM · TUI</code>
 </p>
 
 ---
@@ -17,7 +17,7 @@
   <img src="example.png" width="680" alt="OTRv4+ TUI — encrypted session with SMP verified">
 </p>
 
-<p align="center"><em>Full OTRv4 DAKE + SMP verification on Libera.chat over TLS — complete in under 3 minutes. Blue 🔵 = identity confirmed by shared secret (SMP zero-knowledge proof).<br>Ctrl+P or Ctrl+S to pause incoming messages and scroll back. Type <code>/tui</code> to toggle pinned chrome.</em></p>
+<p align="center"><em>Full OTRv4 DAKE + SMP verification with hybrid PQC (ML-KEM-1024 + ML-DSA-87 + ZKP). Blue 🔵 = identity confirmed. Tested live on both Libera.chat TLS and irc.postman.i2p I2P SAM.<br>Ctrl+P or Ctrl+S to pause and scroll back. Type <code>/tui</code> to toggle pinned chrome.</em></p>
 
 ---
 
@@ -89,10 +89,10 @@ If another user is in `#otr` (their nick is `SomeNick`), type:
 
 This starts the OTRv4 DAKE handshake. Fingerprints display once the DAKE handshake completes. Type `y` to trust. Either side then types a shared SMP secret (agreed out of band) and runs `/smp start`.
 
-Typical completion times:
-- **TLS clearnet** (e.g. Libera.chat): DAKE + SMP verified in **under 3 minutes**
-- **I2P SAM**: 5–10 minutes depending on tunnel build time
-- **Tor**: 3–6 minutes
+Typical completion times (measured, hybrid PQC SMP v10.9.1):
+- **TLS clearnet** (Libera.chat): DAKE + SMP verified in **under 6 minutes**
+- **I2P SAM** (irc.postman.i2p): DAKE + SMP verified in **~15–16 minutes** (fragment rate limiting required due to server flood policy)
+- **Tor**: 8–12 minutes (estimated)
 
 You see `✅ SMP VERIFIED` in blue when done.
 
@@ -211,7 +211,7 @@ As of v10.7, the ratchet's X448 Diffie-Hellman runs entirely in the Rust core vi
 
 Ed448 ring signatures provide deniable authentication in DAKE3. The ring signature is implemented in pure Rust using `ed448-goldilocks-plus` and `sha3` for SHAKE-256. ML-DSA-87 is appended as hybrid post-quantum auth. ClientProfile signature verification on incoming peers runs through the Rust `verify_ed448_sig` function. SMP provides out-of-band identity verification via a hybrid post-quantum four-step protocol: the classical OTRv4 Schnorr ZKP over a 3072-bit safe prime runs alongside ML-KEM-1024 key encapsulation and ML-DSA-87 per-step signatures. The pq_binding_key derived from the KEM shared secret binds every ML-DSA-87 signature to the session. All SMP state runs in Rust with `ZeroizeOnDrop` on every exponent and key.
 
-## Hybrid PQC SMP (v10.9.0)
+## Hybrid PQC SMP (v10.9.1)
 
 As of v10.9.0, identity verification uses a hybrid post-quantum SMP protocol. The classical OTRv4 four-step Schnorr ZKP over a 3072-bit safe prime group runs alongside an ML-KEM-1024 and ML-DSA-87 binding layer.
 
@@ -223,7 +223,17 @@ As of v10.9.0, identity verification uses a hybrid post-quantum SMP protocol. Th
 
 **Security:** breaking the equality proof requires breaking all three of the 3072-bit discrete log, ML-KEM-1024, and ML-DSA-87 simultaneously. The wire format is versioned (`0x02` = hybrid PQ) with no silent downgrade possible.
 
-**Wire overhead:** SMP1 grows from ~1.4 KB to ~8.1 KB, SMP2 from ~3.1 KB to ~16.4 KB due to the ML-KEM-1024 and ML-DSA-87 key material. At 2-second fragment intervals over TLS this adds roughly 2 minutes to SMP completion time compared to classical SMP.
+**Wire overhead:** SMP1 grows from ~1.4 KB to ~8.1 KB (18 fragments), SMP2 from ~3.1 KB to ~16.4 KB (49 fragments) due to ML-KEM-1024 and ML-DSA-87 key material.
+
+**Fragment rate limiting on I2P:** irc.postman.i2p enforces strict flood limits. The client uses a batch send strategy (2 fragments, 6-second pause) keeping traffic at ~0.33 lines/second average. At 49 fragments SMP2 takes ~2.5 minutes to send. Full DAKE+SMP over I2P completes in ~15 minutes. SMP session timeout is 45 minutes to accommodate I2P latency.
+
+**Measured timings (v10.9.1, live tested):**
+
+| Transport | Server | DAKE complete | SMP verified | Total |
+|---|---|---|---|---|
+| TLS clearnet | Libera.chat | ~3 min | ~5 min | **~6 min** |
+| I2P SAM | irc.postman.i2p | ~6 min | ~15 min | **~15–16 min** |
+| Tor | — | ~5 min | ~10 min | **~12 min** (est.) |
 
 ## Memory safety
 
@@ -258,7 +268,7 @@ Run `cargo test --release --no-default-features --features pq-rust` before any r
 
 3. **The Rust crypto crates are not audited.** `ed448-goldilocks-plus` 0.16 is the only viable pure-Rust Ed448 implementation but has no formal review. `x448` 0.6 is a pure-Rust X448 with no formal review. `pqcrypto-mlkem 0.1.1` (FIPS 203 ML-KEM-1024) and `pqcrypto-mldsa 0.1.2` (ML-DSA-87) are PQClean-derived reference implementations.
 
-4. **Rust-core-only since v10.7.5.**  Every C extension (`otr4_crypto_ext`, `otr4_ed448_ct`, `otr4_mldsa_ext`) has been retired and the Python `cryptography` library was removed at v10.7.  The entire cryptographic surface of the client now lives inside the Rust `otrv4_core` PyO3 module — there is no second crypto implementation to drift against.  As of v10.7.6 (Phase 5.4) the SMP modular exponentiation is constant-time via `crypto-bigint` `DynResidue`, closing a timing side-channel on the secret SMP exponents. As of v10.9.0 the SMP protocol is hybrid post-quantum: ML-KEM-1024 encapsulation and ML-DSA-87 per-step signatures wrap the classical ZKP, requiring all three primitives to be broken simultaneously.  See the CHANGELOG v10.6.18 → v10.7.6 sequence for the migration history.
+4. **Rust-core-only since v10.7.5.**  Every C extension (`otr4_crypto_ext`, `otr4_ed448_ct`, `otr4_mldsa_ext`) has been retired and the Python `cryptography` library was removed at v10.7.  The entire cryptographic surface of the client now lives inside the Rust `otrv4_core` PyO3 module — there is no second crypto implementation to drift against.  As of v10.7.6 (Phase 5.4) the SMP modular exponentiation is constant-time via `crypto-bigint` `DynResidue`, closing a timing side-channel on the secret SMP exponents. As of v10.9.1 the SMP protocol is hybrid post-quantum: ML-KEM-1024 encapsulation and ML-DSA-87 per-step signatures wrap the classical ZKP, requiring all three primitives to be broken simultaneously.  See the CHANGELOG v10.6.18 → v10.7.6 sequence for the migration history.
 
 5. **Ephemeral identity by design.** Identity keys regenerate at every launch. Fingerprints change on every restart. This is a deliberate threat-model choice for an I2P-based privacy IRC client, not a missing feature. Tor Browser, Cwtch (default), and Briar (before user opt-in) all keep identities short-lived for similar reasons. See ROADMAP Phase 5.3g.
 

@@ -92,7 +92,7 @@ use crate::secure_mem::{SecretBytes, SecretVec};
 // ─── constants ────────────────────────────────────────────────────────────────
 
 const MAX_ATTEMPTS:         u32   = 3;
-const SESSION_TIMEOUT_SECS: u64   = 600;
+const SESSION_TIMEOUT_SECS: u64   = 2700;  // 45 minutes — accommodates I2P + hybrid PQC SMP latency
 const RETRY_COOLDOWN_SECS:  u64   = 30;
 const KDF_ROUNDS:           u32   = 50_000;
 const SMP_PRIME_BYTES:      usize = 384;   // 3072-bit prime = 384 bytes

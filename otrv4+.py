@@ -1345,7 +1345,7 @@ class OTRv4DataMessage :
         except (ValueError ,struct .error ,TypeError )as e :
             raise ValueError (f"Failed to decode message: {e }")
 
-VERSION ="OTRv4+ 10.9.0"
+VERSION ="OTRv4+ 10.9.1"
 
 if not hasattr (hashlib ,'sha3_512'):
     raise RuntimeError (
@@ -9493,13 +9493,15 @@ class OTRv4IRCClient :
         except Exception :
             pass 
 
+        _net =NetworkConstants .detect (getattr (self ,"server",""))
+        _is_overlay =_net in (NetworkConstants .NET_I2P ,NetworkConstants .NET_TOR )
+        _frag_sz =(380 if _net ==NetworkConstants .NET_I2P else UIConstants .OTR_FRAGMENT_SIZE )
         fragments =self .otr_fragmenter .fragment (
         otr_message ,
         sender_tag =sender_tag ,
         receiver_tag =receiver_tag ,
+        max_line =_frag_sz ,
         )
-        _net =NetworkConstants .detect (getattr (self ,"server",""))
-        _is_overlay =_net in (NetworkConstants .NET_I2P ,NetworkConstants .NET_TOR )
         _bucket =4.0 
         _prev_ts =time .monotonic ()
         ok =True 
@@ -9514,7 +9516,16 @@ class OTRv4IRCClient :
                 _bucket -=2.0 
                 _prev_ts =time .monotonic ()
             elif len (fragments )>1 and _is_overlay and i >0 :
-                time .sleep (0.20 )
+                # irc.postman.i2p flood limit: send 2 fragments then pause 6s.
+                # ~0.33 lines/sec average — conservative but reliable.
+                # Tor uses simple 200ms delay.
+                if _net ==NetworkConstants .NET_I2P :
+                    if i %2 ==0 :
+                        time .sleep (6.0 )
+                    else :
+                        time .sleep (0.30 )
+                else :
+                    time .sleep (0.20 )
             if len (fragments )>1 :
                 try :
                     _tb ="█"*(i +1 )+"░"*(len (fragments )-i -1 )
