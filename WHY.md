@@ -12,13 +12,13 @@ Combined with SMP, a man-in-the-middle who intercepts your handshake cannot impe
 
 ## Why the wait is worth it
 
-A fully verified OTRv4+ session over I2P takes about 6–7 minutes to establish from first contact to 🔵. That is not a bug. That is what security over an anonymising network costs.
+A fully verified OTRv4+ session over I2P takes about 15–16 minutes to establish from first contact to 🔵 with the hybrid post-quantum SMP. Over TLS clearnet it is under 6 minutes. That is not a bug. That is what NIST Level 5 post-quantum security over an anonymising network costs — the SMP2 message alone is 49 fragments of ML-KEM and ML-DSA key material.
 
-What you get at the end of those 7 minutes:
+What you get at the end of those minutes:
 
 - **Quantum-safe forward secrecy**: ML-KEM-1024 rotated at every ratchet step. Someone who records your traffic today and builds a quantum computer in 2035 cannot decrypt it.
 - **Post-quantum authentication**: ML-DSA-87 alongside Ed448 ring signatures. Your peer's identity is verified against a standard that survives Shor's algorithm.
-- **Zero-knowledge identity proof**: SMP ran four Rust-computed steps over I2P. Your shared passphrase was never sent over the wire. It never left Rust-owned memory. Even if someone compromised the IRC server and captured every fragment, they cannot brute-force your passphrase from the transcript in any reasonable timeframe. The modular exponentiation is constant-time, so the timing of those steps does not leak your secret either.
+- **Hybrid post-quantum identity proof**: SMP runs four Rust-computed steps over I2P, with the classical Schnorr zero-knowledge proof wrapped in an ML-KEM-1024 + ML-DSA-87 binding layer. Your shared passphrase is never sent over the wire and never leaves Rust-owned memory. To forge a false "verified" result an attacker would need to break the 3072-bit discrete log, ML-KEM-1024, and ML-DSA-87 simultaneously. The modular exponentiation is constant-time, so step timing does not leak your secret.
 - **Network anonymity**: Your I2P destination is unique to this session. The server sees a b32.i2p address it has never seen before and will never see again.
 - **Deniability**: Ed448 ring signatures mean neither party can prove to a third party who said what. The transcript is cryptographically repudiable.
 

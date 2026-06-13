@@ -1,6 +1,6 @@
 // src/smp.rs — Hybrid Post-Quantum Socialist Millionaire Protocol
 //
-// Version: OTRv4+ v10.9.0
+// Version: OTRv4+ v10.9.2
 //
 // Security model
 // ==============

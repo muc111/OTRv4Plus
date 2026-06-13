@@ -6,7 +6,7 @@
 <p align="center"><strong>Post-quantum secure messaging over IRC. Research prototype.</strong></p>
 
 <p align="center">
-<code>v10.9.1 · Rust crypto core · hybrid PQC SMP (ML-KEM-1024 + ML-DSA-87) · I2P SAM · TUI</code>
+<code>v10.9.2 · Rust crypto core · hybrid PQC SMP (ML-KEM-1024 + ML-DSA-87) · I2P SAM · TUI</code>
 </p>
 
 ---
@@ -26,6 +26,24 @@
 OTRv4+ is an IRC client that implements OTRv4 with post-quantum cryptography at every layer including hybrid PQC identity verification (SMP). It runs on Termux (Android) over I2P, Tor, or TLS clearnet, with a Rust crypto core wrapped by a thin Python orchestration layer.
 
 Single-author research prototype. Not a finished product. The author is not a cryptographer. The Rust crypto crates it depends on (`ed448-goldilocks-plus`, `x448`, `pqcrypto-mlkem`, `pqcrypto-mldsa`) are not audited. Use it to study or extend it, not because you need a hardened tool today.
+
+## Why OTRv4+ vs alternatives
+
+A qualified developer's 30-second summary of the niche this fills:
+
+| | OTRv4+ | Signal | Stock OTRv4 | Matrix/Element |
+|---|---|---|---|---|
+| Identifier required | None (IRC nick) | Phone number | None | Email/phone |
+| Transport | IRC over I2P / Tor / TLS | Centralised servers | IRC/XMPP | Centralised homeservers |
+| Post-quantum KEM | ML-KEM-1024 (L5) every ratchet step | ML-KEM-768 (L3) initial only | None | None |
+| Post-quantum signatures | ML-DSA-87 (L5) | No | No | No |
+| Post-quantum SMP | Yes (hybrid) | N/A | No | No |
+| Deniable auth | Ed448 ring signatures | Partial | Yes | No |
+| Network-layer anonymity | I2P (unique destination per session) | No | Depends | No |
+
+**The specific gap it fills:** synchronous, pseudonymous, end-to-end encrypted conversation where both parties are present, no phone number or account exists, the network layer hides your IP, and the cryptography is hardened to NIST Level 5 against a future quantum adversary — including the identity-verification step (SMP), which no other deployed tool hardens against quantum attack.
+
+Signal is faster, asynchronous, and the right choice for mass-market messaging. OTRv4+ is for the sessions where traces are unacceptable and you need cryptographic certainty of who you are talking to, over an anonymising network, with no identifying account. The cost is latency: a full hybrid-PQC handshake over I2P takes ~15 minutes. See [WHY.md](WHY.md) for the longer rationale.
 
 ## Quick start
 
@@ -282,6 +300,7 @@ GPL-3.0 for the source. Commercial use requires a separate license (see [COMMERC
 
 ## See also
 
+- [SPEC.md](SPEC.md) **formal wire-level protocol specification** — byte layouts, KDF inputs, state machines, test vectors. Write a compatible implementation in any language from this document alone.
 - [CHANGELOG.md](CHANGELOG.md) per-version changes
 - [SECURITY.md](SECURITY.md) threat model and known issues
 - [FEATURES.md](FEATURES.md) full feature inventory

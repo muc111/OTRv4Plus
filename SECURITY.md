@@ -7,9 +7,9 @@ Threat model, known issues, and reporting.
 | Adversary | Defense |
 |---|---|
 | Passive network eavesdropper | TLS 1.3 transport (when used over plain IRC), or I2P / Tor onion routing |
-| Active MITM at first contact | SMP zero-knowledge proof out-of-band (user types same secret on both sides) |
+| Active MITM at first contact | Hybrid PQC SMP zero-knowledge proof out-of-band (user types same secret on both sides); classical Schnorr ZKP wrapped in ML-KEM-1024 + ML-DSA-87 binding |
 | Long-term key compromise after the fact | Per-message forward secrecy via double ratchet; PCS via DH ratchet at 100-message / 24-hour boundaries |
-| Future quantum adversary recording today | ML-KEM-1024 hybrid in DAKE; ML-DSA-87 hybrid signatures |
+| Future quantum adversary recording today | ML-KEM-1024 hybrid in DAKE; ML-DSA-87 hybrid signatures; hybrid PQC SMP (ML-KEM-1024 + ML-DSA-87 binding the identity proof) |
 | Python heap inspection (post-exploitation) | Long-term private bytes live inside Rust `SecretBytes<N>` (ZeroizeOnDrop); session keys move Rust-to-Rust via the `DakeOutput` opaque handle; no Python cryptography library holds key material |
 | AES-GCM nonce reuse | Counter-based nonce per ratchet step, KDF-derived; nonce never reused across messages |
 
@@ -41,6 +41,9 @@ Threat model, known issues, and reporting.
 | Skipped message keys | Rust `HashMap<u64, SecretBytes<32>>` | `ZeroizeOnDrop` on values; map cleared on session close |
 | SMP secret | Rust `SecretVec` inside `RustSMPVault` | `ZeroizeOnDrop` when vault drops |
 | SMP exponents (a2, a3, b2, b3, r, etc.) | Rust scalars | `ZeroizeOnDrop` on the `Scalar` wrapper |
+| SMP ML-KEM-1024 secret key | Rust heap, hybrid PQC SMP | Wiped after decapsulation |
+| SMP ML-DSA-87 signing key | Rust heap, hybrid PQC SMP | `ZeroizeOnDrop` |
+| SMP pq_binding_key | Rust `SecretBytes<32>` | `ZeroizeOnDrop`, wiped per step |
 
 No long-term private key material appears on the Python heap as `bytes` or `bytearray` during normal session operation. As of v10.7 there is no Python cryptography library in the codebase, so no key material transits an OpenSSL-backed Python object.
 
@@ -66,7 +69,7 @@ Run before every release:
 cargo test --release --no-default-features --features pq-rust
 ```
 
-Expected: **20 tests pass** (17 prior + 3 ML-KEM tests added in v10.7.3 when the brace-KEM moved to Rust).  If `ed448_rfc8032_vectors_byte_exact` fails, the `ed448-goldilocks-plus` crate has diverged from RFC 8032.  If `x448_rfc7748_known_answer` fails, the `x448` crate has diverged from RFC 7748 and the ratchet would desync against any peer — do not ship.  If `mlkem1024_byte_sizes_match_spec` or `mlkem1024_roundtrip_shared_secret_matches` fails, the `pqcrypto-mlkem` crate has diverged from FIPS 203.  All four are build-time gates against the spec documents themselves.
+Expected: **30+ tests pass** (17 prior + 3 ML-KEM + 15 hybrid PQC SMP tests added in v10.9.0: classical roundtrip, hybrid PQ roundtrip, mismatched secrets in both modes, version-mismatch rejection, ML-DSA context sign/verify, wrong-context rejection, ML-KEM encaps/decaps roundtrip, pq_binding_key determinism).  If `ed448_rfc8032_vectors_byte_exact` fails, the `ed448-goldilocks-plus` crate has diverged from RFC 8032.  If `x448_rfc7748_known_answer` fails, the `x448` crate has diverged from RFC 7748 and the ratchet would desync against any peer — do not ship.  If `mlkem1024_byte_sizes_match_spec` or `mlkem1024_roundtrip_shared_secret_matches` fails, the `pqcrypto-mlkem` crate has diverged from FIPS 203.  All four are build-time gates against the spec documents themselves.
 
 Two helper functions were removed at v10.6.17: `_verify_ed448_rust_compat()` and `_verify_ring_sig_rust_compat()`.  The previous comparison against the C extension's `ring_sign` and `ring_verify` is no longer performed.  As of v10.7.5 the C extension itself has been retired (see caveat 4 below), so these comparison paths are doubly obsolete.
 
@@ -107,6 +110,8 @@ Two helper functions were removed at v10.6.17: `_verify_ed448_rust_compat()` and
 8. **ClientProfile lifetime: 14 days (v10.7.5).**  Earlier versions used a 365-day expiry, which was incoherent with the ephemeral-identity design (caveat 5).  The OTRv4 spec §4.1 recommends short profile lifetimes; v10.7.5 reduces the validity to 14 days, matching `otr4j`'s default.  Because OTRv4+ regenerates identity keys at every launch, this is an upper bound on how long an *offline* peer will still accept a previously-cached profile — it is not the practical lifetime of any single key, which is hours at most.
 
 9. **SMP modular exponentiation is constant-time (v10.7.6, Phase 5.4).**  Prior to v10.7.6, SMP used `num-bigint`'s `modpow`, whose running time depends on the exponent's bit pattern.  Because SMP exponentiates with secret values (the per-session blinding scalars, the SMP secret itself, and the ZKP randomisers), this was a timing side-channel: an attacker able to measure SMP-round timing precisely could in principle recover bits of those secrets.  v10.7.6 routes every secret-exponent `modpow` through `crypto-bigint`'s `DynResidue` (Montgomery-form modular exponentiation, constant-time in the exponent).  The MODP-3072 group (OTRv4 §5.3) is unchanged — same prime, same generator — so the wire format and spec compliance are identical; only the implementation changed.  Caveats: (a) the *public*-value arithmetic in the ZKP reconstruction (challenge/response combination) remains on `num-bigint`, which is correct because those operands are public and carry no secret-dependent timing; (b) `crypto-bigint`'s constant-time claims, like those of the other Rust crypto crates here, have not been formally audited.  The practical attack surface for this side-channel was always narrow over I2P (multi-second fragmentation latency drowns the signal), but constant-time is the correct posture regardless.
+
+10. **SMP is hybrid post-quantum (v10.9.0).**  The classical OTRv4 four-step Schnorr ZKP over the 3072-bit MODP group is preserved unchanged and now runs alongside an ML-KEM-1024 and ML-DSA-87 binding layer.  In SMP1 the initiator appends an ML-KEM-1024 encapsulation key and ML-DSA-87 public key.  In SMP2 the responder encapsulates to derive `kem_ss`, derives `pq_binding_key = KDF(PQ_BRACE_KEY, domain || kem_ss || transcript_tag, 32)`, and signs the entire SMP2 body with ML-DSA-87 under that binding key.  SMP3/4 each verify the previous step's ML-DSA-87 signature before processing classical fields, then sign their own output.  Forging a false "verified" requires breaking the 3072-bit discrete log, ML-KEM-1024, and ML-DSA-87 simultaneously.  The wire format is versioned (`0x01` classical, `0x02` hybrid PQ) with no silent downgrade.  **Known limitation:** the ZKP scalar arithmetic (the `d = r - c*x` response computation) still uses variable-time `num-bigint`; the exponentiation is constant-time via `crypto-bigint` Montgomery form but the surrounding scalar multiply is not yet. A fully constant-time ZKP is tracked as future work.  The SMP session timeout was raised to 45 minutes (from 10) at v10.9.1 to accommodate the hybrid-PQ wire overhead over I2P, where SMP2 is 49 fragments and a full verification takes ~15–16 minutes.
 
 ## Reporting issues
 

@@ -1345,7 +1345,7 @@ class OTRv4DataMessage :
         except (ValueError ,struct .error ,TypeError )as e :
             raise ValueError (f"Failed to decode message: {e }")
 
-VERSION ="OTRv4+ 10.9.1"
+VERSION ="OTRv4+ 10.9.2"
 
 if not hasattr (hashlib ,'sha3_512'):
     raise RuntimeError (
@@ -1643,6 +1643,15 @@ def _handle_input_char (ch :str ):
                 after =''.join (_input_buffer [_input_pos :])
                 sys .stdout .write (f'{ch }{after }\x1b[{len (after )}D')
             sys .stdout .flush ()
+        try :
+            _c =getattr (__import__ ("builtins"),"_active_client",None )
+            if _c :
+                _ap =_c .panel_manager .active_panel 
+                _pp =_c .panel_manager .panels .get (_ap )
+                if _pp and _pp .panel_type =="private":
+                    _c .send_raw (f"@+typing=active TAGMSG {_ap }")
+        except Exception :
+            pass 
         return None 
 
     return None 
@@ -9557,9 +9566,12 @@ class OTRv4IRCClient :
         """
         prefix =None 
         trailing =None 
-        
+        _msg_tags ={}
         if line .startswith ("@"):
             tags_str ,line =line .split (" ",1 )
+            for _t in tags_str [1 :].split (";"):
+                _k ,_v =(_t .split ("=",1 )if "="in _t else (_t ,""))
+                _msg_tags [_k ]=_v 
             
         if line .startswith (":"):
             parts =line [1 :].split (" ",1 )
@@ -9572,7 +9584,7 @@ class OTRv4IRCClient :
             params =line .split ()
         command =params [0 ]if params else None 
         params =params [1 :]if params else []
-        return prefix ,command ,params ,trailing 
+        return prefix ,command ,params ,trailing ,_msg_tags 
 
         
 
@@ -9652,7 +9664,7 @@ class OTRv4IRCClient :
     def handle_message (self ,line :str ):
         """Dispatch one IRC line to the appropriate handler."""
         try :
-            prefix ,command ,params ,trailing =self .parse_irc_message (line )
+            prefix ,command ,params ,trailing ,_tags =self .parse_irc_message (line )
             self .logger .network_message ("IN",prefix or "SERVER",command or "?",len (line ))
             self .debug ("recv",{"cmd":command ,"params":params [:3 ],"trail":(trailing or "")[:120 ]})
 
@@ -9707,6 +9719,26 @@ class OTRv4IRCClient :
                         self .debug (f"plaintext flood from {sender } — dropping ({_count } msgs/10s)")
                     else :
                         self ._display_plaintext (sender ,target ,message )
+                return 
+
+            if command =="TAGMSG":
+                _tv =_tags .get ("+typing","")
+                _tgt =params [0 ]if params else ""
+                if _tgt ==self .nick and _tv in ("active","paused","done"):
+                    _pnl =self .panel_manager .panels .get (sender )
+                    if _pnl is not None :
+                        if _tv in ("active","paused"):
+                            _tmsg =colorize (
+                            f"✍ {sender } is typing…"if _tv =="active"else f"✍ {sender } paused…",
+                            "yellow")
+                            _last =_pnl .history [-1 ]["message"]if _pnl .history else ""
+                            if "✍"in _last :
+                                _pnl .history [-1 ]["message"]=_tmsg 
+                            else :
+                                self .add_message (sender ,_tmsg )
+                        elif _tv =="done":
+                            if _pnl .history and "✍"in _pnl .history [-1 ]["message"]:
+                                _pnl .history .pop ()
                 return 
 
             if command =="JOIN":
@@ -10650,6 +10682,17 @@ class OTRv4IRCClient :
             return False 
 
         self .panel_manager .switch_to_panel (name )
+        # Rebuild scroll history from this panel-s actual messages
+        # so Ctrl+P scrollback shows only the current panel, not all channels
+        global _scroll_history 
+        _switched_panel =self .panel_manager .panels .get (name )
+        if _switched_panel :
+            _scroll_history .clear ()
+            for _e in _switched_panel .history :
+                _m =_e .get ("message","").strip ()
+                if _m :
+                    _scroll_history .append (_m )
+            if len (_scroll_history )>500 :_scroll_history =_scroll_history [-500 :]
         if getattr (self ,"_tui_enabled",False )and self ._screen is not None :
             self ._screen .scroll_offset =0 
             self ._screen .redraw_full ()
@@ -10676,18 +10719,41 @@ class OTRv4IRCClient :
         if not history :
             lines_out .append (colorize ("  (no messages yet)","dim"))
         else :
+            # Replay full history, skip blank entries only
             for entry in history :
+                if not entry .get ("message","").strip ():continue 
                 ts =colorize (time .strftime ("%H:%M:%S",time .localtime (entry ["timestamp"])),"dim")
                 lines_out .append (f"{ts } {tag } {entry ['message']}")
         lines_out .append (colorize ("─"*left +" live "+"─"*max (0 ,right -1 ),"dim"))
+        # Build tab bar line showing all open panels
+        try :
+            _cols =shutil .get_terminal_size (fallback =(80 ,24 )).columns 
+        except Exception :
+            _cols =80 
+        _pm =self .panel_manager 
+        _tab_parts =[]
+        for _pn in _pm .panel_order :
+            _pp =_pm .panels .get (_pn )
+            if _pp is None :continue 
+            _icon =UIConstants .SECURITY_ICONS .get (_pp .security_level ,"🔴")
+            _unread =f"({_pp .unread_count })"if _pp .unread_count >0 else ""
+            _label =f"{_icon }{_pn }{_unread }"
+            if _pn ==name :
+                _tab_parts .append (colorize (_label ,"cyan"))
+            else :
+                _tab_parts .append (colorize (_label ,"dim"))
+        _tab_str =" | ".join (_tab_parts )
+        _sep_str =colorize ("─"*min (_cols ,80 ),"dim")
         with _print_lock :
             try :
                 buf ="".join (_input_buffer )
                 if _current_prompt or buf :
                     sys .stdout .write ("\x1b[1G\x1b[2K")
                 for ln in lines_out :
-                    wrapped =_word_wrap (ln ,shutil .get_terminal_size (fallback =(80 ,24 )).columns )
+                    wrapped =_word_wrap (ln ,_cols )
                     sys .stdout .write (wrapped +"\n")
+                sys .stdout .write (_sep_str +"\n")
+                sys .stdout .write (_tab_str +"\n")
                 if _current_prompt or buf :
                     sys .stdout .write (_current_prompt +buf )
                 sys .stdout .flush ()
@@ -11775,7 +11841,7 @@ class EnhancedOTRv4IRCClient (OTRv4IRCClient ):
     def handle_message (self ,line :str ):
         """Dispatch IRC line — routes OTR fragments to process_incoming_otr_message."""
         try :
-            prefix ,command ,params ,trailing =self .parse_irc_message (line )
+            prefix ,command ,params ,trailing ,_tags =self .parse_irc_message (line )
             self .logger .network_message ("IN",prefix or "SERVER",
             command or "?",len (line ))
             self .debug ("recv",{"cmd":command ,
@@ -12859,12 +12925,22 @@ def main ():
                     _print_prompt ()
                     continue 
 
+                try :
+                    _ap =client .panel_manager .active_panel 
+                    _pp =client .panel_manager .panels .get (_ap )
+                    if _pp and _pp .panel_type =="private":
+                        client .send_raw (f"@+typing=done TAGMSG {_ap }")
+                except Exception :
+                    pass 
                 if line .startswith ("/"):
                     client .handle_command (line [1 :])
                 else :
                     client .handle_chat_message (line )
 
-                _print_prompt ()
+                if getattr (client ,"_tui_enabled",False )and client ._screen is not None :
+                    client ._screen .redraw_full ()
+                else :
+                    _print_prompt ()
 
             except KeyboardInterrupt :
                 safe_print (colorize ("\nCtrl-C — type /quit to exit","yellow"))
