@@ -28,9 +28,9 @@ No other widely deployable tool gives you all of this simultaneously. Signal is 
 
 | Platform | Method |
 |---|---|
-| **Android (Termux)** | One-command install — `./termux_install.sh` |
+| **Android (Termux)** | Build from source — see the README install guide |
 | **GrapheneOS (Pixel)** | Termux in work profile — fully functional, no Google services required |
-| **Linux phones** (PostmarketOS, Mobian) | Native Python — `python otrv4+.py` |
+| **Linux phones** (PostmarketOS, Mobian) | Build the Rust core, run with Python |
 | **Desktop Linux** | Native Python, or WeeChat plugin (drop-in, no compilation) |
 | **OpenBSD** | Native Python — works out of the box |
 | **Raspberry Pi / Steam Deck** | Same as desktop Linux |
@@ -50,12 +50,8 @@ This is the communication tool I wanted for myself. I'm sharing it because other
 
 ---
 
-## Quick Start
+## Getting started
 
-```bash
-git clone https://github.com/muc111/OTRv4Plus
-cd OTRv4Plus
-./termux_install.sh   # Android/Termux
-# or
-python otrv4+.py      # Linux/macOS
-```
+Build and install instructions are in the [README](README.md#quick-start). The
+core cryptographic engine builds from source with `cargo`; there are no prebuilt
+binaries and no C extensions.
