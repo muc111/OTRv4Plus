@@ -87,7 +87,7 @@ pub fn aes256gcm_encrypt<'py>(
             "aes256gcm_encrypt: internal encryption failure"
         ))?;
 
-    Ok(PyBytes::new_bound(py, &ct_with_tag))
+    Ok(PyBytes::new(py, &ct_with_tag))
 }
 
 /// Decrypt with AES-256-GCM.
@@ -136,7 +136,7 @@ pub fn aes256gcm_decrypt<'py>(
             "aes256gcm_decrypt: authentication failed (wrong key, nonce, aad, or tampered ciphertext)"
         ))?;
 
-    Ok(PyBytes::new_bound(py, &plaintext))
+    Ok(PyBytes::new(py, &plaintext))
 }
 
 #[cfg(test)]

@@ -52,8 +52,8 @@ use pqcrypto_traits::sign::{
 #[pyfunction]
 pub fn mldsa87_keygen<'py>(py: Python<'py>) -> PyResult<(Bound<'py, PyBytes>, Bound<'py, PyByteArray>)> {
     let (pk, sk) = mldsa87::keypair();
-    let pub_bytes  = PyBytes::new_bound(py, pk.as_bytes());
-    let priv_array = PyByteArray::new_bound(py, sk.as_bytes());
+    let pub_bytes  = PyBytes::new(py, pk.as_bytes());
+    let priv_array = PyByteArray::new(py, sk.as_bytes());
     Ok((pub_bytes, priv_array))
 }
 
@@ -68,7 +68,7 @@ pub fn mldsa87_sign<'py>(py: Python<'py>, priv_bytes: &[u8], msg: &[u8]) -> PyRe
             "mldsa87_sign: invalid secret key bytes (expected 4896 bytes)"
         ))?;
     let sig = mldsa87::detached_sign(msg, &sk);
-    Ok(PyBytes::new_bound(py, sig.as_bytes()))
+    Ok(PyBytes::new(py, sig.as_bytes()))
 }
 
 /// Verify an ML-DSA-87 detached signature.

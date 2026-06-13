@@ -1345,7 +1345,7 @@ class OTRv4DataMessage :
         except (ValueError ,struct .error ,TypeError )as e :
             raise ValueError (f"Failed to decode message: {e }")
 
-VERSION ="OTRv4+ 10.9.2"
+VERSION ="OTRv4+ 10.9.3"
 
 if not hasattr (hashlib ,'sha3_512'):
     raise RuntimeError (

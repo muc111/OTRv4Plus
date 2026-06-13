@@ -71,35 +71,35 @@ impl Dakeresult {
     #[getter] fn consumed(&self) -> bool { self.consumed }
 
     #[getter] fn root_key<'py>(&self, py: Python<'py>) -> PyResult<Option<Bound<'py, PyBytes>>> {
-        self.check_not_consumed()?; Ok(self.root_key.as_ref().map(|v| PyBytes::new_bound(py, v)))
+        self.check_not_consumed()?; Ok(self.root_key.as_ref().map(|v| PyBytes::new(py, v)))
     }
     #[setter(root_key)] fn set_root_key(&mut self, v: Option<Vec<u8>>) -> PyResult<()> {
         self.check_not_consumed()?; self.root_key = v; Ok(())
     }
 
     #[getter] fn chain_key_a<'py>(&self, py: Python<'py>) -> PyResult<Option<Bound<'py, PyBytes>>> {
-        self.check_not_consumed()?; Ok(self.chain_key_a.as_ref().map(|v| PyBytes::new_bound(py, v)))
+        self.check_not_consumed()?; Ok(self.chain_key_a.as_ref().map(|v| PyBytes::new(py, v)))
     }
     #[setter(chain_key_a)] fn set_chain_key_a(&mut self, v: Option<Vec<u8>>) -> PyResult<()> {
         self.check_not_consumed()?; self.chain_key_a = v; Ok(())
     }
 
     #[getter] fn chain_key_b<'py>(&self, py: Python<'py>) -> PyResult<Option<Bound<'py, PyBytes>>> {
-        self.check_not_consumed()?; Ok(self.chain_key_b.as_ref().map(|v| PyBytes::new_bound(py, v)))
+        self.check_not_consumed()?; Ok(self.chain_key_b.as_ref().map(|v| PyBytes::new(py, v)))
     }
     #[setter(chain_key_b)] fn set_chain_key_b(&mut self, v: Option<Vec<u8>>) -> PyResult<()> {
         self.check_not_consumed()?; self.chain_key_b = v; Ok(())
     }
 
     #[getter] fn brace_key<'py>(&self, py: Python<'py>) -> PyResult<Option<Bound<'py, PyBytes>>> {
-        self.check_not_consumed()?; Ok(self.brace_key.as_ref().map(|v| PyBytes::new_bound(py, v)))
+        self.check_not_consumed()?; Ok(self.brace_key.as_ref().map(|v| PyBytes::new(py, v)))
     }
     #[setter(brace_key)] fn set_brace_key(&mut self, v: Option<Vec<u8>>) -> PyResult<()> {
         self.check_not_consumed()?; self.brace_key = v; Ok(())
     }
 
     #[getter] fn mac_key<'py>(&self, py: Python<'py>) -> PyResult<Option<Bound<'py, PyBytes>>> {
-        self.check_not_consumed()?; Ok(self.mac_key.as_ref().map(|v| PyBytes::new_bound(py, v)))
+        self.check_not_consumed()?; Ok(self.mac_key.as_ref().map(|v| PyBytes::new(py, v)))
     }
     #[setter(mac_key)] fn set_mac_key(&mut self, v: Option<Vec<u8>>) -> PyResult<()> {
         self.check_not_consumed()?; self.mac_key = v; Ok(())
@@ -161,7 +161,7 @@ pub enum DakePhase {
 
 use std::cell::RefCell;
 
-#[pyclass]
+#[pyclass(unsendable)]
 pub struct DakeOutput {
     // Secret material — private, no PyO3 getter.  Consumed by
     // consume_into_ratchet().  Wrapped in Option so we can .take() it out
@@ -874,7 +874,7 @@ impl PyDake {
             .map_err(|e| PyValueError::new_err(format!("Ed448 SigningKey construction failed: {:?}", e)))?;
         let signature = signing_key.sign_raw(unsigned_body);
         let sig_bytes_arr: [u8; 114] = signature.to_bytes();
-        let sig_py = PyBytes::new_bound(py, &sig_bytes_arr).unbind();
+        let sig_py = PyBytes::new(py, &sig_bytes_arr).unbind();
 
         // ── Construct DakeState (copies bytes into SecretBytes<N>) ──
         let mut inner = DakeState::new(
@@ -991,7 +991,7 @@ impl PyDake {
             )))?;
         let signature = signing_key.sign_raw(unsigned_body);
         let sig_bytes_arr: [u8; 114] = signature.to_bytes();
-        let sig_py = PyBytes::new_bound(py, &sig_bytes_arr).unbind();
+        let sig_py = PyBytes::new(py, &sig_bytes_arr).unbind();
 
         // ── Construct DakeState ──
         let mut inner = DakeState::new(
@@ -1041,14 +1041,14 @@ impl PyDake {
             .map_err(|e| PyValueError::new_err(format!("Ed448 SigningKey construction failed: {:?}", e)))?;
         let signature = signing_key.sign_raw(test_msg);
         let sig_bytes_arr: [u8; 114] = signature.to_bytes();
-        Ok(PyBytes::new_bound(py, &sig_bytes_arr).unbind())
+        Ok(PyBytes::new(py, &sig_bytes_arr).unbind())
     }
 
     #[pyo3(signature = (our_profile_bytes = None, mldsa_pub_bytes = None))]
     fn generate_dake1<'py>(&mut self, py: Python<'py>, our_profile_bytes: Option<&[u8]>, mldsa_pub_bytes: Option<&[u8]>) -> PyResult<Bound<'py, PyBytes>> {
         let profile = match our_profile_bytes { Some(p) => p.to_vec(), None => self.inner.our_profile_bytes.clone() };
         if profile.is_empty() { return Err(PyErr::from(OtrError::Internal)); }
-        Ok(PyBytes::new_bound(py, &self.inner.generate_dake1(&profile, mldsa_pub_bytes).map_err(PyErr::from)?))
+        Ok(PyBytes::new(py, &self.inner.generate_dake1(&profile, mldsa_pub_bytes).map_err(PyErr::from)?))
     }
 
     /// Process DAKE1 – no profile extraction needed in Python.
@@ -1150,7 +1150,7 @@ impl PyDake {
     }
 
     fn assemble_dake3<'py>(&self, py: Python<'py>, sigma_bytes: &[u8], mldsa_sig_bytes: Option<&[u8]>) -> PyResult<Bound<'py, PyBytes>> {
-        Ok(PyBytes::new_bound(py, &self.inner.assemble_dake3(sigma_bytes, mldsa_sig_bytes).map_err(PyErr::from)?))
+        Ok(PyBytes::new(py, &self.inner.assemble_dake3(sigma_bytes, mldsa_sig_bytes).map_err(PyErr::from)?))
     }
     fn process_dake3(&mut self, data: &[u8]) -> PyResult<()> { self.inner.process_dake3(data).map_err(PyErr::from) }
     fn get_phase(&self) -> String {

@@ -75,8 +75,8 @@ pub fn mlkem1024_keygen<'py>(
     py: Python<'py>,
 ) -> PyResult<(Bound<'py, PyBytes>, Bound<'py, PyByteArray>)> {
     let (pk, sk) = mlkem1024::keypair();
-    let ek_bytes = PyBytes::new_bound(py, pk.as_bytes());
-    let dk_array = PyByteArray::new_bound(py, sk.as_bytes());
+    let ek_bytes = PyBytes::new(py, pk.as_bytes());
+    let dk_array = PyByteArray::new(py, sk.as_bytes());
     Ok((ek_bytes, dk_array))
 }
 
@@ -103,8 +103,8 @@ pub fn mlkem1024_encaps<'py>(
         ))?;
     // pqcrypto returns (SharedSecret, Ciphertext) — invert to (ct, ss).
     let (ss, ct) = mlkem1024::encapsulate(&pk);
-    let ct_bytes = PyBytes::new_bound(py, ct.as_bytes());
-    let ss_bytes = PyBytes::new_bound(py, ss.as_bytes());
+    let ct_bytes = PyBytes::new(py, ct.as_bytes());
+    let ss_bytes = PyBytes::new(py, ss.as_bytes());
     Ok((ct_bytes, ss_bytes))
 }
 
@@ -134,7 +134,7 @@ pub fn mlkem1024_decaps<'py>(
             "mlkem1024_decaps: malformed ML-KEM-1024 ciphertext",
         ))?;
     let ss = mlkem1024::decapsulate(&ciphertext, &sk);
-    Ok(PyBytes::new_bound(py, ss.as_bytes()))
+    Ok(PyBytes::new(py, ss.as_bytes()))
 }
 
 #[cfg(test)]

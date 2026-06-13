@@ -1,6 +1,6 @@
 // src/smp.rs — Hybrid Post-Quantum Socialist Millionaire Protocol
 //
-// Version: OTRv4+ v10.9.2
+// Version: OTRv4+ v10.9.3
 //
 // Security model
 // ==============
@@ -108,6 +108,7 @@ const MLDSA_PRV_SIZE: usize = 4896;
 const MLDSA_SIG_SIZE: usize = 4627;
 
 // Wire version bytes
+#[allow(dead_code)]
 const SMP_VERSION_CLASSICAL: u8 = 0x01;
 const SMP_VERSION_PQ:        u8 = 0x02;
 
@@ -1491,7 +1492,7 @@ impl PySmp {
         question: Option<String>,
     ) -> PyResult<Bound<'py, PyBytes>> {
         self.inner.generate_smp1(question)
-            .map(|d| PyBytes::new_bound(py, &d))
+            .map(|d| PyBytes::new(py, &d))
             .map_err(PyErr::from)
     }
 
@@ -1501,7 +1502,7 @@ impl PySmp {
         data: &[u8],
     ) -> PyResult<Bound<'py, PyBytes>> {
         self.inner.process_smp1_generate_smp2(data)
-            .map(|d| PyBytes::new_bound(py, &d))
+            .map(|d| PyBytes::new(py, &d))
             .map_err(PyErr::from)
     }
 
@@ -1511,7 +1512,7 @@ impl PySmp {
         data: &[u8],
     ) -> PyResult<Bound<'py, PyBytes>> {
         self.inner.process_smp2_generate_smp3(data)
-            .map(|d| PyBytes::new_bound(py, &d))
+            .map(|d| PyBytes::new(py, &d))
             .map_err(PyErr::from)
     }
 
@@ -1521,7 +1522,7 @@ impl PySmp {
         data: &[u8],
     ) -> PyResult<Bound<'py, PyBytes>> {
         self.inner.process_smp3_generate_smp4(data)
-            .map(|d| PyBytes::new_bound(py, &d))
+            .map(|d| PyBytes::new(py, &d))
             .map_err(PyErr::from)
     }
 

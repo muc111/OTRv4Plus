@@ -1,0 +1,7 @@
+[advisories]
+ignore = [
+  # API not called in this crate (no PyString::from_object call sites) — verified unreachable
+  "RUSTSEC-2025-0020",
+  # API not called in this crate (no PyCFunction::new_closure call sites) — verified unreachable
+  "RUSTSEC-2026-0177",
+]

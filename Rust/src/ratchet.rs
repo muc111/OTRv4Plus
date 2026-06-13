@@ -609,7 +609,7 @@ impl RustDoubleRatchet {
     fn set_ad(&mut self, ad: &[u8]) { self.inner.set_ad(ad); }
     fn needs_rekey(&self) -> bool { self.inner.needs_rekey() }
     fn local_pub<'py>(&self, py: Python<'py>) -> Bound<'py, PyBytes> {
-        PyBytes::new_bound(py, self.inner.local_pub())
+        PyBytes::new(py, self.inner.local_pub())
     }
     fn ratchet_id(&self) -> u32 { self.inner.ratchet_id() }
     // SECURITY (audit C4): brace_key getter REMOVED.
@@ -621,14 +621,14 @@ impl RustDoubleRatchet {
     fn encrypt<'py>(&mut self, py: Python<'py>, plaintext: &[u8]) -> PyResult<Bound<'py, PyDict>> {
         let result = self.inner.encrypt(plaintext)
             .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
-        let d = PyDict::new_bound(py);
-        d.set_item("ciphertext", PyBytes::new_bound(py, &result.ciphertext))?;
-        d.set_item("header", PyBytes::new_bound(py, &result.header))?;
-        d.set_item("nonce", PyBytes::new_bound(py, &result.nonce))?;
-        d.set_item("tag", PyBytes::new_bound(py, &result.tag))?;
+        let d = PyDict::new(py);
+        d.set_item("ciphertext", PyBytes::new(py, &result.ciphertext))?;
+        d.set_item("header", PyBytes::new(py, &result.header))?;
+        d.set_item("nonce", PyBytes::new(py, &result.nonce))?;
+        d.set_item("tag", PyBytes::new(py, &result.tag))?;
         d.set_item("ratchet_id", result.ratchet_id)?;
         let mac_list: Vec<Bound<'_, PyBytes>> = result.reveal_mac_keys.iter()
-            .map(|k| PyBytes::new_bound(py, k)).collect();
+            .map(|k| PyBytes::new(py, k)).collect();
         d.set_item("reveal_mac_keys", mac_list)?;
         Ok(d)
     }
@@ -641,7 +641,7 @@ impl RustDoubleRatchet {
             .map_err(|_| pyo3::exceptions::PyValueError::new_err("tag must be 16 bytes"))?;
         let plaintext = self.inner.decrypt_same_dh(header, ciphertext, nonce_arr, tag_arr)
             .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
-        Ok(PyBytes::new_bound(py, &plaintext))
+        Ok(PyBytes::new(py, &plaintext))
     }
 
     fn decrypt_new_dh<'py>(&mut self, py: Python<'py>,
@@ -657,7 +657,7 @@ impl RustDoubleRatchet {
         let plaintext = self.inner.decrypt_new_dh(header, ciphertext, nonce_arr, tag_arr,
             dh_secret_recv, dh_secret_send, new_local_pub)
             .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
-        Ok(PyBytes::new_bound(py, &plaintext))
+        Ok(PyBytes::new(py, &plaintext))
     }
 
     fn send_ratchet(&mut self, dh_secret: &[u8], new_local_pub: &[u8]) -> PyResult<()> {
@@ -677,7 +677,7 @@ impl RustDoubleRatchet {
 
     // ── Corrected: returns Python bytes object ────────────────
     fn header_dh_pub<'py>(&self, py: Python<'py>, header_bytes: &[u8]) -> Option<Bound<'py, PyBytes>> {
-        DoubleRatchet::header_dh_pub(header_bytes).map(|pk: [u8; 56]| PyBytes::new_bound(py, &pk))
+        DoubleRatchet::header_dh_pub(header_bytes).map(|pk: [u8; 56]| PyBytes::new(py, &pk))
     }
 
     fn zeroize(&mut self) {

@@ -36,7 +36,7 @@ pq-rust  = [
 test-only-kdf = []
 
 [dependencies]
-pyo3         = { version = "0.21", features = ["extension-module", "abi3-py39"] }
+pyo3         = { version = "0.24", features = ["extension-module", "abi3-py39"] }
 zeroize      = { version = "1.8",  features = ["derive", "alloc"] }
 aes-gcm      = { version = "0.10", features = ["aes"] }
 sha3         = { version = "0.10" }
