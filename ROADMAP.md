@@ -4,6 +4,9 @@ What's next for OTRv4+. Ordered roughly by priority, not by ease.
 
 ## Recently shipped
 
+- **v10.9.2** Formal protocol specification (`SPEC.md`) added — byte-level wire layouts for DAKE1/2/3 and ClientProfile, the KDF usage-ID table, the normative session-key derivation order, the full hybrid PQC SMP construction, fragmentation, state machines, and the RFC 3526 prime. Documentation pass across README (added "Why vs alternatives" comparison + 30-second pitch), SECURITY, and WHY for the hybrid SMP. `termux_install.sh` rewritten Rust-only. No wire change.
+- **v10.9.1** SMP session timeout raised to 45 min (from 10) for the hybrid-PQ wire overhead over I2P. I2P transport tuned against irc.postman.i2p: fragment size 450→380 B (postman truncated the DAKE1 tail), send pacing changed to a 2-fragment / 6-second batch after per-fragment delays all triggered Excess Flood. Per-panel scroll fix (`_scroll_history` was global, mixing channels). IRCv3 P2P typing notifications. Measured: DAKE+SMP ~15–16 min over I2P, <6 min over TLS.
+- **v10.9.0** **Hybrid post-quantum SMP.** The classical four-step Schnorr ZKP over the 3072-bit group is wrapped in an ML-KEM-1024 + ML-DSA-87 binding layer: SMP1 carries the KEM encapsulation key and an ML-DSA-87 public key, SMP2 derives `pq_binding_key` from the KEM shared secret and signs the wire body with ML-DSA-87, SMP3/4 verify-then-sign. Forging "verified" now requires breaking the discrete log, ML-KEM-1024, and ML-DSA-87 simultaneously. Wire-versioned 0x01/0x02, no silent downgrade. A KEM-key-mixing bug (initiator derived the secret scalar without the KEM key, responder with it → false-negative SMP) was found in live two-session testing and fixed by removing the KEM key from secret derivation entirely. 15 new SMP tests, 30+ total.
 - **v10.7.6** Phase 5.4. SMP modular exponentiation made constant-time: `modpow` migrated from `num-bigint` (variable-time) to `crypto-bigint` `DynResidue<48>` (Montgomery-form, constant-time in the exponent). Closes the timing side-channel on the secret SMP exponents (blinding scalars, the SMP secret, ZKP randomisers) — the last open security-hardening item on this roadmap. The 3072-bit group (OTRv4 §5.3) is unchanged, so the wire format and spec compliance are identical; only the exponentiation implementation changed. `crypto-bigint` promoted from transitive to direct dep (no new compile). 6 SMP unit tests added. Verified live over I2P with peer QuartzRoot. Fixed a latent mislabel found during the work: `SMP_PRIME_BYTES` was `256` but the prime is 3072-bit (384 bytes) — corrected (the old `num-bigint` path was unaffected because `fixed_bytes` never truncated).
 - **v10.7.5** ClientProfile validity reduced from 365 days to 14 days, matching the OTRv4 spec §4.1 recommendation and `otr4j`'s default.  The previous 1-year value was incoherent with the ephemeral-identity design.  Implemented as a class-level `VALIDITY_SECONDS` constant so the two assignment sites can't drift again.
 - **v10.7.4** Phase 5.3k + 5.3i-D.  All C extensions retired.  `otr4_ed448_ct` import deleted from `otrv4+.py` (the import was a defensive ground-truth; a grep for `_ed448_ct.` member access was empty — it was never called).  `otr4_crypto_ext.c`, `otr4_ed448_ct.c`, `otr4_mldsa_ext.c`, and `setup_otr4.py` removed via `git rm`.  Seven test files in `tests/` migrated onto `otrv4_core`; the C-extension smoke test `test_otr.py` deleted.  Concurrent fix in `aead.rs`: deprecated `aes-gcm 0.10` `GenericArray::from_slice` helper replaced by `Aes256Gcm::new_from_slice` (KeyInit) and `Nonce::from(*&[u8;12])`.  Cargo build is back to **0 warnings**, **20 tests passing**.  OTRv4+ is now Rust-core-only — the architectural finish line.
@@ -115,7 +118,23 @@ I2P SAM bridge works today. Adding an alternative Tor `.onion` transport would b
 
 ### Formal review
 
-The crypto path is now small enough to be reviewable: ~3500 lines of Rust across `dake.rs`, `ratchet.rs`, `smp.rs`, `smp_vault.rs`, `ring_sig.rs`, `key_handles.rs`, `mldsa.rs`, `mlkem.rs`, `aead.rs`, `secure_mem.rs`, `kdf.rs`. As of v10.7.5 the entire cryptographic surface is Rust — the Python `cryptography` library was removed at v10.7 and all C extensions at v10.7.5 (Phase 5.3k). As of v10.7.6 (Phase 5.4) the SMP modular exponentiation is constant-time via `crypto-bigint`. A formal third-party review would significantly increase confidence. No funding for this; expression of interest welcome.
+The crypto path is now small enough to be reviewable: ~3500 lines of Rust across `dake.rs`, `ratchet.rs`, `smp.rs`, `smp_vault.rs`, `ring_sig.rs`, `key_handles.rs`, `mldsa.rs`, `mlkem.rs`, `aead.rs`, `secure_mem.rs`, `kdf.rs`. As of v10.7.5 the entire cryptographic surface is Rust — the Python `cryptography` library was removed at v10.7 and all C extensions at v10.7.5 (Phase 5.3k). As of v10.7.6 (Phase 5.4) the SMP modular exponentiation is constant-time via `crypto-bigint`, and as of v10.9.0 the SMP is hybrid post-quantum. A formal third-party review would significantly increase confidence. No funding for this; expression of interest welcome.
+
+### Full post-quantum SMP / PQ-PAKE
+
+The hybrid SMP (v10.9.0) wraps the classical Schnorr ZKP rather than replacing it, so the equality proof itself is still classical (susceptible to Shor, though an attacker must also break ML-KEM-1024 and ML-DSA-87). SMP is effectively a PAKE that predates the term; modern PQ-PAKE constructions (lattice-based CPace-style, or the newer PQ-PAKE designs) would be a cleaner foundation than bolting PQC onto the Schnorr proof. Evaluating a PQ-PAKE replacement for the equality test is the most significant open cryptographic item.
+
+### Constant-time SMP ZKP scalar arithmetic
+
+The SMP modular exponentiation is constant-time (v10.7.6), but the surrounding ZKP scalar arithmetic — the `d = r - c*x` response computation — still uses variable-time `num-bigint`. This is a real residual timing side-channel on the secret exponents. It was deliberately not hot-patched because rewriting working ZKP arithmetic into `crypto-bigint` constant-time ops risks a correctness regression; it needs its own test vectors and careful review.
+
+### Seed-only ML-KEM key storage (if persistence is ever added)
+
+ML-KEM private keys are currently held as the full expanded decapsulation key (3168 B) rather than the 64-byte (d,z) seed. This is moot today because the keys are fully ephemeral — fresh per DAKE and per ratchet step, used once, zeroized, never persisted — so the binding attacks that seed-only storage defends against (which concern stored-and-reloaded keys) do not apply. If key persistence is ever added, switch to seed-only storage and re-derive deterministically.
+
+### Post-quantum ClientProfile signing
+
+ClientProfile signatures are Ed448 only. Adding an ML-DSA-87 signature alongside would extend hybrid authentication to the profile itself.
 
 ## What is not on the roadmap
 

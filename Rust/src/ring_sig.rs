@@ -317,7 +317,7 @@ pub fn py_ring_sign<'py>(
     msg:  &[u8],
 ) -> PyResult<Py<PyBytes>> {
     match ring_sign_bytes(seed, a1, a2, msg) {
-        Ok(sig) => Ok(PyBytes::new_bound(py, &sig).unbind()),
+        Ok(sig) => Ok(PyBytes::new(py, &sig).unbind()),
         Err(e)  => Err(PyValueError::new_err(e)),
     }
 }

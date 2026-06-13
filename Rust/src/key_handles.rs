@@ -89,7 +89,7 @@ impl Ed448KeyHandle {
 
     /// 57-byte compressed Ed448 public key.
     fn public_bytes<'py>(&self, py: Python<'py>) -> Py<PyBytes> {
-        PyBytes::new_bound(py, &self.pub_bytes).unbind()
+        PyBytes::new(py, &self.pub_bytes).unbind()
     }
 
     /// Sign `msg` with pure Ed448 (RFC 8032 §5.2, empty context).
@@ -101,7 +101,7 @@ impl Ed448KeyHandle {
             )))?;
         let signature = signing_key.sign_raw(msg);
         let sig_bytes: [u8; 114] = signature.to_bytes();
-        Ok(PyBytes::new_bound(py, &sig_bytes).unbind())
+        Ok(PyBytes::new(py, &sig_bytes).unbind())
     }
 
     /// OTRv4 Schnorr ring signature using this handle as the signing key.
@@ -118,7 +118,7 @@ impl Ed448KeyHandle {
         let sig = crate::ring_sig::ring_sign_bytes(
             self.seed.expose_slice(), a1, a2, msg
         ).map_err(|e| PyValueError::new_err(e))?;
-        Ok(PyBytes::new_bound(py, &sig).unbind())
+        Ok(PyBytes::new(py, &sig).unbind())
     }
 
     fn __repr__(&self) -> String {
@@ -257,7 +257,7 @@ impl X448KeyHandle {
 
     /// 56-byte X448 public key.
     fn public_bytes<'py>(&self, py: Python<'py>) -> Py<PyBytes> {
-        PyBytes::new_bound(py, &self.pub_bytes).unbind()
+        PyBytes::new(py, &self.pub_bytes).unbind()
     }
 
     /// X448 Diffie-Hellman with a peer's 56-byte public key.
@@ -278,7 +278,7 @@ impl X448KeyHandle {
         let ss = sk.as_diffie_hellman(&pk)
             .ok_or_else(|| PyValueError::new_err("X448 DH produced all-zero shared secret"))?;
         let ss_bytes: [u8; 56] = *ss.as_bytes();
-        Ok(PyBytes::new_bound(py, &ss_bytes).unbind())
+        Ok(PyBytes::new(py, &ss_bytes).unbind())
     }
 
     fn __repr__(&self) -> String {

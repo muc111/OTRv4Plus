@@ -1,6 +1,6 @@
 # Features
 
-What's implemented as of v10.7.
+What's implemented as of v10.9.2.
 
 ## Cryptography
 
@@ -10,8 +10,8 @@ What's implemented as of v10.7.
 |---|---|---|
 | Ed448 | Long-term identity signing + ClientProfile verification | `ed448-goldilocks-plus` 0.16 (pure Rust) |
 | X448 | Ephemeral DH (DAKE and ratchet) | `x448` 0.6 (pure Rust) — both the DAKE and the double-ratchet DH run on this crate as of v10.6.21 |
-| ML-KEM-1024 | Post-quantum KEM (DAKE brace key, ratchet rekey) | `pqcrypto-mlkem` 0.1.1 (FIPS 203) — pure Rust.  v10.7.3 moved `MLKEM1024BraceKEM` off the `otr4_crypto_ext` C extension onto Rust via `src/mlkem.rs`; v10.7.4 (5.3k) deleted the C extension. |
-| ML-DSA-87 | Post-quantum signature (hybrid auth) | `pqcrypto-mldsa` 0.1.2 (FIPS 204) — pure Rust (v10.6.18 retired the `otr4_mldsa_ext` C extension). |
+| ML-KEM-1024 | Post-quantum KEM (DAKE brace key, ratchet rekey, hybrid SMP binding) | `pqcrypto-mlkem` 0.1.1 (FIPS 203) — pure Rust.  v10.7.3 moved `MLKEM1024BraceKEM` off the `otr4_crypto_ext` C extension onto Rust via `src/mlkem.rs`; v10.7.4 (5.3k) deleted the C extension. |
+| ML-DSA-87 | Post-quantum signature (hybrid DAKE auth + per-step hybrid SMP signatures) | `pqcrypto-mldsa` 0.1.2 (FIPS 204) — pure Rust (v10.6.18 retired the `otr4_mldsa_ext` C extension). |
 | SHAKE-256 | KDF, ring sig challenge, transcript hash | `sha3` 0.10 |
 | AES-256-GCM | Message encryption + SMP-secrets store + secure-file-destroy | `aes-gcm` 0.10 via Rust `Rust/src/aead.rs` PyO3 bindings (v10.6.19 retired the `cryptography.AESGCM` runtime uses; v10.7.4 (5.3i-D) moved off the deprecated `from_slice` helper to `new_from_slice`). |
 | Argon2id | SMP secret vault KDF | `argon2` 0.5 (pure Rust) via `src/smp_vault.rs`. |
@@ -20,7 +20,7 @@ What's implemented as of v10.7.
 | RFC 7748 X448 vector | Build-time correctness gate (ratchet desync guard) | `src/key_handles.rs` (Rust `#[cfg(test)]`) |
 | FIPS 203 ML-KEM-1024 byte-size + roundtrip | Build-time correctness gate (brace KEM) | `src/mlkem.rs` (Rust `#[cfg(test)]`) |
 
-As of **v10.7.5 (Phase 5.3k)** OTRv4+ is **Rust-core-only**: every cryptographic primitive runs inside the Rust `otrv4_core` PyO3 module.  All three C extensions (`otr4_crypto_ext`, `otr4_ed448_ct`, `otr4_mldsa_ext`) and `setup_otr4.py` have been removed from the repository.  The Python `cryptography` library was retired earlier at v10.7.  There is no longer a second cryptographic implementation surface inside the project.
+As of **v10.7.5 (Phase 5.3k)** OTRv4+ is **Rust-core-only**, and as of **v10.9.0** the SMP is hybrid post-quantum: every cryptographic primitive runs inside the Rust `otrv4_core` PyO3 module.  All three C extensions (`otr4_crypto_ext`, `otr4_ed448_ct`, `otr4_mldsa_ext`) and `setup_otr4.py` have been removed from the repository.  The Python `cryptography` library was retired earlier at v10.7.  There is no longer a second cryptographic implementation surface inside the project.
 
 ### Higher-level protocols
 
@@ -29,8 +29,10 @@ As of **v10.7.5 (Phase 5.3k)** OTRv4+ is **Rust-core-only**: every cryptographic
 | OTRv4 DAKE | Rust (`src/dake.rs`) | Three-message handshake. Pure Rust state machine. The pure-Python `OTRv4DAKE` fallback was deleted in v10.7. |
 | OTRv4 double ratchet | Rust (`src/ratchet.rs`) | DH ratchet at 100-message or 24-hour boundary. X448 DH and ML-KEM-1024 rekey at every DH step, both in Rust. |
 | OTRv4 ring signature | Rust (`src/ring_sig.rs`) | Schnorr ring sig over three Ed448 keys. Pure Rust port of the C reference. |
-| OTRv4 SMP | Rust (`src/smp.rs`, `src/smp_vault.rs`) | Four-step ZKP. 3072-bit MODP group (OTRv4 §5.3). ZeroizeOnDrop on every exponent. Constant-time modular exponentiation via `crypto-bigint` `DynResidue` as of v10.7.6 (Phase 5.4). |
+| OTRv4 SMP (hybrid PQC) | Rust (`src/smp.rs`, `src/smp_vault.rs`) | Four-step Schnorr ZKP over the 3072-bit MODP group (OTRv4 §5.3) wrapped in an ML-KEM-1024 + ML-DSA-87 binding layer as of v10.9.0. Wire-versioned 0x01/0x02, no silent downgrade. ZeroizeOnDrop on every exponent and PQ key. Constant-time modular exponentiation via `crypto-bigint` `DynResidue` (v10.7.6). Forging "verified" requires breaking the discrete log, ML-KEM-1024, and ML-DSA-87 simultaneously. |
 | Ed448 / X448 long-term keys | Rust (`src/key_handles.rs`) | Opaque PyO3 handles. Private bytes never leave Rust. Includes `verify_ed448_sig` for ClientProfile verification. |
+
+A complete byte-level wire specification for all of the above — DAKE, ratchet, and hybrid SMP — is in [SPEC.md](SPEC.md).
 
 ## Transport
 
@@ -52,7 +54,7 @@ As of **v10.7.5 (Phase 5.3k)** OTRv4+ is **Rust-core-only**: every cryptographic
 | `/smp <secret>` and `/smp start` SMP flow | Yes |
 | `/trust <nick>` and `y` / `n` fingerprint trust | Yes |
 | `/fingerprint` shows yours and theirs | Yes |
-| OTRv4 message fragmentation | Yes (260 chars per fragment on I2P) |
+| OTRv4 message fragmentation | Yes (380 B per fragment on I2P, 450 B on TLS/Tor; SMP2 is ~49 fragments on I2P) |
 | Out-of-order message handling | Yes (up to 1000 skipped keys cached) |
 | Session resume after disconnect | No (each connect produces fresh DAKE) |
 | Stable identity across launches | No (deliberate — see ROADMAP Phase 5.3g) |
@@ -71,12 +73,15 @@ As of **v10.7.5 (Phase 5.3k)** OTRv4+ is **Rust-core-only**: every cryptographic
 | Skipped message keys | Rust `HashMap` with `SecretBytes` values. Cleared on session close. |
 | SMP secret | Rust `SecretVec` inside `RustSMPVault`. ZeroizeOnDrop. |
 | SMP exponents | Rust `Scalar` wrappers. ZeroizeOnDrop. |
+| SMP ML-KEM-1024 secret key (hybrid) | Rust heap. Wiped after decapsulation. |
+| SMP ML-DSA-87 signing key (hybrid) | Rust heap. ZeroizeOnDrop. |
+| SMP `pq_binding_key` (hybrid) | Rust `SecretBytes<32>`. ZeroizeOnDrop, wiped per step. |
 
 No long-term private key material appears on the Python heap as `bytes` or `bytearray` during normal session operation. As of v10.7 there is no Python cryptography library in the codebase, so no key material transits an OpenSSL-backed Python object.
 
 ## Build target
 
-- Termux on Android (aarch64), Rust 1.94 or newer
+- Termux on Android (aarch64), Rust 1.80 or newer (1.85+ if building with edition 2024)
 - Python 3.11+
 - No OpenSSL dependency — the C extensions that linked `libssl`/`libcrypto` were retired at v10.7.5 (Phase 5.3k); the Rust core uses pure-Rust crypto crates
 - No Python `cryptography` package dependency as of v10.7

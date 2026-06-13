@@ -191,11 +191,11 @@ impl PySMPVault {
     /// from `store()` → Rust internals via `expose_for_smp()`.
     #[cfg(feature = "test-only-kdf")]
     fn load<'py>(&self, py: Python<'py>, name: &str) -> Option<Bound<'py, PyBytes>> {
-        self.inner.expose_by_name(name).map(|d| PyBytes::new_bound(py, d))
+        self.inner.expose_by_name(name).map(|d| PyBytes::new(py, d))
     }
 
     #[cfg(feature = "test-only-kdf")]
     fn load_by_handle<'py>(&self, py: Python<'py>, handle: u64) -> Option<Bound<'py, PyBytes>> {
-        self.inner.expose_by_handle(handle).map(|d| PyBytes::new_bound(py, d))
+        self.inner.expose_by_handle(handle).map(|d| PyBytes::new(py, d))
     }
 }
