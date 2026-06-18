@@ -3,7 +3,7 @@
 </p>
 
 <h1 align="center">OTRv4+</h1>
-<p align="center"><strong>Post-quantum hybrid encryption for Off The Record over IRC. Experimental, unaudited research prototype.</strong></p>
+<p align="center"><strong>PQC hybrid encryption for Off The Record Chat. Experimental, unaudited research prototype.</strong></p>
 
 <p align="center">
 <code>v10.9.2 · Rust crypto core · hybrid PQC SMP (ML-KEM-1024 + ML-DSA-87) · I2P SAM · TUI</code>
