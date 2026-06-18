@@ -3,7 +3,7 @@
 </p>
 
 <h1 align="center">OTRv4+</h1>
-<p align="center"><strong>Post-quantum secure messaging over IRC. Research prototype.</strong></p>
+<p align="center"><strong>Post-quantum hybrid encryption for OTR over IRC. Experimental, unaudited research prototype.</strong></p>
 
 <p align="center">
 <code>v10.9.2 · Rust crypto core · hybrid PQC SMP (ML-KEM-1024 + ML-DSA-87) · I2P SAM · TUI</code>
@@ -17,33 +17,35 @@
   <img src="example.png" width="680" alt="OTRv4+ TUI — encrypted session with SMP verified">
 </p>
 
-<p align="center"><em>Full OTRv4 DAKE + SMP verification with hybrid PQC (ML-KEM-1024 + ML-DSA-87 + ZKP). Blue 🔵 = identity confirmed. Tested live on both Libera.chat TLS and irc.postman.i2p I2P SAM.<br>Ctrl+P or Ctrl+S to pause and scroll back. Type <code>/tui</code> to toggle pinned chrome.</em></p>
+<p align="center"><em>Full OTRv4 DAKE + SMP verification with a hybrid PQC layer (ML-KEM-1024 + ML-DSA-87 + classical ZKP). Blue 🔵 = identity confirmed. Tested live on both Libera.chat TLS and irc.postman.i2p I2P SAM.<br>Ctrl+P or Ctrl+S to pause and scroll back. Type <code>/tui</code> to toggle pinned chrome.</em></p>
 
 ---
 
 ## What this is
 
-OTRv4+ is an IRC client that implements OTRv4 with post-quantum cryptography at every layer including hybrid PQC identity verification (SMP). It runs on Termux (Android) over I2P, Tor, or TLS clearnet, with a Rust crypto core wrapped by a thin Python orchestration layer.
+OTRv4+ is an IRC client that implements OTRv4 with a post-quantum hybrid layer added at each stage of the protocol — including the SMP identity-verification step. It runs on Termux (Android) over I2P, Tor, or TLS clearnet, with a Rust crypto core wrapped by a thin Python orchestration layer.
 
-Single-author research prototype. Not a finished product. The author is not a cryptographer. The Rust crypto crates it depends on (`ed448-goldilocks-plus`, `x448`, `pqcrypto-mlkem`, `pqcrypto-mldsa`) are not audited. Use it to study or extend it, not because you need a hardened tool today.
+**Single-author research prototype. Not a finished product, and not audited.** The author is not a cryptographer. The protocol composition (the DAKE wiring, the hybrid SMP construction) is hand-written and has had no external review, and the Rust crypto crates it depends on (`ed448-goldilocks-plus`, `x448`, `pqcrypto-mlkem`, `pqcrypto-mldsa`) have had no formal review either. Use it to study or extend, not because you need a hardened tool today. If your safety depends on the security of your messaging, use something audited.
 
-## Why OTRv4+ vs alternatives
+## Where it fits
 
-A qualified developer's 30-second summary of the niche this fills:
+OTRv4+ occupies a narrow niche. Here is roughly where it sits relative to other tools — accurate to the best of the author's knowledge; corrections welcome:
 
 | | OTRv4+ | Signal | Stock OTRv4 | Matrix/Element |
 |---|---|---|---|---|
 | Identifier required | None (IRC nick) | Phone number | None | Email/phone |
 | Transport | IRC over I2P / Tor / TLS | Centralised servers | IRC/XMPP | Centralised homeservers |
-| Post-quantum KEM | ML-KEM-1024 (L5) every ratchet step | ML-KEM-768 (L3) initial only | None | None |
-| Post-quantum signatures | ML-DSA-87 (L5) | No | No | No |
-| Post-quantum SMP | Yes (hybrid) | N/A | No | No |
-| Deniable auth | Ed448 ring signatures | Partial | Yes | No |
-| Network-layer anonymity | I2P (unique destination per session) | No | Depends | No |
+| Post-quantum KEM | ML-KEM-1024, every DH ratchet step | ML-KEM-1024, initial handshake (PQXDH) | None | None |
+| Post-quantum signatures | ML-DSA-87 | No | No | No |
+| Post-quantum SMP | Yes (hybrid) | N/A (no SMP) | No | No |
+| Deniable auth | Ed448 ring signatures | Yes (X3DH/PQXDH) | Yes | No |
+| Network-layer anonymity | I2P (new destination per session) | No | Depends | No |
 
-**The specific gap it fills:** synchronous, pseudonymous, end-to-end encrypted conversation where both parties are present, no phone number or account exists, the network layer hides your IP, and the cryptography is hardened to NIST Level 5 against a future quantum adversary — including the identity-verification step (SMP), which no other deployed tool hardens against quantum attack.
+**The niche:** synchronous, pseudonymous, end-to-end encrypted conversation where both parties are online, no phone number or account exists, the network layer hides your IP, and Category-5 post-quantum parameters (ML-KEM-1024, ML-DSA-87) are used throughout — including the SMP identity check, which is an unusual place to add post-quantum hardening. Whether that hardening actually holds depends on the construction being correct, which has not been reviewed.
 
-Signal is faster, asynchronous, and the right choice for mass-market messaging. OTRv4+ is for the sessions where traces are unacceptable and you need cryptographic certainty of who you are talking to, over an anonymising network, with no identifying account. The cost is latency: a full hybrid-PQC handshake over I2P takes ~15 minutes. See [WHY.md](WHY.md) for the longer rationale.
+A note on the KEM row, since it is easy to get wrong: Signal's PQXDH also uses ML-KEM-1024 (Category 5), so the two are at the same parameter level. The difference is *placement* — PQXDH applies the KEM to the initial key agreement, whereas OTRv4+ re-runs a fresh ML-KEM-1024 exchange at every DH ratchet step. That is the honest distinction; it is not a claim that OTRv4+ is "more post-quantum" than Signal.
+
+Signal is faster, asynchronous, and the right choice for almost everyone. OTRv4+ is for the sessions where you want a pseudonymous, account-free channel over an anonymising network with a shared-secret identity check, and are willing to pay the latency cost: a full hybrid-PQC handshake over I2P takes about 15 minutes. See [WHY.md](WHY.md) for the longer rationale.
 
 ## Quick start
 
@@ -77,7 +79,7 @@ cp target/release/libotrv4_core.so ../otrv4_core.so
 cd ..
 ```
 
-As of v10.7.5 the project is **Rust-core-only**: there are no C extensions to compile and no Python `cryptography` dependency.  The Rust core is the single cryptographic surface.
+As of v10.7.5 the project is **Rust-core-only**: there are no C extensions to compile and no Python `cryptography` dependency. The Rust core is the single cryptographic surface.
 
 ### 3. Verify the build (recommended)
 
@@ -87,7 +89,9 @@ cargo test --release --no-default-features --features pq-rust
 cd ..
 ```
 
-Expected: `test result: ok. 30 passed; 0 failed` (17 existing + 15 new hybrid PQC SMP tests). The tests that matter most are `test_vectors::tests::ed448_rfc8032_vectors_byte_exact` (Rust Ed448 against RFC 8032) and `key_handles::tests::x448_rfc7748_known_answer` (Rust X448 against RFC 7748 §5.2). If either fails, a Rust crypto implementation has drifted from its specification and the build is not safe to use.
+Expected: `test result: ok. 30 passed; 0 failed` (17 existing + 15 hybrid PQC SMP tests). The two that matter most are `test_vectors::tests::ed448_rfc8032_vectors_byte_exact` (Rust Ed448 against RFC 8032) and `key_handles::tests::x448_rfc7748_known_answer` (Rust X448 against RFC 7748 §5.2).
+
+What these tests do and do not tell you: a pass confirms the **primitives** (Ed448, X448) match their published RFC vectors byte-for-byte, so the low-level math is implemented correctly. It does **not** certify the surrounding protocol — the DAKE wiring and the hybrid SMP construction are unreviewed, and no test here can establish that they are secure. Treat a green run as "the building blocks are correct," not "the system is safe."
 
 ### 4. Run it
 
@@ -105,7 +109,7 @@ If another user is in `#otr` (their nick is `SomeNick`), type:
 /otr SomeNick
 ```
 
-This starts the OTRv4 DAKE handshake. Fingerprints display once the DAKE handshake completes. Type `y` to trust. Either side then types a shared SMP secret (agreed out of band) and runs `/smp start`.
+This starts the OTRv4 DAKE handshake. Fingerprints display once the DAKE completes. Type `y` to trust. Either side then types a shared SMP secret (agreed out of band) and runs `/smp start`.
 
 Typical completion times (measured, hybrid PQC SMP v10.9.1):
 - **TLS clearnet** (Libera.chat): DAKE + SMP verified in **under 6 minutes**
@@ -114,7 +118,7 @@ Typical completion times (measured, hybrid PQC SMP v10.9.1):
 
 You see `✅ SMP VERIFIED` in blue when done.
 
-From that point, messages typed in the peer tab are end-to-end encrypted with post-quantum hybrid security.
+From that point, messages typed in the peer tab are end-to-end encrypted with the hybrid post-quantum scheme.
 
 ## TUI mode
 
@@ -203,7 +207,7 @@ After that, the peer tab is green (encrypted + verified) and your typed messages
 
 As of v10.7, the Python `cryptography` library has been **fully removed** from the codebase. Every Ed448, X448, AES-256-GCM, and ML-DSA-87 operation runs inside the Rust `otrv4_core` core. There is no OpenSSL-backed Python crypto in any code path.
 
-As of v10.7.5 (Phase 5.3k) all C extensions have been retired.  The previous `otr4_crypto_ext`, `otr4_ed448_ct`, and `otr4_mldsa_ext` shared libraries are deleted from the repo and the `setup_otr4.py` build target removed.  Every cryptographic operation now runs inside the Rust `otrv4_core` module: ML-KEM-1024 (FIPS 203), ML-DSA-87 (FIPS 204), Ed448 and X448 (`ed448-goldilocks-plus`), AES-256-GCM (`aes-gcm`), and the Argon2id-class KDF that protects the SMP secret vault.  Memory wiping uses Rust `zeroize::Zeroize` on Rust-owned buffers and `ctypes.memset` for the remaining bytearrays held on the Python side.
+As of v10.7.5 (Phase 5.3k) all C extensions have been retired. The previous `otr4_crypto_ext`, `otr4_ed448_ct`, and `otr4_mldsa_ext` shared libraries are deleted from the repo and the `setup_otr4.py` build target removed. Every cryptographic operation now runs inside the Rust `otrv4_core` module: ML-KEM-1024 (FIPS 203), ML-DSA-87 (FIPS 204), Ed448 and X448 (`ed448-goldilocks-plus`), AES-256-GCM (`aes-gcm`), and the Argon2id-class KDF that protects the SMP secret vault. Memory wiping uses Rust `zeroize::Zeroize` on Rust-owned buffers and `ctypes.memset` for the remaining bytearrays held on the Python side.
 
 ## Key exchange (DAKE)
 
@@ -223,15 +227,19 @@ When the handle is garbage-collected, Rust's `ZeroizeOnDrop` runs and wipes the 
 
 Chain keys advance per message via SHAKE-256 KDF. DH ratchet at rekey boundaries (100 messages or 24 hours). Fresh ML-KEM-1024 keypair generated and exchanged at every DH ratchet step. Brace key rotated with each KEM shared secret. Skipped message keys cached for out-of-order delivery (max 1000 skip).
 
-As of v10.7, the ratchet's X448 Diffie-Hellman runs entirely in the Rust core via `X448KeyHandle`. The `x448` crate clamps the scalar per RFC 7748 and rejects low-order points, matching OpenSSL byte-for-byte; an RFC 7748 §5.2 known-answer test gates the build.
+As of v10.7, the ratchet's X448 Diffie-Hellman runs entirely in the Rust core via `X448KeyHandle`. The `x448` crate clamps the scalar per RFC 7748 and rejects low-order points; an RFC 7748 §5.2 known-answer test gates the build.
 
 ## Authentication
 
-Ed448 ring signatures provide deniable authentication in DAKE3. The ring signature is implemented in pure Rust using `ed448-goldilocks-plus` and `sha3` for SHAKE-256. ML-DSA-87 is appended as hybrid post-quantum auth. ClientProfile signature verification on incoming peers runs through the Rust `verify_ed448_sig` function. SMP provides out-of-band identity verification via a hybrid post-quantum four-step protocol: the classical OTRv4 Schnorr ZKP over a 3072-bit safe prime runs alongside ML-KEM-1024 key encapsulation and ML-DSA-87 per-step signatures. The pq_binding_key derived from the KEM shared secret binds every ML-DSA-87 signature to the session. All SMP state runs in Rust with `ZeroizeOnDrop` on every exponent and key.
+Ed448 ring signatures provide deniable authentication in DAKE3. The ring signature is implemented in pure Rust using `ed448-goldilocks-plus` and `sha3` for SHAKE-256. ML-DSA-87 is appended as hybrid post-quantum auth. ClientProfile signature verification on incoming peers runs through the Rust `verify_ed448_sig` function.
+
+SMP provides out-of-band identity verification via a hybrid four-step protocol: the classical OTRv4 Schnorr ZKP over a 3072-bit safe prime runs alongside ML-KEM-1024 key encapsulation and ML-DSA-87 per-step signatures. The `pq_binding_key` derived from the KEM shared secret binds every ML-DSA-87 signature to the session. All SMP state runs in Rust with `ZeroizeOnDrop` on every exponent and key.
 
 ## Hybrid PQC SMP (v10.9.1)
 
 As of v10.9.0, identity verification uses a hybrid post-quantum SMP protocol. The classical OTRv4 four-step Schnorr ZKP over a 3072-bit safe prime group runs alongside an ML-KEM-1024 and ML-DSA-87 binding layer.
+
+SMP itself is not new — the Socialist Millionaires' Protocol has shipped in libotr-based clients (Pidgin, Adium, Jitsi, ChatSecure) since around 2007. What is unusual here is wrapping it in a post-quantum hybrid: the classical equality proof is the same one OTR has always used, with ML-KEM-1024 and ML-DSA-87 added on top.
 
 **How it works:**
 
@@ -239,7 +247,7 @@ As of v10.9.0, identity verification uses a hybrid post-quantum SMP protocol. Th
 - **SMP2** — responder encapsulates to derive `kem_ss`, computes `pq_binding_key = KDF(kem_ss || transcript_tag)`, signs the entire SMP2 wire body with ML-DSA-87 under that binding key
 - **SMP3/4** — each side verifies the previous ML-DSA-87 signature before processing classical fields, then signs its own output
 
-**Security:** breaking the equality proof requires breaking all three of the 3072-bit discrete log, ML-KEM-1024, and ML-DSA-87 simultaneously. The wire format is versioned (`0x02` = hybrid PQ) with no silent downgrade possible.
+**Design intent (not a verified result):** the hybrid layer is meant so that the equality proof is no weaker than the strongest of its three components — the 3072-bit discrete log, ML-KEM-1024, and ML-DSA-87 — so that defeating it would require breaking all three rather than any one. This is the goal of the construction, not a proven property: it is hand-written, unreviewed, and has not been analysed by anyone qualified to confirm it. The wire format is versioned (`0x02` = hybrid PQ) so a downgrade to the classical-only format is not silent, which is a checkable implementation fact rather than a security proof.
 
 **Wire overhead:** SMP1 grows from ~1.4 KB to ~8.1 KB (18 fragments), SMP2 from ~3.1 KB to ~16.4 KB (49 fragments) due to ML-KEM-1024 and ML-DSA-87 key material.
 
@@ -255,7 +263,6 @@ As of v10.9.0, identity verification uses a hybrid post-quantum SMP protocol. Th
 
 ## Memory safety
 
-
 | Component | Where secrets live | Python sees |
 |---|---|---|
 | Ratchet chain / root keys | Rust `SecretBytes<32>` | Nothing |
@@ -270,23 +277,23 @@ As of v10.9.0, identity verification uses a hybrid post-quantum SMP protocol. Th
 | SMP ML-DSA-87 signing key | Rust `SecretBytes<4896>` with `ZeroizeOnDrop` | Nothing |
 | SMP pq_binding_key | Rust `SecretBytes<32>`, wiped after each step | Nothing |
 
-Every value with `ZeroizeOnDrop` is wiped when its owning Rust object is dropped. No private key material appears on the Python heap during normal session operation.
+Every value with `ZeroizeOnDrop` is wiped when its owning Rust object is dropped. No private key material appears on the Python heap during normal session operation. (This is a memory-hygiene property of the implementation; it is independent of whether the protocol design itself is sound.)
 
 ## RFC build-time gates
 
 Earlier versions ran a boot-time cross-verification that signed a test message with Rust Ed448 and the Python `cryptography` library and compared the byte output. v10.6.17 replaced that with hardcoded RFC 8032 §7.4 Ed448 test vectors in `Rust/src/test_vectors.rs`. v10.6.21 added an RFC 7748 §5.2 X448 known-answer vector in `Rust/src/key_handles.rs`. The `cargo test` harness exercises both and asserts byte equality with the published values.
 
-Run `cargo test --release --no-default-features --features pq-rust` before any release. If a vector test fails, the corresponding Rust crate has drifted from its RFC and the build should not ship.
+Run `cargo test --release --no-default-features --features pq-rust` before any release. If a vector test fails, the corresponding Rust crate has drifted from its RFC and the build should not ship. As above: these gates check the primitives against their specifications; they do not validate the protocol built on top of them.
 
 ## Honest caveats
 
-1. **Single author, no external review.** Code style is consistent but design choices have not been peer-reviewed.
+1. **Single author, no external review.** This is the big one. Code style is consistent, but the design choices — especially the hybrid SMP construction — have not been peer-reviewed by anyone with a cryptography background. "It reaches VERIFIED and passes its tests" is not the same as "it is secure."
 
-2. **Built with AI assistance (Claude).** The author drove design and testing; the AI helped with implementation. Each substantive change was live-tested between two I2P peers before being committed.
+2. **Built with AI assistance (Claude).** The author drove design and testing; the AI helped with implementation. Each substantive change was live-tested between two I2P peers before being committed. AI assistance does not substitute for review — if anything it raises the bar for it, because confident-looking mistakes are exactly the failure mode.
 
 3. **The Rust crypto crates are not audited.** `ed448-goldilocks-plus` 0.16 is the only viable pure-Rust Ed448 implementation but has no formal review. `x448` 0.6 is a pure-Rust X448 with no formal review. `pqcrypto-mlkem 0.1.1` (FIPS 203 ML-KEM-1024) and `pqcrypto-mldsa 0.1.2` (ML-DSA-87) are PQClean-derived reference implementations.
 
-4. **Rust-core-only since v10.7.5.**  Every C extension (`otr4_crypto_ext`, `otr4_ed448_ct`, `otr4_mldsa_ext`) has been retired and the Python `cryptography` library was removed at v10.7.  The entire cryptographic surface of the client now lives inside the Rust `otrv4_core` PyO3 module — there is no second crypto implementation to drift against.  As of v10.7.6 (Phase 5.4) the SMP modular exponentiation is constant-time via `crypto-bigint` `DynResidue`, closing a timing side-channel on the secret SMP exponents. As of v10.9.1 the SMP protocol is hybrid post-quantum: ML-KEM-1024 encapsulation and ML-DSA-87 per-step signatures wrap the classical ZKP, requiring all three primitives to be broken simultaneously.  See the CHANGELOG v10.6.18 → v10.7.6 sequence for the migration history.
+4. **Rust-core-only since v10.7.5.** Every C extension (`otr4_crypto_ext`, `otr4_ed448_ct`, `otr4_mldsa_ext`) has been retired and the Python `cryptography` library was removed at v10.7. The entire cryptographic surface now lives inside the Rust `otrv4_core` PyO3 module — there is no second crypto implementation to drift against. As of v10.7.6 (Phase 5.4) the SMP modular exponentiation is constant-time via `crypto-bigint` `DynResidue`, intended to close a timing side-channel on the secret SMP exponents (not independently verified to be constant-time on every target). As of v10.9.1 the SMP protocol is hybrid post-quantum. See the CHANGELOG v10.6.18 → v10.7.6 sequence for the migration history.
 
 5. **Ephemeral identity by design.** Identity keys regenerate at every launch. Fingerprints change on every restart. This is a deliberate threat-model choice for an I2P-based privacy IRC client, not a missing feature. Tor Browser, Cwtch (default), and Briar (before user opt-in) all keep identities short-lived for similar reasons. See ROADMAP Phase 5.3g.
 
@@ -294,18 +301,22 @@ Run `cargo test --release --no-default-features --features pq-rust` before any r
 
 7. **Termux/aarch64 specific build flags.** Both `pqcrypto-mlkem` and `pqcrypto-mldsa` are pinned to `default-features = false, features = ["std"]` because their NEON-optimised C paths trigger `SIGILL` on some aarch64 phones. The portable C reference is correct on any platform; the speed difference is invisible at session scale.
 
+## Reviewers welcome
+
+This project is published to invite exactly the review it has not had. The highest-value targets are the hybrid SMP construction (`smp.rs`) and the DAKE wiring — the hand-written composition, not the upstream primitives. [SPEC.md](SPEC.md) describes the wire format in enough detail to follow the construction or write an independent implementation. If you find a flaw, an issue or a PR is genuinely wanted; "this is broken because X" is more useful than silence.
+
 ## License
 
-GPL-3.0 for the source. Commercial use requires a separate license (see [COMMERCIAL-LICENSE.md](COMMERCIAL-LICENSE.md)).
+GPL-3.0. See the [LICENSE](LICENSE) file.
 
 ## See also
 
-- [SPEC.md](SPEC.md) **formal wire-level protocol specification** — byte layouts, KDF inputs, state machines, test vectors. Write a compatible implementation in any language from this document alone.
-- [CHANGELOG.md](CHANGELOG.md) per-version changes
-- [SECURITY.md](SECURITY.md) threat model and known issues
-- [FEATURES.md](FEATURES.md) full feature inventory
-- [ROADMAP.md](ROADMAP.md) what's planned next
-- [DEVELOPMENT.md](DEVELOPMENT.md) build environment, test plan
-- [CONTRIBUTING.md](CONTRIBUTING.md) PR guidelines
-- [WHY.md](WHY.md) design rationale
-- [MIGRATION.md](MIGRATION.md) moving from earlier versions
+- [SPEC.md](SPEC.md) — **formal wire-level protocol specification**: byte layouts, KDF inputs, state machines, test vectors. Write a compatible implementation in any language from this document alone.
+- [CHANGELOG.md](CHANGELOG.md) — per-version changes
+- [SECURITY.md](SECURITY.md) — threat model and known issues
+- [FEATURES.md](FEATURES.md) — full feature inventory
+- [ROADMAP.md](ROADMAP.md) — what's planned next
+- [DEVELOPMENT.md](DEVELOPMENT.md) — build environment, test plan
+- [CONTRIBUTING.md](CONTRIBUTING.md) — PR guidelines
+- [WHY.md](WHY.md) — design rationale
+- [MIGRATION.md](MIGRATION.md) — moving from earlier versions
