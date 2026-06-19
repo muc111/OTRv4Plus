@@ -6,7 +6,7 @@
 <p align="center"><strong>Post-quantum hybrid encryption for Off The Record (OTR) Chat over IRC and XMPP. Experimental, unaudited research prototype.</strong></p>
 
 <p align="center">
-<code>v10.9.2 · Rust crypto core · hybrid PQC SMP (ML-KEM-1024 + ML-DSA-87) · I2P SAM · TUI</code>
+<code>v10.9.3 · Rust crypto core · hybrid PQC SMP (ML-KEM-1024 + ML-DSA-87) · I2P SAM · TUI</code>
 </p>
 
 ---
