@@ -3,7 +3,7 @@
 </p>
 
 <h1 align="center">OTRv4+</h1>
-<p align="center"><strong>PQC hybrid encryption for Off The Record Chat. Experimental, unaudited research prototype.</strong></p>
+<p align="center"><strong>Post-quantum hybrid encryption for Off The Record (OTR) Chat over IRC and XMPP. Experimental, unaudited research prototype.</strong></p>
 
 <p align="center">
 <code>v10.9.2 · Rust crypto core · hybrid PQC SMP (ML-KEM-1024 + ML-DSA-87) · I2P SAM · TUI</code>
@@ -14,38 +14,44 @@
 ## In action
 
 <p align="center">
-  <img src="example.png" width="680" alt="OTRv4+ TUI — encrypted session with SMP verified">
+  <img src="example.png" width="680" alt="OTRv4+ TUI, encrypted session with SMP verified">
 </p>
 
-<p align="center"><em>Full OTRv4 DAKE + SMP verification with a hybrid PQC layer (ML-KEM-1024 + ML-DSA-87 + classical ZKP). Blue 🔵 = identity confirmed. Tested live on both Libera.chat TLS and irc.postman.i2p I2P SAM.<br>Ctrl+P or Ctrl+S to pause and scroll back. Type <code>/tui</code> to toggle pinned chrome.</em></p>
+<p align="center"><em>Full OTRv4 DAKE + SMP verification with a hybrid PQC layer (ML-KEM-1024 + ML-DSA-87 + classical ZKP). Blue 🔵 = identity confirmed. Tested live on both Libera.chat TLS and irc.postman.i2p I2P SAM, and over XMPP with the same Rust crypto core.<br>Ctrl+P or Ctrl+S to pause and scroll back. Type <code>/tui</code> to toggle pinned chrome.</em></p>
 
 ---
 
 ## What this is
 
-OTRv4+ is an IRC client that implements OTRv4 with a post-quantum hybrid layer added at each stage of the protocol — including the SMP identity-verification step. It runs on Termux (Android) over I2P, Tor, or TLS clearnet, with a Rust crypto core wrapped by a thin Python orchestration layer.
+OTRv4+ is an IRC and XMPP client that implements OTRv4 with a post-quantum hybrid layer added at each stage of the protocol, including the SMP identity-verification step. It runs on Termux (Android) over I2P, Tor, or TLS clearnet, with a Rust crypto core wrapped by a thin Python orchestration layer.
 
 **Single-author research prototype. Not a finished product, and not audited.** The author is not a cryptographer. The protocol composition (the DAKE wiring, the hybrid SMP construction) has had no external review, and the Rust crypto crates it depends on (`ed448-goldilocks-plus`, `x448`, `pqcrypto-mlkem`, `pqcrypto-mldsa`) have had no formal review either. Use it to study or extend, not because you need a hardened tool today. If your safety depends on the security of your messaging, use something audited.
 
+## Authorship
+
+This codebase is AI-generated. The author has not personally written the Rust or Python in this repository and is not a software engineer by trade. What the author brings is years of hands-on experience with PGP, Qubes OS, and adjacent privacy and security tooling, used to direct the design, drive the debugging, and run the live two-peer testing that each change had to pass before being committed. Claude (Anthropic) wrote the implementation under that direction.
+
+This is a real distinction from a project where an experienced cryptography engineer personally authored the code. Strong familiarity with security tools is not the same skill as being able to read and audit a hybrid SMP construction or a DAKE state machine line by line, and this README does not pretend otherwise. Read the rest of this document, and especially the Honest caveats section, with that in mind.
+
 ## Where it fits
 
-OTRv4+ occupies a narrow niche. Here is roughly where it sits relative to other tools — accurate to the best of the author's knowledge; corrections welcome:
+OTRv4+ occupies a narrow niche. Here is roughly where it sits relative to other tools, accurate to the best of the author's knowledge; corrections welcome:
 
 | | OTRv4+ | Signal | Stock OTRv4 | Matrix/Element |
 |---|---|---|---|---|
-| Identifier required | None (IRC nick) | Phone number | None | Email/phone |
-| Transport | IRC over I2P / Tor / TLS | Centralised servers | IRC/XMPP | Centralised homeservers |
+| Identifier required | None (IRC nick / XMPP JID) | Phone number | None | Email/phone |
+| Transport | IRC or XMPP over I2P / Tor / TLS | Centralised servers | IRC/XMPP | Centralised homeservers |
 | Post-quantum KEM | ML-KEM-1024, every DH ratchet step | ML-KEM-1024, initial handshake (PQXDH) | None | None |
 | Post-quantum signatures | ML-DSA-87 | No | No | No |
 | Post-quantum SMP | Yes (hybrid) | N/A (no SMP) | No | No |
 | Deniable auth | Ed448 ring signatures | Yes (X3DH/PQXDH) | Yes | No |
 | Network-layer anonymity | I2P (new destination per session) | No | Depends | No |
 
-**The niche:** synchronous, pseudonymous, end-to-end encrypted conversation where both parties are online, no phone number or account exists, the network layer hides your IP, and Category-5 post-quantum parameters (ML-KEM-1024, ML-DSA-87) are used throughout — including the SMP identity check, which is an unusual place to add post-quantum hardening. Whether that hardening actually holds depends on the construction being correct, which has not been reviewed.
+**The niche:** synchronous, pseudonymous, end-to-end encrypted conversation where both parties are online, no phone number or account exists, the network layer hides your IP, and Category-5 post-quantum parameters (ML-KEM-1024, ML-DSA-87) are used throughout, including the SMP identity check, which is an unusual place to add post-quantum hardening. Whether that hardening actually holds depends on the construction being correct, which has not been reviewed.
 
-A note on the KEM row, since it is easy to get wrong: Signal's PQXDH also uses ML-KEM-1024 (Category 5), so the two are at the same parameter level. The difference is *placement* — PQXDH applies the KEM to the initial key agreement, whereas OTRv4+ re-runs a fresh ML-KEM-1024 exchange at every DH ratchet step. That is the honest distinction; it is not a claim that OTRv4+ is "more post-quantum" than Signal.
+A note on the KEM row, since it is easy to get wrong: Signal's PQXDH also uses ML-KEM-1024 (Category 5), so the two are at the same parameter level. The difference is *placement*: PQXDH applies the KEM to the initial key agreement, whereas OTRv4+ re-runs a fresh ML-KEM-1024 exchange at every DH ratchet step. That is the honest distinction; it is not a claim that OTRv4+ is "more post-quantum" than Signal.
 
-Signal is faster, asynchronous, and the right choice for almost everyone. OTRv4+ is for the sessions where you want a pseudonymous, account-free channel over an anonymising network with a shared-secret identity check, and are willing to pay the latency cost: a full hybrid-PQC handshake over I2P takes about 15 minutes. See [WHY.md](WHY.md) for the longer rationale.
+Signal is faster, asynchronous, and the right choice for almost everyone. OTRv4+ is for the sessions where you want a pseudonymous, account-free channel over an anonymising network with a shared-secret identity check, and are willing to pay the latency cost: a full hybrid-PQC handshake over I2P takes about 15 minutes over IRC, or roughly a minute over XMPP (see Transports below for why). See [WHY.md](WHY.md) for the longer rationale.
 
 ## Quick start
 
@@ -91,7 +97,7 @@ cd ..
 
 Expected: `test result: ok. 30 passed; 0 failed` (17 existing + 15 hybrid PQC SMP tests). The two that matter most are `test_vectors::tests::ed448_rfc8032_vectors_byte_exact` (Rust Ed448 against RFC 8032) and `key_handles::tests::x448_rfc7748_known_answer` (Rust X448 against RFC 7748 §5.2).
 
-What these tests do and do not tell you: a pass confirms the **primitives** (Ed448, X448) match their published RFC vectors byte-for-byte, so the low-level math is implemented correctly. It does **not** certify the surrounding protocol — the DAKE wiring and the hybrid SMP construction are unreviewed, and no test here can establish that they are secure. Treat a green run as "the building blocks are correct," not "the system is safe."
+What these tests do and do not tell you: a pass confirms the **primitives** (Ed448, X448) match their published RFC vectors byte-for-byte, so the low-level math is implemented correctly. It does **not** certify the surrounding protocol: the DAKE wiring and the hybrid SMP construction are unreviewed, and no test here can establish that they are secure. Treat a green run as "the building blocks are correct," not "the system is safe."
 
 ### 4. Run it
 
@@ -120,9 +126,45 @@ You see `✅ SMP VERIFIED` in blue when done.
 
 From that point, messages typed in the peer tab are end-to-end encrypted with the hybrid post-quantum scheme.
 
+## XMPP transport
+
+`otrv4plus_xmpp.py` runs the exact same DAKE, SMP, and double-ratchet implementation in `otrv4_core` over XMPP instead of IRC. It's a separate harness file built on `slixmpp`; everything described later in this README under Architecture, Key exchange, and Hybrid PQC SMP is the identical underlying engine. Only the network transport differs.
+
+### Running it
+
+```bash
+python otrv4plus_xmpp.py --jid alice@example.org --peer bob@example.org --debug
+```
+
+`--sam-host` / `--sam-port` point it at an I2P-hosted XMPP server through the same SAM bridge setup as the IRC client; `--no-i2p` connects to a clearnet/TLS XMPP server directly. `--no-tui` switches to plain linear scrollback instead of the tabbed UI, which is useful for reading trace output. Run `--help` for the full flag list.
+
+### What's been verified live
+
+Two-peer testing over a Prosody server reachable via I2P SAM (`.b32.i2p` addresses), same protocol stack as the IRC client:
+
+- Full three-message DAKE handshake completes (DAKE1 → DAKE2 → DAKE3)
+- Fingerprints display and the trust prompt works
+- Hybrid PQC SMP completes all four steps to `VERIFIED` (ML-KEM-1024 + ML-DSA-87 + the classical ZKP)
+- Messages encrypt and decrypt correctly in both directions after verification
+
+**Measured run, both peers over I2P SAM:**
+
+| Event | Time |
+|---|---|
+| `/otr` issued, DAKE1 sent | 00:27:55 |
+| SMP secret prompt shown (DAKE complete, fingerprint trusted) | 00:28:13 |
+| SMP step 4/4, `VERIFIED` | 00:29:03 |
+| **DAKE start to SMP verified** | **1m 08s** |
+
+A second live run measured 1m 15s end to end, consistent with the number above.
+
+That's roughly 13-14x faster than the IRC client's ~15-16 minutes over the same I2P network (see the timing table in Hybrid PQC SMP below). This isn't a claim that XMPP is a faster protocol: `irc.postman.i2p` enforces strict flood limits, so the IRC client deliberately paces fragment sends (2 fragments, 6-second pause) to avoid being kicked, and SMP2 alone runs to about 49 fragments at the hybrid PQC size. The XMPP path has no equivalent throttling built in, so fragments go through about as fast as the I2P tunnel allows.
+
+XMPP support is newer than IRC and has had fewer live runs; treat it as more experimental until it accumulates more testing. One protocol-level issue specific to it has already been found and fixed: opportunistic DAKE means both peers can end up initiating a handshake at once if `/otr` is run on both sides before the first DAKE1 arrives. This is more likely on the IRC client, where one side often has to wait several minutes for the other side's DAKE1 because of the flood pacing above, but it can happen on either transport. The client now resolves it deterministically by JID instead of deadlocking.
+
 ## TUI mode
 
-OTRv4+ includes a built-in terminal UI that pins a tab bar and input line at the bottom of the screen, keeping your chat history visible above it — useful on mobile where screen space is limited.
+OTRv4+ includes a built-in terminal UI that pins a tab bar and input line at the bottom of the screen, keeping your chat history visible above it (useful on mobile where screen space is limited).
 
 ```
 22:11:29 🔵CobaltBear: works
@@ -146,7 +188,7 @@ Or explicitly:
 /tui off
 ```
 
-TUI is off by default — the client works as a standard scrollback IRC client without it. Enable it when you want the pinned chrome, especially on Termux where the terminal doesn't scroll cleanly.
+TUI is off by default: the client works as a standard scrollback IRC client without it. Enable it when you want the pinned chrome, especially on Termux where the terminal doesn't scroll cleanly.
 
 **Tab switching** (works with or without TUI):
 
@@ -156,7 +198,7 @@ TUI is off by default — the client works as a standard scrollback IRC client w
 /tab-prev              # cycle left
 ```
 
-Tabs show security level icons — 🔴 plaintext, 🟡 encrypted, 🟢 trusted fingerprint, 🔵 SMP verified. Unread message counts appear in brackets: `[#otr🔴(3)]`.
+Tabs show security level icons: 🔴 plaintext, 🟡 encrypted, 🟢 trusted fingerprint, 🔵 SMP verified. Unread message counts appear in brackets: `[#otr🔴(3)]`.
 
 ## What success looks like
 
@@ -239,27 +281,30 @@ SMP provides out-of-band identity verification via a hybrid four-step protocol: 
 
 As of v10.9.0, identity verification uses a hybrid post-quantum SMP protocol. The classical OTRv4 four-step Schnorr ZKP over a 3072-bit safe prime group runs alongside an ML-KEM-1024 and ML-DSA-87 binding layer.
 
-SMP itself is not new — the Socialist Millionaires' Protocol has shipped in libotr-based clients (Pidgin, Adium, Jitsi, ChatSecure) since around 2007. What is unusual here is wrapping it in a post-quantum hybrid: the classical equality proof is the same one OTR has always used, with ML-KEM-1024 and ML-DSA-87 added on top.
+SMP itself is not new: the Socialist Millionaires' Protocol has shipped in libotr-based clients (Pidgin, Adium, Jitsi, ChatSecure) since around 2007. What is unusual here is wrapping it in a post-quantum hybrid: the classical equality proof is the same one OTR has always used, with ML-KEM-1024 and ML-DSA-87 added on top.
 
 **How it works:**
 
-- **SMP1** — initiator generates ML-KEM-1024 and ML-DSA-87 keypairs, appends the KEM encapsulation key (1568 bytes) and ML-DSA-87 public key (2592 bytes) to the classical payload
-- **SMP2** — responder encapsulates to derive `kem_ss`, computes `pq_binding_key = KDF(kem_ss || transcript_tag)`, signs the entire SMP2 wire body with ML-DSA-87 under that binding key
-- **SMP3/4** — each side verifies the previous ML-DSA-87 signature before processing classical fields, then signs its own output
+- **SMP1**: initiator generates ML-KEM-1024 and ML-DSA-87 keypairs, appends the KEM encapsulation key (1568 bytes) and ML-DSA-87 public key (2592 bytes) to the classical payload
+- **SMP2**: responder encapsulates to derive `kem_ss`, computes `pq_binding_key = KDF(kem_ss || transcript_tag)`, signs the entire SMP2 wire body with ML-DSA-87 under that binding key
+- **SMP3/4**: each side verifies the previous ML-DSA-87 signature before processing classical fields, then signs its own output
 
-**Design intent (not a verified result):** the hybrid layer is meant so that the equality proof is no weaker than the strongest of its three components — the 3072-bit discrete log, ML-KEM-1024, and ML-DSA-87 — so that defeating it would require breaking all three rather than any one. This is the goal of the construction, not a proven property: it is hand-written, unreviewed, and has not been analysed by anyone qualified to confirm it. The wire format is versioned (`0x02` = hybrid PQ) so a downgrade to the classical-only format is not silent, which is a checkable implementation fact rather than a security proof.
+**Design intent (not a verified result):** the hybrid layer is meant so that the equality proof is no weaker than the strongest of its three components (the 3072-bit discrete log, ML-KEM-1024, and ML-DSA-87), so that defeating it would require breaking all three rather than any one. This is the goal of the construction, not a proven property: it was AI-generated, unreviewed, and has not been analysed by anyone qualified to confirm it. The wire format is versioned (`0x02` = hybrid PQ) so a downgrade to the classical-only format is not silent, which is a checkable implementation fact rather than a security proof.
 
 **Wire overhead:** SMP1 grows from ~1.4 KB to ~8.1 KB (18 fragments), SMP2 from ~3.1 KB to ~16.4 KB (49 fragments) due to ML-KEM-1024 and ML-DSA-87 key material.
 
 **Fragment rate limiting on I2P:** irc.postman.i2p enforces strict flood limits. The client uses a batch send strategy (2 fragments, 6-second pause) keeping traffic at ~0.33 lines/second average. At 49 fragments SMP2 takes ~2.5 minutes to send. Full DAKE+SMP over I2P completes in ~15 minutes. SMP session timeout is 45 minutes to accommodate I2P latency.
 
-**Measured timings (v10.9.1, live tested):**
+**Measured timings (v10.9.1 IRC, live tested; XMPP added below):**
 
 | Transport | Server | DAKE complete | SMP verified | Total |
 |---|---|---|---|---|
-| TLS clearnet | Libera.chat | ~3 min | ~5 min | **~6 min** |
-| I2P SAM | irc.postman.i2p | ~6 min | ~15 min | **~15–16 min** |
-| Tor | — | ~5 min | ~10 min | **~12 min** (est.) |
+| TLS clearnet (IRC) | Libera.chat | ~3 min | ~5 min | **~6 min** |
+| I2P SAM (IRC) | irc.postman.i2p | ~6 min | ~15 min | **~15-16 min** |
+| Tor (IRC) | n/a | ~5 min | ~10 min | **~12 min** (est.) |
+| I2P SAM (XMPP) | Prosody, .b32.i2p | under 20 sec | ~1 min | **1m 08s** |
+
+The XMPP row is a single measured run; see XMPP transport below for the exact log timestamps and why it's so much faster than the IRC/I2P path.
 
 ## Memory safety
 
@@ -287,13 +332,13 @@ Run `cargo test --release --no-default-features --features pq-rust` before any r
 
 ## Honest caveats
 
-1. **Single author, no external review.** This is the big one. Code style is consistent, but the design choices — especially the hybrid SMP construction — have not been peer-reviewed by anyone with a cryptography background. "It reaches VERIFIED and passes its tests" is not the same as "it is secure."
+1. **Single author, no external review.** This is the big one. Code style is consistent, but the design choices (especially the hybrid SMP construction) have not been peer-reviewed by anyone with a cryptography background. "It reaches VERIFIED and passes its tests" is not the same as "it is secure."
 
-2. **Built with AI assistance (Claude).** The author drove design and testing; the AI helped with implementation. Each substantive change was live-tested between two I2P peers before being committed. AI assistance does not substitute for review — if anything it raises the bar for it, because confident-looking mistakes are exactly the failure mode.
+2. **AI-generated codebase.** See Authorship near the top of this document. Each substantive change was live-tested between two peers before being committed; that testing does not substitute for review, and confident-looking mistakes are exactly the failure mode AI-written crypto code is prone to.
 
 3. **The Rust crypto crates are not audited.** `ed448-goldilocks-plus` 0.16 is the only viable pure-Rust Ed448 implementation but has no formal review. `x448` 0.6 is a pure-Rust X448 with no formal review. `pqcrypto-mlkem 0.1.1` (FIPS 203 ML-KEM-1024) and `pqcrypto-mldsa 0.1.2` (ML-DSA-87) are PQClean-derived reference implementations.
 
-4. **Rust-core-only since v10.7.5.** Every C extension (`otr4_crypto_ext`, `otr4_ed448_ct`, `otr4_mldsa_ext`) has been retired and the Python `cryptography` library was removed at v10.7. The entire cryptographic surface now lives inside the Rust `otrv4_core` PyO3 module — there is no second crypto implementation to drift against. As of v10.7.6 (Phase 5.4) the SMP modular exponentiation is constant-time via `crypto-bigint` `DynResidue`, intended to close a timing side-channel on the secret SMP exponents (not independently verified to be constant-time on every target). As of v10.9.1 the SMP protocol is hybrid post-quantum. See the CHANGELOG v10.6.18 → v10.7.6 sequence for the migration history.
+4. **Rust-core-only since v10.7.5.** Every C extension (`otr4_crypto_ext`, `otr4_ed448_ct`, `otr4_mldsa_ext`) has been retired and the Python `cryptography` library was removed at v10.7. The entire cryptographic surface now lives inside the Rust `otrv4_core` PyO3 module: there is no second crypto implementation to drift against. As of v10.7.6 (Phase 5.4) the SMP modular exponentiation is constant-time via `crypto-bigint` `DynResidue`, intended to close a timing side-channel on the secret SMP exponents (not independently verified to be constant-time on every target). As of v10.9.1 the SMP protocol is hybrid post-quantum. See the CHANGELOG v10.6.18 → v10.7.6 sequence for the migration history.
 
 5. **Ephemeral identity by design.** Identity keys regenerate at every launch. Fingerprints change on every restart. This is a deliberate threat-model choice for an I2P-based privacy IRC client, not a missing feature. Tor Browser, Cwtch (default), and Briar (before user opt-in) all keep identities short-lived for similar reasons. See ROADMAP Phase 5.3g.
 
@@ -303,7 +348,7 @@ Run `cargo test --release --no-default-features --features pq-rust` before any r
 
 ## Reviewers welcome
 
-This project is published to invite exactly the review it has not had. The highest-value targets are the hybrid SMP construction (`smp.rs`) and the DAKE wiring composition, not the upstream primitives. [SPEC.md](SPEC.md) describes the wire format in enough detail to follow the construction or write an independent implementation. If you find a flaw, an issue or a PR is genuinely wanted; "this is broken because X" is more useful than silence.
+This project is published to invite exactly the review it has not had. The highest-value targets are the hybrid SMP construction (`smp.rs`) and the DAKE wiring: the AI-generated composition, not the upstream primitives. [SPEC.md](SPEC.md) describes the wire format in enough detail to follow the construction or write an independent implementation. If you find a flaw, an issue or a PR is genuinely wanted; "this is broken because X" is more useful than silence.
 
 ## License
 
@@ -311,12 +356,12 @@ GPL-3.0. See the [LICENSE](LICENSE) file.
 
 ## See also
 
-- [SPEC.md](SPEC.md) — **formal wire-level protocol specification**: byte layouts, KDF inputs, state machines, test vectors. Write a compatible implementation in any language from this document alone.
-- [CHANGELOG.md](CHANGELOG.md) — per-version changes
-- [SECURITY.md](SECURITY.md) — threat model and known issues
-- [FEATURES.md](FEATURES.md) — full feature inventory
-- [ROADMAP.md](ROADMAP.md) — what's planned next
-- [DEVELOPMENT.md](DEVELOPMENT.md) — build environment, test plan
-- [CONTRIBUTING.md](CONTRIBUTING.md) — PR guidelines
-- [WHY.md](WHY.md) — design rationale
-- [MIGRATION.md](MIGRATION.md) — moving from earlier versions
+- [SPEC.md](SPEC.md) - **formal wire-level protocol specification**: byte layouts, KDF inputs, state machines, test vectors. Write a compatible implementation in any language from this document alone.
+- [CHANGELOG.md](CHANGELOG.md) - per-version changes
+- [SECURITY.md](SECURITY.md) - threat model and known issues
+- [FEATURES.md](FEATURES.md) - full feature inventory
+- [ROADMAP.md](ROADMAP.md) - what's planned next
+- [DEVELOPMENT.md](DEVELOPMENT.md) - build environment, test plan
+- [CONTRIBUTING.md](CONTRIBUTING.md) - PR guidelines
+- [WHY.md](WHY.md) - design rationale
+- [MIGRATION.md](MIGRATION.md) - moving from earlier versions
