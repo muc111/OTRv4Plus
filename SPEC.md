@@ -1,6 +1,6 @@
 # OTRv4+ Protocol Specification
 
-**Version:** 10.9.1
+**Version:** 10.9.3
 **Status:** Draft / Research Prototype
 **Repository:** github.com/muc111/OTRv4Plus
 
@@ -72,6 +72,7 @@ RECOMMENDED, MAY, and OPTIONAL are to be interpreted as described in RFC 2119.
 | X448 private key | 56 |
 | ML-KEM-1024 encapsulation key (ek) | 1568 |
 | ML-KEM-1024 ciphertext (ct) | 1568 |
+| ML-KEM-1024 decapsulation key (dk) | 3168 |
 | ML-KEM-1024 shared secret | 32 |
 | ML-DSA-87 public key | 2592 |
 | ML-DSA-87 signature | 4627 |
@@ -79,6 +80,9 @@ RECOMMENDED, MAY, and OPTIONAL are to be interpreted as described in RFC 2119.
 | HMAC-SHA3-512 MAC | 64 |
 | SMP prime / group element | 384 |
 | SSID | 8 |
+| AES-256-GCM nonce | 12 |
+| AES-256-GCM authentication tag | 16 |
+| Ratchet (data-message) header | 64 |
 
 ---
 
@@ -120,7 +124,16 @@ underlying OTRv4 KDF construction. The OTRv4+ extensions are distinguished by
 | BRACE_KEY_ROTATE | 0x16 | Brace key rotation |
 | EXTRA_SYM_KEY | 0x1F | Extra symmetric key (TLV 7) |
 | PQ_BRACE_KEY | 0x20 | SMP post-quantum binding key |
-| NONCE_DERIVE | 0x21 | Nonce derivation |
+| NONCE_DERIVE | 0x21 | Nonce derivation (reserved; see §5.4) |
+
+Two usage IDs are defined for OTRv4 compatibility but are not load-bearing in the
+data-message path of this implementation. `MAC_KEY` (0x14) is reserved: data
+messages are authenticated by the AES-256-GCM tag (§5.4), not by a separate HMAC,
+so no per-message MAC key is derived or transmitted. `NONCE_DERIVE` (0x21) is
+reserved: the data-message AEAD draws a fresh random 96-bit nonce per message from
+the system CSPRNG rather than deriving it (§5.4). Implementations targeting wire
+compatibility with this specification MUST follow §5.4 and MUST NOT derive the
+nonce from `NONCE_DERIVE`.
 
 ### 2.3 Derived KDF Functions
 
@@ -322,12 +335,89 @@ A quantum adversary who recovers all three X448 DH secrets still cannot compute
 `mixed_secret` without also recovering `mlkem_ss`, which requires breaking
 ML-KEM-1024.
 
+### 4.5 DAKE Transcript and Ring Signature
+
+**Transcript.** Both parties maintain a running DAKE transcript `t`, the in-order
+byte concatenation of every DAKE wire message as it is sent or received. After
+DAKE2, `t = DAKE1_bytes || DAKE2_bytes`. The DAKE3 signatures are computed over `t`
+as it stands at that point; `t` does NOT include DAKE3 itself at signing time.
+After a DAKE3 is verified, its bytes are appended to `t` for any later binding.
+Both peers MUST accumulate the transcript identically, byte for byte.
+
+**Ring signature (sigma).** DAKE3 carries an Ed448 Schnorr ring signature that
+proves the signer holds the private key for one of two long-term identity keys:
+its own and the peer's. Because either identity-key holder could have produced it,
+the signature authenticates the handshake while remaining deniable to any third
+party. This is a 1-out-of-2 OR proof, encoded as four 57-byte scalars, total
+**228 bytes**.
+
+Let `G` be the Ed448 base point, `Q` the group order, `seed` the signer's identity
+seed, and `usage = 0x1C`. The ring is the ordered pair of identity public keys
+`(A1, A2)` and the signed message is the transcript `t`. The signer knows the
+discrete log of one ring member; the construction below is written for a signer
+who knows `a1` with `A1 = a1·G`, simulating the `A2` clause:
+
+```
+Sign:
+  t1     = SHAKE-256(seed || 0x01, 57) mod Q          # ephemeral nonce
+  T1     = t1 · G
+  c2, r2 = uniform random scalars in [0, Q-1]         # simulated clause
+  T2     = r2 · G + c2 · A2
+  c      = SHAKE-256(0x1C || t || A1 || A2 || T1 || T2, 57) mod Q
+  c1     = (c - c2) mod Q
+  r1     = (t1 - c1 · a1) mod Q
+  sigma  = c1 || r1 || c2 || r2                        # 4 x 57 = 228 bytes
+
+Verify:
+  parse (c1, r1, c2, r2) from sigma                    # each 57-byte LE scalar
+  T1'    = r1 · G + c1 · A1
+  T2'    = r2 · G + c2 · A2
+  c'     = SHAKE-256(0x1C || t || A1 || A2 || T1' || T2', 57) mod Q
+  ACCEPT iff c' == (c1 + c2) mod Q
+```
+
+Scalars are 57-byte little-endian (the high byte is `0x00` for canonical scalars
+reduced mod `Q`, which is below 2^446). Points are 57-byte compressed Edwards
+encodings per RFC 8032. Verification accepts regardless of which clause the signer
+simulated, so the verifier need not know which party signed; both peers MUST,
+however, place the two identity keys in the **same order** in the challenge hash.
+The reference implementation fixes this order, and a conforming implementation MUST
+match it.
+
+**ML-DSA-87 over the transcript.** When the DAKE3 ML-DSA flag is `0x01`, the
+ML-DSA-87 signature is computed over the same transcript `t` and MUST also verify
+for the handshake to succeed. Unlike the ring signature, the ML-DSA-87 signature
+is attributable and therefore not deniable (§9.1).
+
 ---
 
 ## 5. Double Ratchet
 
-OTRv4+ uses the OTRv4 Double Ratchet (OTRv4 §) with one extension: ML-KEM-1024
-brace key rotation at every DH ratchet step.
+OTRv4+ uses the OTRv4 Double Ratchet (OTRv4 §) with one extension: an ML-KEM-1024
+brace-key contribution folded in at every DH ratchet step.
+
+The ratchet combines two mechanisms. The **symmetric-key ratchet** governs
+individual messages: each direction has a 32-byte chain key, and sending or
+receiving a message advances that chain key by one KDF step (§5.3), yielding a
+single-use message key and overwriting the previous chain key. Because the KDF
+runs only forward, a compromised chain key does not expose earlier messages
+(forward secrecy). The **DH ratchet** governs the longer-term key material: every
+data message header (§5.4) carries the sender's current X448 ratchet public key,
+and when a receiver sees a public key it has not used before, it performs an X448
+exchange against its own current ratchet secret, folds the result (together with
+the brace key, §5.2) into the root key to derive a fresh receiving chain, then
+generates a new X448 ratchet key pair of its own and folds again to derive a fresh
+sending chain. Fresh DH contributions periodically inject entropy that no prior
+state can predict, which is what gives the ratchet post-compromise (self-healing)
+security. Each peer holds two chains at any time (`chain_key_send`,
+`chain_key_recv`), a root key, a brace key, and the skipped-key and replay state of
+§5.5.
+
+State variables per direction: `prev_chain_len` (the number of messages sent under
+the previous sending chain, transmitted as the header field `prev_chain_len`) and
+`msg_num` (the index of the current message within its chain). Both are 32-bit and
+are used by the receiver to bound skipped-key derivation across ratchet steps
+(§5.5).
 
 ### 5.1 Brace Key Rotation
 
@@ -363,13 +453,101 @@ message_key   = KDF_1(0x13, chain_key, 32)        // MESSAGE_KEY
 new_chain_key = KDF_1(0x12, chain_key, 32)        // CHAIN_KEY
 ```
 
-Messages are encrypted with AES-256-GCM. The 96-bit nonce MUST be unique per
-`(message_key)`. Nonce reuse under the same key catastrophically breaks GCM
-confidentiality and authenticity.
+The message key is consumed once, by the AEAD of §5.4, and the chain key is then
+overwritten by `new_chain_key`. The third value some KDF call sites destructure
+(a MAC key) is not used on the data path; see §2.2 and §5.4.
+
+### 5.4 Data Message Format and AEAD
+
+Each application message is encrypted under its single-use `message_key` with
+AES-256-GCM (NIST SP 800-38D). GCM is the sole authenticator of a data message:
+there is no separate HMAC on the data path.
+
+**Header.** The ratchet header is 64 bytes, big-endian:
+
+```
+Offset  Size  Field
+------  ----  ---------------------------------------------
+0       56    dh_pub          (sender's current X448 ratchet public key)
+56      4     prev_chain_len  (INT, messages in the previous sending chain)
+60      4     msg_num         (INT, index of this message in its chain)
+```
+
+**Associated data (AAD).** The GCM associated data is the encoded header followed
+by a fixed associated-data value `ad` established at ratchet creation and identical
+on both peers (the implementation binds `ad` to the session identifier):
+
+```
+aad = header_bytes(64) || ad
+```
+
+The header is authenticated but NOT encrypted: the receiver needs `dh_pub`,
+`prev_chain_len`, and `msg_num` in the clear to select or derive the correct key
+before decrypting. Binding them as AAD means any alteration of the header, or any
+attempt to replay a message under a different ratchet position, causes the tag to
+fail.
+
+**Encryption.**
+
+```
+nonce       = 12 random bytes from the system CSPRNG     // 96-bit, fresh per message
+ct_with_tag = AES-256-GCM-Encrypt(key = message_key, nonce, plaintext, aad)
+ciphertext  = ct_with_tag[0 .. len-16]
+tag         = ct_with_tag[len-16 .. len]                 // 128-bit
+```
+
+The message key is 32 bytes (AES-256). The nonce is fresh and random per message.
+Because each message key is itself used exactly once, nonce uniqueness under a
+given key holds regardless; the random nonce is defence in depth, not a uniqueness
+requirement. The nonce MUST be transmitted with the message, since the receiver
+cannot reconstruct it. The values placed in the data message are therefore the
+64-byte header, the 12-byte nonce, the ciphertext, and the 16-byte tag, carried
+inside the OTRv4 DATA message envelope (the outer envelope, instance tags, and
+flags follow OTRv4 §).
+
+**Decryption.** The receiver reconstructs `aad = received_header || ad`, appends
+the tag to the ciphertext, and calls AES-256-GCM-Decrypt with the message key for
+that header position. Any failure (wrong key, wrong nonce, AAD mismatch, or
+tampered ciphertext) MUST return a single generic decryption error that does not
+distinguish the cause.
+
+The same AES-256-GCM construction (32-byte key, 12-byte nonce, `ciphertext || tag`
+output, AAD label) is reused, non-normatively for interop, to seal secrets at rest:
+the SMP secret vault and the on-device key store both encrypt their contents with
+it under a separately derived key.
+
+### 5.5 Out-of-Order, Skipped Keys, and Replay
+
+Messages may arrive out of order or be lost. The receiver uses the header fields to
+recover without compromising forward secrecy.
+
+**Skipped keys.** When an arriving `msg_num` is ahead of the receiver's position in
+the current receiving chain, the receiver advances the chain to catch up and stores
+each intermediate message key, indexed by `(dh_pub, msg_num)`, so a later-arriving
+message can still be decrypted. When a header presents a new `dh_pub` (a DH ratchet
+step), the receiver first skips and stores up to `prev_chain_len` keys from the
+previous receiving chain, then performs the DH ratchet (§5.2).
+
+**Bounds (REQUIRED).**
+
+| Constraint | Value | Behaviour on breach |
+|------------|-------|---------------------|
+| Max skip per chain advance (`MAX_SKIP`) | 1000 | reject message (MaxSkipExceeded) |
+| Max stored skipped keys (`MAX_MESSAGE_KEYS`) | 2000 | evict oldest stored key |
+
+A skip request exceeding `MAX_SKIP` MUST be rejected rather than serviced, to
+prevent a peer from forcing unbounded KDF work with a single large `msg_num`. The
+stored-key set is capped at `MAX_MESSAGE_KEYS`; on overflow the oldest entry is
+evicted.
+
+**Replay.** The receiver maintains a cache of recently accepted `(dh_pub, msg_num)`
+pairs and MUST reject any message whose pair is already present. Every stored
+skipped key, like every chain, root, and brace key, MUST be zeroized as soon as it
+is consumed or evicted.
 
 ---
 
-## 6. Socialist Millionaire Protocol (SMP) — Hybrid Post-Quantum
+## 6. Socialist Millionaire Protocol (SMP): Hybrid Post-Quantum
 
 SMP provides out-of-band identity verification by proving both parties hold the
 same shared secret, without revealing it. OTRv4+ implements a hybrid construction:
@@ -412,9 +590,9 @@ A field failing validation MUST abort the SMP session and zeroize all state.
 
 The SMP secret scalar is derived from the user's shared passphrase, the session
 ID, and both fingerprints. This is purely classical and symmetric (it does NOT
-incorporate ML-KEM material — see §6.7 for the rationale).
+incorporate ML-KEM material; see §6.7 for the rationale).
 
-**Step 1 — SHAKE-256 iterated KDF (50,000 rounds):**
+**Step 1: SHAKE-256 iterated KDF (50,000 rounds):**
 ```
 state = SHAKE-256( "OTRv4+SMP-v2" || 0x00 || raw_secret )   // 64-byte output
 for i in 0 .. 49998:                                          // KDF_ROUNDS - 1
@@ -422,7 +600,7 @@ for i in 0 .. 49998:                                          // KDF_ROUNDS - 1
 ```
 Where `"OTRv4+SMP-v2"` is the 12-byte ASCII literal followed by a `0x00` byte.
 
-**Step 2 — HMAC-SHA3-512 session binding:**
+**Step 2: HMAC-SHA3-512 session binding:**
 ```
 hmac_key = SHA3-512(session_id)
 (first, second) = (our_fp, peer_fp) if our_fp <= peer_fp
@@ -433,7 +611,7 @@ binding = HMAC-SHA3-512(hmac_key, first || second || state)
 The fingerprints are ordered lexicographically so both parties derive the same
 secret regardless of role. Implementations MUST NOT use role-dependent ordering.
 
-**Step 3 — reduce mod order:**
+**Step 3: reduce mod order:**
 ```
 secret_int = big-endian-integer(binding) mod q
 if secret_int == 0: secret_int = 1
@@ -599,13 +777,17 @@ reject a reassembled payload exceeding 1 MiB, to prevent memory exhaustion.
 
 | Transport | Fragment payload size | Send pacing |
 |-----------|----------------------|-------------|
-| TLS clearnet | 450 bytes | Token bucket (4 tokens, 2/fragment, 1/sec refill) |
-| I2P SAM | 380 bytes | 2 fragments then 6-second pause |
-| Tor | 450 bytes | 200 ms fixed inter-fragment delay |
+| TLS clearnet (IRC) | 450 bytes | Token bucket (4 tokens, 2/fragment, 1/sec refill) |
+| I2P SAM (IRC) | 380 bytes | 2 fragments then 6-second pause |
+| Tor (IRC) | 450 bytes | 200 ms fixed inter-fragment delay |
+| XMPP (any) | fragment only above ~6 KiB | none |
 
 Fragment sizing is a transport-layer concern and does not affect the
-cryptographic payload. The I2P sizing reflects the stricter line-length and flood
-policies of `irc.postman.i2p`.
+cryptographic payload. The IRC I2P sizing reflects the stricter line-length and
+flood policies of `irc.postman.i2p`. XMPP carries multi-kilobyte stanzas directly,
+so it fragments only payloads exceeding a conservative ~6 KiB threshold and applies
+no send pacing; the underlying cryptographic messages (DAKE, SMP, data) are
+byte-identical across all transports.
 
 ---
 
@@ -677,6 +859,13 @@ An implementation claiming conformance MUST:
 
 8. Enforce the fragment reassembly limits in §7.1.
 
+9. Encrypt each data message under its single-use message key with AES-256-GCM,
+   bind the 64-byte ratchet header as associated data, transmit the fresh per-message
+   nonce, and return a single generic error on any decryption failure (§5.4).
+
+10. Enforce the skipped-key bounds (`MAX_SKIP`, `MAX_MESSAGE_KEYS`) and reject
+    replayed `(dh_pub, msg_num)` pairs (§5.5).
+
 ### 9.1 Known Limitations (Non-Normative)
 
 - The SMP Schnorr ZKP scalar arithmetic (the `d = r - c*x` computation) uses
@@ -733,6 +922,6 @@ Order `q = (p - 1) / 2`. Generator `g = 2`.
 
 ---
 
-*End of specification. This document describes OTRv4+ v10.9.1 as implemented. It is
+*End of specification. This document describes OTRv4+ v10.9.3 as implemented. It is
 a research prototype specification and has not undergone formal cryptographic
 review.*
