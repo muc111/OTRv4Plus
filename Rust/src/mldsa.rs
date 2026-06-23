@@ -3,7 +3,7 @@
 //! v10.6.18 (Phase 5.3j): replaces the `otr4_mldsa_ext` C extension.
 //!
 //! Exposes three functions to Python with byte-identical wire output to
-//! the prior C extension (same FIPS 204 ML-KEM-1024 parameter set, same
+//! the prior C extension (same FIPS 204 ML-DSA-87 parameter set, same
 //! PQClean reference implementation underneath):
 //!
 //! - `mldsa87_keygen() -> (bytes, bytearray)`

@@ -333,10 +333,20 @@ impl DoubleRatchet {
         let (new_root_recv, new_recv_chain) = kdf_root(&self.root_key, dh_secret_recv);
 
         let mut temp_ck = new_recv_chain;
-        for _ in 0..header.msg_num {
-            let (next, _, _) = kdf_chain(&temp_ck);
+        for n in 0..header.msg_num {
+            let (next, mk, _) = kdf_chain(&temp_ck);
             temp_ck.zeroize();
             temp_ck = next;
+            // Audit L2: retain the skipped message keys of the NEW receiving
+            // chain so out-of-order messages that arrive after this DH
+            // ratchet step remain decryptable (previously discarded).
+            let skip_id = SkipId { dh_pub: header.dh_pub, msg_num: n };
+            self.skipped.insert(skip_id, SkippedKey { enc_key: mk });
+            while self.skipped.len() > MAX_MESSAGE_KEYS {
+                if let Some(first) = self.skipped.keys().next().cloned() {
+                    self.skipped.remove(&first);
+                }
+            }
         }
         let (next_recv_ck, mut enc_key, _) = kdf_chain(&temp_ck);
         temp_ck.zeroize();
@@ -681,9 +691,11 @@ impl RustDoubleRatchet {
     }
 
     fn zeroize(&mut self) {
+        // Audit I1: infallible (fixed non-zero keys never trip the zero-key
+        // guard); use expect to satisfy #![deny(clippy::unwrap_used)].
         let dummy = DoubleRatchet::new(
             &[1u8; 32], &[2u8; 32], &[3u8; 32], &[4u8; 32], &[5u8; 56], false
-        ).unwrap();
+        ).expect("dummy ratchet uses fixed non-zero keys");
         let old = std::mem::replace(&mut self.inner, dummy);
         drop(old);
     }

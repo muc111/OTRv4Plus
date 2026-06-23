@@ -521,9 +521,22 @@ impl DakeState {
     pub fn process_dake3(&mut self, data: &[u8]) -> Result<()> {
         if self.phase != DakePhase::SentDake2 { return Err(OtrError::Dake("wrong phase")); }
         if data.len() < 1 + RING_SIGMA_SIZE + 1 { return Err(OtrError::TooShort{need:1+RING_SIGMA_SIZE+1,got:data.len()}); }
+        if data[0] != MSG_DAKE3 { return Err(OtrError::WireFormat); }
         let sigma = &data[1..1+RING_SIGMA_SIZE];
         let off = 1+RING_SIGMA_SIZE;
         let flag = data[off];
+
+        // ── Audit H2: ML-DSA-87 downgrade protection ──
+        // If the peer committed an ML-DSA-87 public key earlier (parsed and
+        // MAC-bound in DAKE1/DAKE2), its DAKE3 signature is MANDATORY.  The
+        // ring signature covers only the transcript (DAKE1‖DAKE2), not this
+        // flag byte, so without this check a MITM strips PQ authentication
+        // with a single 0x01 -> 0x00 flip.
+        let mldsa_required = self.peer_mldsa_pub.is_some();
+        if mldsa_required && flag != 0x01 {
+            return Err(OtrError::Dake("ML-DSA signature stripped: peer committed a PQ key"));
+        }
+
         if flag == 0x01 {
             let start = off+1;
             if data.len()-start < MLDSA_SIG_SIZE { return Err(OtrError::TooShort{need:start+MLDSA_SIG_SIZE,got:data.len()}); }
@@ -531,7 +544,22 @@ impl DakeState {
             let peer_mldsa_pub = self.peer_mldsa_pub.as_ref().ok_or(OtrError::MlDsa)?;
             Self::mldsa_verify(peer_mldsa_pub, &self.transcript, mldsa_sig)?;
         } else if flag != 0x00 { return Err(OtrError::WireFormat); }
-        Self::verify_ring_signature(&self.transcript, &self.our_identity_pub, &self.peer_identity_pub, sigma)?;
+
+        // ── Audit H1: single sound ring-signature verifier ──
+        // Route through ring_sig::ring_verify_bytes, whose challenge binds
+        // the usage tag and BOTH public keys and accepts on a single
+        // condition.  The signer (initiator) signs with A1 = its own
+        // identity, A2 = the responder's identity; from the responder's
+        // side that is (peer_identity_pub, our_identity_pub) in that order.
+        // The previous in-module verify_ring_signature was unsound (no
+        // public keys / usage tag in the hash, OR-of-two acceptance) and
+        // has been removed.
+        if !crate::ring_sig::ring_verify_bytes(
+            &self.peer_identity_pub, &self.our_identity_pub, &self.transcript, sigma,
+        ) {
+            return Err(OtrError::SignatureInvalid);
+        }
+
         self.transcript.extend_from_slice(data);
         self.phase = DakePhase::Established;
         Ok(())
@@ -547,34 +575,38 @@ impl DakeState {
         [0u8; 56]
     }
 
+    /// Extract the peer identity key from a client profile AND verify the
+    /// profile's Ed448 self-signature (audit H3).
+    ///
+    /// The signature covers the profile body (version, version list, identity
+    /// key, prekey, expiry), binding the prekey to the identity.  Without
+    /// this check an attacker can present a profile carrying the victim's
+    /// identity key but the attacker's prekey, complete the DAKE2 MAC with
+    /// their own prekey private key, and spoof the responder's identity.
+    ///
+    /// `profile` is the full profile slice INCLUDING the trailing 114-byte
+    /// signature (callers pass `profile_slice` whose `prof_size` includes it).
     fn extract_identity_from_profile(profile: &[u8]) -> Result<[u8; ED448_PUB_SIZE]> {
-        let vc = if profile.len() > 1 { profile[1] as usize } else { return Err(OtrError::TooShort{need:2,got:profile.len()}) };
+        use crate::error::SafeSlice;
+        let vc = profile.try_byte(1).map_err(|_| OtrError::TooShort{need:2, got:profile.len()})? as usize;
         let hl = 2 + vc;
-        if profile.len() < hl + ED448_PUB_SIZE { return Err(OtrError::TooShort{need:hl+ED448_PUB_SIZE,got:profile.len()}); }
-        let mut id = [0u8; ED448_PUB_SIZE]; id.copy_from_slice(&profile[hl..hl+ED448_PUB_SIZE]); Ok(id)
-    }
+        // Body = everything up to the signature: hl + identity(57) + prekey(56) + expiry(8).
+        let body_len = hl + ED448_PUB_SIZE + X448_PUB_SIZE + 8;
+        let body = profile.try_slice(0..body_len)?;
+        let sig  = profile.try_slice(body_len..body_len + 114)?;
 
-    fn verify_ring_signature(t: &[u8], a0: &[u8;57], a1: &[u8;57], s: &[u8]) -> Result<()> {
-        use ed448_goldilocks_plus::{EdwardsPoint,CompressedEdwardsY,elliptic_curve::Group};
-        use sha3::{Shake256,digest::{Update,ExtendableOutput,XofReader}};
-        if s.len() != RING_SIGMA_SIZE { return Err(OtrError::WireFormat); }
-        let c0 = &s[0..57]; let r0 = &s[57..114]; let c1 = &s[114..171]; let r1 = &s[171..228];
-        let y0 = CompressedEdwardsY::try_from(a0).map_err(|_| OtrError::WireFormat)?.decompress().into_option().ok_or(OtrError::WireFormat)?;
-        let y1 = CompressedEdwardsY::try_from(a1).map_err(|_| OtrError::WireFormat)?.decompress().into_option().ok_or(OtrError::WireFormat)?;
-        let c0s = Self::scalar_from_wide_bytes(c0); let r0s = Self::scalar_from_wide_bytes(r0);
-        let c1s = Self::scalar_from_wide_bytes(c1); let r1s = Self::scalar_from_wide_bytes(r1);
-        let g = EdwardsPoint::generator();
-        let r0p = g * r0s + y0 * c0s;
-        let c2 = Self::scalar_from_wide_bytes(&{ let mut shake = Shake256::default(); Update::update(&mut shake, t); Update::update(&mut shake, r0p.compress().as_bytes()); Update::update(&mut shake, y1.compress().as_bytes()); let mut h=[0u8;114]; shake.finalize_xof().read(&mut h); h });
-        let r1p = g * r1s + y1 * c1s;
-        let call = Self::scalar_from_wide_bytes(&{ let mut shake = Shake256::default(); Update::update(&mut shake, t); Update::update(&mut shake, r0p.compress().as_bytes()); Update::update(&mut shake, r1p.compress().as_bytes()); let mut h=[0u8;114]; shake.finalize_xof().read(&mut h); h });
-        if (c0s + c1s) == call || (c0s + c2) == call { Ok(()) } else { Err(OtrError::SignatureInvalid) }
-    }
+        let id_slice = profile.try_slice(hl..hl + ED448_PUB_SIZE)?;
+        let mut id = [0u8; ED448_PUB_SIZE];
+        id.copy_from_slice(id_slice);
 
-    fn scalar_from_wide_bytes(b: &[u8]) -> ed448_goldilocks_plus::Scalar {
-        use ed448_goldilocks_plus::elliptic_curve::generic_array::GenericArray;
-        let mut w=[0u8;114]; let l=b.len().min(114); w[..l].copy_from_slice(&b[..l]);
-        ed448_goldilocks_plus::Scalar::from_bytes_mod_order_wide(&GenericArray::clone_from_slice(&w))
+        // Pure Ed448 (RFC 8032 §5.2, empty context) over the body. Same
+        // framing as Ed448KeyHandle::sign / verify_ed448_sig.
+        use ed448_goldilocks_plus::{VerifyingKey, Signature};
+        use std::convert::TryFrom;
+        let vk = VerifyingKey::from_bytes(&id).map_err(|_| OtrError::SignatureInvalid)?;
+        let signature = Signature::try_from(sig).map_err(|_| OtrError::SignatureInvalid)?;
+        vk.verify_raw(&signature, body).map_err(|_| OtrError::SignatureInvalid)?;
+        Ok(id)
     }
 
     fn generate_x448_ephemeral() -> Result<(SecretBytes<56>, [u8; X448_PUB_SIZE])> {
@@ -615,13 +647,17 @@ impl DakeState {
         Ok(sk.as_diffie_hellman(&pk).ok_or(OtrError::Internal)?.as_bytes().to_vec())
     }
     fn derive_session_keys(mixed_secret: &[u8], brace_key: &SecretBytes<32>, ssid: &[u8;8]) -> Result<DakeSessionKeys> {
-        let root_seed = kdf::kdf_1(usage::ROOT_KEY, mixed_secret, 96);
-        let extra_raw = kdf::kdf_1(usage::EXTRA_SYM_KEY, mixed_secret, 32);
+        use zeroize::Zeroize;
+        let mut root_seed = kdf::kdf_1(usage::ROOT_KEY, mixed_secret, 96);
+        let mut extra_raw = kdf::kdf_1(usage::EXTRA_SYM_KEY, mixed_secret, 32);
         let mut root=[0u8;32]; root.copy_from_slice(&root_seed[..32]);
         let mut ck_a=[0u8;32]; ck_a.copy_from_slice(&root_seed[32..64]);
         let mut ck_b=[0u8;32]; ck_b.copy_from_slice(&root_seed[64..96]);
         let mut extra=[0u8;32]; extra.copy_from_slice(&extra_raw);
         let mut sid=[0u8;8]; sid.copy_from_slice(ssid);
+        // Audit M2: wipe the heap copies of the derived root/chain/extra keys.
+        root_seed.zeroize();
+        extra_raw.zeroize();
         Ok(DakeSessionKeys{ root_key:SecretBytes::new(root), chain_key_send:SecretBytes::new(ck_a),
             chain_key_recv:SecretBytes::new(ck_b), brace_key:SecretBytes::new(*brace_key.expose()),
             ssid:SecretBytes::new(sid), extra_sym_key:SecretBytes::new(extra) })

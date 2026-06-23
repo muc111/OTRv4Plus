@@ -49,10 +49,11 @@ pub fn kdf_1(usage_id: u8, value: &[u8], output_len: usize) -> Vec<u8> {
 }
 
 pub fn kdf_secret<const N: usize>(usage_id: u8, value: &[u8]) -> SecretBytes<N> {
-    let raw = kdf_1(usage_id, value, N);
+    let mut raw = kdf_1(usage_id, value, N);
     let mut arr = [0u8; N];
     // Length is N by construction of kdf_1; copy_from_slice is safe.
     arr.copy_from_slice(&raw);
+    raw.zeroize();   // audit M2: wipe the heap copy of the secret
     SecretBytes::new(arr)
 }
 
@@ -74,13 +75,16 @@ pub fn kdf_1_py(usage_id: u8, value: &[u8], output_len: usize) -> pyo3::PyResult
 
 /// Advance a chain key one step. Returns (next_ck, message_key, zeros).
 pub fn kdf_chain(chain_key: &[u8; 32]) -> ([u8; 32], [u8; 32], [u8; 32]) {
-    let new_ck = kdf_1(usage::CHAIN_KEY, chain_key, 32);
-    let mk     = kdf_1(usage::MESSAGE_KEY, chain_key, 32);
+    let mut new_ck = kdf_1(usage::CHAIN_KEY, chain_key, 32);
+    let mut mk     = kdf_1(usage::MESSAGE_KEY, chain_key, 32);
 
     let mut ck_arr = [0u8; 32];
     let mut mk_arr = [0u8; 32];
     ck_arr.copy_from_slice(&new_ck);
     mk_arr.copy_from_slice(&mk);
+    // Audit M2: wipe the heap copies of the derived key material.
+    new_ck.zeroize();
+    mk.zeroize();
     (ck_arr, mk_arr, [0u8; 32])
 }
 
@@ -88,12 +92,13 @@ pub fn kdf_root(root_key: &[u8; 32], dh_output: &[u8]) -> ([u8; 32], [u8; 32]) {
     let mut input = Vec::with_capacity(32 + dh_output.len());
     input.extend_from_slice(root_key);
     input.extend_from_slice(dh_output);
-    let raw = kdf_1(usage::ROOT_KEY, &input, 64);
+    let mut raw = kdf_1(usage::ROOT_KEY, &input, 64);
     input.zeroize();
     let mut new_root  = [0u8; 32];
     let mut new_chain = [0u8; 32];
     new_root.copy_from_slice(&raw[..32]);
     new_chain.copy_from_slice(&raw[32..]);
+    raw.zeroize();   // audit M2
     (new_root, new_chain)
 }
 
@@ -101,10 +106,11 @@ pub fn kdf_brace_rotate(brace_key: &[u8; 32], mlkem_ss: &[u8]) -> [u8; 32] {
     let mut input = Vec::with_capacity(32 + mlkem_ss.len());
     input.extend_from_slice(brace_key);
     input.extend_from_slice(mlkem_ss);
-    let raw = kdf_1(usage::BRACE_KEY_ROTATE, &input, 32);
+    let mut raw = kdf_1(usage::BRACE_KEY_ROTATE, &input, 32);
     input.zeroize();
     let mut out = [0u8; 32];
     out.copy_from_slice(&raw);
+    raw.zeroize();   // audit M2
     out
 }
 
@@ -117,12 +123,13 @@ pub fn derive_ratchet_keys(
     let mut input = Vec::with_capacity(64 + shared_secret.len());
     input.extend_from_slice(root_key);
     input.extend_from_slice(shared_secret);
-    let raw = kdf_1(usage::ROOT_KEY, &input, 128);
+    let mut raw = kdf_1(usage::ROOT_KEY, &input, 128);
     input.zeroize();
     let mut new_root  = [0u8; 64];
     let mut new_chain = [0u8; 64];
     new_root.copy_from_slice(&raw[..64]);
     new_chain.copy_from_slice(&raw[64..]);
+    raw.zeroize();   // audit M2
     (SecretBytes::new(new_root), SecretBytes::new(new_chain))
 }
 
@@ -136,9 +143,10 @@ pub fn derive_brace_key(old_brace: &[u8; 32], mlkem_ss: &[u8]) -> SecretBytes<32
 }
 
 pub fn derive_ssid(shared_secret: &[u8]) -> [u8; 8] {
-    let raw = kdf_1(usage::SSID, shared_secret, 8);
+    let mut raw = kdf_1(usage::SSID, shared_secret, 8);
     let mut out = [0u8; 8];
     out.copy_from_slice(&raw);
+    raw.zeroize();   // audit M2 (ssid is public, but keep the path uniform)
     out
 }
 
