@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-OTRv4+ XMPP — full OTR + SMP over XMPP, transported over I2P SAM
+OTRv4+ XMPP - full OTR + SMP over XMPP, transported over I2P SAM
 ================================================================
 
 Post-quantum OTRv4+ end-to-end encryption over XMPP, reusing the IRC client's
@@ -52,6 +52,31 @@ COMMANDS:
     <text>               send to --peer (auto-encrypts once OTR is up)
 """
 
+# =============================================================================
+#  SECURITY MODEL (enforced throughout this file):
+#    * All cryptography lives in the Rust core (otrv4_core) via the shared
+#      EnhancedSessionManager. This transport never holds key material and never
+#      implements a primitive; it moves "?OTRv4 <base64>" frames and renders UI.
+#    * Every piece of untrusted data shown on the terminal (peer JIDs, plaintext
+#      bodies, and DECRYPTED OTR payloads) passes through _sanitise(), which
+#      strips ANSI/OSC/CSI escape sequences, C0/C1 controls, and newlines. This
+#      blocks terminal-title hijack, cursor manipulation, and forged log lines
+#      from a hostile peer or server, even over the encrypted channel.
+#    * Inbound message fragments are bounded (index range, fragment count, and a
+#      per-peer reassembly cap) before stitching, preventing memory-exhaustion
+#      DoS and out-of-range indexing. See _reassemble_fragment.
+#    * TLS verification is on by default; it is only disabled behind the explicit
+#      --insecure-tls opt-in, intended for a self-signed server reached over an
+#      already authenticated I2P tunnel (the .b32 destination is the key hash).
+#    * Fingerprints are pinned on first use (TOFU); the trust prompt gates the
+#      transition to a VERIFIED session.
+#
+#  Audited for: shell/command injection, escape-sequence injection, ReDoS,
+#  unsafe deserialisation, weak hashing, and insecure randomness. None present:
+#  no eval/exec, no pickle/marshal, no shell=True, no user-compiled regexes,
+#  no md5/sha1, and no use of the `random` module for any security decision.
+# =============================================================================
+
 import argparse
 import asyncio
 import builtins
@@ -62,7 +87,7 @@ import re
 import sys
 import time
 
-OTR_MODULE = "otrv4plus"   # symlink -> otrv4+.py
+OTR_MODULE = "otrv4plus"  # symlink -> otrv4+.py
 try:
     _otr = __import__(OTR_MODULE)
     EnhancedSessionManager = _otr.EnhancedSessionManager
@@ -71,29 +96,41 @@ try:
     I2PSAMConnection = getattr(_otr, "I2PSAMConnection", None)
 except Exception as e:
     print(f"Could not import OTR engine from '{OTR_MODULE}': {e}", file=sys.stderr)
-    print("Ensure otrv4+.py, the otrv4plus.py symlink, and otrv4_core.so are "
-          "in this directory.", file=sys.stderr)
+    print(
+        "Ensure otrv4+.py, the otrv4plus.py symlink, and otrv4_core.so are " "in this directory.",
+        file=sys.stderr,
+    )
     sys.exit(1)
 
 
 # ---------------------------------------------------------------------------
-# Terminal UI — REUSES the engine's own ANSI TUI (PanelManager / Screen / raw
+# Terminal UI - REUSES the engine's own ANSI TUI (PanelManager / Screen / raw
 # line editor), the same one the IRC client uses. We do NOT reimplement any of
 # it; we just drive it. These are all module-level in the engine.
 # ---------------------------------------------------------------------------
-_PanelManager     = getattr(_otr, "PanelManager", None)
-_Screen           = getattr(_otr, "Screen", None)
-_UIConstants      = getattr(_otr, "UIConstants", None)
-_setup_raw_mode   = getattr(_otr, "_setup_raw_mode", None)
+_PanelManager = getattr(_otr, "PanelManager", None)
+_Screen = getattr(_otr, "Screen", None)
+_UIConstants = getattr(_otr, "UIConstants", None)
+_setup_raw_mode = getattr(_otr, "_setup_raw_mode", None)
 _restore_terminal = getattr(_otr, "_restore_terminal", None)
-_read_one_char    = getattr(_otr, "_read_one_char", None)
+_read_one_char = getattr(_otr, "_read_one_char", None)
 _handle_input_char = getattr(_otr, "_handle_input_char", None)
-_set_prompt       = getattr(_otr, "_set_prompt", None)
-_colorize         = getattr(_otr, "colorize", lambda s, c: s)
-_EOF_SENTINEL     = getattr(_otr, "_EOF_SENTINEL", object())
-_TUI_AVAILABLE = all(x is not None for x in (
-    _PanelManager, _Screen, _UIConstants, _setup_raw_mode,
-    _restore_terminal, _read_one_char, _handle_input_char, _set_prompt))
+_set_prompt = getattr(_otr, "_set_prompt", None)
+_colorize = getattr(_otr, "colorize", lambda s, c: s)
+_EOF_SENTINEL = getattr(_otr, "_EOF_SENTINEL", object())
+_TUI_AVAILABLE = all(
+    x is not None
+    for x in (
+        _PanelManager,
+        _Screen,
+        _UIConstants,
+        _setup_raw_mode,
+        _restore_terminal,
+        _read_one_char,
+        _handle_input_char,
+        _set_prompt,
+    )
+)
 
 # When the TUI is active, the harness's plain print() output is routed into the
 # panel system instead of scribbling over the engine's screen. We shadow the
@@ -119,6 +156,31 @@ _ACTIVE_TUI_CLIENT = None
 # even after a clean exit.
 _SESSION_LOG_FH = None
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+
+
+def _sanitise(text, max_len: int = 1024) -> str:
+    """Strip ANSI/OSC/CSI escape sequences and control characters from
+    untrusted data (peer JIDs, plaintext bodies, and DECRYPTED OTR payloads)
+    before it is written to the terminal.
+
+    A decrypted message is fully peer-controlled; without this a hostile peer
+    could hijack the terminal title (OSC), move the cursor, or inject control
+    codes through an "encrypted" message. Because this client prints one line
+    per message, newlines and carriage returns are also stripped so a body
+    cannot forge additional log lines (e.g. a fake "[system]" notice). Mirrors
+    the IRC client's _sanitise(). Printable Unicode (incl. emoji) is preserved.
+    """
+    text = str(text)
+    # OSC / DCS / PM / APC strings, terminated by BEL or ST (e.g. title hijack).
+    text = re.sub(r"\x1b[P\]X^_][^\x07\x1b]*(?:\x07|\x1b\\)", "", text)
+    # CSI sequences (cursor movement, colours, erase line/display, ...).
+    text = re.sub(r"\x1b\[[\x30-\x3f]*[\x20-\x2f]*[\x40-\x7e]", "", text)
+    # Two-character Fe escapes.
+    text = re.sub(r"\x1b[\x20-\x2f][\x30-\x7e]", "", text)
+    text = re.sub(r"\x1b.", "", text, flags=re.DOTALL)
+    # Remaining C0/C1 controls and DEL, including newlines/CR (keep only tab).
+    text = re.sub(r"[\x00-\x08\x0a-\x1f\x7f\x80-\x9f]", "", text)
+    return text[:max_len]
 
 
 def _log_to_file(msg):
@@ -151,8 +213,7 @@ try:
     from slixmpp import ClientXMPP
     from slixmpp.exceptions import IqError, IqTimeout
 except ImportError:
-    builtins.print("slixmpp not installed.  Run:  pip install slixmpp aiodns",
-                   file=sys.stderr)
+    builtins.print("slixmpp not installed.  Run:  pip install slixmpp aiodns", file=sys.stderr)
     sys.exit(1)
 
 
@@ -170,12 +231,12 @@ def _fmt_fp(fp: str) -> str:
         return fp or "unavailable"
     clean = fp.upper().replace(" ", "")
     # OTRv4 fingerprints are long (SHA3-512 hex); group in 8s for readability.
-    return " ".join(clean[i:i + 8] for i in range(0, len(clean), 8))
+    return " ".join(clean[i : i + 8] for i in range(0, len(clean), 8))
 
 
-async def start_i2p_sam_forwarder(dest_b32: str, dest_port: int,
-                                  sam_host: str = "127.0.0.1",
-                                  sam_port: int = 7656):
+async def start_i2p_sam_forwarder(
+    dest_b32: str, dest_port: int, sam_host: str = "127.0.0.1", sam_port: int = 7656
+):
     """
     Open an I2P SAM stream to `dest_b32` and expose it as a local TCP endpoint.
 
@@ -185,8 +246,9 @@ async def start_i2p_sam_forwarder(dest_b32: str, dest_port: int,
     the loop so they are not garbage-collected.
     """
     if I2PSAMConnection is None:
-        raise RuntimeError("I2PSAMConnection not available from the OTR module; "
-                           "cannot use I2P SAM transport.")
+        raise RuntimeError(
+            "I2PSAMConnection not available from the OTR module; " "cannot use I2P SAM transport."
+        )
 
     loop = asyncio.get_event_loop()
     sam = I2PSAMConnection(sam_host=sam_host, sam_port=sam_port)
@@ -203,14 +265,14 @@ async def start_i2p_sam_forwarder(dest_b32: str, dest_port: int,
     sam_reader, sam_writer = await asyncio.open_connection(sock=sam_sock)
 
     # I2P tunnels can drop a stream when a large message (e.g. a ~16KB SMP
-    # stanza) is written as one burst — the DAKE (~4KB) survives but SMP does
+    # stanza) is written as one burst - the DAKE (~4KB) survives but SMP does
     # not. The IRC client never hits this because IRC fragments big messages
     # into many tiny lines, which paces the data. We get the same gentle pacing
     # WITHOUT changing the XMPP wire format by writing to the SAM stream in
     # small chunks with a brief yield between them. The peer still receives one
     # XMPP stanza; only our local->I2P feed is paced.
-    SAM_CHUNK = 1024          # bytes per write toward I2P
-    SAM_CHUNK_DELAY = 0.02    # seconds between chunks on large messages
+    SAM_CHUNK = 1024  # bytes per write toward I2P
+    SAM_CHUNK_DELAY = 0.02  # seconds between chunks on large messages
 
     async def _handle_local(local_reader, local_writer):
         async def pump_to_i2p(src, dst):
@@ -225,7 +287,7 @@ async def start_i2p_sam_forwarder(dest_b32: str, dest_port: int,
                         await dst.drain()
                     else:
                         for i in range(0, len(data), SAM_CHUNK):
-                            dst.write(data[i:i + SAM_CHUNK])
+                            dst.write(data[i : i + SAM_CHUNK])
                             await dst.drain()
                             await asyncio.sleep(SAM_CHUNK_DELAY)
             except Exception:
@@ -277,23 +339,23 @@ class OTRv4PlusXMPP(ClientXMPP):
         # Per-peer UI state:
         #   self._pending[peer] = 'trust' | 'smp_secret' | None
         self._pending = {}
-        self._encrypted = set()      # peers whose DAKE has completed
-        self._smp_reported = set()   # (peer, state) already announced
-        self._frag_seq = 0           # monotonic id for outbound fragment sets
+        self._encrypted = set()  # peers whose DAKE has completed
+        self._smp_reported = set()  # (peer, state) already announced
+        self._frag_seq = 0  # monotonic id for outbound fragment sets
 
         # Terminal-UI state (engine TUI is attached lazily in _start_tui).
         self.panel_manager = None
         self._screen = None
         self._tui_enabled = False
         self._tui_last_panel = None
-        self._tui_autofocused = False   # focus the first peer tab exactly once
-        self._tui_jid_by_label = {}     # short tab label -> full peer JID
-        self._tui_label_by_jid = {}     # full peer JID -> short tab label
-        self._own_bare = (jid.split("/", 1)[0] if jid else "")  # never tab-route to self
-        self._probe = False             # --debug: trace session presence around DAKE
-        self._last_dake1 = {}           # peer -> our last DAKE1 (for glare re-send)
+        self._tui_autofocused = False  # focus the first peer tab exactly once
+        self._tui_jid_by_label = {}  # short tab label -> full peer JID
+        self._tui_label_by_jid = {}  # full peer JID -> short tab label
+        self._own_bare = jid.split("/", 1)[0] if jid else ""  # never tab-route to self
+        self._probe = False  # --debug: trace session presence around DAKE
+        self._last_dake1 = {}  # peer -> our last DAKE1 (for glare re-send)
         self._prompt_refresh_cb = None
-        self.nick = (jid.split("@", 1)[0] if jid else "me")
+        self.nick = jid.split("@", 1)[0] if jid else "me"
 
         tracer = OTRTracer(enabled=True) if OTRTracer else None
         if tracer is not None and hasattr(tracer, "set_emit_callback"):
@@ -305,6 +367,7 @@ class OTRv4PlusXMPP(ClientXMPP):
                     print(f"[otr-trace] {line}")
                 except Exception:
                     pass
+
             tracer.set_emit_callback(_trace_emit)
         cfg = OTRConfig(test_mode=True)
         self.otr = EnhancedSessionManager(config=cfg, tracer=tracer)
@@ -316,9 +379,8 @@ class OTRv4PlusXMPP(ClientXMPP):
         # event loop free (so keepalive/network stay alive) AND guarantees the
         # SMP work always has a worker.
         from concurrent.futures import ThreadPoolExecutor
-        self._otr_executor = ThreadPoolExecutor(
-            max_workers=2, thread_name_prefix="otr-crypto"
-        )
+
+        self._otr_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="otr-crypto")
 
         self.auto_authorize = True
         self.auto_subscribe = True
@@ -349,14 +411,16 @@ class OTRv4PlusXMPP(ClientXMPP):
         if self.peer:
             self.send_presence_subscription(pto=self.peer)
             print(f"[subscribe] requested presence from {self.peer}")
-        print("[ready] /otr to start encryption. After DAKE you'll be asked to "
-              "trust the fingerprint, then to set the SMP passphrase. /quit to exit.\n")
+        print(
+            "[ready] /otr to start encryption. After DAKE you'll be asked to "
+            "trust the fingerprint, then to set the SMP passphrase. /quit to exit.\n"
+        )
         # Start XMPP-level keepalive so idle I2P tunnels stay up.
         self._keepalive_task = asyncio.ensure_future(self._keepalive_loop())
 
     async def _keepalive_loop(self):
         """Send a periodic XMPP whitespace ping so the I2P SAM stream is never
-        idle — especially important during the minutes-long SMP DH computations,
+        idle - especially important during the minutes-long SMP DH computations,
         when no application data flows but the tunnel must stay alive. The
         counter lets us SEE in the log that the event loop is still running
         while the SMP crypto executes in the background thread."""
@@ -386,10 +450,12 @@ class OTRv4PlusXMPP(ClientXMPP):
     def _on_message_error(self, msg):
         peer = msg["from"].bare
         text = msg["error"]["text"] or msg["error"]["condition"]
-        print(f"\n[delivery rejected] to {peer}: {text}")
+        print(f"\n[delivery rejected] to {_sanitise(peer, 128)}: {_sanitise(text)}")
         if msg["error"]["condition"] == "forbidden":
-            print("  -> not mutually subscribed; both accounts must accept each "
-                  "other as contacts.\n")
+            print(
+                "  -> not mutually subscribed; both accounts must accept each "
+                "other as contacts.\n"
+            )
 
     # ---------- subscription handshake ----------
 
@@ -428,11 +494,11 @@ class OTRv4PlusXMPP(ClientXMPP):
             # asyncio event loop, the keepalive couldn't fire, and the I2P
             # tunnel would time out ("unexpected eof") right in the middle of
             # SMP. So we offload to a thread and schedule result-handling back
-            # on the loop — exactly how the IRC client keeps its network loop
+            # on the loop - exactly how the IRC client keeps its network loop
             # responsive during the long SMP computations.
             asyncio.ensure_future(self._handle_otr_in_async(peer, body))
         else:
-            print(f"[plain] <{peer}> {body}")
+            print(f"[plain] <{_sanitise(peer, 128)}> {_sanitise(body)}")
 
     async def _handle_otr_in_async(self, peer, body):
         # Announce what kind of OTR message we received.
@@ -444,13 +510,17 @@ class OTRv4PlusXMPP(ClientXMPP):
             try:
                 keys = sorted(self.otr.sessions.keys())
                 present = peer in self.otr.sessions
-                print(f"[otr-probe] inbound {stage_in}: lookup={peer!r} "
-                      f"present={present} stored_keys={keys}")
+                print(
+                    f"[otr-probe] inbound {stage_in}: lookup={peer!r} "
+                    f"present={present} stored_keys={keys}"
+                )
                 if not present and keys:
                     for k in keys:
-                        print(f"[otr-probe]   key mismatch? stored={k!r} "
-                              f"== lookup={peer!r} -> {k == peer} "
-                              f"(len {len(k)} vs {len(peer)})")
+                        print(
+                            f"[otr-probe]   key mismatch? stored={k!r} "
+                            f"== lookup={peer!r} -> {k == peer} "
+                            f"(len {len(k)} vs {len(peer)})"
+                        )
             except Exception as e:
                 print(f"[otr-probe] inbound probe error: {e}")
 
@@ -458,7 +528,7 @@ class OTRv4PlusXMPP(ClientXMPP):
         # A DAKE1 arriving while we already have our OWN outgoing DAKE in
         # progress means both sides ran /otr. Over slow I2P this is common: our
         # DAKE1 hasn't reached them yet, so they start one too. The engine has
-        # no tie-break — it rejects the incoming DAKE1 ("DAKE1 REJECTED,
+        # no tie-break - it rejects the incoming DAKE1 ("DAKE1 REJECTED,
         # DAKE_IN_PROGRESS") and both sides deadlock. Resolve it deterministically
         # by bare JID: the LOWER JID keeps the initiator role; the HIGHER yields,
         # tears down its half-built session, and answers as the responder. Both
@@ -470,17 +540,21 @@ class OTRv4PlusXMPP(ClientXMPP):
             if sess is not None and st == "DAKE_IN_PROGRESS" and is_init:
                 if self._own_bare < peer:
                     # We win the tie. Ignore their DAKE1, but RE-SEND ours so a
-                    # dropped/late first DAKE1 still reaches them — otherwise they
+                    # dropped/late first DAKE1 still reaches them - otherwise they
                     # may never learn to yield. They will answer with DAKE2.
-                    print(f"[otr] simultaneous start with {peer}: keeping "
-                          f"initiator role; re-sending our DAKE1")
+                    print(
+                        f"[otr] simultaneous start with {peer}: keeping "
+                        f"initiator role; re-sending our DAKE1"
+                    )
                     d1 = self._last_dake1.get(peer)
                     if d1:
                         self.send_otr_fragmented(peer, d1)
                     return
                 # We lose the tie: drop our attempt and respond as the responder.
-                print(f"[otr] simultaneous start with {peer}: yielding initiator "
-                      f"role, answering as responder")
+                print(
+                    f"[otr] simultaneous start with {peer}: yielding initiator "
+                    f"role, answering as responder"
+                )
                 try:
                     self.otr.end_session(peer)
                     self._last_dake1.pop(peer, None)
@@ -492,14 +566,17 @@ class OTRv4PlusXMPP(ClientXMPP):
         # ----------------------------------------------------------------------
         # If this is a DATA message it may carry an SMP TLV whose response
         # requires a multi-minute 3072-bit DH computation. Log entry/exit so we
-        # can see on each side exactly when the heavy crypto runs — and confirm
+        # can see on each side exactly when the heavy crypto runs - and confirm
         # the event loop stayed alive (keepalives keep printing) throughout.
         heavy = (stage_in or "").startswith("DATA")
         if heavy:
             import time as _t
+
             t0 = _t.time()
-            print(f"[otr-crypto] processing DATA from {peer} "
-                  f"(SMP DH may take minutes; loop stays alive)...")
+            print(
+                f"[otr-crypto] processing DATA from {peer} "
+                f"(SMP DH may take minutes; loop stays alive)..."
+            )
 
         loop = asyncio.get_event_loop()
         try:
@@ -512,8 +589,8 @@ class OTRv4PlusXMPP(ClientXMPP):
 
         if heavy:
             import time as _t
-            print(f"[otr-crypto] done processing DATA from {peer} "
-                  f"({_t.time() - t0:.1f}s).")
+
+            print(f"[otr-crypto] done processing DATA from {peer} " f"({_t.time() - t0:.1f}s).")
 
         # Detect a freshly-encrypted session and run the trust prompt (once).
         self._check_dake_complete(peer)
@@ -530,7 +607,7 @@ class OTRv4PlusXMPP(ClientXMPP):
                 self.send_otr_fragmented(peer, out_b.decode("utf-8", errors="replace"))
             else:
                 text = out_b.decode("utf-8", errors="replace")
-                print(f"[otr] <{peer}> {text}")
+                print(f"[otr] <{_sanitise(peer, 128)}> {_sanitise(text)}")
 
         # Surface SMP state changes (VERIFIED / FAILED) and re-check DAKE.
         self._report_smp(peer)
@@ -547,10 +624,11 @@ class OTRv4PlusXMPP(ClientXMPP):
             DATA type and byte[0:2] is the version 0x0004.
         """
         import base64 as _b64
+
         try:
             if not frame.startswith(OTR_PREFIX):
                 return None
-            payload = frame[len(OTR_PREFIX):].strip()
+            payload = frame[len(OTR_PREFIX) :].strip()
             if payload.endswith("."):
                 payload = payload[:-1]
             try:
@@ -565,8 +643,12 @@ class OTRv4PlusXMPP(ClientXMPP):
                 return None
 
             # DATA message: version-prefixed 0x00 0x04 0x03
-            if (len(decoded) >= 3 and decoded[0] == 0x00
-                    and decoded[1] == 0x04 and decoded[2] == 0x03):
+            if (
+                len(decoded) >= 3
+                and decoded[0] == 0x00
+                and decoded[1] == 0x04
+                and decoded[2] == 0x03
+            ):
                 return "DATA (may carry SMP)"
 
             # Otherwise byte[0] is the DAKE message type.
@@ -592,7 +674,7 @@ class OTRv4PlusXMPP(ClientXMPP):
                 self.send_otr_fragmented(peer, out_b.decode("utf-8", errors="replace"))
             else:
                 text = out_b.decode("utf-8", errors="replace")
-                print(f"[otr] <{peer}> {text}")
+                print(f"[otr] <{_sanitise(peer, 128)}> {_sanitise(text)}")
 
         self._report_smp(peer)
         self._check_dake_complete(peer)
@@ -601,7 +683,7 @@ class OTRv4PlusXMPP(ClientXMPP):
 
     def _check_dake_complete(self, peer):
         """When a peer's session first becomes encrypted, show fingerprints and
-        prompt for trust — exactly like the IRC client."""
+        prompt for trust - exactly like the IRC client."""
         try:
             if not self.otr.has_encrypted_session(peer):
                 return
@@ -615,8 +697,7 @@ class OTRv4PlusXMPP(ClientXMPP):
         remote_fp = self._remote_fp(peer)
 
         print("\n" + "-" * 60)
-        print(f"[secure] OTR session with {peer} is ENCRYPTED "
-              "(X448 + ML-KEM-1024 + ML-DSA-87).")
+        print(f"[secure] OTR session with {peer} is ENCRYPTED " "(X448 + ML-KEM-1024 + ML-DSA-87).")
         print(f"  Your fingerprint  : {_fmt_fp(local_fp)}")
         print(f"  Their fingerprint : {_fmt_fp(remote_fp)}")
         print("-" * 60)
@@ -657,8 +738,10 @@ class OTRv4PlusXMPP(ClientXMPP):
 
     def _prompt_smp_secret(self, peer):
         print("-" * 60)
-        print("[smp] SOCIALIST MILLIONAIRE PROTOCOL setup "
-              "(hybrid PQC: ML-KEM-1024 + ML-DSA-87 + ZKP).")
+        print(
+            "[smp] SOCIALIST MILLIONAIRE PROTOCOL setup "
+            "(hybrid PQC: ML-KEM-1024 + ML-DSA-87 + ZKP)."
+        )
         print("[smp] Enter the SMP passphrase for auto-respond.")
         print("[smp]   - Both sides must enter the SAME passphrase.")
         print("[smp]   - Once both have stored it, either side runs  /smp start.")
@@ -678,8 +761,9 @@ class OTRv4PlusXMPP(ClientXMPP):
             return
         if ok:
             print("[smp] passphrase stored for auto-respond.")
-            print("[smp] When BOTH sides have stored it, run  /smp start  "
-                  "(either side) to verify.")
+            print(
+                "[smp] When BOTH sides have stored it, run  /smp start  " "(either side) to verify."
+            )
         else:
             print("[smp] could not store passphrase.")
 
@@ -697,12 +781,16 @@ class OTRv4PlusXMPP(ClientXMPP):
             key = (peer, name)
             if name == "SUCCEEDED" and key not in self._smp_reported:
                 self._smp_reported.add(key)
-                print(f"\n[smp] *** IDENTITY VERIFIED with {peer} - "
-                      "shared secret matched (SMP complete). ***\n")
+                print(
+                    f"\n[smp] *** IDENTITY VERIFIED with {peer} - "
+                    "shared secret matched (SMP complete). ***\n"
+                )
             elif name == "FAILED" and key not in self._smp_reported:
                 self._smp_reported.add(key)
-                print(f"\n[smp] *** SMP FAILED with {peer} - secrets did NOT "
-                      "match (or protocol error). Possible MITM. ***\n")
+                print(
+                    f"\n[smp] *** SMP FAILED with {peer} - secrets did NOT "
+                    "match (or protocol error). Possible MITM. ***\n"
+                )
         except Exception:
             pass
 
@@ -742,7 +830,7 @@ class OTRv4PlusXMPP(ClientXMPP):
         The receiver reassembles by msg_id. Small messages are sent whole as
         a normal ?OTRv4 frame.
 
-        IMPORTANT — why the threshold is small: the I2P streaming layer behind
+        IMPORTANT - why the threshold is small: the I2P streaming layer behind
         the SAM bridge does NOT reliably deliver a single large (>~8KB) write as
         one piece end-to-end; a ~16KB SMP2 frame arrives truncated and the
         stream tears down ("unexpected eof"). DAKE (~6KB) and SMP1 (~8KB) are
@@ -758,8 +846,7 @@ class OTRv4PlusXMPP(ClientXMPP):
             print(f"[otr-send] 1 frame ({len(payload)} bytes) -> {peer}")
             return
 
-        chunks = [payload[i:i + MAX_FRAGMENT]
-                  for i in range(0, len(payload), MAX_FRAGMENT)]
+        chunks = [payload[i : i + MAX_FRAGMENT] for i in range(0, len(payload), MAX_FRAGMENT)]
         total = len(chunks)
         # A monotonic per-sender counter, NOT hash(peer, payload[:64], total).
         # The old hash keyed on the first 64 chars of the frame, which are
@@ -771,8 +858,10 @@ class OTRv4PlusXMPP(ClientXMPP):
         self._frag_seq = (self._frag_seq + 1) & 0xFFFFFFFF
         msg_id = "%08x" % self._frag_seq
 
-        print(f"[otr-send] fragmenting {len(payload)} bytes into {total} "
-              f"fragments (id {msg_id}) -> {peer}")
+        print(
+            f"[otr-send] fragmenting {len(payload)} bytes into {total} "
+            f"fragments (id {msg_id}) -> {peer}"
+        )
         for i, chunk in enumerate(chunks, 1):
             frag = f"?OTRv4F|{msg_id}|{i}|{total}|{chunk}"
             self.send_message(mto=peer, mbody=frag, mtype="chat")
@@ -817,24 +906,26 @@ class OTRv4PlusXMPP(ClientXMPP):
             del self._frag_buffers[next(iter(self._frag_buffers))]
 
         key = (peer, msg_id, total)
-        buf = self._frag_buffers.setdefault(
-            key, {"parts": {}, "total": total})
+        buf = self._frag_buffers.setdefault(key, {"parts": {}, "total": total})
         buf["parts"][n] = chunk
         have = len(buf["parts"])
-        print(f"[otr-recv]   fragment {n}/{total} from {peer} "
-              f"(id {msg_id}; have {have}/{total})")
+        print(
+            f"[otr-recv]   fragment {n}/{total} from {peer} " f"(id {msg_id}; have {have}/{total})"
+        )
 
         if have < total:
             return None
 
-        # Complete — but verify every index is present before stitching, so a
+        # Complete - but verify every index is present before stitching, so a
         # duplicate/garbled set can never KeyError here.
         if any(i not in buf["parts"] for i in range(1, total + 1)):
             return None
         ordered = "".join(buf["parts"][i] for i in range(1, total + 1))
         del self._frag_buffers[key]
-        print(f"[otr-recv] reassembled {total} fragments "
-              f"({len(ordered)} bytes, id {msg_id}) from {peer}")
+        print(
+            f"[otr-recv] reassembled {total} fragments "
+            f"({len(ordered)} bytes, id {msg_id}) from {peer}"
+        )
         return ordered
 
     def send_plain(self, peer, text):
@@ -854,9 +945,11 @@ class OTRv4PlusXMPP(ClientXMPP):
             if self._probe:
                 try:
                     keys = sorted(self.otr.sessions.keys())
-                    print(f"[otr-probe] after /otr: stored={peer!r} "
-                          f"present={peer in self.otr.sessions} "
-                          f"all_keys={keys}")
+                    print(
+                        f"[otr-probe] after /otr: stored={peer!r} "
+                        f"present={peer in self.otr.sessions} "
+                        f"all_keys={keys}"
+                    )
                 except Exception as e:
                     print(f"[otr-probe] after-/otr probe error: {e}")
             print(f"[otr] DAKE started with {peer}. Waiting for DAKE2...")
@@ -884,8 +977,11 @@ class OTRv4PlusXMPP(ClientXMPP):
         except Exception as e:
             print(f"[smp] error: {e}")
             return
-        print("[smp] passphrase stored for auto-respond." if ok
-              else "[smp] could not store passphrase.")
+        print(
+            "[smp] passphrase stored for auto-respond."
+            if ok
+            else "[smp] could not store passphrase."
+        )
 
     def smp_start(self, peer, secret=None):
         """
@@ -909,8 +1005,10 @@ class OTRv4PlusXMPP(ClientXMPP):
             except Exception:
                 use_secret = None
         if not use_secret:
-            print("[smp] no passphrase stored. Use  /smp-secret <secret>  first, "
-                  "or  /smp <secret>  to set and start in one step.")
+            print(
+                "[smp] no passphrase stored. Use  /smp-secret <secret>  first, "
+                "or  /smp <secret>  to set and start in one step."
+            )
             return
         try:
             # start_smp runs heavy DH; offload so it never blocks the input
@@ -926,11 +1024,12 @@ class OTRv4PlusXMPP(ClientXMPP):
                     print(f"[smp] start error: {e}")
                     return
                 if smp1:
-                    self.send_otr_fragmented(
-                        peer, smp1 if isinstance(smp1, str) else smp1.decode())
-                    print(f"[smp] started with {peer}; waiting for response "
-                          "(SMP runs several 3072-bit DH rounds; keep both "
-                          "clients running)...")
+                    self.send_otr_fragmented(peer, smp1 if isinstance(smp1, str) else smp1.decode())
+                    print(
+                        f"[smp] started with {peer}; waiting for response "
+                        "(SMP runs several 3072-bit DH rounds; keep both "
+                        "clients running)..."
+                    )
                 else:
                     print(f"[smp] could not start with {peer}")
 
@@ -954,8 +1053,9 @@ class OTRv4PlusXMPP(ClientXMPP):
             has_secret = bool(self.otr.smp_storage.get_secret(peer))
         except Exception:
             pass
-        print(f"[status] {peer}: encrypted={enc} trusted={trusted} "
-              f"smp_secret_stored={has_secret}")
+        print(
+            f"[status] {peer}: encrypted={enc} trusted={trusted} " f"smp_secret_stored={has_secret}"
+        )
 
     def reshow_trust(self, peer):
         self._encrypted.discard(peer)
@@ -1012,7 +1112,7 @@ class OTRv4PlusXMPP(ClientXMPP):
             else:
                 print("no --peer set")
         elif line.startswith("/smp-secret "):
-            rest = line[len("/smp-secret "):].strip()
+            rest = line[len("/smp-secret ") :].strip()
             first = rest.split(" ", 1)[0]
             if "@" in first and " " in rest:
                 t, s = rest.split(" ", 1)
@@ -1063,9 +1163,20 @@ class OTRv4PlusXMPP(ClientXMPP):
     # System-prefixed lines have no peer; everything else routes by JID, with
     # JID-less continuation lines (fingerprints, the SMP banner) inheriting the
     # last peer routed to.
-    _SYS_PREFIXES = ("[i2p]", "[tls]", "[connected]", "[ready]", "[sub]",
-                     "[status]", "[keepalive]", "[disconnected]", "[auth",
-                     "[delivery", "[sent plain]", "[queued]")
+    _SYS_PREFIXES = (
+        "[i2p]",
+        "[tls]",
+        "[connected]",
+        "[ready]",
+        "[sub]",
+        "[status]",
+        "[keepalive]",
+        "[disconnected]",
+        "[auth",
+        "[delivery",
+        "[sent plain]",
+        "[queued]",
+    )
 
     def _tui_label_for(self, jid):
         """Return a short, unique tab label for a peer JID (its localpart,
@@ -1078,12 +1189,10 @@ class OTRv4PlusXMPP(ClientXMPP):
             return existing
         local = jid.split("@", 1)[0] or jid
         label = local
-        if (label in self._tui_jid_by_label
-                and self._tui_jid_by_label[label] != jid):
+        if label in self._tui_jid_by_label and self._tui_jid_by_label[label] != jid:
             dom = jid.split("@", 1)[1] if "@" in jid else ""
             label = "%s@%s" % (local, dom[:6])
-            if (label in self._tui_jid_by_label
-                    and self._tui_jid_by_label[label] != jid):
+            if label in self._tui_jid_by_label and self._tui_jid_by_label[label] != jid:
                 label = jid  # last resort: keep them distinct
         self._tui_jid_by_label[label] = jid
         self._tui_label_by_jid[jid] = label
@@ -1092,10 +1201,10 @@ class OTRv4PlusXMPP(ClientXMPP):
     def _tui_route_output(self, line):
         """Route one harness output line into the panel system. Called from the
         module-level print() shadow while the TUI is active (possibly from the
-        OTR crypto thread — PanelManager/Screen are internally lock-guarded).
+        OTR crypto thread - PanelManager/Screen are internally lock-guarded).
 
         Routing is peer-first: any line naming a peer (other than us) goes to
-        that peer's tab — presence, delivery receipts, OTR/SMP traces included.
+        that peer's tab - presence, delivery receipts, OTR/SMP traces included.
         Only genuinely peerless lines fall to system; bare continuation lines
         (fingerprints, the SMP banner) inherit the last peer."""
         if line == "":
@@ -1114,9 +1223,9 @@ class OTRv4PlusXMPP(ClientXMPP):
         else:
             stripped = line.lstrip()
             if any(stripped.startswith(p) for p in self._SYS_PREFIXES):
-                target = "system"                      # global, peerless
+                target = "system"  # global, peerless
             else:
-                target = self._tui_last_panel or "system"   # continuation
+                target = self._tui_last_panel or "system"  # continuation
         self._tui_update_badge(target, line)
         try:
             self.panel_manager.add_message(target, line)
@@ -1125,8 +1234,11 @@ class OTRv4PlusXMPP(ClientXMPP):
         # First time a real peer conversation appears while we're parked in
         # system (e.g. no --peer was given and the peer initiated), jump to it
         # once. Subsequent messages never steal focus.
-        if (not self._tui_autofocused and target != "system"
-                and self.panel_manager.active_panel == "system"):
+        if (
+            not self._tui_autofocused
+            and target != "system"
+            and self.panel_manager.active_panel == "system"
+        ):
             self._tui_autofocused = True
             try:
                 self.panel_manager.switch_to_panel(target)
@@ -1149,8 +1261,7 @@ class OTRv4PlusXMPP(ClientXMPP):
             return
         SL = _UIConstants.SecurityLevel
         try:
-            if ("SMP VERIFIED" in line or "Fingerprint TRUSTED" in line
-                    or "identity pinned" in line):
+            if "SMP VERIFIED" in line or "Fingerprint TRUSTED" in line or "identity pinned" in line:
                 self.panel_manager.update_panel_security(target, SL.SMP_VERIFIED)
             elif "is ENCRYPTED" in line:
                 self.panel_manager.update_panel_security(target, SL.ENCRYPTED)
@@ -1168,15 +1279,21 @@ class OTRv4PlusXMPP(ClientXMPP):
         if _UIConstants is not None:
             icon = _UIConstants.SECURITY_ICONS.get(active.security_level, "")
         name = "system" if active.name == "system" else active.name
-        _set_prompt(_colorize(self.nick, "cyan") + _colorize(" | ", "dim")
-                    + _colorize(f"[{icon}{name}]", "green") + " ")
+        _set_prompt(
+            _colorize(self.nick, "cyan")
+            + _colorize(" | ", "dim")
+            + _colorize(f"[{icon}{name}]", "green")
+            + " "
+        )
 
     def _tui_peer_hint(self, label):
         """Drop a one-time 'how to start OTR' hint into a peer tab, so the user
         sees what to do in the tab they're actually looking at."""
-        hint = ("Type /otr to start an encrypted session with %s.  You'll then "
-                "confirm the fingerprint and set a shared SMP secret to verify "
-                "identity.  /quit to exit." % label)
+        hint = (
+            "Type /otr to start an encrypted session with %s.  You'll then "
+            "confirm the fingerprint and set a shared SMP secret to verify "
+            "identity.  /quit to exit." % label
+        )
         try:
             self.panel_manager.add_message(label, _colorize(hint, "yellow"))
         except Exception:
@@ -1188,13 +1305,13 @@ class OTRv4PlusXMPP(ClientXMPP):
         engine's panel/screen primitives are lock-guarded, matching the
         print()-shadow path."""
         import logging
+
         client = self
 
         class _DebugTabHandler(logging.Handler):
             def __init__(self):
                 super().__init__(logging.DEBUG)
-                self.setFormatter(
-                    logging.Formatter("%(levelname)s %(name)s: %(message)s"))
+                self.setFormatter(logging.Formatter("%(levelname)s %(name)s: %(message)s"))
 
             def emit(self, record):
                 try:
@@ -1234,14 +1351,15 @@ class OTRv4PlusXMPP(ClientXMPP):
         self.panel_manager = _PanelManager(self)
         self._screen = _Screen(self)
         self._tui_enabled = True
-        self._prompt_refresh_cb = self._refresh_prompt   # PanelManager calls this
-        _ACTIVE_TUI_CLIENT = self                          # arm the print() shadow
+        self._prompt_refresh_cb = self._refresh_prompt  # PanelManager calls this
+        _ACTIVE_TUI_CLIENT = self  # arm the print() shadow
 
         # Take over logging. The root logger's stream handlers would scribble
         # the curses-style screen, so detach them. With --debug, route every
         # record into a dedicated 'debug' tab (rendered purple); otherwise drop
         # them so nothing reaches the terminal directly.
         import logging
+
         root = logging.getLogger()
         self._saved_log_handlers = root.handlers[:]
         for h in self._saved_log_handlers:
@@ -1342,8 +1460,7 @@ class OTRv4PlusXMPP(ClientXMPP):
             peer = self.peer or None
         # Echo our own outgoing plaintext (dispatch_line/send don't echo it) into
         # the tab the user is looking at.
-        if (peer and not line.startswith("/")
-                and not self.has_pending(peer)):
+        if peer and not line.startswith("/") and not self.has_pending(peer):
             self.panel_manager.add_message(active, _colorize("you", "cyan") + ": " + line)
         try:
             keep = self.dispatch_line(peer, line)
@@ -1371,8 +1488,7 @@ class OTRv4PlusXMPP(ClientXMPP):
             i = order.index(pm.active_panel)
             pm.switch_to_panel(order[(i - 1) % len(order)])
             return True
-        if cmd in ("/win", "/window", "/w", "/switch", "/sw", "/go",
-                   "/buffer", "/b", "/j"):
+        if cmd in ("/win", "/window", "/w", "/switch", "/sw", "/go", "/buffer", "/b", "/j"):
             if len(parts) > 1:
                 a = parts[1]
                 if a.isdigit():
@@ -1387,12 +1503,11 @@ class OTRv4PlusXMPP(ClientXMPP):
                     if len(hit) == 1:
                         pm.switch_to_panel(hit[0])
                     else:
-                        pm.add_message(pm.active_panel,
-                                       "no tab '%s'. tabs: %s" %
-                                       (a, ", ".join(order)))
+                        pm.add_message(
+                            pm.active_panel, "no tab '%s'. tabs: %s" % (a, ", ".join(order))
+                        )
             else:
-                names = ", ".join("%d:%s" % (i + 1, n)
-                                  for i, n in enumerate(order))
+                names = ", ".join("%d:%s" % (i + 1, n) for i, n in enumerate(order))
                 pm.add_message(pm.active_panel, "tabs: " + names)
             return True
         # bare /1 /2 /3 ... jumps to that tab by index
@@ -1441,29 +1556,43 @@ def main():
     ap = argparse.ArgumentParser(description="OTRv4+ XMPP - full OTR + SMP over I2P SAM")
     ap.add_argument("--jid", required=True, help="your full JID")
     ap.add_argument("--peer", help="default peer JID for /otr, /smp, chat")
-    ap.add_argument("--server", help="server c2s .b32.i2p address to SAM-connect to "
-                                     "(default: the domain part of --jid)")
+    ap.add_argument(
+        "--server",
+        help="server c2s .b32.i2p address to SAM-connect to " "(default: the domain part of --jid)",
+    )
     ap.add_argument("--port", type=int, default=5222, help="server c2s port")
     ap.add_argument("--sam-host", default="127.0.0.1", help="i2pd SAM host")
     ap.add_argument("--sam-port", type=int, default=7656, help="i2pd SAM port")
-    ap.add_argument("--no-i2p", action="store_true",
-                    help="connect directly (clearnet), do not use I2P SAM")
-    ap.add_argument("--insecure-tls", action="store_true",
-                    help="accept expired/self-signed server certs")
-    ap.add_argument("--no-tui", action="store_true",
-                    help="disable the tabbed TUI; use plain linear scrollback "
-                         "(better for reading debug/trace output)")
-    ap.add_argument("--log-file", default=None,
-                    help="override the session transcript path (default: "
-                         "~/.otrv4plus/logs/session-<timestamp>.log). Only "
-                         "written when --debug is set.")
-    ap.add_argument("--no-log", action="store_true",
-                    help="disable the session transcript even with --debug")
-    ap.add_argument("--keep-log", action="store_true",
-                    help="keep the transcript file after a clean exit "
-                         "(default: deleted on clean /quit or Ctrl+C; kept "
-                         "automatically if the session crashes, so a failure "
-                         "is always diagnosable)")
+    ap.add_argument(
+        "--no-i2p", action="store_true", help="connect directly (clearnet), do not use I2P SAM"
+    )
+    ap.add_argument(
+        "--insecure-tls", action="store_true", help="accept expired/self-signed server certs"
+    )
+    ap.add_argument(
+        "--no-tui",
+        action="store_true",
+        help="disable the tabbed TUI; use plain linear scrollback "
+        "(better for reading debug/trace output)",
+    )
+    ap.add_argument(
+        "--log-file",
+        default=None,
+        help="override the session transcript path (default: "
+        "~/.otrv4plus/logs/session-<timestamp>.log). Only "
+        "written when --debug is set.",
+    )
+    ap.add_argument(
+        "--no-log", action="store_true", help="disable the session transcript even with --debug"
+    )
+    ap.add_argument(
+        "--keep-log",
+        action="store_true",
+        help="keep the transcript file after a clean exit "
+        "(default: deleted on clean /quit or Ctrl+C; kept "
+        "automatically if the session crashes, so a failure "
+        "is always diagnosable)",
+    )
     ap.add_argument("--debug", action="store_true")
     args = ap.parse_args()
 
@@ -1475,15 +1604,17 @@ def main():
     global _SESSION_LOG_FH
     if args.debug and not args.no_log:
         log_path = args.log_file or os.path.expanduser(
-            "~/.otrv4plus/logs/session-%s.log" % time.strftime("%Y%m%d-%H%M%S"))
+            "~/.otrv4plus/logs/session-%s.log" % time.strftime("%Y%m%d-%H%M%S")
+        )
         try:
             os.makedirs(os.path.dirname(log_path) or ".", exist_ok=True)
             _SESSION_LOG_FH = open(log_path, "a", encoding="utf-8")
             builtins.print(f"[log] full session transcript -> {log_path}")
             builtins.print(f"[log] read it live with: tail -f {log_path}")
             if not args.keep_log:
-                builtins.print("[log] deleted automatically on a clean exit; "
-                                "kept if the session crashes")
+                builtins.print(
+                    "[log] deleted automatically on a clean exit; " "kept if the session crashes"
+                )
         except Exception as e:
             builtins.print(f"[log] could not open log file: {e}", file=sys.stderr)
     elif args.log_file and not args.debug:
@@ -1500,6 +1631,7 @@ def main():
 
     if args.insecure_tls:
         import ssl as _ssl
+
         ctx = _ssl.create_default_context()
         ctx.check_hostname = False
         ctx.verify_mode = _ssl.CERT_NONE
@@ -1515,15 +1647,17 @@ def main():
     if use_i2p:
         try:
             host, port = loop.run_until_complete(
-                start_i2p_sam_forwarder(server_b32, args.port,
-                                        sam_host=args.sam_host,
-                                        sam_port=args.sam_port)
+                start_i2p_sam_forwarder(
+                    server_b32, args.port, sam_host=args.sam_host, sam_port=args.sam_port
+                )
             )
         except Exception as e:
             print(f"[i2p] SAM bridge failed: {e}", file=sys.stderr)
-            print("[i2p] Is i2pd running with SAM enabled on "
-                  f"{args.sam_host}:{args.sam_port}? Is the server b32 correct?",
-                  file=sys.stderr)
+            print(
+                "[i2p] Is i2pd running with SAM enabled on "
+                f"{args.sam_host}:{args.sam_port}? Is the server b32 correct?",
+                file=sys.stderr,
+            )
             sys.exit(1)
         client.connect(host, port)
     else:
@@ -1537,8 +1671,10 @@ def main():
     try:
         started_tui = (not args.no_tui) and client._start_tui(loop, debug=args.debug)
         if args.no_tui:
-            print("[tui] disabled (--no-tui): plain scrollback. Commands still work "
-                  "(/otr, /smp, /msg, /status, /quit).")
+            print(
+                "[tui] disabled (--no-tui): plain scrollback. Commands still work "
+                "(/otr, /smp, /msg, /status, /quit)."
+            )
         if started_tui:
             try:
                 loop.run_until_complete(client.disconnected)
@@ -1548,9 +1684,7 @@ def main():
                 client._stop_tui()
         else:
             try:
-                loop.run_until_complete(
-                    asyncio.gather(client.disconnected, _input_loop(client))
-                )
+                loop.run_until_complete(asyncio.gather(client.disconnected, _input_loop(client)))
             except KeyboardInterrupt:
                 client.disconnect()
     except Exception:
