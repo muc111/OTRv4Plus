@@ -1,6 +1,6 @@
 #![cfg(feature = "pq-rust")]
 #![allow(deprecated)]  // upstream generic-array 0.x deprecation in ed448-goldilocks-plus 0.16; see ring_sig.rs for full rationale
-// src/dake.rs — OTRv4 Deniable Authenticated Key Exchange
+// src/dake.rs - OTRv4 Deniable Authenticated Key Exchange
 //
 // All secret material stays inside Rust.  Wire parsing of DAKE1/2 is handled
 // natively so that optional ML‑DSA‑87 fields are processed correctly.
@@ -143,11 +143,11 @@ pub enum DakePhase {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-//  DakeOutput — Phase 4 opaque session-key handle
+//  DakeOutput - Phase 4 opaque session-key handle
 //
 //  Replaces Dakeresult's `Vec<u8>` PyO3 getter-set fields with a private
 //  RefCell<Option<DakeSessionKeys>>.  Python NEVER sees the secret key bytes
-//  as PyBytes — they are moved directly into a RustDoubleRatchet via
+//  as PyBytes - they are moved directly into a RustDoubleRatchet via
 //  consume_into_ratchet(), without crossing the FFI boundary.
 //
 //  This closes audit findings C2 and C3 (Critical Exposure Window) when the
@@ -163,13 +163,13 @@ use std::cell::RefCell;
 
 #[pyclass(unsendable)]
 pub struct DakeOutput {
-    // Secret material — private, no PyO3 getter.  Consumed by
+    // Secret material - private, no PyO3 getter.  Consumed by
     // consume_into_ratchet().  Wrapped in Option so we can .take() it out
     // when consuming; wrapped in RefCell so consume_into_ratchet can take
     // &self (PyO3 method receiver) rather than &mut self.
     inner: RefCell<Option<DakeSessionKeys>>,
 
-    // Public material — exposed via #[pyo3(get)].  These are NOT secrets:
+    // Public material - exposed via #[pyo3(get)].  These are NOT secrets:
     //   ssid is a session identifier (8 bytes) public to both parties
     //   remote_identity_pub is the peer's Ed448 long-term identity key
     //   remote_mldsa_pub is the peer's optional ML-DSA-87 long-term key
@@ -190,7 +190,7 @@ impl DakeOutput {
     fn consumed(&self) -> bool { self.inner.borrow().is_none() }
 
     /// Move the secret session keys into a new RustDoubleRatchet.
-    /// The keys NEVER become PyBytes — they transit from the private
+    /// The keys NEVER become PyBytes - they transit from the private
     /// RefCell<Option<DakeSessionKeys>> directly into the ratchet's owned
     /// SecretBytes fields via DoubleRatchet::new().
     ///
@@ -231,7 +231,7 @@ impl DakeOutput {
         // Take the session keys out of the RefCell, consuming them.
         let keys = self.inner.borrow_mut().take().ok_or_else(|| {
             PyValueError::new_err(
-                "DakeOutput has already been consumed — cannot consume twice",
+                "DakeOutput has already been consumed - cannot consume twice",
             )
         })?;
 
@@ -245,7 +245,7 @@ impl DakeOutput {
 }
 
 impl DakeOutput {
-    /// Internal constructor — only the Rust DakeState may build a DakeOutput.
+    /// Internal constructor - only the Rust DakeState may build a DakeOutput.
     /// Python cannot construct one directly (no `#[new]` method).
     pub(crate) fn from_keys_and_public(
         keys:                  DakeSessionKeys,
@@ -391,7 +391,7 @@ impl DakeState {
 
         // Build the wire BEFORE computing MAC, so the MAC covers exactly what
         // will be sent.  The parser (process_dake2) MACs over data[..off]
-        // where off is everything before the MAC — i.e. the full wire body
+        // where off is everything before the MAC - i.e. the full wire body
         // including any ML-DSA pub.  We must match that on the writer side.
         let mldsa_to_send: Option<&[u8]> = mldsa_pub.or(self.our_mldsa_pub.as_deref());
 
@@ -797,7 +797,7 @@ impl PyDake {
         // ── Wipe the source bytearrays in-place ──
         // PyByteArray::set_item is the safe API; no unsafe needed.
         // After this loop, the Python-side bytearray that the caller
-        // passed in contains all zeros — wherever Python is keeping that
+        // passed in contains all zeros - wherever Python is keeping that
         // memory, it is now zeroed.
         for i in 0..57 {
             our_ik_bytes.set_item(i, 0u8)?;
@@ -825,7 +825,7 @@ impl PyDake {
     /// context) is returned to Python for appending to the unsigned
     /// profile body.  Output is byte-identical to what the Python
     /// `cryptography` library's `Ed448PrivateKey.sign(msg)` would
-    /// produce for the same private bytes and the same message —
+    /// produce for the same private bytes and the same message -
     /// callers MUST validate this with a startup self-check before
     /// trusting this path in production, because an implementation
     /// difference between `ed448-goldilocks-plus` and OpenSSL's Ed448
@@ -904,7 +904,7 @@ impl PyDake {
         // ── Ed448 sign the unsigned profile body ──
         // RFC 8032 §5.2 pure Ed448 (empty context).  Matches what
         // Python `cryptography` lib's Ed448PrivateKey.sign(msg) produces
-        // — caller must verify with a startup self-check before
+        // - caller must verify with a startup self-check before
         // trusting this path in production.
         let signing_key = SigningKey::try_from(ipriv_secret.expose())
             .map_err(|e| PyValueError::new_err(format!("Ed448 SigningKey construction failed: {:?}", e)))?;
@@ -948,7 +948,7 @@ impl PyDake {
     /// this method reads from them once to construct `DakeState` and
     /// sign the profile, then returns.  Python never sees the bytes.
     ///
-    /// Output: same as sign_profile_body_and_construct — a tuple
+    /// Output: same as sign_profile_body_and_construct - a tuple
     /// `(RustDAKE, signature[114])`.
     ///
     /// Note that the handle objects passed in remain alive after this
@@ -1037,7 +1037,7 @@ impl PyDake {
         inner.is_initiator = is_initiator;
         inner.our_profile_bytes = our_profile_bytes.to_vec();
 
-        // No bytearray to wipe — the source is Rust-owned SecretBytes
+        // No bytearray to wipe - the source is Rust-owned SecretBytes
         // that remains in the handles for future operations.  The
         // handles are zeroized on drop when Python GC's them.
 

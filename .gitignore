@@ -40,3 +40,5 @@ libera.pem
 
 libera.pem
 *.pem
+otrv4_core.so
+*.so

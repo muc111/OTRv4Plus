@@ -1,6 +1,6 @@
 # OTRv4+ Protocol Specification
 
-**Version:** 10.9.3
+**Version:** 10.10.4
 **Status:** Draft / Research Prototype
 **Repository:** github.com/muc111/OTRv4Plus
 
@@ -473,13 +473,19 @@ Offset  Size  Field
 60      4     msg_num         (INT, index of this message in its chain)
 ```
 
-**Associated data (AAD).** The GCM associated data is the encoded header followed
-by a fixed associated-data value `ad` established at ratchet creation and identical
-on both peers (the implementation binds `ad` to the session identifier):
+**Associated data (AAD).** The GCM associated data is the 64-byte ratchet header
+followed by the 8-byte session identifier `ssid` derived during the DAKE (§4.4).
+Both peers derive `ssid` symmetrically from `mixed_secret` and MUST use it
+identically as the fixed `ad` component. The derivation and total AAD are:
 
 ```
-aad = header_bytes(64) || ad
+ad  = ssid                           // 8 bytes; KDF_1(0x01, mixed_secret, 8) from §4.4
+aad = header_bytes(64) || ad         // 72 bytes total
 ```
+
+`ad` is fixed for the lifetime of the session (it does not change per message or per
+ratchet step). An implementation MUST derive `ad` from the session SSID exactly as
+above; any deviation causes decryption failure with no distinguishable error.
 
 The header is authenticated but NOT encrypted: the receiver needs `dh_pub`,
 `prev_chain_len`, and `msg_num` in the clear to select or derive the correct key
@@ -693,16 +699,44 @@ key (2592 bytes) are appended to the classical SMP1 payload.
 
 **SMP2 (hybrid):** the responder:
 ```
-(ct, kem_ss) = ML-KEM-1024.Encapsulate(initiator_ek)
+(ct, kem_ss)   = ML-KEM-1024.Encapsulate(initiator_ek)
+transcript_tag = HMAC-SHA3-512(SHA3-512(ssid), smp1_wire_bytes)   // §6.10; see below
 pq_binding_key = KDF_1(0x20, domain || kem_ss || transcript_tag, 32)  // PQ_BRACE_KEY
 ```
 generates its own ML-DSA-87 keypair, and signs the entire SMP2 wire body with
 ML-DSA-87 using `pq_binding_key` as signing context. It appends `ct` (1568),
 its ML-DSA-87 public key (2592), and the ML-DSA-87 signature (4627).
 
+The terms in the `pq_binding_key` derivation are defined as follows:
+
+- **`domain`** = the 12-byte ASCII literal `"OTRv4+SMP-PQ"` (no null terminator).
+  This is a domain separator that distinguishes this key from all other
+  `KDF_1(0x20, ...)` outputs. Its size and encoding are normative.
+
+- **`kem_ss`** = the 32-byte ML-KEM-1024 shared secret produced by
+  `ML-KEM-1024.Encapsulate(initiator_ek)` above. This is the quantum-hardening
+  contribution; an attacker who cannot break ML-KEM-1024 cannot derive this key.
+
+- **`transcript_tag`** = the 64-byte SMP transcript MAC per §6.10, computed as
+  `HMAC-SHA3-512(SHA3-512(ssid), prior_smp_wire_bytes)` over all SMP wire messages
+  received before the current step, in order. At SMP2 this covers only SMP1 wire
+  bytes; at SMP3 it covers SMP1 || SMP2 wire bytes; at SMP4 SMP1 || SMP2 || SMP3.
+  This binds `pq_binding_key` to the specific transcript, preventing cross-session
+  key reuse. Implementations MUST update the running transcript before computing
+  `transcript_tag` for each step.
+
+The KDF input is therefore 12 + 32 + 64 = 108 bytes.
+
 **SMP3 / SMP4 (hybrid):** each side verifies the previous step's ML-DSA-87
 signature **before** processing the classical fields, then signs its own output
-under `pq_binding_key`. SMP3 decapsulates to derive the same `pq_binding_key`.
+under `pq_binding_key`. SMP3 decapsulates to derive the same `pq_binding_key`:
+```
+kem_ss         = ML-KEM-1024.Decapsulate(initiator_dk, ct)
+transcript_tag = HMAC-SHA3-512(SHA3-512(ssid), smp1_wire_bytes)   // same as SMP2
+pq_binding_key = KDF_1(0x20, domain || kem_ss || transcript_tag, 32)
+```
+The initiator MUST use the same `transcript_tag` value (over SMP1 only) at SMP3
+as the responder used at SMP2, so both derive the same `pq_binding_key`.
 
 **Security argument:** breaking the equality proof requires breaking **all three**
 of: the 3072-bit discrete logarithm (to forge the classical ZKPs), ML-KEM-1024 (to
@@ -922,6 +956,6 @@ Order `q = (p - 1) / 2`. Generator `g = 2`.
 
 ---
 
-*End of specification. This document describes OTRv4+ v10.9.3 as implemented. It is
+*End of specification. This document describes OTRv4+ v10.10.4 as implemented. It is
 a research prototype specification and has not undergone formal cryptographic
 review.*

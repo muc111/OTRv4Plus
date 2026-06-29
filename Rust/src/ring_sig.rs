@@ -2,7 +2,7 @@
 //!
 //! Direct port of `otr4_crypto_ext.c`'s `py_ring_sign` / `py_ring_verify` /
 //! `ring_challenge` (lines 1472–1733).  Output is bit-exact compatible with
-//! the C reference — Rust signatures verify with C, C signatures verify
+//! the C reference - Rust signatures verify with C, C signatures verify
 //! with Rust.  This compatibility is enforced by the Python adapter's
 //! startup self-check (`_verify_ring_sig_rust_compat`) before the Rust
 //! path is enabled in production.
@@ -219,7 +219,7 @@ fn derive_ephemeral_scalar(seed: &[u8], msg: &[u8]) -> Scalar {
 ///
 /// Errors:
 ///   - Input length mismatch
-///   - Point decoding failure for `a2` (a1 is not decoded — its compressed
+///   - Point decoding failure for `a2` (a1 is not decoded - its compressed
 ///     form is hashed directly; only a2 is used in scalar multiplication)
 pub fn ring_sign_bytes(
     seed: &[u8],
@@ -382,7 +382,7 @@ mod tests {
         let a1_scalar = derive_signing_scalar(&seed);
         let a1 = encode_point(&EdwardsPoint::mul_by_generator(&a1_scalar));
 
-        // Random A2 (just another public point — we don't need its discrete log).
+        // Random A2 (just another public point - we don't need its discrete log).
         let a2_seed = [0x37u8; 57];
         let a2_scalar = derive_signing_scalar(&a2_seed);
         let a2 = encode_point(&EdwardsPoint::mul_by_generator(&a2_scalar));

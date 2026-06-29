@@ -1338,7 +1338,7 @@ class OTRv4DataMessage:
             raise ValueError(f"Failed to decode message: {e }")
 
 
-VERSION = "OTRv4+ 10.9.4"
+VERSION = "OTRv4+ 10.10.4"
 
 if not hasattr(hashlib, "sha3_512"):
     raise RuntimeError(

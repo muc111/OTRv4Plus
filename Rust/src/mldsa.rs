@@ -23,7 +23,7 @@
 //!     matches the C extension's tolerant verify behaviour so the
 //!     Python `MLDSA87Auth.verify()` classmethod logic stays unchanged.
 //!
-//! Byte sizes (FIPS 204 §4 — ML-DSA-87 parameter set):
+//! Byte sizes (FIPS 204 §4 - ML-DSA-87 parameter set):
 //!   Public key: 2592 bytes  (PQCLEAN_MLDSA87_CLEAN_CRYPTO_PUBLICKEYBYTES)
 //!   Secret key: 4896 bytes  (PQCLEAN_MLDSA87_CLEAN_CRYPTO_SECRETKEYBYTES)
 //!   Signature:  4627 bytes  (PQCLEAN_MLDSA87_CLEAN_CRYPTO_BYTES)
@@ -75,7 +75,7 @@ pub fn mldsa87_sign<'py>(py: Python<'py>, priv_bytes: &[u8], msg: &[u8]) -> PyRe
 ///
 /// Returns `True` on successful verification, `False` on any failure
 /// (parse error in pub/sig, length mismatch, signature invalid).
-/// Never raises — same tolerant behaviour as the C extension it replaces.
+/// Never raises - same tolerant behaviour as the C extension it replaces.
 #[pyfunction]
 pub fn mldsa87_verify(pub_bytes: &[u8], msg: &[u8], sig_bytes: &[u8]) -> PyResult<bool> {
     let pk = match mldsa87::PublicKey::from_bytes(pub_bytes) {
@@ -93,7 +93,7 @@ pub fn mldsa87_verify(pub_bytes: &[u8], msg: &[u8], sig_bytes: &[u8]) -> PyResul
 mod tests {
     use super::*;
 
-    /// Round-trip: keygen, sign, verify — known-good input.
+    /// Round-trip: keygen, sign, verify - known-good input.
     #[test]
     fn mldsa87_roundtrip_succeeds() {
         let (pk, sk) = mldsa87::keypair();

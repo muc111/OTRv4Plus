@@ -57,7 +57,7 @@ pub fn kdf_secret<const N: usize>(usage_id: u8, value: &[u8]) -> SecretBytes<N> 
     SecretBytes::new(arr)
 }
 
-// ── PyO3 bridge — TEST ONLY ──────────────────────────────────────────────────
+// ── PyO3 bridge - TEST ONLY ──────────────────────────────────────────────────
 #[cfg(feature = "test-only-kdf")]
 #[pyo3::pyfunction]
 #[pyo3(name = "kdf_1")]

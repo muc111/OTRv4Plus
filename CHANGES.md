@@ -1,6 +1,6 @@
 # OTRv4+ audit fixes: applied changes
 
-AI-assisted edits. These resolve findings from the core
+AI-assisted edits, directed by Adam. These resolve findings from the core
 audit (otrv4plus_rust_core_audit.md, incl. Addendum A). The Rust changes are
 UNBUILT here (no toolchain in the edit environment); they compile in your head
 but must be built and tested before you ship. The Python file was syntax

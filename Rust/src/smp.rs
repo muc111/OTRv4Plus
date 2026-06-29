@@ -1,4 +1,4 @@
-// src/smp.rs — Hybrid Post-Quantum Socialist Millionaire Protocol
+// src/smp.rs - Hybrid Post-Quantum Socialist Millionaire Protocol
 //
 // Version: OTRv4+ v10.9.3
 //
@@ -92,7 +92,7 @@ use crate::secure_mem::{SecretBytes, SecretVec};
 // ─── constants ────────────────────────────────────────────────────────────────
 
 const MAX_ATTEMPTS:         u32   = 3;
-const SESSION_TIMEOUT_SECS: u64   = 2700;  // 45 minutes — accommodates I2P + hybrid PQC SMP latency
+const SESSION_TIMEOUT_SECS: u64   = 2700;  // 45 minutes - accommodates I2P + hybrid PQC SMP latency
 const RETRY_COOLDOWN_SECS:  u64   = 30;
 const KDF_ROUNDS:           u32   = 50_000;
 const SMP_PRIME_BYTES:      usize = 384;   // 3072-bit prime = 384 bytes
@@ -239,7 +239,7 @@ impl SmpLifecycle {
 
     fn check_not_expired(&self) -> Result<()> {
         if self.created_at.elapsed() > Duration::from_secs(SESSION_TIMEOUT_SECS) {
-            return Err(OtrError::Smp("SMP session expired (10-minute limit)"));
+            return Err(OtrError::Smp("SMP session expired (45-minute limit)"));
         }
         Ok(())
     }
@@ -725,7 +725,21 @@ impl SmpState {
             return Err(OtrError::SmpRange);
         }
         let v = num_bigint::BigUint::from_bytes_be(bytes);
-        if v < num_bigint::BigUint::from(2u8) || v >= *SMP_PRIME {
+        // Audit M1: accepted range is [2, p-2].  The previous bound accepted
+        // p-1 (the order-2 element); libotr requires p-2 as the upper bound.
+        let two  = num_bigint::BigUint::from(2u8);
+        let p_m1 = &*SMP_PRIME - 1u8;          // p - 1
+        if v < two || v >= p_m1 {
+            return Err(OtrError::SmpRange);
+        }
+        // Audit M1: prime-order subgroup membership.  For this prime
+        // (p ≡ 7 mod 8) the generator g = 2 is a quadratic residue and
+        // generates the order-q subgroup (q = SMP_ORDER), so every honest
+        // protocol value x satisfies x^q == 1 (mod p).  Rejecting anything
+        // else removes the small-subgroup / non-residue confinement vector
+        // instead of relying solely on the per-element ZKPs.
+        let one = num_bigint::BigUint::from(1u8);
+        if Self::mod_exp(&v, &SMP_ORDER.to_bytes_be(), &SMP_PRIME) != one {
             return Err(OtrError::SmpRange);
         }
         Ok(())
@@ -1030,7 +1044,7 @@ impl SmpState {
         wire.extend_from_slice(&classical_out);
 
         if wire_version == SMP_VERSION_PQ {
-            // KEM encapsulation — clone out of self.pq before any mutable borrow
+            // KEM encapsulation - clone out of self.pq before any mutable borrow
             let ek = match self.pq.mlkem_ek.clone() {
                 Some(v) => v,
                 None => return Err(self.fail_and_zeroize(
@@ -1152,7 +1166,7 @@ impl SmpState {
             self.pq.verify(signed_portion, sig_bytes)
                 .map_err(|e| self.fail_and_zeroize(e))?;
 
-            // Wipe KEM secret key — it is no longer needed
+            // Wipe KEM secret key - it is no longer needed
             self.pq.mlkem_sk = None;
         }
 
@@ -1357,6 +1371,10 @@ impl SmpState {
             .map_err(|e| self.fail_and_zeroize(e))?;
         let (rb, cr2, d8) = (&fields[0], &fields[1], &fields[2]);
 
+        // Audit L3: range/subgroup-validate rb for consistency with pa/qa/ra
+        // (the ZKP already constrains it, but fail fast on malformed input).
+        Self::validate_group_elem(rb).map_err(|e| self.fail_and_zeroize(e))?;
+
         // Verify PQ signature before accepting the equality result
         if wire_version == SMP_VERSION_PQ {
             let pq_off = classical_end;
@@ -1399,7 +1417,7 @@ impl SmpState {
         self.phase = if verified { SmpPhase::Verified } else { SmpPhase::Failed };
         if !verified { self.lifecycle.record_failure(); }
 
-        // Wipe PQ material — all steps complete
+        // Wipe PQ material - all steps complete
         self.pq.wipe();
 
         Ok(verified)
@@ -1553,7 +1571,7 @@ mod tests {
         let from_bigint = pad_be_384(&SMP_PRIME.to_bytes_be());
         let from_ct     = SMP_PRIME_CT.to_be_bytes();
         assert_eq!(from_bigint, from_ct,
-            "SMP_PRIME_CT and SMP_PRIME disagree — modexp modulus is wrong");
+            "SMP_PRIME_CT and SMP_PRIME disagree - modexp modulus is wrong");
     }
 
     // ── 2. Constant-time modexp known-answer: 2^10 mod p = 1024 ──────────────

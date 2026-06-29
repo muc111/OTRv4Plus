@@ -3,7 +3,7 @@
 /// Handles: chain key advancement, AES‑256‑GCM encrypt/decrypt,
 /// skipped key management, replay detection, and secret zeroization.
 ///
-/// X448 key exchange is delegated to the Python caller — this crate
+/// X448 key exchange is delegated to the Python caller - this crate
 /// only needs the resulting shared secrets.  This avoids linking
 /// OpenSSL into the Rust build and keeps the DH operations in the
 /// existing audited Python/C code path.
@@ -490,18 +490,18 @@ impl RustDoubleRatchet {
         Ok(Self { inner })
     }
 
-    /// SECURITY (audit C2 partial — Patch-1, hardened in Patch-2): consume a
+    /// SECURITY (audit C2 partial - Patch-1, hardened in Patch-2): consume a
     /// `Dakeresult` directly into a ratchet.
     ///
     /// Patch-2 hardening:
-    ///   §2  — Aggressive zeroization: every secret Vec<u8> has its contents
+    ///   §2  - Aggressive zeroization: every secret Vec<u8> has its contents
     ///         overwritten, then `clear()` + `shrink_to_fit()` to drop backing
     ///         capacity so the allocator may immediately reuse the memory.
-    ///   §3  — Sets `result.consumed = true` BEFORE returning, so any
+    ///   §3  - Sets `result.consumed = true` BEFORE returning, so any
     ///         subsequent attempt to read `result.root_key` etc. raises
     ///         `Dakeresult has been consumed` from Python.
-    ///   §4  — One flag covers the whole object: no partial reuse.
-    ///   §7  — Defensive precondition assertion: refuses to consume a
+    ///   §4  - One flag covers the whole object: no partial reuse.
+    ///   §7  - Defensive precondition assertion: refuses to consume a
     ///         Dakeresult that is already consumed (returns PyValueError;
     ///         no panic).
     ///
@@ -517,7 +517,7 @@ impl RustDoubleRatchet {
         use pyo3::exceptions::PyValueError;
         use crate::dake::Dakeresult;
 
-        // §7 — defensive precondition: refuse already-consumed.
+        // §7 - defensive precondition: refuse already-consumed.
         // PyO3 0.21+ idiom: downcast directly to `Bound<Dakeresult>`, then
         // `borrow_mut()` returns a `PyRefMut<Dakeresult>` (PyCell is deprecated).
         let cell: &pyo3::Bound<'_, Dakeresult> = result.downcast::<Dakeresult>()
@@ -528,7 +528,7 @@ impl RustDoubleRatchet {
 
         if bound.consumed {
             return Err(PyValueError::new_err(
-                "Dakeresult has been consumed — cannot consume twice",
+                "Dakeresult has been consumed - cannot consume twice",
             ));
         }
 
@@ -542,7 +542,7 @@ impl RustDoubleRatchet {
             need: usize,
         ) -> PyResult<[u8; 32]> {
             let mut v = slot.take().ok_or_else(|| PyValueError::new_err(
-                format!("Dakeresult.{field_name} is None — DAKE failed or already consumed"),
+                format!("Dakeresult.{field_name} is None - DAKE failed or already consumed"),
             ))?;
             if v.len() != need {
                 // Wipe before drop even on the error path.
@@ -556,7 +556,7 @@ impl RustDoubleRatchet {
             let mut arr = [0u8; 32];
             arr.copy_from_slice(&v);
 
-            // §2 — aggressive zero: overwrite contents, clear length, free capacity.
+            // §2 - aggressive zero: overwrite contents, clear length, free capacity.
             for b in v.iter_mut() { *b = 0u8; }
             v.clear();
             v.shrink_to_fit();
@@ -574,7 +574,7 @@ impl RustDoubleRatchet {
         let chain_key_b = take_aggressive(&mut dr.chain_key_b, "chain_key_b", 32)?;
         let brace_key   = take_aggressive(&mut dr.brace_key,   "brace_key",   32)?;
 
-        // mac_key — secret, but not consumed by the ratchet constructor itself.
+        // mac_key - secret, but not consumed by the ratchet constructor itself.
         // Aggressively zero it anyway so it does not linger after this call.
         // Explicit type annotation on the binding so PyRefMut's deref doesn't
         // confuse the compiler about the closure body's iter_mut element type.
@@ -586,7 +586,7 @@ impl RustDoubleRatchet {
             drop(v);
         }
 
-        // §3 + §4 — mark whole object consumed.  Idempotent guard: even though
+        // §3 + §4 - mark whole object consumed.  Idempotent guard: even though
         // we already drained the Vecs above, calling mark_consumed_and_zero
         // ensures consumed=true and any residual fields (mac_key was already
         // taken; this catches future-added secret fields automatically).
@@ -603,7 +603,7 @@ impl RustDoubleRatchet {
             &root_key, &chain_key_a, &chain_key_b, &brace_key, pub_local, is_initiator,
         ).map_err(|e| PyValueError::new_err(e.to_string()))?;
 
-        // §8 (optional) — Force drop of temporary key arrays.  These are
+        // §8 (optional) - Force drop of temporary key arrays.  These are
         // [u8; 32] on the stack; once they go out of scope at the end of
         // this function they cannot be accessed.  We do not zero them here
         // because `DoubleRatchet::new` has already copied them into its own
@@ -624,7 +624,7 @@ impl RustDoubleRatchet {
     fn ratchet_id(&self) -> u32 { self.inner.ratchet_id() }
     // SECURITY (audit C4): brace_key getter REMOVED.
     // The brace key is a session secret and was previously exposed to Python
-    // as PyBytes.  No production caller needs this — all rotation happens
+    // as PyBytes.  No production caller needs this - all rotation happens
     // inside Rust via rotate_brace_key().  Internal Rust accessor preserved
     // (DoubleRatchet::brace_key) for use by Rust code only.
 
@@ -702,12 +702,12 @@ impl RustDoubleRatchet {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Phase 4 — non-PyO3 constructor for DakeOutput.consume_into_ratchet
+// Phase 4 - non-PyO3 constructor for DakeOutput.consume_into_ratchet
 //
 // This impl block is intentionally OUTSIDE the #[pymethods] block because
 // PyO3 cannot expose a method that takes a non-PyO3 Rust type
-// (DakeSessionKeys here).  The method is callable from Rust code only —
-// specifically from dake::DakeOutput::consume_into_ratchet — and accepts
+// (DakeSessionKeys here).  The method is callable from Rust code only -
+// specifically from dake::DakeOutput::consume_into_ratchet - and accepts
 // the secret session keys by-move, never crossing the FFI boundary.
 //
 // Closes audit findings C2 and C3 (Critical Exposure Window) for the
