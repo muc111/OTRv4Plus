@@ -75,35 +75,55 @@ DEBUG_TAB = "(debug)"
 # ── line kinds → colour role ────────────────────────────────────────────────
 # Mapping from the leading "[prefix]" the harness prints to a semantic kind.
 PREFIX_KIND = {
-    "[otr-recv]": "recv",
-    "[otr-send]": "send",
-    "[otr-crypto]": "crypto",
-    "[otr-trace]": "trace",
-    "[otr]": "msg_in",        # a DECRYPTED incoming message — the important one
-    "[plain]": "plain",       # an UNENCRYPTED incoming message — flag loudly
-    "[otr error]": "error",
-    "[secure]": "secure",
-    "[smp]": "smp",
-    "[trust]": "trust",
-    "[queued]": "info",
-    "[keepalive]": "keepalive",
-    "[subscribe]": "sys",
-    "[connected]": "sys",
-    "[ready]": "sys",
-    "[i2p]": "sys",
-    "[tls]": "sys",
+    "[otr-recv]":    "recv",
+    "[otr-send]":    "send",
+    "[otr-crypto]":  "crypto",
+    "[otr-trace]":   "trace",
+    "[otr-probe]":   "trace",
+    "[otr]":         "msg_in",       # decrypted incoming message
+    "[plain]":       "plain",        # unencrypted incoming — flag loudly
+    "[otr error]":   "error",
+    "[secure]":      "secure",
+    "[smp]":         "smp",
+    "[trust]":       "trust",
+    "[queued]":      "info",
+    "[keepalive]":   "keepalive",
+    "[subscribe]":   "sys",
+    "[sub]":         "sys",
+    "[connected]":   "sys",
+    "[version]":     "sys",
+    "[ready]":       "sys",
+    "[i2p]":         "sys",
+    "[tls]":         "sys",
+    "[reconnect]":   "sys",
+    "[disconnected]":"sys",
+    "[connection":   "sys",
+    "[stream":       "sys",
+    "[auth":         "sys",
+    "[presence]":    "info",
+    "[roster]":      "info",
+    "[receipt]":     "info",
+    "[ping]":        "info",
+    "[block]":       "info",
+    "[rate-limit]":  "error",
+    "[delivery":     "info",
+    "[sent plain]":  "send",
+    "[help]":        "info",
+    "[log]":         "sys",
     "[ClientProfile]": "sys",
 }
 
 # Security badge shown in the header per tab.
 SEC_PLAINTEXT = "plaintext"
 SEC_ENCRYPTED = "encrypted"
-SEC_VERIFIED = "verified"
+SEC_FINGERPRINT = "fingerprint"   # DAKE complete + fingerprint trusted; not yet SMP
+SEC_VERIFIED = "verified"         # SMP identity verification passed
 
 _SEC_GLYPH = {
-    SEC_PLAINTEXT: "PLAINTEXT",
-    SEC_ENCRYPTED: "ENCRYPTED",
-    SEC_VERIFIED: "VERIFIED",
+    SEC_PLAINTEXT:  "PLAINTEXT",
+    SEC_ENCRYPTED:  "ENCRYPTED",
+    SEC_FINGERPRINT:"TRUSTED",
+    SEC_VERIFIED:   "SMP VERIFIED",
 }
 
 
@@ -140,7 +160,7 @@ class Buffer:
     def __init__(self, name, title=None):
         self.name = name
         self.title = title or name
-        self.lines = deque(maxlen=5000)   # (text, kind)
+        self.lines = deque(maxlen=50000)  # (text, kind) — ring buffer
         self.scroll = 0                   # rows scrolled up from the bottom
         self.unread = 0
         self.activity = False             # any non-trivial line since last view
@@ -167,7 +187,7 @@ class TuiModel:
         self.active = STATUS_TAB
         self.tick = 0                 # last keepalive tick seen
         self.connected = False
-        self.history = deque(maxlen=500)
+        self.history = deque(maxlen=1000)   # command input history
         self.notice = ""              # transient one-line status (errors, hints)
         self._last_peer = None        # peer continuation lines inherit
 
@@ -249,20 +269,35 @@ class TuiModel:
 
     def _update_badge(self, name, raw):
         """Best-effort security-state tracking from human-readable lines.
-        Markers are chosen to match the harness's canonical prints and to
-        avoid false positives (e.g. 'TRUSTED' is a substring of 'UNTRUSTED',
-        so we key on the success line 'Fingerprint TRUSTED' instead)."""
+        Three distinct levels:
+          SEC_ENCRYPTED   — DAKE complete, session encrypted
+          SEC_FINGERPRINT — fingerprint accepted (TOFU pinned), not yet SMP
+          SEC_VERIFIED    — SMP identity proof passed (strongest)
+        SMP FAILED reverts from VERIFIED to FINGERPRINT (still encrypted+trusted)."""
         b = self.buffers.get(name)
         if b is None:
             return
+        # DAKE complete → encrypted
         if "is ENCRYPTED" in raw or "SECURITY: PLAINTEXT" in raw:
             if b.security == SEC_PLAINTEXT:
                 b.security = SEC_ENCRYPTED
-        if ("SMP VERIFIED" in raw or "Fingerprint TRUSTED" in raw
-                or "identity pinned" in raw):
+        # Fingerprint accepted → green (trusted but not SMP)
+        if ("Fingerprint TRUSTED" in raw or "identity pinned" in raw
+                or "already trusted" in raw.lower()):
+            if b.security in (SEC_PLAINTEXT, SEC_ENCRYPTED):
+                b.security = SEC_FINGERPRINT
+        # SMP complete → blue (strongest: identity proven via shared secret)
+        # Accept all Rust engine terminal state names
+        _smp_ok = ("SMP VERIFIED" in raw or "SMP complete" in raw
+                   or "IDENTITY VERIFIED" in raw or "SMP_VERIFIED" in raw
+                   or ("VERIFIED" in raw and "STATE_UPDATED" in raw))
+        if _smp_ok:
             b.security = SEC_VERIFIED
-        if "SMP" in raw and "FAILED" in raw:
-            b.security = SEC_ENCRYPTED  # verified failed → back to merely encrypted
+        # SMP failed → back to fingerprint level (still encrypted + TOFU)
+        if "SMP FAILED" in raw or ("SMP" in raw and "FAILED" in raw):
+            if b.security == SEC_VERIFIED:
+                b.security = SEC_FINGERPRINT
+        # Capture fingerprints for header display
         m = re.search(r"Your fingerprint\s*:\s*([0-9A-Fa-f ]{8,})", raw)
         if m:
             b.local_fp = m.group(1).strip()
@@ -301,6 +336,17 @@ class TuiModel:
             self.line(STATUS_TAB, raw, "sys")
             return
 
+        # Protocol/trace lines: route to debug tab (keeps peer panel clean).
+        # When debug=False they are suppressed entirely — the peer panel shows
+        # only messages, security events and SMP results, never wire noise.
+        if kind in ("recv", "send", "crypto", "trace", "keepalive"):
+            if self.debug:
+                # Still scan for badge signals before hiding from peer tab
+                peer_name = self._route_peer(raw)
+                self._update_badge(peer_name, raw)
+                self.line(DEBUG_TAB, raw, kind)
+            return
+
         # Everything else — prefixed protocol/message lines AND prefix-less
         # continuation lines (indented fingerprints, the SMP banner) — gets
         # routed (continuations inherit the current peer) and badge-scanned.
@@ -313,7 +359,12 @@ class TuiModel:
             m = re.match(r"\[otr\]\s*<([^>]+)>\s?(.*)", raw, re.S)
             if m:
                 who, body = _localpart(m.group(1)), m.group(2)
-                self.line(name, "%s │ %s" % (who, body), "msg_in")
+                b = self.buffers.get(name)
+                # Cyan when SMP identity is verified, white otherwise
+                in_kind = "msg_in_verified" if (
+                    b is not None and b.security == SEC_VERIFIED
+                ) else "msg_in"
+                self.line(name, "%s │ %s" % (who, body), in_kind)
                 return
         if kind == "plain":
             m = re.match(r"\[plain\]\s*<([^>]+)>\s?(.*)", raw, re.S)
@@ -325,9 +376,12 @@ class TuiModel:
         self.line(name, raw, kind or "info")
 
     def echo_local(self, peer, text):
-        """Local echo of the user's own outgoing plaintext (the harness does
-        not print it, so we do — like weechat shows your own line)."""
-        self.line(peer, "you │ %s" % text, "msg_out")
+        """Local echo of the user's own outgoing message."""
+        b = self.buffers.get(peer)
+        out_kind = "msg_out_verified" if (
+            b is not None and b.security == SEC_VERIFIED
+        ) else "msg_out"
+        self.line(peer, "you │ %s" % text, out_kind)
 
     # ---- scrolling ---------------------------------------------------------
     def scroll_by(self, rows, page):
@@ -346,7 +400,7 @@ class TuiModel:
         b = self.buf()
 
         # Header (1-2 lines): active tab, security, fingerprints, conn/tick.
-        sec = _SEC_GLYPH.get(b.security, b.security)
+        sec = _SEC_GLYPH.get(b.security, b.security.upper())
         conn = "online" if self.connected else "connecting"
         h1 = "OTRv4+  %s  [%s]  net:%s  tick:%d" % (
             b.title, sec, conn, self.tick)
@@ -475,12 +529,13 @@ def _make_log_handler(model, loop, on_change):
 # The curses front-end.
 # ─────────────────────────────────────────────────────────────────────────────
 class Tui:
-    def __init__(self, model, loop, submit, debug=False):
+    def __init__(self, model, loop, submit, debug=False, on_quit=None):
         self.model = model
         self.loop = loop
-        self.submit = submit            # callable(active_tab, text)
+        self.submit = submit
         self.debug = debug
-        self.commands = {}              # name -> callable(args:str)
+        self.on_quit = on_quit          # callable() — runs before stopping loop
+        self.commands = {}
         self.stdscr = None
         self._old_stdout = None
         self.input = ""
@@ -535,8 +590,12 @@ class Tui:
                 m.scroll_by(-1, page=10)
             elif a.startswith("down"):
                 m.scroll_by(1, page=10)
+            elif a in ("top", "t"):
+                m.buf().scroll = len(m.buf().lines)
+            elif a in ("bottom", "b", "end"):
+                m.buf().scroll = 0
             else:
-                m.notice = "usage: /scroll up|down"
+                m.notice = "usage: /scroll up|down|top|bottom"
 
         def c_debug(_a):
             m.ensure(DEBUG_TAB, title="debug", activate=True)
@@ -592,22 +651,24 @@ class Tui:
     def _init_colors(self, curses):
         # pair id -> (fg, attr)
         defs = {
-            "recv": (curses.COLOR_CYAN, 0),
-            "send": (curses.COLOR_CYAN, 0),
-            "crypto": (curses.COLOR_BLUE, 0),
-            "trace": (-1, curses.A_DIM),
-            "msg_in": (curses.COLOR_WHITE, curses.A_BOLD),
-            "msg_out": (curses.COLOR_WHITE, 0),
-            "plain": (curses.COLOR_YELLOW, curses.A_BOLD),
-            "error": (curses.COLOR_RED, curses.A_BOLD),
-            "secure": (curses.COLOR_GREEN, curses.A_BOLD),
-            "smp": (curses.COLOR_MAGENTA, 0),
-            "trust": (curses.COLOR_YELLOW, 0),
-            "sys": (-1, curses.A_DIM),
-            "info": (-1, 0),
-            "keepalive": (-1, curses.A_DIM),
-            "header": (curses.COLOR_BLACK, curses.A_REVERSE),
-            "header_dim": (-1, curses.A_DIM),
+            "recv":            (curses.COLOR_CYAN, 0),
+            "send":            (curses.COLOR_CYAN, 0),
+            "crypto":          (curses.COLOR_BLUE, 0),
+            "trace":           (-1, curses.A_DIM),
+            "msg_in":          (curses.COLOR_WHITE, curses.A_BOLD),
+            "msg_in_verified": (curses.COLOR_BLUE, curses.A_BOLD),    # 🔵 dark blue SMP proven
+            "msg_out":         (-1, 0),
+            "msg_out_verified":(curses.COLOR_BLUE, 0),                # 🔵 your side too
+            "plain":           (curses.COLOR_YELLOW, curses.A_BOLD),
+            "error":           (curses.COLOR_RED, curses.A_BOLD),
+            "secure":          (curses.COLOR_GREEN, curses.A_BOLD),
+            "smp":             (curses.COLOR_MAGENTA, 0),
+            "trust":           (curses.COLOR_YELLOW, 0),
+            "sys":             (-1, curses.A_DIM),
+            "info":            (-1, 0),
+            "keepalive":       (-1, curses.A_DIM),
+            "header":          (curses.COLOR_BLACK, curses.A_REVERSE),
+            "header_dim":      (-1, curses.A_DIM),
         }
         i = 1
         for kind, (fg, attr) in defs.items():
@@ -822,6 +883,11 @@ class Tui:
             self.model.notice = "input error: %s" % e
 
     def _quit(self):
+        if self.on_quit is not None:
+            try:
+                self.on_quit()
+            except Exception:
+                pass
         self._stopped.set()
 
     # ---- run ---------------------------------------------------------------
@@ -844,7 +910,7 @@ class Tui:
 # default OTR command table to the harness. Returns the Tui (call .run()).
 # ─────────────────────────────────────────────────────────────────────────────
 def install_tui(client, loop, own_jid="", initial_peer=None, debug=False,
-                delegate=None):
+                delegate=None, on_quit=None):
     model = TuiModel(own_jid=own_jid, debug=debug)
     if initial_peer:
         model.ensure(initial_peer, title=_localpart(initial_peer), activate=True)
@@ -884,7 +950,7 @@ def install_tui(client, loop, own_jid="", initial_peer=None, debug=False,
         model.echo_local(peer, text)
         client.send_user_text(peer, text)
 
-    tui = Tui(model, loop, submit, debug=debug)
+    tui = Tui(model, loop, submit, debug=debug, on_quit=on_quit)
     box["tui"] = tui
 
     # ---- default OTR command table (choice A). For exact parity (choice B),
@@ -971,10 +1037,11 @@ def _selftest():
     m.ingest("[i2p] SAM stream established.")
     check("sys -> status", m.buffers[STATUS_TAB].lines[-1][0].startswith("[i2p]"))
 
-    # 3. an inbound protocol line auto-opens the peer tab and routes there
+    # 3. an inbound protocol line still auto-opens the peer tab (via _route_peer)
+    # but the line itself goes to the debug tab (not the peer panel)
     m.ingest("[otr-recv] <- DAKE1 from %s" % peer)
     check("peer tab auto-opened", peer in m.buffers)
-    check("recv routed to peer", m.buffers[peer].lines[-1][1] == "recv")
+    check("recv routed to debug (not peer)", m.buffers[DEBUG_TAB].lines[-1][1] == "recv")
     check("own jid never opened", own not in m.buffers)
 
     # 4. secure line sets ENCRYPTED and captures fingerprints
@@ -985,14 +1052,18 @@ def _selftest():
     check("local fp captured", m.buffers[peer].local_fp.startswith("17536E21"))
     check("remote fp captured", m.buffers[peer].remote_fp.startswith("786D86AA"))
 
-    # 5. SMP VERIFIED upgrades the badge
+    # 4b. fingerprint trusted → SEC_FINGERPRINT (not SEC_VERIFIED)
+    m.ingest("[trust] Fingerprint TRUSTED - identity pinned (VERIFIED).")
+    check("fingerprint badge", m.buffers[peer].security == SEC_FINGERPRINT)
+
+    # 5. SMP VERIFIED upgrades the badge to SEC_VERIFIED
     m.ingest("[otr-trace] 🔐 SMP step 4/4 · 🔵✅ SMP VERIFIED — identity confirmed!")
     check("verified badge", m.buffers[peer].security == SEC_VERIFIED)
 
-    # 6. decrypted message reformat
+    # 6. decrypted message reformat — security is SEC_VERIFIED at this point
     m.ingest("[otr] <%s> hello" % peer)
     last = m.buffers[peer].lines[-1]
-    check("msg_in kind", last[1] == "msg_in")
+    check("msg_in_verified kind", last[1] == "msg_in_verified")
     check("msg_in reformatted", last[0] == "bob │ hello")
 
     # 7. plaintext (unencrypted) inbound is flagged
@@ -1000,14 +1071,14 @@ def _selftest():
     last = m.buffers[peer].lines[-1]
     check("plain flagged", "PLAINTEXT!" in last[0] and last[1] == "plain")
 
-    # 8. local echo
+    # 8. local echo — security is still SEC_VERIFIED so uses msg_out_verified
     m.echo_local(peer, "hi back")
-    check("local echo", m.buffers[peer].lines[-1] == ("you │ hi back", "msg_out"))
+    check("local echo", m.buffers[peer].lines[-1] == ("you │ hi back", "msg_out_verified"))
 
-    # 9. unread tracking when not active
+    # 9. unread tracking when not active — use a message-kind line, not a send
     m.switch(STATUS_TAB)
     before = m.buffers[peer].unread
-    m.ingest("[otr-send] -> DATA to %s" % peer)
+    m.ingest("[smp] passphrase stored for %s" % peer)
     check("unread increments off-tab", m.buffers[peer].unread == before + 1)
     m.switch(peer)
     check("unread clears on switch", m.buffers[peer].unread == 0)

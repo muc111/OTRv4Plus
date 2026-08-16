@@ -32,6 +32,13 @@ import socks
 import threading
 
 try:
+    from otrv4plus_log import ChannelLogManager as _ChannelLogManager
+    _LOG_AVAILABLE = True
+except ImportError:
+    _ChannelLogManager = None
+    _LOG_AVAILABLE = False
+
+try:
     from otrv4_core import RustDoubleRatchet as _RustRatchet
 
     RUST_RATCHET_AVAILABLE = True
@@ -1260,7 +1267,7 @@ class OTRv4DataMessage:
             return hmac.compare_digest(self.mac, computed)
         except (TypeError, ValueError) as e:
             if DEBUG_MODE:
-                print(f"[OTRv4DataMessage] MAC verification error: {e }")
+                print("[OTRv4DataMessage] MAC verification failed")
             return False
         except Exception:
             return False
@@ -1338,7 +1345,7 @@ class OTRv4DataMessage:
             raise ValueError(f"Failed to decode message: {e }")
 
 
-VERSION = "OTRv4+ 10.10.4"
+VERSION = "OTRv4+ 10.10.5"
 
 if not hasattr(hashlib, "sha3_512"):
     raise RuntimeError(
@@ -1555,18 +1562,24 @@ def _consume_escape_seq() -> None:
                         sys.stdout.flush()
                 elif seq == b"5~":  # PgUp
                     _page = max(1, shutil.get_terminal_size(fallback=(80, 20)).lines - 3)
-                    if not _scroll_locked:
-                        _scroll_locked = True
-                    _scroll_pos = min(_scroll_pos + _page, len(_scroll_history))
-                    _show_scrollback(_scroll_pos, _page)
+                    if _TUI_SCROLL_CALLBACK is not None:
+                        _TUI_SCROLL_CALLBACK("pgup", _page)
+                    else:
+                        if not _scroll_locked:
+                            _scroll_locked = True
+                        _scroll_pos = min(_scroll_pos + _page, len(_scroll_history))
+                        _show_scrollback(_scroll_pos, _page)
                 elif seq == b"6~":  # PgDn
                     _page = max(1, shutil.get_terminal_size(fallback=(80, 20)).lines - 3)
-                    _scroll_pos = max(0, _scroll_pos - _page)
-                    if _scroll_pos == 0:
-                        _scroll_locked = False
-                        _scroll_unlock()
+                    if _TUI_SCROLL_CALLBACK is not None:
+                        _TUI_SCROLL_CALLBACK("pgdn", _page)
                     else:
-                        _show_scrollback(_scroll_pos, _page)
+                        _scroll_pos = max(0, _scroll_pos - _page)
+                        if _scroll_pos == 0:
+                            _scroll_locked = False
+                            _scroll_unlock()
+                        else:
+                            _show_scrollback(_scroll_pos, _page)
     except Exception:
         pass
 
@@ -1631,7 +1644,13 @@ def _handle_input_char(ch: str):
                 sys.stdout.write(f"\x1b[D{after } \x1b[{len (after )+1 }D")
                 sys.stdout.flush()
         return None
-    if ch in ("\x13", "\x10"):  # Ctrl+S or Ctrl+P - scroll lock toggle
+    # Ctrl+B / Ctrl+F — TUI panel scroll (like `less`; work on Termux software keyboard)
+    if ch in ("\x02", "\x06"):  # Ctrl+B = scroll up, Ctrl+F = scroll down
+        if _TUI_SCROLL_CALLBACK is not None:
+            _page = max(1, shutil.get_terminal_size(fallback=(80, 20)).lines - 3)
+            _TUI_SCROLL_CALLBACK("pgup" if ch == "\x02" else "pgdn", _page)
+            return None
+    if ch in ("\x13", "\x10"):  # Ctrl+S or Ctrl+P - scroll lock toggle (non-TUI)
         if _scroll_locked:
             _scroll_pos = 0
             _scroll_unlock()
@@ -1773,6 +1792,7 @@ _scroll_locked = False
 _scroll_buffer: deque = deque(maxlen=500)
 _scroll_pos: int = 0
 _scroll_history: list = []
+_TUI_SCROLL_CALLBACK = None  # set by TUI client; receives ("pgup"|"pgdn", page)
 
 
 def _emit_line(text: str) -> None:
@@ -2288,14 +2308,14 @@ class SecureMemory:
                         self._libc.munlock(buf_addr, buf_size)
                 except (OSError, AttributeError, Exception) as e:
                     if DEBUG_MODE:
-                        print(f"[SecureMemory] munlock failed: {e }")
+                        print("[SecureMemory] munlock failed")
                 self._locked = False
 
             self._buffer = None
 
         except Exception as e:
             if DEBUG_MODE:
-                print(f"[SecureMemory] Zeroize error: {e }")
+                print("[SecureMemory] zeroize error")
             raise
         finally:
             try:
@@ -2673,7 +2693,7 @@ class ClientProfile:
         OTRv4 spec §4.1 mandates SHA3-512 for fingerprints.
         Using SHA-256 (previous implementation) produced fingerprints
         incompatible with all other OTRv4 clients (CoyIM, pidgin-otr4, etc.).
-        Fingerprint is returned as 128 uppercase hex chars in 10 groups of 8.
+        Fingerprint is returned as 128 uppercase hex chars in 16 groups of 8.
         """
         try:
 
@@ -2687,11 +2707,11 @@ class ClientProfile:
                 return ""
             fp_bytes = hashlib.sha3_512(identity_pub).digest()
             hex_str = fp_bytes.hex().upper()
-            groups = [hex_str[i : i + 8] for i in range(0, 80, 8)]
+            groups = [hex_str[i : i + 8] for i in range(0, 128, 8)]
             return " ".join(groups)
         except (AttributeError, TypeError, ValueError) as e:
             if DEBUG_MODE:
-                print(f"[ClientProfile] Error getting fingerprint: {e }")
+                print("[ClientProfile] Error getting fingerprint")
             return ""
         except Exception:
             return ""
@@ -2705,7 +2725,7 @@ class ClientProfile:
             return hmac.compare_digest(actual.encode("utf-8"), fingerprint.encode("utf-8"))
         except (TypeError, AttributeError, ValueError) as e:
             if DEBUG_MODE:
-                print(f"[ClientProfile] Fingerprint verification error: {e }")
+                print("[ClientProfile] Fingerprint verification failed")
             return False
         except Exception:
             return False
@@ -2726,7 +2746,7 @@ class ClientProfile:
             return fp_bytes.hex().upper()
         except (AttributeError, TypeError, ValueError) as e:
             if DEBUG_MODE:
-                print(f"[ClientProfile] Error getting prekey fingerprint: {e }")
+                print("[ClientProfile] Error getting prekey fingerprint")
             return ""
         except Exception:
             return ""
@@ -4269,7 +4289,7 @@ class SecureKeyStorage:
 
             except Exception as e:
                 if DEBUG_MODE:
-                    print(f"Failed to store key {key_id }: {e }")
+                    print("Failed to store key")
                 return False
 
     def load_key(self, key_id: str, key_type: str) -> Optional[bytes]:
@@ -4295,7 +4315,7 @@ class SecureKeyStorage:
 
             except Exception as e:
                 if DEBUG_MODE:
-                    print(f"Failed to load key {key_id }: {e }")
+                    print("Failed to load key")
                 return None
 
     def delete_key(self, key_id: str, key_type: str) -> bool:
@@ -4892,7 +4912,7 @@ class Pager:
                 for line in lines[start:end]:
                     if len(line) > TERMINAL_WIDTH:
                         line = line[: TERMINAL_WIDTH - 3] + "..."
-                    safe_print(line)
+                    safe_print("[IRC line suppressed]")
 
                 if footer:
                     safe_print(colorize(footer, "dim"))
@@ -4965,6 +4985,12 @@ class Screen:
             self.cols = 80
 
     def _sep(self) -> str:
+        if self.scroll_offset > 0:
+            tag = f" ↑ scrolled — PgDn to resume · PgUp for more "
+            pad = max(0, self.cols - len(tag))
+            left = colorize("-" * (pad // 2), "dim")
+            right = colorize("-" * (pad - pad // 2), "dim")
+            return left + colorize(tag, "yellow") + right
         return colorize("-" * self.cols, "dim")
 
     def _tabbar_lines(self) -> list:
@@ -5069,6 +5095,21 @@ class Screen:
             sys.stdout.write("".join(out))
             sys.stdout.flush()
 
+    def scroll_up(self, page: int) -> None:
+        """Scroll the active panel up by page visual lines (away from bottom)."""
+        self._measure()
+        tabs = self._tabbar_lines()
+        body_h = max(1, self.rows - self._chrome(tabs))
+        vlines = self._body_visual_lines()
+        max_offset = max(0, len(vlines) - body_h)
+        self.scroll_offset = min(self.scroll_offset + page, max_offset)
+        self.redraw_full()
+
+    def scroll_down(self, page: int) -> None:
+        """Scroll the active panel down by page visual lines (toward bottom)."""
+        self.scroll_offset = max(0, self.scroll_offset - page)
+        self.redraw_full()
+
 
 class ChatPanel:
     """Chat panel for displaying messages"""
@@ -5166,6 +5207,33 @@ class PanelManager:
                 if not self.active_panel:
                     self.active_panel = name
                     self.panels[name].active = True
+                # Load encrypted session history for this channel/nick
+                try:
+                    cl = getattr(self.client, "channel_log", None)
+                    if cl is not None:
+                        history = cl.read_recent(name, n=50000)
+                        if history:
+                            self.panels[name].add_message("── history ─────────────────────────────")
+                            for entry in history:
+                                if "|" in entry:
+                                    ts_str, body = entry.split("|", 1)
+                                    try:
+                                        orig_ts = time.mktime(
+                                            time.strptime(ts_str, "%Y-%m-%d %H:%M:%S")
+                                        )
+                                    except Exception:
+                                        orig_ts = time.time()
+                                    self.panels[name].history.append({
+                                        "id": len(self.panels[name].history),
+                                        "message": body,
+                                        "timestamp": orig_ts,
+                                        "metadata": {},
+                                    })
+                                else:
+                                    self.panels[name].add_message(entry)
+                            self.panels[name].add_message("── live ─────────────────────────────────")
+                except Exception:
+                    pass
                 self._render_ui()
                 return True
             return False
@@ -5199,6 +5267,13 @@ class PanelManager:
                 self.active_panel = name
                 self.panels[name].active = True
                 self.panels[name].clear_unread()
+                # Snap to bottom when switching so latest messages show
+                try:
+                    scr = getattr(self.client, "_screen", None)
+                    if scr is not None:
+                        scr.scroll_offset = 0
+                except Exception:
+                    pass
                 self._render_ui()
                 return True
             return False
@@ -5217,6 +5292,12 @@ class PanelManager:
             panel.add_message(message)
             if self.active_panel != target:
                 panel.unread_count += 1
+            try:
+                cl = getattr(self.client, "channel_log", None)
+                if cl is not None:
+                    cl.append(target, message)
+            except Exception:
+                pass
 
     def update_panel_security(self, name: str, level: UIConstants.SecurityLevel) -> None:
         """Update the security level for a panel and re-render."""
@@ -5667,7 +5748,7 @@ class EnhancedOTRSession:
                 self.smp_vault = RustSMPVault()
                 self.tracer.trace(self.peer, "SMP", None, "READY", "Rust SMP engine initialized")
             except Exception as e:
-                self.logger.debug(f"initialize_smp FAILED: {e }")
+                self.logger.debug("initialize_smp FAILED")
                 raise RuntimeError(f"Failed to initialize Rust SMP engine: {e }") from e
 
     def queue_outgoing_message(self, message: str):
@@ -6425,7 +6506,7 @@ class EnhancedOTRSession:
             import traceback as _tb
 
             msg = f"start_smp: Error: {e }"
-            self.logger.debug(msg + "\n" + _tb.format_exc())
+            self.logger.debug("start_smp FAILED")
 
             raise RuntimeError(f"SMP start failed: {e }") from e
         finally:
@@ -6511,7 +6592,7 @@ class EnhancedOTRSession:
         except Exception as e:
             import traceback as _tb
 
-            self.logger.debug(f"process_smp_message: {e }\n{_tb .format_exc ()}")
+            self.logger.debug("process_smp_message FAILED")
             return None
         finally:
             self._release_lock()
@@ -6570,7 +6651,7 @@ class EnhancedOTRSession:
                 "secret_set": self.rust_smp.check_secret_set(),
             }
         except Exception as e:
-            self.logger.debug(f"get_smp_status: {e }")
+            self.logger.debug("get_smp_status FAILED")
             return {
                 "state": "NONE",
                 "verified": False,
@@ -7017,35 +7098,35 @@ class SessionManager:
         """Set SMP secret for auto-respond"""
         try:
             self.smp_storage.set_secret(peer, secret)
-            self.logger.debug(f"set_smp_secret: Stored in smp_storage for {peer }")
+            self.logger.debug("set_smp_secret: stored")
         except Exception as e:
-            self.logger.debug(f"set_smp_secret: Error storing in smp_storage: {e }")
+            self.logger.debug("set_smp_secret: storage FAILED")
 
         if peer in self.sessions:
             try:
                 session = self.sessions[peer]
                 if hasattr(session, "set_smp_secret"):
                     session.set_smp_secret(secret)
-                    self.logger.debug(f"set_smp_secret: Set in session for {peer }")
+                    self.logger.debug("set_smp_secret: session bound")
             except Exception as e:
-                self.logger.debug(f"set_smp_secret: Error setting in session: {e }")
+                self.logger.debug("set_smp_secret: session bind FAILED")
 
         return True
 
     def start_smp(self, peer: str, secret: str, question: Optional[str] = None) -> Optional[str]:
         """Start SMP verification - returns encrypted message ready to send."""
-        self.logger.debug(f"start_smp: Called for {peer } with secret length {len (secret )}")
+        self.logger.debug("start_smp: called")
 
         if peer not in self.sessions:
-            self.logger.debug(f"start_smp: No session for {peer }")
+            self.logger.debug("start_smp: no session")
             return None
 
         session = self.sessions[peer]
 
         if hasattr(session, "start_smp"):
-            self.logger.debug(f"start_smp: Calling session.start_smp for {peer }")
+            self.logger.debug("start_smp: calling session")
             result = session.start_smp(secret, question)
-            self.logger.debug(f"start_smp: session.start_smp returned: {result is not None }")
+            self.logger.debug("start_smp: returned")
             return result
 
         self.logger.debug(f"start_smp: Session has no start_smp method")
@@ -7068,14 +7149,14 @@ class SessionManager:
 
         except Exception as e:
             if DEBUG_MODE:
-                print(f"SMP message processing failed: {e }")
+                print("SMP message processing failed")
 
         return None
 
     def get_smp_status(self, peer: str) -> Dict[str, Any]:
         """Get SMP status for session."""
         if peer not in self.sessions:
-            self.logger.debug(f"get_smp_status: No session for {peer }, returning NONE")
+            self.logger.debug("get_smp_status: no session")
             return {
                 "state": "NONE",
                 "verified": False,
@@ -7109,7 +7190,7 @@ class SessionManager:
                 session.can_start_smp() if hasattr(session, "can_start_smp") else False,
             )
 
-            self.logger.debug(f"get_smp_status: Returning from session: {status }")
+            self.logger.debug("get_smp_status: returned")
             return status
 
         return {
@@ -7182,7 +7263,7 @@ class SessionManager:
                 return session.process_auto_smp_response(smp_tlv)
         except Exception as e:
             if DEBUG_MODE:
-                print(f"Auto-SMP processing failed: {e }")
+                print("Auto-SMP processing failed")
         return None
 
     def check_and_start_auto_smp(self, peer: str) -> Optional[str]:
@@ -7206,7 +7287,7 @@ class SessionManager:
                     pass
                 session.terminate("session ended")
                 del self.sessions[peer]
-                self.logger.debug(f"end_session: Session ended for {peer }")
+                self.logger.debug("end_session: ended")
         finally:
             self._release_lock()
 
@@ -7509,7 +7590,7 @@ class EnhancedSessionManager:
 
     def _handle_dake1(self, peer: str, dake1_msg: str) -> Optional[bytes]:
         if len(self.sessions) >= getattr(self, "MAX_SESSIONS", 50):
-            self.debug(f"session limit reached - dropping DAKE1 from {peer }")
+            self.debug("session limit reached - dropping DAKE1")
             return None
         with self.lock:
             session = self.get_or_create_session(peer, is_initiator=False)
@@ -7992,7 +8073,7 @@ class EnhancedSessionManager:
                         sess.set_smp_secret(auto_secret)
                         auto_secret = None
             except Exception as _pe:
-                self.logger.debug(f"decrypt_message: SMP pre-load failed for {peer }: {_pe }")
+                self.logger.debug("decrypt_message: SMP pre-load failed")
             plaintext = sess.decrypt_message(encrypted_msg)
 
             queued = getattr(sess, "_queued_smp_response", None)
@@ -8064,7 +8145,7 @@ class EnhancedSessionManager:
         try:
             self.smp_storage.set_secret(peer, secret)
         except Exception as _se:
-            self.logger.debug(f"set_smp_secret: smp_storage write failed for {peer }: {_se }")
+            self.logger.debug("set_smp_secret: storage write FAILED")
 
         with self.lock:
             sess = self.sessions.get(peer)
@@ -8073,7 +8154,7 @@ class EnhancedSessionManager:
             try:
                 sess.set_smp_secret(secret)
             except Exception as _se:
-                self.logger.debug(f"set_smp_secret: session bind failed for {peer }: {_se }")
+                self.logger.debug("set_smp_secret: session bind FAILED")
         return True
 
     def display_fingerprints(self, peer: str) -> str:
@@ -8321,7 +8402,7 @@ class OTRFragmentBuffer:
             if DEBUG_MODE:
                 _c = getattr(__import__("builtins"), "_active_client", None)
                 if _c:
-                    _c._emit("debug", f"[OTRFragment] {idx }/{total } for {sender }")
+                    _c._emit("debug", "[OTRFragment] fragment received")
                 else:
                     _emit_line(f"[OTRFragment] {idx }/{total } for {sender }")
 
@@ -8348,7 +8429,7 @@ class OTRFragmentBuffer:
                 _c = getattr(__import__("builtins"), "_active_client", None)
                 if _c:
                     _c._emit(
-                        "debug", f"[OTRFragment] reassembled {len (combined )} chars from {sender }"
+                        "debug", "[OTRFragment] fragment reassembled"
                     )
                 else:
                     _emit_line(f"[OTRFragment] reassembled {len (combined )} chars from {sender }")
@@ -8531,7 +8612,7 @@ class DebugPanel(ChatPanel):
             "FINGERPRINT": True,
             "UI": True,
         }
-        self.max_debug_lines = 1000
+        self.max_debug_lines = 50000
 
     def log(self, category: str, message: str, data: Optional[dict] = None):
         """Log debug message with category"""
@@ -8922,6 +9003,8 @@ class OTRv4IRCClient:
         self.panel_manager = PanelManager(self)
         self.message_router = MessageRouter(self.panel_manager)
         self.event_handler = EventHandler(self.panel_manager)
+        # Ephemeral per-channel log: new key per session, files wiped on exit
+        self.channel_log = _ChannelLogManager(persistent=False) if _LOG_AVAILABLE else None
 
         self.server = self.config.server
         if self.config.nickserv_nick:
@@ -9038,7 +9121,7 @@ class OTRv4IRCClient:
 
         self.session_manager.ping_refresh_cb = _ping_refresh
 
-        self._emit("debug", colorize(f"[CLIENT] nick={self .nick }", "magenta"))
+        self._emit("debug", "[CLIENT] initialized")
 
     def debug(self, message: str, data: Optional[dict] = None):
         """Route debug output to the debug panel only - never to raw stdout."""
@@ -9286,7 +9369,7 @@ class OTRv4IRCClient:
                             colorize("🧅 I2P SAM: unique destination per session", "green"),
                         )
                     except Exception as e:
-                        self.debug("sam_failed", {"error": str(e)})
+                        self.debug("sam_failed")
                         self.add_message(
                             "system",
                             colorize(f"SAM failed ({e }), falling back to SOCKS5…", "yellow"),
@@ -9456,11 +9539,11 @@ class OTRv4IRCClient:
             self.send_raw(f"USER {self .nick } 0 * :{self .realname }")
 
             self.add_message("system", f"✅ Connected - nick: {colorize_username (self .nick )}")
-            self.debug("handshake sent", {"nick": self.nick, "caps": "LS 302"})
+            self.debug("handshake sent", {"caps": "LS 302"})
             return True
 
         except Exception as exc:
-            self.add_message("system", f"❌ Connection failed: {exc }")
+            self.add_message("system", "❌ Connection failed")
             self.debug("connect failed", {"error": str(exc)})
             self.connected = False
             return False
@@ -9501,13 +9584,13 @@ class OTRv4IRCClient:
                     line, buf = buf.split("\r\n", 1)
                     line = line.strip()
                     if len(line) > 8192:
-                        self.debug(f"oversized IRC line dropped ({len (line )} bytes)")
+                        self.debug("oversized IRC line dropped")
                         continue
                     if line:
                         try:
                             self.handle_message(line)
                         except Exception as exc:
-                            self.debug(f"handle_message error: {exc }")
+                            self.debug("handle_message error")
             except socket.timeout:
                 now = time.time()
                 if now - self.last_ping > 600:
@@ -9585,7 +9668,7 @@ class OTRv4IRCClient:
                 self.running = False
                 break
             except Exception as exc:
-                self.debug(f"recv_loop unexpected error: {exc }")
+                self.debug("recv_loop unexpected error")
                 try:
                     self.add_message(
                         "system",
@@ -9707,10 +9790,10 @@ class OTRv4IRCClient:
                 if self.sock:
                     self.sock.sendall(f"{message }\r\n".encode("utf-8"))
                     self.logger.network_message("OUT", "SERVER", "RAW", len(message))
-                    self.debug("send", {"msg": message[:120]})
+                    self.debug("send")
                     return True
         except Exception as exc:
-            self.debug("send_raw failed", {"error": str(exc)})
+            self.debug("send_raw failed")
             self.running = False
         return False
 
@@ -9939,7 +10022,7 @@ class OTRv4IRCClient:
                 if self.is_ctcp_message(message) and "?OTRv4" not in message:
                     return
                 if len(message) > 4096:
-                    self.debug(f"oversized PRIVMSG from {sender } dropped ({len (message )} bytes)")
+                    self.debug("oversized PRIVMSG dropped")
                     return
                 self.check_auto_reply(sender, target, message)
                 if "?OTRv4" in message:
@@ -10146,7 +10229,7 @@ class OTRv4IRCClient:
                 return
 
         except Exception as exc:
-            self.debug(f"handle_message error: {exc }")
+            self.debug("handle_message error")
 
     def _handle_unknown_command(self, command: str, params, trailing) -> None:
         """No-op handler for unrecognised IRC commands - avoids super() AttributeError."""
@@ -10618,7 +10701,7 @@ class OTRv4IRCClient:
                 self.add_message("system", colorize(trailing, "dim"))
 
         except Exception as exc:
-            self.debug(f"numeric reply error code={code }: {exc }")
+            self.debug("numeric reply error")
 
     def _dispatch_otr_fragment(self, sender: str, fragment: str):
         """Accumulate OTR fragments; process when complete."""
@@ -10721,14 +10804,14 @@ class OTRv4IRCClient:
         try:
             complete = self.fragment_buffers[sender].add_fragment(sender, fragment)
         except ValueError as exc:
-            self.debug(f"fragment error from {sender }: {exc }")
+            self.debug("fragment error")
             return
         if complete:
             self.process_otr_payload(sender, complete)
 
     def process_otr_payload(self, sender: str, payload: str):
         """Route a fully reassembled OTRv4 payload."""
-        self.debug("otr payload", {"sender": sender, "len": len(payload)})
+        self.debug("otr payload", {"len": len(payload)})
         try:
             if not payload.startswith("?OTRv4 "):
                 return
@@ -10812,7 +10895,7 @@ class OTRv4IRCClient:
                 )
 
             except Exception as exc:
-                self.debug(f"data decrypt error from {sender }: {exc }")
+                self.debug("data decrypt error")
 
         try:
             self._smp_executor.submit(_do_decrypt)
@@ -10938,7 +11021,7 @@ class OTRv4IRCClient:
                     try:
                         self._fire_auto_smp(peer)
                     except Exception as exc:
-                        self.debug(f"auto_smp error: {exc }")
+                        self.debug("auto_smp error")
                 time.sleep(1)
 
         threading.Thread(target=_monitor, daemon=True, name="smp-monitor").start()
@@ -11254,8 +11337,13 @@ class OTRv4IRCClient:
                 if self._screen is None:
                     self._screen = Screen(self)
                 self._screen.scroll_offset = 0
+                _scr = self._screen
+                globals()["_TUI_SCROLL_CALLBACK"] = lambda d, p, s=_scr: (
+                    s.scroll_up(p) if d == "pgup" else s.scroll_down(p)
+                )
                 self._screen.redraw_full()
             else:
+                globals()["_TUI_SCROLL_CALLBACK"] = None
                 with _print_lock:
                     sys.stdout.write("\033[2J\033[H")
                     sys.stdout.flush()
@@ -11985,9 +12073,9 @@ class EnhancedOTRv4IRCClient(OTRv4IRCClient):
                             colorize(f"🔑 DAKE2 → sent to {colorize_username (sender )}", "cyan"),
                         )
                     return
-            self.debug(f"{label } processed", {"sender": sender})
+            self.debug(f"{label } processed")
         except Exception as exc:
-            self.debug(f"{label } error: {exc }")
+            self.debug("operation error")
             self.add_message(
                 "system",
                 f"{colorize (f'❌ {label } error from','red')} {sender }: {str (exc )[:60 ]}",
@@ -12079,7 +12167,7 @@ class EnhancedOTRv4IRCClient(OTRv4IRCClient):
                 self._set_pending("trust", peer, remote_fp=remote_fp, is_initiator=is_initiator)
 
         except Exception as exc:
-            self.debug(f"_handle_session_established error: {exc }")
+            self.debug("_handle_session_established error")
             self.add_message(
                 "system", f"{colorize ('❌ Session setup error:','red')} {str (exc )[:100 ]}"
             )
@@ -12097,7 +12185,7 @@ class EnhancedOTRv4IRCClient(OTRv4IRCClient):
                 else:
                     self.session_manager.trust_db.add_trust(peer, remote_fp)
             except Exception as exc:
-                self.debug(f"trust save error: {exc }")
+                self.debug("trust save error")
 
         self._finish_trust(peer, trusted=trusted, remote_fp=remote_fp, is_initiator=is_initiator)
 
@@ -12175,7 +12263,7 @@ class EnhancedOTRv4IRCClient(OTRv4IRCClient):
                         sec,
                     )
             except Exception as exc:
-                self.debug(f"smp secret store error: {exc }")
+                self.debug("smp secret store error")
                 self.add_message(
                     self._otr_panel(peer), colorize("⚠ Could not store SMP secret", "yellow"), sec
                 )
@@ -12222,7 +12310,7 @@ class EnhancedOTRv4IRCClient(OTRv4IRCClient):
         session_manager.decrypt_message → _enh_handle_smp_tlv.
         This method must never be called directly.
         """
-        self.debug(f"process_smp_message called for {sender } - ignored (use decrypt_message path)")
+        self.debug("process_smp_message ignored (use decrypt_message path)")
 
     _NOTIF_COOLDOWN = 30
 
@@ -12503,11 +12591,11 @@ class EnhancedOTRv4IRCClient(OTRv4IRCClient):
             OTRv4IRCClient.handle_message(self, line)
 
         except Exception as exc:
-            self.debug(f"handle_message error: {exc }", {"line": line[:100]})
+            self.debug("handle_message error")
 
     def process_incoming_otr_message(self, sender: str, message: str):
         """Route a complete OTRv4 message to the right handler."""
-        self.debug("otr msg", {"sender": sender, "len": len(message)})
+        self.debug("otr msg", {"len": len(message)})
         try:
             if not message.startswith("?OTRv4 "):
                 return
@@ -12530,12 +12618,12 @@ class EnhancedOTRv4IRCClient(OTRv4IRCClient):
                 and decoded[1] == 0x04
                 and decoded[2] == OTRv4DataMessage.TYPE
             ):
-                self.debug("otr type", {"type": "DATA_V6", "sender": sender})
+                self.debug("otr type", {"type": "DATA_V6"})
                 self._handle_data_message(sender, message)
                 return
 
             msg_type = decoded[0]
-            self.debug("otr type", {"type": msg_type, "sender": sender})
+            self.debug("otr type", {"type": msg_type})
 
             if msg_type == OTRConstants.MESSAGE_TYPE_DAKE1:
                 self.process_dake1(sender, message)
@@ -12546,7 +12634,7 @@ class EnhancedOTRv4IRCClient(OTRv4IRCClient):
             elif msg_type == OTRConstants.MESSAGE_TYPE_DATA:
                 self._handle_data_message(sender, message)
         except Exception as exc:
-            self.debug(f"process_incoming_otr error: {exc }")
+            self.debug("process_incoming_otr error")
 
     def handle_chat_message(self, msg: str):
         """
@@ -12588,7 +12676,7 @@ class EnhancedOTRv4IRCClient(OTRv4IRCClient):
             else:
                 self.send(f"PRIVMSG {peer } :?OTRv4 ")
         except Exception as exc:
-            self.debug(f"start_guided_otr_session error: {exc }")
+            self.debug("start_guided_otr_session error")
 
     def handle_command(self, command: str):
         parts = command.strip().split()
@@ -12665,7 +12753,7 @@ class EnhancedOTRv4IRCClient(OTRv4IRCClient):
 
                 if hasattr(self.session_manager, "smp_storage"):
                     secret = self.session_manager.smp_storage.get_secret(peer)
-                    self.debug(f"Got secret from smp_storage: {bool (secret )}")
+                    self.debug("SMP secret loaded")
 
                 if not secret:
                     self.add_message(
@@ -12677,7 +12765,7 @@ class EnhancedOTRv4IRCClient(OTRv4IRCClient):
                     )
                     return
 
-                self.debug(f"Starting SMP with secret length: {len (secret )}")
+                self.debug("Starting SMP")
                 self._start_smp(peer, secret)
 
             elif subcmd == "abort":
@@ -12872,12 +12960,12 @@ class EnhancedOTRv4IRCClient(OTRv4IRCClient):
                     )
                     return
 
-                self.debug(f"SMP background compute starting for {peer }")
+                self.debug("SMP background compute starting")
                 try:
 
                     encrypted_msg = self.session_manager.start_smp(peer, "", question)
                 except Exception as smp_exc:
-                    self.debug(f"SMP start exception: {smp_exc }")
+                    self.debug("SMP start exception")
                     self.add_message(
                         "system", colorize(f"❌ SMP failed: {str (smp_exc )[:200 ]}", "red")
                     )
@@ -12931,7 +13019,7 @@ class EnhancedOTRv4IRCClient(OTRv4IRCClient):
                                 colorize("❌ SMP init failed - check session state", "red"),
                             )
             except Exception as exc:
-                self.debug(f"_start_smp background error: {exc }")
+                self.debug("_start_smp background error")
                 self.add_message("system", colorize(f"❌ SMP error: {str (exc )[:80 ]}", "red"))
                 self.panel_manager.update_smp_progress(peer, 0, 0)
 
@@ -12955,7 +13043,7 @@ class EnhancedOTRv4IRCClient(OTRv4IRCClient):
             if hasattr(self.session_manager, "get_peer_fingerprint"):
                 fp = self.session_manager.get_peer_fingerprint(peer)
                 if fp:
-                    self.debug(f"_get_remote_fp: got from get_peer_fingerprint: {fp [:16 ]}...")
+                    self.debug("_get_remote_fp: fingerprint obtained")
                     return fp
 
             sess = self.session_manager.get_session(peer)
@@ -12974,10 +13062,10 @@ class EnhancedOTRv4IRCClient(OTRv4IRCClient):
                         pub_bytes = bytes(sess.remote_long_term_pub)
                         fp_bytes = hashlib.sha3_512(pub_bytes).digest()
                         fp = fp_bytes.hex().upper()
-                        self.debug(f"_get_remote_fp: got from remote_long_term_pub: {fp [:16 ]}...")
+                        self.debug("_get_remote_fp: fingerprint obtained")
                         return fp
                     except Exception as e:
-                        self.debug(f"_get_remote_fp: remote_long_term_pub conversion failed: {e }")
+                        self.debug("_get_remote_fp: conversion failed")
 
                 if (
                     hasattr(sess, "_remote_long_term_pub_bytes")
@@ -12986,15 +13074,15 @@ class EnhancedOTRv4IRCClient(OTRv4IRCClient):
                     try:
                         fp_bytes = hashlib.sha3_512(sess._remote_long_term_pub_bytes).digest()
                         fp = fp_bytes.hex().upper()
-                        self.debug(f"_get_remote_fp: got from stored bytes: {fp [:16 ]}...")
+                        self.debug("_get_remote_fp: fingerprint obtained")
                         return fp
                     except Exception as e:
-                        self.debug(f"_get_remote_fp: stored bytes conversion failed: {e }")
+                        self.debug("_get_remote_fp: stored conversion failed")
 
         except Exception as e:
-            self.debug(f"_get_remote_fp error: {e }")
+            self.debug("_get_remote_fp error")
 
-        self.debug(f"_get_remote_fp: no fingerprint found for {peer }")
+        self.debug("_get_remote_fp: no fingerprint found")
         return ""
 
     @staticmethod
@@ -13121,6 +13209,14 @@ class EnhancedOTRv4IRCClient(OTRv4IRCClient):
                 ),
             )
 
+        try:
+            cl = getattr(self, "channel_log", None)
+            if cl is not None:
+                cl.close()
+                self.channel_log = None
+        except Exception:
+            pass
+
         self._secure_wipe_data()
 
         try:
@@ -13210,7 +13306,7 @@ class EnhancedOTRv4IRCClient(OTRv4IRCClient):
                     status += f" ({failed } fallback)"
                 self.add_message("system", colorize(status, "green"))
         except Exception as e:
-            self.add_message("system", colorize(f"⚠ Wipe incomplete: {e }", "yellow"))
+            self.add_message("system", colorize("⚠ Wipe incomplete", "yellow"))
 
 
 def parse_args() -> OTRConfig:
@@ -13661,7 +13757,7 @@ def main():
 
     except Exception as exc:
         try:
-            safe_print(colorize(f"⚠ Critical error (attempting recovery): {exc }", "yellow"))
+            safe_print(colorize("⚠ Critical error (attempting recovery)", "yellow"))
             while True:
                 try:
                     r, _, _ = _select.select([_fd], [], [], 1.0)

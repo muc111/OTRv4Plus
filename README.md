@@ -3,10 +3,10 @@
 </p>
 
 <h1 align="center">OTRv4+</h1>
-<p align="center"><strong>Post-quantum hybrid encryption for Off The Record (OTR) Chat over IRC and XMPP. Experimental, unaudited research prototype.</strong></p>
+<p align="center"><strong>Post-quantum hybrid encryption for Off The Record (OTR) chat <em>and voice calls</em> over IRC and XMPP. Experimental, unaudited research prototype.</strong></p>
 
 <p align="center">
-<code>v10.10.4 · Rust crypto core · hybrid PQC SMP (ML-KEM-1024 + ML-DSA-87) · I2P SAM · TUI</code>
+<code>v10.11.0 · Rust crypto core · hybrid PQC SMP (ML-KEM-1024 + ML-DSA-87) · hybrid PQC voice · I2P SAM · AAudio · TUI</code>
 </p>
 
 ---
@@ -23,7 +23,7 @@
 
 ## What this is
 
-OTRv4+ is an IRC and XMPP client that implements OTRv4 with a post-quantum hybrid layer added at each stage of the protocol, including the SMP identity-verification step. It runs on Termux (Android) over I2P, Tor, or TLS clearnet, with a Rust crypto core wrapped by a thin Python orchestration layer.
+OTRv4+ is an IRC and XMPP client that implements OTRv4 with a post-quantum hybrid layer added at each stage of the protocol, including the SMP identity-verification step and, as of v10.11.0, encrypted voice calls carried over I2P. It runs on Termux (Android) over I2P, Tor, or TLS clearnet, with a Rust crypto core wrapped by a thin Python orchestration layer.
 
 **Single-author research prototype. Not a finished product, and not audited.** The author is not a cryptographer. The protocol composition (the DAKE wiring, the hybrid SMP construction) has had no external review, and the Rust crypto crates it depends on (`ed448-goldilocks-plus`, `x448`, `pqcrypto-mlkem`, `pqcrypto-mldsa`) have had no formal review either. Use it to study or extend, not because you need a hardened tool today. If your safety depends on the security of your messaging, use something audited.
 
@@ -193,6 +193,18 @@ All commands work identically in TUI and `--no-tui` mode.
 /unblock <jid>        unblock JID
 /blocked              list blocked JIDs
 /ping <jid>           XMPP ping via XEP-0199 (prints RTT)
+
+/call [jid]           place an encrypted voice call
+/answer               accept an incoming call
+/reject               decline an incoming call
+/hangup               end the active call
+/mute                 toggle the microphone (stays constant-rate on the wire)
+/calls  /callstatus   call state, epoch, audio backend, packet counters
+/voicedebug  /vdebug  per-call diagnostics every 5 s
+/smpstate             engine SMP state and whether calls are permitted
+/audioprobe           test each audio backend on this device
+/audiotest            verify the microphone captures real samples
+
 /next  /prev          switch tabs (TUI)
 /win <n|name>         jump to tab by number or name prefix
 /tabs                 list open tabs
@@ -224,6 +236,137 @@ Two-peer testing over a Prosody server reachable via I2P SAM (`.b32.i2p` address
 A second live run measured 1m 15s end to end. That is roughly 13–14× faster than the IRC client's ~15–16 minutes over the same I2P network. The speed difference is entirely the IRC fragment rate limit: `irc.postman.i2p` enforces strict flood limits so the IRC client paces sends at 2 fragments then a 6-second pause; SMP2 alone spans ~49 fragments. The XMPP path carries multi-kilobyte stanzas directly and fragments only above ~6 KB (I2P streaming cliff), so the same crypto payload transits in far fewer round trips.
 
 XMPP support is newer than IRC and has had fewer live runs. Treat it as more experimental until it accumulates more testing.
+
+## Encrypted voice calls (v10.11.0)
+
+Voice runs the same Rust crypto core as chat, over the same I2P transport, gated
+behind the same SMP verification. A call is refused unless the engine's own
+cryptographic predicate says the peer is verified — not a badge, not a log line.
+
+### Why this is unusual
+
+Encrypted calling apps are common. What is rare here is the combination:
+
+- **The media never touches a carrier.** Audio goes endpoint → I2P → endpoint.
+  There is no PSTN leg, so no call detail record is created anywhere.
+- **Neither party learns the other's IP address.** Each side publishes a
+  transient I2P destination for the call and tears it down afterwards. The
+  XMPP server sees encrypted signalling stanzas; it never carries the audio.
+- **The media key is hybrid post-quantum.** X448 **and** ML-KEM-1024, both
+  mandatory. An adversary recording the call today must break both to recover
+  it later. Most encrypted-calling systems are classical-only on the media key.
+- **No phone number is involved at any point.** Identity is an XMPP JID on an
+  I2P vhost, verified by SMP against a secret you agreed out of band.
+
+### Compared with a normal carrier call
+
+| | Carrier call (GSM/VoLTE) | OTRv4+ voice |
+|---|---|---|
+| Encryption scope | Handset ↔ tower. The carrier decrypts and re-encrypts | End to end. Keys never leave the two devices |
+| Carrier can listen | Yes, by design — lawful intercept is a standing capability | No carrier is involved |
+| Call detail records | Who, whom, when, duration, cell site. Retained and routinely disclosed | None created |
+| Location exposure | Cell-site data ties the call to a place | No cellular voice leg |
+| Interconnect attacks | SS7/Diameter location tracking and interception are well documented | Not applicable |
+| IMSI catchers | Can force a downgrade and intercept | Not applicable |
+| Identity anchor | Your phone number, KYC-bound in most jurisdictions | An ephemeral JID |
+| Post-quantum | No | Media key is X448 + ML-KEM-1024 |
+| Peer's IP address | N/A | Hidden by I2P from both the peer and the server |
+
+**What a carrier call still does better:** it works to any number on earth, it
+reaches emergency services, and its latency is a fraction of ours. This is not
+a phone replacement. It is a way for two people who already both run OTRv4+ to
+talk without a third party in the middle.
+
+### Protocol
+
+```
+OTR session (DAKE-authenticated) + cryptographic SMP verification
+                              |
+              ephemeral X448   ephemeral ML-KEM-1024
+                    |                 |
+                    +--------+--------+
+                             |
+              HKDF-SHA512 over a length-prefixed transcript
+              (version, call_id, OTR binding, sorted fingerprints,
+               both X448 publics in role order, ML-KEM ek and ct, epoch)
+                             |
+                        voice root (64 B)
+                             |
+              +--------------+--------------+
+          SEND KEY                     RECV KEY
+        AES-256-GCM                  AES-256-GCM
+                             |
+   symmetric ratchet every 500 frames  ->  forward secrecy
+   hybrid X448 + ML-KEM rekey every 120 s -> post-compromise recovery
+```
+
+Media frame, every header field authenticated as AEAD associated data:
+
+```
+sync(1) | version(1) | frame_type(1) | epoch(8) | counter(8) | length(2) | ct||tag(178)
+AAD   = "OTRv4+Voice/AAD/v3" || LP(call_id) || dir_byte || header
+nonce = u32BE(epoch) || u64BE(counter)      derived, never transmitted
+```
+
+Constant 199-byte packet, one every 40 ms, for the whole call. Muting encodes
+digital silence rather than stopping transmission, so mute is invisible to
+anyone counting packets.
+
+Other properties: independent send/receive keys so the two endpoints never
+share an encryption key; a monotonic 64-bit epoch with a two-phase rekey commit
+so a failed rekey never drops a working call; a bounded bitmap replay window
+per (call, direction, epoch); an explicit call state machine where `ENDED` is
+absorbing; and every control message bound to its `call_id`, so a message from
+a previous call cannot act on the current one.
+
+### Audio backend
+
+Voice does **not** use PulseAudio. On Android it drives **AAudio**
+(`libaaudio.so`) through `ctypes` — the NDK C audio API, which needs no JVM and
+no JNI, so it works from a plain Termux process. PulseAudio's OpenSL ES modules
+(`module-sles-source`, `module-sles-sink`) fail with error 12 on at least some
+Android 15 devices, leaving only `auto_null`; AAudio is a different code path
+and works.
+
+PulseAudio remains selectable as an explicitly-reported fallback
+(`OTRV4PLUS_AUDIO_BACKEND=pulseaudio`) and still backs `/audiotest`. Fallback is
+never silent: on a device where PulseAudio only offers `auto_null`, a silent
+demotion would establish keys, encrypt, and transmit pure silence while every
+indicator showed a healthy call.
+
+Run `/audioprobe` to see which backend works on your device. It reports peak
+amplitude, not just byte count, because a byte count cannot tell a working
+microphone from a stream of zeroes.
+
+**Measured on a Xiaomi 25028RN03Y, Android 15, Termux Google Play 2026.06.21:**
+
+| | |
+|---|---|
+| Backend | AAudio, no resampling |
+| Requested / granted | 16 kHz mono PCM_16BIT — granted as requested |
+| Buffer capacity | 2560 frames |
+| Frames per burst | 480 |
+| 3-second capture | 72/72 frames non-zero, peak 30,628 |
+
+### Honest limits
+
+- **Not audited.** Everything in the top-level caveats applies here, and the
+  voice protocol is newer than the chat protocol.
+- **Latency.** Two I2P tunnels, three hops each way. Expect delay well beyond a
+  carrier call. It is usable for conversation; it is not snappy.
+- **Metadata is reduced, not eliminated.** Constant-rate shaping removes
+  speech-dependent packet size and timing. Call start, end, duration, tunnel
+  behaviour, loss and congestion remain observable to a network adversary, and
+  the XMPP server still sees that two JIDs exchanged encrypted stanzas.
+- **Authentication is only as post-quantum as the DAKE.** The ephemeral voice
+  keys are authenticated by the surrounding OTR channel. A quantum adversary
+  able to forge that authentication *in real time* could MITM a live call.
+  Recorded calls stay protected by ML-KEM-1024.
+- **Both ends must run v10.11.0.** The voice wire format changed; older builds
+  are rejected cleanly by the version byte rather than producing garbled audio.
+- **Requires `RECORD_AUDIO` held by the Termux app itself.** Termux:API holding
+  it is not enough — the client runs under Termux's UID.
+
 
 ## TUI mode
 
@@ -407,7 +550,14 @@ Run `cargo test --release --no-default-features --features pq-rust` before any r
 
 6. **Wire-incompatible with stock OTRv4.** Implementations such as `pidgin-otr4` and CoyIM cannot talk to OTRv4+. The ML-DSA-87 extension, the ML-KEM-1024 brace key, and the SHAKE-256 transcript hashing are OTRv4+ additions and there is no negotiation path. Both peers must run OTRv4+.
 
-7. **Termux/aarch64 specific build flags.** Both `pqcrypto-mlkem` and `pqcrypto-mldsa` are pinned to `default-features = false, features = ["std"]` because their NEON-optimised C paths trigger `SIGILL` on some aarch64 phones. The portable C reference is correct on any platform; the speed difference is invisible at session scale.
+7. **Voice is the newest and least-tested surface.** The hybrid voice key
+exchange, the two-phase rekey, and the AAudio backend all landed in v10.11.0.
+The crypto has 110 adversarial unit tests and the audio path has 63 more, but
+unit tests are not live use, and two-device call testing over I2P is still
+accumulating. Treat voice as more experimental than chat, which is itself
+marked experimental.
+
+8. **Termux/aarch64 specific build flags.** Both `pqcrypto-mlkem` and `pqcrypto-mldsa` are pinned to `default-features = false, features = ["std"]` because their NEON-optimised C paths trigger `SIGILL` on some aarch64 phones. The portable C reference is correct on any platform; the speed difference is invisible at session scale.
 
 ## Reviewers welcome
 
