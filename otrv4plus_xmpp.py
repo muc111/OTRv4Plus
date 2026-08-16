@@ -1588,12 +1588,19 @@ class OTRv4PlusXMPP(ClientXMPP):
             if not session:
                 return
             verified_now, name = _smp_query(self.otr, peer)
-            if verified_now and (peer, "SUCCEEDED") not in self._smp_reported:
-                self._smp_reported.add((peer, "SUCCEEDED"))
-                print(
-                    f"\n[smp] *** IDENTITY VERIFIED with {peer} - "
-                    "shared secret matched (SMP complete). ***\n"
-                )
+            if verified_now:
+                # Return whenever the engine confirms, not only the first
+                # time. _report_smp fires on several events per session, so
+                # returning only on the first call let later ones fall through
+                # to the heuristic branch below and print "this is NOT a
+                # verification result" immediately after a genuine
+                # IDENTITY VERIFIED — contradicting a true statement.
+                if (peer, "SUCCEEDED") not in self._smp_reported:
+                    self._smp_reported.add((peer, "SUCCEEDED"))
+                    print(
+                        f"\n[smp] *** IDENTITY VERIFIED with {peer} - "
+                        "shared secret matched (SMP complete). ***\n"
+                    )
                 return
             if not name:
                 return

@@ -2562,6 +2562,13 @@ class VoiceCallManager:
 
     INVITE_TIMEOUT = SAM_SESSION_TIMEOUT + 120
 
+    # Mirrors the module-level constant.  otrv4plus_xmpp.py reaches for
+    # VoiceCallManager.CALL_PREFIX in three places to decide whether a
+    # decrypted body is call signalling; v2 defined it on the class and v3
+    # moved it to module scope, which turned every inbound INVITE into an
+    # AttributeError inside the OTR receive path.  Both spellings resolve.
+    CALL_PREFIX = CALL_PREFIX
+
     def __init__(self, xmpp_client, loop, sam_host="127.0.0.1", sam_port=7656):
         self.client = xmpp_client
         self.loop = loop
