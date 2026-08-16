@@ -3,10 +3,10 @@
 </p>
 
 <h1 align="center">OTRv4+</h1>
-<p align="center"><strong>Post-quantum hybrid encryption for Off The Record (OTR) Chat over IRC and XMPP. Experimental, unaudited research prototype.</strong></p>
+<p align="center"><strong>Post-quantum hybrid encryption for Off The Record (OTR) chat <em>and voice calls</em> over IRC and XMPP. Experimental, unaudited research prototype.</strong></p>
 
 <p align="center">
-<code>v10.9.4 · Rust crypto core · hybrid PQC SMP (ML-KEM-1024 + ML-DSA-87) · I2P SAM · TUI</code>
+<code>v10.11.0 · Rust crypto core · hybrid PQC SMP (ML-KEM-1024 + ML-DSA-87) · hybrid PQC voice · I2P SAM · AAudio · TUI</code>
 </p>
 
 ---
@@ -23,7 +23,7 @@
 
 ## What this is
 
-OTRv4+ is an IRC and XMPP client that implements OTRv4 with a post-quantum hybrid layer added at each stage of the protocol, including the SMP identity-verification step. It runs on Termux (Android) over I2P, Tor, or TLS clearnet, with a Rust crypto core wrapped by a thin Python orchestration layer.
+OTRv4+ is an IRC and XMPP client that implements OTRv4 with a post-quantum hybrid layer added at each stage of the protocol, including the SMP identity-verification step and, as of v10.11.0, encrypted voice calls carried over I2P. It runs on Termux (Android) over I2P, Tor, or TLS clearnet, with a Rust crypto core wrapped by a thin Python orchestration layer.
 
 **Single-author research prototype. Not a finished product, and not audited.** The author is not a cryptographer. The protocol composition (the DAKE wiring, the hybrid SMP construction) has had no external review, and the Rust crypto crates it depends on (`ed448-goldilocks-plus`, `x448`, `pqcrypto-mlkem`, `pqcrypto-mldsa`) have had no formal review either. Use it to study or extend, not because you need a hardened tool today. If your safety depends on the security of your messaging, use something audited.
 
@@ -128,24 +128,101 @@ From that point, messages typed in the peer tab are end-to-end encrypted with th
 
 ## XMPP transport
 
-`otrv4plus_xmpp.py` runs the exact same DAKE, SMP, and double-ratchet implementation in `otrv4_core` over XMPP instead of IRC. It's a separate harness file built on `slixmpp`; everything described later in this README under Architecture, Key exchange, and Hybrid PQC SMP is the identical underlying engine. Only the network transport differs.
+`otrv4plus_xmpp.py` runs the exact same DAKE, SMP, and double-ratchet implementation in `otrv4_core` over XMPP instead of IRC. It is a separate harness built on `slixmpp`; everything in this README under Architecture, Key exchange, and Hybrid PQC SMP is the identical underlying engine. Only the network transport differs.
 
 ### Running it
 
 ```bash
-python otrv4plus_xmpp.py --jid alice@example.org --peer bob@example.org --debug
+python otrv4plus_xmpp.py \
+  --jid alice@<vhost>.b32.i2p \
+  --server <c2s-tunnel>.b32.i2p \
+  --peer bob@<vhost>.b32.i2p \
+  --insecure-tls --debug
 ```
 
-`--sam-host` / `--sam-port` point it at an I2P-hosted XMPP server through the same SAM bridge setup as the IRC client; `--no-i2p` connects to a clearnet/TLS XMPP server directly. `--no-tui` switches to plain linear scrollback instead of the tabbed UI, which is useful for reading trace output. Run `--help` for the full flag list.
+`--sam-host` / `--sam-port` point it at an I2P-hosted XMPP server through the same SAM bridge setup as the IRC client. `--no-i2p` connects to a clearnet/TLS XMPP server directly. `--no-tui` switches to plain linear scrollback. `--no-reconnect` disables the reconnect loop. Run `--help` for the full flag list.
 
-### What's been verified live
+### Security hardening (v10.10.4)
 
-Two-peer testing over a Prosody server reachable via I2P SAM (`.b32.i2p` addresses), same protocol stack as the IRC client:
+The XMPP harness received a full production hardening pass. Every change is in `otrv4plus_xmpp.py`; the Rust core is unchanged.
 
-- Full three-message DAKE handshake completes (DAKE1 → DAKE2 → DAKE3)
+**Subscription approval gate.** `auto_authorize` and `auto_subscribe` are both `False`. All incoming subscription requests are queued in `_pending_subscriptions` and require an explicit `/accept <jid>` or `/deny <jid>` before presence is shared. Previously the client auto-approved all subscription requests, which would allow a hostile JID to silently add itself as a contact.
+
+**Per-peer rate limiting.** Inbound messages are capped at 20 per peer per 5-second window. Messages exceeding the limit are dropped with a `[rate-limit]` notice. Implemented via a per-peer `collections.deque` of monotonic timestamps; no state persists across reconnects.
+
+**SMP secret validation.** Passphrase length is checked before passing to the Rust engine: minimum 8 characters, maximum 512 characters. Applied in `store_smp_secret`, `smp_start`, and `_handle_smp_secret_answer`. Previously any non-empty string, including a single space, was accepted.
+
+**Session-local block list.** `/block <jid>` drops all inbound messages from a JID without processing or displaying them. The block is checked before the rate limiter and before OTR processing. Session-local only; clears on exit. `/unblock <jid>` and `/blocked` manage the list.
+
+**XEP plugins.** Plugins registered in `__init__` alongside existing XEP-0030 and XEP-0085:
+
+| Plugin | Purpose |
+|--------|---------|
+| XEP-0115 | Entity capabilities — efficient feature advertisement to peers |
+| XEP-0184 | Delivery receipts (auto mode: requests and sends receipts) |
+| XEP-0198 | Stream management — stanza acks; graceful degradation if server lacks support |
+| XEP-0199 | XMPP Ping — available for `/ping <jid>` on demand |
+
+XEP-0198 registration is wrapped in `try/except`; if the server does not advertise stream management the plugin silently disables, the session continues, and no exception surfaces to the user.
+
+**Automatic reconnect (I2P-aware).** On disconnect, the client waits with exponential backoff (5 s base, 300 s ceiling) then re-establishes the I2P SAM tunnel via `start_i2p_sam_forwarder` before reconnecting slixmpp. SAM parameters are stored as `_sam_params` before the first connect so they are available to the reconnect loop. A `_shutting_down` flag prevents reconnect loops on `/quit`, Ctrl+C, or authentication failure. `--no-reconnect` disables the feature entirely.
+
+**Presence state.** `_on_presence_available` and `_on_presence_unavailable` handlers print when a peer comes online or goes offline, with optional status text sanitised through `_sanitise()`.
+
+**Delivery receipts.** `_on_delivery_receipt` fires when a peer acknowledges message delivery (XEP-0184), printing `[receipt] delivered to <jid> (id <msg_id>)`.
+
+### XMPP commands
+
+All commands work identically in TUI and `--no-tui` mode.
+
+```
+/otr [jid]            start OTR session (DAKE)
+/smp start            begin SMP verification
+/smp <secret>         set secret and start SMP in one step
+/smp-secret <s>       store secret for auto-respond (no initiation)
+/trust                re-show fingerprint trust prompt
+/msg <jid> <text>     send plaintext message (no OTR)
+/status               show session + trust + SMP state
+/roster               list roster contacts with subscription state
+/add <jid>            add contact and send subscription request
+/remove <jid>         remove contact from roster
+/pending              list pending subscription requests
+/accept <jid>         approve a pending subscription request
+/deny <jid>           reject a pending subscription request
+/block <jid>          block inbound messages from JID (session-local)
+/unblock <jid>        unblock JID
+/blocked              list blocked JIDs
+/ping <jid>           XMPP ping via XEP-0199 (prints RTT)
+
+/call [jid]           place an encrypted voice call
+/answer               accept an incoming call
+/reject               decline an incoming call
+/hangup               end the active call
+/mute                 toggle the microphone (stays constant-rate on the wire)
+/calls  /callstatus   call state, epoch, audio backend, packet counters
+/voicedebug  /vdebug  per-call diagnostics every 5 s
+/smpstate             engine SMP state and whether calls are permitted
+/audioprobe           test each audio backend on this device
+/audiotest            verify the microphone captures real samples
+
+/next  /prev          switch tabs (TUI)
+/win <n|name>         jump to tab by number or name prefix
+/tabs                 list open tabs
+/clear                clear active tab history
+/close                close active tab
+/help                 full command list in-session
+/quit                 disconnect and exit
+```
+
+### What has been verified live
+
+Two-peer testing over a Prosody server reachable via I2P SAM (`.b32.i2p` addresses):
+
+- Full three-message DAKE (DAKE1 → DAKE2 → DAKE3) completes
 - Fingerprints display and the trust prompt works
-- Hybrid PQC SMP completes all four steps to `VERIFIED` (ML-KEM-1024 + ML-DSA-87 + the classical ZKP)
+- Hybrid PQC SMP completes all four steps to `VERIFIED` (ML-KEM-1024 + ML-DSA-87 + classical ZKP)
 - Messages encrypt and decrypt correctly in both directions after verification
+- Simultaneous DAKE (both peers start `/otr` before either DAKE1 arrives) resolves deterministically by bare JID without deadlocking
 
 **Measured run, both peers over I2P SAM:**
 
@@ -156,11 +233,140 @@ Two-peer testing over a Prosody server reachable via I2P SAM (`.b32.i2p` address
 | SMP step 4/4, `VERIFIED` | 00:29:03 |
 | **DAKE start to SMP verified** | **1m 08s** |
 
-A second live run measured 1m 15s end to end, consistent with the number above.
+A second live run measured 1m 15s end to end. That is roughly 13–14× faster than the IRC client's ~15–16 minutes over the same I2P network. The speed difference is entirely the IRC fragment rate limit: `irc.postman.i2p` enforces strict flood limits so the IRC client paces sends at 2 fragments then a 6-second pause; SMP2 alone spans ~49 fragments. The XMPP path carries multi-kilobyte stanzas directly and fragments only above ~6 KB (I2P streaming cliff), so the same crypto payload transits in far fewer round trips.
 
-That's roughly 13-14x faster than the IRC client's ~15-16 minutes over the same I2P network (see the timing table in Hybrid PQC SMP below). This isn't a claim that XMPP is a faster protocol: `irc.postman.i2p` enforces strict flood limits, so the IRC client deliberately paces fragment sends (2 fragments, 6-second pause) to avoid being kicked, and SMP2 alone runs to about 49 fragments at the hybrid PQC size. The XMPP path has no equivalent throttling built in, so fragments go through about as fast as the I2P tunnel allows.
+XMPP support is newer than IRC and has had fewer live runs. Treat it as more experimental until it accumulates more testing.
 
-XMPP support is newer than IRC and has had fewer live runs; treat it as more experimental until it accumulates more testing. One protocol-level issue specific to it has already been found and fixed: opportunistic DAKE means both peers can end up initiating a handshake at once if `/otr` is run on both sides before the first DAKE1 arrives. This is more likely on the IRC client, where one side often has to wait several minutes for the other side's DAKE1 because of the flood pacing above, but it can happen on either transport. The client now resolves it deterministically by JID instead of deadlocking.
+## Encrypted voice calls (v10.11.0)
+
+Voice runs the same Rust crypto core as chat, over the same I2P transport, gated
+behind the same SMP verification. A call is refused unless the engine's own
+cryptographic predicate says the peer is verified — not a badge, not a log line.
+
+### Why this is unusual
+
+Encrypted calling apps are common. What is rare here is the combination:
+
+- **The media never touches a carrier.** Audio goes endpoint → I2P → endpoint.
+  There is no PSTN leg, so no call detail record is created anywhere.
+- **Neither party learns the other's IP address.** Each side publishes a
+  transient I2P destination for the call and tears it down afterwards. The
+  XMPP server sees encrypted signalling stanzas; it never carries the audio.
+- **The media key is hybrid post-quantum.** X448 **and** ML-KEM-1024, both
+  mandatory. An adversary recording the call today must break both to recover
+  it later. Most encrypted-calling systems are classical-only on the media key.
+- **No phone number is involved at any point.** Identity is an XMPP JID on an
+  I2P vhost, verified by SMP against a secret you agreed out of band.
+
+### Compared with a normal carrier call
+
+| | Carrier call (GSM/VoLTE) | OTRv4+ voice |
+|---|---|---|
+| Encryption scope | Handset ↔ tower. The carrier decrypts and re-encrypts | End to end. Keys never leave the two devices |
+| Carrier can listen | Yes, by design — lawful intercept is a standing capability | No carrier is involved |
+| Call detail records | Who, whom, when, duration, cell site. Retained and routinely disclosed | None created |
+| Location exposure | Cell-site data ties the call to a place | No cellular voice leg |
+| Interconnect attacks | SS7/Diameter location tracking and interception are well documented | Not applicable |
+| IMSI catchers | Can force a downgrade and intercept | Not applicable |
+| Identity anchor | Your phone number, KYC-bound in most jurisdictions | An ephemeral JID |
+| Post-quantum | No | Media key is X448 + ML-KEM-1024 |
+| Peer's IP address | N/A | Hidden by I2P from both the peer and the server |
+
+**What a carrier call still does better:** it works to any number on earth, it
+reaches emergency services, and its latency is a fraction of ours. This is not
+a phone replacement. It is a way for two people who already both run OTRv4+ to
+talk without a third party in the middle.
+
+### Protocol
+
+```
+OTR session (DAKE-authenticated) + cryptographic SMP verification
+                              |
+              ephemeral X448   ephemeral ML-KEM-1024
+                    |                 |
+                    +--------+--------+
+                             |
+              HKDF-SHA512 over a length-prefixed transcript
+              (version, call_id, OTR binding, sorted fingerprints,
+               both X448 publics in role order, ML-KEM ek and ct, epoch)
+                             |
+                        voice root (64 B)
+                             |
+              +--------------+--------------+
+          SEND KEY                     RECV KEY
+        AES-256-GCM                  AES-256-GCM
+                             |
+   symmetric ratchet every 500 frames  ->  forward secrecy
+   hybrid X448 + ML-KEM rekey every 120 s -> post-compromise recovery
+```
+
+Media frame, every header field authenticated as AEAD associated data:
+
+```
+sync(1) | version(1) | frame_type(1) | epoch(8) | counter(8) | length(2) | ct||tag(178)
+AAD   = "OTRv4+Voice/AAD/v3" || LP(call_id) || dir_byte || header
+nonce = u32BE(epoch) || u64BE(counter)      derived, never transmitted
+```
+
+Constant 199-byte packet, one every 40 ms, for the whole call. Muting encodes
+digital silence rather than stopping transmission, so mute is invisible to
+anyone counting packets.
+
+Other properties: independent send/receive keys so the two endpoints never
+share an encryption key; a monotonic 64-bit epoch with a two-phase rekey commit
+so a failed rekey never drops a working call; a bounded bitmap replay window
+per (call, direction, epoch); an explicit call state machine where `ENDED` is
+absorbing; and every control message bound to its `call_id`, so a message from
+a previous call cannot act on the current one.
+
+### Audio backend
+
+Voice does **not** use PulseAudio. On Android it drives **AAudio**
+(`libaaudio.so`) through `ctypes` — the NDK C audio API, which needs no JVM and
+no JNI, so it works from a plain Termux process. PulseAudio's OpenSL ES modules
+(`module-sles-source`, `module-sles-sink`) fail with error 12 on at least some
+Android 15 devices, leaving only `auto_null`; AAudio is a different code path
+and works.
+
+PulseAudio remains selectable as an explicitly-reported fallback
+(`OTRV4PLUS_AUDIO_BACKEND=pulseaudio`) and still backs `/audiotest`. Fallback is
+never silent: on a device where PulseAudio only offers `auto_null`, a silent
+demotion would establish keys, encrypt, and transmit pure silence while every
+indicator showed a healthy call.
+
+Run `/audioprobe` to see which backend works on your device. It reports peak
+amplitude, not just byte count, because a byte count cannot tell a working
+microphone from a stream of zeroes.
+
+**Measured on a Xiaomi 25028RN03Y, Android 15, Termux Google Play 2026.06.21:**
+
+| | |
+|---|---|
+| Backend | AAudio, no resampling |
+| Requested / granted | 16 kHz mono PCM_16BIT — granted as requested |
+| Buffer capacity | 2560 frames |
+| Frames per burst | 480 |
+| 3-second capture | 72/72 frames non-zero, peak 30,628 |
+
+### Honest limits
+
+- **Not audited.** Everything in the top-level caveats applies here, and the
+  voice protocol is newer than the chat protocol.
+- **Latency.** Two I2P tunnels, three hops each way. Expect delay well beyond a
+  carrier call. It is usable for conversation; it is not snappy.
+- **Metadata is reduced, not eliminated.** Constant-rate shaping removes
+  speech-dependent packet size and timing. Call start, end, duration, tunnel
+  behaviour, loss and congestion remain observable to a network adversary, and
+  the XMPP server still sees that two JIDs exchanged encrypted stanzas.
+- **Authentication is only as post-quantum as the DAKE.** The ephemeral voice
+  keys are authenticated by the surrounding OTR channel. A quantum adversary
+  able to forge that authentication *in real time* could MITM a live call.
+  Recorded calls stay protected by ML-KEM-1024.
+- **Both ends must run v10.11.0.** The voice wire format changed; older builds
+  are rejected cleanly by the version byte rather than producing garbled audio.
+- **Requires `RECORD_AUDIO` held by the Termux app itself.** Termux:API holding
+  it is not enough — the client runs under Termux's UID.
+
 
 ## TUI mode
 
@@ -338,13 +544,20 @@ Run `cargo test --release --no-default-features --features pq-rust` before any r
 
 3. **The Rust crypto crates are not audited.** `ed448-goldilocks-plus` 0.16 is the only viable pure-Rust Ed448 implementation but has no formal review. `x448` 0.6 is a pure-Rust X448 with no formal review. `pqcrypto-mlkem 0.1.1` (FIPS 203 ML-KEM-1024) and `pqcrypto-mldsa 0.1.2` (ML-DSA-87) are PQClean-derived reference implementations.
 
-4. **Rust-core-only since v10.7.5.** Every C extension (`otr4_crypto_ext`, `otr4_ed448_ct`, `otr4_mldsa_ext`) has been retired and the Python `cryptography` library was removed at v10.7. The entire cryptographic surface now lives inside the Rust `otrv4_core` PyO3 module: there is no second crypto implementation to drift against. As of v10.7.6 (Phase 5.4) the SMP modular exponentiation is constant-time via `crypto-bigint` `DynResidue`, intended to close a timing side-channel on the secret SMP exponents (not independently verified to be constant-time on every target). As of v10.9.1 the SMP protocol is hybrid post-quantum. See the CHANGELOG v10.6.18 → v10.7.6 sequence for the migration history.
+4. **Rust-core-only since v10.7.5.** Every C extension (`otr4_crypto_ext`, `otr4_ed448_ct`, `otr4_mldsa_ext`) has been retired and the Python `cryptography` library was removed at v10.7. The entire cryptographic surface now lives inside the Rust `otrv4_core` PyO3 module: there is no second crypto implementation to drift against. As of v10.7.6 (Phase 5.4) the SMP modular exponentiation is constant-time via `crypto-bigint` `DynResidue`, intended to close a timing side-channel on the secret SMP exponents (not independently verified to be constant-time on every target). As of v10.9.1 the SMP protocol is hybrid post-quantum. As of v10.10.4 the XMPP transport has production-grade security hardening (subscription approval gate, rate limiting, SMP secret validation, block list, stream management, delivery receipts, and I2P-aware reconnect). See the CHANGELOG for the full migration history.
 
 5. **Ephemeral identity by design.** Identity keys regenerate at every launch. Fingerprints change on every restart. This is a deliberate threat-model choice for an I2P-based privacy IRC client, not a missing feature. Tor Browser, Cwtch (default), and Briar (before user opt-in) all keep identities short-lived for similar reasons. See ROADMAP Phase 5.3g.
 
 6. **Wire-incompatible with stock OTRv4.** Implementations such as `pidgin-otr4` and CoyIM cannot talk to OTRv4+. The ML-DSA-87 extension, the ML-KEM-1024 brace key, and the SHAKE-256 transcript hashing are OTRv4+ additions and there is no negotiation path. Both peers must run OTRv4+.
 
-7. **Termux/aarch64 specific build flags.** Both `pqcrypto-mlkem` and `pqcrypto-mldsa` are pinned to `default-features = false, features = ["std"]` because their NEON-optimised C paths trigger `SIGILL` on some aarch64 phones. The portable C reference is correct on any platform; the speed difference is invisible at session scale.
+7. **Voice is the newest and least-tested surface.** The hybrid voice key
+exchange, the two-phase rekey, and the AAudio backend all landed in v10.11.0.
+The crypto has 110 adversarial unit tests and the audio path has 63 more, but
+unit tests are not live use, and two-device call testing over I2P is still
+accumulating. Treat voice as more experimental than chat, which is itself
+marked experimental.
+
+8. **Termux/aarch64 specific build flags.** Both `pqcrypto-mlkem` and `pqcrypto-mldsa` are pinned to `default-features = false, features = ["std"]` because their NEON-optimised C paths trigger `SIGILL` on some aarch64 phones. The portable C reference is correct on any platform; the speed difference is invisible at session scale.
 
 ## Reviewers welcome
 
@@ -356,7 +569,7 @@ GPL-3.0. See the [LICENSE](LICENSE) file.
 
 ## See also
 
-- [SPEC.md](SPEC.md) - **formal wire-level protocol specification**: byte layouts, KDF inputs, state machines, test vectors. Write a compatible implementation in any language from this document alone.
+- [SPEC.md](SPEC.md) - **formal wire-level protocol specification** (v10.10.4): byte layouts, KDF inputs, state machines, test vectors. v10.10.4 fixes two previously underspecified derivations: the GCM associated-data `ad` component (now defined as `ssid`, 8 bytes, from §4.4) and the `pq_binding_key` inputs `domain` and `transcript_tag` in §6.7. Write a compatible implementation in any language from this document alone.
 - [CHANGELOG.md](CHANGELOG.md) - per-version changes
 - [SECURITY.md](SECURITY.md) - threat model and known issues
 - [FEATURES.md](FEATURES.md) - full feature inventory

@@ -2,7 +2,8 @@
 """
 OTRv4+ XMPP - full OTR + SMP over XMPP, transported over I2P SAM
 ================================================================
-Version: 10.10.4
+Version: 10.10.9
+
 
 Post-quantum OTRv4+ end-to-end encryption over XMPP, reusing the IRC client's
 Rust-backed OTR engine (EnhancedSessionManager) unchanged. Every OTR frame
@@ -71,6 +72,7 @@ COMMANDS:
     /blocked              list session-local blocks
     /ping <jid>           XMPP ping a peer (XEP-0199)
     /help                 show this command list
+    /tui                  toggle plain / tabbed-panel mode at runtime
     /quit                 disconnect and exit
     <text>                send to --peer (auto-encrypts once OTR is up)
 """
@@ -117,14 +119,101 @@ import asyncio
 import builtins
 import collections
 import getpass
+import hashlib
+import hmac
 import logging
 import os
 import re
+import secrets
+import struct
 import sys
 import time
+import threading
 from concurrent.futures import ThreadPoolExecutor
 
-XMPP_VERSION = "10.10.4"
+# ---------------------------------------------------------------------------
+# Voice-call optional dependencies.
+#
+# These are resolved LAZILY, never at import time. _bootstrap_termux() may
+# install opuslib / pulseaudio during startup, which happens AFTER this module
+# has been imported. A module-level `import opuslib` would therefore be
+# permanently cached as "missing" for the whole session on a fresh device.
+# _load_opus() re-attempts the import (invalidating importlib's caches) and
+# voice_available() re-probes the filesystem on every call.
+# ---------------------------------------------------------------------------
+
+_opus = None
+_OPUS_AVAILABLE = False
+
+TERMUX_PREFIX = "/data/data/com.termux/files/usr"
+IS_TERMUX = os.path.isdir("/data/data/com.termux")
+
+
+def _which(binary: str) -> "str | None":
+    """Locate an executable, honouring the Termux prefix explicitly.
+
+    shutil.which() alone is unreliable inside Termux when PATH has been
+    trimmed by a wrapper script, so the canonical prefix is checked too.
+    """
+    import shutil as _shutil
+    found = _shutil.which(binary)
+    if found:
+        return found
+    candidate = os.path.join(TERMUX_PREFIX, "bin", binary)
+    if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+        return candidate
+    return None
+
+
+def _load_opus() -> bool:
+    """(Re)attempt the opuslib import. Safe to call repeatedly."""
+    global _opus, _OPUS_AVAILABLE
+    if _OPUS_AVAILABLE:
+        return True
+    try:
+        import importlib
+        importlib.invalidate_caches()
+        import opuslib as _o  # noqa: PLC0415 (deliberate late import)
+        _opus = _o
+        _OPUS_AVAILABLE = True
+    except Exception:
+        _opus = None
+        _OPUS_AVAILABLE = False
+    return _OPUS_AVAILABLE
+
+
+def voice_available() -> "tuple[bool, str]":
+    """Return (usable, human_readable_reason).
+
+    Re-probed on every call so a mid-session dependency install is picked up
+    without a restart.
+    """
+    if not _load_opus():
+        return False, "opuslib not installed  (pip install opuslib --break-system-packages)"
+    # Voice no longer requires PulseAudio: otrv4plus_audio prefers AAudio,
+    # which talks to Android's audio framework directly. parec/pacat remain
+    # a selectable fallback and back the /audiotest self-test, so their
+    # absence is reported as a note rather than treated as fatal.
+    libopus = os.path.join(TERMUX_PREFIX, "lib", "libopus.so")
+    if IS_TERMUX and not os.path.exists(libopus):
+        return False, "libopus.so missing  (pkg install libopus)"
+
+    # At least ONE audio backend must exist. AAudio is preferred and needs no
+    # package at all; parec/pacat are only the fallback. Requiring PulseAudio
+    # here would refuse calls on a device where AAudio works perfectly.
+    try:
+        import otrv4plus_audio as _aud
+        if _aud.aaudio_available():
+            return True, "ok"
+    except Exception as exc:
+        return False, "audio backend module unavailable: %s" % exc
+    if _which("parec") is not None and _which("pacat") is not None:
+        return True, "ok"
+    return (False,
+            "no audio backend: libaaudio.so unavailable and parec/pacat "
+            "missing  (run /audioprobe for details)")
+
+XMPP_VERSION = "10.11.0"
 
 OTR_MODULE = "otrv4plus"  # symlink -> otrv4+.py
 try:
@@ -172,6 +261,10 @@ _TUI_AVAILABLE = all(
 )
 
 _ACTIVE_TUI_CLIENT = None
+# Set unconditionally as soon as the client object exists, independent of
+# whether the TUI starts.  The module-level print() uses this to route every
+# line to channel_log even in plain (--no-tui / default) mode.
+_ACTIVE_CLIENT = None
 
 # Full session transcript (written under --debug, deleted on clean exit).
 _SESSION_LOG_FH = None
@@ -216,6 +309,15 @@ def print(*args, **kwargs):  # noqa: A001 (intentional module-scope shadow)
     sep = kwargs.get("sep", " ")
     msg = sep.join(str(a) for a in args)
     _log_to_file(msg)
+    # Always write to the encrypted per-peer channel log, TUI or not.
+    # Without this, plain-mode sessions (the default) never record history.
+    lc = _ACTIVE_CLIENT
+    if lc is not None and getattr(lc, "channel_log", None) is not None and msg:
+        try:
+            peer = lc._extract_peer(msg) if hasattr(lc, "_extract_peer") else None
+            lc.channel_log.append(peer or "system", msg)
+        except Exception:
+            pass
     if c is not None and getattr(c, "_tui_enabled", False):
         try:
             c._tui_route_output(msg)
@@ -231,6 +333,13 @@ try:
 except ImportError:
     builtins.print("slixmpp not installed.  Run:  pip install slixmpp aiodns", file=sys.stderr)
     sys.exit(1)
+
+try:
+    from otrv4plus_log import ChannelLogManager as _ChannelLogManager
+    _LOG_AVAILABLE = True
+except ImportError:
+    _ChannelLogManager = None
+    _LOG_AVAILABLE = False
 
 
 OTR_PREFIX = "?OTRv4 "
@@ -353,6 +462,279 @@ async def start_i2p_sam_forwarder(
     return host, port
 
 
+
+# SAM timeouts (seconds).
+#
+# These must be separated by what the command actually DOES, not lumped
+# together as "control plane". HELLO is a local handshake and answers in
+# milliseconds. SESSION CREATE with DESTINATION=TRANSIENT, by contrast, makes
+# i2pd construct a complete set of inbound and outbound tunnels BEFORE it
+# replies — the same 30-120 s the XMPP tunnel took at startup, and longer on a
+# busy phone. Applying a control-plane timeout to it caused calls to fail with
+# "SAM timed out after 60s" while i2pd was still working normally.
+SAM_HELLO_TIMEOUT = 30           # local handshake; near-instant
+SAM_SESSION_TIMEOUT = 300        # builds tunnels before replying
+SAM_ACCEPT_TIMEOUT = 300         # waits for the peer to connect
+SAM_CONNECT_TIMEOUT = 240        # builds a path to the peer's destination
+SAM_CTRL_TIMEOUT = SAM_HELLO_TIMEOUT   # retained for older call sites
+
+
+def _ossl_cleanse(buf: bytearray) -> None:
+    """Overwrite a mutable buffer in place.
+
+    Prefers OPENSSL_cleanse from the OTR engine's C extension, which the
+    compiler cannot elide. Falls back to a Python loop only if unavailable.
+    """
+    try:
+        mod = getattr(_otr, "_ossl", None)
+        if mod is not None and hasattr(mod, "cleanse"):
+            mod.cleanse(buf)
+            return
+    except Exception:
+        pass
+    for i in range(len(buf)):
+        buf[i] = 0
+
+
+def _pipe_read_exact(stream, count, keep_going):
+    """Read exactly `count` bytes from an unbuffered pipe.
+
+    The audio children are spawned with bufsize=0, so their pipes are raw
+    FileIO objects. Unlike a BufferedReader, raw read(n) is permitted to
+    return fewer than n bytes at any time without being at EOF — that is the
+    normal case on a pipe. Treating a short read as EOF would silently kill
+    capture after the first partial frame and produce a one-way call.
+
+    Returns the bytes read, or None on genuine end-of-stream.
+    """
+    chunks = bytearray()
+    while len(chunks) < count:
+        if not keep_going():
+            return None
+        try:
+            block = stream.read(count - len(chunks))
+        except (InterruptedError, BlockingIOError):
+            continue
+        except Exception:
+            return None
+        if block is None:            # non-blocking pipe with nothing ready
+            time.sleep(0.002)
+            continue
+        if block == b"":             # genuine EOF: the child exited
+            return None
+        chunks += block
+    return bytes(chunks)
+
+
+def _pipe_write_all(stream, data):
+    """Write every byte to an unbuffered pipe.
+
+    Raw FileIO.write() may accept only part of the buffer; the remainder must
+    be resubmitted or the audio stream desynchronises.
+    """
+    view = memoryview(data)
+    while view:
+        try:
+            written = stream.write(view)
+        except (InterruptedError, BlockingIOError):
+            continue
+        except Exception:
+            return False
+        if not written:
+            return False
+        view = view[written:]
+    try:
+        stream.flush()
+    except Exception:
+        pass
+    return True
+
+
+def _sam_release(sock) -> None:
+    """Force a socket to release any thread blocked reading it.
+
+    close() alone is NOT sufficient: on Linux a thread already parked in
+    recv() is not woken when another thread closes the descriptor, and it
+    stays blocked until its own timeout expires — up to SAM_ACCEPT_TIMEOUT.
+    shutdown() delivers the wakeup; close() then frees the descriptor.
+    Measured: close() 8s+ (never), shutdown()+close() under 1 ms.
+    """
+    if sock is None:
+        return
+    import socket as _socket
+    try:
+        sock.shutdown(_socket.SHUT_RDWR)
+    except Exception:
+        pass          # already dead or never connected — close still needed
+    try:
+        sock.close()
+    except Exception:
+        pass
+
+
+class SAMProtocolError(Exception):
+    """A SAM bridge command returned a non-OK result or malformed reply."""
+
+
+def _sam_read_line(sock, timeout: float) -> str:
+    """Read a single newline-terminated SAM control line.
+
+    Reads exactly one byte at a time and stops at the newline so that not one
+    byte of the payload that follows is consumed. SAM control lines are short
+    and appear at most twice per call, so this is not a hot path.
+    """
+    import socket as _socket
+
+    sock.settimeout(timeout)
+    chunks = bytearray()
+    while True:
+        try:
+            b = sock.recv(1)
+        except _socket.timeout:
+            raise SAMProtocolError(f"SAM timed out after {timeout}s")
+        if not b:
+            raise SAMProtocolError("SAM closed the connection")
+        if b == b"\n":
+            break
+        chunks += b
+        if len(chunks) > 8192:
+            raise SAMProtocolError("SAM control line exceeded 8192 bytes")
+    return chunks.decode("utf-8", errors="replace").strip()
+
+
+def _sam_parse(line: str, expected_prefix: str) -> dict:
+    """Parse a SAM reply line into a key -> value mapping.
+
+    Raises SAMProtocolError unless the prefix matches and RESULT=OK.
+    """
+    if not line.startswith(expected_prefix):
+        raise SAMProtocolError(f"expected '{expected_prefix}', got: {line[:200]}")
+    fields = {}
+    for token in line[len(expected_prefix):].split():
+        if "=" in token:
+            key, value = token.split("=", 1)
+            fields[key] = value
+    if fields.get("RESULT") != "OK":
+        raise SAMProtocolError(f"SAM error: {line[:200]}")
+    return fields
+
+
+def _sam_handshake(sock) -> None:
+    """Perform the mandatory SAM v3.1 HELLO exchange on a fresh socket."""
+    sock.sendall(b"HELLO VERSION MIN=3.1 MAX=3.1\n")
+    _sam_parse(_sam_read_line(sock, SAM_CTRL_TIMEOUT), "HELLO REPLY ")
+
+
+def _sam_open(host: str, port: int, timeout: float):
+    """Open a TCP socket to the SAM bridge and complete the handshake."""
+    import socket as _socket
+
+    sock = _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM)
+    sock.settimeout(timeout)
+    try:
+        sock.connect((host, port))
+        _sam_handshake(sock)
+    except Exception:
+        try:
+            sock.close()
+        except Exception:
+            pass
+        raise
+    return sock
+
+
+
+# =============================================================================
+# Voice call: encrypted Opus over a single bidirectional I2P SAM stream
+# =============================================================================
+#
+# The voice subsystem lives in otrv4plus_voice.py (protocol v3: hybrid
+# X448 + ML-KEM-1024 media keys, call-ID-bound signalling, two-phase rekey,
+# authenticated media headers).  It is a separate module so that the key
+# agreement, the rekey state machine and the replay window can be tested
+# without importing slixmpp, opuslib or PulseAudio — see
+# test_voice_security.py.  Read the module docstring there for the wire
+# format and the exact security claims.
+#
+# Everything below re-exports the voice names under their historical
+# module-level spellings so the rest of this file is unchanged.
+
+import otrv4plus_voice as _voice
+
+_voice.bind_host(
+    print=print,
+    sanitise=_sanitise,
+    ossl_cleanse=_ossl_cleanse,
+    which=_which,
+    load_opus=_load_opus,
+    voice_available=voice_available,
+    sam_open=_sam_open,
+    sam_read_line=_sam_read_line,
+    sam_parse=_sam_parse,
+    sam_release=_sam_release,
+    pipe_read_exact=_pipe_read_exact,
+    pipe_write_all=_pipe_write_all,
+    opus=_opus,
+    termux_prefix=TERMUX_PREFIX,
+    is_termux=IS_TERMUX,
+)
+
+VoiceKeyExchange = _voice.VoiceKeyExchange
+VoiceFrameCrypto = _voice.VoiceFrameCrypto
+VoiceKeySchedule = _voice.VoiceKeySchedule
+VoiceCallSession = _voice.VoiceCallSession
+VoiceCallManager = _voice.VoiceCallManager
+CallState = _voice.CallState
+KemUnavailable = _voice.KemUnavailable
+
+VOICE_SAMPLE_RATE = _voice.VOICE_SAMPLE_RATE
+VOICE_FRAME_MS = _voice.VOICE_FRAME_MS
+VOICE_FRAME_SAMPLES = _voice.VOICE_FRAME_SAMPLES
+VOICE_CHANNELS = _voice.VOICE_CHANNELS
+VOICE_FRAME_BYTES = _voice.VOICE_FRAME_BYTES
+VOICE_BITRATE = _voice.VOICE_BITRATE
+VOICE_OPUS_SLOT = _voice.VOICE_OPUS_SLOT
+VOICE_PACKET_LEN = _voice.VOICE_PACKET_LEN
+VOICE_COMPLEXITY = _voice.VOICE_COMPLEXITY
+VOICE_LOSS_PCT = _voice.VOICE_LOSS_PCT
+VOICE_PLAIN_LEN = _voice.VOICE_PLAIN_LEN
+VOICE_SEALED_LEN = _voice.VOICE_SEALED_LEN
+VOICE_HDR_LEN = _voice.VOICE_HDR_LEN
+VOICE_SYNC = _voice.VOICE_SYNC
+VOICE_MIN_FRAME = _voice.VOICE_MIN_FRAME
+VOICE_MAX_FRAME = _voice.VOICE_MAX_FRAME
+VOICE_JITTER_PREFILL = _voice.VOICE_JITTER_PREFILL
+VOICE_JITTER_MAX = _voice.VOICE_JITTER_MAX
+VOICE_REKEY_SECONDS = _voice.VOICE_REKEY_SECONDS
+VOICE_REKEY_TIMEOUT = _voice.VOICE_REKEY_TIMEOUT
+_pad_opus = _voice.pad_opus
+_unpad_opus = _voice.unpad_opus
+
+# The _opus module is imported lazily by _load_opus(), so rebind after any
+# successful load rather than capturing the None that exists at import time.
+_voice_load_opus = _load_opus
+
+
+def _load_opus_and_bind():
+    ok = _voice_load_opus()
+    if ok:
+        _voice.bind_host(opus=_opus)
+    return ok
+
+
+_voice.bind_host(load_opus=_load_opus_and_bind)
+
+
+def _smp_query(manager, peer):
+    """Ask the OTR engine whether SMP has cryptographically verified a peer.
+
+    Returns (verified, state_name).  The boolean comes only from the engine's
+    published predicates; state_name is for display and no decision is taken
+    on it.  See otrv4plus_voice._smp_query_default.
+    """
+    return _voice._smp_query_default(manager, peer)
+
+
 # =============================================================================
 # XMPP client
 # =============================================================================
@@ -360,7 +742,7 @@ async def start_i2p_sam_forwarder(
 class OTRv4PlusXMPP(ClientXMPP):
     """XMPP transport driving the OTRv4+ engine, with IRC-identical SMP flow."""
 
-    def __init__(self, jid, password, peer=None):
+    def __init__(self, jid, password, peer=None, debug=False):
         super().__init__(jid, password)
         self.peer = peer
 
@@ -368,6 +750,12 @@ class OTRv4PlusXMPP(ClientXMPP):
         self._pending = {}         # peer -> 'trust' | 'smp_secret' | None
         self._encrypted = set()    # peers whose DAKE has completed
         self._smp_reported = set() # (peer, state) already announced
+        # Display only.  Populated by _tui_route_output matching
+        # substrings such as "SMP VERIFIED" in printed lines, which
+        # peer-influenced text can reach.  NOTHING may take a
+        # security decision on this set: the voice gate asks the
+        # engine's cryptographic predicate and nothing else.
+        self._smp_display_hints = set()
         self._frag_seq = 0         # monotonic id for outbound fragment sets
 
         # Security: subscription approval queue; no auto-approval.
@@ -398,17 +786,51 @@ class OTRv4PlusXMPP(ClientXMPP):
         self._tui_jid_by_label = {}
         self._tui_label_by_jid = {}
         self._own_bare = jid.split("/", 1)[0] if jid else ""
-        self._probe = False
         self._prompt_refresh_cb = None
         self.nick = jid.split("@", 1)[0] if jid else "me"
         self._keepalive_task = None
+        self._keepalive_ticks = 0        # liveness, shown by /status
+        self._keepalive_last_ok = None   # monotonic time of last good ping
+        self._keepalive_degraded = False
+
+        # Voice call manager (initialized lazily after event loop is available)
+        self._voice_manager = None
+        self._voice_sam_host = "127.0.0.1"
+        self._voice_sam_port = 7656
+        self._voice_debug = False
+
+        # Diagnostic verbosity is fixed HERE, before the engine exists. The
+        # tracer prints protocol state transitions itself, so constructing it
+        # with enabled=True made those lines unsuppressible no matter what the
+        # emit callback did — which is why --debug appeared to have no effect
+        # on them.
+        self._probe = bool(debug)
 
         # OTR engine.
+        # The tracer stays ENABLED and is filtered at the callback instead of
+        # being switched off. Disabling it wholesale also removed the SMP
+        # progress bar, which is the only feedback a user gets during a
+        # multi-minute verification — leaving both phones apparently frozen
+        # while the protocol ran perfectly underneath.
         tracer = OTRTracer(enabled=True) if OTRTracer else None
         if tracer is not None and hasattr(tracer, "set_emit_callback"):
             def _trace_emit(line, *_a, **_k):
                 try:
-                    print(f"[otr-trace] {line}")
+                    text = str(line)
+                except Exception:
+                    return
+                # The latch runs FIRST and unconditionally: it is the only
+                # record that SMP succeeded, because the engine destroys its
+                # Rust SMP object afterwards and can no longer be asked.
+                try:
+                    self._latch_smp_from_trace(text)
+                except Exception:
+                    pass
+                try:
+                    if self._probe:
+                        print(f"[otr-trace] {text}")
+                    elif self._is_progress_line(text):
+                        print(text)
                 except Exception:
                     pass
             tracer.set_emit_callback(_trace_emit)
@@ -458,12 +880,30 @@ class OTRv4PlusXMPP(ClientXMPP):
         # XEP-0199: XMPP Ping (available for /ping command).
         self.register_plugin("xep_0199")
 
+        # Ephemeral encrypted per-session log: key zeroed and files deleted on exit,
+        # matching the IRC client wipe behaviour. Within-session scrollback is backed
+        # by the encrypted file so panels load their full history on tab open.
+        self.channel_log = _ChannelLogManager(persistent=False) if _LOG_AVAILABLE else None
+        self._cleaned_up = False
+        # Register globally so print() can route to channel_log even when
+        # the TUI is never started (plain mode is now the default).
+        global _ACTIVE_CLIENT
+        _ACTIVE_CLIENT = self
+
     # -------------------------------------------------------------------------
     # Lifecycle
     # -------------------------------------------------------------------------
 
     async def _on_start(self, event):
         self.send_presence()
+        # Initialize voice call manager now that we have an event loop
+        if self._voice_manager is None:
+            self._voice_manager = VoiceCallManager(
+                self, asyncio.get_event_loop(),
+                self._voice_sam_host, self._voice_sam_port)
+            self._voice_manager.debug = self._voice_debug
+            if self._voice_debug:
+                print("[voice] diagnostics enabled (--voice-debug)")
         try:
             await self.get_roster()
         except (IqError, IqTimeout):
@@ -484,19 +924,132 @@ class OTRv4PlusXMPP(ClientXMPP):
         # computations when no application data flows.
         self._keepalive_task = asyncio.ensure_future(self._keepalive_loop())
 
+    # Tracer output that a user needs even when not debugging: long-running
+    # operations must show progress, or a working protocol is indistinguishable
+    # from a hung one.
+    _PROGRESS_TOKENS = ("SMP [", "SMP VERIFIED", "SMP FAILED", "🔐")
+
+    @classmethod
+    def _is_progress_line(cls, text: str) -> bool:
+        return any(token in text for token in cls._PROGRESS_TOKENS)
+
+    # Phrases the engine emits on a completed SMP. Matching is deliberately
+    # narrow: only a terminal success announcement sets the flag, never a
+    # progress line that merely mentions verification.
+    _SMP_TRACE_SUCCESS = (
+        "SMP VERIFIED",
+        "SMP: VERIFIED",        # state-transition form: "SMP: VERIFIED → ..."
+        "IDENTITY CONFIRMED",
+        "SMP COMPLETE",
+        "SECRETS MATCH",
+    )
+    _SMP_TRACE_FAILURE = ("SMP FAILED", "SECRETS DID NOT MATCH", "SMP ABORT")
+
+    def _latch_smp_from_trace(self, line: str) -> None:
+        """Record SMP success at the instant the engine announces it.
+
+        The engine destroys its Rust SMP object once the protocol finishes, in
+        order to zeroize the secrets. get_smp_status() then early-returns
+        {"state": "NONE", "verified": False} forever after, so a verified peer
+        becomes indistinguishable from an unverified one by query alone. This
+        callback is therefore the authoritative record, and it runs whether or
+        not diagnostics are switched on.
+        """
+        upper = line.upper()
+        if any(token in upper for token in self._SMP_TRACE_FAILURE):
+            return
+        if not any(token in upper for token in self._SMP_TRACE_SUCCESS):
+            return
+
+        # Attribute the announcement to a peer. The engine prefixes lines with
+        # [OTR:<peer>]; failing that, a single active session is unambiguous.
+        target = None
+        match = re.search(r"\[OTR:([^\]]+)\]", line)
+        if match:
+            candidate = match.group(1).strip()
+            if "@" in candidate:
+                target = candidate.split("/", 1)[0]
+        if target is None:
+            try:
+                active = [p for p in self.otr.sessions
+                          if isinstance(p, str) and "@" in p]
+                if len(active) == 1:
+                    target = active[0].split("/", 1)[0]
+            except Exception:
+                target = None
+        if target is None and self.peer:
+            target = self.peer.split("/", 1)[0]
+        if target is None:
+            return
+
+        key = (target, "SUCCEEDED")
+        if key in self._smp_reported:
+            return
+        self._smp_reported.add(key)
+        print("\n[smp] *** IDENTITY VERIFIED with %s - shared secret "
+              "matched (SMP complete). ***\n" % target)
+
+    def _dbg(self, message: str) -> None:
+        """Protocol-level diagnostic: shown only with --debug.
+
+        Wire-level detail (handshake stages, fragmentation, crypto timing) is
+        invaluable when something breaks and pure noise when it does not. On a
+        phone screen it buries the conversation, so the default is silence and
+        everything here is opt-in.
+        """
+        if self._probe:
+            print(message)
+
     async def _keepalive_loop(self):
-        """Send a whitespace ping every 8s so idle I2P tunnels stay alive.
-        The tick counter confirms the event loop is not frozen during SMP."""
-        n = 0
+        """Send a whitespace ping every 8 s so idle I2P tunnels stay alive.
+
+        The ping is essential: an idle I2P tunnel is torn down, which would
+        drop the session during the long silences of an SMP exchange.
+
+        The loop is SILENT while it is working, including under --debug. A
+        heartbeat that prints every 8 s forever reports nothing new — after
+        the second line it is pure noise, and on a phone screen it buries the
+        conversation it exists to protect. What is worth saying is a *change*:
+        a ping that failed, and a ping that started working again. Those are
+        printed unconditionally, because by then something is actually wrong.
+
+        Set OTRV4PLUS_KEEPALIVE_TRACE=1 to watch every tick; /status reports
+        the tick count and the age of the last successful ping on demand.
+
+        A failure is not fatal on its own — the stream may simply be
+        mid-reconnect — so a few consecutive failures are tolerated before
+        the loop gives up and lets the reconnect logic take over.
+        """
+        trace = bool(os.environ.get("OTRV4PLUS_KEEPALIVE_TRACE"))
+        consecutive_failures = 0
         try:
             while self.is_connected():
                 await asyncio.sleep(8)
-                n += 1
+                self._keepalive_ticks += 1
                 try:
                     self.send_raw(" ")
-                    print(f"[keepalive] tick {n} (loop alive)")
-                except Exception:
-                    break
+                    self._keepalive_last_ok = time.monotonic()
+                    if consecutive_failures or self._keepalive_degraded:
+                        print("[keepalive] stream responding again after %d "
+                              "failed ping(s)" % consecutive_failures)
+                        self._keepalive_degraded = False
+                    consecutive_failures = 0
+                    if trace:
+                        print("[keepalive] tick %d (loop alive)"
+                              % self._keepalive_ticks)
+                except Exception as exc:
+                    consecutive_failures += 1
+                    if not self._keepalive_degraded:
+                        # Said once, not once per tick: the I2P tunnel is the
+                        # thing most likely to have gone, and the user needs
+                        # to know before the session silently dies.
+                        self._keepalive_degraded = True
+                        print("[keepalive] ping failed (%s) — the I2P tunnel "
+                              "may be dropping" % _sanitise(str(exc), 80))
+                    if consecutive_failures >= 3:
+                        print("[keepalive] stopped after 3 failed pings — "
+                              "reconnect will take over")
+                        break
         except asyncio.CancelledError:
             pass
 
@@ -526,9 +1079,46 @@ class OTRv4PlusXMPP(ClientXMPP):
             except Exception:
                 pass
 
+    # Stream errors that will NEVER succeed on retry. Reconnecting after one
+    # of these rebuilds an I2P tunnel every few seconds forever, burning
+    # bandwidth and hiding the real cause behind a wall of reconnect noise.
+    _FATAL_STREAM_ERRORS = {
+        "host-unknown": (
+            "the server does not serve the domain in your --jid.\n"
+            "  Your JID domain must match the server's VirtualHost.\n"
+            "  If you connect by .b32.i2p address, pass it with --server and\n"
+            "  keep the configured host name in --jid, e.g.\n"
+            "    --jid you@yourhost.i2p --server <b32>.b32.i2p"),
+        "not-authorized": "the server rejected this account or password.",
+        "unsupported-version": "the server requires a different XMPP version.",
+        "invalid-namespace": "protocol mismatch — is this an XMPP server?",
+        "see-other-host": "the server redirected to another host.",
+    }
+
     def _on_stream_error(self, error):
-        condition = getattr(error, "condition", None) or str(error)
+        raw = str(error)
+        condition = getattr(error, "condition", None) or raw
         print(f"[stream error] {_sanitise(str(condition), 256)}")
+
+        # slixmpp does not always populate .condition, so fall back to
+        # matching the element name inside the raw stanza.
+        matched = None
+        for name in self._FATAL_STREAM_ERRORS:
+            if name == str(condition) or ("<%s " % name) in raw or (
+                    "<%s>" % name) in raw:
+                matched = name
+                break
+        if matched is None:
+            return
+
+        self._shutting_down = True          # stop the reconnect loop
+        print("\n[fatal] %s" % self._FATAL_STREAM_ERRORS[matched])
+        print("[fatal] Not retrying — this cannot succeed without a change "
+              "to your arguments or the server configuration.\n")
+        try:
+            self.disconnect()
+        except Exception:
+            pass
 
     async def _reconnect(self):
         """Exponential-backoff reconnect. Re-establishes the I2P SAM tunnel
@@ -667,31 +1257,44 @@ class OTRv4PlusXMPP(ClientXMPP):
             # computations that BLOCK. Offload to a thread to keep the asyncio
             # event loop free so keepalive and network stay responsive.
             asyncio.ensure_future(self._handle_otr_in_async(peer, body))
+        elif body.startswith(VoiceCallManager.CALL_PREFIX):
+            # Call control is only legitimate inside the OTR channel. Arriving
+            # as plaintext it is either an outdated client or an attempt to
+            # steer a call by injecting signalling at the server, so it is
+            # refused rather than acted upon.
+            print("[voice] ignoring UNENCRYPTED call signal from %s — call "
+                  "control is only accepted inside an OTR session"
+                  % _sanitise(peer, 128))
         else:
             print(f"[plain] <{_sanitise(peer, 128)}> {_sanitise(body)}")
 
     async def _handle_otr_in_async(self, peer, body):
         stage_in = self._otr_stage(body)
         if stage_in:
-            print(f"[otr-recv] <- {stage_in} from {peer}")
+            self._dbg(f"[otr-recv] <- {stage_in} from {peer}")
+            # Minimal user-facing progress: the handshake stages are slow over
+            # I2P and silence during them looks like a hang.
+            if not self._probe and stage_in.startswith("DAKE"):
+                print("[otr] handshake: received %s from %s"
+                      % (stage_in, _sanitise(peer, 48)))
 
         if self._probe:
             try:
                 keys = sorted(self.otr.sessions.keys())
                 present = peer in self.otr.sessions
-                print(
+                self._dbg(
                     f"[otr-probe] inbound {stage_in}: lookup={peer!r} "
                     f"present={present} stored_keys={keys}"
                 )
                 if not present and keys:
                     for k in keys:
-                        print(
+                        self._dbg(
                             f"[otr-probe]   key mismatch? stored={k!r} "
                             f"== lookup={peer!r} -> {k == peer} "
                             f"(len {len(k)} vs {len(peer)})"
                         )
             except Exception as e:
-                print(f"[otr-probe] inbound probe error: {e}")
+                self._dbg(f"[otr-probe] inbound probe error: {e}")
 
         # --- DAKE glare resolution ---
         # Over slow I2P both sides may send DAKE1 before either receives the
@@ -727,7 +1330,7 @@ class OTRv4PlusXMPP(ClientXMPP):
         if heavy:
             import time as _t
             t0 = _t.time()
-            print(
+            self._dbg(
                 f"[otr-crypto] processing DATA from {peer} "
                 f"(SMP DH may take minutes; loop stays alive)..."
             )
@@ -743,7 +1346,7 @@ class OTRv4PlusXMPP(ClientXMPP):
 
         if heavy:
             import time as _t
-            print(f"[otr-crypto] done processing DATA from {peer} ({_t.time() - t0:.1f}s).")
+            self._dbg(f"[otr-crypto] done processing DATA from {peer} ({_t.time() - t0:.1f}s).")
 
         self._check_dake_complete(peer)
 
@@ -752,11 +1355,38 @@ class OTRv4PlusXMPP(ClientXMPP):
             if out_b.startswith(OTR_PREFIX_B):
                 stage_out = self._otr_stage(out_b.decode("utf-8", errors="replace"))
                 if stage_out:
-                    print(f"[otr-send] -> {stage_out} to {peer}")
+                    self._dbg(f"[otr-send] -> {stage_out} to {peer}")
                 self.send_otr_fragmented(peer, out_b.decode("utf-8", errors="replace"))
             else:
                 text = out_b.decode("utf-8", errors="replace")
-                print(f"[otr] <{_sanitise(peer, 128)}> {_sanitise(text)}")
+
+                # Call control travels INSIDE the OTR channel, so it surfaces
+                # here as decrypted text and must be routed to the voice
+                # manager before anything else touches it. Without this the
+                # INVITE is rendered as a chat message and the callee never
+                # learns a call is ringing — /answer then reports "no
+                # incoming call" while the caller waits.
+                if text.startswith(VoiceCallManager.CALL_PREFIX):
+                    if self._voice_manager is not None:
+                        asyncio.ensure_future(
+                            self._voice_manager.handle_signal(peer, text))
+                    else:
+                        print("[voice] call signal received before the voice "
+                              "subsystem was ready — ignoring")
+                    return
+
+                smp_ok = (peer, "SUCCEEDED") in self._smp_reported
+                peer_s = _sanitise(peer, 128)
+                text_s = _sanitise(text)
+                if smp_ok:
+                    print(
+                        _colorize("[otr] ", "green")
+                        + _colorize(f"<{peer_s}>", "yellow")
+                        + " "
+                        + _colorize(text_s, "dark_blue")
+                    )
+                else:
+                    print(f"[otr] <{peer_s}> {text_s}")
 
         self._report_smp(peer)
         self._check_dake_complete(peer)
@@ -806,7 +1436,34 @@ class OTRv4PlusXMPP(ClientXMPP):
                 self.send_otr_fragmented(peer, out_b.decode("utf-8", errors="replace"))
             else:
                 text = out_b.decode("utf-8", errors="replace")
-                print(f"[otr] <{_sanitise(peer, 128)}> {_sanitise(text)}")
+
+                # Call control travels INSIDE the OTR channel, so it surfaces
+                # here as decrypted text and must be routed to the voice
+                # manager before anything else touches it. Without this the
+                # INVITE is rendered as a chat message and the callee never
+                # learns a call is ringing — /answer then reports "no
+                # incoming call" while the caller waits.
+                if text.startswith(VoiceCallManager.CALL_PREFIX):
+                    if self._voice_manager is not None:
+                        asyncio.ensure_future(
+                            self._voice_manager.handle_signal(peer, text))
+                    else:
+                        print("[voice] call signal received before the voice "
+                              "subsystem was ready — ignoring")
+                    return
+
+                smp_ok = (peer, "SUCCEEDED") in self._smp_reported
+                peer_s = _sanitise(peer, 128)
+                text_s = _sanitise(text)
+                if smp_ok:
+                    print(
+                        _colorize("[otr] ", "green")
+                        + _colorize(f"<{peer_s}>", "yellow")
+                        + " "
+                        + _colorize(text_s, "dark_blue")
+                    )
+                else:
+                    print(f"[otr] <{peer_s}> {text_s}")
         self._report_smp(peer)
         self._check_dake_complete(peer)
 
@@ -826,7 +1483,7 @@ class OTRv4PlusXMPP(ClientXMPP):
             return
         self._encrypted.add(peer)
 
-        local_fp = self._local_fp()
+        local_fp = self._local_fp(peer)   # pass peer so session path is tried first
         remote_fp = self._remote_fp(peer)
 
         print("\n" + "-" * 60)
@@ -834,8 +1491,8 @@ class OTRv4PlusXMPP(ClientXMPP):
             f"[secure] OTR session with {peer} is ENCRYPTED "
             "(X448 + ML-KEM-1024 + ML-DSA-87)."
         )
-        print(f"  Your fingerprint  : {_fmt_fp(local_fp)}")
-        print(f"  Their fingerprint : {_fmt_fp(remote_fp)}")
+        print(f"  Your fingerprint  : {_colorize(_fmt_fp(local_fp), 'green')}")
+        print(f"  Their fingerprint : {_colorize(_fmt_fp(remote_fp), 'yellow')}")
         print("-" * 60)
 
         already = False
@@ -922,23 +1579,62 @@ class OTRv4PlusXMPP(ClientXMPP):
     # -------------------------------------------------------------------------
 
     def _report_smp(self, peer):
+        # Terminal success state names across Rust engine versions
+        _SMP_SUCCESS = {"SUCCEEDED", "VERIFIED", "COMPLETE", "COMPLETED",
+                        "SMP_VERIFIED", "STATE_UPDATED"}
+        _SMP_FAIL    = {"FAILED", "ERROR", "ABORTED", "SMP_FAILED"}
         try:
             session = self.otr.get_session(peer)
             if not session:
                 return
-            state = getattr(session, "smp_state", None)
-            if state is None:
-                return
-            name = getattr(state, "name", str(state))
-            key = (peer, name)
-            if name == "SUCCEEDED" and key not in self._smp_reported:
-                self._smp_reported.add(key)
+            verified_now, name = _smp_query(self.otr, peer)
+            if verified_now and (peer, "SUCCEEDED") not in self._smp_reported:
+                self._smp_reported.add((peer, "SUCCEEDED"))
                 print(
                     f"\n[smp] *** IDENTITY VERIFIED with {peer} - "
                     "shared secret matched (SMP complete). ***\n"
                 )
-            elif name == "FAILED" and key not in self._smp_reported:
-                self._smp_reported.add(key)
+                return
+            if not name:
+                return
+
+            # Normalise to a single "SUCCEEDED" key regardless of engine naming
+            key_ok   = (peer, "SUCCEEDED")
+            key_fail = (peer, "FAILED")
+
+            # Also check boolean attrs the Rust session may expose directly
+            # Substring matching, because the engine's terminal name has
+            # varied (SUCCEEDED / VERIFIED / STATE_UPDATED). Failure tokens
+            # are checked first so an in-progress or failed phase can never
+            # be misread as success.
+            is_ok = (name in _SMP_SUCCESS) or (
+                not any(t in name for t in
+                        ("FAIL", "ABORT", "ERROR", "EXPECT", "PROGRESS"))
+                and any(t in name for t in
+                        ("SUCCEED", "VERIFI", "COMPLETE", "STATE_UPDATED")))
+            if not is_ok:
+                for attr in ("smp_verified", "is_verified", "identity_verified",
+                             "smp_complete", "is_complete"):
+                    if getattr(session, attr, False):
+                        is_ok = True
+                        break
+
+            is_fail = (name in _SMP_FAIL) or any(
+                t in name for t in ("FAIL", "ABORT", "ERROR"))
+
+            # Deliberately NOT announced as verification.  is_ok is a
+            # name/attribute heuristic; only _smp_query's boolean, handled
+            # above, is the engine saying the shared secret matched.
+            if is_ok and key_ok not in self._smp_display_hints:
+                self._smp_display_hints.add(key_ok)
+                print(
+                    f"\n[smp] SMP reached a terminal state with {peer} "
+                    f"(engine reports: {name}). This is NOT a verification "
+                    "result — run /smpstate to see what the engine actually "
+                    "says.\n"
+                )
+            elif is_fail and key_fail not in self._smp_reported:
+                self._smp_reported.add(key_fail)
                 print(
                     f"\n[smp] *** SMP FAILED with {peer} - secrets did NOT "
                     "match (or protocol error). Possible MITM. ***\n"
@@ -950,7 +1646,36 @@ class OTRv4PlusXMPP(ClientXMPP):
     # Fingerprint helpers
     # -------------------------------------------------------------------------
 
-    def _local_fp(self):
+    def _local_fp(self, peer=None):
+        """Return local identity fingerprint.
+        After DAKE, tries the session first (returns full hybrid FP length).
+        Falls back to client_profile.get_fingerprint() which may return only
+        the classical Ed448 portion."""
+        if peer:
+            try:
+                sess = self.otr.get_session(peer)
+                if sess:
+                    for attr in (
+                        "local_fingerprint", "our_fingerprint", "local_fp",
+                        "identity_fingerprint", "our_identity_fp",
+                    ):
+                        val = getattr(sess, attr, None)
+                        if val and str(val) not in ("unavailable", "None", ""):
+                            return str(val)
+                    for mname in (
+                        "get_local_fingerprint", "get_our_fingerprint",
+                        "get_identity_fingerprint",
+                    ):
+                        fn = getattr(sess, mname, None)
+                        if callable(fn):
+                            try:
+                                val = fn()
+                                if val and str(val) not in ("unavailable", "None", ""):
+                                    return str(val)
+                            except Exception:
+                                pass
+            except Exception:
+                pass
         try:
             cp = getattr(self.otr, "client_profile", None)
             if cp and hasattr(cp, "get_fingerprint"):
@@ -992,7 +1717,7 @@ class OTRv4PlusXMPP(ClientXMPP):
 
         if len(payload) <= MAX_FRAGMENT:
             self.send_message(mto=peer, mbody=payload, mtype="chat")
-            print(f"[otr-send] 1 frame ({len(payload)} bytes) -> {peer}")
+            self._dbg(f"[otr-send] 1 frame ({len(payload)} bytes) -> {peer}")
             return
 
         chunks = [
@@ -1003,15 +1728,15 @@ class OTRv4PlusXMPP(ClientXMPP):
         self._frag_seq = (self._frag_seq + 1) & 0xFFFFFFFF
         msg_id = "%08x" % self._frag_seq
 
-        print(
+        self._dbg(
             f"[otr-send] fragmenting {len(payload)} bytes into {total} "
             f"fragments (id {msg_id}) -> {peer}"
         )
         for i, chunk in enumerate(chunks, 1):
             frag = f"?OTRv4F|{msg_id}|{i}|{total}|{chunk}"
             self.send_message(mto=peer, mbody=frag, mtype="chat")
-            print(f"[otr-send]   sent fragment {i}/{total} (id {msg_id})")
-        print(f"[otr-send] all {total} fragments sent (id {msg_id}) -> {peer}")
+            self._dbg(f"[otr-send]   sent fragment {i}/{total} (id {msg_id})")
+        self._dbg(f"[otr-send] all {total} fragments sent (id {msg_id}) -> {peer}")
 
     def send_otr(self, peer, payload):
         """Legacy alias for send_otr_fragmented."""
@@ -1030,13 +1755,13 @@ class OTRv4PlusXMPP(ClientXMPP):
             n = int(n_s)
             total = int(total_s)
         except Exception:
-            print(f"[otr-recv] malformed fragment from {peer}; dropping")
+            self._dbg(f"[otr-recv] malformed fragment from {peer}; dropping")
             return None
 
         # Reject nonsensical indices before they can corrupt a buffer.
         MAX_FRAGMENTS = 4096
         if total < 1 or total > MAX_FRAGMENTS or n < 1 or n > total:
-            print(f"[otr-recv] fragment index out of range from {peer}; dropping")
+            self._dbg(f"[otr-recv] fragment index out of range from {peer}; dropping")
             return None
 
         if not hasattr(self, "_frag_buffers"):
@@ -1063,7 +1788,7 @@ class OTRv4PlusXMPP(ClientXMPP):
 
         if buf["bytes"] > MAX_BUFFER_BYTES:
             self._frag_buffers.pop(key, None)
-            print(
+            self._dbg(
                 f"[otr-recv] reassembly from {peer} exceeded "
                 f"{MAX_BUFFER_BYTES} bytes; dropping"
             )
@@ -1075,19 +1800,22 @@ class OTRv4PlusXMPP(ClientXMPP):
             del self._frag_buffers[k]
 
         have = len(buf["parts"])
-        print(
+        self._dbg(
             f"[otr-recv]   fragment {n}/{total} from {peer} "
             f"(id {msg_id}; have {have}/{total})"
         )
 
         if have < total:
+            if not self._probe and total > 1:
+                print("[otr] receiving %d/%d fragments from %s"
+                      % (have, total, _sanitise(peer, 48)))
             return None
         # Verify every index present before stitching.
         if any(i not in buf["parts"] for i in range(1, total + 1)):
             return None
         ordered = "".join(buf["parts"][i] for i in range(1, total + 1))
         self._frag_buffers.pop(key, None)
-        print(
+        self._dbg(
             f"[otr-recv] reassembled {total} fragments "
             f"({len(ordered)} bytes, id {msg_id}) from {peer}"
         )
@@ -1106,24 +1834,43 @@ class OTRv4PlusXMPP(ClientXMPP):
         except Exception as e:
             print(f"[otr error] start with {peer}: {e}")
             return
+
+        if not (should_send and msg):
+            # Engine refused — DAKE already in progress or session in bad state.
+            # Force-reset and retry so /otr can always unstick a hung handshake.
+            print(f"[otr] resetting stuck session with {peer}, retrying DAKE...")
+            try:
+                self.otr.end_session(peer)
+                self._encrypted.discard(peer)
+                self._last_dake1.pop(peer, None)
+                self._pending.pop(peer, None)
+                self._smp_reported = {k for k in self._smp_reported if k[0] != peer}
+            except Exception as e:
+                print(f"[otr] reset error: {e}")
+            try:
+                msg, should_send = self.otr.handle_outgoing_message(peer, "")
+            except Exception as e:
+                print(f"[otr error] retry with {peer}: {e}")
+                return
+
         if should_send and msg:
             msg_s = msg if isinstance(msg, str) else msg.decode()
             self._last_dake1[peer] = msg_s
-            print(f"[otr-send] -> DAKE1 to {peer} (starting handshake)")
+            self._dbg(f"[otr-send] -> DAKE1 to {peer} (starting handshake)")
             self.send_otr_fragmented(peer, msg_s)
             if self._probe:
                 try:
                     keys = sorted(self.otr.sessions.keys())
-                    print(
+                    self._dbg(
                         f"[otr-probe] after /otr: stored={peer!r} "
                         f"present={peer in self.otr.sessions} "
                         f"all_keys={keys}"
                     )
                 except Exception as e:
-                    print(f"[otr-probe] after-/otr probe error: {e}")
+                    self._dbg(f"[otr-probe] after-/otr probe error: {e}")
             print(f"[otr] DAKE started with {peer}. Waiting for DAKE2...")
         else:
-            print(f"[otr] could not start DAKE with {peer}")
+            print(f"[otr] could not start DAKE with {peer} — try /otr again")
 
     def send_user_text(self, peer, text):
         try:
@@ -1374,12 +2121,31 @@ class OTRv4PlusXMPP(ClientXMPP):
             "  /unblock <jid>       unblock JID\n"
             "  /blocked             list blocked JIDs\n"
             "  /ping <jid>          XMPP ping (XEP-0199)\n"
+            "  /call [jid]          start encrypted voice call (requires OTR)\n"
+            "  /answer              accept incoming call\n"
+            "  /reject              decline incoming call\n"
+            "  /hangup              end active call\n"
+            "  /mute                toggle microphone mute\n"
+            "  /calls               show voice call state and frame counters\n"
+            "  /audiotest           verify the microphone captures audio\n"
+            "  /audioprobe          test each audio backend on this device\n"
+            "  /smpstate            show raw SMP verification state\n"
+            "  /voicedebug          toggle voice setup + telemetry logging\n"
+            "  Ctrl+B               scroll up one page\n"
+            "  Ctrl+F               scroll down one page\n"
+            "  /up  /b              scroll up one page (text fallback)\n"
+            "  /dn  /f              scroll down one page\n"
+            "  /top                 jump to top of panel history\n"
+            "  /bottom              jump to latest messages\n"
+            "  /log  /history       show full encrypted session history for\n"
+            "                       the active peer (works in plain and TUI mode)\n"
             "  /next  /prev         switch tabs (TUI)\n"
             "  /win <n|name>        jump to tab by number or name\n"
             "  /tabs                list open tabs\n"
             "  /clear               clear active tab\n"
             "  /close               close active tab\n"
             "  /help                this list\n"
+            "  /tui                 toggle between plain scrollback and tabbed panels\n"
             "  /quit                disconnect and exit"
         )
 
@@ -1422,6 +2188,23 @@ class OTRv4PlusXMPP(ClientXMPP):
             return True
 
         lstrip = line.strip()
+
+        # --- TUI toggle ---
+        if lstrip == "/tui":
+            if getattr(self, "_tui_enabled", False):
+                print("[tui] switching to plain scrollback mode")
+                self._tui_quit_to_plain()
+            else:
+                try:
+                    loop = asyncio.get_event_loop()
+                    ok = self._start_tui(loop, debug=self._probe)
+                    if ok:
+                        print("[tui] switched to tabbed panel mode (/tui again to go back)")
+                    else:
+                        print("[tui] could not start TUI (not a tty?)")
+                except Exception as e:
+                    print(f"[tui] error: {e}")
+            return True
 
         # --- Quit ---
         if lstrip == "/quit":
@@ -1486,6 +2269,13 @@ class OTRv4PlusXMPP(ClientXMPP):
         elif lstrip == "/status":
             if peer:
                 self.show_status(peer)
+            if self._keepalive_last_ok is not None:
+                print("[keepalive] %d ticks, last ping OK %.0fs ago"
+                      % (self._keepalive_ticks,
+                         time.monotonic() - self._keepalive_last_ok))
+            elif self._keepalive_ticks:
+                print("[keepalive] %d ticks, no successful ping yet"
+                      % self._keepalive_ticks)
 
         # --- Roster ---
         elif lstrip in ("/roster", "/roster list"):
@@ -1530,6 +2320,140 @@ class OTRv4PlusXMPP(ClientXMPP):
                 self.ping_peer(jid)
             else:
                 print("usage: /ping <jid>")
+
+        # --- Voice calls ---
+        elif lstrip == "/call":
+            if peer and self._voice_manager:
+                asyncio.ensure_future(self._voice_manager.start_call(peer))
+            elif not self._voice_manager:
+                print("[voice] not initialized — connect first")
+            else:
+                print("usage: /call (set --peer first) or /call <jid>")
+        elif lstrip.startswith("/call "):
+            jid = lstrip[6:].strip()
+            if jid and self._voice_manager:
+                asyncio.ensure_future(self._voice_manager.start_call(jid))
+            else:
+                print("usage: /call <jid>")
+        elif lstrip == "/answer":
+            if peer and self._voice_manager:
+                asyncio.ensure_future(self._voice_manager.answer_call(peer))
+            else:
+                print("[voice] no incoming call")
+        elif lstrip == "/reject":
+            if peer and self._voice_manager:
+                asyncio.ensure_future(self._voice_manager.reject_call(peer))
+        elif lstrip == "/hangup":
+            if self._voice_manager:
+                target = peer if self._voice_manager.has_active_call(peer) \
+                    else self._voice_manager.any_active_peer()
+                if target:
+                    asyncio.ensure_future(self._voice_manager.end_call(target))
+                else:
+                    print("[voice] no active call")
+            else:
+                print("[voice] not initialised")
+        elif lstrip == "/mute":
+            if self._voice_manager:
+                target = peer if self._voice_manager.has_active_call(peer) \
+                    else self._voice_manager.any_active_peer()
+                if target:
+                    self._voice_manager.toggle_mute(target)
+                else:
+                    print("[voice] no active call")
+        elif lstrip in ("/calls", "/callstatus"):
+            if self._voice_manager:
+                print(self._voice_manager.status_line())
+            else:
+                print("[voice] not initialised")
+        elif lstrip in ("/voicedebug", "/vdebug"):
+            if self._voice_manager:
+                self._voice_manager.debug = not self._voice_manager.debug
+                print("[voice] diagnostics %s"
+                      % ("ON — call setup and 5s telemetry will be logged"
+                         if self._voice_manager.debug else "off"))
+                if self._voice_manager.debug:
+                    for p_ in list(self._voice_manager._calls):
+                        self._voice_manager._start_stats(p_)
+            else:
+                print("[voice] not initialised")
+        elif lstrip in ("/smpstate", "/smpstatus"):
+            if not peer:
+                print("[smp] no active peer")
+            else:
+                vm = self._voice_manager
+                name = vm._smp_state_name(peer) if vm else "?"
+                reported = ((peer, "SUCCEEDED") in self._smp_reported
+                            or (peer, "SUCCEEDED") in self._smp_display_hints)
+                ok = vm._smp_verified(peer) if vm else False
+                print("[smp] peer            : %s" % _sanitise(peer, 64))
+                print("[smp] engine state    : %s" % _sanitise(name or "-", 60))
+                print("[smp] client recorded : %s" % reported)
+                print("[smp] call permitted  : %s" % ok)
+        elif lstrip in ("/audioprobe", "/audiobackend"):
+            # Determines empirically which backend works on THIS device.
+            def _probe():
+                try:
+                    import otrv4plus_audio as _aud
+                    builtins.print("[audio] %s" % _aud.backend_summary())
+                    _aud.probe(duration=2.0, verbose=True)
+                except Exception as exc:
+                    builtins.print("[audio] probe failed: %s"
+                                   % _sanitise(str(exc), 200))
+            threading.Thread(target=_probe, name="audio-probe",
+                             daemon=True).start()
+        elif lstrip == "/audiotest":
+            asyncio.ensure_future(_audio_selftest_async())
+
+        # --- Scroll (Termux software keyboard fallback) ---
+        elif lstrip in ("/up", "/pgup", "/b"):
+            scr = getattr(self, "_screen", None)
+            if scr:
+                scr.scroll_up(max(1, scr.rows - 3))
+            else:
+                print("[scroll] TUI not active")
+        elif lstrip in ("/dn", "/pgdn", "/f"):
+            scr = getattr(self, "_screen", None)
+            if scr:
+                scr.scroll_down(max(1, scr.rows - 3))
+            else:
+                print("[scroll] TUI not active")
+        elif lstrip == "/top":
+            scr = getattr(self, "_screen", None)
+            if scr:
+                scr.scroll_up(999999)
+            else:
+                print("[scroll] TUI not active")
+        elif lstrip == "/bottom":
+            scr = getattr(self, "_screen", None)
+            if scr:
+                scr.scroll_down(999999)
+
+        # --- Log / History: read from encrypted channel_log (works in any mode) ---
+        elif lstrip in ("/log", "/history"):
+            target_peer = None
+            if self.panel_manager is not None:
+                active = self.panel_manager.active_panel
+                target_peer = self._tui_jid_by_label.get(active) if active else None
+            if not target_peer:
+                target_peer = peer or self.peer
+            if not target_peer:
+                print("[log] no active conversation — set --peer or open a tab first")
+            elif self.channel_log is None:
+                print("[log] channel log not available (otrv4plus_log.py not found)")
+            else:
+                history = self.channel_log.read_recent(target_peer, n=50000)
+                builtins.print(
+                    f"\n[log] ═══ {len(history)} entries for "
+                    f"{_sanitise(target_peer, 128)} ═══"
+                )
+                for entry in history:
+                    if "|" in entry:
+                        ts, body = entry.split("|", 1)
+                        builtins.print(f"  {ts}  {body}")
+                    else:
+                        builtins.print(f"  {entry}")
+                builtins.print(f"[log] ═══ end ({len(history)} entries) ═══\n")
 
         # --- Help ---
         elif lstrip in ("/help", "/?"):
@@ -1591,10 +2515,77 @@ class OTRv4PlusXMPP(ClientXMPP):
         self._tui_label_by_jid[jid] = label
         return label
 
+    def _extract_peer(self, line: str) -> "str | None":
+        """Return the first non-self bare JID found in a line, or None.
+        Shared by the module-level print() channel-log hook and by
+        _tui_route_output so both use identical peer-identification logic."""
+        own_bare = self.boundjid.bare if self.boundjid else None
+        for mm in _JID_PATTERN.finditer(line):
+            cand = mm.group(0).split("/", 1)[0].rstrip(".,;:!?)]}>\"'")
+            if cand == self._own_bare or (own_bare and cand == own_bare):
+                continue
+            return cand
+        return None
+
     def _tui_route_output(self, line):
-        """Route one harness output line into the panel system."""
+        """Route one harness output line into the panel system.
+
+        Routing priority:
+          1. Protocol/trace lines ([otr-trace], [otr-recv], [otr-send],
+             [otr-probe], [otr-crypto], [keepalive]) → debug panel.
+             They contain the peer JID and would flood the peer panel.
+          2. System lines ([connected], [i2p], ...) → system panel.
+          3. Lines with a peer JID → that peer's panel.
+          4. Continuation lines (no JID, no sys prefix) → last peer panel.
+        """
         if line == "":
             return
+
+        # --- Protocol / trace lines → debug panel (keep peer panel clean) ---
+        _PROTO_PREFIXES = (
+            "[otr-trace]", "[otr-recv]", "[otr-send]",
+            "[otr-probe]", "[otr-crypto]", "[keepalive]",
+        )
+        stripped = line.lstrip()
+        if any(stripped.startswith(p) for p in _PROTO_PREFIXES):
+            # Still scan for SMP/badge signals before routing to debug
+            jid = None
+            for mm in _JID_PATTERN.finditer(line):
+                cand = mm.group(0).split("/", 1)[0].rstrip(".,;:!?)]}>\"'")
+                if cand != self._own_bare:
+                    jid = cand
+                    break
+            # Belt-and-braces SMP detection: update peer panel badge even
+            # when the trace line itself goes to debug
+            _smp_ok_signals = ("SMP VERIFIED", "SMP complete",
+                               "IDENTITY VERIFIED", "VERIFIED → STATE_UPDATED",
+                               "SMP_VERIFIED")
+            if any(s in line for s in _smp_ok_signals):
+                check_peer = jid or self._tui_jid_by_label.get(
+                    self._tui_last_panel)
+                if check_peer and (check_peer, "SUCCEEDED") not in self._smp_display_hints:
+                    self._smp_display_hints.add((check_peer, "SUCCEEDED"))
+                    try:
+                        SL = _UIConstants.SecurityLevel
+                        lbl = self._tui_label_for(check_peer)
+                        self.panel_manager.update_panel_security(
+                            lbl, SL.SMP_VERIFIED)
+                    except Exception:
+                        pass
+            try:
+                self.panel_manager.add_message("debug", line)
+            except Exception:
+                pass
+            if self._tui_enabled and self._screen is not None:
+                try:
+                    if self.panel_manager.active_panel == "debug":
+                        self._screen.redraw_body()
+                    self._screen.redraw_tabbar()
+                except Exception:
+                    pass
+            return
+
+        # --- Normal routing for everything else ---
         own_bare = self.boundjid.bare if self.boundjid else None
         jid = None
         for mm in _JID_PATTERN.finditer(line):
@@ -1607,12 +2598,27 @@ class OTRv4PlusXMPP(ClientXMPP):
             target = self._tui_label_for(jid)
             self._tui_last_panel = target
         else:
-            stripped = line.lstrip()
             if any(stripped.startswith(p) for p in self._SYS_PREFIXES):
                 target = "system"
             else:
                 target = self._tui_last_panel or "system"
+
         self._tui_update_badge(target, line)
+
+        # Belt-and-braces SMP signal detection on non-trace lines
+        _smp_ok_signals = ("SMP VERIFIED", "SMP complete",
+                           "IDENTITY VERIFIED", "SMP_VERIFIED")
+        if any(s in line for s in _smp_ok_signals):
+            check_peer = jid or self._tui_jid_by_label.get(target)
+            if check_peer and (check_peer, "SUCCEEDED") not in self._smp_display_hints:
+                self._smp_display_hints.add((check_peer, "SUCCEEDED"))
+                try:
+                    SL = _UIConstants.SecurityLevel
+                    lbl = self._tui_label_for(check_peer)
+                    self.panel_manager.update_panel_security(lbl, SL.SMP_VERIFIED)
+                except Exception:
+                    pass
+
         try:
             self.panel_manager.add_message(target, line)
         except Exception:
@@ -1644,13 +2650,15 @@ class OTRv4PlusXMPP(ClientXMPP):
             return
         SL = _UIConstants.SecurityLevel
         try:
-            if (
-                "SMP VERIFIED" in line
-                or "Fingerprint TRUSTED" in line
-                or "identity pinned" in line
-            ):
+            if "SMP VERIFIED" in line or "SMP complete" in line:
+                # 🔵 Blue: only after SMP identity verification completes
                 self.panel_manager.update_panel_security(target, SL.SMP_VERIFIED)
+            elif "Fingerprint TRUSTED" in line or "identity pinned" in line:
+                # 🟢 Green: fingerprint accepted / TOFU trust pinned, not yet SMP
+                fp_level = getattr(SL, "FINGERPRINT", SL.ENCRYPTED)
+                self.panel_manager.update_panel_security(target, fp_level)
             elif "is ENCRYPTED" in line:
+                # Intermediate: DAKE complete but fingerprint not yet confirmed
                 self.panel_manager.update_panel_security(target, SL.ENCRYPTED)
         except Exception:
             pass
@@ -1750,9 +2758,45 @@ class OTRv4PlusXMPP(ClientXMPP):
             loop.add_reader(sys.stdin.fileno(), self._tui_on_readable)
         except Exception:
             pass
+        # Wire Page Up/Down into the TUI screen scroll
+        try:
+            scr = self._screen
+            _otr._TUI_SCROLL_CALLBACK = lambda d, p, s=scr: (
+                s.scroll_up(p) if d == "pgup" else s.scroll_down(p)
+            )
+        except Exception:
+            pass
         if self.peer:
             label = self._tui_label_for(self.peer)
             self.panel_manager.get_or_create_panel(label, "private")
+            # Load persistent encrypted history into the panel
+            try:
+                if self.channel_log is not None:
+                    panel = self.panel_manager.panels.get(label)
+                    if panel is not None:
+                        history = self.channel_log.read_recent(label, n=50000)
+                        if history:
+                            panel.add_message("── history ─────────────────────────────")
+                            for entry in history:
+                                if "|" in entry:
+                                    ts_str, body = entry.split("|", 1)
+                                    try:
+                                        orig_ts = time.mktime(
+                                            time.strptime(ts_str, "%Y-%m-%d %H:%M:%S")
+                                        )
+                                    except Exception:
+                                        orig_ts = time.time()
+                                    panel.history.append({
+                                        "id": len(panel.history),
+                                        "message": body,
+                                        "timestamp": orig_ts,
+                                        "metadata": {},
+                                    })
+                                else:
+                                    panel.add_message(entry)
+                            panel.add_message("── live ─────────────────────────────────")
+            except Exception:
+                pass
             self.panel_manager.switch_to_panel(label)
             self._tui_last_panel = label
             self._tui_autofocused = True
@@ -1767,6 +2811,10 @@ class OTRv4PlusXMPP(ClientXMPP):
             return
         self._tui_enabled = False
         _ACTIVE_TUI_CLIENT = None
+        try:
+            _otr._TUI_SCROLL_CALLBACK = None
+        except Exception:
+            pass
         try:
             self._loop.remove_reader(sys.stdin.fileno())
         except Exception:
@@ -1786,9 +2834,121 @@ class OTRv4PlusXMPP(ClientXMPP):
             pass
         builtins.print("\r")
 
+    def cleanup(self) -> None:
+        """Full shutdown wipe: identical behaviour to IRC client.
+        Safe to call multiple times (idempotent via _cleaned_up flag)."""
+        if self._cleaned_up:
+            return
+        self._cleaned_up = True
+
+        # 1. Tear down voice calls FIRST — this releases the microphone.
+        #
+        #    cleanup() may run from main()'s finally block, where the event
+        #    loop is often already closed; run_until_complete() would then
+        #    raise and the microphone would stay live past exit. The
+        #    synchronous path is therefore authoritative and is always run,
+        #    with the graceful async path attempted first only when a usable
+        #    running-but-not-closed loop exists.
+        if self._voice_manager is not None:
+            try:
+                loop = getattr(self, "loop", None)
+                if (loop is not None and not loop.is_closed()
+                        and not loop.is_running()):
+                    loop.run_until_complete(self._voice_manager.cleanup())
+            except Exception:
+                pass
+            try:
+                torn = self._voice_manager.cleanup_sync()
+                if torn:
+                    print("[voice] %d call(s) force-closed, "
+                          "microphone released, media keys zeroized" % torn)
+            except Exception:
+                pass
+
+        # 2. Shut down the OTR crypto executor FIRST.
+        #    DakeOutput and other Rust types are !Send (PyO3 constraint). They must
+        #    be dropped on the same thread that created them. Worker threads must
+        #    finish and release all references before we call clear_all_sessions()
+        #    from the main thread — otherwise PyO3 raises RuntimeError on the drop.
+        try:
+            self._otr_executor.shutdown(wait=True, cancel_futures=True)
+        except TypeError:
+            # Python < 3.9 has no cancel_futures
+            self._otr_executor.shutdown(wait=True)
+        except Exception:
+            pass
+
+        # 2. Clear OTR sessions — Rust ZeroizeOnDrop fires on every ratchet drop.
+        #    Safe now: executor threads are done and hold no !Send references.
+        try:
+            if hasattr(self.otr, "clear_all_sessions"):
+                self.otr.clear_all_sessions("xmpp client shutdown")
+        except Exception:
+            pass
+
+        # 3. Wipe ephemeral channel log (key zeroed + .enc files deleted)
+        try:
+            if self.channel_log is not None:
+                self.channel_log.close()
+                self.channel_log = None
+        except Exception:
+            pass
+
+        # 4. Cryptographically destroy ~/.otrv4plus (fingerprints, trust DB, SMP)
+        #    Uses the same _secure_file_destroy function the IRC client uses.
+        try:
+            secure_destroy = getattr(_otr, "_secure_file_destroy", None)
+            if secure_destroy:
+                import glob as _glob
+                otr_dir = os.path.expanduser("~/.otrv4plus")
+                if os.path.isdir(otr_dir):
+                    for fpath in _glob.glob(
+                        os.path.join(otr_dir, "**", "*"), recursive=True
+                    ):
+                        if os.path.isfile(fpath):
+                            try:
+                                secure_destroy(fpath)
+                            except Exception:
+                                pass
+        except Exception:
+            pass
+
+    def _clear_and_exit_msg(self) -> None:
+        """Clear the Termux screen and print termination message — mirrors IRC."""
+        try:
+            sys.stdout.write("\033[2J")
+            sys.stdout.write("\033[H")
+            sys.stdout.write("\033[3J")
+            sys.stdout.flush()
+            builtins.print("\n" * 100, end="")
+            try:
+                import subprocess as _subp
+                _subp.run(["clear"], check=False)
+            except Exception:
+                pass
+            _rust = getattr(_otr, "RUST_RATCHET_AVAILABLE", False)
+            _wipe = "🦀 Rust memory zeroized" if _rust else "Memory cleared"
+            builtins.print(f"\nOTRv4+ XMPP terminated - {_wipe} - screen cleared")
+            builtins.print("Type 'python otrv4plus_xmpp.py' to start again")
+        except Exception:
+            pass
+
+    def _tui_quit_to_plain(self) -> None:
+        """Stop the tabbed TUI and revert to plain scrollback, keeping the
+        XMPP connection alive. Called by the /tui runtime toggle command."""
+        if not getattr(self, "_tui_enabled", False):
+            return
+        self._stop_tui()
+        builtins.print(
+            "\n[tui] reverted to plain scrollback. "
+            "Type /tui to switch back. Commands still work."
+        )
+
     def _tui_quit(self):
         self._shutting_down = True
+        self.cleanup()
         self._stop_tui()
+        self._clear_and_exit_msg()
         try:
             self.disconnect()
         except Exception:
@@ -1827,7 +2987,10 @@ class OTRv4PlusXMPP(ClientXMPP):
         if peer is None:
             peer = self.peer or None
         if peer and not line.startswith("/") and not self.has_pending(peer):
-            self.panel_manager.add_message(active, _colorize("you", "cyan") + ": " + line)
+            smp_ok = peer and (peer, "SUCCEEDED") in getattr(self, "_smp_reported", set())
+            you_s = _colorize("you", "cyan")
+            msg_s = _colorize(line, "dark_blue") if smp_ok else line
+            self.panel_manager.add_message(active, you_s + ": " + msg_s)
         try:
             keep = self.dispatch_line(peer, line)
         except Exception as exc:
@@ -1930,7 +3093,690 @@ async def _input_loop(client):
 # Entry point
 # =============================================================================
 
+# -----------------------------------------------------------------------------
+# Automated Termux / Android provisioning
+# -----------------------------------------------------------------------------
+# Goal: a user receives this single file, runs it, and ends up with a working
+# encrypted voice-capable client without being walked through anything.
+#
+# Everything below runs with shell=False and explicit argv lists. Nothing is
+# interpolated into a shell, so a hostile environment variable or filename
+# cannot become command injection. Every subprocess has a timeout, so a wedged
+# helper cannot hang startup forever.
+#
+# The provisioning is idempotent. Expensive steps (package installation) are
+# gated behind a version-stamped marker file; runtime steps (starting the sound
+# server, loading the microphone source) are re-checked on every launch because
+# they do not survive a reboot.
+# -----------------------------------------------------------------------------
+
+BOOTSTRAP_VERSION = 5
+BOOTSTRAP_MARKER = os.path.expanduser(
+    "~/.otrv4plus/.bootstrap-v%d" % BOOTSTRAP_VERSION)
+
+# Package name -> the executable or library proving it is installed.
+_APT_REQUIREMENTS = (
+    ("pulseaudio", "bin/parec"),
+    ("libopus", "lib/libopus.so"),
+    ("termux-api", "bin/termux-microphone-record"),
+    # Termux splits OpenSSL: the `openssl` package ships libcrypto/libssl,
+    # while the `openssl` COMMAND comes from `openssl-tool`. Checking for
+    # bin/openssl while installing `openssl` can never succeed, so each entry
+    # must name the package that actually provides the file being tested.
+    ("openssl", "lib/libcrypto.so"),
+    ("openssl-tool", "bin/openssl"),
+    ("git", "bin/git"),
+)
+
+# Import name -> pip distribution name. These differ often enough that keying
+# on the import name is the only reliable check.
+_PIP_REQUIREMENTS = (
+    ("slixmpp", "slixmpp"),
+    ("aiodns", "aiodns"),
+    ("cryptography", "cryptography"),
+    ("opuslib", "opuslib"),
+    ("argon2", "argon2-cffi"),
+    ("socks", "pysocks"),
+)
+
+_PULSE_SOURCE_MODULE = "module-sles-source"
+
+
+def _run(argv, timeout=120, env=None, detach=False):
+    """Run a command with no shell. Returns (rc, stdout, stderr).
+
+    Never raises: a missing binary, a timeout and a crash all return a
+    non-zero rc so callers can branch uniformly.
+
+    detach=True is REQUIRED for any command that forks a daemon and exits
+    (pulseaudio --start, i2pd --daemon). Capturing output from such a command
+    deadlocks: the foreground process exits immediately, but the daemon it
+    forked inherits the stdout and stderr pipes and holds them open for its
+    entire lifetime, so communicate() never observes EOF and blocks until the
+    timeout — which then kills the very daemon we were trying to start.
+    Measured: 8 s timeout with capture, 0.01 s without.
+    """
+    import subprocess
+    try:
+        if detach:
+            completed = subprocess.run(
+                argv,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                stdin=subprocess.DEVNULL,
+                timeout=timeout,
+                env=env or os.environ,
+                check=False,
+            )
+            return completed.returncode, "", ""
+        completed = subprocess.run(
+            argv,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            env=env or os.environ,
+            stdin=subprocess.DEVNULL,
+            check=False,
+        )
+        return completed.returncode, completed.stdout or "", completed.stderr or ""
+    except FileNotFoundError:
+        return 127, "", "not found: %s" % argv[0]
+    except subprocess.TimeoutExpired:
+        return 124, "", "timed out after %ss" % timeout
+    except Exception as exc:
+        return 1, "", str(exc)
+
+
+def _termux_env():
+    """Environment for child processes, with the Termux library path set.
+
+    PortAudio and PulseAudio clients resolve libpulse.so at load time; without
+    this on the child's environment they fail with a bare dlopen error that is
+    very hard to diagnose.
+    """
+    env = dict(os.environ)
+    libdir = os.path.join(TERMUX_PREFIX, "lib")
+    current = env.get("LD_LIBRARY_PATH", "")
+    if libdir not in current.split(os.pathsep):
+        env["LD_LIBRARY_PATH"] = (
+            libdir + (os.pathsep + current if current else ""))
+    return env
+
+
+def _apt_missing():
+    """Return the apt packages whose proof-of-install file is absent."""
+    missing = []
+    for package, relative in _APT_REQUIREMENTS:
+        if not os.path.exists(os.path.join(TERMUX_PREFIX, relative)):
+            missing.append(package)
+    return missing
+
+
+def _pip_missing():
+    """Return the pip distributions whose import name does not resolve."""
+    import importlib
+    importlib.invalidate_caches()
+    missing = []
+    for module, distribution in _PIP_REQUIREMENTS:
+        try:
+            importlib.import_module(module)
+        except Exception:
+            missing.append(distribution)
+    return missing
+
+
+def _apt_install(packages):
+    """Install apt packages, tolerating unrelated post-install failures.
+
+    Termux's xdg-utils post-install script fails on many devices and poisons
+    apt's exit status for every package in the same transaction. The return
+    code is therefore ignored entirely; success is judged solely by re-testing
+    for each package's proof file afterwards.
+
+    --no-install-recommends keeps the broken xdg-utils/qt6 dependency chain
+    out of the transaction in the first place.
+    """
+    env = dict(os.environ)
+    env["DEBIAN_FRONTEND"] = "noninteractive"
+    _run(["apt-get", "update", "-y"], timeout=180, env=env)
+    _run(
+        ["apt-get", "install", "-y", "--no-install-recommends",
+         "-o", "Dpkg::Options::=--force-confold",
+         "-o", "Dpkg::Options::=--force-confdef"] + list(packages),
+        timeout=900, env=env,
+    )
+
+
+def _pip_install(distributions):
+    """Install pip distributions into the Termux Python."""
+    _run(
+        [sys.executable, "-m", "pip", "install", "--break-system-packages",
+         "--disable-pip-version-check", "-q"] + list(distributions),
+        timeout=900,
+    )
+
+
+def _pulse_running():
+    return _run(["pulseaudio", "--check"], timeout=15,
+                env=_termux_env())[0] == 0
+
+
+def _pulse_start():
+    """Start PulseAudio as a persistent daemon. Returns (started, diagnosis).
+
+    `pulseaudio --start` forks the daemon and RETURNS — it does not block —
+    so it must be run with its output captured rather than detached. An
+    earlier version detached it, which discarded the daemon's own error
+    message and left this function reporting the unrelated output of a later
+    `--check` call.
+
+    Timing matters more than retrying. A cold daemon on Android can take well
+    over ten seconds to load its modules and accept connections. The first
+    attempt is therefore given a long, patient window; `-k` is only used
+    afterwards, because killing during startup destroys a daemon that was
+    simply slow — which is precisely what happened before.
+    """
+    if _which("pulseaudio") is None:
+        return False, "pulseaudio binary not found — pkg install pulseaudio"
+
+    env = _termux_env()
+    common = ["--exit-idle-time=-1"]
+
+    def _await_daemon(seconds):
+        deadline = time.time() + seconds
+        while time.time() < deadline:
+            if _pulse_running():
+                return True
+            time.sleep(0.4)
+        return False
+
+    # Attempt 1: patient. Captured, so a real failure is explained.
+    rc, out, err = _run(["pulseaudio", "--start"] + common, timeout=45, env=env)
+    if _await_daemon(20):
+        return True, ""
+    first_error = (err or out or "").strip()
+
+    # Attempt 2: clear a stale runtime directory, then start again. Only now
+    # is -k safe, because attempt 1 has been given every chance to finish.
+    _run(["pulseaudio", "-k"], timeout=20, env=env)
+    time.sleep(1.0)
+    rc, out, err = _run(["pulseaudio", "--start"] + common, timeout=45, env=env)
+    if _await_daemon(20):
+        return True, ""
+    second_error = (err or out or "").strip()
+
+    # Attempt 3: explicit daemonize, for builds where --start misbehaves.
+    rc, out, err = _run(["pulseaudio", "--daemonize=yes"] + common,
+                        timeout=45, env=env)
+    if _await_daemon(20):
+        return True, ""
+    third_error = (err or out or "").strip()
+
+    for candidate in (first_error, second_error, third_error):
+        lines = [l for l in candidate.splitlines()
+                 if l.strip() and not l.startswith("I: ")]
+        if lines:
+            return False, lines[-1][:180]
+    return False, "no diagnostic produced by the daemon"
+
+
+def _pulse_sources():
+    """Return the list of PulseAudio source names, or [] on failure."""
+    rc, out, _ = _run(["pactl", "list", "short", "sources"],
+                      timeout=20, env=_termux_env())
+    if rc != 0:
+        return []
+    names = []
+    for line in out.splitlines():
+        parts = line.split("\t")
+        if len(parts) >= 2:
+            names.append(parts[1])
+    return names
+
+
+def _pulse_input_source(sources):
+    """Pick the real microphone from a source list.
+
+    A monitor source is the loopback of the speaker output, not a microphone;
+    selecting one produces a call in which each side hears only themselves.
+    """
+    for name in sources:
+        if "monitor" not in name.lower() and "input" in name.lower():
+            return name
+    for name in sources:
+        if "monitor" not in name.lower():
+            return name
+    return None
+
+
+def _ensure_microphone_source():
+    """Guarantee a non-monitor capture source exists and is the default.
+
+    Returns (source_name_or_None, note).
+    """
+    sources = _pulse_sources()
+    source = _pulse_input_source(sources)
+
+    if source is None:
+        # Load the Android OpenSL ES capture module. Loading it twice creates
+        # duplicate sources, so this only runs when none was found.
+        _run(["pactl", "load-module", _PULSE_SOURCE_MODULE],
+             timeout=30, env=_termux_env())
+        time.sleep(1.0)
+        sources = _pulse_sources()
+        source = _pulse_input_source(sources)
+
+    if source is None:
+        return None, "no capture source available"
+
+    _run(["pactl", "set-default-source", source], timeout=20,
+         env=_termux_env())
+    return source, "ok"
+
+
+def _termux_api_present():
+    """Check the Termux:API companion app, not merely the CLI package.
+
+    The termux-api apt package only installs shell shims; the actual Android
+    bridge is a separate APK. Without the APK the shims block forever waiting
+    on a socket, so this probe is timeout-bounded.
+    """
+    if _which("termux-microphone-record") is None:
+        return False, "termux-api package not installed"
+    rc, out, err = _run(["termux-microphone-record", "-i"], timeout=12)
+    if rc == 124:
+        return False, "Termux:API app not installed (command hung)"
+    blob = (out + err).lower()
+    if "permission" in blob:
+        return True, "permission-needed"
+    return True, "ok"
+
+
+def _request_microphone_permission():
+    """Trigger Android's RECORD_AUDIO prompt for Termux.
+
+    PulseAudio's OpenSL ES source records through the Termux process itself
+    and cannot raise a runtime permission dialog; only the Termux:API bridge
+    can. A one-second recording is therefore started purely to make the system
+    dialog appear, then stopped, and the resulting file is destroyed with the
+    OTR engine's cryptographic shredder. It contains a second of ambient audio
+    at most and never survives this function.
+    """
+    target = os.path.join(
+        os.path.expanduser("~"), ".otrv4plus_permcheck_%s.m4a"
+        % secrets.token_hex(4))
+    try:
+        # termux-microphone-record backgrounds the recorder, so its output
+        # must not be captured for the same reason pulseaudio --start cannot.
+        _run(["termux-microphone-record", "-f", target, "-l", "1"],
+             timeout=20, detach=True)
+        time.sleep(2.0)
+        _run(["termux-microphone-record", "-q"], timeout=20, detach=True)
+        time.sleep(0.5)
+    finally:
+        try:
+            if os.path.exists(target):
+                shred = getattr(_otr, "_secure_file_destroy", None)
+                if shred is not None:
+                    shred(target)
+                else:
+                    with open(target, "r+b") as handle:
+                        length = os.path.getsize(target)
+                        handle.write(os.urandom(max(length, 1)))
+                        handle.flush()
+                        os.fsync(handle.fileno())
+                    os.remove(target)
+        except Exception:
+            try:
+                os.remove(target)
+            except Exception:
+                pass
+
+
+def _capture_selftest(seconds=3.0):
+    """Verify the microphone actually delivers samples.
+
+    Goes through otrv4plus_audio, so it tests whichever backend voice will
+    actually use — AAudio on Android. The previous version drove parec, which
+    meant a device with a perfectly working AAudio microphone was reported as
+    broken and the user was told to repair PulseAudio, which was both wrong
+    and unfixable on hardware where module-sles-source does not load.
+
+    Returns (ok, bytes_captured, peak_amplitude, backend_name).
+
+    Peak is reported rather than asserted: a silent room is not a failure, but
+    a peak of zero alongside a healthy byte count is the signature of a
+    revoked RECORD_AUDIO permission, or of a null source, and is worth telling
+    the user about. Nothing is written to disk and no samples are printed.
+    """
+    try:
+        import otrv4plus_audio as _aud
+    except Exception:
+        return False, 0, 0, "none"
+
+    stream = None
+    total, peak = 0, 0
+    backend = "none"
+    try:
+        stream, _notes = _aud.open_capture(which=_which,
+                                           read_exact=_pipe_read_exact,
+                                           env=_termux_env())
+        backend = stream.name
+        deadline = time.monotonic() + float(seconds)
+        while time.monotonic() < deadline:
+            frame = stream.read_frame(timeout_ms=200)
+            if not frame:
+                continue
+            total += len(frame)
+            n = len(frame) // 2
+            peak = max(peak, max(abs(v) for v in struct.unpack("<%dh" % n,
+                                                               frame)))
+    except Exception:
+        return False, total, peak, backend
+    finally:
+        if stream is not None:
+            try:
+                stream.stop()
+            except Exception:
+                pass
+    return True, total, peak, backend
+
+def _persist_shell_profile():
+    """Append the audio environment to ~/.bashrc, exactly once.
+
+    Written so that a plain `bash` session (not just this script) has a working
+    sound stack, which matters when the user runs the client a second time.
+    """
+    bashrc = os.path.expanduser("~/.bashrc")
+    marker = "# --- OTRv4+ audio environment (managed) ---"
+    try:
+        existing = ""
+        if os.path.exists(bashrc):
+            with open(bashrc, "r", encoding="utf-8", errors="replace") as fh:
+                existing = fh.read()
+        if marker in existing:
+            return False
+        with open(bashrc, "a", encoding="utf-8") as fh:
+            fh.write("\n%s\n" % marker)
+            fh.write("export LD_LIBRARY_PATH=%s/lib:$LD_LIBRARY_PATH\n"
+                     % TERMUX_PREFIX)
+            fh.write("pulseaudio --check 2>/dev/null || "
+                     "pulseaudio --start --exit-idle-time=-1 2>/dev/null\n")
+            fh.write("pactl list short sources 2>/dev/null | "
+                     "grep -qv monitor || "
+                     "pactl load-module %s 2>/dev/null\n" % _PULSE_SOURCE_MODULE)
+            fh.write("# --- end OTRv4+ audio environment ---\n")
+        return True
+    except Exception:
+        return False
+
+
+def _probe_sam(host="127.0.0.1", port=7656, timeout=3.0):
+    """Return True if a SAM v3.1 bridge answers on host:port."""
+    import socket as _socket
+    try:
+        sock = _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM)
+        sock.settimeout(timeout)
+        sock.connect((host, port))
+        sock.sendall(b"HELLO VERSION MIN=3.1 MAX=3.1\n")
+        reply = sock.recv(256)
+        sock.close()
+        return b"RESULT=OK" in reply
+    except Exception:
+        return False
+
+
+def _bootstrap_termux(skip=False, force=False, sam_host="127.0.0.1",
+                      sam_port=7656):
+    """Provision an Android/Termux device end to end.
+
+    No-op on non-Termux systems. Returns a list of unresolved issues; an empty
+    list means the device is ready for encrypted voice calls.
+    """
+    if not IS_TERMUX or skip:
+        _load_opus()
+        return []
+
+    issues = []
+    first_run = force or not os.path.exists(BOOTSTRAP_MARKER)
+
+    builtins.print("=" * 62)
+    builtins.print(" OTRv4+ XMPP — device provisioning")
+    builtins.print("=" * 62)
+
+    # -- 1. Native packages ---------------------------------------------------
+    missing_apt = _apt_missing()
+    if missing_apt:
+        # openssl-tool provides only the command-line utility. Nothing in the
+        # client calls it — libcrypto is reached through the C extensions —
+        # so its absence is cosmetic and must not be presented as a failure.
+        pass
+    if missing_apt:
+        builtins.print("  installing packages: %s" % " ".join(missing_apt))
+        builtins.print("  (this can take a few minutes on first run)")
+        _apt_install(missing_apt)
+        still_missing = _apt_missing()
+        cosmetic = {"openssl-tool"}
+        blocking = [p for p in still_missing if p not in cosmetic]
+        if blocking:
+            issues.append(
+                "could not install: %s  —  run manually: pkg install %s"
+                % (" ".join(blocking), " ".join(blocking)))
+            builtins.print("  ! failed: %s" % " ".join(blocking))
+        if [p for p in still_missing if p in cosmetic]:
+            builtins.print("    note: openssl-tool (the CLI) unavailable — "
+                           "harmless, the client uses libcrypto directly")
+        if not blocking:
+            builtins.print("  packages installed")
+    else:
+        builtins.print("  packages           OK")
+
+    # -- 2. Python distributions ---------------------------------------------
+    missing_pip = _pip_missing()
+    if missing_pip:
+        builtins.print("  installing Python modules: %s" % " ".join(missing_pip))
+        _pip_install(missing_pip)
+        still_missing = _pip_missing()
+        if still_missing:
+            issues.append(
+                "pip install failed for: %s" % " ".join(still_missing))
+            builtins.print("  ! failed: %s" % " ".join(still_missing))
+        else:
+            builtins.print("  Python modules installed")
+    else:
+        builtins.print("  Python modules     OK")
+
+    # Re-import opuslib now that it may exist. Without this the process would
+    # run the whole session believing voice is unavailable.
+    _load_opus()
+
+    # -- 3. Library path for child processes ----------------------------------
+    libdir = os.path.join(TERMUX_PREFIX, "lib")
+    if libdir not in os.environ.get("LD_LIBRARY_PATH", "").split(os.pathsep):
+        os.environ["LD_LIBRARY_PATH"] = (
+            libdir + os.pathsep + os.environ.get("LD_LIBRARY_PATH", ""))
+
+    # -- 4. Termux:API bridge and microphone permission -----------------------
+    api_ok, api_note = _termux_api_present()
+    if not api_ok:
+        issues.append(
+            "Termux:API app missing — install it from F-Droid "
+            "(same source as Termux), then re-run. Without it Android will "
+            "never prompt for microphone access.")
+        builtins.print("  Termux:API         MISSING")
+    elif api_note == "permission-needed" or first_run:
+        builtins.print("  requesting microphone permission…")
+        builtins.print("  >> TAP 'ALLOW' ON THE ANDROID DIALOG <<")
+        _request_microphone_permission()
+        builtins.print("  microphone permission requested")
+    else:
+        builtins.print("  Termux:API         OK")
+
+    # -- 5/6. Audio backend and proof that capture works ---------------------
+    #
+    # AAudio is the backend voice actually uses on Android: it talks to the
+    # platform audio framework directly and needs no daemon, no PulseAudio and
+    # no module-sles-source. So the question is not "is PulseAudio healthy" —
+    # it is "does the backend voice will use deliver real samples". PulseAudio
+    # is only prepared, and only diagnosed, when it is the only backend left.
+    pulse_note = ""
+    aaudio_ok = False
+    try:
+        import otrv4plus_audio as _aud
+        aaudio_ok = _aud.aaudio_available()
+    except Exception as exc:
+        builtins.print("  audio backend      MODULE ERROR: %s"
+                       % _sanitise(str(exc), 80))
+
+    if aaudio_ok:
+        builtins.print("  audio backend      AAudio (native Android)")
+    else:
+        builtins.print("  audio backend      AAudio unavailable — trying "
+                       "PulseAudio")
+        if _pulse_running():
+            builtins.print("  PulseAudio         running")
+        else:
+            started, pulse_note = _pulse_start()
+            if started:
+                builtins.print("  PulseAudio         started")
+            else:
+                builtins.print("  PulseAudio         did not start via --start")
+                if pulse_note:
+                    builtins.print("                     reason: %s"
+                                   % _sanitise(pulse_note, 200))
+        source, _note = _ensure_microphone_source()
+        if source is None:
+            builtins.print("  microphone source  none listed "
+                           "(may still autospawn)")
+        else:
+            builtins.print("  microphone source  %s" % source)
+
+    # Run unconditionally. If this passes, everything above was noise; if it
+    # fails, it is the only failure that actually matters.
+    builtins.print("  testing microphone…")
+    ok_capture, total, peak, backend = _capture_selftest()
+    if ok_capture and total > 0 and peak > 0:
+        builtins.print("  microphone test    OK via %s (peak %d)"
+                       % (backend, peak))
+    elif ok_capture and total > 0:
+        issues.append(
+            "microphone delivered only silence via %s — grant Microphone in "
+            "Settings > Apps > Termux > Permissions, then re-run. Termux:API "
+            "holding the permission is not enough; the Termux app itself "
+            "needs it." % backend)
+        builtins.print("  microphone test    SILENT (%d bytes via %s)"
+                       % (total, backend))
+    elif aaudio_ok:
+        issues.append(
+            "AAudio loaded but produced no audio. Check Settings > Apps > "
+            "Termux > Permissions > Microphone, then run /audioprobe in a "
+            "session for the exact backend error. Do NOT chase PulseAudio: "
+            "voice does not use it.")
+        builtins.print("  microphone test    NO AUDIO (AAudio)")
+    else:
+        detail = (" — %s" % pulse_note) if pulse_note else ""
+        issues.append(
+            "no working audio backend%s. AAudio (libaaudio.so) was not "
+            "available and PulseAudio produced nothing. Run /audioprobe for "
+            "per-backend detail." % detail)
+        builtins.print("  microphone test    NO AUDIO")
+
+    # -- 7. I2P router --------------------------------------------------------
+    if _probe_sam(sam_host, sam_port):
+        builtins.print("  I2P SAM bridge     OK (%s:%d)" % (sam_host, sam_port))
+    else:
+        issues.append(
+            "no I2P SAM bridge on %s:%d — start the i2pd Android app with SAM "
+            "enabled, or run: pkg install i2pd && i2pd --daemon "
+            "(SAM must be enabled in i2pd.conf)" % (sam_host, sam_port))
+        builtins.print("  I2P SAM bridge     NOT FOUND")
+
+    # -- 8. OTR engine and Rust core -----------------------------------------
+    here = os.path.dirname(os.path.abspath(__file__))
+    if not (os.path.exists(os.path.join(here, "otrv4+.py"))
+            or os.path.exists(os.path.join(here, "otrv4plus.py"))):
+        issues.append("otrv4+.py not found beside this script")
+    try:
+        __import__("otrv4_core")
+        builtins.print("  Rust ratchet       OK")
+    except Exception:
+        issues.append(
+            "otrv4_core (Rust ratchet) not installed — build it: "
+            "cd Rust && cargo test --release && "
+            "ANDROID_API_LEVEL=24 maturin build --release && "
+            "pip install target/wheels/otrv4_core-*.whl --break-system-packages")
+        builtins.print("  Rust ratchet       MISSING")
+
+    # -- 9. Persist for future shells ----------------------------------------
+    if _persist_shell_profile():
+        builtins.print("  ~/.bashrc          updated")
+
+    # -- 10. Stamp ------------------------------------------------------------
+    try:
+        os.makedirs(os.path.dirname(BOOTSTRAP_MARKER), exist_ok=True)
+        with open(BOOTSTRAP_MARKER, "w", encoding="utf-8") as fh:
+            fh.write("provisioned %s\n" % time.strftime("%Y-%m-%d %H:%M:%S"))
+        os.chmod(BOOTSTRAP_MARKER, 0o600)
+    except Exception:
+        pass
+
+    # -- Summary --------------------------------------------------------------
+    builtins.print("-" * 62)
+    voice_ok, voice_reason = voice_available()
+    if issues:
+        builtins.print(" Attention needed:")
+        for issue in issues:
+            builtins.print("   * %s" % issue)
+        builtins.print("")
+        builtins.print(" Text chat works regardless; only the items above are "
+                       "required for voice.")
+    else:
+        builtins.print(" Device ready — encrypted text and voice both available.")
+    if not voice_ok:
+        builtins.print(" Voice disabled: %s" % voice_reason)
+    builtins.print("=" * 62)
+    builtins.print("")
+    return issues
+
+
+async def _audio_selftest_async():
+    """/audiotest — re-run the capture probe from inside a live session."""
+    loop = asyncio.get_event_loop()
+    if not IS_TERMUX:
+        print("[audio] self-test is Termux-only")
+        return
+    print("[audio] capturing ~3 s from the microphone…")
+    ok, total, peak, backend = await loop.run_in_executor(
+        None, _capture_selftest)
+    if not ok or total == 0:
+        print("[audio] FAILED — no samples via %s. Run /audioprobe for the "
+              "per-backend error." % backend)
+        return
+    if peak == 0:
+        print("[audio] captured %d bytes via %s but pure silence — check "
+              "Settings > Apps > Termux > Permissions > Microphone (the "
+              "Termux app itself, not Termux:API)" % (total, backend))
+        return
+    print("[audio] OK — %d bytes via %s, peak amplitude %d"
+          % (total, backend, peak))
+    voice_ok, reason = voice_available()
+    print("[audio] voice subsystem: %s" % ("ready" if voice_ok else reason))
+
 def main():
+    # Device provisioning deliberately runs AFTER argument parsing, so that
+    # --skip-setup, --force-setup and --sam-host/--sam-port are honoured.
+    # Running it before argparse would make those flags unreachable.
+
+    # Suppress the slixmpp "Task was destroyed but it is pending" warning that
+    # fires when the event loop closes before XMLStream filter tasks finish.
+    # This is a cosmetic asyncio cleanup race in slixmpp, not an application bug.
+    import warnings
+    warnings.filterwarnings(
+        "ignore",
+        message="Task was destroyed but it is pending",
+        category=RuntimeWarning,
+    )
+
     ap = argparse.ArgumentParser(
         description=f"OTRv4+ XMPP {XMPP_VERSION} - full OTR + SMP over I2P SAM"
     )
@@ -1960,10 +3806,16 @@ def main():
         help="disable automatic reconnection on disconnect",
     )
     ap.add_argument(
+        "--tui",
+        action="store_true",
+        help="enable the tabbed panel UI. Default is plain scrollback, "
+             "which works with Termux's native finger-scroll. Use --tui "
+             "for the tabbed curses-style view.",
+    )
+    ap.add_argument(
         "--no-tui",
         action="store_true",
-        help="disable the tabbed TUI; use plain linear scrollback "
-             "(better for reading debug/trace output)",
+        help="plain linear scrollback (default; kept for backward compatibility)",
     )
     ap.add_argument(
         "--log-file",
@@ -1984,11 +3836,45 @@ def main():
              "(default: deleted on clean /quit or Ctrl+C; kept "
              "automatically if the session crashes)",
     )
+    ap.add_argument(
+        "--skip-setup",
+        action="store_true",
+        help="skip Android/Termux provisioning (packages, microphone, "
+             "PulseAudio) and start immediately",
+    )
+    ap.add_argument(
+        "--force-setup",
+        action="store_true",
+        help="re-run full provisioning even if this device was already "
+             "provisioned",
+    )
+    ap.add_argument(
+        "--setup-only",
+        action="store_true",
+        help="provision the device, print the report, and exit without "
+             "connecting",
+    )
+    ap.add_argument(
+        "--voice-debug",
+        action="store_true",
+        help="log voice call setup stages and 5-second in-call telemetry "
+             "(also toggleable at runtime with /voicedebug)",
+    )
     ap.add_argument("--debug", action="store_true")
     args = ap.parse_args()
 
+    # ---- Device provisioning (Termux only; a no-op elsewhere) ----
+    _setup_issues = _bootstrap_termux(
+        skip=args.skip_setup,
+        force=args.force_setup,
+        sam_host=args.sam_host,
+        sam_port=args.sam_port,
+    )
+    if args.setup_only:
+        sys.exit(1 if _setup_issues else 0)
+
     logging.basicConfig(
-        level=logging.DEBUG if args.debug else logging.INFO,
+        level=logging.DEBUG if args.debug else logging.WARNING,
         format="%(levelname)-8s %(message)s",
     )
 
@@ -2012,8 +3898,48 @@ def main():
     elif args.log_file and not args.debug:
         builtins.print("[log] --log-file has no effect without --debug")
 
+    # Validate the addresses BEFORE prompting for a password. A malformed JID
+    # otherwise surfaces as a slixmpp stringprep traceback after the user has
+    # already typed their password — unreadable, and it discards the input.
+    def _check_jid(value, label):
+        if not value:
+            return
+        if "@" not in value or value.count("@") != 1:
+            sys.exit("Invalid %s: %r\n"
+                     "  Expected  user@server.b32.i2p" % (label, value))
+        local, _, domain = value.partition("@")
+        if not local or not domain:
+            sys.exit("Invalid %s: %r\n"
+                     "  Both a username and a server are required." 
+                     % (label, value))
+        if "..." in value or ".." in domain:
+            sys.exit("Invalid %s: %r\n"
+                     "  This looks like an abbreviated address. Use the full "
+                     "server name, not one shortened with '...'." 
+                     % (label, value))
+        for part in domain.split("."):
+            if not part:
+                sys.exit("Invalid %s: %r\n"
+                         "  The server name has an empty part — check for a "
+                         "stray or doubled dot." % (label, value))
+
+    _check_jid(args.jid, "--jid")
+    _check_jid(args.peer, "--peer")
+
     password = getpass.getpass(f"Password for {args.jid}: ")
-    client = OTRv4PlusXMPP(args.jid, password, peer=args.peer)
+    try:
+        client = OTRv4PlusXMPP(args.jid, password, peer=args.peer,
+                               debug=args.debug)
+    except Exception as exc:
+        sys.exit("Could not use that address: %s\n"
+                 "  Check --jid and --peer are full user@server.b32.i2p "
+                 "addresses." % exc)
+
+    # Voice media uses its own SAM sessions, independent of the XMPP tunnel,
+    # so it needs the bridge coordinates explicitly.
+    client._voice_sam_host = args.sam_host
+    client._voice_sam_port = args.sam_port
+    client._voice_debug = bool(args.voice_debug)
 
     if hasattr(client, "enable_direct_tls"):
         client.enable_direct_tls = False
@@ -2082,15 +4008,14 @@ def main():
     else:
         client.connect()
 
-    client._probe = args.debug
     _clean_exit = True
+    use_tui = getattr(args, "tui", False) and not getattr(args, "no_tui", False)
     try:
-        started_tui = (not args.no_tui) and client._start_tui(loop, debug=args.debug)
-        if args.no_tui:
-            print(
-                "[tui] disabled (--no-tui): plain scrollback. "
-                "Commands still work (/otr, /smp, /msg, /status, /help, /quit)."
-            )
+        started_tui = use_tui and client._start_tui(loop, debug=args.debug)
+        if not use_tui:
+            if args.debug:
+                print("[mode] plain scrollback. Swipe up for history; /log "
+                      "shows the full session. --tui for tabbed panels.")
         if started_tui:
             try:
                 loop.run_until_complete(client.disconnected)
@@ -2110,6 +4035,10 @@ def main():
         _clean_exit = False
         raise
     finally:
+        client.cleanup()
+        if not getattr(client, "_tui_enabled", False):
+            # Non-TUI path or TUI already stopped — do screen clear here
+            client._clear_and_exit_msg()
         if _SESSION_LOG_FH is not None:
             log_path = getattr(_SESSION_LOG_FH, "name", None)
             try:

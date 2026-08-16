@@ -5,14 +5,43 @@ edition     = "2021"
 authors     = ["OTRv4+ contributors"]
 description = "Post-quantum OTRv4 cryptographic core (Rust/PyO3)"
 license     = "GPL-3.0"
+# The 1.80 in the source comments is the *language* floor (std::sync::LazyLock
+# in smp.rs).  The real floor is the dependency tree, and it is 1.85:
+#   * pqcrypto-mlkem / pqcrypto-mldsa build scripts emit
+#     `cargo::rustc-check-cfg=...`, which needs cargo >= 1.77;
+#   * base64ct 1.8, zeroize 1.9, getrandom 0.3 and wasip2 are edition2024,
+#     which needs cargo >= 1.85.
+# Measured, not guessed: cargo 1.75 cannot even resolve the graph.  Declaring
+# 1.80 here would let a 1.80-1.84 toolchain start a build that fails much
+# later with an unrelated-looking error.
+rust-version = "1.85"
 
 [lib]
-name       = "otrv4_core"
-crate-type = ["cdylib"]
+name = "otrv4_core"
+# rlib added alongside cdylib.  cdylib alone builds the .so Python loads, but
+# it cannot be linked by anything else — so no integration test under tests/
+# can ever `use otrv4_core::...`.  Adding rlib costs one extra artifact in
+# target/ and nothing at runtime.
+crate-type = ["cdylib", "rlib"]
 
 [features]
-default  = ["pyo3/extension-module", "pq-rust"]
-pq-rust  = [
+# CHANGED, AND IT CHANGES YOUR BUILD COMMAND.
+#
+#     wheel / .so : cargo build --release --features extension-module
+#     unit tests  : cargo test
+#
+# `pyo3/extension-module` tells PyO3 not to link against libpython, which is
+# correct when the artifact is a Python extension (the interpreter supplies
+# the symbols) and fatal for anything else.  With it in `default`, `cargo
+# test` builds a standalone test binary that references Py_None,
+# PyErr_SetString and friends with nothing to resolve them against, and the
+# link fails.  That is why the #[cfg(test)] modules in aead.rs and mlkem.rs
+# have never been able to run.  Making the feature opt-in is PyO3's own
+# documented resolution.
+default          = ["pq-rust"]
+extension-module = ["pyo3/extension-module"]
+
+pq-rust = [
     "num-bigint",
     "num-traits",
     "crypto-bigint",
@@ -23,6 +52,7 @@ pq-rust  = [
     "getrandom",
     "ed448-goldilocks-plus",
 ]
+
 # v10.6.18.1: declared so rustc stops emitting unexpected_cfgs warnings
 # for the #[cfg(feature = "test-only-kdf")] blocks in kdf.rs, header.rs,
 # and smp_vault.rs.  These blocks expose PyO3 entry points to crate
@@ -31,12 +61,25 @@ pq-rust  = [
 # extract SMP secrets from the vault, breaking the security boundary
 # the gates enforce.  The feature is OFF by default and is opted-in
 # only for Python-side internals tests via:
-#   cargo build --release --features pq-rust,test-only-kdf
+#   cargo build --release --features extension-module,test-only-kdf
 # Do not add this to `default` or `pq-rust`.
+#
+# The comment above is the only thing that has ever enforced that.  Add this
+# to lib.rs so it is enforced by the compiler instead:
+#
+#   #[cfg(all(feature = "test-only-kdf", feature = "extension-module"))]
+#   compile_error!(
+#       "test-only-kdf exposes SMP vault secrets to Python and must never be \
+#        combined with extension-module: that combination is a shippable \
+#        wheel with the test gates open."
+#   );
+#
+# It then becomes impossible to build a distributable artifact with the
+# gates open, rather than merely inadvisable.
 test-only-kdf = []
 
 [dependencies]
-pyo3         = { version = "0.24", features = ["extension-module", "abi3-py39"] }
+pyo3         = { version = "0.24", features = ["abi3-py39"] }
 zeroize      = { version = "1.8",  features = ["derive", "alloc"] }
 aes-gcm      = { version = "0.10", features = ["aes"] }
 sha3         = { version = "0.10" }
@@ -77,9 +120,16 @@ ed448-goldilocks-plus = {
 }
 
 [profile.release]
-opt-level       = 3
-lto             = true
-codegen-units   = 1
+opt-level     = 3
+lto           = true
+codegen-units = 1
+# panic = "abort" combined with overflow-checks = true means any arithmetic
+# overflow on attacker-influenced input aborts the whole Python process
+# rather than raising a Python exception.  For a crypto core that is a
+# defensible fail-closed choice — a wrapped counter is worse than a crash —
+# but it is a remote-DoS surface, so it should be a decision rather than a
+# default.  Keeping it: a panic here means an invariant this code depends on
+# has already been violated.
 panic           = "abort"
 overflow-checks = true
 
@@ -88,3 +138,11 @@ overflow-checks = true
 
 [profile.test]
 overflow-checks = true
+
+[dev-dependencies]
+# Property-based testing for the parts where hand-written cases are weakest:
+# SMP transcript encoding, ratchet header round-trips, and the KDF's
+# length-prefixing.  Add as you write them; declaring it here costs nothing
+# until a test uses it.
+proptest = "1"
+hex      = "0.4"
