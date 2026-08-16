@@ -332,6 +332,78 @@ class TestTeardownIntegration(IntegrationBase):
 # Isolation guarantees
 # ===========================================================================
 
+class TestBurstDelivery(IntegrationBase):
+    """I2P delivers in bursts. A burst must not cost frames or alignment.
+
+    The live-call symptom this pins: dropped and resync climbing together
+    while authfail stayed at 0. Nothing was failing to decrypt — whole frames
+    were being discarded before the parser saw them, and the survivor was cut
+    mid-frame so the parser then had to hunt for sync.
+    """
+
+    def _session(self):
+        session = build_session(self.loop, is_initiator=False)
+        session._opus_dec = FakeOpusDecoder()
+        session.jitter = V.JitterBuffer(prefill=1, maxlen=200)
+        return session
+
+    def test_large_burst_loses_no_frames(self):
+        session = self._session()
+        tx = V.VoiceFrameCrypto(b"\x5c" * V.ROOT_LEN, CALL_ID, 0, True)
+        plain = bytes(V.pad_opus(b"\xAB" * 80))
+
+        # 41 packets: exactly what one read(8192) can return.
+        burst = b"".join(tx.seal(plain) for _ in range(41))
+        self.assertGreater(len(burst), V.VOICE_PACKET_LEN * 8,
+                           "burst must exceed the old trim threshold")
+
+        buf = bytearray(burst)
+        session._drain_buffer(buf)
+
+        self.assertEqual(session.stats["recv"], 41,
+                         "every frame in the burst must be recovered")
+        self.assertEqual(session.stats["resync"], 0,
+                         "a clean burst must not desync the parser")
+        self.assertEqual(session.stats["dropped"], 0)
+        self.assertEqual(len(buf), 0)
+
+    def test_sustained_bursts_do_not_accumulate_resync(self):
+        session = self._session()
+        tx = V.VoiceFrameCrypto(b"\x5c" * V.ROOT_LEN, CALL_ID, 0, True)
+        plain = bytes(V.pad_opus(b"\xAB" * 80))
+        buf = bytearray()
+        for _ in range(20):
+            buf += b"".join(tx.seal(plain) for _ in range(30))
+            session._drain_buffer(buf)
+        self.assertEqual(session.stats["recv"], 600)
+        self.assertEqual(session.stats["resync"], 0)
+        self.assertEqual(session.stats["dropped"], 0)
+
+    def test_partial_trailing_frame_is_held_not_discarded(self):
+        session = self._session()
+        tx = V.VoiceFrameCrypto(b"\x5c" * V.ROOT_LEN, CALL_ID, 0, True)
+        plain = bytes(V.pad_opus(b"\xAB" * 80))
+        packets = [tx.seal(plain) for _ in range(10)]
+        stream = b"".join(packets)
+        split = len(stream) - 50               # last frame arrives cut short
+        buf = bytearray(stream[:split])
+        session._drain_buffer(buf)
+        self.assertEqual(session.stats["recv"], 9)
+        buf += stream[split:]
+        session._drain_buffer(buf)
+        self.assertEqual(session.stats["recv"], 10,
+                         "a frame split across reads must still arrive")
+        self.assertEqual(session.stats["resync"], 0)
+
+    def test_garbage_flood_is_still_bounded(self):
+        # The bound must remain a real DoS guard for a peer that never
+        # completes a frame.
+        session = self._session()
+        buf = bytearray(b"\xa7" * 100000)
+        session._drain_buffer(buf)
+        self.assertLessEqual(len(buf), V.VOICE_HDR_LEN)
+
+
 class TestIsolation(IntegrationBase):
 
     def test_aaudio_path_starts_no_subprocess(self):

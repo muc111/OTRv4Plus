@@ -2151,12 +2151,23 @@ class VoiceCallSession:
                     break
                 buf += chunk
 
-                # A peer that never completes a frame must not grow this.
-                if len(buf) > VOICE_PACKET_LEN * 8:
-                    del buf[:-VOICE_PACKET_LEN]
-                    self.stats["dropped"] += 1
-
+                # Drain BEFORE bounding.  read(8192) returns up to 41 packets
+                # in one go and I2P delivers in bursts, so trimming first
+                # discarded every complete frame in the burst and cut the
+                # survivor at an arbitrary offset — destroying byte alignment
+                # and forcing the parser to hunt for sync afterwards.  That
+                # showed up on a live call as dropped and resync climbing in
+                # lockstep with authfail=0: nothing was failing to decrypt,
+                # the frames were being shredded before they could be read.
                 self._drain_buffer(buf)
+
+                # Only unparseable residue can reach here: a drained buffer
+                # holds at most one partial frame.  Anything larger is a peer
+                # sending bytes that never form a frame, so this is the DoS
+                # guard it was meant to be rather than a data shredder.
+                if len(buf) > VOICE_PACKET_LEN * 8:
+                    del buf[:]
+                    self.stats["dropped"] += 1
         except asyncio.CancelledError:
             raise
         except Exception as exc:
@@ -2296,6 +2307,7 @@ class VoiceCallSession:
         audio = self.audio_backend or "-"
         return ("state=%s role=%s audio=%s %s keys=%s epoch=%d pending=%s sent=%d "
                 "recv=%d dropped=%d late=%d authfail=%d replay=%d resync=%d "
+                "backpressure=%d oversize=%d "
                 "jitter=%d ratchets=%d rekeys=%d/%d"
                 % (self.state, self.role, audio, rate,
                    "confirmed" if self.keys_confirmed.is_set() else "pending",
@@ -2303,7 +2315,9 @@ class VoiceCallSession:
                    self.stats["sent"], self.stats["recv"],
                    self.stats["dropped"], self.stats["late"],
                    self.stats["auth_fail"], self.stats["replay"],
-                   self.stats["resync"], self.jitter.depth(),
+                   self.stats["resync"],
+                   self.stats["backpressure"], self.stats["oversize"],
+                   self.jitter.depth(),
                    ratchets, rekeys, failed))
 
     # -- teardown ---------------------------------------------------------
