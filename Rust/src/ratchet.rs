@@ -73,6 +73,7 @@ impl Drop for ReplayCache {
 }
 
 // ── Encrypt result ──────────────────────────────────────────────────
+#[derive(Clone)]   // tests clone a message to build a forgery
 pub struct EncryptResult {
     pub ciphertext: Vec<u8>,
     pub header: Vec<u8>,
@@ -512,7 +513,8 @@ impl DoubleRatchet {
     // BEFORE the message authenticated, so one forged packet
     // permanently desynchronised the receive chain. decrypt_same_dh
     // and decrypt_new_dh now derive into scratch and commit only
-    // after the AEAD tag verifies.
+    // after the AEAD tag verifies. See tests::forged_frame_does_not
+    // _desync_the_receive_chain.
 }
 
 // ── PyO3 wrapper with ALL required methods ──────────────────────────
@@ -821,5 +823,188 @@ impl RustDoubleRatchet {
         let _ = (root_key, chain_key_send, chain_key_recv, brace_key);
 
         Ok(Self { inner })
+    }
+}
+// ── Tests ───────────────────────────────────────────────────────────
+//
+// These exist because RT-1 shipped. The ratchet advanced chain_key_recv
+// before authenticating, so one forged packet desynchronised a session
+// permanently — and nothing in this crate would have noticed, because
+// dake.rs and ratchet.rs between them had zero tests.
+//
+// Requires `cargo test` to link, which means extension-module must not be
+// in `default`. See Cargo.toml.
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const RK: [u8; 32] = [0x11; 32];
+    const CKA: [u8; 32] = [0x22; 32];
+    const CKB: [u8; 32] = [0x33; 32];
+    const BK: [u8; 32] = [0x44; 32];
+
+    /// A connected pair. Alice's send chain is Bob's receive chain: `new()`
+    /// swaps them for the responder, so both are built from the same inputs.
+    fn pair() -> (DoubleRatchet, DoubleRatchet) {
+        let alice = DoubleRatchet::new(&RK, &CKA, &CKB, &BK, &[0xAA; 56], true)
+            .expect("alice");
+        let bob = DoubleRatchet::new(&RK, &CKA, &CKB, &BK, &[0xBB; 56], false)
+            .expect("bob");
+        (alice, bob)
+    }
+
+    fn deliver(rx: &mut DoubleRatchet, m: &EncryptResult)
+        -> Result<Vec<u8>, RatchetError> {
+        rx.decrypt_same_dh(&m.header, &m.ciphertext, &m.nonce, &m.tag)
+    }
+
+    #[test]
+    fn round_trip() {
+        let (mut a, mut b) = pair();
+        let m = a.encrypt(b"hello").unwrap();
+        assert_eq!(deliver(&mut b, &m).unwrap(), b"hello");
+    }
+
+    /// RT-1. The regression that motivated all of this.
+    ///
+    /// Corrupt one ciphertext byte, deliver it, then deliver a genuine
+    /// message. Before the fix the forgery advanced chain_key_recv, so the
+    /// genuine message derived from the wrong key and the session was dead
+    /// from that point on — every subsequent message failing and advancing
+    /// the chain again.
+    #[test]
+    fn forged_frame_does_not_desync_the_receive_chain() {
+        let (mut a, mut b) = pair();
+
+        let good = a.encrypt(b"first").unwrap();
+        let mut forged = a.encrypt(b"second").unwrap();
+        forged.ciphertext[0] ^= 0x01;
+
+        assert!(deliver(&mut b, &forged).is_err(), "forgery must be rejected");
+        assert_eq!(deliver(&mut b, &good).unwrap(), b"first",
+                   "a rejected forgery must leave the ratchet untouched");
+
+        // And the session keeps working afterwards.
+        let third = a.encrypt(b"third").unwrap();
+        assert_eq!(deliver(&mut b, &third).unwrap(), b"third");
+    }
+
+    /// RT-1, the skip_keys variant: a forged message claiming a distant
+    /// msg_num used to advance the chain by that many steps and move
+    /// msg_num_recv forward, after which every genuine message was rejected
+    /// as MessageTooOld.
+    #[test]
+    fn forged_frame_with_a_large_msg_num_does_not_advance_the_counter() {
+        let (mut a, mut b) = pair();
+        let good = a.encrypt(b"payload").unwrap();
+
+        let mut forged = good.clone();
+        // Re-encode the header with a far-future msg_num.
+        let hdr = RatchetHeader::decode(&good.header).unwrap();
+        let far = RatchetHeader::new(hdr.dh_pub, hdr.prev_chain_len, 900);
+        forged.header = far.encode().to_vec();
+
+        assert!(deliver(&mut b, &forged).is_err());
+        assert_eq!(b.msg_num_recv, 0, "counter must not move on a forgery");
+        assert!(b.skipped.is_empty(), "no keys may be stored for a forgery");
+        assert_eq!(deliver(&mut b, &good).unwrap(), b"payload");
+    }
+
+    /// RT-2. A forged message must not be able to fill the skipped-key store
+    /// and evict the keys a legitimate out-of-order message needs.
+    #[test]
+    fn forgery_does_not_populate_the_skipped_store() {
+        let (mut a, mut b) = pair();
+        let m0 = a.encrypt(b"zero").unwrap();
+        let _m1 = a.encrypt(b"one").unwrap();
+        let m2 = a.encrypt(b"two").unwrap();
+
+        // Genuine out-of-order delivery: m2 first stores a key for m1.
+        assert_eq!(deliver(&mut b, &m0).unwrap(), b"zero");
+        assert_eq!(deliver(&mut b, &m2).unwrap(), b"two");
+        let stored = b.skipped.len();
+        assert_eq!(stored, 1, "m1's key should be held");
+
+        let mut forged = a.encrypt(b"forged").unwrap();
+        forged.ciphertext[0] ^= 0xFF;
+        assert!(deliver(&mut b, &forged).is_err());
+        assert_eq!(b.skipped.len(), stored,
+                   "a forgery must not add or evict skipped keys");
+    }
+
+    /// RT-3. A forgery aimed at a skipped msg_num used to consume the key
+    /// before decrypting, destroying it for the genuine message.
+    #[test]
+    fn failed_decrypt_does_not_consume_a_skipped_key() {
+        let (mut a, mut b) = pair();
+        let m0 = a.encrypt(b"zero").unwrap();
+        let m1 = a.encrypt(b"one").unwrap();
+        let m2 = a.encrypt(b"two").unwrap();
+
+        deliver(&mut b, &m0).unwrap();
+        deliver(&mut b, &m2).unwrap();          // stores m1's key
+
+        let mut forged = m1.clone();
+        forged.ciphertext[0] ^= 0x01;
+        assert!(deliver(&mut b, &forged).is_err());
+
+        assert_eq!(deliver(&mut b, &m1).unwrap(), b"one",
+                   "the real m1 must still decrypt after a forgery hit it");
+    }
+
+    #[test]
+    fn out_of_order_delivery_works() {
+        let (mut a, mut b) = pair();
+        let msgs: Vec<_> = (0..5)
+            .map(|i| a.encrypt(format!("m{i}").as_bytes()).unwrap())
+            .collect();
+        for i in [4usize, 0, 3, 1, 2] {
+            assert_eq!(deliver(&mut b, &msgs[i]).unwrap(),
+                       format!("m{i}").as_bytes());
+        }
+    }
+
+    #[test]
+    fn replay_is_rejected() {
+        let (mut a, mut b) = pair();
+        let m = a.encrypt(b"once").unwrap();
+        assert_eq!(deliver(&mut b, &m).unwrap(), b"once");
+        assert!(matches!(deliver(&mut b, &m),
+                         Err(RatchetError::ReplayDetected(_))));
+    }
+
+    #[test]
+    fn skip_beyond_max_is_refused() {
+        let (mut a, mut b) = pair();
+        let good = a.encrypt(b"x").unwrap();
+        let hdr = RatchetHeader::decode(&good.header).unwrap();
+        let far = RatchetHeader::new(hdr.dh_pub, hdr.prev_chain_len,
+                                     MAX_SKIP + 1);
+        let mut forged = good.clone();
+        forged.header = far.encode().to_vec();
+        assert!(matches!(deliver(&mut b, &forged),
+                         Err(RatchetError::MaxSkipExceeded(_))));
+        assert!(b.skipped.is_empty());
+    }
+
+    #[test]
+    fn zero_chain_key_is_refused() {
+        assert!(DoubleRatchet::new(&RK, &[0u8; 32], &CKB, &BK, &[0xAA; 56], true)
+                .is_err());
+        assert!(DoubleRatchet::new(&[0u8; 32], &CKA, &CKB, &BK, &[0xAA; 56], true)
+                .is_err());
+    }
+
+    #[test]
+    fn a_long_conversation_stays_in_sync() {
+        let (mut a, mut b) = pair();
+        for i in 0..200 {
+            let m = a.encrypt(format!("msg {i}").as_bytes()).unwrap();
+            assert_eq!(deliver(&mut b, &m).unwrap(),
+                       format!("msg {i}").as_bytes(),
+                       "desync at message {i}");
+        }
+        assert!(b.skipped.len() <= MAX_MESSAGE_KEYS);
     }
 }

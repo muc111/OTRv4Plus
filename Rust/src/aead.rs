@@ -9,6 +9,7 @@
 //! cryptography library's call shape so the Python edits are one-line
 //! swaps:
 //!
+//! ```text
 //!     # before
 //!     AESGCM(key).encrypt(nonce, plaintext, aad)
 //!     AESGCM(key).decrypt(nonce, ct_and_tag, aad)
@@ -16,6 +17,7 @@
 //!     # after
 //!     otrv4_core.aes256gcm_encrypt(key, nonce, plaintext, aad)
 //!     otrv4_core.aes256gcm_decrypt(key, nonce, ct_and_tag, aad)
+//! ```
 //!
 //! Wire format (output of encrypt / input to decrypt) is `ciphertext || tag`,
 //! with the 16-byte tag at the end.  This matches the cryptography library's
@@ -25,7 +27,9 @@
 //! Constraints:
 //!   - key MUST be 32 bytes (AES-256).  ValueError on any other length.
 //!   - nonce MUST be 12 bytes (96-bit, GCM-standard).  ValueError on any
+//! ```text
 //!     other length.
+//! ```
 //!   - aad MAY be empty.  Both peers must agree on the AAD or decrypt fails.
 //!
 //! Decrypt returns ValueError on any failure (length mismatch, tag
@@ -45,7 +49,9 @@ use aes_gcm::{Aes256Gcm, Nonce};
 ///
 /// Returns `ciphertext || 16-byte tag`.  Wire-identical to
 /// `cryptography.hazmat.primitives.ciphers.aead.AESGCM(key).encrypt(
+/// ```text
 ///     nonce, plaintext, aad)`.
+/// ```
 #[pyfunction]
 pub fn aes256gcm_encrypt<'py>(
     py: Python<'py>,

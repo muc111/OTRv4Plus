@@ -9,6 +9,7 @@
 //!
 //! Algorithm (OTRv4 spec §4.3.3, signer knows a1 such that A1 = a1·G):
 //!
+//! ```text
 //!     a1   = SHAKE256(seed, 114)[:57], clamped per RFC 8032 §5.2.5
 //!     t1   = per-signature ephemeral, bound to (seed-prefix ‖ random ‖ msg)
 //!            and reduced mod Q (audit C1 fix; was seed-only, which leaked
@@ -20,14 +21,17 @@
 //!     c1   = (c - c2) mod Q
 //!     r1   = (t1 - c1·a1) mod Q
 //!     sig  = c1 ‖ r1 ‖ c2 ‖ r2          (each 57 bytes LE, total 228)
+//! ```
 //!
 //! Verify:
 //!
+//! ```text
 //!     parse (c1, r1, c2, r2) from sig
 //!     T1'  = r1·G + c1·A1
 //!     T2'  = r2·G + c2·A2
 //!     c'   = SHAKE256(0x1C ‖ msg ‖ A1 ‖ A2 ‖ T1' ‖ T2', 57) mod Q
 //!     accept iff c' == (c1 + c2) mod Q
+//! ```
 //!
 //! Wire format mirrors the C implementation exactly: all scalars are
 //! 57-byte little-endian (the high byte is 0x00 for canonical scalars
@@ -220,7 +224,9 @@ fn derive_ephemeral_scalar(seed: &[u8], msg: &[u8]) -> Scalar {
 /// Errors:
 ///   - Input length mismatch
 ///   - Point decoding failure for `a2` (a1 is not decoded - its compressed
+/// ```text
 ///     form is hashed directly; only a2 is used in scalar multiplication)
+/// ```
 pub fn ring_sign_bytes(
     seed: &[u8],
     a1:   &[u8],
