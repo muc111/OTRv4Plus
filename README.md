@@ -6,7 +6,7 @@
 <p align="center"><strong>Post-quantum hybrid encryption for Off The Record (OTR) chat <em>and voice calls</em> over IRC and XMPP. Experimental, unaudited research prototype.</strong></p>
 
 <p align="center">
-<code>v10.11.0 · Rust crypto core · hybrid PQC SMP (ML-KEM-1024 + ML-DSA-87) · hybrid PQC voice · I2P SAM · AAudio · TUI</code>
+<code>v10.11.1 · Rust crypto core · hybrid PQC SMP + voice (ML-KEM-1024 + ML-DSA-87) · I2P SAM · AAudio · TUI</code>
 </p>
 
 ---
@@ -47,11 +47,11 @@ OTRv4+ occupies a narrow niche. Here is roughly where it sits relative to other 
 | Deniable auth | Ed448 ring signatures | Yes (X3DH/PQXDH) | Yes | No |
 | Network-layer anonymity | I2P (new destination per session) | No | Depends | No |
 
-**The niche:** synchronous, pseudonymous, end-to-end encrypted conversation where both parties are online, no phone number or account exists, the network layer hides your IP, and Category-5 post-quantum parameters (ML-KEM-1024, ML-DSA-87) are used throughout, including the SMP identity check, which is an unusual place to add post-quantum hardening. Whether that hardening actually holds depends on the construction being correct, which has not been reviewed.
+**The niche:** synchronous, pseudonymous, end-to-end encrypted conversation — chat and voice — where both parties are online, no phone number or account exists, the network layer hides your IP, and Category-5 post-quantum parameters are used throughout, including the SMP identity check and the voice media key. Whether that hardening holds depends on the construction being correct, which has not been reviewed.
 
-A note on the KEM row, since it is easy to get wrong: Signal's PQXDH also uses ML-KEM-1024 (Category 5), so the two are at the same parameter level. The difference is *placement*: PQXDH applies the KEM to the initial key agreement, whereas OTRv4+ re-runs a fresh ML-KEM-1024 exchange at every DH ratchet step. That is the honest distinction; it is not a claim that OTRv4+ is "more post-quantum" than Signal.
+On the KEM row, since it is easy to get wrong: Signal's PQXDH also uses ML-KEM-1024, so both are at the same parameter level. The difference is *placement* — PQXDH applies the KEM to the initial key agreement; OTRv4+ re-runs a fresh ML-KEM-1024 exchange at every DH ratchet step, in SMP, and per voice call and rekey. That is the distinction; it is not a claim to be "more post-quantum" than Signal.
 
-Signal is faster, asynchronous, and the right choice for almost everyone. OTRv4+ is for the sessions where you want a pseudonymous, account-free channel over an anonymising network with a shared-secret identity check, and are willing to pay the latency cost: a full hybrid-PQC handshake over I2P takes about 15 minutes over IRC, or roughly a minute over XMPP (see Transports below for why). See [WHY.md](WHY.md) for the longer rationale.
+Signal is faster, asynchronous, and the right choice for almost everyone. OTRv4+ is for sessions where you want a pseudonymous, account-free channel over an anonymising network with a shared-secret identity check, and will pay the latency: a full hybrid-PQC handshake takes ~15 minutes over IRC/I2P, or about a minute over XMPP. See [WHY.md](WHY.md).
 
 ## Quick start
 
@@ -80,10 +80,16 @@ cd OTRv4Plus
 
 # Build the Rust crypto core (about 3 minutes on a modern phone)
 cd Rust
-cargo build --release --no-default-features --features pq-rust
+cargo build --release --features extension-module,pq-rust
 cp target/release/libotrv4_core.so ../otrv4_core.so
 cd ..
 ```
+
+The `extension-module` feature is explicit as of v10.11.1. It was previously in
+`default`, which told PyO3 not to link libpython — correct for the `.so`, and
+fatal for anything else. It meant `cargo test` failed at link time, so all 35
+unit tests in the crate had never been executed. Moving it out of `default`
+costs one flag on the build line and makes the test suite reachable.
 
 As of v10.7.5 the project is **Rust-core-only**: there are no C extensions to compile and no Python `cryptography` dependency. The Rust core is the single cryptographic surface.
 
@@ -91,11 +97,19 @@ As of v10.7.5 the project is **Rust-core-only**: there are no C extensions to co
 
 ```bash
 cd Rust
-cargo test --release --no-default-features --features pq-rust
+cargo test --lib            # 45 tests, ~90 s (the SMP tests are 3072-bit DH)
+cargo test --lib ratchet    # 10 ratchet tests, under a second
 cd ..
 ```
 
-Expected: `test result: ok. 30 passed; 0 failed` (17 existing + 15 hybrid PQC SMP tests). The two that matter most are `test_vectors::tests::ed448_rfc8032_vectors_byte_exact` (Rust Ed448 against RFC 8032) and `key_handles::tests::x448_rfc7748_known_answer` (Rust X448 against RFC 7748 §5.2).
+Expected: `test result: ok. 45 passed; 0 failed`. Four groups matter most:
+
+| Test | Checks |
+|---|---|
+| `test_vectors::ed448_rfc8032_vectors_byte_exact` | Rust Ed448 against RFC 8032 §7.4 |
+| `key_handles::x448_rfc7748_known_answer` | Rust X448 against RFC 7748 §5.2 |
+| `smp::pq_smp_matching_secret_verifies` | Full hybrid PQ SMP round trip |
+| `ratchet::forged_frame_does_not_desync_the_receive_chain` | RT-1 regression (see Security fixes) |
 
 What these tests do and do not tell you: a pass confirms the **primitives** (Ed448, X448) match their published RFC vectors byte-for-byte, so the low-level math is implemented correctly. It does **not** certify the surrounding protocol: the DAKE wiring and the hybrid SMP construction are unreviewed, and no test here can establish that they are secure. Treat a green run as "the building blocks are correct," not "the system is safe."
 
@@ -237,136 +251,207 @@ A second live run measured 1m 15s end to end. That is roughly 13–14× faster t
 
 XMPP support is newer than IRC and has had fewer live runs. Treat it as more experimental until it accumulates more testing.
 
-## Encrypted voice calls (v10.11.0)
+## Encrypted voice calls
 
-Voice runs the same Rust crypto core as chat, over the same I2P transport, gated
-behind the same SMP verification. A call is refused unless the engine's own
-cryptographic predicate says the peer is verified — not a badge, not a log line.
+Voice runs the same Rust crypto core as chat, over the same I2P transport,
+gated behind the same SMP verification. A call is refused unless the engine's
+own cryptographic predicate says the peer is verified — not a badge, not a log
+line.
 
 ### Why this is unusual
 
-Encrypted calling apps are common. What is rare here is the combination:
+Encrypted calling apps are common; the combination here is not.
 
 - **The media never touches a carrier.** Audio goes endpoint → I2P → endpoint.
-  There is no PSTN leg, so no call detail record is created anywhere.
-- **Neither party learns the other's IP address.** Each side publishes a
-  transient I2P destination for the call and tears it down afterwards. The
-  XMPP server sees encrypted signalling stanzas; it never carries the audio.
+  No PSTN leg, so no call detail record exists anywhere.
+- **Neither party learns the other's IP.** Each side publishes a transient I2P
+  destination for the call and tears it down afterwards. The XMPP server sees
+  encrypted signalling stanzas; it never carries audio.
 - **The media key is hybrid post-quantum.** X448 **and** ML-KEM-1024, both
-  mandatory. An adversary recording the call today must break both to recover
-  it later. Most encrypted-calling systems are classical-only on the media key.
-- **No phone number is involved at any point.** Identity is an XMPP JID on an
-  I2P vhost, verified by SMP against a secret you agreed out of band.
+  mandatory. An adversary recording the call must break both to recover it
+  later. Most encrypted-calling systems are classical-only on the media key.
+- **No phone number anywhere.** Identity is an XMPP JID on an I2P vhost,
+  verified by SMP against a secret agreed out of band.
 
-### Compared with a normal carrier call
+### Compared with a carrier call
 
-| | Carrier call (GSM/VoLTE) | OTRv4+ voice |
+| | Carrier (GSM/VoLTE) | OTRv4+ |
 |---|---|---|
-| Encryption scope | Handset ↔ tower. The carrier decrypts and re-encrypts | End to end. Keys never leave the two devices |
-| Carrier can listen | Yes, by design — lawful intercept is a standing capability | No carrier is involved |
-| Call detail records | Who, whom, when, duration, cell site. Retained and routinely disclosed | None created |
-| Location exposure | Cell-site data ties the call to a place | No cellular voice leg |
-| Interconnect attacks | SS7/Diameter location tracking and interception are well documented | Not applicable |
-| IMSI catchers | Can force a downgrade and intercept | Not applicable |
-| Identity anchor | Your phone number, KYC-bound in most jurisdictions | An ephemeral JID |
-| Post-quantum | No | Media key is X448 + ML-KEM-1024 |
-| Peer's IP address | N/A | Hidden by I2P from both the peer and the server |
+| Encryption scope | Handset ↔ tower; the carrier decrypts | End to end; keys never leave the devices |
+| Carrier can listen | Yes, by design — lawful intercept | No carrier involved |
+| Call detail records | Who, whom, when, duration, cell site | None created |
+| Interconnect attacks | SS7/Diameter tracking and interception | Not applicable |
+| IMSI catchers | Can force downgrade and intercept | Not applicable |
+| Identity anchor | Phone number, KYC-bound | Ephemeral JID |
+| Post-quantum media | No | X448 + ML-KEM-1024 |
 
-**What a carrier call still does better:** it works to any number on earth, it
-reaches emergency services, and its latency is a fraction of ours. This is not
-a phone replacement. It is a way for two people who already both run OTRv4+ to
-talk without a third party in the middle.
+A carrier call reaches any number on earth, reaches emergency services, and has
+a fraction of the latency. This is not a phone replacement — it is a way for
+two people who both already run OTRv4+ to talk without a third party in the
+middle.
 
-### Protocol
+### Media key derivation
 
 ```
-OTR session (DAKE-authenticated) + cryptographic SMP verification
-                              |
-              ephemeral X448   ephemeral ML-KEM-1024
-                    |                 |
-                    +--------+--------+
-                             |
-              HKDF-SHA512 over a length-prefixed transcript
-              (version, call_id, OTR binding, sorted fingerprints,
-               both X448 publics in role order, ML-KEM ek and ct, epoch)
-                             |
-                        voice root (64 B)
-                             |
-              +--------------+--------------+
-          SEND KEY                     RECV KEY
-        AES-256-GCM                  AES-256-GCM
-                             |
-   symmetric ratchet every 500 frames  ->  forward secrecy
-   hybrid X448 + ML-KEM rekey every 120 s -> post-compromise recovery
+transcript = LP("OTRv4+Voice/v3") || LP(call_id) || LP(otr_binding)
+          || LP(fp_low) || LP(fp_high)                  # sorted — symmetric
+          || LP(x448_initiator) || LP(x448_responder)   # role-ordered
+          || LP(mlkem_ek) || LP(mlkem_ct) || u64(epoch)
+
+ikm  = LP(x448_shared) || LP(mlkem_shared)              # both mandatory
+salt = SHA-512("OTRv4+Voice/Salt/v3" || transcript)
+root = HKDF-SHA512(ikm, salt, "OTRv4+Voice/Initial/v1" || transcript)
 ```
 
-Media frame, every header field authenticated as AEAD associated data:
+`LP(x)` is a 4-byte big-endian length prefix followed by `x`. Every field is
+prefixed, so no two distinct field sets serialise identically — unprefixed
+concatenation is re-partitionable, and a short `ssid` followed by a long
+fingerprint would hash the same as the reverse.
+
+The fingerprint pair is **sorted** because each endpoint sees its own as
+"local"; the X448 publics are **role-ordered** (initiator first) rather than
+local/remote. Getting either wrong makes the two sides build different
+transcripts and derive different roots, which is what the earlier
+"media keys did not agree" failure was.
+
+Directional keys:
 
 ```
-sync(1) | version(1) | frame_type(1) | epoch(8) | counter(8) | length(2) | ct||tag(178)
-AAD   = "OTRv4+Voice/AAD/v3" || LP(call_id) || dir_byte || header
-nonce = u32BE(epoch) || u64BE(counter)      derived, never transmitted
+K_dir = HKDF-SHA512(root, salt=call_id,
+                    info="OTRv4+Voice/Media/v1" || LP(call_id)
+                         || u64(epoch) || dir_byte)
 ```
+
+`dir_byte` is `0x01` initiator→responder, `0x02` reverse. The endpoints never
+share an encryption key, so both counters can start at zero safely. A single
+bidirectional key with two counters from zero would give identical key+nonce
+on different plaintexts, leaking the plaintext XOR and GHASH's `H`.
+
+Confirmation is two-way and role-labelled: the responder proves possession in
+ACCEPT, the initiator in CONFIRM. Audio cannot start before both verify.
+
+### Media frame
+
+```
+off  0  sync        u8    0xA7
+off  1  version     u8    0x03
+off  2  frame_type  u8    0x01 (AUDIO — the only value ever sent)
+off  3  epoch       u64 BE
+off 11  counter     u64 BE
+off 19  length      u16 BE
+off 21  ciphertext || GCM tag
+
+AAD   = "OTRv4+Voice/AAD/v3" || LP(call_id) || dir_byte || header[0:21]
+nonce = u32BE(epoch mod 2^32) || u64BE(counter)     derived, not transmitted
+```
+
+Every header field is inside the AAD: flipping the epoch, counter, length or
+frame type causes a tag failure. `dir_byte` is **not** on the wire — the
+receiver supplies the peer's direction locally, so a frame reflected back at
+its own sender fails authentication. The nonce is derived from authenticated
+fields rather than sent, costing no bytes and removing a tamper surface.
 
 Constant 199-byte packet, one every 40 ms, for the whole call. Muting encodes
-digital silence rather than stopping transmission, so mute is invisible to
+digital silence rather than stopping transmission, so it is invisible to
 anyone counting packets.
 
-Other properties: independent send/receive keys so the two endpoints never
-share an encryption key; a monotonic 64-bit epoch with a two-phase rekey commit
-so a failed rekey never drops a working call; a bounded bitmap replay window
-per (call, direction, epoch); an explicit call state machine where `ENDED` is
-absorbing; and every control message bound to its `call_id`, so a message from
-a previous call cannot act on the current one.
+### Key schedule
+
+- **Symmetric ratchet** every 500 frames (20 s) — forward secrecy for audio
+  already sent. It does *not* give post-compromise recovery; an attacker
+  holding the current chain key can step it forward indefinitely.
+- **Hybrid rekey** every 120 s: fresh X448 + fresh ML-KEM-1024, chained onto
+  the old root. This is where post-compromise recovery comes from.
+- **Monotonic 64-bit epoch**, `new == current + 1` enforced. Old, duplicate,
+  skipped and future epochs are all rejected.
+- **Two-phase commit** (CURRENT → PENDING → CONFIRMED → COMMITTED): a failed,
+  replayed or lost rekey costs one rekey and never the call. The previous
+  epoch is retained for one epoch so frames already in flight still decrypt.
+- **Replay rejection** via a 1024-frame bitmap window per (call, direction,
+  epoch) — 128 bytes regardless of call length. Reordering and replay are
+  distinct: an unseen counter inside the window is accepted, the same counter
+  twice is not.
+
+Every control message (INVITE, ACCEPT, CONFIRM, REJECT, REKEY, REKEYACK,
+REKEYCOMMIT, END) carries and is matched against the `call_id`, so a message
+from a previous call cannot act on the current one.
 
 ### Audio backend
 
 Voice does **not** use PulseAudio. On Android it drives **AAudio**
-(`libaaudio.so`) through `ctypes` — the NDK C audio API, which needs no JVM and
-no JNI, so it works from a plain Termux process. PulseAudio's OpenSL ES modules
-(`module-sles-source`, `module-sles-sink`) fail with error 12 on at least some
-Android 15 devices, leaving only `auto_null`; AAudio is a different code path
-and works.
+(`libaaudio.so`) through `ctypes`.
 
-PulseAudio remains selectable as an explicitly-reported fallback
-(`OTRV4PLUS_AUDIO_BACKEND=pulseaudio`) and still backs `/audiotest`. Fallback is
-never silent: on a device where PulseAudio only offers `auto_null`, a silent
-demotion would establish keys, encrypt, and transmit pure silence while every
-indicator showed a healthy call.
+`android.media.AudioRecord` is a Java class and needs a JNI attachment to a
+live ART VM. Termux runs a plain Linux userland with no JVM, so it is
+unreachable from this process. AAudio is the NDK **C** API — the same
+AudioFlinger path `AudioRecord` sits on — exposed as plain C symbols, needing
+no JVM, no JNI and no second build system.
 
-Run `/audioprobe` to see which backend works on your device. It reports peak
-amplitude, not just byte count, because a byte count cannot tell a working
-microphone from a stream of zeroes.
-
-**Measured on a Xiaomi 25028RN03Y, Android 15, Termux Google Play 2026.06.21:**
-
-| | |
+| Requested | Used |
 |---|---|
-| Backend | AAudio, no resampling |
-| Requested / granted | 16 kHz mono PCM_16BIT — granted as requested |
-| Buffer capacity | 2560 frames |
-| Frames per burst | 480 |
-| 3-second capture | 72/72 frames non-zero, peak 30,628 |
+| `AudioRecord` | `AAudioStream`, `DIRECTION_INPUT` |
+| `AudioTrack` | `AAudioStream`, `DIRECTION_OUTPUT` |
+| `AudioSource.VOICE_COMMUNICATION` | `AAUDIO_INPUT_PRESET_VOICE_COMMUNICATION` |
+| `ENCODING_PCM_16BIT` | `AAUDIO_FORMAT_PCM_I16` |
+| `ERROR_DEAD_OBJECT` | `AAUDIO_ERROR_DISCONNECTED` (−899) |
+
+PulseAudio's OpenSL ES modules fail with error 12 (`SL_RESULT_FEATURE_UNSUPPORTED`)
+on Android 15, leaving only `auto_null`. PulseAudio remains selectable via
+`OTRV4PLUS_AUDIO_BACKEND=pulseaudio` and still backs `/audiotest`, but fallback
+is never silent: on a device where it exposes only `auto_null`, a silent
+demotion would establish keys, encrypt, and transmit pure silence with every
+indicator healthy.
+
+`/audioprobe` reports which backend works, and reports **peak amplitude** — a
+byte count cannot distinguish a working microphone from a stream of zeroes, and
+zeroes are exactly what a revoked `RECORD_AUDIO` or a null source produces.
+
+**Codec and jitter:**
+
+- Opus 16 kHz mono, 40 ms frames, **24 kbit/s CBR**, DTX off. A 40 ms frame is
+  120 bytes in the fixed 160-byte slot; at the previous 16 kbit/s half of every
+  packet was zero padding transmitted anyway.
+- **In-band FEC**, decoded at playout. Recovering a lost frame needs the *next*
+  packet, which does not exist at receive time, so the jitter buffer holds Opus
+  payloads rather than PCM. A one-frame gap is reconstructed from the
+  successor's redundant copy — recovered audio, not synthesised concealment.
+  Longer gaps fall back to PLC. This also cuts buffer memory 8×.
+- **Adaptive jitter buffer.** RFC 3550 interarrival smoothing with the frame
+  counter as sender timestamp (spacing is exactly 40 ms by construction, so any
+  deviation is transit jitter). Target is 3× the estimate plus one frame,
+  clamped: 240 ms on a clean path, 600 ms ceiling, and it shrinks back when the
+  path recovers.
+
+### Microphone access
+
+No remote message can open the microphone. Only `start_audio()` opens the
+device, and only `_await_media` (after a local `/call`) and `answer_call`
+(after a local `/answer`) reach it. Ringing opens playback only. This is
+enforced by a test that enumerates every caller, not by inspection.
+
+`/mute` **closes the capture stream** rather than reading and discarding. The
+OS recording indicator goes out. A soft mute leaves the microphone open — the
+OS still routes audio into the process, and anything that compromised it could
+read the buffer.
 
 ### Honest limits
 
-- **Not audited.** Everything in the top-level caveats applies here, and the
-  voice protocol is newer than the chat protocol.
-- **Latency.** Two I2P tunnels, three hops each way. Expect delay well beyond a
-  carrier call. It is usable for conversation; it is not snappy.
+- **Latency.** Two I2P tunnels, three hops each way. Usable for conversation,
+  not snappy.
 - **Metadata is reduced, not eliminated.** Constant-rate shaping removes
   speech-dependent packet size and timing. Call start, end, duration, tunnel
-  behaviour, loss and congestion remain observable to a network adversary, and
-  the XMPP server still sees that two JIDs exchanged encrypted stanzas.
+  behaviour, loss and congestion remain observable, and the XMPP server still
+  sees that two JIDs exchanged encrypted stanzas.
 - **Authentication is only as post-quantum as the DAKE.** The ephemeral voice
   keys are authenticated by the surrounding OTR channel. A quantum adversary
-  able to forge that authentication *in real time* could MITM a live call.
-  Recorded calls stay protected by ML-KEM-1024.
-- **Both ends must run v10.11.0.** The voice wire format changed; older builds
-  are rejected cleanly by the version byte rather than producing garbled audio.
+  able to forge that authentication *in real time* could MITM a live call;
+  recorded calls stay protected by ML-KEM-1024.
+- **Echo** when both endpoints are speaker-out in one room. I2P adds hundreds
+  of ms each way; echo cancellers are built for tens.
 - **Requires `RECORD_AUDIO` held by the Termux app itself.** Termux:API holding
-  it is not enough — the client runs under Termux's UID.
-
+  it is not enough — this process runs under Termux's UID.
+- **Both ends must run v10.11.0+.** The voice wire format changed; older builds
+  are rejected cleanly by the version byte rather than producing garbled audio.
 
 ## TUI mode
 
@@ -453,9 +538,7 @@ After that, the peer tab is green (encrypted + verified) and your typed messages
 └─────────────────────────────────────────────┘
 ```
 
-As of v10.7, the Python `cryptography` library has been **fully removed** from the codebase. Every Ed448, X448, AES-256-GCM, and ML-DSA-87 operation runs inside the Rust `otrv4_core` core. There is no OpenSSL-backed Python crypto in any code path.
-
-As of v10.7.5 (Phase 5.3k) all C extensions have been retired. The previous `otr4_crypto_ext`, `otr4_ed448_ct`, and `otr4_mldsa_ext` shared libraries are deleted from the repo and the `setup_otr4.py` build target removed. Every cryptographic operation now runs inside the Rust `otrv4_core` module: ML-KEM-1024 (FIPS 203), ML-DSA-87 (FIPS 204), Ed448 and X448 (`ed448-goldilocks-plus`), AES-256-GCM (`aes-gcm`), and the Argon2id-class KDF that protects the SMP secret vault. Memory wiping uses Rust `zeroize::Zeroize` on Rust-owned buffers and `ctypes.memset` for the remaining bytearrays held on the Python side.
+**One cryptographic surface.** The Python `cryptography` library was removed at v10.7 and the last C extensions (`otr4_crypto_ext`, `otr4_ed448_ct`, `otr4_mldsa_ext`) retired at v10.7.5. Every operation — ML-KEM-1024 (FIPS 203), ML-DSA-87 (FIPS 204), Ed448 and X448 (`ed448-goldilocks-plus`, `x448`), AES-256-GCM (`aes-gcm`), SHAKE-256 (`sha3`), and the Argon2id-class KDF protecting the SMP vault — runs inside `otrv4_core`. There is no second implementation to drift against. Wiping uses Rust `zeroize::Zeroize` on Rust-owned buffers and `ctypes.memset` for the bytearrays still held Python-side.
 
 ## Key exchange (DAKE)
 
@@ -476,6 +559,12 @@ When the handle is garbage-collected, Rust's `ZeroizeOnDrop` runs and wipes the 
 Chain keys advance per message via SHAKE-256 KDF. DH ratchet at rekey boundaries (100 messages or 24 hours). Fresh ML-KEM-1024 keypair generated and exchanged at every DH ratchet step. Brace key rotated with each KEM shared secret. Skipped message keys cached for out-of-order delivery (max 1000 skip).
 
 As of v10.7, the ratchet's X448 Diffie-Hellman runs entirely in the Rust core via `X448KeyHandle`. The `x448` crate clamps the scalar per RFC 7748 and rejects low-order points; an RFC 7748 §5.2 known-answer test gates the build.
+
+As of v10.11.1 both decrypt paths **authenticate before mutating any ratchet
+state**. `decrypt_same_dh` and `decrypt_new_dh` derive every chain key and
+skipped-message key into scratch storage, verify the AEAD tag, and only then
+commit; on failure the derived material is zeroized and the ratchet is left
+untouched. See Security fixes below for why this changed.
 
 ## Authentication
 
@@ -534,7 +623,58 @@ Every value with `ZeroizeOnDrop` is wiped when its owning Rust object is dropped
 
 Earlier versions ran a boot-time cross-verification that signed a test message with Rust Ed448 and the Python `cryptography` library and compared the byte output. v10.6.17 replaced that with hardcoded RFC 8032 §7.4 Ed448 test vectors in `Rust/src/test_vectors.rs`. v10.6.21 added an RFC 7748 §5.2 X448 known-answer vector in `Rust/src/key_handles.rs`. The `cargo test` harness exercises both and asserts byte equality with the published values.
 
-Run `cargo test --release --no-default-features --features pq-rust` before any release. If a vector test fails, the corresponding Rust crate has drifted from its RFC and the build should not ship. As above: these gates check the primitives against their specifications; they do not validate the protocol built on top of them.
+Run `cargo test --lib` before any release. If a vector test fails, the
+corresponding Rust crate has drifted from its RFC and the build should not
+ship. These gates check the **primitives** against their specifications; they
+do not validate the protocol built on top of them.
+
+Plain `cargo test` also runs doctests. Indented blocks in module docs are
+compiled as Rust by default, so the ASCII algorithm notation in `aead.rs` and
+`ring_sig.rs` is fenced as ```` ```text ````; without that, `T1' = r1·G` parses
+as an unterminated character literal.
+
+## Security fixes in v10.11.1
+
+A self-audit of the Rust core and the voice subsystem. Every item below is
+fixed and has a regression test.
+
+| ID | Severity | Module | Finding |
+|---|---|---|---|
+| RT-1 | **Critical** | `ratchet.rs` | One forged packet permanently desynchronised the receive chain |
+| RT-2 | Medium | `ratchet.rs` | Forged messages evicted genuine skipped keys |
+| RT-3 | Medium | `ratchet.rs` | A failed decrypt consumed the skipped key it needed |
+| R7 | High | `dake.rs` | Unauthenticated remote denial of session establishment |
+| R8 | Medium | `dake.rs` | Raw DH and ML-KEM secrets never zeroized |
+| R9 | Low | `dake.rs` | Hand-computed bounds; with `panic = "abort"`, a remote process kill |
+
+**RT-1.** `decrypt_same_dh` advanced `chain_key_recv` — and via `skip_keys`,
+up to 1000 steps of it — *before* calling `aes_decrypt`. The ratchet header
+(`dh_pub`, `msg_num`) travels in the clear as AEAD associated data, so anyone
+able to observe the channel could construct a forgery with no key material.
+One forged packet advanced the chain and then failed authentication; the next
+genuine message derived from the wrong key, failed, and advanced it again. The
+session never recovered. `skip_keys` was deleted rather than left unused.
+
+**R7.** DAKE1's optional ML-DSA public key was detected by trailing length,
+and DAKE1 carries no MAC — it is the first message. Appending 2592 arbitrary
+bytes fabricated a peer commitment, which made DAKE3 demand a signature the
+genuine initiator never sends. Cost: padding and no key material. Effect: OTR
+sessions never form, bypassing SMP gating, rate limits and the voice state
+machine by never reaching them. Now an explicit presence byte, matching the
+idiom `assemble_dake3` already used. **This changed DAKE1's wire format — both
+endpoints must run v10.11.1.**
+
+Python side: the voice SMP gate now reads only the engine's cryptographic
+predicate (a prior version could be satisfied by a printed log line); the media
+receive buffer is drained before being bounded (it was discarding 40 complete
+frames per burst on I2P's bursty delivery); the control-plane rate limiter is
+bounded with LRU eviction; unmute is pinned to the call's audio backend.
+
+The `cargo test` link failure was itself a finding: with
+`pyo3/extension-module` in `default`, all 35 existing Rust tests were dead
+code, and `dake.rs` and `ratchet.rs` had none between them. RT-1 is precisely
+what one unit test catches — decrypt a corrupted frame, then a valid one, and
+assert the valid one still works.
 
 ## Honest caveats
 
@@ -550,18 +690,13 @@ Run `cargo test --release --no-default-features --features pq-rust` before any r
 
 6. **Wire-incompatible with stock OTRv4.** Implementations such as `pidgin-otr4` and CoyIM cannot talk to OTRv4+. The ML-DSA-87 extension, the ML-KEM-1024 brace key, and the SHAKE-256 transcript hashing are OTRv4+ additions and there is no negotiation path. Both peers must run OTRv4+.
 
-7. **Voice is the newest and least-tested surface.** The hybrid voice key
-exchange, the two-phase rekey, and the AAudio backend all landed in v10.11.0.
-The crypto has 110 adversarial unit tests and the audio path has 63 more, but
-unit tests are not live use, and two-device call testing over I2P is still
-accumulating. Treat voice as more experimental than chat, which is itself
-marked experimental.
+7. **Voice is the newest and least-tested surface.** The hybrid voice key exchange, two-phase rekey, and AAudio backend landed in v10.11.0; the security fixes above landed in v10.11.1. Coverage is 210 Python tests (110 adversarial voice-protocol, 49 audio backend, 51 voice/audio integration) plus 45 Rust tests. Two-way audio has been verified live between two Android phones over I2P, with a mid-call hybrid rekey and `authfail=0 replay=0 resync=0`. That is one pair of devices on one network path — unit tests and a working call are not the same as review. Treat voice as more experimental than chat, which is itself marked experimental.
 
 8. **Termux/aarch64 specific build flags.** Both `pqcrypto-mlkem` and `pqcrypto-mldsa` are pinned to `default-features = false, features = ["std"]` because their NEON-optimised C paths trigger `SIGILL` on some aarch64 phones. The portable C reference is correct on any platform; the speed difference is invisible at session scale.
 
 ## Reviewers welcome
 
-This project is published to invite exactly the review it has not had. The highest-value targets are the hybrid SMP construction (`smp.rs`) and the DAKE wiring: the AI-generated composition, not the upstream primitives. [SPEC.md](SPEC.md) describes the wire format in enough detail to follow the construction or write an independent implementation. If you find a flaw, an issue or a PR is genuinely wanted; "this is broken because X" is more useful than silence.
+This project is published to invite exactly the review it has not had. The highest-value targets are the hybrid SMP construction (`smp.rs`, 1828 lines and the least-reviewed file here), the DAKE wiring, and the voice key schedule — the AI-generated composition, not the upstream primitives. RT-1 above is the kind of thing that was sitting in this codebase unnoticed until someone read the order of operations. [SPEC.md](SPEC.md) describes the wire format in enough detail to follow the construction or write an independent implementation. If you find a flaw, an issue or a PR is genuinely wanted; "this is broken because X" is more useful than silence.
 
 ## License
 
@@ -569,7 +704,7 @@ GPL-3.0. See the [LICENSE](LICENSE) file.
 
 ## See also
 
-- [SPEC.md](SPEC.md) - **formal wire-level protocol specification** (v10.10.4): byte layouts, KDF inputs, state machines, test vectors. v10.10.4 fixes two previously underspecified derivations: the GCM associated-data `ad` component (now defined as `ssid`, 8 bytes, from §4.4) and the `pq_binding_key` inputs `domain` and `transcript_tag` in §6.7. Write a compatible implementation in any language from this document alone.
+- [SPEC.md](SPEC.md) - **formal wire-level protocol specification**: byte layouts, KDF inputs, state machines, test vectors. v10.10.4 fixes two previously underspecified derivations: the GCM associated-data `ad` component (now defined as `ssid`, 8 bytes, from §4.4) and the `pq_binding_key` inputs `domain` and `transcript_tag` in §6.7. Write a compatible implementation in any language from this document alone.
 - [CHANGELOG.md](CHANGELOG.md) - per-version changes
 - [SECURITY.md](SECURITY.md) - threat model and known issues
 - [FEATURES.md](FEATURES.md) - full feature inventory
