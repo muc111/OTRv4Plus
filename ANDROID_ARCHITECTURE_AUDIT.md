@@ -41,7 +41,7 @@ longer true — I built and ran everything:
 | Rust core | `cargo test` | **45 passed, 0 failed** (36.8s) |
 | Rust release wheel | `maturin build --release` | **Built OK**, abi3 ≥ 3.9, 49.8s |
 | Python import gate | `import otrv4_core` | **OK** — all 20 required symbols present |
-| Python suite | `pytest tests/` | See Appendix C |
+| Python suite | `pytest tests/` | See Appendix B |
 
 The `AUDIT_HANDOFF.md` §9 release gates 1 and 2 (`ring_sig` nonce-reuse test, SMP KATs under the
 new subgroup check) both pass. Toolchain floor `rust-version = "1.85"` is accurate.
@@ -844,9 +844,34 @@ compile_error!("test-only-kdf exposes SMP vault secrets to Python and must never
                 combined with extension-module");
 ```
 
-Right now only a comment prevents that build. For a release pipeline that is not enough. This is a
-3-line, zero-risk change to `lib.rs` — **not a cryptographic change** — and I recommend landing it
-in Phase 2. It needs your go-ahead since it touches the Rust crate.
+Right now only a comment prevents that build. For a release pipeline that is not enough.
+
+**However — the two comments in `Cargo.toml` are in tension, and the test run proved it.** A few
+lines above the proposed guard, the same file documents the *supported* way to run the Python-side
+internals tests:
+
+```
+cargo build --release --features extension-module,test-only-kdf
+```
+
+That is precisely the combination `compile_error!` would forbid. Adding the guard verbatim would
+make those tests **unrunnable**, not merely inconvenient. Confirmed empirically: on a production
+build (gates closed), `tests/test_harness_audit.py` and `tests/test_rust_security.py` fail with
+`AttributeError: 'RustSMPVault' object has no attribute 'load'` — which is the gate *working
+correctly*, but it means those tests genuinely require the forbidden build.
+
+So this needs a slightly better answer than pasting the comment in. Options:
+
+- **(i) Guard the release path only** — key the `compile_error!` off a `release-build` feature or a
+  build-script check for a `RELEASE=1` environment marker, so CI release jobs cannot open the gates
+  but a developer can still build the test wheel. *Recommended.*
+- **(ii) Add the guard as written** and delete or rewrite the vault read-back tests to assert the
+  gate is closed rather than to read secrets back. Strictly safer; loses the internals coverage.
+- **(iii) Leave it and enforce in CI** — assert the shipped `.so` has no `load` symbol as a release
+  gate. No crate change at all, but the protection lives outside the compiler.
+
+Whichever you pick, the current state — a comment as the only control — should not survive to
+release. This touches the Rust crate, so it needs your go-ahead.
 
 ---
 
@@ -880,7 +905,57 @@ failing gate without being reported first.**
 `Rust/Cargo.toml` · `conftest.py` · `tests/conftest.py` · 13 test modules (5,200) ·
 `README.md` · `SECURITY.md` · `AUDIT_HANDOFF.md` · `ROADMAP.md` · `DEVELOPMENT.md` · `SPEC.md`
 
-## Appendix B — Decisions required before Phase 2
+## Appendix B — Test baseline, measured
+
+All figures below were produced during this audit on Python 3.12.3 / Rust 1.85+, x86_64.
+
+| Suite | Config | Result |
+|---|---|---|
+| `cargo test` (Rust core) | default features | **45 passed, 0 failed** — 36.8s |
+| `maturin build --release` | `pyo3/extension-module` | wheel builds; imports; 20/20 required symbols |
+| `test_voice_security.py`, `test_audio_backend.py`, `test_voice_audio_integration.py` | production wheel | **210 passed, 0 failed** — 5.2s |
+| `tests/` | production wheel (gates closed) | 245 passed, **26 failed** — 336s |
+| `tests/` | `test-only-kdf` wheel (gates open) | 248 passed, **23 failed** — 173s |
+| `tests/test_otrv4_integration.py` | any | **collection error** — excluded from the runs above |
+
+### B.1 The failures are harness rot, not cryptographic regressions
+
+Every failure investigated traces to a test that was **never updated for the v10.7 "Rust-core-only"
+migration**. Three distinct causes, all on the test side:
+
+```
+AttributeError: 'RustSMPVault' object has no attribute 'load'
+  → the test-only-kdf security gate working exactly as designed.
+    Accounts for the 26 → 23 delta. Not a defect.
+
+AttributeError: 'cryptography...Ed448PrivateKey' object has no attribute 'ring_sign'
+  → tests build keys with the `cryptography` library and pass them where a Rust
+    Ed448KeyHandle is now required. `cryptography` was removed from runtime at v10.7.
+
+AttributeError: module 'otrv4_' has no attribute 'OTRv4DAKE'
+  → the pure-Python DAKE was deleted at v10.7. Same cause as the stale module.
+
+TypeError: argument 'dk': 'bytearray' cannot be converted to 'PyBytes'
+  → PyO3 signatures tightened to `bytes`; tests still pass `bytearray`.
+```
+
+**Conclusion:** the Rust core is healthy — its own 45 tests pass, and the 210 voice/audio tests
+(written after the migration) pass in every configuration. The rot is confined to the **older
+Python protocol tests**, roughly **10% of that suite**, plus one module that cannot even be
+collected.
+
+This matters for the Android work specifically. Spec §19 requires identifying the existing tests
+and §20 requires a full regression matrix; the suite the Android integration will lean on as its
+"did I break the engine?" gate is currently ~10% non-functional and cannot be run as a whole
+without an `--ignore` flag. **Recommend repairing it in Phase 2**, before any integration work
+starts — otherwise Phase 5's exit gate ("existing `tests/` suite still passes unchanged") is not
+measurable.
+
+Repair is mechanical, not cryptographic: update the tests to use Rust key handles instead of
+`cryptography` objects, pass `bytes` instead of `bytearray`, and delete or rewrite the two
+`OTRv4DAKE` references. No core change is implied.
+
+## Appendix C — Decisions required before Phase 2
 
 1. **B1 — Identity persistence:** (a) persistent, (b) keep ephemeral, or (c) opt-in hybrid?
 2. **B2 — Python runtime:** approve Chaquopy, including its commercial licence?
