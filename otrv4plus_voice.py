@@ -370,8 +370,13 @@ VOICE_FRAME_SAMPLES = VOICE_SAMPLE_RATE * VOICE_FRAME_MS // 1000     # 640
 VOICE_CHANNELS = 1
 VOICE_FRAME_BYTES = VOICE_FRAME_SAMPLES * VOICE_CHANNELS * 2
 FRAME_INTERVAL_S = VOICE_FRAME_MS / 1000.0
-VOICE_BITRATE = 16000
-VOICE_COMPLEXITY = 5
+# 40 ms at 24 kbit/s is 120 bytes; the slot is 160, so this is free — the
+# packet stays 199 bytes and the rate is unchanged. At 16 kbit/s we were
+# padding half of every frame with zeroes and paying for it anyway.
+VOICE_BITRATE = 24000
+# 8 rather than 5: the extra CPU is affordable at 25 frames/s on aarch64 and
+# buys audible quality, which matters more here than on a low-latency path.
+VOICE_COMPLEXITY = 8
 VOICE_LOSS_PCT = 20
 
 # Constant-rate shaping.  Opus at 16 kbit/s and 40 ms is exactly 80 bytes in
@@ -1501,12 +1506,49 @@ class RateLimiter:
     a phone.
     """
 
+    MAX_TRACKED = 512          # distinct peers held before pruning kicks in
+
     def __init__(self, per_minute: int):
         self._per_minute = max(1, int(per_minute))
         self._events = {}
+        self._last_prune = 0.0
+
+    def _prune(self, now: float) -> None:
+        """Bound the tracking table.
+
+        Without this the dict grows one list per peer that has ever sent a
+        call signal and never shrinks. handle_signal() rate-limits BEFORE the
+        OTR and SMP gates — deliberately, so the gates cannot themselves be
+        used as a workload — so the key set is driven by whoever talks to us,
+        not by whoever we accept.
+
+        Two stages. Expiry first: anything with nothing inside the window is
+        free to drop and costs an attacker nothing to avoid. Then a hard cap,
+        evicting least-recently-seen, because a flood of distinct JIDs inside
+        a single window is all current and expiry alone would keep every one.
+
+        The cap is a deliberate trade. Eviction resets a peer's budget, so a
+        sufficiently wide flood can push a real peer out and buy itself a
+        fresh allowance. That is acceptable: reaching this function at all
+        requires an established OTR session, which costs the attacker an
+        ML-KEM exchange, an ML-DSA signature and a ring signature per JID —
+        far more than it costs us. Unbounded memory is the worse failure.
+        """
+        cutoff = now - 60.0
+        for key in [k for k, w in self._events.items()
+                    if not w or w[-1] < cutoff]:
+            self._events.pop(key, None)
+        if len(self._events) > self.MAX_TRACKED:
+            ordered = sorted(self._events.items(),
+                             key=lambda kv: kv[1][-1] if kv[1] else 0.0)
+            for key, _w in ordered[:len(self._events) - self.MAX_TRACKED]:
+                self._events.pop(key, None)
+        self._last_prune = now
 
     def allow(self, key: str, now=None) -> bool:
         now = time.monotonic() if now is None else now
+        if now - self._last_prune > 60.0 or len(self._events) > self.MAX_TRACKED:
+            self._prune(now)
         window = self._events.setdefault(key, [])
         cutoff = now - 60.0
         while window and window[0] < cutoff:
@@ -1594,6 +1636,7 @@ class VoiceCallSession:
         self._capture = None      # otrv4plus_audio capture stream
         self._playback = None     # otrv4plus_audio playback stream
         self.audio_backend = None
+        self._audio_env = None
         self._opus_enc = None
         self._opus_dec = None
         self._silence_frame = None
@@ -1615,7 +1658,7 @@ class VoiceCallSession:
 
         self.stats = {"sent": 0, "recv": 0, "dropped": 0, "late": 0,
                       "oversize": 0, "backpressure": 0, "auth_fail": 0,
-                      "replay": 0, "resync": 0}
+                      "replay": 0, "resync": 0, "fec_recovered": 0}
 
     # -- state machine ----------------------------------------------------
 
@@ -2020,6 +2063,7 @@ class VoiceCallSession:
             env["LD_LIBRARY_PATH"] = libdir + os.pathsep + env.get(
                 "LD_LIBRARY_PATH", "")
 
+        self._audio_env = env
         self._capture, cap_notes = _audio.open_capture(
             which=_HOST["which"], read_exact=_HOST["pipe_read_exact"], env=env)
         try:
@@ -2100,19 +2144,66 @@ class VoiceCallSession:
     def _capture_worker(self) -> None:
         """Mic -> Opus -> AEAD -> event loop.  Runs on its own thread.
 
-        Nothing below the read changed: the same PCM, the same codec, the
-        same seal under the same key schedule.  Only the source of the bytes
-        is different.
+        Muting RELEASES the capture device rather than reading and discarding.
+        A soft mute leaves the microphone open: Android's recording indicator
+        stays lit, the OS still routes audio into this process, and anything
+        that compromised the process could read it. Closing the stream makes
+        the mute observable at the OS level, which is the only place a mute is
+        worth anything.
+
+        Constant-rate output is preserved regardless. While muted we transmit
+        the cached silence frame on the same 40 ms cadence, so packet size and
+        timing are identical to speech and the mute is invisible on the wire.
         """
-        # Bound once: end() clears self._capture before joining this thread,
-        # so re-reading the attribute each pass would dereference None during
-        # a normal teardown.  stop() is idempotent and read_frame() returns
-        # None once closed, so the local reference stays safe.
         capture = self._capture
         if capture is None:
             return
 
+        next_frame = time.monotonic()
         while self._running:
+            if self._muted:
+                if capture is not None:
+                    try:
+                        capture.stop()
+                    except Exception:
+                        pass
+                    capture = None
+                    self._capture = None
+                    _print("[voice] microphone RELEASED — the OS recording "
+                           "indicator should go out")
+                # Keep the wire cadence with the cached silence frame.
+                next_frame += VOICE_FRAME_MS / 1000.0
+                delay = next_frame - time.monotonic()
+                if delay > 0:
+                    time.sleep(delay)
+                else:
+                    next_frame = time.monotonic()
+                if self._silence_frame is not None:
+                    self._emit(pad_opus(self._silence_frame))
+                continue
+
+            if capture is None:
+                # Unmuted: take the device back.
+                try:
+                    # Pinned to the backend the call started on. Letting the
+                    # reopen fall through to PulseAudio would put the second
+                    # half of the call on auto_null — transmitting silence
+                    # with every indicator healthy, which is the failure mode
+                    # this whole path is built to avoid.
+                    capture, _notes = _audio.open_capture(
+                        preferred=self.audio_backend,
+                        which=_HOST["which"],
+                        read_exact=_HOST["pipe_read_exact"],
+                        env=self._audio_env)
+                    self._capture = capture
+                    next_frame = time.monotonic()
+                    _print("[voice] microphone live")
+                except Exception as exc:
+                    self._muted = True
+                    _print("[voice] could not reopen the microphone (%s) — "
+                           "staying muted" % _san(str(exc), 120))
+                    continue
+
             try:
                 raw = capture.read_frame(timeout_ms=200)
             except _audio.AudioError as exc:
@@ -2139,24 +2230,12 @@ class VoiceCallSession:
             pcm = bytearray(raw)
             opus_frame = None
             try:
-                if self._muted:
-                    # Mute must be invisible on the wire.  Encoding digital
-                    # silence keeps size and cadence identical to speech;
-                    # not transmitting would announce the mute to anyone
-                    # counting packets.
-                    _wipe(pcm)
-                    if self._silence_frame is None:
-                        continue
-                    opus_frame = bytearray(self._silence_frame)
-                else:
-                    opus_frame = bytearray(
-                        self._opus_enc.encode(bytes(pcm), VOICE_FRAME_SAMPLES))
-                    _wipe(pcm)
-
+                opus_frame = bytearray(
+                    self._opus_enc.encode(bytes(pcm), VOICE_FRAME_SAMPLES))
+                _wipe(pcm)
                 padded = pad_opus(bytes(opus_frame))
                 _wipe(opus_frame)
                 opus_frame = None
-
                 if padded is None:
                     # Encoder exceeded the fixed slot.  Substitute silence
                     # rather than emit an odd-sized packet: a lost 40 ms is
@@ -2165,19 +2244,37 @@ class VoiceCallSession:
                     if self._silence_frame is None:
                         continue
                     padded = pad_opus(self._silence_frame)
-                    if padded is None:
-                        continue
-
-                packet = self._seal_frame(padded)
-                if packet is None:
-                    continue
-                self.loop.call_soon_threadsafe(self._write_packet, packet)
+                self._emit(padded)
             except Exception:
                 self.stats["dropped"] += 1
             finally:
                 _wipe(pcm)
                 if opus_frame is not None:
                     _wipe(opus_frame)
+
+    def _emit(self, padded) -> None:
+        """Seal one padded frame and hand it to the event loop."""
+        if padded is None:
+            return
+        try:
+            packet = self._seal_frame(padded)
+        except FrameError as exc:
+            # Counter exhaustion is unreachable in practice (2^62 frames) but
+            # it is permanent when it happens: every later frame fails the
+            # same way. Counting it as a drop would present as a call that
+            # silently stopped transmitting.
+            if "exhausted" in str(exc):
+                self._signal_stream_lost("frame counter exhausted")
+                self._running = False
+            else:
+                self.stats["dropped"] += 1
+            return
+        except Exception:
+            self.stats["dropped"] += 1
+            return
+        if packet is None:
+            return
+        self.loop.call_soon_threadsafe(self._write_packet, packet)
 
     # asyncio buffers writes without limit.  For real-time audio a backlog is
     # worthless — by the time it drains the audio is stale — so transmission
@@ -2316,14 +2413,15 @@ class VoiceCallSession:
             try:
                 epoch, counter, plaintext = self.open_packet(header, sealed)
                 del buf[:VOICE_HDR_LEN + length]
+                # Queue the Opus payload, not decoded PCM. Decoding at
+                # playout is what makes Opus in-band FEC usable: recovering a
+                # lost frame requires the NEXT packet, which does not exist
+                # yet at receive time. It also cuts the buffer's memory by
+                # 8x, since 160 bytes of Opus replaces 1280 of PCM.
                 opus_frame = bytearray(unpad_opus(plaintext))
-                pcm = bytearray(self._opus_dec.decode(bytes(opus_frame),
-                                                      VOICE_FRAME_SAMPLES))
-                _wipe(opus_frame)
-                opus_frame = None
-                if self.jitter.push(epoch, counter, pcm):
+                if self.jitter.push(epoch, counter, opus_frame):
                     self.stats["recv"] += 1
-                    pcm = None               # ownership passed to playback
+                    opus_frame = None        # ownership passed to playback
                 else:
                     self.stats["late"] += 1
             except FrameError as exc:
@@ -2346,55 +2444,101 @@ class VoiceCallSession:
 
     # -- playback ---------------------------------------------------------
 
-    def _conceal(self, gap: int) -> None:
-        """Run packet-loss concealment for a detected gap.
+    def _decode(self, opus_frame, fec: bool = False):
+        """Decode one Opus frame.  Returns PCM or None.
+
+        fec=True asks Opus to extract the redundant copy of the PREVIOUS
+        frame carried inside this one. That is what in-band FEC is: the
+        encoder spends a few bits describing the frame before, so a single
+        lost packet can be reconstructed once its successor arrives.
+        """
+        if self._opus_dec is None:
+            return None
+        try:
+            if fec:
+                return bytearray(self._opus_dec.decode(
+                    bytes(opus_frame), VOICE_FRAME_SAMPLES, decode_fec=True))
+            return bytearray(self._opus_dec.decode(bytes(opus_frame),
+                                                   VOICE_FRAME_SAMPLES))
+        except Exception:
+            return None
+
+    def _conceal(self, gap: int):
+        """Synthesise PCM for a detected gap.
 
         Bounded: a large gap means the far end went away, and synthesising
         seconds of concealment audio helps nobody.
         """
-        if self._opus_dec is None or gap <= 0:
-            return
+        out = []
         for _ in range(min(gap, 3)):
             try:
                 plc = self._opus_dec.decode(None, VOICE_FRAME_SAMPLES)
             except Exception:
-                return
-            pcm = bytearray(plc)
-            playback = self._playback
-            try:
-                if playback is not None:
-                    playback.write_frame(bytes(pcm))
-            except Exception:
-                return
-            finally:
-                _wipe(pcm)
+                return out
+            out.append(bytearray(plc))
+        return out
 
     def _playback_worker(self) -> None:
-        """Jitter buffer -> the playback device.  Runs on its own thread."""
+        """Jitter buffer -> decode -> the playback device.
+
+        A one-frame gap is repaired from the next packet's FEC copy, which is
+        the common case on a lossy path and is genuinely recovered audio
+        rather than synthesised. Longer gaps fall back to packet-loss
+        concealment.
+        """
         while self._running:
             item = self.jitter.pop()
             if item is None:
                 time.sleep(VOICE_FRAME_MS / 2000.0)
                 continue
-            pcm, gap = item
+            opus_frame, gap = item
             playback = self._playback
+            recovered = []
             try:
-                if gap:
-                    self._conceal(gap)
-                if playback is not None:
-                    playback.write_frame(bytes(pcm))
-            except _audio.AudioError as exc:
-                if exc.code == _audio.AUDIO_DEVICE_DISCONNECTED:
-                    self._signal_stream_lost("audio device disconnected")
-                    break
+                if gap == 1:
+                    pcm_fec = self._decode(opus_frame, fec=True)
+                    if pcm_fec is not None:
+                        recovered.append(pcm_fec)
+                        self.stats["fec_recovered"] += 1
+                    else:
+                        recovered.extend(self._conceal(gap))
+                elif gap > 1:
+                    recovered.extend(self._conceal(gap))
+
+                pcm = self._decode(opus_frame)
+                if pcm is not None:
+                    recovered.append(pcm)
+
+                for chunk in recovered:
+                    try:
+                        if playback is not None:
+                            playback.write_frame(bytes(chunk))
+                    except _audio.AudioError as exc:
+                        if exc.code == _audio.AUDIO_DEVICE_DISCONNECTED:
+                            self._signal_stream_lost(
+                                "audio device disconnected")
+                            return
+                    except Exception:
+                        pass
+                    finally:
+                        _wipe(chunk)
+                recovered = []
             except Exception:
                 pass
             finally:
-                _wipe(pcm)
+                for chunk in recovered:
+                    _wipe(chunk)
+                _wipe(opus_frame)
 
     # -- control ----------------------------------------------------------
 
     def toggle_mute(self) -> bool:
+        """Toggle the microphone.
+
+        Muting closes the capture stream; the device is genuinely released,
+        not merely ignored. Unmuting reopens it, which takes a moment on
+        AAudio, so the first frame or two after unmute may be silence.
+        """
         self._muted = not self._muted
         return self._muted
 
@@ -2410,7 +2554,7 @@ class VoiceCallSession:
         audio = self.audio_backend or "-"
         return ("state=%s role=%s audio=%s %s keys=%s epoch=%d pending=%s sent=%d "
                 "recv=%d dropped=%d late=%d authfail=%d replay=%d resync=%d "
-                "backpressure=%d oversize=%d "
+                "backpressure=%d oversize=%d fec=%d "
                 "jitter=%d/%d (%.0fms) ratchets=%d rekeys=%d/%d"
                 % (self.state, self.role, audio, rate,
                    "confirmed" if self.keys_confirmed.is_set() else "pending",
@@ -2420,6 +2564,7 @@ class VoiceCallSession:
                    self.stats["auth_fail"], self.stats["replay"],
                    self.stats["resync"],
                    self.stats["backpressure"], self.stats["oversize"],
+                   self.stats["fec_recovered"],
                    self.jitter.depth(), self.jitter.target_depth,
                    self.jitter.jitter_ms,
                    ratchets, rekeys, failed))

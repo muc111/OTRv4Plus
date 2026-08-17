@@ -1188,6 +1188,37 @@ class TestRateLimiting(unittest.TestCase):
         self.assertTrue(rl.allow("b", 1))
 
 
+class TestResourceExhaustion(unittest.TestCase):
+    """Per-peer state must not grow without bound."""
+
+    def test_rate_limiter_prunes_idle_peers(self):
+        rl = V.RateLimiter(5)
+        now = 1000.0
+        for i in range(2000):
+            rl.allow("peer%d@example.org" % i, now)
+        self.assertLessEqual(len(rl._events), V.RateLimiter.MAX_TRACKED + 1,
+                             "one list per peer, kept forever, is a slow "
+                             "memory exhaustion from anyone who can send a "
+                             "call signal")
+
+    def test_a_recent_peer_survives_a_small_amount_of_noise(self):
+        rl = V.RateLimiter(2)
+        now = 1000.0
+        rl.allow("active@example.org", now)
+        rl.allow("active@example.org", now + 1)
+        for i in range(10):
+            rl.allow("noise%d@example.org" % i, now + 2)
+        self.assertFalse(rl.allow("active@example.org", now + 3),
+                         "an active peer's budget must survive ordinary churn")
+
+    def test_expired_peers_are_dropped(self):
+        rl = V.RateLimiter(5)
+        rl.allow("gone@example.org", 1000.0)
+        rl.allow("here@example.org", 1200.0)
+        self.assertNotIn("gone@example.org", rl._events)
+        self.assertIn("here@example.org", rl._events)
+
+
 class TestFuzzing(unittest.TestCase):
 
     def test_signal_parser_never_crashes(self):

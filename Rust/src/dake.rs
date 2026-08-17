@@ -7,7 +7,7 @@
 
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyByteArray};
-use zeroize::ZeroizeOnDrop;
+use zeroize::{Zeroize, ZeroizeOnDrop};   // R8: Zeroize wipes the raw DH/KEM Vec<u8>s
 
 use pqcrypto_traits::kem::{
     PublicKey as KemPublicKey, SecretKey as KemSecretKey,
@@ -333,7 +333,13 @@ impl DakeState {
         msg.extend_from_slice(&self.our_eph_x448_pub);
         msg.extend_from_slice(&self.our_mlkem_ek);
         msg.extend_from_slice(client_profile);
-        if let Some(p) = mldsa_pub.or(self.our_mldsa_pub.as_deref()) { msg.extend_from_slice(p); }
+        // R7: declare presence explicitly, as assemble_dake3 already does.
+        // DAKE1 carries no MAC, so an optional trailing field detected by
+        // length alone can be fabricated by anyone on the path.
+        match mldsa_pub.or(self.our_mldsa_pub.as_deref()) {
+            Some(p) => { msg.push(0x01); msg.extend_from_slice(p); }
+            None    => { msg.push(0x00); }
+        }
         self.transcript.extend_from_slice(&msg);
         self.phase = DakePhase::SentDake1;
         Ok(msg)
@@ -341,7 +347,14 @@ impl DakeState {
 
     pub fn process_dake1(&mut self, data: &[u8]) -> Result<()> {
         // Wire: type | X448_pub(56) | MLKEM_ek(1568) | profile(var) | [MLDSA_pub(2592)]
-        if data.len() < 1 + X448_PUB_SIZE + MLKEM_EK_SIZE + 3 { return Err(OtrError::TooShort { need: 1+X448_PUB_SIZE+MLKEM_EK_SIZE+3, got: data.len() }); }
+        // R9: derive the bound instead of hand-computing a +3 margin. The
+        // profile's version count lives at DAKE1_FIXED_PREFIX + 1, and with
+        // panic = "abort" in the release profile an off-by-one here is a
+        // remote process kill, not an exception.
+        const DAKE1_FIXED_PREFIX: usize = 1 + X448_PUB_SIZE + MLKEM_EK_SIZE;
+        if data.len() < DAKE1_FIXED_PREFIX + 2 {
+            return Err(OtrError::TooShort { need: DAKE1_FIXED_PREFIX + 2, got: data.len() });
+        }
         if data[0] != MSG_DAKE1 { return Err(OtrError::WireFormat); }
         let mut off = 1;
         self.peer_eph_x448_pub.copy_from_slice(&data[off..off + X448_PUB_SIZE]);
@@ -350,15 +363,34 @@ impl DakeState {
         off += MLKEM_EK_SIZE;
 
         // parse profile
-        let num_versions = data[off + 1] as usize;
+        let num_versions = *data.get(off + 1)
+            .ok_or(OtrError::WireFormat)? as usize;
         if num_versions == 0 || num_versions > 8 { return Err(OtrError::WireFormat); }
         let prof_size = 1 + 1 + num_versions + ED448_PUB_SIZE + X448_PUB_SIZE + 8 + 114;
         if off + prof_size > data.len() { return Err(OtrError::WireFormat); }
         let profile_slice = &data[off..off + prof_size];
         off += prof_size;
 
-        // optional ML‑DSA pub
-        if data.len() - off >= MLDSA_PUB_SIZE { self.peer_mldsa_pub = Some(data[off..off + MLDSA_PUB_SIZE].to_vec()); }
+        // R7: presence is declared, never inferred from the remaining
+        // length. Appending 2592 arbitrary bytes to an unauthenticated DAKE1
+        // used to fabricate a peer ML-DSA commitment, which then made
+        // process_dake3 demand a signature the genuine initiator never sends
+        // — an unauthenticated remote denial of session establishment for
+        // the cost of padding and no key material.
+        self.peer_mldsa_pub = match data.get(off) {
+            None | Some(0x00) => None,
+            Some(0x01) => {
+                off += 1;
+                if data.len() - off < MLDSA_PUB_SIZE {
+                    return Err(OtrError::TooShort { need: off + MLDSA_PUB_SIZE, got: data.len() });
+                }
+                let pk = data[off..off + MLDSA_PUB_SIZE].to_vec();
+                off += MLDSA_PUB_SIZE;
+                let _ = off;
+                Some(pk)
+            }
+            Some(_) => return Err(OtrError::WireFormat),
+        };
 
         self.peer_identity_pub = Self::extract_identity_from_profile(profile_slice)?;
         self.peer_profile_bytes = Some(profile_slice.to_vec());
@@ -376,18 +408,28 @@ impl DakeState {
         let prekey_priv_bytes = our_prekey_priv.unwrap_or(self.our_prekey_priv.expose());
 
 
-        let dh1 = Self::x448_dh(self.our_eph_x448_priv.expose(), &self.peer_eph_x448_pub)?;
-        let dh2 = Self::x448_dh(self.our_eph_x448_priv.expose(), &self.peer_prekey_pub())?;
-        let dh3 = Self::x448_dh(prekey_priv_bytes, &self.peer_eph_x448_pub)?;
-        let (ct, mlkem_ss) = Self::mlkem_encapsulate(&self.peer_mlkem_ek)?;
+        let mut dh1 = Self::x448_dh(self.our_eph_x448_priv.expose(), &self.peer_eph_x448_pub)?;
+        let mut dh2 = Self::x448_dh(self.our_eph_x448_priv.expose(), &self.peer_prekey_pub())?;
+        let mut dh3 = Self::x448_dh(prekey_priv_bytes, &self.peer_eph_x448_pub)?;
+        let (ct, mut mlkem_ss) = Self::mlkem_encapsulate(&self.peer_mlkem_ek)?;
         let brace_key = kdf::derive_brace_key(&[0u8; 32], &mlkem_ss);
 
-        let mut combined = Vec::new();
-        combined.extend_from_slice(&dh1); combined.extend_from_slice(&dh2);
-        combined.extend_from_slice(&dh3); combined.extend_from_slice(&mlkem_ss);
+        // R8: every raw shared secret this function holds is wiped before
+        // it leaves scope. Zeroizing wraps the concatenation so it is cleared
+        // on every exit path including `?` propagation. kdf.rs is meticulous
+        // about this for its own heap copies; this was the one place holding
+        // all four secrets at once and not doing it.
+        let combined = zeroize::Zeroizing::new({
+            let mut v = Vec::with_capacity(3 * X448_PUB_SIZE + 32);
+            v.extend_from_slice(&dh1); v.extend_from_slice(&dh2);
+            v.extend_from_slice(&dh3); v.extend_from_slice(&mlkem_ss);
+            v
+        });
         let mixed_secret = kdf::kdf_1(usage::SHARED_SECRET, &combined, 64);
         let ssid = { let mut a = [0u8; 8]; a.copy_from_slice(&kdf::kdf_1(usage::SSID, &mixed_secret, 8)); a };
         let mac_key = kdf::kdf_1(usage::DAKE_MAC_KEY, &mixed_secret, 64);
+        // x448_dh returns owned Vec<u8>; wipe them now that they are mixed.
+        dh1.zeroize(); dh2.zeroize(); dh3.zeroize(); mlkem_ss.zeroize();
 
         // Build the wire BEFORE computing MAC, so the MAC covers exactly what
         // will be sent.  The parser (process_dake2) MACs over data[..off]
@@ -450,7 +492,8 @@ impl DakeState {
         if off + 3 > data.len() {
             return Err(OtrError::TooShort { need: off + 3, got: data.len() });
         }
-        let num_versions = data[off + 1] as usize;
+        let num_versions = *data.get(off + 1)
+            .ok_or(OtrError::WireFormat)? as usize;
         if num_versions == 0 || num_versions > 8 {
             return Err(OtrError::WireFormat);
         }
@@ -482,18 +525,28 @@ impl DakeState {
         let prekey_priv_bytes = our_prekey_priv.unwrap_or(self.our_prekey_priv.expose());
 
 
-        let dh1 = Self::x448_dh(self.our_eph_x448_priv.expose(), &self.peer_eph_x448_pub)?;
-        let dh2 = Self::x448_dh(prekey_priv_bytes, &self.peer_eph_x448_pub)?;
-        let dh3 = Self::x448_dh(self.our_eph_x448_priv.expose(), &self.peer_prekey_pub())?;
-        let mlkem_ss = Self::mlkem_decapsulate(self.our_mlkem_sk.expose(), &mlkem_ct)?;
+        let mut dh1 = Self::x448_dh(self.our_eph_x448_priv.expose(), &self.peer_eph_x448_pub)?;
+        let mut dh2 = Self::x448_dh(prekey_priv_bytes, &self.peer_eph_x448_pub)?;
+        let mut dh3 = Self::x448_dh(self.our_eph_x448_priv.expose(), &self.peer_prekey_pub())?;
+        let mut mlkem_ss = Self::mlkem_decapsulate(self.our_mlkem_sk.expose(), &mlkem_ct)?;
         let brace_key = kdf::derive_brace_key(&[0u8; 32], &mlkem_ss);
 
-        let mut combined = Vec::new();
-        combined.extend_from_slice(&dh1); combined.extend_from_slice(&dh2);
-        combined.extend_from_slice(&dh3); combined.extend_from_slice(&mlkem_ss);
+        // R8: every raw shared secret this function holds is wiped before
+        // it leaves scope. Zeroizing wraps the concatenation so it is cleared
+        // on every exit path including `?` propagation. kdf.rs is meticulous
+        // about this for its own heap copies; this was the one place holding
+        // all four secrets at once and not doing it.
+        let combined = zeroize::Zeroizing::new({
+            let mut v = Vec::with_capacity(3 * X448_PUB_SIZE + 32);
+            v.extend_from_slice(&dh1); v.extend_from_slice(&dh2);
+            v.extend_from_slice(&dh3); v.extend_from_slice(&mlkem_ss);
+            v
+        });
         let mixed_secret = kdf::kdf_1(usage::SHARED_SECRET, &combined, 64);
         let ssid = { let mut a = [0u8; 8]; a.copy_from_slice(&kdf::kdf_1(usage::SSID, &mixed_secret, 8)); a };
         let mac_key = kdf::kdf_1(usage::DAKE_MAC_KEY, &mixed_secret, 64);
+        // x448_dh returns owned Vec<u8>; wipe them now that they are mixed.
+        dh1.zeroize(); dh2.zeroize(); dh3.zeroize(); mlkem_ss.zeroize();
 
         let expected_mac = kdf::hmac_sha3_512(&mac_key, message_body);
 

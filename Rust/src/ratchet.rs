@@ -282,15 +282,17 @@ impl DoubleRatchet {
             self.dh_pub_remote = Some(header.dh_pub);
         }
 
+        // Skipped-key path: peek, authenticate, and only then consume. The
+        // previous code removed the key before decrypting, so a forged
+        // message aimed at a skipped msg_num destroyed the key the genuine
+        // message needed.
         let skip_id = SkipId { dh_pub: header.dh_pub, msg_num: header.msg_num };
-        if let Some(skipped) = self.skipped.remove(&skip_id) {
-            let pt = self.aes_decrypt(&skipped.enc_key, header_bytes, ciphertext, nonce, tag)?;
+        if let Some(skipped) = self.skipped.get(&skip_id) {
+            let key = skipped.enc_key;
+            let pt = self.aes_decrypt(&key, header_bytes, ciphertext, nonce, tag)?;
+            self.skipped.remove(&skip_id);
             self.seen.insert(&header.dh_pub, header.msg_num);
             return Ok(pt);
-        }
-
-        if header.msg_num > self.msg_num_recv {
-            self.skip_keys(&header.dh_pub, header.msg_num)?;
         }
 
         if header.msg_num < self.msg_num_recv {
@@ -299,18 +301,78 @@ impl DoubleRatchet {
             )));
         }
 
-        let (mut next_ck, mut enc_key, _) = kdf_chain(&self.chain_key_recv);
+        // ── Authenticate BEFORE mutating any ratchet state ──────────────
+        //
+        // This is the whole point of the rewrite. Previously skip_keys() and
+        // the chain advance both ran before aes_decrypt, so ONE forged
+        // message — and the header is visible on the wire, so anyone who can
+        // observe and inject can build one — permanently advanced
+        // chain_key_recv. Every genuine message after it then derived from
+        // the wrong chain key, failed, and advanced it again. A single
+        // unauthenticated packet killed the session for good.
+        //
+        // Everything below derives into scratch state. Nothing on `self`
+        // changes until the AEAD tag has verified.
+        let skip_count = header.msg_num.checked_sub(self.msg_num_recv)
+            .ok_or_else(|| RatchetError::Protocol("Skip count overflow".into()))?;
+        if skip_count > self.max_skip {
+            return Err(RatchetError::MaxSkipExceeded(skip_count));
+        }
+
+        let mut scratch_ck = self.chain_key_recv;
+        let mut pending_skipped: Vec<(u32, [u8; 32])> = Vec::new();
+        for n in self.msg_num_recv..header.msg_num {
+            let (mut next_ck, enc_key, _) = kdf_chain(&scratch_ck);
+            scratch_ck.zeroize();
+            scratch_ck = next_ck;
+            next_ck.zeroize();
+            pending_skipped.push((n, enc_key));
+        }
+
+        let (mut next_ck, mut enc_key, _) = kdf_chain(&scratch_ck);
+        scratch_ck.zeroize();
+
+        let pt = match self.aes_decrypt(&enc_key, header_bytes, ciphertext, nonce, tag) {
+            Ok(pt) => pt,
+            Err(e) => {
+                // Forged or corrupt: discard every derived key and leave the
+                // ratchet exactly as it was.
+                enc_key.zeroize();
+                next_ck.zeroize();
+                for (_, mut k) in pending_skipped { k.zeroize(); }
+                return Err(e);
+            }
+        };
+        enc_key.zeroize();
+
+        // ── Authenticated: commit ───────────────────────────────────────
+        for (n, enc_key) in pending_skipped {
+            let skip_id = SkipId { dh_pub: header.dh_pub, msg_num: n };
+            self.skipped.insert(skip_id, SkippedKey { enc_key });
+        }
+        self.prune_skipped();
+
         self.chain_key_recv.zeroize();
         self.chain_key_recv = next_ck;
         next_ck.zeroize();
-
-        let pt = self.aes_decrypt(&enc_key, header_bytes, ciphertext, nonce, tag)?;
-        enc_key.zeroize();
 
         self.msg_num_recv = header.msg_num.checked_add(1)
             .ok_or_else(|| RatchetError::Protocol("Message counter overflow".into()))?;
         self.seen.insert(&header.dh_pub, header.msg_num);
         Ok(pt)
+    }
+
+    /// Bound the skipped-key store. Evicts the lowest SkipId, which is
+    /// deterministic but arbitrary with respect to age; acceptable because
+    /// the store is only reachable after authentication.
+    fn prune_skipped(&mut self) {
+        while self.skipped.len() > MAX_MESSAGE_KEYS {
+            if let Some(first) = self.skipped.keys().next().cloned() {
+                self.skipped.remove(&first);
+            } else {
+                break;
+            }
+        }
     }
 
     // ── Decrypt with DH ratchet ─────────────────────────────────
@@ -330,34 +392,53 @@ impl DoubleRatchet {
             return Err(RatchetError::MaxSkipExceeded(header.msg_num));
         }
 
+        // Same discipline as decrypt_same_dh: a DH ratchet step is a much
+        // larger commitment — new root, both chains, both counters — and the
+        // old code performed all of it, plus up to max_skip key derivations,
+        // before authenticating. A forged header with a random dh_pub and a
+        // high msg_num therefore burned the CPU, flooded the skipped-key
+        // store (evicting genuine keys), and rotated the root, all on
+        // unauthenticated input.
         let (new_root_recv, new_recv_chain) = kdf_root(&self.root_key, dh_secret_recv);
 
-        let mut temp_ck = new_recv_chain;
+        let mut scratch_ck = new_recv_chain;
+        let mut pending_skipped: Vec<(u32, [u8; 32])> = Vec::new();
         for n in 0..header.msg_num {
-            let (next, mk, _) = kdf_chain(&temp_ck);
-            temp_ck.zeroize();
-            temp_ck = next;
-            // Audit L2: retain the skipped message keys of the NEW receiving
-            // chain so out-of-order messages that arrive after this DH
-            // ratchet step remain decryptable (previously discarded).
+            let (mut next, mk, _) = kdf_chain(&scratch_ck);
+            scratch_ck.zeroize();
+            scratch_ck = next;
+            next.zeroize();
+            pending_skipped.push((n, mk));
+        }
+        let (mut next_recv_ck, mut enc_key, _) = kdf_chain(&scratch_ck);
+        scratch_ck.zeroize();
+
+        let pt = match self.aes_decrypt(&enc_key, header_bytes, ciphertext, nonce, tag) {
+            Ok(pt) => pt,
+            Err(e) => {
+                enc_key.zeroize();
+                next_recv_ck.zeroize();
+                let mut r = new_root_recv;  r.zeroize();
+                for (_, mut k) in pending_skipped { k.zeroize(); }
+                return Err(e);
+            }
+        };
+        enc_key.zeroize();
+
+        // ── Authenticated: commit the ratchet step ──────────────────────
+        for (n, mk) in pending_skipped {
+            // Audit L2: retain the skipped keys of the NEW receiving chain so
+            // out-of-order messages arriving after this step still decrypt.
             let skip_id = SkipId { dh_pub: header.dh_pub, msg_num: n };
             self.skipped.insert(skip_id, SkippedKey { enc_key: mk });
-            while self.skipped.len() > MAX_MESSAGE_KEYS {
-                if let Some(first) = self.skipped.keys().next().cloned() {
-                    self.skipped.remove(&first);
-                }
-            }
         }
-        let (next_recv_ck, mut enc_key, _) = kdf_chain(&temp_ck);
-        temp_ck.zeroize();
-
-        let pt = self.aes_decrypt(&enc_key, header_bytes, ciphertext, nonce, tag)?;
-        enc_key.zeroize();
+        self.prune_skipped();
 
         self.root_key.zeroize();
         self.root_key = new_root_recv;
         self.chain_key_recv.zeroize();
         self.chain_key_recv = next_recv_ck;
+        next_recv_ck.zeroize();
 
         if let Some(old) = self.dh_pub_remote {
             self.last_remote_pub = Some(old);
@@ -384,12 +465,6 @@ impl DoubleRatchet {
             mac.zeroize();
         }
         self.last_mac_key = None;
-
-        while self.skipped.len() > MAX_MESSAGE_KEYS {
-            if let Some(first_key) = self.skipped.keys().next().cloned() {
-                self.skipped.remove(&first_key);
-            }
-        }
 
         self.seen.insert(&header.dh_pub, header.msg_num);
         Ok(pt)
@@ -433,29 +508,11 @@ impl DoubleRatchet {
             .map_err(|_| RatchetError::DecryptionFailed("AES‑GCM authentication failed".into()))
     }
 
-    fn skip_keys(&mut self, dh_pub: &[u8; 56], target: u32) -> Result<(), RatchetError> {
-        if target <= self.msg_num_recv { return Ok(()); }
-        let skip_count = target.checked_sub(self.msg_num_recv)
-            .ok_or_else(|| RatchetError::Protocol("Skip count overflow".into()))?;
-        if skip_count > self.max_skip {
-            return Err(RatchetError::MaxSkipExceeded(skip_count));
-        }
-        for n in self.msg_num_recv..target {
-            let (mut next_ck, enc_key, _) = kdf_chain(&self.chain_key_recv);
-            self.chain_key_recv.zeroize();
-            self.chain_key_recv = next_ck;
-            next_ck.zeroize();
-            let skip_id = SkipId { dh_pub: *dh_pub, msg_num: n };
-            self.skipped.insert(skip_id, SkippedKey { enc_key });
-            while self.skipped.len() > MAX_MESSAGE_KEYS {
-                if let Some(first) = self.skipped.keys().next().cloned() {
-                    self.skipped.remove(&first);
-                }
-            }
-        }
-        self.msg_num_recv = target;
-        Ok(())
-    }
+    // skip_keys() removed: it advanced chain_key_recv and msg_num_recv
+    // BEFORE the message authenticated, so one forged packet
+    // permanently desynchronised the receive chain. decrypt_same_dh
+    // and decrypt_new_dh now derive into scratch and commit only
+    // after the AEAD tag verifies.
 }
 
 // ── PyO3 wrapper with ALL required methods ──────────────────────────

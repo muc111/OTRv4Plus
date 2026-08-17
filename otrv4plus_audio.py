@@ -1198,7 +1198,7 @@ class Ringer:
             self._spawn([notif, "--id", self._notif_id,
                          "--title", "Incoming encrypted call",
                          "--content", content,
-                         "--priority", "max", "--sound", "--ongoing"])
+                         "--priority", "max", "--sound"])
         if self._vibrate:
             vib = which("termux-vibrate")
             if vib:

@@ -56,10 +56,21 @@ class FakeOpusEncoder:
 
 
 class FakeOpusDecoder:
-    def __init__(self):
+    def __init__(self, fec_supported=True):
         self.calls = 0
+        self.fec_calls = 0
+        self.plc_calls = 0
+        self.fec_supported = fec_supported
 
-    def decode(self, data, frame_samples):
+    def decode(self, data, frame_samples, decode_fec=False):
+        if data is None:
+            self.plc_calls += 1
+            return b"\x00\x00" * frame_samples
+        if decode_fec:
+            if not self.fec_supported:
+                raise TypeError("build has no FEC")
+            self.fec_calls += 1
+            return b"\x33\x44" * frame_samples
         self.calls += 1
         return b"\x11\x22" * frame_samples
 
@@ -529,6 +540,208 @@ class TestJitterDrift(IntegrationBase):
         self.assertLessEqual(jb.depth(), 10)
         self.assertEqual(jb.stats["drift"], 0,
                          "one frame in, one frame out must never shed audio")
+
+
+class TestMicrophoneAccess(IntegrationBase):
+    """The microphone must never open without a local decision.
+
+    This is the property that matters most: a remote peer, however
+    authenticated, must not be able to make this device listen.
+    """
+
+    def test_no_remote_message_opens_capture(self):
+        import inspect
+        # Only start_audio() opens the device, and only these two reach it:
+        # _await_media (after a local /call) and answer_call (after a local
+        # /answer). Both require a local decision.
+        callers = []
+        for name in dir(V.VoiceCallManager):
+            attr = getattr(V.VoiceCallManager, name, None)
+            if not callable(attr):
+                continue
+            try:
+                src = inspect.getsource(attr)
+            except (OSError, TypeError):
+                continue
+            if "start_audio" in src:
+                callers.append(name)
+        self.assertEqual(sorted(callers), ["_await_media", "answer_call"])
+
+        opens = "_open_audio_devices"
+        for handler in ("_on_invite", "_on_accept", "_on_confirm",
+                        "_on_rekey", "_on_rekey_ack", "_on_rekey_commit",
+                        "_on_reject", "_on_end", "handle_signal"):
+            src = inspect.getsource(getattr(V.VoiceCallManager, handler))
+            self.assertNotIn("start_audio", src,
+                             "%s can open the microphone remotely" % handler)
+            self.assertNotIn(opens, src)
+
+    def test_start_audio_requires_confirmed_keys_and_state(self):
+        session = build_session(self.loop)
+        session._writer = object()
+        session.state = V.CallState.RINGING
+        with self.assertRaises(Exception):
+            self.loop.run_until_complete(session.start_audio())
+
+    def test_ringing_opens_playback_only_never_capture(self):
+        import inspect
+        src = inspect.getsource(V.VoiceCallManager._start_ringing)
+        self.assertNotIn("open_capture", src)
+        self.assertNotIn("AAudioCapture", src)
+
+    def test_mute_releases_the_device(self):
+        lib = install(FakeAAudioLib(frames_per_burst=480, steady=900))
+        session = build_session(self.loop)
+        session._capture = A.AAudioCapture()
+        session._silence_frame = b"\x00" * 40
+        session._write_packet = lambda p: None
+        session.loop = _InlineLoop()
+        session._running = True
+        session._muted = True
+
+        t = threading.Thread(target=session._capture_worker, daemon=True)
+        t.start()
+        deadline = time.time() + 3.0
+        while time.time() < deadline and session._capture is not None:
+            time.sleep(0.02)
+        session._running = False
+        t.join(timeout=2.0)
+
+        self.assertIsNone(session._capture,
+                          "mute must release the capture stream")
+        self.assertEqual(lib.closed, 1,
+                         "the OS-level device must actually be closed")
+
+    def test_mute_still_transmits_at_constant_rate(self):
+        install(FakeAAudioLib(frames_per_burst=480, steady=900))
+        session = build_session(self.loop)
+        session._capture = A.AAudioCapture()
+        session._silence_frame = b"\x00" * 40
+        sent = []
+        session._write_packet = sent.append
+        session.loop = _InlineLoop()
+        session._running = True
+        session._muted = True
+
+        t = threading.Thread(target=session._capture_worker, daemon=True)
+        t.start()
+        time.sleep(0.5)
+        session._running = False
+        t.join(timeout=2.0)
+
+        self.assertGreater(len(sent), 5, "muted calls must keep transmitting")
+        for packet in sent:
+            self.assertEqual(len(packet), V.VOICE_PACKET_LEN,
+                             "mute must be invisible on the wire")
+
+
+class TestForwardErrorCorrection(IntegrationBase):
+    """A single lost frame should be recovered, not concealed."""
+
+    def _session(self):
+        session = build_session(self.loop, is_initiator=False)
+        session._opus_dec = FakeOpusDecoder()
+        session.jitter = V.JitterBuffer(prefill=1, maxlen=200, adaptive=False)
+        session._playback = _CollectingPlayback()
+        return session
+
+    def test_single_gap_uses_fec_not_concealment(self):
+        session = self._session()
+        session.jitter.push(0, 0, bytearray(b"\xAA" * 40))
+        session.jitter.push(0, 2, bytearray(b"\xBB" * 40))   # frame 1 lost
+        session._running = True
+        t = threading.Thread(target=session._playback_worker, daemon=True)
+        t.start()
+        time.sleep(0.4)
+        session._running = False
+        t.join(timeout=2.0)
+
+        self.assertEqual(session._opus_dec.fec_calls, 1,
+                         "a one-frame gap must be recovered via FEC")
+        self.assertEqual(session._opus_dec.plc_calls, 0,
+                         "FEC recovery must not also run concealment")
+        self.assertEqual(session.stats["fec_recovered"], 1)
+
+    def test_long_gap_falls_back_to_concealment(self):
+        session = self._session()
+        session.jitter.push(0, 0, bytearray(b"\xAA" * 40))
+        session.jitter.push(0, 5, bytearray(b"\xBB" * 40))
+        session._running = True
+        t = threading.Thread(target=session._playback_worker, daemon=True)
+        t.start()
+        time.sleep(0.4)
+        session._running = False
+        t.join(timeout=2.0)
+        self.assertGreater(session._opus_dec.plc_calls, 0)
+        self.assertEqual(session._opus_dec.fec_calls, 0)
+
+    def test_build_without_fec_degrades_to_concealment(self):
+        session = self._session()
+        session._opus_dec = FakeOpusDecoder(fec_supported=False)
+        session.jitter.push(0, 0, bytearray(b"\xAA" * 40))
+        session.jitter.push(0, 2, bytearray(b"\xBB" * 40))
+        session._running = True
+        t = threading.Thread(target=session._playback_worker, daemon=True)
+        t.start()
+        time.sleep(0.4)
+        session._running = False
+        t.join(timeout=2.0)
+        self.assertEqual(session.stats["fec_recovered"], 0)
+        self.assertGreater(session._opus_dec.plc_calls, 0)
+
+    def test_jitter_holds_opus_not_pcm(self):
+        session = self._session()
+        tx = V.VoiceFrameCrypto(b"\x5c" * V.ROOT_LEN, CALL_ID, 0, True)
+        payload = b"\xAB" * 80
+        buf = bytearray(tx.seal(bytes(V.pad_opus(payload))))
+        session._drain_buffer(buf)
+        item = session.jitter.pop()
+        self.assertIsNotNone(item)
+        self.assertEqual(bytes(item[0]), payload,
+                         "buffer must hold the Opus frame, not decoded PCM")
+
+
+class _CollectingPlayback:
+    name = "fake"
+
+    def __init__(self):
+        self.frames = []
+
+    def write_frame(self, pcm, timeout_ms=200):
+        self.frames.append(bytes(pcm))
+        return True
+
+    def stop(self):
+        pass
+
+    def diagnostics(self):
+        return {"backend": "fake"}
+
+
+class TestMuteReopen(IntegrationBase):
+    """Unmuting must take back the same device, not a different backend."""
+
+    def test_reopen_pins_the_original_backend(self):
+        import inspect
+        src = inspect.getsource(V.VoiceCallSession._capture_worker)
+        self.assertIn("preferred=self.audio_backend", src,
+                      "an unmute that falls through to PulseAudio would put "
+                      "the rest of the call on auto_null")
+        self.assertIn("env=self._audio_env", src)
+
+    def test_counter_exhaustion_is_reported_not_silent(self):
+        session = build_session(self.loop)
+        session.schedule.cipher_for_send()._send_counter = \
+            V.VoiceFrameCrypto.MAX_COUNTER
+        reported = []
+        session.on_stream_lost = lambda peer, cid, why: reported.append(why)
+        session.loop = _InlineLoop()
+        session._running = True
+        session._emit(bytes(V.pad_opus(b"x")))
+        self.assertTrue(any("exhausted" in w for w in reported),
+                        "a permanently dead transmit path must not present "
+                        "as an ordinary dropped frame")
+        self.assertFalse(session._running)
 
 
 class TestIsolation(IntegrationBase):
