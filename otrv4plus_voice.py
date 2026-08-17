@@ -369,6 +369,7 @@ VOICE_FRAME_MS = 40
 VOICE_FRAME_SAMPLES = VOICE_SAMPLE_RATE * VOICE_FRAME_MS // 1000     # 640
 VOICE_CHANNELS = 1
 VOICE_FRAME_BYTES = VOICE_FRAME_SAMPLES * VOICE_CHANNELS * 2
+FRAME_INTERVAL_S = VOICE_FRAME_MS / 1000.0
 VOICE_BITRATE = 16000
 VOICE_COMPLEXITY = 5
 VOICE_LOSS_PCT = 20
@@ -401,6 +402,12 @@ DIR_RESPONDER = 0x02        # callee -> caller
 # audio nobody will ever hear.
 VOICE_JITTER_PREFILL = 6            # 240 ms before playout starts
 VOICE_JITTER_MAX = 50               # ~2 s hard cap
+# Latency ceiling. Without this the buffer keeps whatever depth a burst pushed
+# it to for the rest of the call: playout is paced by the audio device, so it
+# never catches up on its own. Observed at 46/50 and 27/50 on live calls —
+# nearly two seconds parked on top of I2P's own delay. Shedding one 40 ms
+# frame is a click; holding two seconds makes conversation impossible.
+VOICE_JITTER_DRIFT_HIGH = 15        # 600 ms — above this, claw latency back
 VOICE_JITTER_LATE_TOLERANCE = 2     # frames older than this are discarded
 
 VOICE_REKEY_SECONDS = 120
@@ -1160,8 +1167,30 @@ class VoiceKeySchedule:
 
         pending_root = bytearray(root)
         confirms = derive_confirmations(pending_root, self.call_id, epoch)
+
+        # Build the pending cipher NOW and register it for RECEIVE, while
+        # leaving _epoch alone so we keep sending on the committed epoch.
+        #
+        # The initiator commits one round trip before the responder does: it
+        # verifies REKEYACK, switches its send epoch, and only then sends
+        # REKEYCOMMIT. Media travels the direct I2P tunnel while REKEYCOMMIT
+        # goes via the XMPP server, so the new-epoch audio reliably overtakes
+        # it. The responder was rejecting every one of those frames with
+        # "no live key for epoch N+1" — which lands in the authfail bucket.
+        # Live call: authfail=87 on the responder, 0 on the initiator, across
+        # 5 rekeys.
+        #
+        # Accepting inbound frames on the pending epoch is safe. REKEY arrives
+        # inside the authenticated OTR channel, so only the real peer can
+        # start one, and the pending root is derived from secrets only the two
+        # of us hold. Anything encrypted under the wrong key still fails its
+        # AEAD tag. What REKEYCOMMIT proves is that the peer agrees on the
+        # root — which is a precondition for SENDING, not for receiving.
+        pending_cipher = VoiceFrameCrypto(pending_root, self.call_id, epoch,
+                                          self.is_initiator)
+        self._ciphers[epoch] = pending_cipher
         self._pending = {"epoch": epoch, "root": pending_root,
-                         "confirms": confirms, "cipher": None}
+                         "confirms": confirms, "cipher": pending_cipher}
         return confirms
 
     def expected_peer_confirm(self) -> bytes:
@@ -1194,14 +1223,12 @@ class VoiceKeySchedule:
 
         pending = self._pending
         self._pending = None
-        try:
+        # The cipher has been receiving since begin_rekey; committing only
+        # promotes it to the send epoch as well.
+        cipher = pending.get("cipher")
+        if cipher is None:
             cipher = VoiceFrameCrypto(pending["root"], self.call_id, epoch,
                                       self.is_initiator)
-        except Exception:
-            _wipe(pending["root"])
-            self.rekeys_failed += 1
-            raise
-
         self._ciphers[epoch] = cipher
         _wipe(self._root)
         self._root = pending["root"]
@@ -1217,6 +1244,9 @@ class VoiceKeySchedule:
         _wipe(self._pending["root"])
         cipher = self._pending.get("cipher")
         if cipher is not None:
+            # Registered for receive by begin_rekey; a failed rekey must take
+            # it back out so a stale epoch cannot keep decrypting.
+            self._ciphers.pop(self._pending["epoch"], None)
             cipher.zeroize()
         self._pending = None
         self.rekeys_failed += 1
@@ -1268,7 +1298,8 @@ class JitterBuffer:
     """
 
     def __init__(self, prefill=VOICE_JITTER_PREFILL, maxlen=VOICE_JITTER_MAX,
-                 late_tolerance=VOICE_JITTER_LATE_TOLERANCE):
+                 late_tolerance=VOICE_JITTER_LATE_TOLERANCE,
+                 drift_high=VOICE_JITTER_DRIFT_HIGH, adaptive=True):
         import heapq
         self._heapq = heapq
         self._heap = []
@@ -1277,10 +1308,21 @@ class JitterBuffer:
         self._prefill = int(prefill)
         self._maxlen = int(maxlen)
         self._late_tolerance = int(late_tolerance)
+        self._drift_high = max(int(prefill) + 1, int(drift_high))
         self._primed = False
         self._last_played = -1
+
+        # Adaptive depth. A fixed cushion is a bad trade on I2P: too small and
+        # every tunnel hiccup is a dropout, too large and the whole call
+        # carries the worst-case delay even when the path is behaving. So the
+        # target tracks measured arrival jitter and moves with the path.
+        self._adaptive = bool(adaptive)
+        self._target = float(prefill)
+        self._jitter_est = 0.0          # seconds, RFC 3550 style smoothing
+        self._last_arrival = None
+        self._last_seq = None
         self.stats = {"queued": 0, "late": 0, "duplicate": 0,
-                      "overflow": 0, "gaps": 0}
+                      "overflow": 0, "gaps": 0, "drift": 0}
 
     @staticmethod
     def sequence(epoch: int, counter: int) -> int:
@@ -1292,10 +1334,52 @@ class JitterBuffer:
         """
         return (int(epoch) << 62) | (int(counter) & ((1 << 62) - 1))
 
+    def _observe_arrival(self, seq: int, now: float) -> None:
+        """Update the jitter estimate and the target depth.
+
+        RFC 3550's interarrival jitter, with the frame counter standing in for
+        a sender timestamp: consecutive frames are 40 ms apart by
+        construction, so the expected spacing is known exactly and any
+        deviation is transit jitter.
+
+            D = (arrival_delta) - (expected_delta)
+            J += (|D| - J) / 16
+
+        The target is three standard-ish deviations of that, plus one frame of
+        slack, clamped so it can never collapse below the floor or run away to
+        the hard cap. Three is the usual choice: it absorbs nearly every
+        spike without paying for the very worst one permanently.
+        """
+        if not self._adaptive:
+            return
+        if self._last_arrival is not None and self._last_seq is not None:
+            seq_delta = seq - self._last_seq
+            if 0 < seq_delta < 200:            # ignore reorder and huge gaps
+                expected = seq_delta * (FRAME_INTERVAL_S)
+                observed = now - self._last_arrival
+                d = abs(observed - expected)
+                self._jitter_est += (d - self._jitter_est) / 16.0
+                frames = (3.0 * self._jitter_est) / FRAME_INTERVAL_S
+                self._target = max(
+                    float(self._prefill),
+                    min(float(self._drift_high), frames + 1.0))
+        if seq > (self._last_seq or -1):
+            self._last_arrival = now
+            self._last_seq = seq
+
+    @property
+    def target_depth(self) -> int:
+        return int(self._target + 0.5)
+
+    @property
+    def jitter_ms(self) -> float:
+        return self._jitter_est * 1000.0
+
     def push(self, epoch: int, counter: int, pcm) -> bool:
         """Offer one decoded frame.  False if it was dropped."""
         seq = self.sequence(epoch, counter)
         with self._lock:
+            self._observe_arrival(seq, time.monotonic())
             if seq <= self._last_played - self._late_tolerance:
                 self.stats["late"] += 1
                 return False
@@ -1328,7 +1412,7 @@ class JitterBuffer:
         """
         with self._lock:
             if not self._primed:
-                if len(self._heap) < self._prefill:
+                if len(self._heap) < self.target_depth:
                     return None
                 self._primed = True
             if not self._heap:
@@ -1336,6 +1420,25 @@ class JitterBuffer:
                 # the next burst choppy.
                 self._primed = False
                 return None
+
+            # Shed the oldest while we are above the latency ceiling. One
+            # frame per pop, so depth converges over a second or so instead
+            # of jumping — a gradual trim is far less audible than a jump,
+            # and the gap counter below reports it as concealment anyway.
+            # Shed against the adaptive target rather than a fixed ceiling,
+            # so a call that starts on a congested path and then settles gets
+            # its latency back instead of carrying the bad minute all night.
+            # Margin of at least 4 frames (160 ms) beyond target before we
+            # reclaim anything. Proportional-to-prefill was too tight on a
+            # small cushion: four frames arriving out of order looked like
+            # accumulated latency and the oldest got shed, reordering the
+            # audio it was there to fix.
+            if len(self._heap) > self.target_depth + max(self._prefill, 4):
+                stale_seq, stale_pcm = self._heapq.heappop(self._heap)
+                self._seqs.discard(stale_seq)
+                _wipe(stale_pcm)
+                self.stats["drift"] += 1
+
             seq, pcm = self._heapq.heappop(self._heap)
             self._seqs.discard(seq)
             gap = 0
@@ -2308,7 +2411,7 @@ class VoiceCallSession:
         return ("state=%s role=%s audio=%s %s keys=%s epoch=%d pending=%s sent=%d "
                 "recv=%d dropped=%d late=%d authfail=%d replay=%d resync=%d "
                 "backpressure=%d oversize=%d "
-                "jitter=%d ratchets=%d rekeys=%d/%d"
+                "jitter=%d/%d (%.0fms) ratchets=%d rekeys=%d/%d"
                 % (self.state, self.role, audio, rate,
                    "confirmed" if self.keys_confirmed.is_set() else "pending",
                    epoch, "-" if pending is None else pending,
@@ -2317,7 +2420,8 @@ class VoiceCallSession:
                    self.stats["auth_fail"], self.stats["replay"],
                    self.stats["resync"],
                    self.stats["backpressure"], self.stats["oversize"],
-                   self.jitter.depth(),
+                   self.jitter.depth(), self.jitter.target_depth,
+                   self.jitter.jitter_ms,
                    ratchets, rekeys, failed))
 
     # -- teardown ---------------------------------------------------------
@@ -2593,6 +2697,7 @@ class VoiceCallManager:
         self._stats_tasks = {}
         self._rekey_tasks = {}
         self._last_invite = {}
+        self._ringers = {}
         self._control_limiter = RateLimiter(VOICE_MAX_CONTROL_PER_MIN)
         self._rekey_limiter = RateLimiter(VOICE_MAX_REKEY_PER_MIN)
         self.debug = False
@@ -2923,6 +3028,9 @@ class VoiceCallManager:
             _print("[voice] no incoming call to answer")
             return
 
+        # Before anything opens a playback stream, so the two never contend.
+        self._stop_ringing(peer)
+
         if not session.try_transition(CallState.CONNECTING):
             return
         self._cancel_timeout(peer)
@@ -3099,8 +3207,31 @@ class VoiceCallManager:
         self._calls[peer] = session
         self._arm_timeout(peer, call_id)
 
+        self._start_ringing(peer)
         _print("\n[voice] incoming call from %s" % _san(peer, 64))
         _print("[voice] /answer to accept, /reject to decline\n")
+
+    def _start_ringing(self, peer: str) -> None:
+        """Ring, notify and vibrate for an incoming call."""
+        self._stop_ringing(peer)
+        try:
+            ringer = _audio.Ringer()
+            ringer.start(peer=peer, which=_HOST["which"],
+                         write_all=_HOST["pipe_write_all"])
+            self._ringers[peer] = ringer
+        except Exception as exc:
+            # Never let a ringtone failure stop a call arriving.
+            self._vdbg(peer, "ringer failed: %s" % _san(str(exc), 120))
+
+    def _stop_ringing(self, peer: str) -> None:
+        """Silence the ringer.  Must run before the call opens playback."""
+        ringer = self._ringers.pop(peer, None)
+        if ringer is None:
+            return
+        try:
+            ringer.stop()
+        except Exception:
+            pass
 
     async def _on_accept(self, peer: str, fields) -> None:
         if len(fields) != 4:
@@ -3439,6 +3570,7 @@ class VoiceCallManager:
 
     async def end_call(self, peer: str, notify_peer: bool = True) -> None:
         peer = self._bare(peer)
+        self._stop_ringing(peer)
         session = self._calls.pop(peer, None)
         self._cancel_timeout(peer)
         for registry in (self._stats_tasks, self._rekey_tasks):
@@ -3464,6 +3596,7 @@ class VoiceCallManager:
 
     async def reject_call(self, peer: str) -> None:
         peer = self._bare(peer)
+        self._stop_ringing(peer)
         session = self._calls.pop(peer, None)
         self._cancel_timeout(peer)
         if session is None:
@@ -3493,6 +3626,8 @@ class VoiceCallManager:
 
     def cleanup_sync(self) -> int:
         """Synchronous teardown for paths with no usable event loop."""
+        for peer in list(self._ringers):
+            self._stop_ringing(peer)
         count = 0
         for peer in list(self._calls.keys()):
             session = self._calls.pop(peer, None)

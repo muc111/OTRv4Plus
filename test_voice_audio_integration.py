@@ -404,6 +404,133 @@ class TestBurstDelivery(IntegrationBase):
         self.assertLessEqual(len(buf), V.VOICE_HDR_LEN)
 
 
+class TestRekeyReceiveWindow(IntegrationBase):
+    """The responder must accept the new epoch before it commits.
+
+    The initiator commits a full round trip earlier: it verifies REKEYACK,
+    switches its send epoch, then sends REKEYCOMMIT. Media takes the direct
+    I2P tunnel while REKEYCOMMIT goes via the XMPP server, so new-epoch audio
+    reliably overtakes it. Live call: authfail=87 on the responder, 0 on the
+    initiator, across 5 rekeys.
+    """
+
+    def _pair(self):
+        call_id = CALL_ID
+        root = b"\x5c" * V.ROOT_LEN
+        si = V.VoiceKeySchedule(call_id, True)
+        sr = V.VoiceKeySchedule(call_id, False)
+        si.install_initial(root)
+        sr.install_initial(root)
+        return si, sr
+
+    def _derive(self, si, sr, epoch):
+        new_root = V.derive_rekey_root(
+            si.current_root(), b"\x01" * 56, b"\x02" * 32,
+            V.build_transcript(CALL_ID, OTR_BINDING, FP_A, FP_B,
+                               b"\x03" * 56, b"\x04" * 56,
+                               b"\x05" * V.MLKEM_EK_LEN,
+                               b"\x06" * V.MLKEM_CT_LEN, epoch))
+        si.begin_rekey(epoch, new_root)
+        sr.begin_rekey(epoch, new_root)
+        return si.our_confirm(), sr.our_confirm()
+
+    def test_responder_opens_new_epoch_frames_before_commit(self):
+        si, sr = self._pair()
+        ci, cr = self._derive(si, sr, 1)
+
+        # Initiator commits and immediately transmits on epoch 1.
+        self.assertTrue(si.commit_rekey(1, cr))
+        self.assertEqual(si.epoch, 1)
+        plain = bytes(V.pad_opus(b"\xAB" * 80))
+        packet = si.cipher_for_send().seal(plain)
+
+        # Responder has NOT committed yet — REKEYCOMMIT is still in flight.
+        self.assertEqual(sr.epoch, 0)
+        cipher = sr.cipher_for_epoch(1)
+        self.assertIsNotNone(cipher, "pending epoch must be receivable")
+        self.assertEqual(cipher.open(packet[:V.VOICE_HDR_LEN],
+                                     packet[V.VOICE_HDR_LEN:]), plain)
+
+    def test_responder_still_sends_on_the_committed_epoch(self):
+        si, sr = self._pair()
+        self._derive(si, sr, 1)
+        self.assertEqual(sr.epoch, 0)
+        self.assertEqual(sr.cipher_for_send().epoch, 0,
+                         "receiving early must not move the send epoch")
+
+    def test_no_authfail_across_a_rekey_boundary(self):
+        import asyncio
+        session = build_session(self.loop, is_initiator=False)
+        session._opus_dec = FakeOpusDecoder()
+        session.jitter = V.JitterBuffer(prefill=1, maxlen=200)
+        si = V.VoiceKeySchedule(CALL_ID, True)
+        si.install_initial(b"\x5c" * V.ROOT_LEN)
+        sr = session.schedule
+
+        plain = bytes(V.pad_opus(b"\xAB" * 80))
+        buf = bytearray()
+        for _ in range(5):
+            buf += si.cipher_for_send().seal(plain)
+
+        ci, cr = self._derive(si, sr, 1)
+        si.commit_rekey(1, cr)
+        # 20 frames on the new epoch arrive before REKEYCOMMIT is processed.
+        for _ in range(20):
+            buf += si.cipher_for_send().seal(plain)
+
+        session._drain_buffer(buf)
+        self.assertEqual(session.stats["auth_fail"], 0,
+                         "new-epoch audio must not be rejected pre-commit")
+        self.assertEqual(session.stats["recv"], 25)
+        self.assertEqual(session.stats["resync"], 0)
+
+    def test_aborted_rekey_withdraws_the_receive_cipher(self):
+        si, sr = self._pair()
+        self._derive(si, sr, 1)
+        self.assertIsNotNone(sr.cipher_for_epoch(1))
+        sr.abort_rekey()
+        self.assertIsNone(sr.cipher_for_epoch(1),
+                          "a failed rekey must not leave a live key behind")
+        self.assertEqual(sr.epoch, 0)
+
+
+class TestJitterDrift(IntegrationBase):
+    """Latency accumulated during a burst must not persist for the call."""
+
+    def test_depth_converges_back_to_the_ceiling(self):
+        jb = V.JitterBuffer(prefill=2, maxlen=60, drift_high=10,
+                            adaptive=False)
+        for c in range(40):
+            jb.push(0, c, bytearray(b"\x00" * 8))
+        self.assertGreater(jb.depth(), 10)
+        for _ in range(60):
+            if jb.pop() is None:
+                break
+        self.assertLessEqual(jb.depth(), 10)
+        self.assertGreater(jb.stats["drift"], 0)
+
+    def test_steady_state_sheds_nothing(self):
+        # One frame in, one frame out — arrival matched to playout, which is
+        # what a healthy call looks like. Depth stays at the prefill cushion.
+        # adaptive=False: this test is about the shed rule, not the
+        # estimator. With adaptation on, synthetic arrivals with no delay
+        # between them read as jitter and move the target mid-test.
+        jb = V.JitterBuffer(prefill=2, maxlen=60, drift_high=10,
+                            adaptive=False)
+        # Prime to exactly the target. Priming above the shed threshold and
+        # then complaining that it sheds would be testing the test.
+        for seq in range(jb.target_depth):
+            jb.push(0, seq, bytearray(b"\x00" * 8))
+        seq = jb.target_depth
+        for _ in range(200):
+            jb.push(0, seq, bytearray(b"\x00" * 8))
+            seq += 1
+            jb.pop()
+        self.assertLessEqual(jb.depth(), 10)
+        self.assertEqual(jb.stats["drift"], 0,
+                         "one frame in, one frame out must never shed audio")
+
+
 class TestIsolation(IntegrationBase):
 
     def test_aaudio_path_starts_no_subprocess(self):

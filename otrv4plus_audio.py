@@ -1036,3 +1036,182 @@ if __name__ == "__main__":
     result = probe()
     if os.environ.get("OTRV4PLUS_AUDIO_JSON"):
         print(json.dumps(result, indent=2, default=str))
+
+
+# ---------------------------------------------------------------------------
+# Incoming-call ringer
+# ---------------------------------------------------------------------------
+
+class Ringer:
+    """Ring pattern for an incoming call, synthesised and played via AAudio.
+
+    No audio file is read or written: the tone is generated as PCM in memory,
+    which keeps the "nothing touches disk" property and needs no extra
+    package. It plays through the same backend the call will use, so if the
+    ringer is audible the call will be too — a silent ringer is itself a
+    useful signal that playback is broken.
+
+    Termux:API notification and vibration run alongside it, because the phone
+    is usually screen-off and face-down when a call arrives and a tone from a
+    backgrounded terminal is easy to miss.
+
+    stop() is idempotent and must be called before the call opens its own
+    playback stream, so the two never contend for the device.
+    """
+
+    # UK-style double ring: 400 + 450 Hz, 0.4 s on, 0.2 s gap, 0.4 s on,
+    # then two seconds of silence. Distinct from a notification chirp and
+    # recognisable as a call without being shrill.
+    TONE_HZ = (400.0, 450.0)
+    PATTERN = ((0.4, True), (0.2, False), (0.4, True), (2.0, False))
+    AMPLITUDE = 0.28                      # headroom: two summed tones
+
+    def __init__(self, notify=True, vibrate=True):
+        self._stop = threading.Event()
+        self._thread = None
+        self._stream = None
+        self._notify = notify
+        self._vibrate = vibrate
+        self._notif_id = "otrv4plus-call"
+        self.started = False
+        self.error = None
+
+    # -- tone generation --------------------------------------------------
+
+    _PATTERN_CACHE = None
+
+    @classmethod
+    def _build_pattern(cls):
+        """One full ring cycle as a list of canonical-format PCM frames.
+
+        Cached: this is ~80 frames of pure-Python sine, and generating it
+        after the device opens delayed the first audible ring on a slow
+        phone. Same bytes every call, so building it once is free.
+        """
+        if cls._PATTERN_CACHE is not None:
+            return cls._PATTERN_CACHE
+        import math
+        frames = []
+        phase = 0
+        for seconds, voiced in cls.PATTERN:
+            for _ in range(max(1, int(round(seconds / (FRAME_MS / 1000.0))))):
+                samples = []
+                for i in range(FRAME_SAMPLES):
+                    if not voiced:
+                        samples.append(0)
+                        continue
+                    t = (phase + i) / float(SAMPLE_RATE)
+                    v = sum(math.sin(2.0 * math.pi * f * t)
+                            for f in cls.TONE_HZ) / len(cls.TONE_HZ)
+                    samples.append(int(max(-1.0, min(1.0, v))
+                                       * cls.AMPLITUDE * 32767))
+                phase += FRAME_SAMPLES
+                frames.append(struct.pack("<%dh" % FRAME_SAMPLES, *samples))
+        cls._PATTERN_CACHE = frames
+        return frames
+
+    # -- lifecycle --------------------------------------------------------
+
+    def start(self, peer: str = "", which=None, write_all=None) -> None:
+        if self._thread is not None:
+            return
+        self._stop.clear()
+        if self._notify:
+            self._post_notification(peer, which)
+        self._thread = threading.Thread(target=self._run, name="voice-ringer",
+                                        args=(which, write_all), daemon=True)
+        self._thread.start()
+
+    def _run(self, which, write_all) -> None:
+        pattern = self._build_pattern()
+        try:
+            self._stream, _notes = open_playback(which=which,
+                                                 write_all=write_all)
+            self.started = True
+        except Exception as exc:
+            # A silent ring is survivable — the call still shows on screen —
+            # so this never propagates into the call path.
+            self.error = str(exc)
+            return
+        try:
+            while not self._stop.is_set():
+                for frame in pattern:
+                    if self._stop.is_set():
+                        break
+                    try:
+                        self._stream.write_frame(frame)
+                    except Exception:
+                        return
+        finally:
+            try:
+                self._stream.stop()
+            except Exception:
+                pass
+            self._stream = None
+
+    def stop(self) -> None:
+        """Silence the ringer and release the device.  Idempotent."""
+        self._stop.set()
+        thread, self._thread = self._thread, None
+        if thread is not None and thread.is_alive():
+            # Bounded: the loop checks the flag once per 40 ms frame.
+            thread.join(timeout=1.5)
+        stream = self._stream
+        if stream is not None:
+            try:
+                stream.stop()
+            except Exception:
+                pass
+            self._stream = None
+        self._clear_notification()
+
+    # -- Termux:API -------------------------------------------------------
+
+    def _post_notification(self, peer: str, which) -> None:
+        """Notification plus vibration, best effort.
+
+        OTRV4PLUS_RING_PRIVACY=1 keeps the peer's JID off the lock screen,
+        where anyone holding the phone can read it.
+        """
+        import subprocess
+        which = which or _default_which
+        if os.environ.get("OTRV4PLUS_RING_PRIVACY"):
+            content = "Open Termux to answer"
+        else:
+            content = str(peer)[:96] or "unknown peer"
+
+        notif = which("termux-notification")
+        if notif:
+            try:
+                subprocess.Popen(
+                    [notif, "--id", self._notif_id,
+                     "--title", "Incoming encrypted call",
+                     "--content", content,
+                     "--priority", "max", "--sound", "--ongoing"],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                    stdin=subprocess.DEVNULL)
+            except Exception:
+                pass
+        if self._vibrate:
+            vib = which("termux-vibrate")
+            if vib:
+                try:
+                    subprocess.Popen([vib, "-d", "800"],
+                                     stdout=subprocess.DEVNULL,
+                                     stderr=subprocess.DEVNULL,
+                                     stdin=subprocess.DEVNULL)
+                except Exception:
+                    pass
+
+    def _clear_notification(self) -> None:
+        import subprocess
+        remove = _default_which("termux-notification-remove")
+        if not remove:
+            return
+        try:
+            subprocess.Popen([remove, self._notif_id],
+                             stdout=subprocess.DEVNULL,
+                             stderr=subprocess.DEVNULL,
+                             stdin=subprocess.DEVNULL)
+        except Exception:
+            pass

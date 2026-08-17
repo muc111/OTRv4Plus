@@ -12,6 +12,7 @@ audit report rather than faked into a green tick here.
 """
 
 import struct
+import time
 import unittest
 
 import otrv4plus_audio as A
@@ -586,6 +587,160 @@ class TestPlaybackPinning(BackendBase):
         src = inspect.getsource(V.VoiceCallSession._open_audio_devices)
         self.assertIn("preferred=self._capture.name", src,
                       "playback must be pinned to the capture backend")
+
+
+class TestRinger(BackendBase):
+    """Incoming-call ringer: audible, silenceable, and never blocking a call."""
+
+    def test_pattern_is_canonical_pcm(self):
+        frames = A.Ringer._build_pattern()
+        self.assertGreater(len(frames), 20)
+        for f in frames:
+            self.assertEqual(len(f), A.FRAME_BYTES)
+
+    def test_pattern_has_tone_and_silence(self):
+        frames = A.Ringer._build_pattern()
+        peaks = []
+        for f in frames:
+            n = len(f) // 2
+            peaks.append(max(abs(v) for v in struct.unpack("<%dh" % n, f)))
+        self.assertGreater(max(peaks), 3000, "ringer must be audible")
+        self.assertEqual(min(peaks), 0, "pattern must contain silent gaps")
+        self.assertLess(max(peaks), 32767, "must not clip")
+
+    def test_ringing_plays_through_the_backend(self):
+        lib = install(FakeAAudioLib())
+        r = A.Ringer(notify=False, vibrate=False)
+        r.start(peer="p@e.org")
+        # Wait for actual audio, not just for the device to open: started is
+        # set the moment the stream exists, and stopping there would race the
+        # first write.
+        deadline = time.time() + 5.0
+        while time.time() < deadline and lib.written_frames == 0:
+            time.sleep(0.02)
+        self.assertTrue(r.started, "ringer never opened playback: %s" % r.error)
+        r.stop()
+        self.assertGreater(lib.written_frames, 0)
+        self.assertEqual(lib.closed, 1, "ringer must release the device")
+
+    def test_stop_is_idempotent_and_releases_once(self):
+        lib = install(FakeAAudioLib())
+        r = A.Ringer(notify=False, vibrate=False)
+        r.start(peer="p@e.org")
+        time.sleep(0.2)
+        r.stop()
+        r.stop()
+        self.assertLessEqual(lib.closed, 1)
+
+    def test_no_playback_device_does_not_raise(self):
+        # A silent ring is survivable; a crash in the receive path is not.
+        A._LIB = None
+        A._LIB_ERROR = "no libaaudio"
+        r = A.Ringer(notify=False, vibrate=False)
+        r.start(peer="p@e.org")
+        time.sleep(0.3)
+        r.stop()
+        self.assertFalse(r.started)
+        self.assertIsNotNone(r.error)
+
+    def test_privacy_mode_keeps_the_jid_off_the_lock_screen(self):
+        import inspect
+        src = inspect.getsource(A.Ringer._post_notification)
+        self.assertIn("OTRV4PLUS_RING_PRIVACY", src)
+        self.assertIn("Open Termux to answer", src)
+
+    def test_ringer_stops_before_call_playback_opens(self):
+        import inspect
+        import otrv4plus_voice as V
+        src = inspect.getsource(V.VoiceCallManager.answer_call)
+        self.assertIn("self._stop_ringing(peer)", src)
+        self.assertLess(src.index("_stop_ringing"),
+                        src.index("responder_derive"),
+                        "ringer must be silenced before the call takes the "
+                        "audio device")
+
+
+class TestAdaptiveJitter(unittest.TestCase):
+    """Target depth must track the path instead of being fixed."""
+
+    def _sim(self, spikes, n=400, seed=1):
+        import random
+        import otrv4plus_voice as V
+        random.seed(seed)
+        jb = V.JitterBuffer()
+        t = 0.0
+        for i in range(n):
+            t += 0.040 + random.choice(spikes)
+            jb._observe_arrival(jb.sequence(0, i), t)
+        return jb
+
+    def test_clean_path_stays_at_the_floor(self):
+        import otrv4plus_voice as V
+        jb = self._sim([0.0])
+        self.assertEqual(jb.target_depth, V.VOICE_JITTER_PREFILL)
+        self.assertLess(jb.jitter_ms, 1.0)
+
+    def test_bad_path_grows_the_cushion(self):
+        import otrv4plus_voice as V
+        jb = self._sim([0.0, 0.25, 0.4])
+        self.assertGreater(jb.jitter_ms, 100.0)
+        self.assertGreater(jb.target_depth, V.VOICE_JITTER_PREFILL)
+        self.assertLessEqual(jb.target_depth, V.VOICE_JITTER_DRIFT_HIGH)
+
+    def test_target_is_always_bounded(self):
+        import otrv4plus_voice as V
+        for spikes in ([0.0], [0.0, 0.5], [2.0], [0.0, 0.01, 0.9]):
+            jb = self._sim(spikes, n=200)
+            self.assertGreaterEqual(jb.target_depth, V.VOICE_JITTER_PREFILL)
+            self.assertLessEqual(jb.target_depth, V.VOICE_JITTER_DRIFT_HIGH)
+
+    def test_recovers_when_the_path_settles(self):
+        import otrv4plus_voice as V
+        jb = self._sim([0.0, 0.3], n=200)
+        bad = jb.target_depth
+        t = 100.0
+        for i in range(200, 900):
+            t += 0.040
+            jb._observe_arrival(jb.sequence(0, i), t)
+        self.assertLess(jb.target_depth, bad,
+                        "cushion must shrink once the path recovers")
+        self.assertEqual(jb.target_depth, V.VOICE_JITTER_PREFILL)
+
+
+class TestHostApiCompatibility(unittest.TestCase):
+    """Names otrv4plus_xmpp.py reaches for must exist on the objects it uses.
+
+    The v3 rewrite moved CALL_PREFIX from a VoiceCallManager class attribute
+    to module scope. otrv4plus_xmpp.py checks
+    `text.startswith(VoiceCallManager.CALL_PREFIX)` in three places to decide
+    whether a decrypted body is call signalling, so every inbound INVITE
+    raised AttributeError inside the OTR receive path and voice could never
+    start. Compiling and importing cleanly did not catch it, because the
+    attribute is only touched when a call actually arrives.
+    """
+
+    def test_call_prefix_on_both_class_and_module(self):
+        import otrv4plus_voice as V
+        self.assertEqual(V.VoiceCallManager.CALL_PREFIX, V.CALL_PREFIX)
+        self.assertTrue(V.CALL_PREFIX.startswith("?OTRv4-CALL"))
+
+    def test_every_attribute_the_host_dereferences_exists(self):
+        import re
+        import otrv4plus_voice as V
+        try:
+            src = open("otrv4plus_xmpp.py").read()
+        except OSError:
+            self.skipTest("otrv4plus_xmpp.py not beside the tests")
+        missing = []
+        for cls, attr in re.findall(
+                r"\b(VoiceCallManager|VoiceCallSession|CallState)\.([A-Za-z_]+)",
+                src):
+            obj = getattr(V, cls, None)
+            if obj is not None and not hasattr(obj, attr):
+                missing.append("%s.%s" % (cls, attr))
+        self.assertEqual(sorted(set(missing)), [],
+                         "otrv4plus_xmpp.py dereferences names the voice "
+                         "module does not define")
 
 
 class TestPipelineAgreement(unittest.TestCase):
