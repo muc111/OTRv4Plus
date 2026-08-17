@@ -728,7 +728,8 @@ class TestHostApiCompatibility(unittest.TestCase):
         import re
         import otrv4plus_voice as V
         try:
-            src = open("otrv4plus_xmpp.py").read()
+            with open("otrv4plus_xmpp.py") as fh:
+                src = fh.read()
         except OSError:
             self.skipTest("otrv4plus_xmpp.py not beside the tests")
         missing = []

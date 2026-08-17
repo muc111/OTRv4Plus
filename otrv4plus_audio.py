@@ -699,6 +699,9 @@ class PulseCapture(AudioStream):
             stdin=subprocess.DEVNULL, bufsize=0, env=env or dict(os.environ))
         time.sleep(0.25)
         if self._proc.poll() is not None:
+            # Reap the pipes before raising. Leaving them to the GC leaked a
+            # file descriptor per failed attempt, and open_capture() retries.
+            _terminate(self._proc)
             raise AudioError(AUDIO_RECORD_INITIALIZATION_FAILED,
                              "parec exited immediately")
 
@@ -751,6 +754,7 @@ class PulsePlayback(AudioStream):
             stdout=subprocess.DEVNULL, bufsize=0, env=env or dict(os.environ))
         time.sleep(0.25)
         if self._proc.poll() is not None:
+            _terminate(self._proc)
             raise AudioError(AUDIO_PLAYBACK_INITIALIZATION_FAILED,
                              "pacat exited immediately")
 
@@ -784,6 +788,14 @@ class PulsePlayback(AudioStream):
 
 
 def _terminate(proc) -> None:
+    """Stop a child and close its pipes. Never raises."""
+    for stream in ("stdin", "stdout", "stderr"):
+        handle = getattr(proc, stream, None)
+        if handle is not None:
+            try:
+                handle.close()
+            except Exception:
+                pass
     try:
         if proc.poll() is None:
             proc.terminate()
@@ -1067,6 +1079,7 @@ class Ringer:
     AMPLITUDE = 0.28                      # headroom: two summed tones
 
     def __init__(self, notify=True, vibrate=True):
+        self._helpers = []              # Termux:API children awaiting reap
         self._stop = threading.Event()
         self._thread = None
         self._stream = None
@@ -1182,36 +1195,47 @@ class Ringer:
 
         notif = which("termux-notification")
         if notif:
-            try:
-                subprocess.Popen(
-                    [notif, "--id", self._notif_id,
-                     "--title", "Incoming encrypted call",
-                     "--content", content,
-                     "--priority", "max", "--sound", "--ongoing"],
-                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                    stdin=subprocess.DEVNULL)
-            except Exception:
-                pass
+            self._spawn([notif, "--id", self._notif_id,
+                         "--title", "Incoming encrypted call",
+                         "--content", content,
+                         "--priority", "max", "--sound", "--ongoing"])
         if self._vibrate:
             vib = which("termux-vibrate")
             if vib:
-                try:
-                    subprocess.Popen([vib, "-d", "800"],
-                                     stdout=subprocess.DEVNULL,
-                                     stderr=subprocess.DEVNULL,
-                                     stdin=subprocess.DEVNULL)
-                except Exception:
-                    pass
+                self._spawn([vib, "-d", "800"])
 
-    def _clear_notification(self) -> None:
+    def _spawn(self, argv) -> None:
+        """Launch a Termux:API helper without blocking or leaking it.
+
+        These are fire-and-forget and exit in well under a second, but a
+        Popen garbage-collected while its child still runs leaves a zombie
+        and emits a ResourceWarning. Holding the handle and reaping finished
+        ones on the next call keeps that tidy without ever blocking the
+        receive path on an external binary.
+        """
         import subprocess
-        remove = _default_which("termux-notification-remove")
-        if not remove:
-            return
+        self._helpers = [p for p in self._helpers if p.poll() is None]
         try:
-            subprocess.Popen([remove, self._notif_id],
-                             stdout=subprocess.DEVNULL,
-                             stderr=subprocess.DEVNULL,
-                             stdin=subprocess.DEVNULL)
+            self._helpers.append(subprocess.Popen(
+                argv, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                stdin=subprocess.DEVNULL))
         except Exception:
             pass
+
+    def _reap_helpers(self) -> None:
+        for proc in self._helpers:
+            try:
+                if proc.poll() is None:
+                    proc.wait(timeout=1.0)
+            except Exception:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+        self._helpers = []
+
+    def _clear_notification(self) -> None:
+        remove = _default_which("termux-notification-remove")
+        if remove:
+            self._spawn([remove, self._notif_id])
+        self._reap_helpers()
