@@ -72,6 +72,25 @@ The project moved through several architectural phases. The short version:
 
 ## Build
 
+### Python version requirement
+
+**Python 3.12 or newer is required.** This is not a preference:
+
+```
+otrv4+.py:4268  raise ValueError(f"Key component empty or too long: {s !r }")
+                SyntaxError on 3.11 -- f-string: expecting '}'
+```
+
+The codebase uses a `{expr !r }` spacing style that is only legal under PEP 701
+(Python 3.12+). On 3.11 or earlier `otrv4+.py` does not parse at all, so the
+failure appears as a SyntaxError during import rather than as a clear version
+error. `Rust/pyproject.toml` declares `requires-python = ">=3.12"` for this
+reason, and `android_bridge/bootstrap.py` checks it before attempting the
+import so the Android host fails with an explanatory message instead.
+
+The Rust extension is built `abi3-py39` and would technically load on 3.9; the
+constraint comes from the Python application layer, not the wheel.
+
 ### Prerequisites
 
 On Termux (Android):
