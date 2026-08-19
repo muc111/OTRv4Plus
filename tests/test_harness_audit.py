@@ -190,10 +190,18 @@ class TestSecureKeyStorage(unittest.TestCase):
 
 # ═══════════ Rust SMP Vault ══════════════════════════════════════
 
+# RustSMPVault.load / load_by_handle are compiled out unless the core is built
+# with `test-only-kdf`.  On a production wheel their absence is the security
+# boundary working as designed, so these read-back tests skip rather than fail.
+# The complementary assertion -- that a production build MUST NOT expose them --
+# lives in tests/test_release_guard.py.
+_VAULT_READBACK = hasattr(RustSMPVault, "load")
+
 @unittest.skipUnless(VAULT_AVAILABLE, "otrv4_core not installed")
 class TestRustSMPVault(unittest.TestCase):
     """Rust vault for SMP secret storage with zeroize-on-drop."""
 
+    @unittest.skipUnless(_VAULT_READBACK, "core built without test-only-kdf")
     def test_01_store_and_load(self):
         vault = RustSMPVault()
         data = b'\xaa' * 384
@@ -215,6 +223,7 @@ class TestRustSMPVault(unittest.TestCase):
         vault.remove("secret")
         self.assertFalse(vault.has("secret"))
 
+    @unittest.skipUnless(_VAULT_READBACK, "core built without test-only-kdf")
     def test_04_overwrite_existing(self):
         vault = RustSMPVault()
         vault.store("r5", b'\x01' * 32)

@@ -367,6 +367,13 @@ class TestSessionIsolation:
 # 10. SMP Vault
 # ═══════════════════════════════════════════════════════════════════
 
+# RustSMPVault.load / load_by_handle are compiled out unless the core is built
+# with `test-only-kdf`.  On a production wheel their absence is the security
+# boundary working as designed, so these read-back tests skip rather than fail.
+# The complementary assertion -- that a production build MUST NOT expose them --
+# lives in tests/test_release_guard.py.
+_VAULT_READBACK = hasattr(RustSMPVault, "load")
+
 @pytest.mark.skipif(not RUST_AVAILABLE, reason="otrv4_core not installed")
 class TestSMPVaultSecurity:
     """Rust SMP vault deterministic zeroization."""
@@ -379,6 +386,7 @@ class TestSMPVaultSecurity:
         vault.clear()
         assert vault.count() == 0
 
+    @pytest.mark.skipif(not _VAULT_READBACK, reason="core built without test-only-kdf")
     def test_vault_overwrite_replaces(self):
         vault = RustSMPVault()
         vault.store("r5", b'\x01' * 32)

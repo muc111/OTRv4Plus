@@ -239,3 +239,64 @@ for _name, _val in [('SMPMath', SMPMath), ('SMPConstants', SMPConstants),
 # We do NOT import the old SMPEngine — it is gone.
 # If any test still needs it, it will fail; the test should be skipped.
 SMPEngine = None
+
+
+# NOTE: this file and the project-root otrv4_testlib.py are two divergent copies.
+# Which one a test imports depends on collection order, because tests/test_attacks.py
+# front-loads tests/ onto sys.path at import time.  The helper block below is kept
+# byte-identical in both copies so the suite is deterministic either way.  Unifying
+# the two copies is tracked separately -- see ANDROID_PHASE2_REPORT.md.
+
+# ── v10.7 migration helpers ───────────────────────────────────────────────────
+# The `cryptography` library was removed from the OTRv4+ runtime at v10.7; every
+# Ed448/X448 private key is now a Rust-owned handle whose seed never reaches the
+# Python heap.  Tests written before that migration built keys with
+# `ed448.Ed448PrivateKey.generate()` and passed them to APIs that now require a
+# handle (RingSignature.sign calls `handle.ring_sign(...)`).
+#
+# These helpers are the canonical way for a test to obtain a signing key.  Do not
+# reintroduce `cryptography` key objects: a test that constructs one is exercising
+# an API the product no longer has.
+
+def ed448_keypair():
+    """Return (Ed448KeyHandle, 57-byte public key).
+
+    The handle owns its seed inside Rust (SecretBytes<57>, ZeroizeOnDrop); the
+    seed is never observable from Python.
+    """
+    import otrv4_core as _c
+    handle = _c.generate_ed448_keypair()
+    return handle, bytes(handle.public_bytes())
+
+
+def x448_keypair():
+    """Return (X448KeyHandle, 56-byte public key)."""
+    import otrv4_core as _c
+    handle = _c.generate_x448_keypair()
+    return handle, bytes(handle.public_bytes())
+
+
+def mlkem_keypair():
+    """Return (ek, dk) with dk already converted to `bytes`.
+
+    `mlkem1024_keygen` deliberately returns dk as a `bytearray` so callers can
+    wipe it in place, but `mlkem1024_decaps` takes `&[u8]` and PyO3 will not
+    coerce a bytearray to PyBytes.  Production wraps with `bytes(dk)` at every
+    call site (otrv4+.py:445, otrv4plus_voice.py:276); this helper does the same
+    so tests cannot drift from production again.
+    """
+    import otrv4_core as _c
+    ek, dk = _c.mlkem1024_keygen()
+    return bytes(ek), bytes(dk)
+
+
+def rust_vault_readback_available():
+    """True when the core was built with `test-only-kdf`.
+
+    RustSMPVault.load / load_by_handle are compiled out of production builds so
+    Python cannot extract stored SMP secrets.  Tests that read secrets back must
+    skip when the gate is closed rather than fail — the absence of `load` on a
+    production wheel is the security property working, not a regression.
+    """
+    import otrv4_core as _c
+    return hasattr(_c.RustSMPVault, "load")

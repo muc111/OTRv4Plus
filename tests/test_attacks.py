@@ -92,10 +92,9 @@ def _ratchet_pair(rekey_interval=None):
     return alice, bob
 
 def _ed448_keypair():
-    k = ed448.Ed448PrivateKey.generate()
-    pub = k.public_key().public_bytes(
-        serialization.Encoding.Raw, serialization.PublicFormat.Raw)
-    return k, pub
+    # v10.7: RingSignature.sign requires a Rust Ed448KeyHandle (it calls
+    # handle.ring_sign); `cryptography` key objects no longer satisfy it.
+    return otr.ed448_keypair()
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -279,6 +278,7 @@ class TestTranscriptBinding:
     def test_handshake_nonces_are_unique(self):
         """ML-KEM encapsulation uses fresh randomness each time."""
         ek, dk = _ossl.mlkem1024_keygen()
+        dk = bytes(dk)   # dk is a bytearray; decaps requires bytes
         ct1, ss1 = _ossl.mlkem1024_encaps(ek)
         ct2, ss2 = _ossl.mlkem1024_encaps(ek)
         assert ct1 != ct2, "Encapsulation ciphertexts must be unique"
@@ -346,6 +346,7 @@ class TestPQDowngrade:
     def test_mlkem_ciphertext_required(self):
         """Decaps with empty/zeroed ciphertext must not produce the real shared secret."""
         ek, dk = _ossl.mlkem1024_keygen()
+        dk = bytes(dk)   # dk is a bytearray; decaps requires bytes
         ct, real_ss = _ossl.mlkem1024_encaps(ek)
         # Try decaps with zeroed ciphertext (downgrade attempt)
         try:
@@ -357,6 +358,7 @@ class TestPQDowngrade:
     def test_mlkem_truncated_ciphertext_rejected(self):
         """Truncated ciphertext must fail."""
         ek, dk = _ossl.mlkem1024_keygen()
+        dk = bytes(dk)   # dk is a bytearray; decaps requires bytes
         ct, _ = _ossl.mlkem1024_encaps(ek)
         with pytest.raises(Exception):
             _ossl.mlkem1024_decaps(ct[:-1], dk)
@@ -364,7 +366,9 @@ class TestPQDowngrade:
     def test_mlkem_wrong_key_rejected(self):
         """Ciphertext encapsulated for ek1 must not decaps with dk2."""
         ek1, dk1 = _ossl.mlkem1024_keygen()
+        dk1 = bytes(dk1)   # dk is a bytearray; decaps requires bytes
         ek2, dk2 = _ossl.mlkem1024_keygen()
+        dk2 = bytes(dk2)   # dk is a bytearray; decaps requires bytes
         ct, ss1 = _ossl.mlkem1024_encaps(ek1)
         # ML-KEM uses implicit rejection — decaps with wrong key gives random-looking ss
         ss_wrong = _ossl.mlkem1024_decaps(ct, dk2)
@@ -373,11 +377,13 @@ class TestPQDowngrade:
     def test_kem_shared_secret_not_all_zeros(self):
         """A valid shared secret must not be all zeros."""
         ek, dk = _ossl.mlkem1024_keygen()
+        dk = bytes(dk)   # dk is a bytearray; decaps requires bytes
         ct, ss = _ossl.mlkem1024_encaps(ek)
         assert ss != b'\x00' * 32, "Shared secret is all zeros — broken KEM"
 
     def test_kem_shared_secret_not_all_ones(self):
         ek, dk = _ossl.mlkem1024_keygen()
+        dk = bytes(dk)   # dk is a bytearray; decaps requires bytes
         ct, ss = _ossl.mlkem1024_encaps(ek)
         assert ss != b'\xff' * 32, "Shared secret is all ones — broken KEM"
 
@@ -908,14 +914,19 @@ class TestSimultaneousSend:
 # Additional imports for protocol-level tests
 # ─────────────────────────────────────────────────────────────────────────────
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM as _AESGCM
-import otrv4_ as _otrv4   # OTRv4DAKE, ClientProfile, NullLogger live here
+import otrv4_ as _otrv4   # RustDAKEAdapter, ClientProfile, NullLogger live here
 
 
 def _do_dake_handshake(init_profile, resp_profile):
-    """Return (alice_keys, bob_keys) from a complete DAKE handshake."""
-    a = _otrv4.OTRv4DAKE(client_profile=init_profile,
+    """Return (alice_keys, bob_keys) from a complete DAKE handshake.
+
+    v10.7 removed the pure-Python OTRv4DAKE; RustDAKEAdapter is now the only
+    DAKE orchestrator and takes the same constructor arguments, so these
+    UKS/transcript-binding assertions carry over unchanged.
+    """
+    a = _otrv4.RustDAKEAdapter(client_profile=init_profile,
                           explicit_initiator=True,  logger=_otrv4.NullLogger())
-    b = _otrv4.OTRv4DAKE(client_profile=resp_profile,
+    b = _otrv4.RustDAKEAdapter(client_profile=resp_profile,
                           explicit_initiator=False, logger=_otrv4.NullLogger())
     b.process_dake1(a.generate_dake1(), peer_key="a")
     a.process_dake2(b.generate_dake2())

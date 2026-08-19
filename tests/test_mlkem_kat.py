@@ -32,6 +32,7 @@ class TestMLKEM1024KAT(unittest.TestCase):
     def test_01_keygen_sizes(self):
         """Key generation produces correct sizes per FIPS 203."""
         ek, dk = _ossl.mlkem1024_keygen()
+        dk = bytes(dk)   # dk is a bytearray; decaps requires bytes
         self.assertEqual(len(ek), EK_BYTES,  f"ek must be {EK_BYTES} bytes")
         self.assertEqual(len(dk), DK_BYTES,  f"dk must be {DK_BYTES} bytes")
 
@@ -45,6 +46,7 @@ class TestMLKEM1024KAT(unittest.TestCase):
     def test_03_roundtrip_single(self):
         """Single encaps/decaps roundtrip succeeds."""
         ek, dk = _ossl.mlkem1024_keygen()
+        dk = bytes(dk)   # dk is a bytearray; decaps requires bytes
         ct, ss1 = _ossl.mlkem1024_encaps(ek)
         ss2 = _ossl.mlkem1024_decaps(ct, dk)
         self.assertEqual(ss1, ss2, "Shared secrets must match")
@@ -54,6 +56,7 @@ class TestMLKEM1024KAT(unittest.TestCase):
         failures = []
         for i in range(100):
             ek, dk = _ossl.mlkem1024_keygen()
+            dk = bytes(dk)   # dk is a bytearray; decaps requires bytes
             ct, ss1 = _ossl.mlkem1024_encaps(ek)
             ss2 = _ossl.mlkem1024_decaps(ct, dk)
             if ss1 != ss2:
@@ -63,7 +66,9 @@ class TestMLKEM1024KAT(unittest.TestCase):
     def test_05_keygen_produces_unique_keys(self):
         """Each keygen call produces a fresh random keypair."""
         ek1, dk1 = _ossl.mlkem1024_keygen()
+        dk1 = bytes(dk1)   # dk is a bytearray; decaps requires bytes
         ek2, dk2 = _ossl.mlkem1024_keygen()
+        dk2 = bytes(dk2)   # dk is a bytearray; decaps requires bytes
         self.assertNotEqual(ek1, ek2, "ek values must be unique")
         self.assertNotEqual(dk1, dk2, "dk values must be unique")
 
@@ -79,12 +84,14 @@ class TestMLKEM1024KAT(unittest.TestCase):
         """Shared secret is never all-zero."""
         for _ in range(10):
             ek, dk = _ossl.mlkem1024_keygen()
+            dk = bytes(dk)   # dk is a bytearray; decaps requires bytes
             ct, ss = _ossl.mlkem1024_encaps(ek)
             self.assertNotEqual(ss, b'\x00' * SS_BYTES, "ss must not be all zeros")
 
     def test_08_implicit_rejection(self):
         """Modified ciphertext triggers implicit rejection (different ss)."""
         ek, dk = _ossl.mlkem1024_keygen()
+        dk = bytes(dk)   # dk is a bytearray; decaps requires bytes
         ct, ss_good = _ossl.mlkem1024_encaps(ek)
         ss_legit = _ossl.mlkem1024_decaps(ct, dk)
         self.assertEqual(ss_good, ss_legit, "Normal decaps must match")
@@ -98,6 +105,7 @@ class TestMLKEM1024KAT(unittest.TestCase):
     def test_09_implicit_rejection_deterministic(self):
         """Implicit rejection is deterministic for same invalid ciphertext."""
         ek, dk = _ossl.mlkem1024_keygen()
+        dk = bytes(dk)   # dk is a bytearray; decaps requires bytes
         ct, _ = _ossl.mlkem1024_encaps(ek)
         ct_bad = bytearray(ct); ct_bad[0] ^= 0x01
         ct_bad = bytes(ct_bad)
@@ -108,7 +116,9 @@ class TestMLKEM1024KAT(unittest.TestCase):
     def test_10_wrong_dk_gives_wrong_ss(self):
         """Decapsulating with wrong dk gives different shared secret."""
         ek1, dk1 = _ossl.mlkem1024_keygen()
+        dk1 = bytes(dk1)   # dk is a bytearray; decaps requires bytes
         ek2, dk2 = _ossl.mlkem1024_keygen()
+        dk2 = bytes(dk2)   # dk is a bytearray; decaps requires bytes
         ct, ss1 = _ossl.mlkem1024_encaps(ek1)
         ss_wrong = _ossl.mlkem1024_decaps(ct, dk2)
         self.assertNotEqual(ss1, ss_wrong, "Wrong dk must not recover correct ss")
@@ -122,6 +132,7 @@ class TestMLKEM1024KAT(unittest.TestCase):
     def test_12_short_ct_rejected(self):
         """Decapsulation with truncated ct raises ValueError."""
         ek, dk = _ossl.mlkem1024_keygen()
+        dk = bytes(dk)   # dk is a bytearray; decaps requires bytes
         ct, _ = _ossl.mlkem1024_encaps(ek)
         with self.assertRaises((ValueError, TypeError)):
             _ossl.mlkem1024_decaps(ct[:CT_BYTES - 1], dk)
@@ -134,7 +145,9 @@ class TestMLKEM1024KAT(unittest.TestCase):
     def test_14_cross_key_encaps(self):
         """ct from ek1 decapsulates only with dk1, not dk2."""
         ek1, dk1 = _ossl.mlkem1024_keygen()
+        dk1 = bytes(dk1)   # dk is a bytearray; decaps requires bytes
         ek2, dk2 = _ossl.mlkem1024_keygen()
+        dk2 = bytes(dk2)   # dk is a bytearray; decaps requires bytes
         ct, ss1 = _ossl.mlkem1024_encaps(ek1)
         ss_ok   = _ossl.mlkem1024_decaps(ct, dk1)
         ss_fail = _ossl.mlkem1024_decaps(ct, dk2)
@@ -147,6 +160,7 @@ class TestMLKEM1024KAT(unittest.TestCase):
         secrets_list = []
         for _ in range(50):
             ek, dk = _ossl.mlkem1024_keygen()
+            dk = bytes(dk)   # dk is a bytearray; decaps requires bytes
             ct, ss = _ossl.mlkem1024_encaps(ek)
             secrets_list.append(ss)
         for pos in range(SS_BYTES):
