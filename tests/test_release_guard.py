@@ -144,3 +144,74 @@ def test_gated_surface_is_fully_enumerated():
         f"{sorted(unknown)}. Add them to GATED_VAULT_METHODS or "
         f"GATED_MODULE_FUNCTIONS so the release assertion covers them."
     )
+
+
+# ── No development credential in shippable sources ────────────────────────────
+
+# The Phase 2/3 spec is explicit: "1337" is a development unlock sequence, and
+# the production build must contain no such credential. It must never appear in
+# Kotlin/Python/Rust production source, resources, assets, or the manifest.
+#
+# This runs now, before the unlock UI exists, so the rule is enforced from the
+# first commit that could break it rather than being retrofitted after Phase 3.
+
+_DEV_CREDENTIALS = ("1337",)
+
+_SHIPPABLE_SUFFIXES = (".py", ".kt", ".java", ".xml", ".pro", ".kts", ".rs", ".toml")
+
+# Directories that never reach a device.
+_EXCLUDED_PARTS = {
+    "tests", ".attic", "target", "build", "__pycache__", ".git",
+    "androidTest", "test",
+}
+
+
+def _shippable_sources():
+    import pathlib
+    root = pathlib.Path(__file__).resolve().parent.parent
+    for path in root.rglob("*"):
+        if not path.is_file() or path.suffix not in _SHIPPABLE_SUFFIXES:
+            continue
+        if _EXCLUDED_PARTS & set(path.relative_to(root).parts):
+            continue
+        yield path, root
+
+
+def test_no_development_credential_in_shippable_sources():
+    """No development unlock credential may sit in anything that ships."""
+    offenders = []
+    for path, root in _shippable_sources():
+        try:
+            body = path.read_text(encoding="utf-8", errors="strict")
+        except (UnicodeDecodeError, OSError):
+            continue
+        for credential in _DEV_CREDENTIALS:
+            for lineno, line in enumerate(body.splitlines(), start=1):
+                if credential not in line:
+                    continue
+                stripped = line.strip()
+                # A prose mention explaining the rule is not a credential.
+                if stripped.startswith(("#", "//", "*", "<!--")):
+                    continue
+                offenders.append(f"{path.relative_to(root)}:{lineno}: {stripped[:80]}")
+    assert not offenders, (
+        "development credential found in shippable source:\n  " + "\n  ".join(offenders)
+    )
+
+
+def test_android_resources_carry_no_secret_looking_values():
+    """strings.xml and friends are APK-readable; nothing secret may live there."""
+    import pathlib, re
+    root = pathlib.Path(__file__).resolve().parent.parent / "android"
+    if not root.is_dir():
+        pytest.skip("android project not present")
+
+    banned_names = re.compile(
+        r'name\s*=\s*"[^"]*(secret|passw|credential|seed|key|token|pin)[^"]*"',
+        re.IGNORECASE)
+    long_hex = re.compile(r"\b[0-9a-fA-F]{32,}\b")
+
+    for path in root.rglob("*.xml"):
+        body = path.read_text(encoding="utf-8", errors="replace")
+        assert not banned_names.search(body), f"{path} declares a secret-looking resource"
+        assert not long_hex.search(body), f"{path} contains a long hex literal"
