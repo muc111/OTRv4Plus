@@ -64,18 +64,28 @@ pq-rust = [
 #   cargo build --release --features extension-module,test-only-kdf
 # Do not add this to `default` or `pq-rust`.
 #
-# The comment above is the only thing that has ever enforced that.  Add this
-# to lib.rs so it is enforced by the compiler instead:
+# ENFORCEMENT (was: "the comment above is the only thing that has ever enforced
+# that").  A `compile_error!` on the feature combination was considered and
+# rejected: `--features extension-module,test-only-kdf` is also the *documented*
+# way to build the wheel the Python internals tests need, so a compile_error
+# would make those tests unrunnable.  A macro cannot tell a deliberate test
+# build from an accidental release one, because it cannot read the environment.
 #
-#   #[cfg(all(feature = "test-only-kdf", feature = "extension-module"))]
-#   compile_error!(
-#       "test-only-kdf exposes SMP vault secrets to Python and must never be \
-#        combined with extension-module: that combination is a shippable \
-#        wheel with the test gates open."
-#   );
+# build.rs can, and now does.  The rule:
 #
-# It then becomes impossible to build a distributable artifact with the
-# gates open, rather than merely inadvisable.
+#     building with `test-only-kdf` FAILS unless OTRV4PLUS_ALLOW_TEST_GATES=1
+#
+# Fail-closed: any build that enables the feature, including transitively, dies
+# with a loud error by default.  Opting in is explicit, per-invocation and
+# greppable, which a release pipeline will not do by accident:
+#
+#     OTRV4PLUS_ALLOW_TEST_GATES=1 maturin build --release \
+#         --features pyo3/extension-module,test-only-kdf
+#
+# The matching check on the artifact side is tests/test_release_guard.py, which
+# asserts the installed module exposes no gated API.  Run it with the variable
+# UNSET against the release wheel; that is the release pipeline's fail-closed
+# assertion.
 test-only-kdf = []
 
 [dependencies]
