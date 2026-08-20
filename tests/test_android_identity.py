@@ -25,7 +25,7 @@ otrv4_core = pytest.importorskip("otrv4_core")
 
 from android_bridge.secure_store import (          # noqa: E402
     AesGcmSealedStore, DekHandle, DekProvider, SealError, UnsealError,
-    NonceExhausted, RECORD_VERSION,
+    KeyRotationRequired, MAX_RECORDS_PER_KEY, RECORD_VERSION,
 )
 from android_bridge.identity import (              # noqa: E402
     IdentityManager, IdentityKeyStore, CorruptIdentity, IdentityError,
@@ -377,10 +377,51 @@ class TestAtRestProperties:
         provider = _MemoryDekProvider()
         store = AesGcmSealedStore(provider)
         nonces = set()
-        for i in range(500):
+        for i in range(2000):
             blob = store.seal("t", f"r{i}", 1, b"payload")
             nonces.add(blob[5:17])
-        assert len(nonces) == 500, "nonce reuse detected"
+        assert len(nonces) == 2000, "nonce reuse detected"
+
+    def test_nonce_is_random_not_sequential(self):
+        """The spec requires a CSPRNG nonce per operation, not a counter.
+
+        A counter-derived nonce would show as a monotonic low-order run and as
+        a mostly-constant high half; random ones do neither.
+        """
+        provider = _MemoryDekProvider()
+        store = AesGcmSealedStore(provider)
+        nonces = [store.seal("t", f"r{i}", 1, b"x")[5:17] for i in range(64)]
+
+        as_ints = [int.from_bytes(n, "big") for n in nonces]
+        assert as_ints != sorted(as_ints), "nonces look sequential"
+        # A counter nonce keeps the leading bytes fixed; random nonces vary.
+        assert len({n[:4] for n in nonces}) > 32, "nonce high bytes look fixed"
+
+    def test_identical_plaintext_seals_differently(self):
+        """Same key, same plaintext, same AAD must still give distinct records."""
+        store = AesGcmSealedStore(_MemoryDekProvider())
+        a = store.seal("t", "r", 1, b"identical payload")
+        b = store.seal("t", "r", 1, b"identical payload")
+        assert a != b
+        assert a[5:17] != b[5:17], "nonce reused for identical input"
+        assert store.unseal("t", "r", 1, a) == store.unseal("t", "r", 1, b)
+
+    def test_rotation_bound_matches_the_nist_random_nonce_limit(self):
+        assert MAX_RECORDS_PER_KEY == 2 ** 32
+
+    def test_seal_refuses_past_the_rotation_bound(self):
+        """Reaching the analysed bound must be loud, not a silent continuation."""
+        provider = _MemoryDekProvider()
+        store = AesGcmSealedStore(provider)
+        # Fast-forward the usage meter rather than sealing 2^32 records.
+        provider._counters[1] = MAX_RECORDS_PER_KEY
+        with pytest.raises(KeyRotationRequired):
+            store.seal("t", "r", 1, b"one too many")
+
+        # Rotating clears the condition and old records stay readable.
+        provider.rotate()
+        fresh = store.seal("t", "r", 1, b"after rotation")
+        assert store.unseal("t", "r", 1, fresh) == b"after rotation"
 
     def test_aad_binds_record_type_and_id(self):
         provider = _MemoryDekProvider()

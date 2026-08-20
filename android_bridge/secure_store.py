@@ -31,22 +31,32 @@ a different key generation.
 
 Nonce policy
 ------------
-Deterministic per-key counter, not `random(12)`.
+A fresh 96-bit nonce from the OS CSPRNG for every encryption operation, as the
+product specification requires.  `os.urandom` is used, which on Android is
+`getrandom(2)`.
 
-The Rust AEAD is stateless and delegates nonce uniqueness to its caller (prior
-audit item M4).  A random 96-bit nonce carries a birthday bound that a message
-database will approach; a counter does not.  The counter is persisted next to
-the key generation by the `DekProvider`, and `key_id` increments whenever the
-key rotates, which resets the counter space.
+Uniqueness is enforced by design rather than left to chance.  The Rust AEAD is
+stateless and delegates nonce uniqueness to its caller (prior audit item M4), so
+the obligation lands here:
 
-If a provider cannot guarantee the counter survives process death, it must
-report a fresh `key_id` at every start (see `DekProvider.begin_epoch`), which
-trades key-rotation churn for a guarantee that no nonce is ever reused.
+  * NIST SP 800-38D §8.3 bounds random-nonce AES-GCM at 2^32 invocations under
+    one key.  `MAX_RECORDS_PER_KEY` is set to that bound, and `seal` raises
+    `KeyRotationRequired` on reaching it rather than quietly continuing.  At
+    2^32 records the collision probability is about 2^-33.
+  * `key_id` identifies the key generation, so rotation gives a fresh nonce
+    space and old records stay readable under their original key.
+  * `tests/test_android_identity.py` asserts nonce uniqueness across bulk seals
+    and asserts that two seals of identical plaintext differ.
+
+An earlier draft of this module used a deterministic counter.  That was changed
+to match the specification: the counter is retained ONLY to enforce the rotation
+bound above, and never contributes to the nonce.
 """
 
 from __future__ import annotations
 
 import abc
+import os
 import struct
 from typing import Optional
 
@@ -57,6 +67,7 @@ __all__ = [
     "DekHandle",
     "SealError",
     "UnsealError",
+    "KeyRotationRequired",
     "NonceExhausted",
     "RECORD_VERSION",
 ]
@@ -68,9 +79,10 @@ _TAG_LEN = 16
 _KEY_ID_LEN = 4
 _HEADER_LEN = 1 + _KEY_ID_LEN + _NONCE_LEN
 
-# 2^64 records under one key would be absurd; cap far below the GCM counter
-# limit so exhaustion is a clean error rather than a wrap.
-_MAX_COUNTER = (1 << 48) - 1
+# NIST SP 800-38D §8.3: with random nonces, AES-GCM is bounded to 2^32
+# invocations per key.  Reaching it is a clean, loud error demanding rotation --
+# never a silent continuation past the analysed bound.
+MAX_RECORDS_PER_KEY = 1 << 32
 
 
 class SealError(RuntimeError):
@@ -85,8 +97,17 @@ class UnsealError(RuntimeError):
     """
 
 
-class NonceExhausted(SealError):
-    """The counter space for this key generation is used up; rotate the key."""
+class KeyRotationRequired(SealError):
+    """This key generation has reached its record limit; rotate before sealing.
+
+    Raised at the NIST SP 800-38D random-nonce bound of 2^32 records per key.
+    Deliberately fatal to the seal: continuing past the analysed bound would
+    make the collision probability an unmeasured quantity.
+    """
+
+
+# Retained under the old name so existing callers keep working.
+NonceExhausted = KeyRotationRequired
 
 
 class DekHandle(abc.ABC):
@@ -114,7 +135,11 @@ class DekHandle(abc.ABC):
 
     @abc.abstractmethod
     def next_counter(self) -> int:
-        """Return a counter value never previously used under this key_id."""
+        """Count one more record sealed under this key_id, and return the total.
+
+        This is a usage meter for the rotation bound in `MAX_RECORDS_PER_KEY`.
+        It does NOT contribute to the nonce -- nonces come from the CSPRNG.
+        """
 
 
 class DekProvider(abc.ABC):
@@ -206,14 +231,16 @@ class AesGcmSealedStore(SealedStore):
     def seal(self, record_type: str, record_id: str, schema_version: int,
              plaintext: bytes) -> bytes:
         handle = self._dek.current()
-        counter = handle.next_counter()
-        if counter > _MAX_COUNTER:
-            raise NonceExhausted("counter space exhausted for this key_id; rotate")
+        records = handle.next_counter()
+        if records > MAX_RECORDS_PER_KEY:
+            raise KeyRotationRequired(
+                "key generation has reached the NIST SP 800-38D random-nonce "
+                "bound of 2^32 records; rotate the key before sealing more"
+            )
 
-        # 12-byte nonce: 4 zero bytes || 8-byte big-endian counter.  Unique per
-        # (key_id, counter) and never reused because the counter is monotonic
-        # and key_id changes on rotation.
-        nonce = b"\x00" * 4 + struct.pack(">Q", counter)
+        # Fresh 96-bit nonce from the OS CSPRNG for every operation, per the
+        # product specification.  os.urandom is getrandom(2) on Android.
+        nonce = os.urandom(_NONCE_LEN)
         aad = _build_aad(RECORD_VERSION, handle.key_id, record_type,
                          schema_version, record_id)
         try:
