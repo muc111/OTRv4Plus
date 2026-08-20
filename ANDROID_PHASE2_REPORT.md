@@ -23,6 +23,11 @@ No cryptographic primitive, protocol or orchestration path was modified.
 | Persistent identity architecture + tests | **Done** — including a real cross-process test |
 | Typed bridge (structured state, no terminal scraping) | **Done** — 50 tests |
 | Android bootstrap + diagnostics (Python side) | **Done** — verified end to end |
+| Application security layer (lock machine, throttle) | **Done** — 35 JVM tests pass |
+| Keystore / credential / SecureStore contracts | **Done** — interfaces, no concrete default |
+| Sensitive storage audit | **Done** — `ANDROID_STORAGE_AUDIT.md`, 17 categories |
+| AAudio path reachability | **Done** (structural) / device half blocked |
+| Storage nonce design corrected to CSPRNG | **Done** — per specification |
 | Android project shell (Gradle/Kotlin sources) | **Written, not compiled** |
 | M3 disposition | **Done** — documented with caller evidence |
 | L1 tracking | **Done** — `SECURITY_ISSUES.md` |
@@ -30,8 +35,8 @@ No cryptographic primitive, protocol or orchestration path was modified.
 | Python 3.12 documentation corrected | **Done** |
 | On-device verification | **BLOCKED** |
 
-Seven commits on `claude/otrv4plus-android-spec-a3oq4d`; 46 files changed,
-35 of them new.
+Twelve commits on `claude/otrv4plus-android-spec-a3oq4d`; 61 files changed,
+48 of them new.
 
 ---
 
@@ -87,13 +92,15 @@ All figures measured in this environment on Python 3.12.3, x86_64.
 | Suite | Before Phase 2 | After |
 |---|---|---|
 | `cargo test` | 45 passed | **45 passed** (unchanged) |
-| `tests/` (production wheel) | 245 passed, 26 failed, 1 module uncollectable | **386 passed, 4 skipped, 1 xfailed, 0 failed** |
+| `tests/` (production wheel) | 245 passed, 26 failed, 1 module uncollectable | **403 passed, 4 skipped, 1 xfailed, 0 failed** |
 | `tests/` (`test-only-kdf` wheel) | 248 passed, 23 failed | **passes; the 3 gated tests run instead of skipping** |
 | voice + audio suites | 210 passed | **210 passed** (unchanged) |
+| Kotlin security layer | did not exist | **35 passed** (JVM, no Android SDK) |
 | `--ignore` needed? | yes | **no** |
 
-New tests added in Phase 2: 115 (identity 31, bridge 50, diagnostics/bootstrap
-19, release guard 6, plus repaired coverage).
+New tests added in Phase 2: **167** — Python 132 (identity 35, bridge 50,
+diagnostics/bootstrap 19, audio path 13, release guard 6, plus repaired
+coverage) and Kotlin 35.
 
 The 4 skips are the three vault read-back tests on a production wheel (correct —
 their absence *is* the security boundary) and one `importorskip`. The 1 xfail is
@@ -236,7 +243,141 @@ decision before Phase 4.**
 
 ---
 
-## 6. M3 disposition
+## 6. Security-layer architecture
+
+The specification's five states, with an exhaustive transition table enforced on
+every move — the same idiom the voice subsystem already uses for `CallState`,
+where scattered unchecked assignments were replaced by one validated table:
+
+```
+LOCKED --> AUTHENTICATING --> UNLOCKED --> BACKGROUND_LOCK_PENDING --> LOCKED
+```
+
+`AUTHENTICATING` is reachable only from `LOCKED`, so a stale lifecycle callback
+cannot push an unlocked session back through authentication; `LOCKED` cannot
+jump straight to `UNLOCKED`. The data-key handle is released on every path out
+of `UNLOCKED`, and relock completes even if releasing it throws.
+
+Classes delivered (all pure Kotlin — no Android imports, so they are
+unit-testable on a plain JVM):
+
+| Class | State |
+|---|---|
+| `LockState` / `AppLockManager` | implemented, 20 tests |
+| `AttemptThrottle` + `ThrottleStore` | implemented, 9 tests |
+| `KeystoreManager`, `SecurityLevel`, `KeystoreDiagnostics`, `DataKeyHandle` | contract only |
+| `UnlockCredentialService`, `UnlockOutcome`, `Argon2idParams` | contract only |
+| `UnlockCredentialSource` | contract only; implementations live in test sources |
+| `SecureStore`, `RecordType` | contract only |
+
+**A flaw the tests caught before commit.** The first draft treated a backwards
+clock as "no time passed", which keeps the app `UNLOCKED` — fail-open. Anyone
+holding the device could keep a session alive indefinitely by winding the clock
+back before returning to the app. A backwards clock now counts as expired and
+relocks. The caller should supply a monotonic source
+(`SystemClock.elapsedRealtime()`); this is defence for when it does not, and for
+a reboot resetting the reference.
+
+**`AttemptThrottle` never receives the credential** — it counts outcomes, not
+inputs, and a test asserts its methods take no parameters at all. It is checked
+*before* any key derivation, so the unlock screen cannot be used as a
+CPU-exhaustion oracle. Counters persist through `ThrottleStore`, because a
+throttle that forgets on restart is not a throttle. It has **no**
+wipe/destroy/erase capability, and a test asserts that: the specification
+forbids destroying user data after N failures without an explicit product
+decision, so the capability does not exist rather than existing unused.
+
+**`Argon2idParams` ships `calibrated = false`.** The specification requires the
+parameters to come from measurement on real hardware. The desktop engine's
+values (time=3, memory=64 MiB, parallelism=4) are carried as a starting point
+explicitly marked uncalibrated; 64 MiB on a low-end phone may be unacceptably
+slow or may push the app toward an OOM kill during unlock. Phase 12's release
+checklist must assert `calibrated == true`.
+
+### Keystore abstraction
+
+`KeystoreManager` reports what a device actually provides rather than what the
+app would prefer: `SOFTWARE_ONLY`, `KEYSTORE_SOFTWARE`, `HARDWARE_TEE`,
+`STRONGBOX`. **StrongBox is preferred but never required** — a device without it
+degrades and records the fact honestly. `KeystoreDiagnostics` exposes keystore
+availability, hardware-backing, StrongBox availability, whether user
+authentication is required, key version and encryption version. Every field is a
+capability or a version number; none is derived from key material.
+
+`unwrapDataKey` returns an opaque `DataKeyHandle` — the key bytes are not a
+return value, so the software path cannot be more permissive than the hardware
+one. `rewrapDataKey` is how the credential changes without re-encrypting user
+data.
+
+### Calculator unlock architecture (architecture only)
+
+```
+Calculator -> credential -> AttemptThrottle.check() -> Argon2id -> KEK
+           -> unwrap Keystore-held DEK -> AEAD tag verifies -> UNLOCKED
+```
+
+The credential is an authentication input, never the key. There is no stored
+plaintext to compare against: verification *is* the AEAD tag on the wrapped key,
+so a wrong credential and a corrupt record fail identically. `"1337"` appears in
+no production Kotlin constant, resource, asset, manifest entry, or Python/Rust
+source — `tests/test_release_guard.py` enforces that, and was confirmed to fail
+when a credential is deliberately introduced.
+
+No calculator UI was built. That is Phase 3.
+
+## 7. Storage architecture
+
+Full table in `ANDROID_STORAGE_AUDIT.md` — 17 categories, enumerated from the
+actual write sites rather than from the Phase 1 summary. The four that matter:
+
+- **The device seed *is* the storage key.** `SecureKeyStorage` derives its AES
+  key with Argon2id from a 32-byte seed sitting in plaintext next to the
+  ciphertext, so the KDF adds nothing against filesystem access. This is the
+  largest at-rest weakness and is exactly what a non-exportable Keystore
+  wrapping key fixes.
+- **The trust database is plaintext JSON** — a contact graph in the clear.
+- **The message log is the worst combination**: full message bodies, a bespoke
+  AEAD, and a plaintext key file in the same directory.
+- **Ratchet state, session keys, SMP state and voice audio already never touch
+  disk**, which is correct. `RecordType.NEVER_PERSISTED` encodes that so a
+  future "cache the ratchet for faster resume" cannot be added quietly.
+
+### Record format
+
+```
+version(1) || key_id(4) || nonce(12) || ciphertext || tag(16)
+AAD = version || key_id || record_type || 0 || schema_version || 0 || record_id
+```
+
+**Nonces are a fresh 96-bit CSPRNG draw per operation**, per the specification.
+An earlier Phase 2 draft used a deterministic counter; that was corrected.
+Uniqueness is enforced by design rather than left to chance:
+`MAX_RECORDS_PER_KEY` is the NIST SP 800-38D §8.3 bound of 2^32 invocations per
+key, and `seal()` raises `KeyRotationRequired` on reaching it rather than
+continuing past the analysed bound. The per-key counter survives only as a usage
+meter for that bound and never contributes to the nonce.
+
+## 8. AAudio
+
+The existing AAudio backend loads `libaaudio.so` through `ctypes.CDLL`, so it
+needs no per-ABI build or packaging of its own and works in any ordinary Android
+process. 13 tests pin the properties that decide whether it works in an APK: the
+system library paths are searched, the module imports with no audio device
+present (Chaquopy imports it at startup, long before a call), `aaudio_available()`
+reports absence rather than raising, and the host can pin the backend explicitly.
+
+Failure behaviour is safe and stays that way: a missing `RECORD_AUDIO`
+permission propagates rather than falling back, because every backend runs under
+the same UID and a silent demotion would encrypt and transmit silence while
+reporting a healthy call.
+
+The voice host seam (`bind_host`) and the `CallState` machine are pinned by
+tests, including one asserting `android_bridge.events.CallState` mirrors
+`otrv4plus_voice.CallState` exactly so the two cannot diverge.
+
+**Not verified**: any actual audio on a device. That is the blocked half.
+
+## 9. M3 disposition
 
 `PyDakeSessionKeys` exposes `root_key`, `chain_key_a/b`, `brace_key`, `mac_key`
 as PyBytes via `get_session_keys()` and the legacy `generate_dake2`/
@@ -257,7 +398,7 @@ agreed first. Full reasoning in `SECURITY_ISSUES.md`.
 
 ---
 
-## 7. L1 and other tracked issues
+## 10. L1 and other tracked issues
 
 `SECURITY_ISSUES.md` is new and tracks five items. **L1 is OPEN and is not
 claimed as fixed.**
@@ -282,7 +423,7 @@ claimed as fixed.**
 
 ---
 
-## 8. Release / test build separation
+## 11. Release / test build separation
 
 The Phase 1 audit found that only a *comment* prevented shipping a wheel with the
 SMP vault read-back gates open. Enforcement now sits on both sides:
@@ -318,7 +459,7 @@ credential is deliberately introduced, so they are not vacuous.
 
 ---
 
-## 9. Android configuration (written, not compiled)
+## 12. Android configuration (written, not compiled)
 
 - **Chaquopy** pinned to **Python 3.12** — a hard requirement, not a preference.
 - **minSdk 26**, chosen from an actual constraint: AAudio, the Android audio
@@ -343,7 +484,7 @@ credential is deliberately introduced, so they are not vacuous.
 
 ---
 
-## 10. I2P findings
+## 13. I2P findings
 
 Full report: `ANDROID_I2P_FEASIBILITY.md`. Headlines:
 
@@ -368,7 +509,7 @@ Full report: `ANDROID_I2P_FEASIBILITY.md`. Headlines:
 
 ---
 
-## 11. Exit gate
+## 14. Exit gate
 
 | Gate | Status |
 |---|---|
@@ -380,6 +521,9 @@ Full report: `ANDROID_I2P_FEASIBILITY.md`. Headlines:
 | Typed bridge exists | **DONE** |
 | No dependency on terminal scraping | **DONE** — enforced by test |
 | Persistent identity implemented/tested | **DONE**, with decision B1-seed open |
+| Security state machine exists | **DONE** — 35 JVM tests |
+| Keystore abstraction exists | **DONE** — contract only; Phase 4 implements |
+| Storage architecture documented | **DONE** — `ANDROID_STORAGE_AUDIT.md` |
 | `cargo test` green | **DONE** — 45/45 |
 | Voice/audio suite green | **DONE** — 210/210 |
 | Python suite repaired, no `--ignore` | **DONE** — 386 passed |
@@ -396,7 +540,7 @@ work behind each is finished and waiting.
 
 ---
 
-## 12. Decisions required
+## 15. Decisions required
 
 1. **B1-seed** — Option A (seed in Python) or **Option B** (Rust-side sealing,
    recommended)? Blocks Phase 4.
@@ -410,7 +554,7 @@ work behind each is finished and waiting.
 6. **G1** — implement the DAKE handshake timeout (behaviour change), or leave
    tracked?
 
-## 13. Phase 3 prerequisites
+## 16. Phase 3 prerequisites
 
 Before the calculator/unlock UX work begins:
 
