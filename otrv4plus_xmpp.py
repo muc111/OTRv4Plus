@@ -378,7 +378,8 @@ def _fmt_fp(fp: str) -> str:
 # them without importing this one.
 from otrv4plus_i2p import (            # noqa: E402
     SAM_CHUNK, SAM_RATE_BPS, SAM_CHUNK_DELAY, SAM_BURST_BYTES,
-    SamWritePacer, LegacySamPacer, make_pacer, set_nodelay, tuning_summary,
+    SamWritePacer, LegacySamPacer, make_pacer, set_nodelay,
+    tuning_enabled, tuning_summary,
 )
 
 _set_nodelay = set_nodelay              # historical spelling used below
@@ -418,18 +419,41 @@ async def start_i2p_sam_forwarder(
     _set_nodelay(sam_writer.transport)
 
     # Original pacing unless OTRV4PLUS_TRANSPORT_TUNING asks for the bucket.
-    pacer = make_pacer()
+    tuned_pacing = tuning_enabled("pacing")
+    pacer = SamWritePacer() if tuned_pacing else None
     print("[i2p] %s" % tuning_summary())
 
     async def _handle_local(local_reader, local_writer):
         _set_nodelay(local_writer.transport)
 
         async def pump_to_i2p(src, dst):
+            # Two explicit paths rather than one emulated by a pacer object.
+            #
+            # The "off" path below is the original code, character for
+            # character. My first revert kept the token-bucket loop shape and
+            # only swapped the delay source, which was NOT the same thing: it
+            # slept BEFORE each write instead of after, so every chunk shifted
+            # 20 ms later and small messages -- which previously paid nothing
+            # at all -- started paying 20 ms. I claimed "byte-identical to the
+            # working build" for something that was merely similar. This
+            # branch removes the claim by removing the emulation.
             try:
                 while True:
                     data = await src.read(65536)
                     if not data:
                         break
+                    if not tuned_pacing:
+                        # ── original, unmodified ─────────────────────────
+                        if len(data) <= SAM_CHUNK:
+                            dst.write(data)
+                            await dst.drain()
+                        else:
+                            for i in range(0, len(data), SAM_CHUNK):
+                                dst.write(data[i : i + SAM_CHUNK])
+                                await dst.drain()
+                                await asyncio.sleep(SAM_CHUNK_DELAY)
+                        continue
+                    # ── opt-in: OTRV4PLUS_TRANSPORT_TUNING=pacing ────────
                     for i in range(0, len(data), SAM_CHUNK):
                         piece = data[i : i + SAM_CHUNK]
                         await pacer.take(len(piece))
