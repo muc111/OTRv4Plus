@@ -16,7 +16,7 @@ use zeroize::{Zeroize, ZeroizeOnDrop};
 use rand::rngs::OsRng;
 use rand::RngCore;
 
-use crate::kdf::{kdf_chain, kdf_root, kdf_brace_rotate, kdf_mkmac};
+use crate::kdf::{kdf_chain, kdf_root, kdf_brace_rotate, kdf_mkmac, mkmac_fingerprint};
 use crate::header::{RatchetHeader, RatchetError};
 
 const MAX_SKIP: u32 = 1000;
@@ -24,6 +24,13 @@ const MAX_MESSAGE_KEYS: usize = 2000;
 const MAX_SEEN: usize = 10_000;
 const REKEY_INTERVAL: u32 = 50;
 const AD_DEFAULT: &[u8] = b"OTRv4-DATA";
+
+/// Audit C2: how many MKmac fingerprints to retain for the revealed-key
+/// cross-check. A peer reveals at most MAX_PENDING_REVEALS (50) keys per
+/// message and reveals them within a message or two of using them, so this is
+/// two orders of magnitude more history than the check ever needs. Each entry
+/// is 32 bytes and is a hash, not key material.
+const MAX_MAC_FINGERPRINTS: usize = 4096;
 
 // ── Skipped key storage ─────────────────────────────────────────────
 #[derive(Zeroize, ZeroizeOnDrop)]
@@ -124,6 +131,12 @@ pub struct DoubleRatchet {
     seen: ReplayCache,
     last_mac_key: Option<Vec<u8>>,
     pending_reveal_macs: Vec<Vec<u8>>,
+    /// Audit C2: fingerprints of every MKmac this endpoint has derived, in
+    /// either direction, including the ones derived for skipped messages that
+    /// never arrived. A key the peer reveals is checked against this set.
+    /// Hashes only -- see kdf::mkmac_fingerprint.
+    derived_mac_fps: HashSet<[u8; 32]>,
+    derived_mac_fp_order: VecDeque<[u8; 32]>,
     rekey_interval: u32,
     max_skip: u32,
 }
@@ -139,6 +152,8 @@ impl Drop for DoubleRatchet {
         if let Some(ref mut k) = self.last_remote_pub { k.zeroize(); }
         if let Some(ref mut k) = self.last_mac_key { k.zeroize(); }
         for mac in &mut self.pending_reveal_macs { mac.zeroize(); }
+        self.derived_mac_fps.clear();
+        self.derived_mac_fp_order.clear();
         self.ad.zeroize();
         self.skipped.clear();
     }
@@ -181,6 +196,8 @@ impl DoubleRatchet {
             seen: ReplayCache::new(MAX_SEEN),
             last_mac_key: None,
             pending_reveal_macs: Vec::new(),
+            derived_mac_fps: HashSet::new(),
+            derived_mac_fp_order: VecDeque::new(),
             rekey_interval: REKEY_INTERVAL,
             max_skip: MAX_SKIP,
         })
@@ -265,6 +282,9 @@ impl DoubleRatchet {
         tag.copy_from_slice(&ciphertext_with_tag[ct_len..]);
 
         enc_key.zeroize();
+        // Audit C2: the peer reveals the MKmac of every message it receives
+        // from us, so our own send-side keys belong in the cross-check set.
+        self.note_derived_mac(&mkmac);
         self.last_mac_key = Some(mkmac.to_vec());
 
         let rid = self.ratchet_id;
@@ -375,6 +395,10 @@ impl DoubleRatchet {
 
         // ── Authenticated: commit ───────────────────────────────────────
         for (n, enc_key) in pending_skipped {
+            // Audit C2: the peer will reveal the MKmac of the message this
+            // key belongs to whether or not that message ever reaches us, so
+            // fingerprint it now while MKenc is in hand.
+            self.note_derived_mac(&kdf_mkmac(&enc_key));
             let skip_id = SkipId { dh_pub: header.dh_pub, msg_num: n };
             self.skipped.insert(skip_id, SkippedKey { enc_key });
         }
@@ -394,8 +418,40 @@ impl DoubleRatchet {
         Ok(DecryptResult { plaintext: pt, mac_key: mkmac.to_vec() })
     }
 
+    /// Audit C2: remember that this endpoint derived `mkmac`.
+    ///
+    /// Called at every point an MKmac comes into existence -- send, receive,
+    /// and the skipped-message path -- so that the set covers every key the
+    /// peer could legitimately reveal, including keys for messages that were
+    /// lost in transit and whose MKenc only ever existed in the skipped store.
+    fn note_derived_mac(&mut self, mkmac: &[u8]) {
+        let fp = mkmac_fingerprint(mkmac);
+        if self.derived_mac_fps.insert(fp) {
+            self.derived_mac_fp_order.push_back(fp);
+        }
+        while self.derived_mac_fp_order.len() > MAX_MAC_FINGERPRINTS {
+            if let Some(old) = self.derived_mac_fp_order.pop_front() {
+                self.derived_mac_fps.remove(&old);
+            } else {
+                break;
+            }
+        }
+    }
+
+    /// Audit C2: did this endpoint independently derive `key`?
+    ///
+    /// True means the peer revealed a MAC key that really did key a message
+    /// on a chain both sides share -- the revelation is genuine. False means
+    /// only that this endpoint cannot account for the key; it is NOT proof of
+    /// misbehaviour, because eviction and messages skipped past an old chain
+    /// both produce keys the peer holds and this side never derived.
+    pub fn knows_derived_mac(&self, key: &[u8]) -> bool {
+        self.derived_mac_fps.contains(&mkmac_fingerprint(key))
+    }
+
     /// Queue a MAC key for later revelation, bounded.
     fn queue_reveal(&mut self, mkmac: &[u8; 64]) {
+        self.note_derived_mac(mkmac);
         self.pending_reveal_macs.push(mkmac.to_vec());
         const MAX_PENDING_REVEALS: usize = 50;
         if self.pending_reveal_macs.len() > MAX_PENDING_REVEALS {
@@ -475,6 +531,8 @@ impl DoubleRatchet {
         for (n, mk) in pending_skipped {
             // Audit L2: retain the skipped keys of the NEW receiving chain so
             // out-of-order messages arriving after this step still decrypt.
+            // Audit C2: fingerprint the matching MKmac at the same time.
+            self.note_derived_mac(&kdf_mkmac(&mk));
             let skip_id = SkipId { dh_pub: header.dh_pub, msg_num: n };
             self.skipped.insert(skip_id, SkippedKey { enc_key: mk });
         }
@@ -800,6 +858,18 @@ impl RustDoubleRatchet {
         self.inner.is_new_dh(header_bytes)
     }
 
+    /// Audit C2: has this endpoint independently derived the MAC key the peer
+    /// just revealed?
+    ///
+    /// Takes a revealed key -- a value that is public by construction -- and
+    /// returns a boolean. Nothing secret crosses the boundary in either
+    /// direction: the ratchet stores fingerprints, not keys, and returns one
+    /// bit. See DoubleRatchet::knows_derived_mac for what False does and does
+    /// not prove.
+    fn knows_revealed_mac_key(&self, key: &[u8]) -> bool {
+        self.inner.knows_derived_mac(key)
+    }
+
     // ── Corrected: returns Python bytes object ────────────────
     fn header_dh_pub<'py>(&self, py: Python<'py>, header_bytes: &[u8]) -> Option<Bound<'py, PyBytes>> {
         DoubleRatchet::header_dh_pub(header_bytes).map(|pk: [u8; 56]| PyBytes::new(py, &pk))
@@ -920,6 +990,90 @@ mod tests {
     fn deliver_full(rx: &mut DoubleRatchet, m: &EncryptResult)
         -> Result<DecryptResult, RatchetError> {
         rx.decrypt_same_dh(&m.header, &m.ciphertext, &m.nonce, &m.tag)
+    }
+
+    // ── Audit C2: revealed-key cross-check ──────────────────────────────
+
+    #[test]
+    fn own_send_key_is_accountable() {
+        // The peer reveals the MKmac of every message it receives from us.
+        let (mut a, _b) = pair();
+        let m = a.encrypt(b"hello").unwrap();
+        assert!(a.knows_derived_mac(&m.mac_key));
+    }
+
+    #[test]
+    fn received_key_is_accountable() {
+        let (mut a, mut b) = pair();
+        let m = a.encrypt(b"hello").unwrap();
+        let r = deliver_full(&mut b, &m).unwrap();
+        assert!(b.knows_derived_mac(&r.mac_key));
+        assert!(b.knows_derived_mac(&m.mac_key));
+    }
+
+    #[test]
+    fn an_invented_key_is_not_accountable() {
+        let (mut a, _b) = pair();
+        let _ = a.encrypt(b"hello").unwrap();
+        assert!(!a.knows_derived_mac(&[0x5A; 64]));
+        assert!(!a.knows_derived_mac(&[0u8; 64]));
+    }
+
+    #[test]
+    fn a_single_flipped_bit_is_not_accountable() {
+        let (mut a, _b) = pair();
+        let m = a.encrypt(b"hello").unwrap();
+        let mut near = m.mac_key.clone();
+        near[0] ^= 0x01;
+        assert!(!a.knows_derived_mac(&near));
+    }
+
+    #[test]
+    fn a_lost_messages_key_is_still_accountable() {
+        // The case that would make a naive cross-check fire on honest peers:
+        // Alice's first message never arrives, but she reveals its MKmac. Bob
+        // holds the skipped MKenc and fingerprints the matching MKmac when he
+        // stores it, so he can still account for the key.
+        let (mut a, mut b) = pair();
+        let lost = a.encrypt(b"never arrives").unwrap();
+        let arrived = a.encrypt(b"arrives").unwrap();
+        deliver(&mut b, &arrived).unwrap();
+        assert!(b.knows_derived_mac(&lost.mac_key));
+    }
+
+    #[test]
+    fn a_forgery_contributes_nothing_to_the_set() {
+        let (mut a, mut b) = pair();
+        let m = a.encrypt(b"real").unwrap();
+        let mut forged_ct = m.ciphertext.clone();
+        forged_ct[0] ^= 0x01;
+        assert!(b.decrypt_same_dh(&m.header, &forged_ct, &m.nonce, &m.tag).is_err());
+        // The genuine key is still unknown to Bob: he never authenticated it.
+        assert!(!b.knows_derived_mac(&m.mac_key));
+    }
+
+    #[test]
+    fn the_fingerprint_set_is_bounded() {
+        let (mut a, _b) = pair();
+        for _ in 0..(MAX_MAC_FINGERPRINTS + 200) {
+            let _ = a.encrypt(b"x").unwrap();
+        }
+        assert!(a.derived_mac_fps.len() <= MAX_MAC_FINGERPRINTS);
+        assert_eq!(a.derived_mac_fps.len(), a.derived_mac_fp_order.len());
+    }
+
+    #[test]
+    fn a_message_never_reveals_its_own_key() {
+        // encrypt() takes the pending queue before installing the current
+        // message's key, so the two can never coincide.
+        let (mut a, mut b) = pair();
+        for _ in 0..5 {
+            let m = a.encrypt(b"x").unwrap();
+            assert!(!m.reveal_mac_keys.iter().any(|k| *k == m.mac_key));
+            deliver(&mut b, &m).unwrap();
+            let r = b.encrypt(b"y").unwrap();
+            assert!(!r.reveal_mac_keys.iter().any(|k| *k == r.mac_key));
+        }
     }
 
     #[test]

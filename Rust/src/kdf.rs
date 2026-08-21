@@ -113,6 +113,28 @@ pub fn kdf_mkmac(enc_key: &[u8; 32]) -> [u8; 64] {
     out
 }
 
+/// Audit C2: a one-way, domain-separated fingerprint of an `MKmac`.
+///
+/// The ratchet records one of these for every MKmac it derives, so that a MAC
+/// key the peer later reveals can be checked against keys this endpoint
+/// independently derived. Storing the fingerprint rather than the key means
+/// the cross-check adds no new store of live key material: a fingerprint
+/// cannot be used to compute or verify a MAC.
+///
+/// SHA3-256 rather than the OTRv4 KDF because this value never leaves the
+/// process and is not part of the wire protocol; the domain string keeps it
+/// from colliding with any other hash the codebase computes.
+pub fn mkmac_fingerprint(mkmac: &[u8]) -> [u8; 32] {
+    use sha3::{Sha3_256, Digest};
+    let mut h = Sha3_256::new();
+    Digest::update(&mut h, b"OTRv4Plus.mkmac.fingerprint.v1");
+    Digest::update(&mut h, mkmac);
+    let out = h.finalize();
+    let mut arr = [0u8; 32];
+    arr.copy_from_slice(&out);
+    arr
+}
+
 pub fn kdf_root(root_key: &[u8; 32], dh_output: &[u8]) -> ([u8; 32], [u8; 32]) {
     let mut input = Vec::with_capacity(32 + dh_output.len());
     input.extend_from_slice(root_key);

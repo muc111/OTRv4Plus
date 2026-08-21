@@ -3333,6 +3333,20 @@ class RustBackedDoubleRatchet:
             except Exception as e:
                 raise EncryptionError(f"Decryption failed: {e }")
 
+    def knows_revealed_mac_key(self, key: bytes) -> bool:
+        """C2: did this endpoint independently derive the MAC key `key`?
+
+        Delegates to the engine, which fingerprints every MKmac it derives --
+        send side, receive side, and the skipped-message path. True means the
+        peer revealed a key that really did authenticate a message on a chain
+        both sides share. False means only that this endpoint cannot account
+        for it; see _record_revealed_mac_keys for why that is not proof of
+        misbehaviour.
+
+        Only public values cross the boundary: a revealed key in, one bit out.
+        """
+        return bool(self._rust.knows_revealed_mac_key(bytes(key)))
+
     def _decrypt_new_dh(self, header_bytes, ciphertext, nonce, tag):
         """Handle decrypt with DH ratchet step.
 
@@ -6040,17 +6054,49 @@ class EnhancedOTRSession:
 
     MAX_PEER_REVEALED_MAC_KEYS = 200
 
-    def _record_revealed_mac_keys(self, keys):
-        """Record MAC keys the peer published for already-authenticated messages.
+    def _record_revealed_mac_keys(self, keys, this_message_mac_key=None):
+        """Cross-check and record the MAC keys the peer published (audit C2).
 
-        OTRv4 reveals old MKmac values so that anyone can forge a message that
-        looks like it came from the sender — that is the deniability property.
-        Once revealed, a key authenticates nothing, so this store is not
-        secret; it is kept only so the property is observable and so a
-        malformed reveal list is rejected rather than ignored.
+        OTRv4 §4.4.2 has each side publish the MKmac of messages it has
+        finished with, so that anyone -- not just the two participants -- can
+        forge a message bearing that MAC. That is the deniability mechanism.
+
+        The keys are public by construction, so this store holds nothing
+        secret. What it does is make the mechanism checkable:
+
+        VERIFIED
+            The engine independently derived the same MKmac, so the key really
+            did authenticate a message on a chain both sides share. This is
+            the property revelation is supposed to have, and it is now
+            observed per key rather than assumed.
+
+        UNACCOUNTED
+            This endpoint cannot derive the key. That is NOT evidence of
+            misbehaviour and is deliberately not fatal. A key legitimately
+            lands here when the peer sent a message that never arrived and
+            then rotated its DH key before we could derive the tail of the old
+            chain, or when the fingerprint window (4096 entries) has rolled
+            over. Tearing the session down on an unaccounted key would hand
+            any attacker who can drop one packet a reliable way to kill every
+            session -- a worse outcome than the one it would be defending
+            against, because a peer that wants to defeat the check can simply
+            reveal nothing at all. The count is kept so the condition is
+            visible instead of silent.
+
+        Fatal (fail closed):
+            wrong length, all-zero, or the key that authenticated the very
+            message carrying it. The last is the one revelation must never do:
+            publishing the current message's MKmac would make that message
+            forgeable at the instant it is accepted. The engine does not do it
+            -- encrypt() takes the pending queue before installing the current
+            key -- so this is a standing guard on that ordering.
         """
         if not hasattr(self, "peer_revealed_mac_keys"):
             self.peer_revealed_mac_keys = []
+            self.revealed_mac_keys_verified = 0
+            self.revealed_mac_keys_unaccounted = 0
+            self.revealed_mac_check_available = True
+
         for k in keys:
             if len(k) != OTRv4DataMessage.REVEALED_MAC_KEY_LEN:
                 raise ValueError(
@@ -6061,7 +6107,29 @@ class EnhancedOTRSession:
                     "Peer revealed an all-zero MAC key - revelation is "
                     "supposed to publish the key that authenticated a real "
                     "message")
+            if this_message_mac_key is not None and hmac.compare_digest(
+                    bytes(k), bytes(this_message_mac_key)):
+                raise ValueError(
+                    "Peer revealed the MAC key of the message carrying the "
+                    "revelation - a key is only ever revealed once the "
+                    "message it authenticated is finished with")
+
+            if self.revealed_mac_check_available:
+                try:
+                    known = self.ratchet.knows_revealed_mac_key(bytes(k))
+                except AttributeError:
+                    # Engine predates the cross-check (stale extension build).
+                    # Recorded once, not per message, and never silently: the
+                    # keys are still stored, they just carry no verification.
+                    self.revealed_mac_check_available = False
+                    known = False
+                if known:
+                    self.revealed_mac_keys_verified += 1
+                else:
+                    self.revealed_mac_keys_unaccounted += 1
+
             self.peer_revealed_mac_keys.append(bytes(k))
+
         excess = len(self.peer_revealed_mac_keys) - self.MAX_PEER_REVEALED_MAC_KEYS
         if excess > 0:
             del self.peer_revealed_mac_keys[:excess]
@@ -6100,7 +6168,8 @@ class EnhancedOTRSession:
         # are public by design; record them so the deniability property is
         # observable rather than nominal, and bound the store.
         if dmsg.revealed_mac_keys:
-            self._record_revealed_mac_keys(dmsg.revealed_mac_keys)
+            self._record_revealed_mac_keys(dmsg.revealed_mac_keys,
+                                           this_message_mac_key=mac_key)
 
         if dmsg.kem_ct is not None:
             self.ratchet.process_incoming_kem_ct(dmsg.kem_ct)
