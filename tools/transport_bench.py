@@ -47,7 +47,7 @@ OLD_CHUNK = 1024
 OLD_DELAY = 0.020
 NEW_CHUNK = 1024
 NEW_RATE = 51200.0
-NEW_BURST = 4096
+NEW_BURST = 1024        # see otrv4plus_i2p: 4096 broke SMP on a real path
 
 
 def old_pacing_seconds(nbytes):
@@ -65,8 +65,12 @@ def old_pacing_seconds(nbytes):
 
 
 def new_pacing_seconds(nbytes, tokens=NEW_BURST):
-    """The delay the token bucket imposes on a single message, cold bucket
-    full. Same long-run ceiling, no charge inside the burst allowance."""
+    """Wall-clock delay the token bucket imposes on a single message.
+
+    The clock advances as each charged wait is slept, which is what take()
+    does -- summing the raw delays instead would compound them and overstate
+    the cost several-fold.
+    """
     total = 0.0
     remaining = nbytes
     while remaining > 0:
@@ -76,7 +80,7 @@ def new_pacing_seconds(nbytes, tokens=NEW_BURST):
             tokens -= piece
             continue
         total += (piece - tokens) / NEW_RATE
-        tokens = 0.0
+        tokens = 0.0                       # refilled during the sleep itself
     return total
 
 

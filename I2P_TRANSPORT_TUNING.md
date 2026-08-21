@@ -108,7 +108,7 @@ profile and watch tunnel-build failures before latency.
 |---|---|---|
 | `TCP_NODELAY` | Every SAM socket and both ends of the local XMPP bridge | Nagle costs ~41 ms whenever a queued burst drains. No effect at steady 40 ms cadence — measured, and reported as a negative in the analysis. |
 | Write chunk 1024 B | `otrv4plus_i2p.SAM_CHUNK` | I2P has been observed to drop a stream on a single large write (~8 KB). |
-| Burst allowance 4096 B | `SAM_BURST_BYTES` | Half the observed cliff. Traffic inside it pays no pacing delay. |
+| Burst allowance 1024 B | `SAM_BURST_BYTES` | One chunk. **Was 4096 and that broke SMP on a real path** — the old code's guarantee was ≤1 chunk without a ~20 ms gap, not ≤8 KB per burst. Override with `OTRV4PLUS_SAM_BURST_BYTES` for experiments against a real tunnel only. |
 | Sustained rate 51200 B/s | `SAM_RATE_BPS` | Identical to the ceiling the previous fixed-sleep pacing produced. |
 | Send-queue bound 400 ms | `VoiceCallSession.VOICE_MAX_WRITE_BACKLOG_MS` | Above this, audio is stale enough that the receiver's jitter buffer would discard it anyway. |
 

@@ -156,19 +156,41 @@ that mattered is kept:
 What it removes is the fixed cost paid by traffic that was never near the
 cliff.
 
+**CORRECTED 2026-08-21 — the first version of this change broke SMP on a real
+I2P path.** The burst allowance was set to 4096 bytes on the reasoning that
+half of an "~8 KB cliff" mentioned in a comment must be safe. That was a
+misreading. The old code's actual, empirically-derived guarantee was **never
+more than 1024 bytes toward SAM without a ~20 ms gap** — the cliff figure
+describes a single large write, not how much may be sent back to back. Nothing
+on the build host could test the difference, and TCP_NODELAY (§3.2, same pass)
+made it worse by removing the coalescing that had been spreading those writes
+out. Reported symptom: SMP, whose messages are large enough to fragment, failed
+with the peer dropping mid-fragment.
+
+`SAM_BURST_BYTES` is now 1024, which reproduces the old inter-chunk spacing
+exactly. What survives is the removal of the **trailing** sleep after the final
+chunk — which delayed the next stanza and nothing else — and byte-proportional
+rather than per-chunk charging, so a short final chunk costs less than a full
+20 ms.
+
 **MEASURED** (`tools/transport_bench.py`, benchmark 1):
 
 | message | old | new | saved |
 |---|---|---|---|
 | 200 B | 0.0 ms | 0.0 ms | — |
-| 1500 B | 40.0 ms | **0.0 ms** | 40.0 ms |
-| 2500 B | 60.0 ms | **0.0 ms** | 60.0 ms |
-| 4096 B | 80.0 ms | **0.0 ms** | 80.0 ms |
-| 6000 B (an OTR fragment) | 120.0 ms | **37.2 ms** | 82.8 ms |
-| 24000 B | 480.0 ms | 388.8 ms | 91.2 ms |
+| 900 B | 0.0 ms | 0.0 ms | — |
+| 1500 B | 40.0 ms | **9.3 ms** | 30.7 ms |
+| 2500 B | 60.0 ms | **28.8 ms** | 31.2 ms |
+| 4096 B | 80.0 ms | **60.0 ms** | 20.0 ms |
+| 6000 B (an OTR fragment) | 120.0 ms | **97.2 ms** | 22.8 ms |
+| 24000 B | 480.0 ms | 448.8 ms | 31.2 ms |
 
-Sustained rate over 200 KB: 49.8 KiB/s → 51.0 KiB/s, i.e. unchanged within the
+Sustained rate over 200 KB: 49.8 KiB/s → 50.3 KiB/s, i.e. unchanged within the
 granularity of the old integer-chunk model.
+
+The saving is ~20–31 ms per message, not the 40–83 ms first claimed. The
+larger figure required a burst allowance that does not survive contact with a
+real tunnel.
 
 ### 3.2 T2 — Nagle on the SAM sockets
 
@@ -398,8 +420,10 @@ maximum at all.**
 
 Predictions, recorded now so they can be falsified:
 
-* **MEASURED, will hold:** signalling latency drops by 40–120 ms per fragment
-  (§3.1). Independent of the router.
+* **MEASURED, will hold:** signalling latency drops by ~20–31 ms per fragment
+  (§3.1). Independent of the router. The 40–120 ms originally predicted here
+  depended on a burst allowance that broke SMP on a real path and has been
+  reverted.
 * **MEASURED, conditional:** ~41 ms per frame removed whenever a stalled queue
   drains (§3.2). How often that happens on a real path is unknown.
 * **INFERRED:** p95/p99 improve from the send-queue bound (§3.3) and from

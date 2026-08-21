@@ -231,14 +231,62 @@ class TestSamWritePacing:
     def pacer_cls(self):
         return i2pcfg.SamWritePacer
 
-    def test_a_small_message_is_never_delayed(self, pacer_cls):
-        """The regression that motivated this: a 1500-byte stanza paid 40 ms
-        of fixed sleep, and everything queued behind it paid the same."""
+    def test_a_message_inside_one_chunk_is_never_delayed(self, pacer_cls):
+        """A stanza that fits in a single write pays nothing.
+
+        This is where the old form was plainly wasteful: it slept 20 ms after
+        every chunk INCLUDING the last, so even a one-chunk message delayed
+        whatever was queued behind it.
+        """
         now = [0.0]
         pacer = pacer_cls(clock=lambda: now[0])
         assert pacer.delay_for(1024) == 0.0
-        assert pacer.delay_for(476) == 0.0
+        assert pacer.delay_for(0) == 0.0
         assert pacer.paced_writes == 0
+
+    def test_the_old_inter_chunk_spacing_is_preserved(self, pacer_cls):
+        """The safety property the previous implementation actually provided.
+
+        Not "under 8 KB per burst" -- that was a misreading that broke SMP on a
+        real path. The empirical guarantee was: never more than SAM_CHUNK bytes
+        toward SAM without a ~20 ms gap. A full chunk must therefore cost the
+        same 20 ms it always did.
+        """
+        now = [0.0]
+        pacer = pacer_cls(clock=lambda: now[0])
+        assert pacer.delay_for(i2pcfg.SAM_CHUNK) == 0.0       # first is free
+        second = pacer.delay_for(i2pcfg.SAM_CHUNK)
+        assert abs(second - 0.020) < 1e-6, (
+            "a full chunk must still wait the 20 ms the fixed sleep gave it")
+
+    def test_the_default_burst_is_one_chunk(self, pacer_cls):
+        """Regression guard on the exact value that broke SMP.
+
+        A default above SAM_CHUNK lets more than one chunk leave back to back,
+        which is what the old pacing existed to prevent -- and TCP_NODELAY,
+        added in the same pass, removed the coalescing that had been masking
+        it.
+        """
+        assert i2pcfg.SAM_BURST_BYTES == i2pcfg.SAM_CHUNK
+
+    def test_no_trailing_delay_after_the_final_chunk(self, pacer_cls):
+        """The part of the improvement that survives.
+
+        The old loop slept after the last chunk too, delaying the NEXT stanza
+        for no transport reason at all.
+        """
+        now = [0.0]
+        pacer = pacer_cls(clock=lambda: now[0])
+        total = 0.0
+        for offset in range(0, 6000, i2pcfg.SAM_CHUNK):
+            piece = min(i2pcfg.SAM_CHUNK, 6000 - offset)
+            delay = pacer.delay_for(piece)
+            total += delay
+            now[0] += delay                     # take() sleeps here
+        old_form = 6 * 0.020                    # six chunks, six sleeps
+        assert total < old_form, "no better than the fixed sleep"
+        assert total >= 4 * 0.020, (
+            "inter-chunk spacing was weakened, not just the trailing sleep")
 
     def test_a_burst_within_the_allowance_is_free(self, pacer_cls):
         now = [0.0]

@@ -85,6 +85,7 @@ __all__ = [
 ]
 
 import asyncio
+import os
 import time
 
 
@@ -263,7 +264,38 @@ def set_nodelay(sock_or_transport) -> bool:
 # unchanged within the granularity of the old integer-chunk model.
 SAM_CHUNK = 1024              # bytes per write toward I2P (unchanged)
 SAM_RATE_BPS = 51200.0        # identical long-run ceiling to the old pacing
-SAM_BURST_BYTES = 4096        # below the observed ~8 KB SAM cliff
+
+# REGRESSION (2026-08-21). This was 4096, and that was wrong.
+#
+# The old code's actual guarantee was: **never more than 1024 bytes toward SAM
+# without a 20 ms gap**. It was arrived at empirically against real tunnels.
+# The 4096-byte burst allowance was reasoned from a comment that mentioned an
+# "~8 KB cliff", on the argument that half of it must be safe -- but the cliff
+# figure describes a single large write, not the amount that may be sent
+# back-to-back, and no measurement here could test the difference. It was a
+# guess dressed as a margin, and it was made worse by TCP_NODELAY, which was
+# added in the same pass and removes the coalescing delay that used to spread
+# those writes out.
+#
+# Reported symptom: SMP -- whose messages are large enough to fragment --
+# broke on a real I2P path, with the peer dropping mid-fragment.
+#
+# 1024 reproduces the old spacing exactly: the first chunk goes out
+# immediately, every chunk after it waits 1024/51200 = 20 ms, which is what
+# the fixed sleep produced. The part of T1 that survives is the removal of the
+# TRAILING sleep after the final chunk, which delayed the next stanza and
+# nothing else.
+#
+# Override only for experiment, and only against a real tunnel:
+#   OTRV4PLUS_SAM_BURST_BYTES=4096 python3 otrv4plus_xmpp.py ...
+SAM_BURST_BYTES = 1024
+
+try:
+    _burst_override = int(os.environ.get("OTRV4PLUS_SAM_BURST_BYTES", "") or 0)
+    if _burst_override >= SAM_CHUNK:
+        SAM_BURST_BYTES = _burst_override
+except ValueError:
+    pass
 
 
 class SamWritePacer:
