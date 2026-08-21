@@ -462,25 +462,6 @@ VOICE_JITTER_MAX = 50               # ~2 s hard cap
 VOICE_JITTER_DRIFT_HIGH = 15        # 600 ms — above this, claw latency back
 VOICE_JITTER_LATE_TOLERANCE = 2     # frames older than this are discarded
 
-# I2P tunnel options for the media SAM session (audit T3).
-#
-# The session was created with no options at all, so every tunnel property was
-# the local router's default -- 5/5 on i2pd, 2/2 on Java I2P. Two installs of
-# the same build were getting materially different resilience. See
-# otrv4plus_i2p.py for the option names, the i2pd source they were read from,
-# and why hop count is deliberately NOT part of this.
-try:
-    import otrv4plus_i2p as _i2pcfg
-    VOICE_SAM_OPTIONS = _i2pcfg.VOICE_TUNNEL_OPTIONS
-except ImportError:                      # pragma: no cover - module is local
-    _i2pcfg = None
-    VOICE_SAM_OPTIONS = {}
-
-try:
-    import otrv4plus_telemetry as _telemetry
-except ImportError:                      # pragma: no cover - module is local
-    _telemetry = None
-
 VOICE_REKEY_SECONDS = 120
 VOICE_REKEY_TIMEOUT = 45
 
@@ -1399,11 +1380,6 @@ class JitterBuffer:
         self.stats = {"queued": 0, "late": 0, "duplicate": 0,
                       "overflow": 0, "gaps": 0, "drift": 0}
 
-    def __len__(self) -> int:
-        """Frames currently resident. Used for the depth distribution."""
-        with self._lock:
-            return len(self._heap)
-
     @staticmethod
     def sequence(epoch: int, counter: int) -> int:
         """A single monotonic ordering key across epoch boundaries.
@@ -1641,12 +1617,6 @@ class LatencyTracker:
         self.sent = 0
         self.answered = 0
         self.timed_out = 0
-        # T4: the most recent sample of each kind. The rolling windows above
-        # are for the status line and are medians of the last few samples;
-        # these are the raw values, so a caller accumulating a distribution
-        # sees every sample rather than a smoothed one.
-        self.last_rtt_ms = None
-        self.last_oneway_ms = None
 
     # -- clocks -----------------------------------------------------------
 
@@ -1719,7 +1689,6 @@ class LatencyTracker:
             if rtt < 0 or rtt > 120000:
                 return False               # implausible; drop rather than skew
             self._rtt.append(rtt)
-            self.last_rtt_ms = rtt
             self._offset_ms = ((t2 - t1) + (t3 - t4)) / 2.0
             self.answered += 1
         return True
@@ -1729,7 +1698,6 @@ class LatencyTracker:
     def observe_frame(self, peer_send_ms: int, _t0=None) -> None:
         """Record a one-way sample from an audio frame's timestamp."""
         with self._lock:
-            self.last_oneway_ms = None
             if self._offset_ms is None:
                 return                     # no clock correction yet
             arrival = self.stamp()
@@ -1740,7 +1708,6 @@ class LatencyTracker:
             delta = arrival - peer_send_ms + self._offset_ms
             if -1000.0 < delta < 120000.0:
                 self._oneway.append(delta)
-                self.last_oneway_ms = delta
 
     # -- readout ----------------------------------------------------------
 
@@ -1868,8 +1835,7 @@ class VoiceCallSession:
     ROLE_RESPONDER = "responder"
 
     def __init__(self, peer, loop, call_id, is_initiator,
-                 sam_host="127.0.0.1", sam_port=7656, sam_options=None,
-                 metrics=None):
+                 sam_host="127.0.0.1", sam_port=7656):
         if not call_id or len(call_id) != 16:
             raise ValueError("call_id must be exactly 16 bytes")
 
@@ -1881,26 +1847,6 @@ class VoiceCallSession:
                      else self.ROLE_RESPONDER)
         self.sam_host = sam_host
         self.sam_port = sam_port
-        # T3: tunnel options for this call's SAM session. Defaults come from
-        # otrv4plus_i2p; a caller may narrow them but not invent options the
-        # router does not implement -- session_options() refuses those.
-        if sam_options is None:
-            self.sam_options = dict(VOICE_SAM_OPTIONS)
-        elif _i2pcfg is not None:
-            self.sam_options = _i2pcfg.session_options(sam_options)
-        else:
-            self.sam_options = dict(sam_options)
-
-        # T4: transport telemetry. Numeric counters and distributions only;
-        # see otrv4plus_telemetry.py for the value guard. None means the
-        # session runs without it, which is the default for callers that have
-        # not opted in.
-        self.metrics = metrics
-        self._last_frame_at = None         # T4: interarrival reference
-        self.health = None
-        if _telemetry is not None:
-            self.health = _telemetry.TransportHealth(
-                on_change=self._on_health_change)
 
         self.state = CallState.IDLE
         self._state_lock = threading.Lock()
@@ -2184,15 +2130,10 @@ class VoiceCallSession:
             ctrl = sam_open(self.sam_host, self.sam_port, SAM_HELLO_TIMEOUT)
             try:
                 session_id = "otrv4voice_%s" % secrets.token_hex(6)
-                opts = ""
-                if _i2pcfg is not None and self.sam_options:
-                    rendered = _i2pcfg.format_options(self.sam_options)
-                    if rendered:
-                        opts = " " + rendered
                 ctrl.sendall(
                     ("SESSION CREATE STYLE=STREAM ID=%s "
-                     "DESTINATION=TRANSIENT SIGNATURE_TYPE=7%s\n"
-                     % (session_id, opts)).encode("ascii"))
+                     "DESTINATION=TRANSIENT SIGNATURE_TYPE=7\n"
+                     % session_id).encode("ascii"))
                 # i2pd builds a full tunnel set before answering, so this is
                 # minutes rather than seconds on a busy phone.
                 fields = sam_parse(sam_read_line(ctrl, SAM_SESSION_TIMEOUT),
@@ -2616,78 +2557,18 @@ class VoiceCallSession:
             return
         if packet is None:
             return
-        # T4: the stamp lets _write_packet report how long the frame waited
-        # between being sealed on the capture thread and reaching the socket.
-        # One float; nothing derived from it goes on the wire.
-        self.loop.call_soon_threadsafe(self._write_packet, packet,
-                                       time.monotonic())
+        self.loop.call_soon_threadsafe(self._write_packet, packet)
 
     # asyncio buffers writes without limit.  For real-time audio a backlog is
     # worthless — by the time it drains the audio is stale — so transmission
     # is bounded and excess frames are discarded rather than queued.
-    #
-    # TAIL LATENCY (audit T5). The bound was 50 packets, which at 40 ms per
-    # frame is **two seconds** of audio allowed to sit in the transport before
-    # anything is dropped. That is bufferbloat in the send path: when I2P
-    # congests, every one of those queued frames is delivered late by however
-    # long the queue took to drain, so the congestion is converted directly
-    # into a two-second tail and the receiver's jitter buffer then has to
-    # absorb or discard it. Dropping earlier costs a small number of frames at
-    # the moment of congestion and keeps everything after it current.
-    #
-    # 400 ms is chosen against the receiver: the adaptive jitter buffer's hard
-    # cap is 50 frames and its drift ceiling is 15 (600 ms), so a frame more
-    # than 400 ms late in the send queue is already competing with the
-    # receiver's own clawback and is likely to be discarded there anyway.
-    # Sending it costs bandwidth and delays the frame behind it.
-    # OFF by default. 50 packets is what the working build used; the 400 ms
-    # bound is an inferred improvement that has never met a congested I2P
-    # path, and this pass has already broken a working system twice by
-    # defaulting an unvalidated change ON.
-    #   OTRV4PLUS_TRANSPORT_TUNING=queue   enables the 400 ms bound
-    VOICE_MAX_WRITE_BACKLOG_MS = 400
-    _LEGACY_WRITE_BACKLOG = VOICE_PACKET_LEN * 50          # 2 s, as shipped
-    if _i2pcfg is not None and _i2pcfg.tuning_enabled("queue"):
-        _MAX_WRITE_BACKLOG = VOICE_PACKET_LEN * max(
-            2, int(VOICE_MAX_WRITE_BACKLOG_MS / VOICE_FRAME_MS))
-    else:
-        _MAX_WRITE_BACKLOG = _LEGACY_WRITE_BACKLOG
-
-    def _on_health_change(self, old_state: str, new_state: str) -> None:
-        """Transport health transition (audit T6).
-
-        Reported, not acted on. DEGRADED is deliberately not a reconnect
-        trigger: an I2P path that is slow for a few seconds recovers on its
-        own far more often than a rebuilt tunnel set arrives quickly, and a
-        transport that tears down a working session on latency reconnects
-        during every call. Only an actual stream failure ends a call, and that
-        path is _signal_stream_lost, not this one.
-        """
-        if self.metrics is not None:
-            try:
-                self.metrics.event("health_change", from_state=old_state,
-                                   to_state=new_state)
-            except Exception:
-                pass
-
-    def transport_health(self) -> str:
-        """Current transport health as a display string."""
-        return self.health.state if self.health is not None else "HEALTHY"
+    _MAX_WRITE_BACKLOG = VOICE_PACKET_LEN * 50
 
     def _signal_stream_lost(self, why: str) -> None:
         """Report a media failure exactly once, on the loop."""
         if self._loss_signalled or self._closing:
             return
         self._loss_signalled = True
-        # The only path to DISCONNECTED: an actual transport failure, never a
-        # latency observation.
-        if self.health is not None:
-            self.health.note_failure()
-        if self.metrics is not None:
-            try:
-                self.metrics.event("stream_lost")
-            except Exception:
-                pass
         callback = self.on_stream_lost
         if callback is None:
             return
@@ -2697,11 +2578,10 @@ class VoiceCallSession:
         except Exception:
             pass
 
-    def _write_packet(self, packet: bytes, sealed_at=None) -> None:
+    def _write_packet(self, packet: bytes) -> None:
         """Write one framed packet.  Event-loop thread only."""
         if not self._running or self._writer is None:
             return
-        metrics = self.metrics
         try:
             if self._writer.is_closing():
                 return
@@ -2710,21 +2590,11 @@ class VoiceCallSession:
                 try:
                     if transport.get_write_buffer_size() > self._MAX_WRITE_BACKLOG:
                         self.stats["backpressure"] += 1
-                        if metrics is not None:
-                            metrics.incr("backpressure_drops")
                         return
                 except Exception:
                     pass
-            if metrics is not None and sealed_at is not None:
-                metrics.observe("send_queue",
-                                (time.monotonic() - sealed_at) * 1000.0)
-            write_start = time.monotonic() if metrics is not None else None
             self._writer.write(packet)
             self.stats["sent"] += 1
-            if metrics is not None:
-                metrics.observe("socket_write",
-                                (time.monotonic() - write_start) * 1000.0)
-                metrics.incr("frames_sent")
         except Exception:
             self.stats["dropped"] += 1
 
@@ -2838,20 +2708,10 @@ class VoiceCallSession:
                         pass
                     continue
                 if ftype == FRAME_TYPE_PONG:
-                    rtt = None
                     try:
-                        if self.latency.handle_pong(plaintext):
-                            rtt = self.latency.last_rtt_ms
+                        self.latency.handle_pong(plaintext)
                     except Exception:
-                        rtt = None
-                    # T4/T6: the RTT sample feeds the distribution (so a p95
-                    # and a p99 exist at all) and the health machine, which
-                    # needs several consecutive bad samples before it moves.
-                    if rtt is not None:
-                        if self.metrics is not None:
-                            self.metrics.observe("rtt", rtt)
-                        if self.health is not None:
-                            self.health.observe_rtt(rtt)
+                        pass
                     continue
                 # Queue the Opus payload, not decoded PCM. Decoding at
                 # playout is what makes Opus in-band FEC usable: recovering a
@@ -2860,37 +2720,12 @@ class VoiceCallSession:
                 # 8x, since 160 bytes of Opus replaces 1280 of PCM.
                 _opus, _send_ms = unpad_frame(plaintext)
                 self.latency.observe_frame(_send_ms, self._call_t0)
-                oneway = self.latency.last_oneway_ms
-                # T4/T6: arrival accounting. Interarrival and jitter are
-                # derived from local clock deltas only, so they need no clock
-                # agreement with the peer and are available from the first
-                # two frames -- unlike one-way, which needs an RTT sample
-                # first.
-                if self.health is not None:
-                    self.health.note_progress()
-                if self.metrics is not None:
-                    now = time.monotonic()
-                    previous = self._last_frame_at
-                    self._last_frame_at = now
-                    if previous is not None:
-                        gap_ms = (now - previous) * 1000.0
-                        self.metrics.observe("interarrival", gap_ms)
-                        self.metrics.observe("jitter",
-                                             abs(gap_ms - VOICE_FRAME_MS))
-                    if oneway is not None:
-                        self.metrics.observe("oneway", oneway)
-                    self.metrics.incr("frames_received")
                 opus_frame = bytearray(_opus)
                 if self.jitter.push(epoch, counter, opus_frame):
                     self.stats["recv"] += 1
                     opus_frame = None        # ownership passed to playback
-                    if self.metrics is not None:
-                        self.metrics.observe("jitter_depth",
-                                             float(len(self.jitter)))
                 else:
                     self.stats["late"] += 1
-                    if self.metrics is not None:
-                        self.metrics.incr("late_frames")
             except FrameError as exc:
                 text = str(exc)
                 if "replay" in text:
@@ -3034,33 +2869,7 @@ class VoiceCallSession:
                    self.stats["fec_recovered"],
                    self.jitter.depth(), self.jitter.target_depth,
                    self.jitter.jitter_ms, self.latency.summary(),
-                   ratchets, rekeys, failed)
-                + self.transport_summary())
-
-    def transport_summary(self) -> str:
-        """Tail latency and transport health (audit T4).
-
-        latency.summary() reports a median over the last ten probes, which is
-        the right number for a status line and says nothing about the tail.
-        This adds the numbers the tail is actually judged on. Empty until the
-        first RTT sample exists, so a call that has just started does not
-        display placeholder percentiles.
-        """
-        parts = []
-        if self.health is not None:
-            parts.append("link=%s" % self.health.state)
-        if self.metrics is not None:
-            hist = self.metrics.histogram("rtt")
-            if hist.count:
-                parts.append("rtt p50/p95/p99/max=%.0f/%.0f/%.0f/%.0fms(n=%d)"
-                             % (hist.percentile(50), hist.percentile(95),
-                                hist.percentile(99), hist.percentile(100),
-                                hist.count))
-            jit = self.metrics.histogram("jitter")
-            if jit.count:
-                parts.append("jit p95/max=%.0f/%.0fms"
-                             % (jit.percentile(95), jit.percentile(100)))
-        return (" " + " ".join(parts)) if parts else ""
+                   ratchets, rekeys, failed))
 
     # -- teardown ---------------------------------------------------------
 
@@ -3340,67 +3149,8 @@ class VoiceCallManager:
         self._rekey_limiter = RateLimiter(VOICE_MAX_REKEY_PER_MIN)
         self.debug = False
         self._debug_t0 = {}
-        self._health_tasks = {}
-
-        # T4: transport telemetry. In-memory always -- nine bounded histograms
-        # per call, a few KB, and it is what makes p95/p99/max available at
-        # all. The JSONL sink stays off unless a path is given, because even
-        # purely numeric transport telemetry is traffic-analysis material:
-        # frame counts and RTTs describe when a call happened and how long it
-        # lasted.
-        self._telemetry_sink = None
-        if _telemetry is not None:
-            path = os.environ.get("OTRV4PLUS_TRANSPORT_LOG")
-            try:
-                self._telemetry_sink = _telemetry.JsonlSink(path or None)
-            except OSError:
-                self._telemetry_sink = _telemetry.JsonlSink(None)
 
     # -- helpers ----------------------------------------------------------
-
-    def _new_metrics(self, peer, call_id, role):
-        """One metrics container per call, or None without the module."""
-        if _telemetry is None:
-            return None
-        try:
-            return _telemetry.TransportMetrics(
-                call_tag=_telemetry.opaque_tag(call_id),
-                peer_tag=_telemetry.opaque_tag(peer),
-                role=role,
-                sink=self._telemetry_sink)
-        except Exception:
-            return None
-
-    async def _health_loop(self, peer: str) -> None:
-        """Drive the stall detector for one call.
-
-        A silent stream produces no RTT samples, so nothing else would ever
-        notice it: the health machine has to be asked. One wakeup per second
-        per call, which is cheaper than the frame it is watching for.
-        """
-        ticks = 0
-        try:
-            while True:
-                await asyncio.sleep(1.0)
-                session = self._calls.get(peer)
-                if session is None or not session.is_live():
-                    return
-                if session.health is not None:
-                    session.health.tick()
-                ticks += 1
-                # An interim snapshot every 60 s. A long soak that dies part
-                # way through must still leave everything up to the last
-                # minute: a histogram that only ever existed in memory is no
-                # use for a comparison against a baseline.
-                if ticks % 60 == 0 and session.metrics is not None:
-                    try:
-                        session.metrics.write_snapshot("session_snapshot")
-                    except Exception:
-                        pass
-        except asyncio.CancelledError:
-            pass
-        except Exception:
-            pass
 
     @staticmethod
     def _bare(jid: str) -> str:
@@ -3636,9 +3386,8 @@ class VoiceCallManager:
         self._vdbg(peer, "placing call, call_id=%s" % call_id.hex()[:16])
 
         try:
-            session = VoiceCallSession(
-                peer, self.loop, call_id, True, self.sam_host, self.sam_port,
-                metrics=self._new_metrics(peer, call_id, "initiator"))
+            session = VoiceCallSession(peer, self.loop, call_id, True,
+                                       self.sam_host, self.sam_port)
         except Exception as exc:
             _print("[voice] could not start the key exchange: %s"
                    % _san(str(exc), 200))
@@ -3715,7 +3464,6 @@ class VoiceCallManager:
             return
         self._start_stats(peer)
         self._start_rekey(peer)
-        self._note_session_open(peer)
         _print("[voice] call active with %s — /hangup to end, /mute to toggle mic"
                % _san(peer, 64))
 
@@ -3792,7 +3540,6 @@ class VoiceCallManager:
 
         self._start_stats(peer)
         self._start_rekey(peer)
-        self._note_session_open(peer)
         _print("[voice] call active with %s — /hangup to end, /mute to toggle mic"
                % _san(peer, 64))
 
@@ -3882,9 +3629,8 @@ class VoiceCallManager:
         self._last_invite[peer] = now
 
         try:
-            session = VoiceCallSession(
-                peer, self.loop, call_id, False, self.sam_host, self.sam_port,
-                metrics=self._new_metrics(peer, call_id, "responder"))
+            session = VoiceCallSession(peer, self.loop, call_id, False,
+                                       self.sam_host, self.sam_port)
         except Exception as exc:
             self._signal(peer, "REJECT", (call_id.hex(), "internal"))
             self._vdbg(peer, "could not build session: %s" % _san(str(exc), 120))
@@ -4247,53 +3993,7 @@ class VoiceCallManager:
         except Exception:
             pass
 
-    def _note_session_open(self, peer: str) -> None:
-        """Mark the start of the measured window in the telemetry log."""
-        session = self._calls.get(peer)
-        if session is None or session.metrics is None:
-            return
-        try:
-            session.metrics.event(
-                "session_open",
-                tunnels_in=session.sam_options.get("inbound.quantity", 0),
-                tunnels_out=session.sam_options.get("outbound.quantity", 0),
-                hops_in=session.sam_options.get("inbound.length", 0),
-                hops_out=session.sam_options.get("outbound.length", 0))
-        except Exception:
-            pass
-
-    def _write_final_telemetry(self, session) -> None:
-        """Flush the call's distributions before the session is discarded.
-
-        Without this the histograms die with the object and the JSONL holds
-        only events -- which is exactly the state that would make a soak test
-        produce nothing comparable.
-        """
-        metrics = getattr(session, "metrics", None)
-        if metrics is None:
-            return
-        try:
-            health = getattr(session, "health", None)
-            if health is not None:
-                snap = health.snapshot()
-                metrics.event("session_close",
-                              transitions=snap["transitions"],
-                              seconds_healthy=snap["seconds_healthy"],
-                              seconds_degraded=snap["seconds_degraded"],
-                              seconds_recovering=snap["seconds_recovering"],
-                              seconds_disconnected=snap["seconds_disconnected"])
-            metrics.write_snapshot("session_close")
-        except Exception:
-            pass
-
     def _start_stats(self, peer: str) -> None:
-        # The health loop runs whether or not debug is on: it is the stall
-        # detector, not a debug aid, and a call that goes silent must be
-        # noticed on a shipped build too.
-        task = self._health_tasks.get(peer)
-        if task is None or task.done():
-            self._health_tasks[peer] = asyncio.ensure_future(
-                self._health_loop(peer))
         if not self.debug:
             return
         task = self._stats_tasks.get(peer)
@@ -4321,15 +4021,13 @@ class VoiceCallManager:
         self._stop_ringing(peer)
         session = self._calls.pop(peer, None)
         self._cancel_timeout(peer)
-        for registry in (self._stats_tasks, self._rekey_tasks,
-                         self._health_tasks):
+        for registry in (self._stats_tasks, self._rekey_tasks):
             task = registry.pop(peer, None)
             if task is not None and not task.done():
                 task.cancel()
         if session is None:
             _print("[voice] no active call")
             return
-        self._write_final_telemetry(session)
         waiter = getattr(session, "_rekey_waiter", None)
         if waiter is not None and not waiter[1].done():
             waiter[1].cancel()

@@ -104,10 +104,7 @@ class IntegrationBase(unittest.TestCase):
         packets = []
         done = threading.Event()
 
-        def collect(packet, _sealed_at=None):
-            # _sealed_at: _emit now stamps each frame with its seal time so
-            # the transport can report send-queue delay. Accepted and ignored
-            # here -- this stub exists to capture packets, not to time them.
+        def collect(packet):
             packets.append(packet)
             if len(packets) >= frames:
                 done.set()
@@ -227,7 +224,7 @@ class TestCaptureIntegration(IntegrationBase):
         self.addCleanup(session._capture.stop)
         lost = []
         session.on_stream_lost = lambda *a: lost.append(a)
-        session._write_packet = lambda p, _t=None: None
+        session._write_packet = lambda p: None
         session.loop = _InlineLoop()
         session._running = True
         t = threading.Thread(target=session._capture_worker, daemon=True)
@@ -255,7 +252,7 @@ class TestDisconnectPropagation(IntegrationBase):
         reported = []
         session.on_stream_lost = lambda peer, cid, why: reported.append(why)
         session.loop = _InlineLoop()
-        session._write_packet = lambda p, _t=None: None
+        session._write_packet = lambda p: None
         session._running = True
         session._capture_worker()
 
@@ -335,7 +332,7 @@ class TestTeardownIntegration(IntegrationBase):
         session._capture = A.AAudioCapture()
         session._playback = A.AAudioPlayback()
         session.transition(V.CallState.INVITING)
-        session._write_packet = lambda p, _t=None: None
+        session._write_packet = lambda p: None
         session.loop = _InlineLoop()
         session._running = True
         t = threading.Thread(target=session._capture_worker, daemon=True)
@@ -610,7 +607,7 @@ class TestMicrophoneAccess(IntegrationBase):
         session = build_session(self.loop)
         session._capture = A.AAudioCapture()
         session._silence_frame = b"\x00" * 40
-        session._write_packet = lambda p, _t=None: None
+        session._write_packet = lambda p: None
         session.loop = _InlineLoop()
         session._running = True
         session._muted = True
@@ -634,7 +631,7 @@ class TestMicrophoneAccess(IntegrationBase):
         session._capture = A.AAudioCapture()
         session._silence_frame = b"\x00" * 40
         sent = []
-        session._write_packet = lambda p, _t=None: sent.append(p)
+        session._write_packet = sent.append
         session.loop = _InlineLoop()
         session._running = True
         session._muted = True
@@ -781,7 +778,7 @@ class TestLatency(IntegrationBase):
     def _pump(src, dst):
         """Move everything src emitted into dst's parser."""
         buf = bytearray()
-        src._write_packet = lambda p, _t=None: buf.extend(p)
+        src._write_packet = buf.extend
         return buf
 
     def test_ping_pong_produces_an_rtt_sample(self):
