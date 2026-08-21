@@ -268,6 +268,135 @@ class AppLockManagerTest {
     }
 }
 
+/**
+ * Decision 7: no clock condition may leave an authenticated session permanently
+ * UNLOCKED.
+ *
+ * The relock deadline is the one place where a clock the user controls could buy
+ * an indefinite unlocked window, so each scenario is checked explicitly rather
+ * than assumed to follow from the arithmetic.
+ */
+class ClockRollbackTest {
+
+    private fun unlocked(clock: FakeClock, grace: Long = 10_000):
+            Pair<AppLockManager, FakeDataKey> {
+        val key = FakeDataKey()
+        val mgr = AppLockManager(clock, backgroundGraceMillis = grace)
+        mgr.beginAuthentication()
+        mgr.authenticationSucceeded(key)
+        return mgr to key
+    }
+
+    @Test
+    fun `normal timestamp relocks after the grace period`() {
+        val clock = FakeClock(now = 1_000)
+        val (mgr, key) = unlocked(clock)
+        mgr.onBackgrounded()
+        clock.advance(10_001)
+        mgr.onForegrounded()
+        assertEquals(LockState.LOCKED, mgr.state)
+        assertTrue(key.closed)
+    }
+
+    @Test
+    fun `future timestamp relocks`() {
+        // A clock jumped far forward looks like a long absence: relock.
+        val clock = FakeClock(now = 1_000)
+        val (mgr, key) = unlocked(clock)
+        mgr.onBackgrounded()
+        clock.now = Long.MAX_VALUE / 2
+        mgr.onForegrounded()
+        assertEquals(LockState.LOCKED, mgr.state)
+        assertTrue(key.closed)
+    }
+
+    @Test
+    fun `backwards clock relocks`() {
+        val clock = FakeClock(now = 1_000_000)
+        val (mgr, key) = unlocked(clock)
+        mgr.onBackgrounded()
+        clock.now = 0
+        mgr.onForegrounded()
+        assertEquals(LockState.LOCKED, mgr.state)
+        assertTrue(key.closed)
+    }
+
+    @Test
+    fun `extreme backwards jump relocks`() {
+        val clock = FakeClock(now = 0)
+        val (mgr, key) = unlocked(clock)
+        mgr.onBackgrounded()
+        clock.now = Long.MIN_VALUE / 2
+        mgr.onForegrounded()
+        assertEquals(LockState.LOCKED, mgr.state)
+        assertTrue(key.closed)
+    }
+
+    @Test
+    fun `large forward jump relocks via the timer path too`() {
+        val clock = FakeClock(now = 1_000)
+        val (mgr, _) = unlocked(clock)
+        mgr.onBackgrounded()
+        clock.now = Long.MAX_VALUE / 4
+        mgr.onRelockTimerFired()
+        assertEquals(LockState.LOCKED, mgr.state)
+    }
+
+    @Test
+    fun `process restart starts locked regardless of the clock`() {
+        // A new AppLockManager is what a restarted process gets. No stored
+        // timestamp and no clock value can produce an UNLOCKED start.
+        listOf(0L, -1L, 1_000L, Long.MAX_VALUE / 2, Long.MIN_VALUE / 2).forEach { t ->
+            val mgr = AppLockManager(FakeClock(now = t))
+            assertEquals(LockState.LOCKED, mgr.state, "restart at t=$t must be LOCKED")
+            assertNull(mgr.dataKey())
+            // And a stray lifecycle event still cannot unlock it.
+            mgr.onForegrounded()
+            mgr.onRelockTimerFired()
+            assertEquals(LockState.LOCKED, mgr.state)
+        }
+    }
+
+    @Test
+    fun `no clock value leaves a backgrounded session unlocked forever`() {
+        // Exhaustive over the interesting cases: whatever the clock does, the
+        // session either resumes within the grace period or relocks. It never
+        // stays BACKGROUND_LOCK_PENDING with the key still reachable.
+        val cases = listOf(0L, 1L, 9_999L, 10_000L, 10_001L,
+                           Long.MAX_VALUE / 2, -1L, Long.MIN_VALUE / 2)
+        cases.forEach { target ->
+            val clock = FakeClock(now = 500_000)
+            val (mgr, key) = unlocked(clock)
+            mgr.onBackgrounded()
+            clock.now = target
+            mgr.onForegrounded()
+            when (mgr.state) {
+                LockState.UNLOCKED ->
+                    // Only legitimate when time genuinely advanced by less than
+                    // the grace period.
+                    assertTrue(target - 500_000 in 0 until 10_000,
+                               "resumed unlocked at target=$target without a valid elapsed time")
+                LockState.LOCKED -> assertTrue(key.closed, "relocked without releasing the key")
+                else -> throw AssertionError("stuck in ${mgr.state} at target=$target")
+            }
+        }
+    }
+
+    @Test
+    fun `throttle backoff also survives a clock rollback`() {
+        val store = MemoryThrottleStore()
+        val clock = FakeClock(now = 1_000_000)
+        val throttle = AttemptThrottle(store, clock, baseDelayMillis = 1_000,
+                                       maxDelayMillis = 60_000, freeAttempts = 3)
+        repeat(6) { throttle.recordFailure() }
+        listOf(0L, -1L, Long.MIN_VALUE / 2).forEach { t ->
+            clock.now = t
+            assertTrue(throttle.check() is AttemptThrottle.Decision.Blocked,
+                       "rollback to $t granted a free attempt")
+        }
+    }
+}
+
 // ── Throttle ─────────────────────────────────────────────────────────────────
 
 class AttemptThrottleTest {

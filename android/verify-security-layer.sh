@@ -53,5 +53,6 @@ java -cp "$OUT:$COMPILE_CP" org.junit.runner.JUnitCore \
   org.otrv4plus.android.security.LockStateTransitionTest \
   org.otrv4plus.android.security.AppLockManagerTest \
   org.otrv4plus.android.security.AttemptThrottleTest \
+  org.otrv4plus.android.security.ClockRollbackTest \
   org.otrv4plus.android.security.Argon2idParamsTest \
   org.otrv4plus.android.security.RecordTypeTest
