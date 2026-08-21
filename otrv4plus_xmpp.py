@@ -372,6 +372,16 @@ def _fmt_fp(fp: str) -> str:
 # =============================================================================
 # I2P SAM forwarder
 # =============================================================================
+#
+# The SAM write pacer and the TCP_NODELAY helper live in otrv4plus_i2p so they
+# can be tested without slixmpp installed, and so the voice module can reach
+# them without importing this one.
+from otrv4plus_i2p import (            # noqa: E402
+    SAM_CHUNK, SAM_RATE_BPS, SAM_BURST_BYTES, SamWritePacer, set_nodelay,
+)
+
+_set_nodelay = set_nodelay              # historical spelling used below
+
 
 async def start_i2p_sam_forwarder(
     dest_b32: str, dest_port: int, sam_host: str = "127.0.0.1", sam_port: int = 7656
@@ -402,28 +412,26 @@ async def start_i2p_sam_forwarder(
     sam_sock = await loop.run_in_executor(None, _do_sam)
     print("[i2p] SAM stream established.")
 
+    _set_nodelay(sam_sock)
     sam_reader, sam_writer = await asyncio.open_connection(sock=sam_sock)
+    _set_nodelay(sam_writer.transport)
 
-    # I2P tunnels can drop a stream when a large message is written as one
-    # burst. We pace writes in small chunks to avoid the SAM cliff (~8KB).
-    SAM_CHUNK = 1024        # bytes per write toward I2P
-    SAM_CHUNK_DELAY = 0.02  # seconds between chunks on large messages
+    pacer = SamWritePacer()
 
     async def _handle_local(local_reader, local_writer):
+        _set_nodelay(local_writer.transport)
+
         async def pump_to_i2p(src, dst):
             try:
                 while True:
                     data = await src.read(65536)
                     if not data:
                         break
-                    if len(data) <= SAM_CHUNK:
-                        dst.write(data)
+                    for i in range(0, len(data), SAM_CHUNK):
+                        piece = data[i : i + SAM_CHUNK]
+                        await pacer.take(len(piece))
+                        dst.write(piece)
                         await dst.drain()
-                    else:
-                        for i in range(0, len(data), SAM_CHUNK):
-                            dst.write(data[i : i + SAM_CHUNK])
-                            await dst.drain()
-                            await asyncio.sleep(SAM_CHUNK_DELAY)
             except Exception:
                 pass
             finally:
@@ -633,6 +641,10 @@ def _sam_open(host: str, port: int, timeout: float):
     sock.settimeout(timeout)
     try:
         sock.connect((host, port))
+        # T2: media frames are 199 bytes every 40 ms on a loopback socket.
+        # Set before the handshake so it covers every byte this socket ever
+        # carries, control lines included.
+        _set_nodelay(sock)
         _sam_handshake(sock)
     except Exception:
         try:

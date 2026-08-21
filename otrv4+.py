@@ -875,10 +875,24 @@ class I2PSAMConnection:
         self._control_sock.connect((self.sam_host, self.sam_port))
         self._handshake(self._control_sock)
 
+        # T3: tunnel options. Without these the session took whatever the
+        # local router defaulted to, which is 5/5 tunnels on i2pd and 2/2 on
+        # Java I2P — the same build behaving differently per install, with
+        # nobody having chosen either. See otrv4plus_i2p.py for the option
+        # names, the i2pd source they were verified against, and why hop
+        # count is deliberately not among them.
+        _opts = ""
+        try:
+            import otrv4plus_i2p as _i2pcfg
+            _rendered = _i2pcfg.format_options(_i2pcfg.XMPP_TUNNEL_OPTIONS)
+            if _rendered:
+                _opts = " " + _rendered
+        except Exception:
+            _opts = ""
         reply = self._send_cmd(
             self._control_sock,
             f"SESSION CREATE STYLE=STREAM ID={self ._session_id } "
-            f"DESTINATION=TRANSIENT SIGNATURE_TYPE=7",
+            f"DESTINATION=TRANSIENT SIGNATURE_TYPE=7{_opts }",
         )
         parsed = self._parse_reply(reply, "SESSION STATUS ")
         if parsed.get("RESULT") != "OK":
@@ -901,6 +915,12 @@ class I2PSAMConnection:
             self._control_sock.close()
             raise ConnectionError(f"SAM stream connect failed: {reply }")
 
+        # T2: loopback socket carrying an interactive stream; Nagle would
+        # hold small stanzas back to coalesce them with the next write.
+        try:
+            stream_sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        except OSError:
+            pass
         stream_sock.settimeout(1.0)
         return stream_sock
 
