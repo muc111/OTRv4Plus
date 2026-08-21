@@ -75,7 +75,7 @@ Points at which this process can add delay, in path order:
 | 4 | Send-queue bound | **Defect T5** — 2 s of stale audio admitted. §3.3 |
 | 5 | Loopback socket | **Defect T2** — Nagle, 41 ms on burst drain. §3.2 |
 | 6 | SAM session options | **Defect T3** — none set; router-dependent. §3.4 |
-| 7 | XMPP bridge pacing | **Defect T1** — up to 120 ms fixed sleep. §3.1 |
+| 7 | XMPP bridge pacing | **Defect T1** — up to 120 ms fixed sleep. §3.1. First fix regressed SMP; corrected. |
 | 8 | Reader loop | `read(8192)`, drain-before-bound. No issue found. |
 | 9 | Jitter buffer | Adaptive, RFC 3550 smoothing, drift clawback. No issue found. |
 | 10 | Instrumentation | **Defect T4** — cannot report a tail at all. §2 |
@@ -149,8 +149,8 @@ that mattered is kept:
 
 * no single write exceeds `SAM_CHUNK` (1024 B), and `drain()` still applies
   backpressure between writes;
-* no unpaced burst exceeds `SAM_BURST_BYTES` (4096 B) — half the observed
-  cliff;
+* no unpaced burst exceeds `SAM_BURST_BYTES`, which is **one chunk** — see the
+  correction below, where setting this to 4096 broke SMP;
 * the sustained ceiling is unchanged at 1024 B / 20 ms = 51200 B/s.
 
 What it removes is the fixed cost paid by traffic that was never near the
