@@ -146,7 +146,8 @@ Stated conservatively, the run is evidence for:
   degrading, which is the practical bar for usability.
 - **No regression from the MAC fix.** The call ran after the fix and the Rust
   rebuild, so the changed frame plaintext layout and the new MAC derivation did
-  not break sustained media.
+  not break sustained media. OBSERVED, on one run, with both endpoints on the
+  same build. It says nothing about a mismatched pair — see §F.
 - **Usability at I2P latency.** ~1.3 s RTT is high for conversation and users
   will notice it, but the call remained functional for hours.
 
@@ -166,3 +167,29 @@ That is a meaningful engineering result. It is not a security result.
   for the Android phase.
 - The run was on a desktop/Termux-class host, not inside an APK. It says nothing
   about behaviour under Android's Doze, App Standby or memory pressure.
+
+---
+
+## F. Frame revision (audit C1)
+
+The latency work moved 8 bytes of the fixed padding slot into a sender
+timestamp carried **inside** the AEAD. The packet stays 199 bytes, so nothing
+about the observable traffic pattern changed — but the frame *plaintext* layout
+did, and `VOICE_PROTOCOL_VERSION` was still `3`.
+
+That was the more dangerous of the two version gaps this branch found. A
+mismatched pair would have authenticated every frame successfully under GCM —
+the layout change is inside the sealed region, not in the AAD — and the failure
+would have surfaced only as `unpad_opus` misreading Opus data: garbled audio,
+with nothing pointing at a version mismatch.
+
+`VOICE_PROTOCOL_VERSION` is now `4`. `parse_media_header` rejects any other
+revision before the AEAD runs, with an error naming the version.
+TEST-VERIFIED in `tests/test_protocol_version.py::TestVoiceFrameVersion`:
+revision 3 and every other value are refused at the header, the current
+revision parses, and the plaintext layout the bump exists for is pinned
+(`VOICE_PLAIN_LEN == 2 + VOICE_TS_LEN + VOICE_OPUS_SLOT`).
+
+The soak run predates the version bump and was conducted with matched
+endpoints, so it is unaffected by the change; the rekey cadence, jitter and RTT
+figures in §A stand as recorded.

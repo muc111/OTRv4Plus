@@ -74,6 +74,24 @@ latest), so the Gradle plugin can be resolved without it. Allowlisting
 `dl.google.com` alone would unblock the SDK, the NDK, AGP and AndroidX, i.e.
 everything the build needs.
 
+**Re-probed at the end of the pre-Android hardening pass.** Unchanged:
+
+```
+https://dl.google.com/android/repository/repository2-3.xml
+    curl: (56) CONNECT tunnel failed, response 403
+https://maven.google.com/com/android/tools/build/gradle/8.7.0/gradle-8.7.0.pom
+    301 -> https://dl.google.com/dl/android/maven2/...            (same policy)
+https://repo.maven.apache.org/maven2/com/chaquo/python/gradle/16.0.0/gradle-16.0.0.pom
+    200                                                            (not a blocker)
+```
+
+The refusal is at the CONNECT tunnel, so it is an environment network policy,
+not a missing credential, a TLS problem or a build misconfiguration. No attempt
+was made to work around it, and none should be: Chaquopy, Compose, Kotlin, Rust
+and the approved architecture are not the obstacle and must not be swapped out
+to dodge the SDK dependency. The fix is an allowlist entry or a build host that
+has one.
+
 Exact failing command:
 
 ```

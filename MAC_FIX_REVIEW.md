@@ -190,18 +190,14 @@ Full suite state after repair: **415 passed, 42 skipped, 1 xfailed, 0 failed** i
 
 **Existing peers are NOT compatible. Both endpoints must upgrade together.**
 
-**Finding: there is no version guard for this break.** `PROTOCOL_VERSION`
-remains `0x0004` and `OTRConstants.PROTOCOL_VERSION` remains `0x04`; neither was
-bumped, and no negotiation or capability flag distinguishes the two formats.
+**Original finding: there was no version guard for this break.** `PROTOCOL_VERSION`
+remained `0x0004` and `OTRConstants.PROTOCOL_VERSION` remained `0x04`; neither was
+bumped, and no negotiation or capability flag distinguished the two formats. A
+mismatched pair failed with `"MAC verification failed - message may be forged or
+replayed"` — a message pointing at forgery or replay when the actual cause was a
+version mismatch.
 
-The practical consequence is that a mismatched pair fails with
-`"MAC verification failed - message may be forged or replayed"` — a message that
-points at forgery or replay when the actual cause is a version mismatch. That is
-a misleading diagnostic on a security-relevant path, and on a consumer product it
-would generate support reports about attacks that are not happening.
-
-This does not weaken the cryptography. It is a deployment and diagnosability
-concern, and it is worth fixing before any public release. See §12.
+**Resolved** in `36bf131`. See §13.
 
 ## 11. Test vectors
 
@@ -214,57 +210,211 @@ chain, not any primitive.
 `kdf_chain`'s in-crate signature changed (`[u8;32]` → `[u8;64]` third element),
 which is an API change within the crate, not a vector change.
 
-## 12. Remaining security concerns
+## 12. Security concerns raised by this review
+
+Recorded as they stood at review time. Current status in §13.
 
 **C1 — no version guard for a breaking wire change (§10).** Medium. Not a
 cryptographic weakness; a diagnosability and deployment problem that presents as
-a forgery warning. Recommend a version bump or capability flag before release.
+a forgery warning. → **RESOLVED**, §13.1.
 
 **C2 — peer-revealed keys are recorded, not verified.**
-`_record_revealed_mac_keys` validates length and rejects all-zero entries, then
-appends to a bounded list. Nothing cross-checks that a published key corresponds
-to a message actually received. The docstring is honest that the store exists "so
-the property is observable", but recording is not verification: a peer could
-publish well-formed random 64-byte values indefinitely and nothing would notice.
-Low severity — the keys are public by design and the store is bounded — but the
-property is weaker than it may appear.
+`_record_revealed_mac_keys` validated length and rejected all-zero entries, then
+appended to a bounded list. Nothing cross-checked that a published key
+corresponded to a message actually received: a peer could publish well-formed
+random 64-byte values indefinitely and nothing would notice. Low severity — the
+keys are public by design and the store is bounded — but the property was weaker
+than it appeared. → **RESOLVED**, §13.2.
 
 **C3 — MKmac is queued before the outer MAC is verified.** The queue happens
 after GCM authenticates and after the commit point, but before
-`dmsg.verify_mac()` runs in Python. A message whose GCM tag passes but whose
-outer MAC fails would still have had its key queued. Low severity: passing GCM
-means the peer held the correct chain keys, so the key is not being published for
-a forgery. Worth recording because the ordering is not obvious from either side
-alone.
+`dmsg.verify_mac()` runs in Python. → **AUDITED, no change required**, §13.3.
 
 **C4 — the outer MAC's role should be documented.** With MKmac now genuinely
 chain-derived, the outer MAC is no longer the "adds nothing" layer the upstream
 audit described. But GCM remains the primary authentication and runs first. The
 outer MAC's purpose is now precisely to *be revealable*. That is worth stating so
 a future reader does not treat it as redundant and remove it — which would remove
-the deniability mechanism with it.
+the deniability mechanism with it. → Stated here and at the call site in
+`_enh_dec_v6`; also in the header of `tests/test_reveal_ordering.py`.
 
-**C5 — L1's status. My recommendation: re-scope, do not simply close.**
+**C5 — L1's status. Re-scope, do not simply close.** → §13.4.
 
-`MAC_KEY_REVELATION_AUDIT.md` marks L1 **RESOLVED** on the strength of the
-forgeability test. As §7 sets out, that particular test does not support the
-conclusion. The end-to-end tests added here *do* support a narrower one:
+---
 
-- **Demonstrated:** the implementation publishes the key that authenticated a
-  received message, and that published key can re-MAC a forgery of that message.
-  The mechanism works.
-- **Not demonstrated:** formal OTR deniability. That is a statement about what an
-  adversary or judge can distinguish given a transcript, and it depends on the
-  whole protocol — the ring signature, the DAKE transcript, SMP, and what other
-  evidence binds a party to a session. It cannot be established by a unit test.
+## 13. Resolution pass
 
-So the *implementation defect* is fixed and verified; the *formal property* is
-not established. Recommend L1 be recorded as **mechanism implemented and
-verified; formal property unverified**, and that "deniable" not be used as a
-product claim until a cryptographic review says otherwise. Note that the ring
-signature independently provides *participation* deniability for the handshake —
-a different and defensible claim that should not be conflated with transcript
-deniability.
+Work done after the review above, on `claude/otrv4plus-android-spec-a3oq4d`.
+Commits `36bf131` (C1) and `8d509bc` (C2/C3).
+
+Evidence vocabulary used throughout:
+
+| Label | Meaning |
+|---|---|
+| OBSERVED | Seen in one run or one reading of the source. Not generalised. |
+| TEST-VERIFIED | An automated test asserts it and that test currently passes. |
+| IMPLEMENTATION PROPERTY | Holds by construction in this codebase. Not a statement about the protocol. |
+| DESIGN INTENT | What the code is meant to do. Not evidence that it does. |
+| FORMAL SECURITY CLAIM | A cryptographic property with an argument or proof behind it. Used nowhere in this document. |
+
+### 13.1 C1 — protocol versioning · RESOLVED
+
+The two formats that changed incompatibly now carry different version numbers:
+
+| Constant | Was | Is | Why |
+|---|---|---|---|
+| `OTRv4DataMessage.PROTOCOL_VERSION` | `0x0004` | `0x0005` | MAC value differs; `REVEALED_MAC_KEY_LEN` 32 → 64 |
+| `VOICE_PROTOCOL_VERSION` | `3` | `4` | frame plaintext layout changed (8-byte timestamp inside the AEAD) |
+| `OTRConstants.PROTOCOL_VERSION` | `0x04` | `0x04` | **deliberately unchanged** — see below |
+
+The ClientProfile and DAKE formats did not change. Bumping their version would
+falsely signal a handshake change and invalidate every existing profile, so it
+stays at `0x04`; `TestProfileVersionUnchanged` pins it so a later edit cannot
+bump it casually. That is the one version this work concluded must NOT change,
+and this is the technical reason.
+
+`ProtocolVersionError(ValueError)` was added. Subclassing `ValueError` keeps
+every existing `except ValueError` handler around `decode()` working, while a
+caller that needs to tell a version mismatch from a cryptographic failure can
+catch it specifically. `decode()` re-raises it ahead of its generic wrapper —
+the wrapper flattened it on the first attempt, which restored exactly the
+ambiguity C1 exists to remove, so there is a regression test for that alone.
+
+The gate is strict equality in **both** directions. No older revision is
+accepted, so the old MAC construction is never evaluated and cannot be forced;
+no newer revision is accepted either, since this build does not know its framing.
+
+TEST-VERIFIED (`tests/test_protocol_version.py`, 34 tests): matching versions,
+mismatched versions, old/new peer interaction, downgrade attempts across
+`0x0000`–`0x0004`, forward versions, malformed and truncated version fields,
+200 random-garbage inputs, and the voice frame revision.
+
+Also fixed in the same commit: `BinaryReader.read_uint{8,16,32,64}` and
+`read_mpi` converted `ensure()`'s `ValueError` into `RuntimeError` through a
+bare `except Exception`. Truncation is an expected condition on untrusted
+input, `decode()` does not catch `RuntimeError`, and no caller expects it — so
+a short header escaped the parser as an "unexpected error" rather than a clean
+parse failure. `read_bytes()` already re-raised; the integer readers now match.
+
+**Documented break.** Builds at data-message revision `0x0004` and `0x0005`
+cannot interoperate, in either direction, and neither can voice revisions `3`
+and `4`. There is no compatibility mode and none should be added: accepting the
+old revision would mean accepting the old MAC construction.
+
+### 13.2 C2 — revealed MAC key cross-check · RESOLVED
+
+Lifecycle traced end to end. What is revealed, by whom:
+
+| Source | What it is | Where it is queued |
+|---|---|---|
+| `encrypt()` | MKmac of a message **we sent**, held in `last_mac_key` and queued on the *next* send | `ratchet.rs` `encrypt` / `send_ratchet` |
+| `decrypt_same_dh` / `decrypt_new_dh` | MKmac of a message **we received**, after authentication | `queue_reveal` |
+| skipped-key path | MKmac re-derived from a stored MKenc | `queue_reveal` |
+
+So each side publishes keys the other side also derived — which is what makes
+the check possible. IMPLEMENTATION PROPERTY: the engine now fingerprints every
+MKmac it derives (`kdf::mkmac_fingerprint`, domain-separated SHA3-256), and
+`knows_derived_mac()` answers whether a revealed key is one of them.
+
+Fingerprints, not keys. The cross-check adds no new store of live key material,
+and one bit crosses the PyO3 boundary in response to a value that is public by
+construction. The set is bounded at 4096 entries with FIFO eviction.
+
+Fingerprinting **at the skipped-key path** is what makes the check usable in
+practice. When a message is lost in transit its MKenc only ever exists in the
+skipped store, yet the peer still reveals the matching MKmac. Deriving the
+fingerprint when that key is stored — rather than when the message arrives —
+means an honest peer's revelation for a lost message is still accountable.
+TEST-VERIFIED in both Rust and Python.
+
+Fail closed (raises, tears the message down):
+
+- wrong length
+- all-zero
+- **the key that authenticated the very message carrying the revelation.** New.
+  Publishing the current message's MKmac would make that message forgeable at
+  the instant it is accepted. `encrypt()` takes the pending queue before
+  installing the current key, so the engine cannot do it; the receive-side
+  guard and a Rust test hold that ordering in place.
+
+Not fatal, and deliberately so: a key this endpoint cannot account for. An
+unaccounted key is **not** evidence of misbehaviour. Eviction from the
+fingerprint window, and messages skipped past the tail of an old chain before a
+DH rotation, both leave an honest peer holding keys this side never derived.
+Making it fatal would let anyone able to drop a single packet kill any session
+on demand, and would buy nothing — a peer that wants to defeat the check can
+simply reveal nothing at all. Verified and unaccounted counts are kept
+(`revealed_mac_keys_verified`, `revealed_mac_keys_unaccounted`) so the condition
+is visible rather than silent.
+
+TEST-VERIFIED (`tests/test_revealed_mac_crosscheck.py`, 17 tests; `ratchet.rs`,
+8 tests): keys derivable in both directions and through the real reveal queue;
+a lost message's key still accountable; invented keys and one-bit-off keys
+rejected; the three fatal cases; unaccounted keys counted not raised; both
+stores bounded.
+
+### 13.3 C3 — reveal ordering · AUDITED, NO CHANGE REQUIRED
+
+Required invariant:
+
+    unauthenticated input → parse/validate → AEAD → outer MAC
+      → commit ratchet state → queue/reveal MAC key
+
+Both Rust receive paths already hold it. Every key derivation runs into scratch
+state (`scratch_ck`, `pending_skipped`); `aes_decrypt` gates the commit and
+zeroizes everything on failure; `queue_reveal` sits after the
+`// ── Authenticated: commit ──` marker. The skipped-key path peeks at the
+stored key, authenticates, and only then consumes it. No ordering change was
+needed, so none was made.
+
+One deviation is deliberate and is now documented rather than "fixed": the
+engine queues the reveal after the AEAD tag verifies but **before** the caller
+checks the outer MAC. That is sound. `MKmac = KDF(0x14, MKenc, 64)`, so anyone
+able to produce a valid GCM tag under MKenc can compute the outer MAC as well.
+The outer MAC is a second, spec-mandated check whose key is later published —
+it is not the thing standing between a forgery and the ratchet. AES-256-GCM is,
+and it runs first.
+
+TEST-VERIFIED (`tests/test_reveal_ordering.py`, 15 tests), asserting on emitted
+values rather than source shape: a forged ciphertext, a forged tag, a wholly
+invented message and a burst of 32 forgeries each publish nothing; the genuine
+message still decrypts after a forgery and after 50 of them; a forged high
+`msg_num` does not flood the skipped store; a replay publishes no second copy;
+a valid message publishes exactly its authenticating key and nothing else;
+earlier state and the pending queue survive a later forgery.
+
+### 13.4 L1 — four separate claims
+
+The single word "resolved" was doing too much work. Split:
+
+**A. The mechanism is implemented.** TEST-VERIFIED. `MKmac = KDF(0x14, MKenc,
+64)` per OTRv4 §4.4.2, 64 bytes, chain-derived, different for every message.
+
+**B. It is correctly integrated into the ratchet.** TEST-VERIFIED. Sender and
+receiver derive the same MKmac for the same message; the key that is published
+is the key that authenticated it; the queue drains, does not republish, is
+bounded at 50, and publishes nothing for a message that failed to authenticate.
+
+**C. It is tested end to end.** TEST-VERIFIED, against the real ratchet and the
+real reveal queue rather than a reconstruction — `tests/test_mac_revelation_end_to_end.py`,
+`tests/test_reveal_ordering.py`, `tests/test_revealed_mac_crosscheck.py`. A
+published key can re-MAC a forgery of the real message, using the bytes the
+implementation itself emitted.
+
+**D. The protocol provides formal deniability.** **NOT CLAIMED.** No
+cryptographic argument or proof is offered here, and none of the tests above
+constitutes one. Formal deniability is a statement about what an adversary or a
+judge can distinguish given a transcript; it depends on the whole protocol — the
+ring signature, the DAKE transcript, SMP, and whatever else binds a party to a
+session — and cannot be established by a unit test.
+
+L1's status is therefore: **mechanism implemented, integrated and tested;
+formal deniability remains an unproven protocol-level property.** The mechanism
+stays: it is a precondition for the property, and the absence of a proof is not
+a reason to remove it. "Deniable" should not be used as a product claim until a
+cryptographic review says otherwise. The ring signature independently provides
+*participation* deniability for the handshake — a different and defensible
+claim that should not be conflated with transcript deniability.
 
 ---
 
@@ -284,5 +434,10 @@ buffer. Both halves are now enforced and both are covered by tests that exercise
 the implementation rather than a reconstruction of it.
 
 That is a genuine improvement and the analysis behind it was sound. It is not, on
-its own, a demonstration of formal deniability, and C1 should be addressed before
-release.
+its own, a demonstration of formal deniability — see §13.4, which separates the
+four claims that were previously collapsed into one.
+
+C1, C2 and C3 have since been addressed; §13 records what changed, what was
+audited and left alone, and why. The remaining open item is not an
+implementation defect: it is the formal property, which needs a cryptographic
+review this document cannot substitute for.

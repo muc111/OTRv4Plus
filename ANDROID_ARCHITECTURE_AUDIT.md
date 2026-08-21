@@ -819,18 +819,34 @@ These are the prior audit's open items. They do not block Phase 2 but should be 
 
 - **M3** — legacy Rust DAKE methods returning session keys as `PyBytes` are still present as a
   Python fallback. **Decide before release**: remove, or gate behind a feature flag.
+  **Gated.** The five `Dakeresult` session-key getters are compiled out unless
+  `legacy-dake-keys` is enabled, `build.rs` refuses that feature without an explicit opt-in
+  environment variable, and the Python fallback that reads them is unreachable because
+  `_check_rust_requirements()` hard-requires `generate_dake2_output` / `process_dake2_output`
+  at import. Verified against the built artifact, not only the source: the production `.so`
+  contains no `__pymethod_get_root_key__` / `chain_key_a` / `chain_key_b` / `brace_key` /
+  `mac_key` symbols, and `Dakeresult` is not registered on the module, so Python cannot obtain
+  or construct one. The corresponding *setters* are still compiled in; they are write-only,
+  guarded by the consumption check, and unreachable for the same reason, so they were left
+  alone rather than churned.
 - **M4** — stateless AEAD, caller-owned nonce uniqueness. The new `storage.rs` counter design
   (§10.2) closes this *for storage*; the wire path is unchanged.
-- **L1** — MAC-key revelation reveals all-zeros, so the intended OTR deniability property is **not
-  achieved**. Either implement it or drop the machinery — but do not claim deniability in
-  marketing material until it is resolved.
+- **L1** — MAC-key revelation. **Re-scoped, not closed.** The mechanism is implemented,
+  integrated into the ratchet and tested end to end against the real reveal queue; formal
+  deniability is a protocol-level property with no proof offered and is **not claimed**. The
+  four claims are separated in `MAC_FIX_REVIEW.md` §13.4. Do not use "deniable" in marketing
+  material until a cryptographic review says otherwise.
 - **Transport/framing layers were never professionally audited** — the prior audit names this as
   the #1 target ("historically where this codebase's bugs have appeared"). The Android app puts
   this code in front of far more users.
 - **Wire-format-locked**: ring challenge uses a 57-byte reduction with ~2⁻¹⁰ bias (cosmetic); the
   optional ML-DSA key is detected by leftover length rather than an explicit flag. A versioned
   wire revision should fix both — best done **before** a public release, since afterwards it
-  becomes a compatibility break.
+  becomes a compatibility break. Note that the data-message revision has since moved to
+  `0x0005` for the MKmac fix (`MAC_FIX_REVIEW.md` §13.1); if these two are to be fixed in a
+  wire revision, that break has already been taken and doing them now costs nothing extra.
+  The ClientProfile/DAKE version deliberately stayed at `0x04`, so a profile-format change
+  would still be a separate, additional break.
 
 ### 14.4 Build-hardening item found during this audit
 
