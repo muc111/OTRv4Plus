@@ -1332,6 +1332,29 @@ class OTRv4DataMessage:
             raise ValueError(f"Failed to encode message: {e }")
 
     @classmethod
+    def looks_like_data_frame(cls, decoded: bytes) -> bool:
+        """True if `decoded` begins with this build's data-message header.
+
+        Five call sites used to sniff the first three bytes as the literals
+        0x00, 0x04, TYPE. When C1 moved PROTOCOL_VERSION from 0x0004 to
+        0x0005 the encoder started emitting 00 05 03 and every one of those
+        checks silently stopped matching -- so an encrypted data message fell
+        through to the message-type branch, matched nothing, and was dropped
+        with "unknown message type: 0" and no error to the user. SMP was the
+        first thing to hit it because SMP is the first data message a session
+        sends. Grepping for PROTOCOL_VERSION did not find them, because none
+        of them referenced it.
+
+        Deriving the bytes from the constant is what stops that recurring: a
+        future revision changes one number and every classifier follows.
+        """
+        if len(decoded) < 3:
+            return False
+        return (decoded[0] == (cls.PROTOCOL_VERSION >> 8)
+                and decoded[1] == (cls.PROTOCOL_VERSION & 0xFF)
+                and decoded[2] == cls.TYPE)
+
+    @classmethod
     def decode(cls, data: bytes) -> "OTRv4DataMessage":
         """Decode raw bytes into an OTRv4DataMessage.  Raises ValueError on errors."""
         try:
@@ -6030,10 +6053,7 @@ class EnhancedOTRSession:
             decoded = _safe_b64decode(raw)
 
             if (
-                len(decoded) >= 3
-                and decoded[0] == 0x00
-                and decoded[1] == 0x04
-                and decoded[2] == OTRv4DataMessage.TYPE
+                OTRv4DataMessage.looks_like_data_frame(decoded)
             ):
                 text_bytes = self._enh_dec_v6(decoded)
             else:
@@ -7774,10 +7794,7 @@ class EnhancedSessionManager:
                     return None
 
                 if (
-                    len(decoded) >= 3
-                    and decoded[0] == 0x00
-                    and decoded[1] == 0x04
-                    and decoded[2] == OTRv4DataMessage.TYPE
+                    OTRv4DataMessage.looks_like_data_frame(decoded)
                 ):
                     return self._handle_data_message(peer, message)
 
@@ -10954,7 +10971,9 @@ class OTRv4IRCClient:
                         # base64, then pad.
                         _peek_src = chunk[:16]
                         peek = _b64.urlsafe_b64decode(_peek_src + "=" * (-len(_peek_src) % 4))
-                        if len(peek) >= 3 and peek[0] == 0x00 and peek[1] == 0x04:
+                        if (len(peek) >= 3
+                                and peek[0] == (OTRv4DataMessage.PROTOCOL_VERSION >> 8)
+                                and peek[1] == (OTRv4DataMessage.PROTOCOL_VERSION & 0xFF)):
                             msg_type = "data"
                         elif len(peek) >= 1:
                             msg_type = {
@@ -11034,10 +11053,7 @@ class OTRv4IRCClient:
             if not decoded:
                 return
             if (
-                len(decoded) >= 3
-                and decoded[0] == 0x00
-                and decoded[1] == 0x04
-                and decoded[2] == OTRv4DataMessage.TYPE
+                OTRv4DataMessage.looks_like_data_frame(decoded)
             ):
                 self._handle_data_message(sender, payload)
                 return
@@ -12825,10 +12841,7 @@ class EnhancedOTRv4IRCClient(OTRv4IRCClient):
                 return
 
             if (
-                len(decoded) >= 3
-                and decoded[0] == 0x00
-                and decoded[1] == 0x04
-                and decoded[2] == OTRv4DataMessage.TYPE
+                OTRv4DataMessage.looks_like_data_frame(decoded)
             ):
                 self.debug("otr type", {"type": "DATA_V6"})
                 self._handle_data_message(sender, message)
