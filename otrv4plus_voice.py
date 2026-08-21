@@ -307,6 +307,22 @@ _KEM = None
 _KEM_RESOLVED = False
 
 
+def _kem_self_test(provider) -> bool:
+    """One keygen/encaps/decaps round trip. False if anything is wrong."""
+    try:
+        ek, dk = provider.keygen()
+        if len(ek) != MLKEM_EK_LEN or len(dk) != MLKEM_DK_LEN:
+            return False
+        ct, ss = provider.encaps(bytes(ek))
+        if len(ct) != MLKEM_CT_LEN or len(ss) != MLKEM_SS_LEN:
+            return False
+        # Also catches the (ct, ss) vs (ss, ct) inversion, which is otherwise
+        # silent and presents much later as "media keys did not agree".
+        return bytes(provider.decaps(bytes(ct), dk)) == bytes(ss)
+    except Exception:
+        return False
+
+
 def _resolve_kem():
     global _KEM, _KEM_RESOLVED
     if _KEM_RESOLVED:
@@ -316,8 +332,15 @@ def _resolve_kem():
         import otrv4_core                                   # type: ignore
         if all(hasattr(otrv4_core, n) for n in
                ("mlkem1024_keygen", "mlkem1024_encaps", "mlkem1024_decaps")):
-            _KEM = _RustKem(otrv4_core)
-            return _KEM
+            candidate = _RustKem(otrv4_core)
+            # Prove it works before trusting it. Attribute presence is not
+            # evidence: a partially built core, or a stub installed by another
+            # module, satisfies hasattr and then fails at call time — during a
+            # call, after the user has already dialled. One round trip here
+            # costs microseconds and turns that into a clean fallback.
+            if _kem_self_test(candidate):
+                _KEM = candidate
+                return _KEM
     except Exception:
         pass
     try:
@@ -383,11 +406,19 @@ VOICE_LOSS_PCT = 20
 # CBR; the slot is sized for the VBR peak so a build that refuses vbr=0
 # degrades to 8 kbit/s of padding overhead rather than replacing every single
 # frame with silence and producing a call that carries no audio at all.
-VOICE_OPUS_SLOT = 160
-VOICE_PLAIN_LEN = 2 + VOICE_OPUS_SLOT
+# 8 bytes of the fixed slot carry the sender's monotonic timestamp, used for
+# one-way latency. Taken from padding that was already being transmitted, so
+# the packet stays 199 bytes and the constant-rate property is untouched:
+# 24 kbit/s at 40 ms is 120 bytes, well inside the remaining 152.
+VOICE_TS_LEN = 8
+VOICE_OPUS_SLOT = 152
+VOICE_PLAIN_LEN = 2 + VOICE_TS_LEN + VOICE_OPUS_SLOT
 
 VOICE_SYNC = 0xA7
 FRAME_TYPE_AUDIO = 0x01
+FRAME_TYPE_PING = 0x02          # latency probe, echoed as PONG
+FRAME_TYPE_PONG = 0x03
+_FRAME_TYPES = (FRAME_TYPE_AUDIO, FRAME_TYPE_PING, FRAME_TYPE_PONG)
 
 # sync | version | frame_type | epoch(8) | counter(8) | length(2)
 VOICE_HDR_LEN = 21
@@ -831,11 +862,12 @@ def parse_media_header(raw: bytes):
         raise FrameError("bad sync byte")
     if version != VOICE_PROTOCOL_VERSION:
         raise FrameError("unsupported protocol version %d" % version)
-    if ftype != FRAME_TYPE_AUDIO:
-        # AUDIO is the only value ever transmitted.  Mute, silence and speech
-        # are all AUDIO so that the field carries no information about what
-        # the microphone is doing.
+    if ftype not in _FRAME_TYPES:
         raise FrameError("unsupported frame type 0x%02x" % ftype)
+    # Mute, silence and speech are all AUDIO, so the field still says nothing
+    # about what the microphone is doing. PING/PONG are the only exceptions
+    # and they are the same 199 bytes on the same cadence, so an observer
+    # learns that a probe happened, not anything about the conversation.
     if not (VOICE_MIN_FRAME <= length <= VOICE_MAX_FRAME):
         raise FrameError("implausible sealed length %d" % length)
     return epoch, counter, length, ftype
@@ -914,6 +946,7 @@ class VoiceFrameCrypto:
 
         self._replay = ReplayWindow()
         self.ratchet_steps = 0
+        self.last_frame_type = FRAME_TYPE_AUDIO
         self._zeroized = False
 
     # -- send -------------------------------------------------------------
@@ -927,8 +960,8 @@ class VoiceFrameCrypto:
             self.ratchet_steps += 1
         self._send_gcm = self._AESGCM(bytes(self._send_key))
 
-    def seal(self, plaintext: bytes) -> bytes:
-        """Encrypt one padded Opus frame.  Returns the complete wire packet."""
+    def seal(self, plaintext: bytes, frame_type: int = FRAME_TYPE_AUDIO) -> bytes:
+        """Encrypt one padded frame.  Returns the complete wire packet."""
         if self._zeroized:
             raise FrameError("media cipher already zeroized")
         if self._send_counter >= self.MAX_COUNTER:
@@ -939,7 +972,8 @@ class VoiceFrameCrypto:
             self._advance_send(sub)
 
         counter = self._send_counter
-        header = pack_media_header(self.epoch, counter, VOICE_SEALED_LEN)
+        header = pack_media_header(self.epoch, counter, VOICE_SEALED_LEN,
+                                   frame_type=frame_type)
         aad = media_aad(self.call_id, self.send_dir, header)
         sealed = self._send_gcm.encrypt(media_nonce(self.epoch, counter),
                                         plaintext, aad)
@@ -971,7 +1005,7 @@ class VoiceFrameCrypto:
         """
         if self._zeroized:
             raise FrameError("media cipher already zeroized")
-        epoch, counter, length, _ = parse_media_header(header)
+        epoch, counter, length, ftype = parse_media_header(header)
         if epoch != self.epoch:
             raise FrameError("frame epoch %d is not this cipher's epoch %d"
                              % (epoch, self.epoch))
@@ -1012,6 +1046,7 @@ class VoiceFrameCrypto:
 
         # Committed only now, after authentication.
         self._replay.check_and_set(counter)
+        self.last_frame_type = ftype
         return plaintext
 
     # -- lifecycle --------------------------------------------------------
@@ -1475,27 +1510,217 @@ class JitterBuffer:
 # Opus padding
 # ---------------------------------------------------------------------------
 
-def pad_opus(opus_frame: bytes):
-    """Pad to the fixed slot.  None if the frame will not fit."""
+def pad_opus(opus_frame: bytes, send_ts_ms: int = 0):
+    """Pad to the fixed slot, carrying the sender's timestamp.
+
+    Layout: len(2) || send_ts_ms(8) || opus || zero padding.
+
+    The timestamp sits INSIDE the AEAD, so it is encrypted and authenticated
+    rather than exposed in the header. It is milliseconds since the sender's
+    call started, not wall-clock: a relative value leaks nothing about the
+    sender's clock, and one-way latency only needs the difference.
+    """
     if len(opus_frame) > VOICE_OPUS_SLOT:
         return None
-    return (struct.pack(">H", len(opus_frame)) + bytes(opus_frame)
+    return (struct.pack(">HQ", len(opus_frame), int(send_ts_ms) & 0xFFFFFFFFFFFFFFFF)
+            + bytes(opus_frame)
             + b"\x00" * (VOICE_OPUS_SLOT - len(opus_frame)))
 
 
-def unpad_opus(plain: bytes) -> bytes:
-    """Recover the Opus frame from a padded plaintext."""
+def unpad_frame(plain: bytes):
+    """Recover (opus_frame, send_ts_ms) from a padded plaintext."""
     if len(plain) != VOICE_PLAIN_LEN:
         raise FrameError("padded frame has the wrong length")
-    length = struct.unpack(">H", plain[:2])[0]
+    length, send_ts = struct.unpack(">HQ", plain[:2 + VOICE_TS_LEN])
     if length > VOICE_OPUS_SLOT:
         raise FrameError("declared Opus length exceeds the slot")
-    return bytes(plain[2:2 + length])
+    off = 2 + VOICE_TS_LEN
+    return bytes(plain[off:off + length]), send_ts
+
+
+def unpad_opus(plain: bytes) -> bytes:
+    """Recover just the Opus frame.  Kept for callers that ignore timing."""
+    return unpad_frame(plain)[0]
 
 
 # ---------------------------------------------------------------------------
 # Control-plane rate limiting
 # ---------------------------------------------------------------------------
+
+class LatencyTracker:
+    """RTT and one-way latency over the media stream.
+
+    Two measurements, because they answer different questions and fail
+    differently.
+
+    **RTT (ping/pong).** Needs no shared clock, so it is the number to trust.
+    A PING carries an id and the sender's t1; the peer echoes it with its own
+    t2 (receive) and t3 (send). Then, exactly as NTP does:
+
+        rtt    = (t4 - t1) - (t3 - t2)
+        offset = ((t2 - t1) + (t3 - t4)) / 2
+
+    Subtracting the peer's turnaround means a slow responder inflates neither
+    number.
+
+    **One-way (frame timestamps).** Each audio frame carries the sender's
+    milliseconds-since-call-start. Raw, the difference between that and our
+    own clock is latency PLUS the offset between two unsynchronised phone
+    clocks, which can be seconds — larger than the thing being measured. The
+    offset from the ping/pong exchange is subtracted to correct it, so one-way
+    is only reported once at least one RTT sample exists.
+
+    Rolling windows: 10 RTT samples, 20 one-way. Medians, not means — a single
+    I2P tunnel stall would drag a mean for the rest of the call.
+    """
+
+    RTT_WINDOW = 10
+    ONEWAY_WINDOW = 20
+    PING_INTERVAL = 5.0
+    PING_TIMEOUT = 30.0
+
+    def __init__(self):
+        import collections
+        # Per-call random origin. Frame stamps and ping/pong must share ONE
+        # clock or the offset corrects nothing — that was the first version's
+        # bug: frames were stamped call-relative while pings used raw
+        # monotonic, so the two were in different units.
+        #
+        # The mask also keeps time.monotonic() off the wire. On Linux that is
+        # time since boot, so a raw stamp would leak approximate uptime as a
+        # weak device fingerprint. A constant per-call offset is absorbed
+        # entirely by the ping/pong offset calculation, so it costs nothing.
+        self._base = int.from_bytes(secrets.token_bytes(4), "big")
+        self._rtt = collections.deque(maxlen=self.RTT_WINDOW)
+        self._oneway = collections.deque(maxlen=self.ONEWAY_WINDOW)
+        self._pending = {}                 # ping_id -> t1
+        self._offset_ms = None             # peer clock minus ours
+        self._lock = threading.Lock()
+        self._next_ping = 0.0
+        self._seq = 0
+        self.sent = 0
+        self.answered = 0
+        self.timed_out = 0
+
+    # -- clocks -----------------------------------------------------------
+
+    @staticmethod
+    def now_ms() -> int:
+        return int(time.monotonic() * 1000)
+
+    def stamp(self) -> int:
+        """The single clock used for every measurement, masked per call."""
+        return (self._base + self.now_ms()) & 0xFFFFFFFFFFFFFFFF
+
+    def call_ms(self, _t0=None) -> int:
+        """Frame timestamp.  Same clock as the probes, by construction."""
+        return self.stamp()
+
+    # -- ping/pong --------------------------------------------------------
+
+    def due(self) -> bool:
+        return time.monotonic() >= self._next_ping
+
+    def build_ping(self):
+        """Return (ping_id, payload) and arm the timeout."""
+        with self._lock:
+            self._next_ping = time.monotonic() + self.PING_INTERVAL
+            self._seq = (self._seq + 1) & 0xFFFFFFFFFFFFFFFF
+            ping_id = self._seq
+            t1 = self.stamp()
+            self._pending[ping_id] = t1
+            self.sent += 1
+            # Bound: a peer that never answers must not grow this.
+            if len(self._pending) > 64:
+                for stale in sorted(self._pending)[:len(self._pending) - 64]:
+                    self._pending.pop(stale, None)
+                    self.timed_out += 1
+            cutoff = t1 - int(self.PING_TIMEOUT * 1000)
+            for stale in [k for k, v in self._pending.items() if v < cutoff]:
+                self._pending.pop(stale, None)
+                self.timed_out += 1
+        return ping_id, struct.pack(">QQ", ping_id, t1)
+
+    def build_pong_stamped(self, ping_payload: bytes) -> bytes:
+        """Echo a PING, stamping our receive and send times on OUR clock."""
+        if len(ping_payload) < 16:
+            raise FrameError("PING payload too short")
+        ping_id, t1 = struct.unpack(">QQ", ping_payload[:16])
+        t2 = self.stamp()
+        t3 = t2                              # turnaround is immediate
+        return struct.pack(">QQQQ", ping_id, t1, t2, t3)
+
+    @staticmethod
+    def build_pong(ping_payload: bytes) -> bytes:
+        """Echo a PING as a PONG, stamping receive and send times."""
+        if len(ping_payload) < 16:
+            raise FrameError("PING payload too short")
+        ping_id, t1 = struct.unpack(">QQ", ping_payload[:16])
+        t2 = t3 = 0
+        return struct.pack(">QQQQ", ping_id, t1, t2, t3)
+
+    def handle_pong(self, payload: bytes) -> bool:
+        """Record an RTT sample and update the clock offset."""
+        if len(payload) < 32:
+            raise FrameError("PONG payload too short")
+        ping_id, _t1_echo, t2, t3 = struct.unpack(">QQQQ", payload[:32])
+        t4 = self.stamp()
+        with self._lock:
+            t1 = self._pending.pop(ping_id, None)
+            if t1 is None:
+                return False               # unknown, replayed or timed out
+            rtt = (t4 - t1) - (t3 - t2)
+            if rtt < 0 or rtt > 120000:
+                return False               # implausible; drop rather than skew
+            self._rtt.append(rtt)
+            self._offset_ms = ((t2 - t1) + (t3 - t4)) / 2.0
+            self.answered += 1
+        return True
+
+    # -- one-way ----------------------------------------------------------
+
+    def observe_frame(self, peer_send_ms: int, _t0=None) -> None:
+        """Record a one-way sample from an audio frame's timestamp."""
+        with self._lock:
+            if self._offset_ms is None:
+                return                     # no clock correction yet
+            arrival = self.stamp()
+            # offset = peer_clock - our_clock, so the peer's send instant on
+            # OUR clock is (peer_send_ms - offset) and the one-way delay is
+            # arrival - (peer_send_ms - offset). Subtracting the offset
+            # instead of adding it doubles the skew rather than removing it.
+            delta = arrival - peer_send_ms + self._offset_ms
+            if -1000.0 < delta < 120000.0:
+                self._oneway.append(delta)
+
+    # -- readout ----------------------------------------------------------
+
+    @staticmethod
+    def _median(values):
+        if not values:
+            return None
+        ordered = sorted(values)
+        mid = len(ordered) // 2
+        if len(ordered) % 2:
+            return ordered[mid]
+        return (ordered[mid - 1] + ordered[mid]) / 2.0
+
+    @property
+    def rtt_ms(self):
+        with self._lock:
+            return self._median(self._rtt)
+
+    @property
+    def oneway_ms(self):
+        with self._lock:
+            return self._median(self._oneway)
+
+    def summary(self) -> str:
+        rtt, ow = self.rtt_ms, self.oneway_ms
+        return "rtt=%s oneway=%s" % (
+            "%.0fms" % rtt if rtt is not None else "-",
+            "%.0fms" % ow if ow is not None else "-")
+
 
 class RateLimiter:
     """Per-peer token bucket for control messages.
@@ -1649,6 +1874,8 @@ class VoiceCallSession:
         self._prewarm = None
 
         self.jitter = JitterBuffer()
+        self.latency = LatencyTracker()
+        self._call_t0 = time.monotonic()   # frame-timestamp origin
         self._muted = False
         self._running = False
         self._closing = False
@@ -2233,7 +2460,8 @@ class VoiceCallSession:
                 opus_frame = bytearray(
                     self._opus_enc.encode(bytes(pcm), VOICE_FRAME_SAMPLES))
                 _wipe(pcm)
-                padded = pad_opus(bytes(opus_frame))
+                padded = pad_opus(bytes(opus_frame),
+                                  self.latency.call_ms(self._call_t0))
                 _wipe(opus_frame)
                 opus_frame = None
                 if padded is None:
@@ -2243,7 +2471,9 @@ class VoiceCallSession:
                     self.stats["oversize"] += 1
                     if self._silence_frame is None:
                         continue
-                    padded = pad_opus(self._silence_frame)
+                    padded = pad_opus(
+                        self._silence_frame,
+                        self.latency.call_ms(self._call_t0))
                 self._emit(padded)
             except Exception:
                 self.stats["dropped"] += 1
@@ -2251,6 +2481,43 @@ class VoiceCallSession:
                 _wipe(pcm)
                 if opus_frame is not None:
                     _wipe(opus_frame)
+
+            # Outside the try: a probe must still go out on a frame that
+            # failed to encode, or a codec hiccup would also stop latency
+            # measurement.
+            self._maybe_ping()
+
+    def _emit_probe(self, frame_type: int, payload: bytes) -> None:
+        """Send a PING or PONG as a full-size frame.
+
+        Padded to VOICE_PLAIN_LEN so a probe is indistinguishable from audio
+        by length; only the authenticated frame_type byte differs.
+        """
+        if len(payload) > VOICE_PLAIN_LEN:
+            return
+        plain = payload + b"\x00" * (VOICE_PLAIN_LEN - len(payload))
+        try:
+            with self._key_lock:
+                cipher = self.schedule.cipher_for_send()
+                if cipher is None:
+                    return
+                packet = cipher.seal(plain, frame_type=frame_type)
+        except Exception:
+            return
+        try:
+            self.loop.call_soon_threadsafe(self._write_packet, packet)
+        except Exception:
+            pass
+
+    def _maybe_ping(self) -> None:
+        """Emit a latency probe if one is due."""
+        if not self.latency.due():
+            return
+        try:
+            _pid, payload = self.latency.build_ping()
+            self._emit_probe(FRAME_TYPE_PING, payload)
+        except Exception:
+            pass
 
     def _emit(self, padded) -> None:
         """Seal one padded frame and hand it to the event loop."""
@@ -2325,13 +2592,13 @@ class VoiceCallSession:
         its own cipher, so a frame claiming an epoch we never committed —
         or one already retired — is rejected without touching any key.
         """
-        epoch, counter, length, _ = parse_media_header(header)
+        epoch, counter, length, ftype = parse_media_header(header)
         with self._key_lock:
             cipher = self.schedule.cipher_for_epoch(epoch)
             if cipher is None:
                 raise FrameError("no live key for epoch %d" % epoch)
             plaintext = cipher.open(header, sealed)
-        return epoch, counter, plaintext
+        return epoch, counter, plaintext, ftype
 
     async def _network_reader(self) -> None:
         """Stream -> AEAD -> Opus -> jitter buffer."""
@@ -2411,14 +2678,33 @@ class VoiceCallSession:
             opus_frame = None
             pcm = None
             try:
-                epoch, counter, plaintext = self.open_packet(header, sealed)
+                epoch, counter, plaintext, ftype = self.open_packet(
+                    header, sealed)
                 del buf[:VOICE_HDR_LEN + length]
+
+                if ftype == FRAME_TYPE_PING:
+                    # Authenticated before we answer, so a forged PING cannot
+                    # make us transmit.
+                    try:
+                        self._emit_probe(FRAME_TYPE_PONG,
+                                         self.latency.build_pong_stamped(plaintext))
+                    except Exception:
+                        pass
+                    continue
+                if ftype == FRAME_TYPE_PONG:
+                    try:
+                        self.latency.handle_pong(plaintext)
+                    except Exception:
+                        pass
+                    continue
                 # Queue the Opus payload, not decoded PCM. Decoding at
                 # playout is what makes Opus in-band FEC usable: recovering a
                 # lost frame requires the NEXT packet, which does not exist
                 # yet at receive time. It also cuts the buffer's memory by
                 # 8x, since 160 bytes of Opus replaces 1280 of PCM.
-                opus_frame = bytearray(unpad_opus(plaintext))
+                _opus, _send_ms = unpad_frame(plaintext)
+                self.latency.observe_frame(_send_ms, self._call_t0)
+                opus_frame = bytearray(_opus)
                 if self.jitter.push(epoch, counter, opus_frame):
                     self.stats["recv"] += 1
                     opus_frame = None        # ownership passed to playback
@@ -2555,7 +2841,7 @@ class VoiceCallSession:
         return ("state=%s role=%s audio=%s %s keys=%s epoch=%d pending=%s sent=%d "
                 "recv=%d dropped=%d late=%d authfail=%d replay=%d resync=%d "
                 "backpressure=%d oversize=%d fec=%d "
-                "jitter=%d/%d (%.0fms) ratchets=%d rekeys=%d/%d"
+                "jitter=%d/%d (%.0fms) %s ratchets=%d rekeys=%d/%d"
                 % (self.state, self.role, audio, rate,
                    "confirmed" if self.keys_confirmed.is_set() else "pending",
                    epoch, "-" if pending is None else pending,
@@ -2566,7 +2852,7 @@ class VoiceCallSession:
                    self.stats["backpressure"], self.stats["oversize"],
                    self.stats["fec_recovered"],
                    self.jitter.depth(), self.jitter.target_depth,
-                   self.jitter.jitter_ms,
+                   self.jitter.jitter_ms, self.latency.summary(),
                    ratchets, rekeys, failed))
 
     # -- teardown ---------------------------------------------------------
@@ -3672,12 +3958,13 @@ class VoiceCallManager:
                 delta = {k: cur.get(k, 0) - last.get(k, 0) for k in cur}
                 last = dict(cur)
                 self._vdbg(peer, "5s: tx=%d rx=%d drop=%d late=%d authfail=%d "
-                           "replay=%d jitter=%d/%d epoch=%d"
+                           "replay=%d jitter=%d/%d epoch=%d %s"
                            % (delta.get("sent", 0), delta.get("recv", 0),
                               delta.get("dropped", 0), delta.get("late", 0),
                               delta.get("auth_fail", 0), delta.get("replay", 0),
                               session.jitter.depth(), VOICE_JITTER_MAX,
-                              session.schedule.epoch))
+                              session.schedule.epoch,
+                              session.latency.summary()))
                 expect = 1000 // VOICE_FRAME_MS * 5
                 if delta.get("recv", 0) == 0:
                     self._vdbg(peer, "WARNING: no audio received in 5 s")

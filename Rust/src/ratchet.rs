@@ -16,7 +16,7 @@ use zeroize::{Zeroize, ZeroizeOnDrop};
 use rand::rngs::OsRng;
 use rand::RngCore;
 
-use crate::kdf::{kdf_chain, kdf_root, kdf_brace_rotate};
+use crate::kdf::{kdf_chain, kdf_root, kdf_brace_rotate, kdf_mkmac};
 use crate::header::{RatchetHeader, RatchetError};
 
 const MAX_SKIP: u32 = 1000;
@@ -81,6 +81,25 @@ pub struct EncryptResult {
     pub tag: [u8; 16],
     pub ratchet_id: u32,
     pub reveal_mac_keys: Vec<Vec<u8>>,
+    /// MKmac for THIS message (64 B, OTRv4 §4.4.2). The caller authenticates
+    /// the assembled data message with it, then drops it; this ratchet keeps
+    /// its own copy in `last_mac_key` for later revelation. MKmac is designed
+    /// to become public, so handing it across the FFI boundary costs nothing
+    /// that revelation would not publish anyway.
+    pub mac_key: Vec<u8>,
+}
+
+/// Result of decrypting one message.
+///
+/// L1: the receive path previously queued nothing for revelation —
+/// `last_mac_key` was assigned only in `encrypt_message`. Deniability turns on
+/// revealing the keys that authenticated messages you RECEIVED, since those
+/// are the ones a third party could then forge. The receive-side MKmac is now
+/// queued after successful authentication.
+pub struct DecryptResult {
+    pub plaintext: Vec<u8>,
+    /// MKmac for this message (64 B), so the caller can verify the outer MAC.
+    pub mac_key: Vec<u8>,
 }
 
 // ── Double Ratchet ──────────────────────────────────────────────────
@@ -202,8 +221,8 @@ impl DoubleRatchet {
         const MAX_PENDING_REVEALS: usize = 50;
         if self.pending_reveal_macs.len() > MAX_PENDING_REVEALS {
             let drain_n = self.pending_reveal_macs.len() - MAX_PENDING_REVEALS;
-            for mac in self.pending_reveal_macs.drain(..drain_n) {
-                drop(mac);
+            for mut mac in self.pending_reveal_macs.drain(..drain_n) {
+                mac.zeroize();
             }
         }
     }
@@ -216,7 +235,7 @@ impl DoubleRatchet {
 
     // ── Encrypt ─────────────────────────────────────────────────
     pub fn encrypt(&mut self, plaintext: &[u8]) -> Result<EncryptResult, RatchetError> {
-        let (mut next_ck, mut enc_key, mac_key) = kdf_chain(&self.chain_key_send);
+        let (mut next_ck, mut enc_key, mkmac) = kdf_chain(&self.chain_key_send);
         self.chain_key_send.zeroize();
         self.chain_key_send = next_ck;
         next_ck.zeroize();
@@ -246,7 +265,7 @@ impl DoubleRatchet {
         tag.copy_from_slice(&ciphertext_with_tag[ct_len..]);
 
         enc_key.zeroize();
-        self.last_mac_key = Some(mac_key.to_vec());
+        self.last_mac_key = Some(mkmac.to_vec());
 
         let rid = self.ratchet_id;
         self.msg_num_send = self.msg_num_send.checked_add(1)
@@ -263,6 +282,7 @@ impl DoubleRatchet {
             tag,
             ratchet_id: rid,
             reveal_mac_keys: reveal,
+            mac_key: mkmac.to_vec(),
         })
     }
 
@@ -270,7 +290,7 @@ impl DoubleRatchet {
     pub fn decrypt_same_dh(
         &mut self, header_bytes: &[u8], ciphertext: &[u8],
         nonce: &[u8; 12], tag: &[u8; 16],
-    ) -> Result<Vec<u8>, RatchetError> {
+    ) -> Result<DecryptResult, RatchetError> {
         let header = RatchetHeader::decode(header_bytes)?;
 
         if self.seen.contains(&header.dh_pub, header.msg_num) {
@@ -293,7 +313,11 @@ impl DoubleRatchet {
             let pt = self.aes_decrypt(&key, header_bytes, ciphertext, nonce, tag)?;
             self.skipped.remove(&skip_id);
             self.seen.insert(&header.dh_pub, header.msg_num);
-            return Ok(pt);
+            // Skipped path: MKmac is re-derived from the stored MKenc rather
+            // than kept alongside it, so the store stays 32 bytes per entry.
+            let mkmac = kdf_mkmac(&key);
+            self.queue_reveal(&mkmac);
+            return Ok(DecryptResult { plaintext: pt, mac_key: mkmac.to_vec() });
         }
 
         if header.msg_num < self.msg_num_recv {
@@ -333,6 +357,7 @@ impl DoubleRatchet {
         let (mut next_ck, mut enc_key, _) = kdf_chain(&scratch_ck);
         scratch_ck.zeroize();
 
+        let recv_enc_key = enc_key;
         let pt = match self.aes_decrypt(&enc_key, header_bytes, ciphertext, nonce, tag) {
             Ok(pt) => pt,
             Err(e) => {
@@ -341,10 +366,12 @@ impl DoubleRatchet {
                 enc_key.zeroize();
                 next_ck.zeroize();
                 for (_, mut k) in pending_skipped { k.zeroize(); }
+                let mut dead = recv_enc_key; dead.zeroize();
                 return Err(e);
             }
         };
         enc_key.zeroize();
+        let mut recv_enc_key = recv_enc_key;
 
         // ── Authenticated: commit ───────────────────────────────────────
         for (n, enc_key) in pending_skipped {
@@ -360,7 +387,23 @@ impl DoubleRatchet {
         self.msg_num_recv = header.msg_num.checked_add(1)
             .ok_or_else(|| RatchetError::Protocol("Message counter overflow".into()))?;
         self.seen.insert(&header.dh_pub, header.msg_num);
-        Ok(pt)
+
+        let mkmac = kdf_mkmac(&recv_enc_key);
+        recv_enc_key.zeroize();
+        self.queue_reveal(&mkmac);
+        Ok(DecryptResult { plaintext: pt, mac_key: mkmac.to_vec() })
+    }
+
+    /// Queue a MAC key for later revelation, bounded.
+    fn queue_reveal(&mut self, mkmac: &[u8; 64]) {
+        self.pending_reveal_macs.push(mkmac.to_vec());
+        const MAX_PENDING_REVEALS: usize = 50;
+        if self.pending_reveal_macs.len() > MAX_PENDING_REVEALS {
+            let drain_n = self.pending_reveal_macs.len() - MAX_PENDING_REVEALS;
+            for mut mac in self.pending_reveal_macs.drain(..drain_n) {
+                mac.zeroize();
+            }
+        }
     }
 
     /// Bound the skipped-key store. Evicts the lowest SkipId, which is
@@ -381,7 +424,7 @@ impl DoubleRatchet {
         &mut self, header_bytes: &[u8], ciphertext: &[u8],
         nonce: &[u8; 12], tag: &[u8; 16],
         dh_secret_recv: &[u8], dh_secret_send: &[u8], new_local_pub: &[u8; 56],
-    ) -> Result<Vec<u8>, RatchetError> {
+    ) -> Result<DecryptResult, RatchetError> {
         let header = RatchetHeader::decode(header_bytes)?;
 
         if self.seen.contains(&header.dh_pub, header.msg_num) {
@@ -413,11 +456,13 @@ impl DoubleRatchet {
         }
         let (mut next_recv_ck, mut enc_key, _) = kdf_chain(&scratch_ck);
         scratch_ck.zeroize();
+        let mut recv_enc_key = enc_key;
 
         let pt = match self.aes_decrypt(&enc_key, header_bytes, ciphertext, nonce, tag) {
             Ok(pt) => pt,
             Err(e) => {
                 enc_key.zeroize();
+                recv_enc_key.zeroize();
                 next_recv_ck.zeroize();
                 let mut r = new_root_recv;  r.zeroize();
                 for (_, mut k) in pending_skipped { k.zeroize(); }
@@ -468,7 +513,11 @@ impl DoubleRatchet {
         self.last_mac_key = None;
 
         self.seen.insert(&header.dh_pub, header.msg_num);
-        Ok(pt)
+
+        let mkmac = kdf_mkmac(&recv_enc_key);
+        recv_enc_key.zeroize();
+        self.queue_reveal(&mkmac);
+        Ok(DecryptResult { plaintext: pt, mac_key: mkmac.to_vec() })
     }
 
     // ── Check if a new DH public key was used ──────────────────
@@ -699,34 +748,41 @@ impl RustDoubleRatchet {
         let mac_list: Vec<Bound<'_, PyBytes>> = result.reveal_mac_keys.iter()
             .map(|k| PyBytes::new(py, k)).collect();
         d.set_item("reveal_mac_keys", mac_list)?;
+        d.set_item("mac_key", PyBytes::new(py, &result.mac_key))?;
         Ok(d)
     }
 
     fn decrypt_same_dh<'py>(&mut self, py: Python<'py>,
-        header: &[u8], ciphertext: &[u8], nonce: &[u8], tag: &[u8]) -> PyResult<Bound<'py, PyBytes>> {
+        header: &[u8], ciphertext: &[u8], nonce: &[u8], tag: &[u8]) -> PyResult<Bound<'py, PyDict>> {
         let nonce_arr: &[u8; 12] = nonce.try_into()
             .map_err(|_| pyo3::exceptions::PyValueError::new_err("nonce must be 12 bytes"))?;
         let tag_arr: &[u8; 16] = tag.try_into()
             .map_err(|_| pyo3::exceptions::PyValueError::new_err("tag must be 16 bytes"))?;
-        let plaintext = self.inner.decrypt_same_dh(header, ciphertext, nonce_arr, tag_arr)
+        let r = self.inner.decrypt_same_dh(header, ciphertext, nonce_arr, tag_arr)
             .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
-        Ok(PyBytes::new(py, &plaintext))
+        let d = PyDict::new(py);
+        d.set_item("plaintext", PyBytes::new(py, &r.plaintext))?;
+        d.set_item("mac_key", PyBytes::new(py, &r.mac_key))?;
+        Ok(d)
     }
 
     fn decrypt_new_dh<'py>(&mut self, py: Python<'py>,
         header: &[u8], ciphertext: &[u8], nonce: &[u8], tag: &[u8],
         dh_secret_recv: &[u8], dh_secret_send: &[u8], new_local_pub: &[u8],
-    ) -> PyResult<Bound<'py, PyBytes>> {
+    ) -> PyResult<Bound<'py, PyDict>> {
         let nonce_arr: &[u8; 12] = nonce.try_into()
             .map_err(|_| pyo3::exceptions::PyValueError::new_err("nonce must be 12 bytes"))?;
         let tag_arr: &[u8; 16] = tag.try_into()
             .map_err(|_| pyo3::exceptions::PyValueError::new_err("tag must be 16 bytes"))?;
         let new_local_pub: &[u8; 56] = new_local_pub.try_into()
             .map_err(|_| pyo3::exceptions::PyValueError::new_err("new_local_pub must be 56 bytes"))?;
-        let plaintext = self.inner.decrypt_new_dh(header, ciphertext, nonce_arr, tag_arr,
+        let r = self.inner.decrypt_new_dh(header, ciphertext, nonce_arr, tag_arr,
             dh_secret_recv, dh_secret_send, new_local_pub)
             .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
-        Ok(PyBytes::new(py, &plaintext))
+        let d = PyDict::new(py);
+        d.set_item("plaintext", PyBytes::new(py, &r.plaintext))?;
+        d.set_item("mac_key", PyBytes::new(py, &r.mac_key))?;
+        Ok(d)
     }
 
     fn send_ratchet(&mut self, dh_secret: &[u8], new_local_pub: &[u8]) -> PyResult<()> {
@@ -857,6 +913,13 @@ mod tests {
     fn deliver(rx: &mut DoubleRatchet, m: &EncryptResult)
         -> Result<Vec<u8>, RatchetError> {
         rx.decrypt_same_dh(&m.header, &m.ciphertext, &m.nonce, &m.tag)
+          .map(|r| r.plaintext)
+    }
+
+    /// Deliver and keep the receive-side MKmac.
+    fn deliver_full(rx: &mut DoubleRatchet, m: &EncryptResult)
+        -> Result<DecryptResult, RatchetError> {
+        rx.decrypt_same_dh(&m.header, &m.ciphertext, &m.nonce, &m.tag)
     }
 
     #[test]
@@ -951,6 +1014,112 @@ mod tests {
 
         assert_eq!(deliver(&mut b, &m1).unwrap(), b"one",
                    "the real m1 must still decrypt after a forgery hit it");
+    }
+
+    // ── L1: MAC-key revelation ───────────────────────────────────────
+
+    /// The bug: kdf_chain returned [0u8; 32] as MKmac, so every key queued
+    /// for revelation was 32 zero bytes and revealing them proved nothing.
+    #[test]
+    fn mkmac_is_64_bytes_and_not_zero() {
+        let (_, _, mkmac) = kdf_chain(&CKA);
+        assert_eq!(mkmac.len(), 64, "OTRv4 §4.4.2 requires a 64-byte MKmac");
+        assert!(mkmac.iter().any(|&b| b != 0), "MKmac must not be all-zero");
+    }
+
+    /// MKmac must derive from MKenc, not from the chain key, so that
+    /// revealing it exposes nothing about the chain's future.
+    #[test]
+    fn mkmac_derives_from_the_message_key() {
+        let (_, mkenc, mkmac) = kdf_chain(&CKA);
+        assert_eq!(kdf_mkmac(&mkenc), mkmac);
+        let (_, other_enc, _) = kdf_chain(&CKB);
+        assert_ne!(kdf_mkmac(&other_enc), mkmac);
+    }
+
+    /// The sender's MKmac and the receiver's MKmac for the same message must
+    /// be equal — otherwise the revealed key cannot forge that message.
+    #[test]
+    fn sender_and_receiver_agree_on_mkmac() {
+        let (mut a, mut b) = pair();
+        let m = a.encrypt(b"authentic").unwrap();
+        let r = deliver_full(&mut b, &m).unwrap();
+        assert_eq!(r.plaintext, b"authentic");
+        assert_eq!(m.mac_key.len(), 64);
+        assert_eq!(r.mac_key, m.mac_key,
+                   "the key that authenticated the message must be the key \
+                    both sides derive");
+        assert!(r.mac_key.iter().any(|&x| x != 0));
+    }
+
+    /// The receive path queued nothing before this fix: last_mac_key was
+    /// assigned only in encrypt_message. Deniability turns on revealing the
+    /// keys that authenticated messages you RECEIVED.
+    #[test]
+    fn receive_side_mkmac_is_queued_for_revelation() {
+        let (mut a, mut b) = pair();
+        let m = a.encrypt(b"received").unwrap();
+        let r = deliver_full(&mut b, &m).unwrap();
+
+        let next = b.encrypt(b"reply").unwrap();
+        assert!(next.reveal_mac_keys.iter().any(|k| k == &r.mac_key),
+                "the MKmac that authenticated an inbound message must be \
+                 revealed");
+        for k in &next.reveal_mac_keys {
+            assert_eq!(k.len(), 64);
+            assert!(k.iter().any(|&x| x != 0), "no all-zero key may be revealed");
+        }
+    }
+
+    /// Skipped messages take a different code path and must behave the same.
+    #[test]
+    fn skipped_message_mkmac_is_queued() {
+        let (mut a, mut b) = pair();
+        let m0 = a.encrypt(b"zero").unwrap();
+        let m1 = a.encrypt(b"one").unwrap();
+        let m2 = a.encrypt(b"two").unwrap();
+
+        deliver_full(&mut b, &m0).unwrap();
+        deliver_full(&mut b, &m2).unwrap();          // m1's key is skipped
+        let r1 = deliver_full(&mut b, &m1).unwrap(); // arrives late
+        assert_eq!(r1.mac_key, m1.mac_key,
+                   "the skipped path must derive the same MKmac");
+
+        let reply = b.encrypt(b"reply").unwrap();
+        assert!(reply.reveal_mac_keys.iter().any(|k| k == &r1.mac_key));
+    }
+
+    /// A forgery must not leak a MAC key: nothing is queued if the message
+    /// never authenticated.
+    #[test]
+    fn forgery_reveals_nothing() {
+        let (mut a, mut b) = pair();
+        let mut forged = a.encrypt(b"x").unwrap();
+        forged.ciphertext[0] ^= 0x01;
+        assert!(deliver_full(&mut b, &forged).is_err());
+        let reply = b.encrypt(b"reply").unwrap();
+        assert!(reply.reveal_mac_keys.is_empty(),
+                "an unauthenticated message must not queue a MAC key");
+    }
+
+    /// An empty queue must stay empty — never a placeholder zero key.
+    #[test]
+    fn empty_reveal_queue_is_empty_not_zero_padded() {
+        let (mut a, _b) = pair();
+        let m = a.encrypt(b"first").unwrap();
+        assert!(m.reveal_mac_keys.is_empty());
+    }
+
+    #[test]
+    fn reveal_queue_is_bounded() {
+        let (mut a, mut b) = pair();
+        for i in 0..200 {
+            let m = a.encrypt(format!("m{i}").as_bytes()).unwrap();
+            deliver_full(&mut b, &m).unwrap();
+        }
+        let reply = b.encrypt(b"reply").unwrap();
+        assert!(reply.reveal_mac_keys.len() <= 50,
+                "got {}", reply.reveal_mac_keys.len());
     }
 
     #[test]
