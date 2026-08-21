@@ -46,10 +46,52 @@ Three things are unavailable in this environment, and all three are required for
 the on-device gates:
 
 ```
-dl.google.com   403 at the egress proxy  -> no Android SDK, no NDK, no AGP
-chaquo.com      403 at the egress proxy  -> no Chaquopy plugin or runtime
+dl.google.com   403 at the egress proxy  -> no Android SDK, no NDK, no AGP, no AndroidX
+chaquo.com      403 at the egress proxy  -> (not decisive -- see below)
 (no device)                              -> no real-device verification
 ```
+
+**Refined 2026-08-21.** Re-probed after the MAC fix. The picture is narrower than
+first reported, and one host is decisive:
+
+| Artifact | Source | Status |
+|---|---|---|
+| Android SDK command-line tools | `dl.google.com` | **BLOCKED** (403) |
+| Android NDK | `dl.google.com` | **BLOCKED** (403) |
+| Android Gradle Plugin 8.7.3 | `dl.google.com` only | **BLOCKED** — 404 on Maven Central |
+| AndroidX / Compose | `dl.google.com` only | **BLOCKED** — 404 on Maven Central |
+| Chaquopy 16.0.0 | **Maven Central** | **AVAILABLE** (200) |
+| Kotlin, kotlinx, JUnit | Maven Central | AVAILABLE |
+| Gradle 8.14.3, JDK 21 | local | AVAILABLE |
+| Rust `aarch64-linux-android` std | static.rust-lang.org | AVAILABLE |
+
+`maven.google.com` is not a separate route: it 301-redirects to
+`dl.google.com/dl/android/maven2/`, which the same policy refuses.
+
+**So `dl.google.com` is the single blocking host.** `chaquo.com` turns out not to
+be required — Chaquopy is mirrored on Maven Central (16.0.0 present, 17.0.0
+latest), so the Gradle plugin can be resolved without it. Allowlisting
+`dl.google.com` alone would unblock the SDK, the NDK, AGP and AndroidX, i.e.
+everything the build needs.
+
+Exact failing command:
+
+```
+$ cd android && gradle --offline --no-daemon tasks
+Plugin [id: 'com.android.application', version: '8.7.3'] was not found
+  could not resolve plugin artifact
+  'com.android.application:com.android.application.gradle.plugin:8.7.3'
+```
+
+and for the native side:
+
+```
+$ cargo check --target aarch64-linux-android --release
+error occurred in cc-rs: failed to find tool "aarch64-linux-android-clang"
+```
+
+(`pqcrypto-mlkem` / `pqcrypto-mldsa` compile C reference code and need the NDK
+toolchain; the Rust std for the target installs fine.)
 
 Both refusals were confirmed against the proxy's own status endpoint, which
 records them as policy denials rather than transient failures. The proxy
