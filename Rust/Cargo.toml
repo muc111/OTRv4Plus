@@ -88,6 +88,22 @@ pq-rust = [
 # assertion.
 test-only-kdf = []
 
+# M3 (Android decision 2): the legacy DAKE surface that returns session key
+# material to Python as PyBytes -- Dakeresult's root_key/chain_key_a/
+# chain_key_b/brace_key/mac_key getters, plus PyDake::generate_dake2,
+# process_dake2 and get_session_keys.
+#
+# OFF by default, so a production artifact does not merely hide them: they are
+# not compiled in and do not exist.  The live path uses generate_dake2_output /
+# process_dake2_output, which move keys Rust-to-Rust into the ratchet through an
+# opaque DakeOutput and never materialise PyBytes; _check_rust_requirements()
+# hard-requires those at import time, so nothing reachable needs this feature.
+#
+# build.rs refuses to build with it unless OTRV4PLUS_ALLOW_LEGACY_DAKE_KEYS=1 is
+# set explicitly, and tests/test_release_guard.py asserts the installed artifact
+# does not expose the surface.
+legacy-dake-keys = []
+
 [dependencies]
 pyo3         = { version = "0.24", features = ["abi3-py39"] }
 zeroize      = { version = "1.8",  features = ["derive", "alloc"] }

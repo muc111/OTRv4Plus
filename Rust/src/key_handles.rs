@@ -62,11 +62,21 @@ pub struct Ed448KeyHandle {
 
 #[pymethods]
 impl Ed448KeyHandle {
-    /// Construct from raw 57 bytes (test/internal use; production calls
-    /// `generate_ed448_keypair` instead so the seed is never observed
-    /// from Python at all).
+    /// Construct from raw 57 bytes.
+    ///
+    /// TEST-ONLY as of decision B1 (option B). Production creates identities
+    /// with `generate_ed448_keypair` and persists them with
+    /// `identity::create_sealed_identity`, so nothing on the live path needs to
+    /// hand Rust a seed. Leaving this Python-visible would let Python INJECT a
+    /// chosen identity, which weakens the invariant that a handle's key was
+    /// generated inside Rust and never observed -- so it is compiled out unless
+    /// `test-only-kdf` is enabled.
+    ///
+    /// It remains `pub(crate)` for `identity.rs`, which is how unsealing
+    /// rebuilds a handle without the seed ever becoming a Python object.
+    #[cfg(feature = "test-only-kdf")]
     #[staticmethod]
-    fn from_seed_bytes<'py>(seed: &[u8]) -> PyResult<Self> {
+    pub(crate) fn from_seed_bytes<'py>(seed: &[u8]) -> PyResult<Self> {
         if seed.len() != 57 {
             return Err(PyValueError::new_err(format!(
                 "Ed448 seed must be 57 bytes, got {}", seed.len()
@@ -135,6 +145,29 @@ impl Ed448KeyHandle {
     pub(crate) fn expose_seed_slice(&self) -> &[u8] {
         self.seed.expose_slice()
     }
+
+    /// Crate-internal reconstruction from a raw seed. NOT a PyO3 method.
+    ///
+    /// This is what `identity.rs` uses to rebuild a handle while unsealing, so
+    /// it must exist on every build -- unlike the `#[staticmethod]` above,
+    /// which is test-only because it would let Python inject a chosen identity.
+    pub(crate) fn from_seed_internal(seed: &[u8]) -> PyResult<Self> {
+        if seed.len() != 57 {
+            return Err(PyValueError::new_err(format!(
+                "Ed448 seed must be 57 bytes, got {}", seed.len()
+            )));
+        }
+        let signing_key = SigningKey::try_from(seed)
+            .map_err(|e| PyValueError::new_err(format!(
+                "Ed448 SigningKey construction failed: {:?}", e
+            )))?;
+        let vk = signing_key.verifying_key();
+        let pub_bytes: [u8; 57] = vk.to_bytes();
+        let secret = SecretBytes::<57>::from_slice(seed)
+            .ok_or_else(|| PyValueError::new_err("internal: seed length"))?;
+        Ok(Self { seed: secret, pub_bytes })
+    }
+
 }
 
 /// Generate a fresh Ed448 keypair inside Rust.  Returns a handle
@@ -232,10 +265,12 @@ pub struct X448KeyHandle {
 
 #[pymethods]
 impl X448KeyHandle {
-    /// Construct from raw 56 bytes.  Same intent as Ed448: production
-    /// uses `generate_x448_keypair` so the seed never appears in Python.
+    /// Construct from raw 56 bytes.
+    ///
+    /// TEST-ONLY as of decision B1 -- see `Ed448KeyHandle::from_seed_bytes`.
+    #[cfg(feature = "test-only-kdf")]
     #[staticmethod]
-    fn from_priv_bytes<'py>(priv_bytes: &[u8]) -> PyResult<Self> {
+    pub(crate) fn from_priv_bytes<'py>(priv_bytes: &[u8]) -> PyResult<Self> {
         if priv_bytes.len() != 56 {
             return Err(PyValueError::new_err(format!(
                 "X448 private bytes must be 56 bytes, got {}", priv_bytes.len()
@@ -293,6 +328,28 @@ impl X448KeyHandle {
     pub(crate) fn expose_priv_slice(&self) -> &[u8] {
         self.priv_bytes.expose_slice()
     }
+
+    /// Crate-internal reconstruction. NOT a PyO3 method -- see
+    /// `Ed448KeyHandle::from_seed_internal`.
+    pub(crate) fn from_priv_internal(priv_bytes: &[u8]) -> PyResult<Self> {
+        if priv_bytes.len() != 56 {
+            return Err(PyValueError::new_err(format!(
+                "X448 private bytes must be 56 bytes, got {}", priv_bytes.len()
+            )));
+        }
+        let mut priv_arr = [0u8; 56];
+        priv_arr.copy_from_slice(priv_bytes);
+
+        // Same derivation the PyO3 constructor and dake.rs use.
+        let sk = x448::Secret::from(priv_arr);
+        let pk = x448::PublicKey::from(&sk);
+        let pub_arr: [u8; 56] = *pk.as_bytes();
+
+        let secret = SecretBytes::new(priv_arr);
+        priv_arr.zeroize();
+
+        Ok(Self { priv_bytes: secret, pub_bytes: pub_arr })
+    }
 }
 
 /// Generate a fresh X448 keypair inside Rust.
@@ -338,7 +395,7 @@ mod tests {
     fn ed448_sign_then_verify_roundtrip() {
         let mut seed = [7u8; 57];
         seed[56] = 0;
-        let handle = Ed448KeyHandle::from_seed_bytes(&seed)
+        let handle = Ed448KeyHandle::from_seed_internal(&seed)
             .expect("seed -> handle");
 
         let signing_key = SigningKey::try_from(&seed[..]).expect("signing key");

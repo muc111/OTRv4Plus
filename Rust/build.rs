@@ -31,6 +31,53 @@
 //! installed exposes no gated API.
 
 fn main() {
+    guard_test_only_kdf();
+    guard_legacy_dake_keys();
+}
+
+/// M3: the legacy DAKE surface that returns session keys to Python as PyBytes.
+///
+/// Same fail-closed shape as the vault gate below: enabling the feature is a
+/// build error unless the opt-in is explicit, so a release pipeline cannot turn
+/// it on by accident or inherit it transitively.
+fn guard_legacy_dake_keys() {
+    println!("cargo:rerun-if-env-changed=OTRV4PLUS_ALLOW_LEGACY_DAKE_KEYS");
+
+    if std::env::var_os("CARGO_FEATURE_LEGACY_DAKE_KEYS").is_none() {
+        return;
+    }
+    let allowed = std::env::var("OTRV4PLUS_ALLOW_LEGACY_DAKE_KEYS")
+        .map(|v| v == "1")
+        .unwrap_or(false);
+    if !allowed {
+        panic!(
+            "\n\
+             ============================================================\n\
+             REFUSING TO BUILD: `legacy-dake-keys` is enabled.\n\
+             ============================================================\n\
+             This feature compiles the legacy DAKE surface back in:\n\
+             Dakeresult's root_key / chain_key_a / chain_key_b / brace_key /\n\
+             mac_key getters, and PyDake::generate_dake2 / process_dake2 /\n\
+             get_session_keys.  Those hand session key material to Python as\n\
+             PyBytes.  An artifact built this way must not be distributed.\n\
+             \n\
+             The live path does not need it: generate_dake2_output and\n\
+             process_dake2_output move keys Rust-to-Rust into the ratchet\n\
+             through an opaque DakeOutput.\n\
+             \n\
+             If you are building for a test that genuinely exercises the legacy\n\
+             surface, say so explicitly:\n\
+             \n\
+             OTRV4PLUS_ALLOW_LEGACY_DAKE_KEYS=1 cargo build \\\n\
+                 --features legacy-dake-keys\n\
+             ============================================================\n"
+        );
+    }
+    println!("cargo:warning=OTRV4PLUS_ALLOW_LEGACY_DAKE_KEYS=1: legacy DAKE session-key \
+              APIs are EXPOSED to Python. This artifact must not be distributed.");
+}
+
+fn guard_test_only_kdf() {
     println!("cargo:rerun-if-env-changed=OTRV4PLUS_ALLOW_TEST_GATES");
 
     let feature_on = std::env::var_os("CARGO_FEATURE_TEST_ONLY_KDF").is_some();

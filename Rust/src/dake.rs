@@ -70,6 +70,21 @@ impl Dakeresult {
     // ── Getters / setters with consumption guard ───────────────
     #[getter] fn consumed(&self) -> bool { self.consumed }
 
+    // ── M3: legacy session-key surface, gated out of production ──────────────
+    // These five getters hand root/chain/brace/MAC key material to Python as
+    // PyBytes.  The live path does not use them: RustDAKEAdapter calls
+    // generate_dake2_output / process_dake2_output, which move the keys
+    // Rust-to-Rust into the ratchet via an opaque DakeOutput and never
+    // materialise PyBytes.  _check_rust_requirements() hard-requires those
+    // *_output methods at import time, so the Python fallback that reads these
+    // getters is unreachable in any importable build.
+    //
+    // Compiled out unless `legacy-dake-keys` is enabled, so a production
+    // artifact cannot expose them at all -- not merely undocumented, absent.
+    // build.rs refuses to build with the feature unless the opt-in environment
+    // variable is set, and tests/test_release_guard.py asserts the installed
+    // artifact does not expose them.
+    #[cfg(feature = "legacy-dake-keys")]
     #[getter] fn root_key<'py>(&self, py: Python<'py>) -> PyResult<Option<Bound<'py, PyBytes>>> {
         self.check_not_consumed()?; Ok(self.root_key.as_ref().map(|v| PyBytes::new(py, v)))
     }
@@ -77,6 +92,7 @@ impl Dakeresult {
         self.check_not_consumed()?; self.root_key = v; Ok(())
     }
 
+    #[cfg(feature = "legacy-dake-keys")]
     #[getter] fn chain_key_a<'py>(&self, py: Python<'py>) -> PyResult<Option<Bound<'py, PyBytes>>> {
         self.check_not_consumed()?; Ok(self.chain_key_a.as_ref().map(|v| PyBytes::new(py, v)))
     }
@@ -84,6 +100,7 @@ impl Dakeresult {
         self.check_not_consumed()?; self.chain_key_a = v; Ok(())
     }
 
+    #[cfg(feature = "legacy-dake-keys")]
     #[getter] fn chain_key_b<'py>(&self, py: Python<'py>) -> PyResult<Option<Bound<'py, PyBytes>>> {
         self.check_not_consumed()?; Ok(self.chain_key_b.as_ref().map(|v| PyBytes::new(py, v)))
     }
@@ -91,6 +108,7 @@ impl Dakeresult {
         self.check_not_consumed()?; self.chain_key_b = v; Ok(())
     }
 
+    #[cfg(feature = "legacy-dake-keys")]
     #[getter] fn brace_key<'py>(&self, py: Python<'py>) -> PyResult<Option<Bound<'py, PyBytes>>> {
         self.check_not_consumed()?; Ok(self.brace_key.as_ref().map(|v| PyBytes::new(py, v)))
     }
@@ -98,6 +116,7 @@ impl Dakeresult {
         self.check_not_consumed()?; self.brace_key = v; Ok(())
     }
 
+    #[cfg(feature = "legacy-dake-keys")]
     #[getter] fn mac_key<'py>(&self, py: Python<'py>) -> PyResult<Option<Bound<'py, PyBytes>>> {
         self.check_not_consumed()?; Ok(self.mac_key.as_ref().map(|v| PyBytes::new(py, v)))
     }
@@ -1155,6 +1174,7 @@ impl PyDake {
         Ok(robj.into_any())
     }
 
+    #[cfg(feature = "legacy-dake-keys")]
     fn generate_dake2<'py>(&mut self, py: Python<'py>, our_prekey_priv_bytes: Option<&[u8]>, mldsa_pub_bytes: Option<&[u8]>) -> PyResult<Py<PyAny>> {
         if self.inner.our_profile_bytes.is_empty() { return Err(PyErr::from(OtrError::Internal)); }
         let profile = self.inner.our_profile_bytes.clone();
@@ -1200,6 +1220,7 @@ impl PyDake {
     }
 
     /// Process DAKE2 – parsing done in Rust, no profile bytes needed.
+    #[cfg(feature = "legacy-dake-keys")]
     fn process_dake2<'py>(&mut self, py: Python<'py>, dake2_bytes: &[u8], our_prekey_priv_bytes: Option<&[u8]>) -> PyResult<Py<PyAny>> {
         let keys = self.inner.process_dake2(dake2_bytes, our_prekey_priv_bytes).map_err(PyErr::from)?;
         let robj = Py::new(py, Dakeresult::success())?; let rb = robj.bind(py);
@@ -1250,6 +1271,7 @@ impl PyDake {
         }.to_string()
     }
     fn is_established(&self) -> bool { self.inner.phase == DakePhase::Established }
+    #[cfg(feature = "legacy-dake-keys")]
     fn get_session_keys(&mut self) -> Option<Py<PyAny>> {
         Python::with_gil(|py| {
             if let Some(keys) = self.inner.take_session_keys() {

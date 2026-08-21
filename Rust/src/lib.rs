@@ -22,6 +22,7 @@ pub mod test_vectors;     // v10.6.17: RFC 8032 Ed448 test vectors (Phase 5.3f-n
 pub mod mldsa;            // v10.6.18: ML-DSA-87 PyO3 bindings (Phase 5.3j)
 pub mod aead;             // v10.6.19: AES-256-GCM PyO3 bindings (Phase 5.3h, part B)
 pub mod mlkem;            // v10.7.3: ML-KEM-1024 PyO3 bindings (Phase 5.3i-C)
+pub mod identity;         // Android B1 (option B): Rust-owned identity sealing (additive)
 
 use pyo3::prelude::*;
 use pyo3::wrap_pyfunction;
@@ -56,6 +57,13 @@ fn otrv4_core(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(key_handles::generate_ed448_keypair, m)?)?;
     m.add_function(wrap_pyfunction!(key_handles::generate_x448_keypair,  m)?)?;
     m.add_function(wrap_pyfunction!(key_handles::verify_ed448_sig,        m)?)?;
+    // Android decision B1 (option B): identity persistence sealed INSIDE Rust.
+    // No seed accessor is added -- only ciphertext and handles cross the
+    // boundary.  See src/identity.rs.
+    m.add_function(wrap_pyfunction!(identity::seal_identity,           m)?)?;
+    m.add_function(wrap_pyfunction!(identity::unseal_identity,         m)?)?;
+    m.add_function(wrap_pyfunction!(identity::create_sealed_identity,  m)?)?;
+    m.add_function(wrap_pyfunction!(identity::identity_record_version, m)?)?;
 
     Ok(())
 }

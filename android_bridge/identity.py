@@ -20,25 +20,27 @@ own docstring calls itself "test/internal use; production calls
 generate_ed448_keypair instead so the seed is never observed from Python at
 all."  So persistence requires a seed that Python has held.
 
-Two ways to resolve it:
+Two ways to resolve it were considered:
 
   A. Generate the seed in Python, seal it, reconstruct with `from_seed_bytes`.
-     Works today with no Rust change.  Costs the documented property that
-     private key bytes never appear on the Python heap: the seed is on the heap
-     at creation and again at every load, and CPython gives no reliable
-     zeroization for it.
+     Works with no Rust change.  Costs the documented property that private key
+     bytes never appear on the Python heap: the seed is on the heap at creation
+     and again at every load, and CPython gives no reliable zeroization for it.
 
-  B. Seal and unseal INSIDE Rust -- an additive `storage.rs` exposing something
-     like `seal_ed448_handle(handle, dek) -> bytes` and
-     `unseal_ed448_handle(blob, dek) -> Ed448KeyHandle`.  Only ciphertext
-     crosses the boundary; the seed never enters Python at any point.  Needs new
-     (additive, non-primitive) Rust.
+  B. Seal and unseal INSIDE Rust.  Only ciphertext crosses the boundary; the
+     seed never enters Python at any point.
 
-B is the architecturally correct answer and is what the Phase 1 report proposed.
-A is not safe to adopt silently, so this module does NOT choose: it defines
-`IdentityKeyStore` as the swap point, and both options implement it.  The Phase 2
-deliverable is the interface plus a test double; the production implementation
-is a Phase 4 item pending that decision.
+**Option B is the approved and implemented design** (decision B1).  The additive
+Rust module `Rust/src/identity.rs` provides `create_sealed_identity`,
+`seal_identity` and `unseal_identity`, using the crate-internal accessors that
+are `pub(crate)` and therefore invisible to Python.  No `get_seed()` accessor
+was added and none may be: `tests/test_rust_identity_sealing.py` enumerates the
+module's Python-visible surface and fails if anything seed-shaped appears.
+
+`RustSealedIdentityKeyStore` below is the production implementation.  Option A
+survives only as a test double in `tests/test_android_identity.py`, kept because
+it exercises the manager's lifecycle without requiring a DEK, and marked there
+as development/test only.
 
 What this module guarantees regardless of which is chosen
 --------------------------------------------------------
@@ -251,3 +253,93 @@ class IdentityManager:
     @property
     def current(self) -> Optional[IdentityRecord]:
         return self._loaded
+
+
+class RustSealedIdentityKeyStore(IdentityKeyStore):
+    """Production identity custody: sealing happens inside Rust (decision B1).
+
+    The Ed448 seed and X448 private scalar are read through Rust's
+    crate-internal accessors and encrypted before anything crosses into Python.
+    What this class handles is ciphertext.
+
+    Two layers of AES-256-GCM end up wrapping the identity, deliberately:
+
+      inner  Rust `identity.rs`  -- keeps the seed inside the Rust boundary and
+                                    binds the record version and key_id
+      outer  `SealedStore`       -- binds the record to its slot (record type,
+                                    record id, schema version)
+
+    The outer layer is what stops a sealed identity being replayed into a
+    different record slot; the inner layer is what stops the seed ever being a
+    Python object.  They solve different problems, so both are kept.
+
+    The data-encryption key is supplied by a `DekProvider`.  On Android that key
+    is unwrapped from a Keystore-held wrapping key; here it is whatever the
+    provider supplies.
+
+    Known residual, recorded rather than glossed: the DEK itself is a Python
+    `bytes` in this arrangement, because the provider hands it over to be passed
+    down to Rust.  The seed is not, which is what decision B1 required.  Phase 4
+    should shorten that path further by having Kotlin pass the unwrapped DEK
+    straight into Rust over JNI, so Python only ever holds an opaque handle.
+    """
+
+    def __init__(self, dek_provider, key_id: int = 1):
+        if dek_provider is None:
+            raise IdentityError(
+                "RustSealedIdentityKeyStore requires a DekProvider; identity "
+                "material is never sealed under a key this class invents."
+            )
+        self._dek_provider = dek_provider
+        self._key_id = int(key_id)
+
+    def _core(self):
+        try:
+            import otrv4_core
+        except ImportError as exc:
+            raise IdentityError(
+                "otrv4_core is required for identity sealing"
+            ) from exc
+        for required in ("create_sealed_identity", "unseal_identity"):
+            if not hasattr(otrv4_core, required):
+                raise IdentityError(
+                    f"otrv4_core is missing {required}; rebuild the Rust core"
+                )
+        return otrv4_core
+
+    def _dek(self) -> bytes:
+        handle = self._dek_provider.current()
+        raw = getattr(handle, "raw_key_for_rust", None)
+        if raw is None:
+            raise IdentityError(
+                "the DekProvider must expose raw_key_for_rust() so the key can "
+                "be handed to the Rust sealing layer"
+            )
+        return raw()
+
+    def create(self):
+        """Generate and seal an identity without the seed entering Python."""
+        core = self._core()
+        dek = self._dek()
+        try:
+            ident, prekey, sealed = core.create_sealed_identity(dek, self._key_id)
+        except Exception as exc:
+            raise IdentityError(f"identity creation failed: {type(exc).__name__}") from None
+        return ident, prekey, bytes(sealed)
+
+    def restore(self, serialized: bytes):
+        """Rebuild the handles from a Rust-sealed blob.
+
+        Any failure -- wrong key, tampering, truncation, unknown version --
+        raises `CorruptIdentity`, undifferentiated.
+        """
+        core = self._core()
+        dek = self._dek()
+        try:
+            ident, prekey = core.unseal_identity(bytes(serialized), dek, self._key_id)
+        except Exception:
+            raise CorruptIdentity("identity record could not be opened") from None
+        return ident, prekey
+
+
+__all__.append("RustSealedIdentityKeyStore")

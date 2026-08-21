@@ -23,6 +23,16 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 otrv4_core = pytest.importorskip("otrv4_core")
 
+# The double below rebuilds handles from a raw seed. Decision B1 (option B)
+# gated Ed448KeyHandle.from_seed_bytes out of production builds, because it lets
+# Python inject a chosen identity. These tests therefore run only on a
+# test-only-kdf wheel; tests/test_rust_identity_sealing.py covers the same
+# lifecycle against the production build, sealing inside Rust.
+pytestmark = pytest.mark.skipif(
+    not hasattr(otrv4_core.Ed448KeyHandle, "from_seed_bytes"),
+    reason="seed injection is gated out of production builds (decision B1)",
+)
+
 from android_bridge.secure_store import (          # noqa: E402
     AesGcmSealedStore, DekHandle, DekProvider, SealError, UnsealError,
     KeyRotationRequired, MAX_RECORDS_PER_KEY, RECORD_VERSION,
@@ -479,25 +489,32 @@ class TestNoInsecureDefaults:
             IdentityManager(AesGcmSealedStore(_MemoryDekProvider()), None)
 
     def test_package_ships_no_concrete_key_custody(self):
-        """android_bridge must not contain a usable production default.
+        """Key CUSTODY must still come from the platform, not this package.
 
-        If someone later adds one, this test fails and forces the security
-        decision to be made explicitly rather than inherited from a convenience
-        class that happened to work.
+        Narrowed since decision B1: `RustSealedIdentityKeyStore` is now the
+        approved production IdentityKeyStore and legitimately lives here, so the
+        rule applies to DekProvider only. Producing the data-encryption key --
+        unwrapping it from an Android Keystore key after an Argon2id-derived KEK
+        opens it -- is Phase 4 and must not acquire a convenience default that
+        happens to work.
         """
         import android_bridge.secure_store as ss
-        import android_bridge.identity as ident
         import inspect
 
-        for mod, base in ((ss, ss.DekProvider), (ident, ident.IdentityKeyStore)):
-            for name, obj in vars(mod).items():
-                if not inspect.isclass(obj) or obj is base:
-                    continue
-                if issubclass(obj, base) and not inspect.isabstract(obj):
-                    pytest.fail(
-                        f"{mod.__name__}.{name} is a concrete {base.__name__}; "
-                        f"key custody must come from the platform, not this package"
-                    )
+        for name, obj in vars(ss).items():
+            if not inspect.isclass(obj) or obj is ss.DekProvider:
+                continue
+            if issubclass(obj, ss.DekProvider) and not inspect.isabstract(obj):
+                pytest.fail(
+                    f"android_bridge.secure_store.{name} is a concrete "
+                    f"DekProvider; key custody must come from the platform"
+                )
+
+    def test_the_production_key_store_still_fails_closed(self):
+        """RustSealedIdentityKeyStore must refuse to invent a key."""
+        from android_bridge.identity import RustSealedIdentityKeyStore
+        with pytest.raises(IdentityError):
+            RustSealedIdentityKeyStore(None)
 
 
 class TestFingerprintDerivation:
