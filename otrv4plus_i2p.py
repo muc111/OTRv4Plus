@@ -80,13 +80,73 @@ __all__ = [
     "TUNNEL_OPTION_DEFAULTS", "VOICE_TUNNEL_OPTIONS", "XMPP_TUNNEL_OPTIONS",
     "SUPPORTED_OPTIONS", "UNSUPPORTED_OPTIONS", "session_options",
     "format_options", "describe",
-    "SAM_CHUNK", "SAM_RATE_BPS", "SAM_BURST_BYTES", "SamWritePacer",
-    "set_nodelay",
+    "SAM_CHUNK", "SAM_RATE_BPS", "SAM_CHUNK_DELAY", "SAM_BURST_BYTES",
+    "SamWritePacer", "LegacySamPacer", "make_pacer", "set_nodelay",
+    "TUNING", "tuning_enabled", "tuning_summary",
 ]
 
 import asyncio
 import os
 import time
+
+
+# ── Feature switch: every transport change is OFF by default ─────────────────
+#
+# WHY. The changes in this module were designed and measured on a build host
+# with no I2P router, no XMPP server and no peer. Twice now they have broken a
+# working system on a real path -- first the SAM write pacing (SMP failing with
+# the peer dropping mid-fragment), and the burst allowance that caused it was
+# reasoned from a code comment rather than from a measurement.
+#
+# An unvalidated optimisation that defaults ON is an optimisation that breaks
+# other people's working software. So none of them are on unless asked for,
+# and they can be enabled one at a time so a failure can be attributed to
+# exactly one change:
+#
+#   OTRV4PLUS_TRANSPORT_TUNING=off        (default) original behaviour
+#   OTRV4PLUS_TRANSPORT_TUNING=pacing     token-bucket SAM write pacing
+#   OTRV4PLUS_TRANSPORT_TUNING=nodelay    TCP_NODELAY on SAM sockets
+#   OTRV4PLUS_TRANSPORT_TUNING=tunnels    I2P options on SESSION CREATE
+#   OTRV4PLUS_TRANSPORT_TUNING=queue      400 ms voice send-queue bound
+#   OTRV4PLUS_TRANSPORT_TUNING=all        all of the above
+#
+# Comma-separated to combine: OTRV4PLUS_TRANSPORT_TUNING=nodelay,queue
+#
+# Telemetry is deliberately NOT behind this switch. It only reads clocks and
+# increments counters, it cannot affect a byte on the wire, and it is the one
+# thing that makes the next failure diagnosable.
+_TUNING_NAMES = ("pacing", "nodelay", "tunnels", "queue")
+
+
+def _parse_tuning():
+    raw = os.environ.get("OTRV4PLUS_TRANSPORT_TUNING", "").strip().lower()
+    if not raw or raw in ("off", "0", "none", "false", "no"):
+        return frozenset()
+    if raw in ("all", "1", "on", "true", "yes"):
+        return frozenset(_TUNING_NAMES)
+    chosen = {name.strip() for name in raw.split(",") if name.strip()}
+    unknown = chosen - set(_TUNING_NAMES)
+    if unknown:
+        raise ValueError(
+            "OTRV4PLUS_TRANSPORT_TUNING: unknown option(s) %s; valid names are "
+            "%s, or 'all' / 'off'"
+            % (sorted(unknown), list(_TUNING_NAMES)))
+    return frozenset(chosen)
+
+
+TUNING = _parse_tuning()
+
+
+def tuning_enabled(name: str) -> bool:
+    """True when transport change `name` was explicitly asked for."""
+    return name in TUNING
+
+
+def tuning_summary() -> str:
+    """One line for the startup banner, so a session states its own config."""
+    if not TUNING:
+        return "transport tuning: off (original behaviour)"
+    return "transport tuning: " + ",".join(sorted(TUNING))
 
 
 #: Router defaults, read from i2pd libi2pd/Destination.h. Present so a reader
@@ -181,11 +241,13 @@ def session_options(overrides=None, base=None) -> dict:
 def format_options(options) -> str:
     """Render options for the SESSION CREATE line.
 
-    Sorted so the command is byte-identical for identical settings, which
-    makes two sessions comparable in a log without exposing anything about
-    either: these are tunnel parameters, not identity.
+    Returns "" unless the `tunnels` tuning is enabled, so by default both SAM
+    sessions are created with exactly the command the working build sent.
+    Sorted otherwise, so the command is byte-identical for identical settings
+    -- which makes two sessions comparable in a log without exposing anything
+    about either: these are tunnel parameters, not identity.
     """
-    if not options:
+    if not options or not tuning_enabled("tunnels"):
         return ""
     return " ".join("%s=%d" % (key, options[key]) for key in sorted(options))
 
@@ -222,6 +284,8 @@ def set_nodelay(sock_or_transport) -> bool:
     """
     import socket as _socket
 
+    if not tuning_enabled("nodelay"):
+        return False
     sock = sock_or_transport
     if sock is None:
         return False
@@ -264,6 +328,7 @@ def set_nodelay(sock_or_transport) -> bool:
 # unchanged within the granularity of the old integer-chunk model.
 SAM_CHUNK = 1024              # bytes per write toward I2P (unchanged)
 SAM_RATE_BPS = 51200.0        # identical long-run ceiling to the old pacing
+SAM_CHUNK_DELAY = 0.020       # the original fixed sleep after every chunk
 
 # REGRESSION (2026-08-21). This was 4096, and that was wrong.
 #
@@ -344,3 +409,39 @@ class SamWritePacer:
         wait = self.delay_for(count)
         if wait > 0:
             await asyncio.sleep(wait)
+
+
+class LegacySamPacer:
+    """The original pacing, byte for byte: sleep SAM_CHUNK_DELAY after EVERY
+    chunk, including the last.
+
+    This is what shipped on main and what a real I2P path is known to
+    tolerate. It is the default. The trailing sleep is pure waste -- it delays
+    the next stanza and nothing on the wire -- but "wasteful and working" beats
+    "efficient and unproven", and the token bucket has not yet survived a real
+    path.
+    """
+
+    __slots__ = ("chunk_delay", "paced_writes", "paced_seconds")
+
+    def __init__(self, chunk_delay=SAM_CHUNK_DELAY, **_ignored):
+        self.chunk_delay = float(chunk_delay)
+        self.paced_writes = 0
+        self.paced_seconds = 0.0
+
+    def delay_for(self, count):
+        self.paced_writes += 1
+        self.paced_seconds += self.chunk_delay
+        return self.chunk_delay
+
+    async def take(self, count):
+        self.paced_writes += 1
+        self.paced_seconds += self.chunk_delay
+        await asyncio.sleep(self.chunk_delay)
+
+
+def make_pacer():
+    """The pacer the bridge should use: original unless `pacing` was asked for."""
+    if tuning_enabled("pacing"):
+        return SamWritePacer()
+    return LegacySamPacer()

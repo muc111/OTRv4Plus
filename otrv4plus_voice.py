@@ -2640,9 +2640,18 @@ class VoiceCallSession:
     # than 400 ms late in the send queue is already competing with the
     # receiver's own clawback and is likely to be discarded there anyway.
     # Sending it costs bandwidth and delays the frame behind it.
+    # OFF by default. 50 packets is what the working build used; the 400 ms
+    # bound is an inferred improvement that has never met a congested I2P
+    # path, and this pass has already broken a working system twice by
+    # defaulting an unvalidated change ON.
+    #   OTRV4PLUS_TRANSPORT_TUNING=queue   enables the 400 ms bound
     VOICE_MAX_WRITE_BACKLOG_MS = 400
-    _MAX_WRITE_BACKLOG = VOICE_PACKET_LEN * max(
-        2, int(VOICE_MAX_WRITE_BACKLOG_MS / VOICE_FRAME_MS))
+    _LEGACY_WRITE_BACKLOG = VOICE_PACKET_LEN * 50          # 2 s, as shipped
+    if _i2pcfg is not None and _i2pcfg.tuning_enabled("queue"):
+        _MAX_WRITE_BACKLOG = VOICE_PACKET_LEN * max(
+            2, int(VOICE_MAX_WRITE_BACKLOG_MS / VOICE_FRAME_MS))
+    else:
+        _MAX_WRITE_BACKLOG = _LEGACY_WRITE_BACKLOG
 
     def _on_health_change(self, old_state: str, new_state: str) -> None:
         """Transport health transition (audit T6).

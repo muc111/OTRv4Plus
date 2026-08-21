@@ -416,14 +416,18 @@ class TestTunnelOptions:
             assert profile["inbound.lengthVariance"] == 0
             assert profile["outbound.lengthVariance"] == 0
 
-    def test_options_render_as_sam_key_value_pairs(self):
+    def test_options_render_as_sam_key_value_pairs(self, monkeypatch):
+        # The rendering is only exercised when `tunnels` is enabled; by
+        # default SESSION CREATE carries no options at all.
+        monkeypatch.setattr(i2pcfg, "TUNING", frozenset({"tunnels"}))
         rendered = i2pcfg.format_options(i2pcfg.VOICE_TUNNEL_OPTIONS)
         assert "inbound.length=3" in rendered
         assert "inbound.quantity=4" in rendered
         assert "=" in rendered and "\n" not in rendered
 
-    def test_rendering_is_stable(self):
+    def test_rendering_is_stable(self, monkeypatch):
         """Two identical settings must produce an identical command line."""
+        monkeypatch.setattr(i2pcfg, "TUNING", frozenset({"tunnels"}))
         a = i2pcfg.format_options(i2pcfg.VOICE_TUNNEL_OPTIONS)
         b = i2pcfg.format_options(dict(i2pcfg.VOICE_TUNNEL_OPTIONS))
         assert a == b
@@ -448,8 +452,9 @@ class TestTunnelOptions:
         with pytest.raises(ValueError):
             i2pcfg.session_options({"inbound.quantity": "four"})
 
-    def test_the_session_create_line_stays_one_line(self):
+    def test_the_session_create_line_stays_one_line(self, monkeypatch):
         """A newline in an option would split the SAM command in two."""
+        monkeypatch.setattr(i2pcfg, "TUNING", frozenset({"tunnels"}))
         rendered = i2pcfg.format_options(i2pcfg.VOICE_TUNNEL_OPTIONS)
         assert "\n" not in rendered and "\r" not in rendered
 
@@ -462,21 +467,28 @@ class TestSendQueueBound:
     def voice(self):
         return pytest.importorskip("otrv4plus_voice")
 
-    def test_the_backlog_is_bounded_in_time_not_packets(self, voice):
+    def test_the_tuned_backlog_is_bounded_in_time_not_packets(self, voice):
         session_cls = voice.VoiceCallSession
         assert session_cls.VOICE_MAX_WRITE_BACKLOG_MS <= 600, (
             "the send queue admits more stale audio than the receiver's own "
             "drift ceiling will keep")
 
-    def test_the_bound_shrank(self, voice):
-        """The old bound was 50 packets: two seconds of audio queued in the
-        transport before anything was dropped."""
-        old_bytes = voice.VOICE_PACKET_LEN * 50
-        assert voice.VoiceCallSession._MAX_WRITE_BACKLOG < old_bytes
+    def test_the_tuned_bound_would_shrink(self, voice):
+        """The tuned bound is smaller than the 50-packet original.
+
+        Asserted arithmetically rather than by reading _MAX_WRITE_BACKLOG,
+        because that is fixed at class-definition time and defaults to the
+        original -- the change is opt-in via OTRV4PLUS_TRANSPORT_TUNING=queue.
+        """
+        tuned = voice.VOICE_PACKET_LEN * max(
+            2, int(voice.VoiceCallSession.VOICE_MAX_WRITE_BACKLOG_MS
+                   / voice.VOICE_FRAME_MS))
+        assert tuned < voice.VoiceCallSession._LEGACY_WRITE_BACKLOG
 
     def test_at_least_a_few_frames_are_still_buffered(self, voice):
         """Bounded is not the same as unbuffered: a momentary scheduling
-        hiccup must not drop audio."""
+        hiccup must not drop audio. True of both the default and the tuned
+        bound."""
         assert (voice.VoiceCallSession._MAX_WRITE_BACKLOG
                 >= voice.VOICE_PACKET_LEN * 2)
 
@@ -629,7 +641,9 @@ class TestSamFailure:
     def test_nodelay_on_none_is_false(self):
         assert i2pcfg.set_nodelay(None) is False
 
-    def test_nodelay_takes_effect_on_a_live_socket(self):
+    def test_nodelay_takes_effect_on_a_live_socket(self, monkeypatch):
+        # Opt-in: off by default, so enable it to test that it works at all.
+        monkeypatch.setattr(i2pcfg, "TUNING", frozenset({"nodelay"}))
         import socket as _socket
         server = _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM)
         server.bind(("127.0.0.1", 0))
@@ -668,3 +682,84 @@ class TestCounters:
         for _ in range(5000):
             metrics.event("resync")
         assert len(metrics.events) <= 512
+
+
+
+# ── Nothing is enabled unless it was asked for ───────────────────────────────
+
+class TestTransportTuningIsOptIn:
+    """Every change in this pass defaults OFF.
+
+    Twice now an unvalidated transport change defaulted ON and broke a working
+    system on a real I2P path. These pin the default so that cannot happen a
+    third time by accident -- a future edit that flips one on has to change a
+    test that says, in words, why it is off.
+    """
+
+    def test_nothing_is_enabled_by_default(self, monkeypatch):
+        monkeypatch.delenv("OTRV4PLUS_TRANSPORT_TUNING", raising=False)
+        assert i2pcfg._parse_tuning() == frozenset()
+
+    def test_tcp_nodelay_is_off_by_default(self):
+        """Measured to help only on burst drain; never validated on a real
+        path, and it removed the coalescing that was spreading SAM writes."""
+        import socket as _socket
+        server = _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM)
+        server.bind(("127.0.0.1", 0))
+        server.listen(1)
+        client = _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM)
+        try:
+            client.connect(server.getsockname())
+            assert i2pcfg.set_nodelay(client) is False
+            assert client.getsockopt(_socket.IPPROTO_TCP,
+                                     _socket.TCP_NODELAY) == 0
+        finally:
+            client.close()
+            server.close()
+
+    def test_no_tunnel_options_are_sent_by_default(self):
+        """SESSION CREATE must be byte-identical to the working build."""
+        assert i2pcfg.format_options(i2pcfg.VOICE_TUNNEL_OPTIONS) == ""
+        assert i2pcfg.format_options(i2pcfg.XMPP_TUNNEL_OPTIONS) == ""
+
+    def test_the_default_pacer_is_the_original(self):
+        pacer = i2pcfg.make_pacer()
+        assert isinstance(pacer, i2pcfg.LegacySamPacer)
+
+    def test_the_original_pacer_sleeps_after_every_chunk(self):
+        """Including the last -- wasteful, and exactly what worked."""
+        pacer = i2pcfg.LegacySamPacer()
+        for _ in range(6):
+            assert pacer.delay_for(1024) == i2pcfg.SAM_CHUNK_DELAY
+        assert pacer.paced_writes == 6
+
+    def test_the_voice_send_queue_bound_is_the_original(self):
+        voice = pytest.importorskip("otrv4plus_voice")
+        assert (voice.VoiceCallSession._MAX_WRITE_BACKLOG
+                == voice.VoiceCallSession._LEGACY_WRITE_BACKLOG)
+
+    @pytest.mark.parametrize("name", ["pacing", "nodelay", "tunnels", "queue"])
+    def test_each_change_can_be_enabled_alone(self, name, monkeypatch):
+        """Bisectable: a failure on a real path attributes to one change."""
+        monkeypatch.setenv("OTRV4PLUS_TRANSPORT_TUNING", name)
+        assert i2pcfg._parse_tuning() == frozenset({name})
+
+    def test_all_enables_everything(self, monkeypatch):
+        monkeypatch.setenv("OTRV4PLUS_TRANSPORT_TUNING", "all")
+        assert i2pcfg._parse_tuning() == frozenset(i2pcfg._TUNING_NAMES)
+
+    def test_combinations_are_accepted(self, monkeypatch):
+        monkeypatch.setenv("OTRV4PLUS_TRANSPORT_TUNING", "nodelay,queue")
+        assert i2pcfg._parse_tuning() == frozenset({"nodelay", "queue"})
+
+    def test_a_typo_is_refused_rather_than_ignored(self, monkeypatch):
+        """A silently ignored switch reads as enabled when it is not -- the
+        same failure mode session_options() refuses for tunnel options."""
+        monkeypatch.setenv("OTRV4PLUS_TRANSPORT_TUNING", "nodelay,nodleay")
+        with pytest.raises(ValueError):
+            i2pcfg._parse_tuning()
+
+    def test_off_is_spelled_several_obvious_ways(self, monkeypatch):
+        for value in ("off", "0", "none", "false", "no", ""):
+            monkeypatch.setenv("OTRV4PLUS_TRANSPORT_TUNING", value)
+            assert i2pcfg._parse_tuning() == frozenset()

@@ -377,7 +377,8 @@ def _fmt_fp(fp: str) -> str:
 # can be tested without slixmpp installed, and so the voice module can reach
 # them without importing this one.
 from otrv4plus_i2p import (            # noqa: E402
-    SAM_CHUNK, SAM_RATE_BPS, SAM_BURST_BYTES, SamWritePacer, set_nodelay,
+    SAM_CHUNK, SAM_RATE_BPS, SAM_CHUNK_DELAY, SAM_BURST_BYTES,
+    SamWritePacer, LegacySamPacer, make_pacer, set_nodelay, tuning_summary,
 )
 
 _set_nodelay = set_nodelay              # historical spelling used below
@@ -416,7 +417,9 @@ async def start_i2p_sam_forwarder(
     sam_reader, sam_writer = await asyncio.open_connection(sock=sam_sock)
     _set_nodelay(sam_writer.transport)
 
-    pacer = SamWritePacer()
+    # Original pacing unless OTRV4PLUS_TRANSPORT_TUNING asks for the bucket.
+    pacer = make_pacer()
+    print("[i2p] %s" % tuning_summary())
 
     async def _handle_local(local_reader, local_writer):
         _set_nodelay(local_writer.transport)
