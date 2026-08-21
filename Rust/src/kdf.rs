@@ -73,19 +73,44 @@ pub fn kdf_1_py(usage_id: u8, value: &[u8], output_len: usize) -> pyo3::PyResult
 
 // ── Ratchet KDF ──────────────────────────────────────────────────────────────
 
-/// Advance a chain key one step. Returns (next_ck, message_key, zeros).
-pub fn kdf_chain(chain_key: &[u8; 32]) -> ([u8; 32], [u8; 32], [u8; 32]) {
+/// Advance a chain key one step per OTRv4 §4.4.2.
+///
+/// Returns `(next_ck, MKenc, MKmac)`.
+///
+/// L1 fix: the third element was `[0u8; 32]` — a hardcoded all-zero
+/// placeholder, documented as "zeros". `ratchet.rs::encrypt_message` bound it
+/// to `mac_key` and stored it as `last_mac_key`, so every MAC key queued for
+/// revelation was 32 zero bytes. Revealing zeros gives a forger nothing, so
+/// the OTRv4 deniability property was never achieved.
+///
+/// `MKmac = KDF(usage_MAC_key, MKenc, 64)` — derived from the *message* key,
+/// not the chain key, and 64 bytes as the specification requires.
+pub fn kdf_chain(chain_key: &[u8; 32]) -> ([u8; 32], [u8; 32], [u8; 64]) {
     let mut new_ck = kdf_1(usage::CHAIN_KEY, chain_key, 32);
     let mut mk     = kdf_1(usage::MESSAGE_KEY, chain_key, 32);
+    let mut mkmac  = kdf_1(usage::MAC_KEY, &mk, 64);
 
     let mut ck_arr = [0u8; 32];
     let mut mk_arr = [0u8; 32];
+    let mut mac_arr = [0u8; 64];
     ck_arr.copy_from_slice(&new_ck);
     mk_arr.copy_from_slice(&mk);
+    mac_arr.copy_from_slice(&mkmac);
     // Audit M2: wipe the heap copies of the derived key material.
     new_ck.zeroize();
     mk.zeroize();
-    (ck_arr, mk_arr, [0u8; 32])
+    mkmac.zeroize();
+    (ck_arr, mk_arr, mac_arr)
+}
+
+/// `MKmac` for a message key already in hand — the skipped-message path holds
+/// `MKenc` and needs the matching MAC key at reveal time.
+pub fn kdf_mkmac(enc_key: &[u8; 32]) -> [u8; 64] {
+    let mut mkmac = kdf_1(usage::MAC_KEY, enc_key, 64);
+    let mut out = [0u8; 64];
+    out.copy_from_slice(&mkmac);
+    mkmac.zeroize();
+    out
 }
 
 pub fn kdf_root(root_key: &[u8; 32], dh_output: &[u8]) -> ([u8; 32], [u8; 32]) {

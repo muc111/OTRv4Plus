@@ -145,18 +145,30 @@ class TestCaptureIntegration(IntegrationBase):
 
         # Every packet must be a well-formed v3 media frame that the peer's
         # cipher opens — i.e. the audio swap did not disturb framing or AEAD.
+        # Latency probes share the stream and consume counters, so they are
+        # separated out here rather than assumed absent.
         peer = V.VoiceFrameCrypto(b"\x5c" * V.ROOT_LEN, CALL_ID, 0, False)
-        for i, packet in enumerate(packets[:6]):
-            self.assertEqual(len(packet), V.VOICE_PACKET_LEN)
+        audio = 0
+        for packet in packets:
+            self.assertEqual(len(packet), V.VOICE_PACKET_LEN,
+                             "probes must be the same size as audio")
             header = packet[:V.VOICE_HDR_LEN]
             epoch, counter, length, ftype = V.parse_media_header(header)
             self.assertEqual(epoch, 0)
-            self.assertEqual(counter, i)
             self.assertEqual(length, V.VOICE_SEALED_LEN)
-            self.assertEqual(ftype, V.FRAME_TYPE_AUDIO)
+            self.assertIn(ftype, (V.FRAME_TYPE_AUDIO, V.FRAME_TYPE_PING,
+                                  V.FRAME_TYPE_PONG))
+            if ftype != V.FRAME_TYPE_AUDIO:
+                peer.open(header, packet[V.VOICE_HDR_LEN:])
+                continue
+            audio += 1
             plain = peer.open(header, packet[V.VOICE_HDR_LEN:])
             self.assertEqual(len(plain), V.VOICE_PLAIN_LEN)
-            self.assertEqual(V.unpad_opus(plain), b"\xAB" * 80)
+            opus, send_ms = V.unpad_frame(plain)
+            self.assertEqual(opus, b"\xAB" * 80)
+            self.assertGreaterEqual(send_ms, 0,
+                                    "frames must carry a send timestamp")
+        self.assertGreaterEqual(audio, 5, "most frames must be audio")
 
     def test_encoder_receives_exactly_1280_bytes(self):
         install(FakeAAudioLib(frames_per_burst=480, steady=999))
@@ -188,9 +200,10 @@ class TestCaptureIntegration(IntegrationBase):
         session._capture = A.AAudioCapture()
         self.addCleanup(session._capture.stop)
         packets = self.run_capture(session, frames=10)
+        # Counters are gapless across the whole stream, probes included.
         counters = [V.parse_media_header(p[:V.VOICE_HDR_LEN])[1]
-                    for p in packets[:10]]
-        self.assertEqual(counters, list(range(10)))
+                    for p in packets]
+        self.assertEqual(counters, list(range(len(counters))))
 
     def test_mute_still_transmits_constant_rate(self):
         install(FakeAAudioLib(frames_per_burst=480, steady=20000))
@@ -742,6 +755,129 @@ class TestMuteReopen(IntegrationBase):
                         "a permanently dead transmit path must not present "
                         "as an ordinary dropped frame")
         self.assertFalse(session._running)
+
+
+class TestLatency(IntegrationBase):
+    """RTT and one-way latency over the media stream."""
+
+    def _linked_pair(self):
+        """Two sessions whose probe frames can be handed to each other."""
+        root = b"\x5c" * V.ROOT_LEN
+        a = build_session(self.loop, is_initiator=True)
+        b = build_session(self.loop, is_initiator=False)
+        for s in (a, b):
+            s.schedule.zeroize()
+            s.schedule = V.VoiceKeySchedule(CALL_ID, s.is_initiator)
+            s.schedule.install_initial(root)
+            s.loop = _InlineLoop()
+            s._opus_dec = FakeOpusDecoder()
+            s.jitter = V.JitterBuffer(prefill=1, maxlen=50, adaptive=False)
+        return a, b
+
+    @staticmethod
+    def _pump(src, dst):
+        """Move everything src emitted into dst's parser."""
+        buf = bytearray()
+        src._write_packet = buf.extend
+        return buf
+
+    def test_ping_pong_produces_an_rtt_sample(self):
+        a, b = self._linked_pair()
+        out_a = self._pump(a, b)
+        out_b = self._pump(b, a)
+
+        a._maybe_ping()                       # first probe is due immediately
+        self.assertTrue(out_a, "a PING should have been emitted")
+
+        b._drain_buffer(out_a)                # b answers with a PONG
+        self.assertTrue(out_b, "a PONG should have been emitted")
+
+        a._drain_buffer(out_b)                # a records the RTT
+        self.assertIsNotNone(a.latency.rtt_ms, "no RTT sample recorded")
+        self.assertGreaterEqual(a.latency.rtt_ms, 0)
+        self.assertEqual(a.latency.answered, 1)
+
+    def test_probe_is_the_same_size_as_audio(self):
+        a, _b = self._linked_pair()
+        out = self._pump(a, None)
+        a._maybe_ping()
+        self.assertEqual(len(out), V.VOICE_PACKET_LEN,
+                         "a probe must not be distinguishable by length")
+
+    def test_unsolicited_pong_is_ignored(self):
+        a, b = self._linked_pair()
+        payload = struct.pack(">QQQQ", 99999, 0, 0, 0)
+        self.assertFalse(a.latency.handle_pong(payload),
+                         "a PONG for a ping we never sent must be dropped")
+        self.assertIsNone(a.latency.rtt_ms)
+
+    def test_implausible_rtt_is_discarded(self):
+        t = V.LatencyTracker()
+        pid, _payload = t.build_ping()
+        # t3 far in the future makes the computed RTT negative.
+        bad = struct.pack(">QQQQ", pid, 0, 0, t.stamp() + 10 ** 9)
+        self.assertFalse(t.handle_pong(bad))
+        self.assertIsNone(t.rtt_ms)
+
+    def test_pending_pings_are_bounded(self):
+        t = V.LatencyTracker()
+        for _ in range(500):
+            t._next_ping = 0.0
+            t.build_ping()
+        self.assertLessEqual(len(t._pending), 64,
+                             "an unanswering peer must not grow this")
+
+    def test_rolling_windows_are_bounded(self):
+        t = V.LatencyTracker()
+        for i in range(200):
+            t._rtt.append(i)
+            t._oneway.append(i)
+        self.assertEqual(len(t._rtt), t.RTT_WINDOW)
+        self.assertEqual(len(t._oneway), t.ONEWAY_WINDOW)
+
+    def test_median_resists_a_single_spike(self):
+        t = V.LatencyTracker()
+        for _ in range(9):
+            t._rtt.append(100)
+        t._rtt.append(60000)                  # one tunnel stall
+        self.assertLess(t.rtt_ms, 200,
+                        "a mean would carry the stall for the rest of the call")
+
+    def test_oneway_needs_a_clock_offset_first(self):
+        t = V.LatencyTracker()
+        t.observe_frame(t.stamp())
+        self.assertIsNone(t.oneway_ms,
+                          "an uncorrected one-way figure is clock skew, not "
+                          "latency")
+
+    def test_oneway_is_corrected_by_the_measured_offset(self):
+        t = V.LatencyTracker()
+        t._offset_ms = 5000.0                 # peer clock 5 s ahead of ours
+        # Peer stamps its own clock, which reads 5000 ms above ours.
+        t.observe_frame(t.stamp() + 5000)
+        ow = t.oneway_ms
+        self.assertIsNotNone(ow)
+        self.assertLess(abs(ow), 500,
+                        "a 5 s clock skew must not appear as 5 s of latency")
+
+    def test_summary_format_matches_the_debug_line(self):
+        t = V.LatencyTracker()
+        self.assertEqual(t.summary(), "rtt=- oneway=-")
+        t._rtt.extend([2980, 2980, 2980])
+        t._oneway.extend([1450, 1450, 1450])
+        self.assertEqual(t.summary(), "rtt=2980ms oneway=1450ms")
+
+    def test_forged_ping_cannot_make_us_transmit(self):
+        a, b = self._linked_pair()
+        out_b = self._pump(b, a)
+        # A PING under a key b does not hold.
+        rogue = V.VoiceFrameCrypto(b"\x11" * V.ROOT_LEN, CALL_ID, 0, True)
+        packet = rogue.seal(b"\x00" * V.VOICE_PLAIN_LEN,
+                            frame_type=V.FRAME_TYPE_PING)
+        buf = bytearray(packet)
+        b._drain_buffer(buf)
+        self.assertEqual(len(out_b), 0,
+                         "an unauthenticated PING must not be answered")
 
 
 class TestIsolation(IntegrationBase):

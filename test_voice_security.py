@@ -367,10 +367,18 @@ class TestMediaAEAD(unittest.TestCase):
             self.rx.open(forged, sealed)
 
     def test_frame_type_modification_rejected(self):
+        # 0x02/0x03 are now valid PING/PONG types, so a flip to those is
+        # caught by the AEAD rather than the parser — the frame type is in
+        # the AAD. An undefined type is still refused structurally.
         hdr, sealed = self._one()
-        forged = V.pack_media_header(0, 0, V.VOICE_SEALED_LEN, frame_type=0x02)
-        with self.assertRaises(V.FrameError):
+        forged = V.pack_media_header(0, 0, V.VOICE_SEALED_LEN,
+                                     frame_type=V.FRAME_TYPE_PING)
+        with self.assertRaises(Exception):
             self.rx.open(forged, sealed)
+        undefined = V.pack_media_header(0, 0, V.VOICE_SEALED_LEN,
+                                        frame_type=0x7F)
+        with self.assertRaises(V.FrameError):
+            self.rx.open(undefined, sealed)
 
     def test_version_and_sync_validated(self):
         hdr, sealed = self._one()

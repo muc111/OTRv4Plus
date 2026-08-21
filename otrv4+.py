@@ -1004,6 +1004,13 @@ class BinaryReader:
             return val
         except IndexError as e:
             raise ValueError(f"Failed to read {length } bytes: {e }")
+        except ValueError:
+            # Truncation is an EXPECTED condition on untrusted input, not an
+            # internal error. ensure() raises ValueError; the bare `except
+            # Exception` below used to convert it to RuntimeError, which
+            # OTRv4DataMessage.decode does not catch — so a short message
+            # escaped as "Unexpected error" instead of a clean parse failure.
+            raise
         except Exception as e:
             raise RuntimeError(f"Unexpected error reading bytes: {e }")
 
@@ -1194,6 +1201,7 @@ class OTRv4DataMessage:
     ECDH_LEN = 56
     NONCE_LEN = 12
     MAC_LEN = 64
+    REVEALED_MAC_KEY_LEN = 64   # OTRv4 §4.4.2 MKmac
     FLAG_IGNORE_UNREADABLE = 0x01
 
     def __init__(self):
@@ -1280,8 +1288,12 @@ class OTRv4DataMessage:
             mac = self.mac if len(self.mac) == self.MAC_LEN else b"\x00" * self.MAC_LEN
             keys = struct.pack("!I", len(self.revealed_mac_keys))
             for k in self.revealed_mac_keys:
-                if len(k) != 32:
-                    raise ValueError(f"Revealed MAC key must be 32 bytes, got {len (k )}")
+                # L1: 64 bytes per OTRv4 §4.4.2. Was 32, which silently
+                # dropped every spec-sized key the engine produced.
+                if len(k) != self.REVEALED_MAC_KEY_LEN:
+                    raise ValueError(
+                        f"Revealed MAC key must be {self .REVEALED_MAC_KEY_LEN } "
+                        f"bytes, got {len (k )}")
                 keys += k
             return ah + ct_blk + mac + keys
         except (struct.error, TypeError, ValueError) as e:
@@ -1338,7 +1350,8 @@ class OTRv4DataMessage:
             if num_keys > 2000:
                 raise ValueError(f"Implausible revealed key count: {num_keys }")
             for _ in range(num_keys):
-                msg.revealed_mac_keys.append(r.read_bytes(32))
+                msg.revealed_mac_keys.append(
+                    r.read_bytes(cls.REVEALED_MAC_KEY_LEN))
 
             return msg
         except (ValueError, struct.error, TypeError) as e:
@@ -3139,13 +3152,18 @@ class RustBackedDoubleRatchet:
     def _kdf_ck(self, ck: bytes, label: bytes = b"MESSAGE_KEY"):
         """Advance a chain key per OTRv4 spec §4.4.2.
 
-        Returns (new_ck, message_key, extra_zeros).
-        label arg is accepted for API compatibility but unused -
-        the KDF usage IDs are fixed by the spec.
+        Returns (new_ck, MKenc, MKmac).
+
+        L1: the third element was a hardcoded ``bytes(32)`` documented as
+        "extra_zeros". §4.4.2 puts MKmac there, so anything reading this
+        position as a MAC key got 32 zero bytes. It is now derived per spec:
+        ``MKmac = KDF(usage_MAC_key, MKenc, 64)`` — from the message key, not
+        the chain key, and 64 bytes.
         """
         new_ck = kdf_1(KDFUsage.CHAIN_KEY, ck, 32)
         mk = kdf_1(KDFUsage.MESSAGE_KEY, ck, 32)
-        return new_ck, mk, bytes(32)
+        mkmac = kdf_1(KDFUsage.MAC_KEY, mk, 64)
+        return new_ck, mk, mkmac
 
     def encrypt_message(self, plaintext):
         """Encrypt a message (Spec §4.4.3). Same return signature as Python."""
@@ -3176,10 +3194,17 @@ class RustBackedDoubleRatchet:
                 enc["tag"],
                 self._dh_epoch,
                 list(enc["reveal_mac_keys"]),
+                enc["mac_key"],
             )
 
     def decrypt_message(self, header_bytes, ciphertext, nonce, tag):
-        """Decrypt a message (OTRv4 §4.4.4). Returns plaintext bytes."""
+        """Decrypt a message (OTRv4 §4.4.4).
+
+        Returns ``(plaintext, mkmac)``. The MAC key is returned so the
+        caller can verify the outer OTRv4 MAC with the key that actually
+        keyed it; the engine has already queued its own copy for later
+        revelation.
+        """
         with self.lock:
 
             hdr_dh_pub = None
@@ -3196,7 +3221,8 @@ class RustBackedDoubleRatchet:
 
                 if is_new_dh and self.dh_ratchet_remote_pub is not None:
 
-                    pt = self._decrypt_new_dh(header_bytes, ciphertext, nonce, tag)
+                    pt, _mkmac = self._decrypt_new_dh(
+                        header_bytes, ciphertext, nonce, tag)
                 else:
 
                     if self.dh_ratchet_remote_pub is None:
@@ -3206,7 +3232,9 @@ class RustBackedDoubleRatchet:
                             self.dh_ratchet_remote = None
                             self.dh_ratchet_remote_pub = dh_pub_h
 
-                    pt = self._rust.decrypt_same_dh(header_bytes, ciphertext, nonce, tag)
+                    _res = self._rust.decrypt_same_dh(
+                        header_bytes, ciphertext, nonce, tag)
+                    pt, _mkmac = _res["plaintext"], _res["mac_key"]
 
                 _did_dh_ratchet_recv = (
                     is_new_dh and self.dh_ratchet_remote_pub is not None and pt is not None
@@ -3237,7 +3265,7 @@ class RustBackedDoubleRatchet:
                 self.message_num_recv += 1
                 new_ck_r, _, _ = self._kdf_ck(self._rks_recv.read())
                 self._rks_recv.write(new_ck_r)
-                return pt
+                return pt, _mkmac
 
             except Exception as e:
                 raise EncryptionError(f"Decryption failed: {e }")
@@ -3261,7 +3289,7 @@ class RustBackedDoubleRatchet:
         new_local_pub = new_local.public_bytes()
         dh_secret_send = new_local.dh(dh_pub)
 
-        pt = self._rust.decrypt_new_dh(
+        _res = self._rust.decrypt_new_dh(
             header_bytes, ciphertext, nonce, tag, dh_secret_recv, dh_secret_send, new_local_pub
         )
 
@@ -3291,7 +3319,7 @@ class RustBackedDoubleRatchet:
         self._rks_recv.write(_new_ck_recv)
 
         self.prepare_brace_rotation()
-        return pt
+        return _res["plaintext"], _res["mac_key"]
 
     def _ratchet(self, dh_pub):
         """Send-side forced DH ratchet step."""
@@ -5833,18 +5861,22 @@ class EnhancedOTRSession:
             payload_obj = OTRv4Payload(plaintext or "", tlvs)
             payload = payload_obj.encode(add_padding=True)
 
-            ct, rh_bytes, nonce, tag, ratchet_id, reveal_keys = self.ratchet.encrypt_message(
-                payload
+            ct, rh_bytes, nonce, tag, ratchet_id, reveal_keys, mac_key = (
+                self.ratchet.encrypt_message(payload)
             )
             ct_with_tag = ct + tag
 
             rh = RatchetHeader.decode(rh_bytes)
-            mac_key = hashlib.sha3_512(
-                self.session_id
-                + ratchet_id.to_bytes(4, "big")
-                + rh.msg_num.to_bytes(4, "big")
-                + b"OTRv4-MAC-KEY"
-            ).digest()[:32]
+            # L1: MKmac now comes from the ratchet chain (OTRv4 §4.4.2), not
+            # from sha3_512(session_id || ratchet_id || msg_num). The old key
+            # was a pure function of session_id and two CLEARTEXT wire fields,
+            # so it authenticated nothing an attacker holding session_id could
+            # not reproduce — and it was not the key that got revealed, which
+            # is why revelation proved nothing.
+            if len(mac_key) != OTRv4DataMessage.REVEALED_MAC_KEY_LEN:
+                raise ValueError(
+                    f"MKmac must be {OTRv4DataMessage .REVEALED_MAC_KEY_LEN } "
+                    f"bytes, got {len (mac_key )}")
 
             dmsg = OTRv4DataMessage()
             dmsg.sender_tag = self._sender_tag
@@ -5863,7 +5895,16 @@ class EnhancedOTRSession:
             dmsg.kem_ek = _kem_ek
 
             dmsg.mac = dmsg.compute_mac(mac_key)
-            dmsg.revealed_mac_keys = [k for k in reveal_keys if len(k) == 32]
+            # L1: no length filter. The old `if len(k) == 32` silently dropped
+            # every spec-sized key; a key the engine queued for revelation must
+            # either be revealed or raise, never vanish.
+            dmsg.revealed_mac_keys = [bytes(k) for k in reveal_keys]
+            for _k in dmsg.revealed_mac_keys:
+                if len(_k) != OTRv4DataMessage.REVEALED_MAC_KEY_LEN:
+                    raise ValueError(
+                        f"Engine produced a {len (_k )}-byte MAC key for "
+                        "revelation; expected "
+                        f"{OTRv4DataMessage .REVEALED_MAC_KEY_LEN }")
 
             wire = dmsg.encode()
             encoded = base64.urlsafe_b64encode(wire).decode("ascii").rstrip("=")
@@ -5934,6 +5975,34 @@ class EnhancedOTRSession:
         finally:
             self._release_lock()
 
+    MAX_PEER_REVEALED_MAC_KEYS = 200
+
+    def _record_revealed_mac_keys(self, keys):
+        """Record MAC keys the peer published for already-authenticated messages.
+
+        OTRv4 reveals old MKmac values so that anyone can forge a message that
+        looks like it came from the sender — that is the deniability property.
+        Once revealed, a key authenticates nothing, so this store is not
+        secret; it is kept only so the property is observable and so a
+        malformed reveal list is rejected rather than ignored.
+        """
+        if not hasattr(self, "peer_revealed_mac_keys"):
+            self.peer_revealed_mac_keys = []
+        for k in keys:
+            if len(k) != OTRv4DataMessage.REVEALED_MAC_KEY_LEN:
+                raise ValueError(
+                    f"Peer revealed a {len (k )}-byte MAC key; expected "
+                    f"{OTRv4DataMessage .REVEALED_MAC_KEY_LEN }")
+            if not any(k):
+                raise ValueError(
+                    "Peer revealed an all-zero MAC key - revelation is "
+                    "supposed to publish the key that authenticated a real "
+                    "message")
+            self.peer_revealed_mac_keys.append(bytes(k))
+        excess = len(self.peer_revealed_mac_keys) - self.MAX_PEER_REVEALED_MAC_KEYS
+        if excess > 0:
+            del self.peer_revealed_mac_keys[:excess]
+
     def _enh_dec_v6(self, decoded: bytes) -> bytes:
         """Decrypt v6 OTRv4DataMessage."""
         dmsg = OTRv4DataMessage.decode(decoded)
@@ -5946,23 +6015,29 @@ class EnhancedOTRSession:
                 f"0x{dmsg .receiver_tag :08x}"
             )
 
-        mac_key = hashlib.sha3_512(
-            self.session_id
-            + dmsg.ratchet_id.to_bytes(4, "big")
-            + dmsg.message_id.to_bytes(4, "big")
-            + b"OTRv4-MAC-KEY"
-        ).digest()[:32]
-        if not dmsg.verify_mac(mac_key):
-            raise ValueError("MAC verification failed - message may be forged or replayed")
-
         rh_bytes = RatchetHeader(dmsg.ecdh_pub, dmsg.prev_chain_len, dmsg.message_id).encode()
         if len(dmsg.ciphertext) < 16:
             raise ValueError("Ciphertext too short for GCM tag")
         ct, tag = dmsg.ciphertext[:-16], dmsg.ciphertext[-16:]
 
+        # L1: MKmac is chain-derived, so it does not exist until the ratchet
+        # has advanced. Order is decrypt-then-verify rather than the reverse.
+        # That is safe: AES-256-GCM is the primary authentication and runs
+        # first, rejecting any forgery before this point. The outer OTRv4 MAC
+        # is a second, spec-mandated check whose key is later published.
         _rid_before = self.ratchet.ratchet_id
-        plaintext = self.ratchet.decrypt_message(rh_bytes, ct, dmsg.nonce, tag)
+        plaintext, mac_key = self.ratchet.decrypt_message(
+            rh_bytes, ct, dmsg.nonce, tag)
         _did_dh_ratchet = self.ratchet.ratchet_id != _rid_before
+
+        if not dmsg.verify_mac(mac_key):
+            raise ValueError("MAC verification failed - message may be forged or replayed")
+
+        # Keys the peer revealed for previously-authenticated messages. They
+        # are public by design; record them so the deniability property is
+        # observable rather than nominal, and bound the store.
+        if dmsg.revealed_mac_keys:
+            self._record_revealed_mac_keys(dmsg.revealed_mac_keys)
 
         if dmsg.kem_ct is not None:
             self.ratchet.process_incoming_kem_ct(dmsg.kem_ct)
