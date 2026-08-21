@@ -45,9 +45,18 @@ class TestAAudioIsReachableFromAnApk:
         assert hasattr(audio, "open_playback")
         assert hasattr(audio, "aaudio_available")
 
-    def test_availability_probe_is_safe_off_android(self):
-        """Must report absence, not raise: the diagnostics screen calls this."""
-        assert audio.aaudio_available() is False
+    def test_availability_probe_reports_rather_than_raises(self):
+        """The diagnostics screen calls this on every platform.
+
+        The contract is "answer, do not raise" -- not "answer False". This
+        test previously asserted False, which encoded "we are not on Android"
+        as an invariant and therefore failed on the one platform the whole
+        AAudio path exists for. On a device with libaaudio present, True is
+        the correct answer.
+        """
+        result = audio.aaudio_available()
+        assert isinstance(result, bool)
+        assert result == (audio._load_aaudio() is not None)
 
     def test_backend_selection_is_overridable(self):
         """open_capture(preferred=...) lets the Android host pin AAudio rather
@@ -79,9 +88,27 @@ class TestFailureBehaviourIsSafe:
         assert "notes" in src, "the caller must be told why a backend was skipped"
 
     def test_opening_capture_without_any_backend_raises(self):
-        """Off Android with no PulseAudio, this must fail loudly."""
+        """With no backend reachable, this must fail loudly rather than
+        return a stream that yields silence.
+
+        `which=None` removes PulseAudio, but AAudio is found through ctypes
+        and is unaffected by it -- so on a real Android device the call
+        legitimately succeeds and the original form of this test failed there.
+        Skipped when AAudio is genuinely present: the no-backend condition
+        cannot be constructed on that device without stubbing the loader,
+        which would test the stub rather than the code.
+        """
+        if audio.aaudio_available():
+            pytest.skip("AAudio is present: no-backend cannot be constructed")
         with pytest.raises(audio.AudioError):
             audio.open_capture(which=lambda _binary: None)
+
+    def test_a_present_backend_is_not_silently_replaced(self, ):
+        """The Android-side counterpart: when AAudio IS available, asking for
+        it must give it, not a fallback that would transmit silence."""
+        if not audio.aaudio_available():
+            pytest.skip("AAudio not present on this host")
+        assert audio._pick_order(audio.BACKEND_AAUDIO) == (audio.BACKEND_AAUDIO,)
 
 
 class TestVoiceLayerHostSeam:
