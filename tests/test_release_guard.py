@@ -271,10 +271,18 @@ def test_production_artifact_exposes_no_legacy_dake_session_keys():
 @pytest.mark.skipif(_LEGACY_DAKE_EXPECTED,
                     reason="OTRV4PLUS_ALLOW_LEGACY_DAKE_KEYS=1: legacy build")
 def test_production_dakeresult_exposes_no_secret_getters():
-    """The Dakeresult secret getters must be compiled out, not just unused."""
+    """The Dakeresult secret getters must be compiled out, not just unused.
+
+    An unexported Dakeresult is the stronger outcome, not a reason to skip:
+    Python cannot obtain or construct one, so the getters are unreachable even
+    before the question of whether they were compiled in. This used to report
+    as a skip, which reads in CI as "not checked" rather than "cannot happen".
+    """
     result = getattr(otrv4_core, "Dakeresult", None)
     if result is None:
-        pytest.skip("Dakeresult is not exported")
+        assert not hasattr(otrv4_core, "Dakeresult"), \
+            "Dakeresult is exported after all"
+        return
     leaked = [g for g in ("root_key", "chain_key_a", "chain_key_b",
                           "brace_key", "mac_key") if hasattr(result, g)]
     assert not leaked, f"Dakeresult exposes secret getters {leaked} -- {_M3_WHY}"
@@ -309,3 +317,100 @@ def test_identity_sealing_api_is_present_in_production():
     for name in ("seal_identity", "unseal_identity", "create_sealed_identity",
                  "identity_record_version"):
         assert hasattr(otrv4_core, name), f"otrv4_core is missing {name}"
+
+
+# ── The artifact itself, not the API surface it happens to register ──────────
+#
+# Everything above asks Python what the module exposes. That answers the
+# question that matters at runtime, but it goes through the module's
+# registration table: a gated function that was compiled in but not registered
+# would pass. These read the compiled object instead, so the assertion is about
+# what was built rather than about what was wired up.
+
+_GATED_SYMBOLS = {
+    # symbol in the .so             feature that adds it
+    "from_seed_bytes":              "test-only-kdf",
+    "from_priv_bytes":              "test-only-kdf",
+    "__pymethod_get_root_key__":    "legacy-dake-keys",
+    "__pymethod_get_chain_key_a__": "legacy-dake-keys",
+    "__pymethod_get_chain_key_b__": "legacy-dake-keys",
+    "__pymethod_get_brace_key__":   "legacy-dake-keys",
+    "__pymethod_get_mac_key__":     "legacy-dake-keys",
+    "get_session_keys":             "legacy-dake-keys",
+}
+
+
+def _installed_object_file():
+    """The compiled extension backing the imported otrv4_core, or None."""
+    import pathlib
+    pkg = getattr(otrv4_core, "__file__", None)
+    if not pkg:
+        return None
+    for so in pathlib.Path(pkg).parent.glob("*.so"):
+        return so
+    return None
+
+
+def _symbols_present(path):
+    """Gated symbol names that appear in the object file's string table."""
+    try:
+        blob = path.read_bytes()
+    except OSError:
+        return None
+    return sorted(name for name in _GATED_SYMBOLS
+                  if name.encode("ascii") in blob)
+
+
+@pytest.mark.skipif(_TEST_BUILD_EXPECTED or _LEGACY_DAKE_EXPECTED,
+                    reason="opt-in build: the gated symbols are expected")
+def test_production_object_file_contains_no_gated_symbols():
+    """A release artifact must not merely hide the gated APIs -- it must not
+    contain them.
+
+    This is the artifact-level counterpart to the attribute checks above. It
+    would catch a build where a gated entry point was compiled in and left
+    unregistered, which every hasattr() assertion in this file would miss.
+    """
+    so = _installed_object_file()
+    if so is None:
+        pytest.skip("no compiled otrv4_core extension found next to the module")
+
+    present = _symbols_present(so)
+    if present is None:
+        pytest.skip(f"could not read {so}")
+
+    assert present == [], (
+        f"{so.name} contains gated symbols {present} "
+        f"(features: {sorted({_GATED_SYMBOLS[n] for n in present})}). "
+        "This is not a release artifact."
+    )
+
+
+@pytest.mark.skipif(not (_TEST_BUILD_EXPECTED or _LEGACY_DAKE_EXPECTED),
+                    reason="production build: nothing to confirm")
+def test_optin_object_file_really_carries_the_gated_symbols():
+    """Guard against the check above passing vacuously.
+
+    If an opt-in build produced an artifact indistinguishable from the release
+    one, the gating would be a no-op and the production assertion would be
+    proving nothing.
+    """
+    so = _installed_object_file()
+    if so is None:
+        pytest.skip("no compiled otrv4_core extension found next to the module")
+
+    present = _symbols_present(so)
+    if present is None:
+        pytest.skip(f"could not read {so}")
+
+    expected_features = set()
+    if _TEST_BUILD_EXPECTED:
+        expected_features.add("test-only-kdf")
+    if _LEGACY_DAKE_EXPECTED:
+        expected_features.add("legacy-dake-keys")
+
+    found_features = {_GATED_SYMBOLS[n] for n in present}
+    assert expected_features & found_features, (
+        f"opt-in build for {sorted(expected_features)} but {so.name} carries "
+        f"no matching gated symbol -- the installed wheel is not that build"
+    )

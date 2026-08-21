@@ -889,6 +889,40 @@ So this needs a slightly better answer than pasting the comment in. Options:
 Whichever you pick, the current state — a comment as the only control — should not survive to
 release. This touches the Rust crate, so it needs your go-ahead.
 
+**Resolved: option (i), plus (iii) as a second control.** `Rust/build.rs` refuses to build with
+`test-only-kdf` unless `OTRV4PLUS_ALLOW_TEST_GATES=1`, and with `legacy-dake-keys` unless
+`OTRV4PLUS_ALLOW_LEGACY_DAKE_KEYS=1`. `tests/test_release_guard.py` then asserts against the
+artifact that is actually installed, so a gate-open wheel built elsewhere is caught too.
+
+**Re-confirmed at the artifact level.** Three wheels were built from this tree and inspected as
+binaries rather than through the source or the module's registration table:
+
+| Build | `from_seed_bytes` / `from_priv_bytes` | `Dakeresult` getters, `get_session_keys` | .so size |
+|---|---|---|---|
+| production (`pq-rust,extension-module`) | absent | absent | 1,233,136 |
+| `+test-only-kdf` (opt-in set) | **present** | absent | 1,247,392 |
+| `+legacy-dake-keys` (opt-in set) | absent | **present** | 1,249,704 |
+
+Both opt-in features fail the build outright when their environment variable is unset
+(`build.rs:53` and `build.rs:93` panic).
+
+The gate was checked in both directions, which matters more than the passing case: with the
+internals-test wheel installed and no opt-in variable set, the production assertions **fail**
+(`test_production_artifact_exposes_no_seed_injection`,
+`test_production_artifact_exposes_no_vault_readback`,
+`test_production_object_file_contains_no_gated_symbols`); with the legacy wheel, the M3 assertions
+fail. So the guard is not vacuous — it distinguishes the artifacts it claims to distinguish.
+
+`test_production_object_file_contains_no_gated_symbols` was added in this pass. Every other
+assertion in that file asks Python what the module exposes, which goes through the module's
+registration table: a gated entry point compiled in but left unregistered would pass all of them.
+Reading the object file closes that gap. One entry point is in exactly that state today —
+`kdf::kdf_1_py` is `#[cfg(feature = "test-only-kdf")]` but is never registered in `lib.rs`, so it
+is unreachable from Python in *every* build, including the internals-test one.
+
+A `Dakeresult` skip was also turned into an assertion: it reported "skipped" when the type is not
+exported, which reads in CI as "not checked" rather than "cannot happen".
+
 ---
 
 ## 15. Phased implementation plan

@@ -6091,10 +6091,15 @@ class EnhancedOTRSession:
             -- encrypt() takes the pending queue before installing the current
             key -- so this is a standing guard on that ordering.
         """
+        # Each attribute guarded separately: a session object that predates one
+        # of them must not leave the others uninitialised.
         if not hasattr(self, "peer_revealed_mac_keys"):
             self.peer_revealed_mac_keys = []
+        if not hasattr(self, "revealed_mac_keys_verified"):
             self.revealed_mac_keys_verified = 0
+        if not hasattr(self, "revealed_mac_keys_unaccounted"):
             self.revealed_mac_keys_unaccounted = 0
+        if not hasattr(self, "revealed_mac_check_available"):
             self.revealed_mac_check_available = True
 
         for k in keys:

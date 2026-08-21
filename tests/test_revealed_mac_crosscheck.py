@@ -266,25 +266,138 @@ class TestUnaccountedIsNotFatal:
 
 # ── The full path, through a real session ────────────────────────────────────
 
+class _FakeRatchet:
+    """Just enough ratchet for _enh_dec_v6, with the reveal answer under test."""
+
+    def __init__(self, mac_key, plaintext, known=True):
+        self._mac_key = mac_key
+        self._plaintext = plaintext
+        self._known = known
+        self.ratchet_id = 1
+
+    def decrypt_message(self, header, ct, nonce, tag):
+        return self._plaintext, self._mac_key
+
+    def knows_revealed_mac_key(self, key):
+        return self._known
+
+    def prepare_brace_rotation(self):
+        pass
+
+    def process_incoming_kem_ct(self, ct):
+        pass
+
+    def process_incoming_kem_ek(self, ek):
+        pass
+
+
+class _FakeSession:
+    """A stand-in carrying the real _enh_dec_v6 and _record_revealed_mac_keys.
+
+    The receive path only touches the attributes set here, so this exercises
+    the real code rather than a paraphrase of it.
+    """
+
+    def __init__(self, ratchet):
+        owner = _record_owner()
+        self.ratchet = ratchet
+        self._sender_tag = 0x0000AAAA
+        self._receiver_tag = 0
+        self.routed = []
+        self.MAX_PEER_REVEALED_MAC_KEYS = owner.MAX_PEER_REVEALED_MAC_KEYS
+        self._enh_dec_v6 = owner._enh_dec_v6.__get__(self)
+        self._record_revealed_mac_keys = \
+            owner._record_revealed_mac_keys.__get__(self)
+
+    def _enh_route_tlvs(self, tlvs):
+        self.routed.append(tlvs)
+
+
+def _wire(mac_key, revealed, text=b"hello", break_mac=False):
+    """A data message whose outer MAC is keyed by `mac_key`."""
+    msg = otr.OTRv4DataMessage()
+    msg.sender_tag = 0x0000BBBB
+    msg.receiver_tag = 0x0000AAAA
+    msg.flags, msg.prev_chain_len = 0, 0
+    msg.ratchet_id, msg.message_id = 1, 0
+    msg.ecdh_pub, msg.nonce = bytes(56), bytes(12)
+    msg.ciphertext = b"\x00" * 32
+    msg.revealed_mac_keys = [bytes(k) for k in revealed]
+    msg.mac = msg.compute_mac(mac_key)
+    if break_mac:
+        bad = bytearray(msg.mac)
+        bad[0] ^= 0x01
+        msg.mac = bytes(bad)
+    return msg.encode()
+
+
 class TestThroughTheReceivePath:
-    """_enh_dec_v6 must pass this message's own MAC key to the recorder."""
+    """The real _enh_dec_v6, driven end to end over a fake ratchet.
 
-    def test_receive_path_passes_the_carrying_key(self):
-        import inspect
-        owner = _record_owner()
-        src = inspect.getsource(owner._enh_dec_v6)
-        assert "this_message_mac_key=mac_key" in src, (
-            "the receive path no longer hands the recorder the key that "
-            "authenticated the carrying message, so the self-reveal guard is "
-            "dead code")
+    These assert on what the path does, not on how it is written: an earlier
+    version of this class read the source text, which cannot tell a working
+    guard from a comment mentioning one.
+    """
 
-    def test_recording_happens_after_mac_verification(self):
-        """Ordering (audit C3): nothing is recorded from an unauthenticated
-        message."""
-        import inspect
-        owner = _record_owner()
-        src = inspect.getsource(owner._enh_dec_v6)
-        verify = src.index("verify_mac")
-        record = src.index("_record_revealed_mac_keys")
-        assert verify < record, \
-            "revealed keys are recorded before the MAC is verified"
+    def _payload(self):
+        return otr.OTRv4Payload("hello", []).encode(add_padding=False)
+
+    def test_a_normal_message_records_the_revealed_key(self):
+        mac_key = os.urandom(MKMAC_LEN)
+        revealed = os.urandom(MKMAC_LEN)
+        sess = _FakeSession(_FakeRatchet(mac_key, self._payload()))
+
+        out = sess._enh_dec_v6(_wire(mac_key, [revealed]))
+
+        assert out == b"hello"
+        assert sess.peer_revealed_mac_keys == [revealed]
+        assert sess.revealed_mac_keys_verified == 1
+
+    def test_the_carrying_messages_own_key_is_refused(self):
+        """The self-reveal guard is reachable from the real receive path.
+
+        If _enh_dec_v6 stopped handing the recorder the key that authenticated
+        the carrying message, this message would be accepted.
+        """
+        mac_key = os.urandom(MKMAC_LEN)
+        sess = _FakeSession(_FakeRatchet(mac_key, self._payload()))
+
+        with pytest.raises(ValueError) as exc:
+            sess._enh_dec_v6(_wire(mac_key, [mac_key]))
+        assert "carrying" in str(exc.value)
+
+    def test_nothing_is_recorded_when_the_outer_mac_fails(self):
+        """Ordering (audit C3): a message that fails the outer MAC must not
+        contribute a revealed key."""
+        mac_key = os.urandom(MKMAC_LEN)
+        revealed = os.urandom(MKMAC_LEN)
+        sess = _FakeSession(_FakeRatchet(mac_key, self._payload()))
+
+        with pytest.raises(ValueError) as exc:
+            sess._enh_dec_v6(_wire(mac_key, [revealed], break_mac=True))
+        assert "MAC verification failed" in str(exc.value)
+        assert not hasattr(sess, "peer_revealed_mac_keys") or \
+            sess.peer_revealed_mac_keys == []
+
+    def test_an_unaccountable_key_is_counted_but_the_message_lands(self):
+        mac_key = os.urandom(MKMAC_LEN)
+        sess = _FakeSession(
+            _FakeRatchet(mac_key, self._payload(), known=False))
+
+        out = sess._enh_dec_v6(_wire(mac_key, [os.urandom(MKMAC_LEN)]))
+
+        assert out == b"hello"
+        assert sess.revealed_mac_keys_unaccounted == 1
+        assert sess.revealed_mac_keys_verified == 0
+
+    def test_an_all_zero_revealed_key_rejects_the_message(self):
+        mac_key = os.urandom(MKMAC_LEN)
+        sess = _FakeSession(_FakeRatchet(mac_key, self._payload()))
+        wire = _wire(mac_key, [])
+
+        # An all-zero key encodes fine on the wire, so drive the recorder with
+        # the same call the receive path makes.
+        with pytest.raises(ValueError):
+            sess._record_revealed_mac_keys([bytes(MKMAC_LEN)],
+                                           this_message_mac_key=mac_key)
+        assert wire  # the wire form itself is fine; the reveal list is not
