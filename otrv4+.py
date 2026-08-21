@@ -958,6 +958,14 @@ class BinaryReader:
             return val
         except IndexError as e:
             raise ValueError(f"Failed to read uint8: {e }")
+        except ValueError:
+            # Truncation is EXPECTED on untrusted input. ensure() raises
+            # ValueError; the bare `except Exception` below would convert it
+            # to RuntimeError, which decode() does not catch and no caller
+            # expects. read_bytes() already re-raises; the integer readers
+            # must behave identically or a short header escapes as an
+            # "unexpected error" instead of a clean parse failure.
+            raise
         except Exception as e:
             raise RuntimeError(f"Unexpected error reading uint8: {e }")
 
@@ -969,6 +977,8 @@ class BinaryReader:
             return val
         except struct.error as e:
             raise ValueError(f"Failed to unpack uint16: {e }")
+        except ValueError:
+            raise  # truncation: see read_uint8
         except Exception as e:
             raise RuntimeError(f"Unexpected error reading uint16: {e }")
 
@@ -980,6 +990,8 @@ class BinaryReader:
             return val
         except struct.error as e:
             raise ValueError(f"Failed to unpack uint32: {e }")
+        except ValueError:
+            raise  # truncation: see read_uint8
         except Exception as e:
             raise RuntimeError(f"Unexpected error reading uint32: {e }")
 
@@ -991,6 +1003,8 @@ class BinaryReader:
             return val
         except struct.error as e:
             raise ValueError(f"Failed to unpack uint64: {e }")
+        except ValueError:
+            raise  # truncation: see read_uint8
         except Exception as e:
             raise RuntimeError(f"Unexpected error reading uint64: {e }")
 
@@ -1196,7 +1210,25 @@ class OTRv4Payload:
 class OTRv4DataMessage:
     """OTRv4 DATA message wire format (spec §4.4.3)."""
 
-    PROTOCOL_VERSION = 0x0004
+    # OTRv4+ data-message wire revision.
+    #
+    # 0x0004 -> 0x0005 (C1): the MKmac fix changed this message's wire
+    # behaviour in two incompatible ways.
+    #
+    #   1. The MAC value differs. MKmac is now KDF(0x14, MKenc, 64) per OTRv4
+    #      4.4.2, replacing sha3_512(session_id || ratchet_id || msg_num). Same
+    #      field, same offset, different value.
+    #   2. REVEALED_MAC_KEY_LEN widened 32 -> 64, changing the byte layout of
+    #      any message carrying revealed keys.
+    #
+    # Both ends must run the same revision. The version field is read and
+    # checked in decode() before any key material is touched, so a mismatch
+    # surfaces as ProtocolVersionError rather than as a MAC failure.
+    #
+    # Only THIS layer is incremented. The ClientProfile/DAKE format did not
+    # change, so OTRConstants.PROTOCOL_VERSION stays at 4 -- bumping it would
+    # falsely signal a handshake change and invalidate profiles needlessly.
+    PROTOCOL_VERSION = 0x0005
     TYPE = 0x03
     ECDH_LEN = 56
     NONCE_LEN = 12
@@ -1308,7 +1340,16 @@ class OTRv4DataMessage:
 
             ver = r.read_uint16()
             if ver != cls.PROTOCOL_VERSION:
-                raise ValueError(f"Wrong OTRv4 version: 0x{ver :04x}")
+                # Checked before anything reads key material, so a mismatched
+                # peer never reaches MAC verification and is never reported as
+                # a forgery. Strict equality: no downgrade is accepted and the
+                # pre-0x0005 MAC construction is never evaluated.
+                raise ProtocolVersionError(
+                    f"OTRv4+ wire revision mismatch: peer sent 0x{ver :04x}, "
+                    f"this build speaks 0x{cls .PROTOCOL_VERSION :04x}. "
+                    f"This is a version mismatch, NOT a forgery or replay. "
+                    f"Both endpoints must run the same build."
+                )
             mtype = r.read_uint8()
             if mtype != cls.TYPE:
                 raise ValueError(
@@ -1354,6 +1395,12 @@ class OTRv4DataMessage:
                     r.read_bytes(cls.REVEALED_MAC_KEY_LEN))
 
             return msg
+        except ProtocolVersionError:
+            # C1: must NOT be re-wrapped. The whole point of the typed error is
+            # that a caller can tell a wire-revision mismatch from a
+            # cryptographic failure; flattening it back to a generic ValueError
+            # here would restore exactly the ambiguity it exists to remove.
+            raise
         except (ValueError, struct.error, TypeError) as e:
             raise ValueError(f"Failed to decode message: {e }")
 
@@ -1985,6 +2032,22 @@ class EncryptionError(Exception):
     def __init__(self, message: str, session: Optional["EnhancedOTRSession"] = None):
         super().__init__(message)
         self.session = session
+
+
+class ProtocolVersionError(ValueError):
+    """The peer speaks a different OTRv4+ wire revision.
+
+    C1. Subclasses ValueError deliberately: every existing `except ValueError`
+    handler around decode() keeps working, while callers that need to tell a
+    version mismatch from a cryptographic failure can catch this specifically.
+
+    This exists because the two failure modes were previously indistinguishable.
+    A peer on an older build would pass the version check (the constant had not
+    been incremented for a breaking change), then fail MAC verification, and the
+    user would be shown "message may be forged or replayed" for what was really
+    a version mismatch -- an alarming and wrong diagnosis on a security-relevant
+    path.
+    """
 
 
 class TypeValidationError(Exception):

@@ -385,7 +385,23 @@ def set_kem_provider_for_testing(provider) -> None:
 # Media / codec constants
 # ---------------------------------------------------------------------------
 
-VOICE_PROTOCOL_VERSION = 3
+# Voice frame wire revision.
+#
+# 3 -> 4 (C1): the latency work changed the frame PLAINTEXT layout. Eight bytes
+# of the fixed padding slot now carry the sender's monotonic timestamp
+# (VOICE_TS_LEN), so VOICE_PLAIN_LEN and the pad_opus/unpad_opus framing differ
+# from revision 3.
+#
+# The packet is still 199 bytes and the header is unchanged, so a revision-3
+# peer and a revision-4 peer would BOTH pass the header version check if this
+# were left at 3. Worse, the timestamp sits inside the AEAD, so GCM would
+# authenticate successfully and the mismatch would only appear as unpad_opus
+# misreading Opus data -- garbled audio or a FrameError, with nothing pointing
+# at a version mismatch.
+#
+# Incrementing it moves that failure to parse_media_header, which raises
+# FrameError("unsupported protocol version N") before any key material is used.
+VOICE_PROTOCOL_VERSION = 4
 
 VOICE_SAMPLE_RATE = 16000
 VOICE_FRAME_MS = 40
