@@ -204,8 +204,8 @@ class TestSizeExtremes:
             size = 1 if i % 2 == 0 else 4_096
             msg = os.urandom(size)
 
-            ct, header, nonce, tag, _, _ = alice.encrypt_message(msg)
-            pt = bob.decrypt_message(header, ct, nonce, tag)
+            ct, header, nonce, tag, _, _, _mkmac = alice.encrypt_message(msg)
+            pt = bob.decrypt_message(header, ct, nonce, tag)[0]
 
             assert pt == msg, \
                 f"Corruption at op {i} (size={size}): " \
@@ -217,8 +217,8 @@ class TestSizeExtremes:
 
         for size in [0, 1, 255, 256, 1024, 4096, 65535]:
             msg = os.urandom(size)
-            ct, header, nonce, tag, _, _ = alice.encrypt_message(msg)
-            pt = bob.decrypt_message(header, ct, nonce, tag)
+            ct, header, nonce, tag, _, _, _mkmac = alice.encrypt_message(msg)
+            pt = bob.decrypt_message(header, ct, nonce, tag)[0]
             assert pt == msg, f"Corruption at size={size}"
 
     def test_size_extremes_nonce_uniqueness(self):
@@ -229,11 +229,11 @@ class TestSizeExtremes:
         for i in range(1_000):
             size = random.choice([1, 4096])
             msg = os.urandom(size)
-            ct, header, nonce, tag, _, _ = alice.encrypt_message(msg)
+            ct, header, nonce, tag, _, _, _mkmac = alice.encrypt_message(msg)
 
             assert nonce not in nonces, \
                 f"NONCE REUSE at op {i} (size={size})"
             nonces.add(nonce)
 
-            pt = bob.decrypt_message(header, ct, nonce, tag)
+            pt = bob.decrypt_message(header, ct, nonce, tag)[0]
             assert pt == msg

@@ -96,7 +96,7 @@ def _run_torture(runs: int, seed: int = None):
 
         msg = os.urandom(rng.randint(1, 256))
 
-        ct, header, nonce, tag, ratchet_id, _ = sender.encrypt_message(msg)
+        ct, header, nonce, tag, ratchet_id, _, _mkmac = sender.encrypt_message(msg)
 
         # ── Nonce uniqueness ─────────────────────────────────────────────────
         if nonce in seen_nonces:
@@ -117,7 +117,7 @@ def _run_torture(runs: int, seed: int = None):
         else:
             # Deliver current message in order
             try:
-                pt = receiver.decrypt_message(header, ct, nonce, tag)
+                pt = receiver.decrypt_message(header, ct, nonce, tag)[0]
                 if pt != msg:
                     raise RuntimeError(f"PLAINTEXT CORRUPTION at op {i}")
             except otr.EncryptionError as e:
@@ -139,7 +139,7 @@ def _run_torture(runs: int, seed: int = None):
             while ooo_buffer and rng.random() < 0.4:
                 ooo_recv, ooo_h, ooo_ct, ooo_n, ooo_t, ooo_msg = ooo_buffer.popleft()
                 try:
-                    ooo_pt = ooo_recv.decrypt_message(ooo_h, ooo_ct, ooo_n, ooo_t)
+                    ooo_pt = ooo_recv.decrypt_message(ooo_h, ooo_ct, ooo_n, ooo_t)[0]
                     if ooo_pt != ooo_msg:
                         raise RuntimeError(f"OOO PLAINTEXT CORRUPTION at op {i}")
                     ooo_delivered += 1

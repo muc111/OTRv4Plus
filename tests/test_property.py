@@ -398,8 +398,8 @@ class TestDoubleRatchet:
     def test_single_message_roundtrip(self, msg):
         """Alice sends, Bob decrypts — message is recovered exactly."""
         alice, bob = _make_ratchet_pair()
-        ct, hdr, nonce, tag, rid, _ = alice.encrypt_message(msg)
-        recovered = bob.decrypt_message(hdr, ct, nonce, tag)
+        ct, hdr, nonce, tag, rid, _, _mkmac = alice.encrypt_message(msg)
+        recovered = bob.decrypt_message(hdr, ct, nonce, tag)[0]
         assert recovered == msg, "ratchet: decrypt(encrypt(m)) != m"
 
     @given(msgs=st.lists(plaintext_st, min_size=1, max_size=10))
@@ -407,14 +407,14 @@ class TestDoubleRatchet:
         """Multiple messages in sequence all decrypt correctly."""
         alice, bob = _make_ratchet_pair()
         for msg in msgs:
-            ct, hdr, nonce, tag, _, _ = alice.encrypt_message(msg)
-            assert bob.decrypt_message(hdr, ct, nonce, tag) == msg
+            ct, hdr, nonce, tag, _, _, _mkmac = alice.encrypt_message(msg)
+            assert bob.decrypt_message(hdr, ct, nonce, tag)[0] == msg
 
     @given(msg=plaintext_st)
     def test_replay_rejected(self, msg):
         """Replaying the same ciphertext is rejected."""
         alice, bob = _make_ratchet_pair()
-        ct, hdr, nonce, tag, _, _ = alice.encrypt_message(msg)
+        ct, hdr, nonce, tag, _, _, _mkmac = alice.encrypt_message(msg)
         bob.decrypt_message(hdr, ct, nonce, tag)   # first decrypt succeeds
         with pytest.raises(Exception):
             bob.decrypt_message(hdr, ct, nonce, tag)  # replay must fail
@@ -424,7 +424,7 @@ class TestDoubleRatchet:
         """Flipping a byte in the ciphertext must cause decryption failure."""
         assume(len(msg) > 0)
         alice, bob = _make_ratchet_pair()
-        ct, hdr, nonce, tag, _, _ = alice.encrypt_message(msg)
+        ct, hdr, nonce, tag, _, _, _mkmac = alice.encrypt_message(msg)
         bad_ct = bytes([ct[0] ^ 0xFF]) + ct[1:]
         with pytest.raises(Exception):
             bob.decrypt_message(hdr, bad_ct, nonce, tag)
@@ -433,8 +433,8 @@ class TestDoubleRatchet:
     def test_bidirectional(self, msg):
         """Bob can also send to Alice."""
         alice, bob = _make_ratchet_pair()
-        ct, hdr, nonce, tag, _, _ = bob.encrypt_message(msg)
-        recovered = alice.decrypt_message(hdr, ct, nonce, tag)
+        ct, hdr, nonce, tag, _, _, _mkmac = bob.encrypt_message(msg)
+        recovered = alice.decrypt_message(hdr, ct, nonce, tag)[0]
         assert recovered == msg
 
 

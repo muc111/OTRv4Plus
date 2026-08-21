@@ -487,8 +487,8 @@ class TestOTRv4PlusMLKEM(unittest.TestCase):
             # Alice sends a burst
             for i in range(2):
                 msg = f"a2b-r{round_num}-{i}".encode()
-                ct, hdr, nonce, tag, rid, _ = alice.encrypt_message(msg)
-                pt = bob.decrypt_message(hdr, ct, nonce, tag)
+                ct, hdr, nonce, tag, rid, _, _mkmac = alice.encrypt_message(msg)
+                pt = bob.decrypt_message(hdr, ct, nonce, tag)[0]
                 self.assertEqual(pt, msg)
                 ratchets_seen.add(rid)
                 delivered += 1
@@ -496,8 +496,8 @@ class TestOTRv4PlusMLKEM(unittest.TestCase):
             # Bob replies
             for i in range(2):
                 msg = f"b2a-r{round_num}-{i}".encode()
-                ct, hdr, nonce, tag, rid, _ = bob.encrypt_message(msg)
-                pt = alice.decrypt_message(hdr, ct, nonce, tag)
+                ct, hdr, nonce, tag, rid, _, _mkmac = bob.encrypt_message(msg)
+                pt = alice.decrypt_message(hdr, ct, nonce, tag)[0]
                 self.assertEqual(pt, msg)
                 ratchets_seen.add(rid)
                 delivered += 1

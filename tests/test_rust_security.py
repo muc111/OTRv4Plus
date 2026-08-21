@@ -137,7 +137,7 @@ class TestTamperDetection:
 
     def test_flipped_ciphertext_bit(self):
         alice, bob = _make_pair()
-        ct, hdr, n, t, _, _ = alice.encrypt_message(b"tamper test")
+        ct, hdr, n, t, _, _, _mkmac = alice.encrypt_message(b"tamper test")
         tampered = bytearray(ct)
         tampered[0] ^= 0x01
         with pytest.raises(otr.EncryptionError):
@@ -145,35 +145,35 @@ class TestTamperDetection:
 
     def test_wrong_nonce(self):
         alice, bob = _make_pair()
-        ct, hdr, n, t, _, _ = alice.encrypt_message(b"nonce test")
+        ct, hdr, n, t, _, _, _mkmac = alice.encrypt_message(b"nonce test")
         wrong_nonce = secrets.token_bytes(12)
         with pytest.raises(otr.EncryptionError):
             bob.decrypt_message(hdr, ct, wrong_nonce, t)
 
     def test_wrong_tag(self):
         alice, bob = _make_pair()
-        ct, hdr, n, t, _, _ = alice.encrypt_message(b"tag test")
+        ct, hdr, n, t, _, _, _mkmac = alice.encrypt_message(b"tag test")
         wrong_tag = secrets.token_bytes(16)
         with pytest.raises(otr.EncryptionError):
             bob.decrypt_message(hdr, ct, n, wrong_tag)
 
     def test_truncated_ciphertext(self):
         alice, bob = _make_pair()
-        ct, hdr, n, t, _, _ = alice.encrypt_message(b"truncate test")
+        ct, hdr, n, t, _, _, _mkmac = alice.encrypt_message(b"truncate test")
         with pytest.raises(otr.EncryptionError):
             bob.decrypt_message(hdr, ct[:len(ct)//2], n, t)
 
     def test_extended_ciphertext(self):
         alice, bob = _make_pair()
-        ct, hdr, n, t, _, _ = alice.encrypt_message(b"extend test")
+        ct, hdr, n, t, _, _, _mkmac = alice.encrypt_message(b"extend test")
         with pytest.raises(otr.EncryptionError):
             bob.decrypt_message(hdr, ct + b'\x00', n, t)
 
     def test_swapped_messages_rejected(self):
         """Two messages — swapping their tags/nonces is rejected."""
         alice, bob = _make_pair()
-        ct1, h1, n1, t1, _, _ = alice.encrypt_message(b"msg1")
-        ct2, h2, n2, t2, _, _ = alice.encrypt_message(b"msg2")
+        ct1, h1, n1, t1, _, _, _mkmac = alice.encrypt_message(b"msg1")
+        ct2, h2, n2, t2, _, _, _mkmac = alice.encrypt_message(b"msg2")
         # Deliver msg2 first (OK — out of order)
         bob.decrypt_message(h2, ct2, n2, t2)
         # Now try msg1's ciphertext with msg2's nonce — must fail
@@ -190,7 +190,7 @@ class TestReplayRejection:
 
     def test_exact_replay_rejected(self):
         alice, bob = _make_pair()
-        ct, hdr, n, t, _, _ = alice.encrypt_message(b"replay me")
+        ct, hdr, n, t, _, _, _mkmac = alice.encrypt_message(b"replay me")
         bob.decrypt_message(hdr, ct, n, t)
         with pytest.raises(otr.EncryptionError):
             bob.decrypt_message(hdr, ct, n, t)
@@ -231,15 +231,15 @@ class TestGauntlet:
         for i in range(100_000):
             msg = f"gauntlet-{i}".encode()
             if rng.random() < 0.5:
-                ct, h, n, t, rid, _ = alice.encrypt_message(msg)
+                ct, h, n, t, rid, _, _mkmac = alice.encrypt_message(msg)
                 assert n not in nonces_seen, f"Nonce reuse at message {i}"
                 nonces_seen.add(n)
-                pt = bob.decrypt_message(h, ct, n, t)
+                pt = bob.decrypt_message(h, ct, n, t)[0]
             else:
-                ct, h, n, t, rid, _ = bob.encrypt_message(msg)
+                ct, h, n, t, rid, _, _mkmac = bob.encrypt_message(msg)
                 assert n not in nonces_seen, f"Nonce reuse at message {i}"
                 nonces_seen.add(n)
-                pt = alice.decrypt_message(h, ct, n, t)
+                pt = alice.decrypt_message(h, ct, n, t)[0]
             assert pt == msg, f"Mismatch at message {i}"
 
         assert len(nonces_seen) == 100_000
@@ -287,15 +287,15 @@ class TestPostCompromiseRecovery:
 
         # Send 10 messages (triggers rekey at 5)
         for i in range(10):
-            ct, h, n, t, rid, _ = alice.encrypt_message(f"pre-{i}".encode())
+            ct, h, n, t, rid, _, _mkmac = alice.encrypt_message(f"pre-{i}".encode())
             bob.decrypt_message(h, ct, n, t)
 
         rid_after = rid
 
         # Send 10 more (should be in new ratchet epoch)
         for i in range(10):
-            ct, h, n, t, rid, _ = alice.encrypt_message(f"post-{i}".encode())
-            pt = bob.decrypt_message(h, ct, n, t)
+            ct, h, n, t, rid, _, _mkmac = alice.encrypt_message(f"post-{i}".encode())
+            pt = bob.decrypt_message(h, ct, n, t)[0]
             assert pt == f"post-{i}".encode()
 
 
@@ -310,7 +310,7 @@ class TestRatchetIdMonotonic:
         alice, bob = _make_pair(rekey_interval=10)
         prev_rid = 0
         for i in range(100):
-            ct, h, n, t, rid, _ = alice.encrypt_message(f"rid-{i}".encode())
+            ct, h, n, t, rid, _, _mkmac = alice.encrypt_message(f"rid-{i}".encode())
             assert rid >= prev_rid, f"Ratchet ID decreased: {rid} < {prev_rid} at message {i}"
             prev_rid = rid
             bob.decrypt_message(h, ct, n, t)
@@ -327,12 +327,12 @@ class TestSessionIsolation:
         alice1, bob1 = _make_pair()
         alice2, bob2 = _make_pair()
 
-        ct1, h1, n1, t1, _, _ = alice1.encrypt_message(b"session1")
-        ct2, h2, n2, t2, _, _ = alice2.encrypt_message(b"session2")
+        ct1, h1, n1, t1, _, _, _mkmac = alice1.encrypt_message(b"session1")
+        ct2, h2, n2, t2, _, _, _mkmac = alice2.encrypt_message(b"session2")
 
         # Each session decrypts its own
-        assert bob1.decrypt_message(h1, ct1, n1, t1) == b"session1"
-        assert bob2.decrypt_message(h2, ct2, n2, t2) == b"session2"
+        assert bob1.decrypt_message(h1, ct1, n1, t1)[0] == b"session1"
+        assert bob2.decrypt_message(h2, ct2, n2, t2)[0] == b"session2"
 
         # Cross-session must fail
         with pytest.raises(otr.EncryptionError):
@@ -348,8 +348,8 @@ class TestSessionIsolation:
             try:
                 a, b = _make_pair()
                 for i in range(1000):
-                    ct, h, n, t, _, _ = a.encrypt_message(f"t{session_id}-{i}".encode())
-                    pt = b.decrypt_message(h, ct, n, t)
+                    ct, h, n, t, _, _, _mkmac = a.encrypt_message(f"t{session_id}-{i}".encode())
+                    pt = b.decrypt_message(h, ct, n, t)[0]
                     assert pt == f"t{session_id}-{i}".encode()
             except Exception as e:
                 errors.append((session_id, str(e)))
@@ -422,15 +422,15 @@ class TestRollbackImpossible:
         alice, bob = _make_pair()
 
         for i in range(5):
-            ct, h, n, t, _, _ = alice.encrypt_message(f"pre-{i}".encode())
+            ct, h, n, t, _, _, _mkmac = alice.encrypt_message(f"pre-{i}".encode())
             bob.decrypt_message(h, ct, n, t)
 
         # Attempt to "rollback" the Python-side counter
         alice.message_counter_send = 0
 
         # Rust internal state is unchanged — next message still decrypts
-        ct, h, n, t, _, _ = alice.encrypt_message(b"after rollback attempt")
-        pt = bob.decrypt_message(h, ct, n, t)
+        ct, h, n, t, _, _, _mkmac = alice.encrypt_message(b"after rollback attempt")
+        pt = bob.decrypt_message(h, ct, n, t)[0]
         assert pt == b"after rollback attempt"
 
     def test_nonce_uniqueness_after_counter_reset(self):
@@ -439,7 +439,7 @@ class TestRollbackImpossible:
         alice, _ = _make_pair()
         nonces = set()
         for i in range(50):
-            ct, h, n, t, _, _ = alice.encrypt_message(f"n-{i}".encode())
+            ct, h, n, t, _, _, _mkmac = alice.encrypt_message(f"n-{i}".encode())
             assert n not in nonces
             nonces.add(n)
 
@@ -447,7 +447,7 @@ class TestRollbackImpossible:
         alice.message_counter_send = 0
 
         for i in range(50):
-            ct, h, n, t, _, _ = alice.encrypt_message(f"n2-{i}".encode())
+            ct, h, n, t, _, _, _mkmac = alice.encrypt_message(f"n2-{i}".encode())
             assert n not in nonces, "Nonce collision after counter reset!"
             nonces.add(n)
 
@@ -461,35 +461,35 @@ class TestEdgeCaseMessages:
 
     def test_empty_message(self):
         alice, bob = _make_pair()
-        ct, h, n, t, _, _ = alice.encrypt_message(b"")
-        pt = bob.decrypt_message(h, ct, n, t)
+        ct, h, n, t, _, _, _mkmac = alice.encrypt_message(b"")
+        pt = bob.decrypt_message(h, ct, n, t)[0]
         assert pt == b""
 
     def test_single_byte_message(self):
         alice, bob = _make_pair()
-        ct, h, n, t, _, _ = alice.encrypt_message(b"\x00")
-        pt = bob.decrypt_message(h, ct, n, t)
+        ct, h, n, t, _, _, _mkmac = alice.encrypt_message(b"\x00")
+        pt = bob.decrypt_message(h, ct, n, t)[0]
         assert pt == b"\x00"
 
     def test_64kb_message(self):
         alice, bob = _make_pair()
         big = secrets.token_bytes(65536)
-        ct, h, n, t, _, _ = alice.encrypt_message(big)
-        pt = bob.decrypt_message(h, ct, n, t)
+        ct, h, n, t, _, _, _mkmac = alice.encrypt_message(big)
+        pt = bob.decrypt_message(h, ct, n, t)[0]
         assert pt == big
 
     def test_all_zero_plaintext(self):
         alice, bob = _make_pair()
         zeros = b'\x00' * 1024
-        ct, h, n, t, _, _ = alice.encrypt_message(zeros)
-        pt = bob.decrypt_message(h, ct, n, t)
+        ct, h, n, t, _, _, _mkmac = alice.encrypt_message(zeros)
+        pt = bob.decrypt_message(h, ct, n, t)[0]
         assert pt == zeros
 
     def test_all_ff_plaintext(self):
         alice, bob = _make_pair()
         ffs = b'\xff' * 1024
-        ct, h, n, t, _, _ = alice.encrypt_message(ffs)
-        pt = bob.decrypt_message(h, ct, n, t)
+        ct, h, n, t, _, _, _mkmac = alice.encrypt_message(ffs)
+        pt = bob.decrypt_message(h, ct, n, t)[0]
         assert pt == ffs
 
 

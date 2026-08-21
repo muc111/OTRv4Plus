@@ -93,7 +93,7 @@ class Packet:
 def _encrypt(sender, receiver, sender_id, seq):
     """Encrypt a random message, return a Packet."""
     msg = os.urandom(random.randint(1, 200))
-    ct, header, nonce, tag, ratchet_id, _ = sender.encrypt_message(msg)
+    ct, header, nonce, tag, ratchet_id, _, _mkmac = sender.encrypt_message(msg)
     return Packet(receiver, header, ct, nonce, tag, msg, sender_id, seq)
 
 
@@ -101,7 +101,7 @@ def _decrypt_and_verify(pkt):
     """Decrypt a packet; return True if plaintext matches, False on expected
     EncryptionError, raise on silent corruption."""
     try:
-        pt = pkt.receiver.decrypt_message(pkt.header, pkt.ct, pkt.nonce, pkt.tag)
+        pt = pkt.receiver.decrypt_message(pkt.header, pkt.ct, pkt.nonce, pkt.tag)[0]
     except otr.EncryptionError:
         return False
     except Exception:

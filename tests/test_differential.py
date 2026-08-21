@@ -151,14 +151,14 @@ class TestRatchetDifferential:
     def test_alice_to_bob(self):
         alice, bob = _make_ratchet_pair()
         msg = b"hello bob"
-        ct, hdr, nonce, tag, _, _ = alice.encrypt_message(msg)
-        assert bob.decrypt_message(hdr, ct, nonce, tag) == msg
+        ct, hdr, nonce, tag, _, _, _mkmac = alice.encrypt_message(msg)
+        assert bob.decrypt_message(hdr, ct, nonce, tag)[0] == msg
 
     def test_bob_to_alice(self):
         alice, bob = _make_ratchet_pair()
         msg = b"hello alice"
-        ct, hdr, nonce, tag, _, _ = bob.encrypt_message(msg)
-        assert alice.decrypt_message(hdr, ct, nonce, tag) == msg
+        ct, hdr, nonce, tag, _, _, _mkmac = bob.encrypt_message(msg)
+        assert alice.decrypt_message(hdr, ct, nonce, tag)[0] == msg
 
     def test_interleaved(self):
         """Interleaved Alice↔Bob messages all decrypt correctly."""
@@ -171,8 +171,8 @@ class TestRatchetDifferential:
             (bob, alice, b"B-to-A reply 2"),
         ]
         for sender, receiver, msg in exchanges:
-            ct, hdr, nonce, tag, _, _ = sender.encrypt_message(msg)
-            assert receiver.decrypt_message(hdr, ct, nonce, tag) == msg
+            ct, hdr, nonce, tag, _, _, _mkmac = sender.encrypt_message(msg)
+            assert receiver.decrypt_message(hdr, ct, nonce, tag)[0] == msg
 
     def test_chain_key_advances(self):
         """Sending N messages produces N different ciphertexts for the same plaintext."""
@@ -180,7 +180,7 @@ class TestRatchetDifferential:
         msg = b"same message every time"
         ciphertexts = set()
         for _ in range(5):
-            ct, hdr, nonce, tag, _, _ = alice.encrypt_message(msg)
+            ct, hdr, nonce, tag, _, _, _mkmac = alice.encrypt_message(msg)
             key = ct + nonce  # (ct, nonce) pair must be unique
             assert key not in ciphertexts, "Ratchet reused (ct, nonce) pair — chain key not advancing"
             ciphertexts.add(key)
