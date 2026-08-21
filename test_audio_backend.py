@@ -634,14 +634,49 @@ class TestRinger(BackendBase):
 
     def test_no_playback_device_does_not_raise(self):
         # A silent ring is survivable; a crash in the receive path is not.
+        #
+        # BOTH backends must be suppressed for this to be the no-device case.
+        # Clearing _LIB/_LIB_ERROR only removes AAudio; open_playback then
+        # falls back to PulseAudio and, on a device that actually has pacat --
+        # i.e. every phone this software is meant to run on -- opens
+        # successfully and sets started=True. The test was asserting a
+        # property of the host, not of the ringer, and failed on Termux for
+        # that reason. `which` is the documented seam for suppressing the
+        # PulseAudio probe, so use it and make the case deterministic
+        # everywhere.
+        saved_lib, saved_err = A._LIB, A._LIB_ERROR
         A._LIB = None
         A._LIB_ERROR = "no libaaudio"
+        try:
+            r = A.Ringer(notify=False, vibrate=False)
+            r.start(peer="p@e.org", which=lambda _binary: None)
+            time.sleep(0.3)
+            r.stop()                       # must not raise: that is the test
+            self.assertFalse(r.started)
+            self.assertIsNotNone(r.error)
+        finally:
+            # These are module globals. Leaving them clobbered made this test
+            # a source of order-dependent failures in whatever ran next.
+            A._LIB, A._LIB_ERROR = saved_lib, saved_err
+
+    def test_a_working_backend_still_rings(self):
+        """The counterpart, on a host that does have playback.
+
+        Guards against "does not raise" being satisfied by a ringer that
+        never rings anywhere.
+        """
+        lib = install(FakeAAudioLib())
         r = A.Ringer(notify=False, vibrate=False)
         r.start(peer="p@e.org")
-        time.sleep(0.3)
-        r.stop()
-        self.assertFalse(r.started)
-        self.assertIsNotNone(r.error)
+        deadline = time.time() + 5.0
+        while time.time() < deadline and lib.written_frames == 0:
+            time.sleep(0.02)
+        try:
+            self.assertTrue(r.started, "ringer never opened playback: %s"
+                            % r.error)
+            self.assertIsNone(r.error)
+        finally:
+            r.stop()
 
     def test_privacy_mode_keeps_the_jid_off_the_lock_screen(self):
         import inspect
