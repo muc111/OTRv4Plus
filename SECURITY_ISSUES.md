@@ -14,10 +14,10 @@ Status vocabulary:
 | ID | Title | Severity | Status |
 |----|-------|----------|--------|
 | L1 | MAC-key revelation reveals all-zeros; deniability not achieved | Design | **OPEN** |
-| M3 | Legacy DAKE path can hand session keys to Python as PyBytes | Medium | **MITIGATED** |
+| M3 | Legacy DAKE path can hand session keys to Python as PyBytes | Medium | **RESOLVED** |
 | G1 | `RustDAKEAdapter.is_expired()` is a stub; DAKE handshake timeout absent | Low | **OPEN** |
 | G2 | Two divergent copies of `otrv4_testlib.py`; which loads depends on collection order | Low | **OPEN** |
-| B1-seed | Persisting an identity requires the seed to exist in Python | Design | **DECISION REQUIRED** |
+| B1-seed | Persisting an identity requires the seed to exist in Python | Design | **RESOLVED** |
 
 ---
 
@@ -102,7 +102,23 @@ different claim.
 
 ## M3 — Legacy DAKE path can hand session keys to Python
 
-**Status: MITIGATED (unreachable on the live path). Disposition below.**
+**Status: RESOLVED. Compiled out of production builds.**
+
+Regression tests: `tests/test_release_guard.py::test_production_artifact_exposes_no_legacy_dake_session_keys`
+and `::test_production_dakeresult_exposes_no_secret_getters`.
+
+The five `Dakeresult` secret getters and `PyDake::generate_dake2` /
+`process_dake2` / `get_session_keys` are behind the `legacy-dake-keys` Cargo
+feature, OFF by default. They are **absent from a production artifact**, not
+merely undocumented. `Rust/build.rs` refuses to build with the feature unless
+`OTRV4PLUS_ALLOW_LEGACY_DAKE_KEYS=1` is set explicitly. The live DAKE
+implementation is unchanged — `generate_dake2_output` / `process_dake2_output`
+use a different internal path and were not touched.
+
+Verified across three wheels: production (guard passes), legacy without opt-in
+(guard **fails**, catching the surface), legacy with opt-in (passes).
+
+The original analysis, retained for the record:
 
 ### What exists
 
@@ -232,7 +248,25 @@ implementations are not trivially interchangeable.
 
 ## B1-seed — Persisting an identity requires the seed in Python
 
-**Status: DECISION REQUIRED before the Phase 4 vault is built.**
+**Status: RESOLVED. Option B implemented — sealing happens inside Rust.**
+
+Regression tests: `tests/test_rust_identity_sealing.py` (35 tests covering all
+nine required proofs).
+
+`Rust/src/identity.rs` seals and unseals the identity using the crate-internal
+accessors, so only ciphertext crosses into Python. No `get_seed()` accessor was
+added. Writing the proofs found that PyO3 keeps a `#[staticmethod]`
+Python-visible regardless of `pub(crate)`, so `from_seed_bytes` was still a seed
+*injection* path; it and `from_priv_bytes` are now behind `test-only-kdf`, and
+`identity.rs` uses `from_seed_internal` / `from_priv_internal`, which are not
+PyO3 methods at all.
+
+Residual, recorded rather than glossed: the DEK itself is still a Python `bytes`
+because the provider hands it down to Rust. The **seed** is not, which is what
+the decision required. Phase 4 should shorten that path by passing the unwrapped
+DEK straight from Kotlin into Rust over JNI.
+
+The original analysis, retained for the record:
 
 Decision B1 (persistent identity) is approved, but there is a boundary in the
 way:

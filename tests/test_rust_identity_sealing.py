@@ -38,6 +38,12 @@ pytestmark = pytest.mark.skipif(
     reason="Rust core built without the identity sealing module",
 )
 
+# Seed injection is deliberately present on a test-only-kdf wheel, so the two
+# assertions that demand its ABSENCE are production-build assertions. They skip
+# on an acknowledged test build and fail loudly on any wheel that claims to be
+# production while still exposing injection.
+_TEST_BUILD = os.environ.get("OTRV4PLUS_ALLOW_TEST_GATES") == "1"
+
 from android_bridge.identity import (            # noqa: E402
     CorruptIdentity, IdentityError, IdentityManager, RustSealedIdentityKeyStore,
     fingerprint_of,
@@ -169,6 +175,8 @@ class TestSeedIsNotExposed:
             assert not any(b in low for b in banned), \
                 f"otrv4_core.{name} looks like a seed accessor"
 
+    @pytest.mark.skipif(_TEST_BUILD,
+                        reason="OTRV4PLUS_ALLOW_TEST_GATES=1: internals-test wheel")
     def test_3b_no_seed_accessor_on_the_key_handles(self):
         """Neither a read path nor an injection path may be Python-visible.
 
@@ -192,6 +200,8 @@ class TestSeedIsNotExposed:
             for banned in ("from_seed_internal", "from_priv_internal"):
                 assert not hasattr(cls, banned), f"{cls.__name__}.{banned} leaked to Python"
 
+    @pytest.mark.skipif(_TEST_BUILD,
+                        reason="OTRV4PLUS_ALLOW_TEST_GATES=1: internals-test wheel")
     def test_3c_seed_injection_is_gated_out_of_production(self):
         """Python must not be able to supply a chosen identity seed.
 

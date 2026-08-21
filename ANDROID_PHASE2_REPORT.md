@@ -92,15 +92,20 @@ All figures measured in this environment on Python 3.12.3, x86_64.
 | Suite | Before Phase 2 | After |
 |---|---|---|
 | `cargo test` | 45 passed | **45 passed** (unchanged) |
-| `tests/` (production wheel) | 245 passed, 26 failed, 1 module uncollectable | **403 passed, 4 skipped, 1 xfailed, 0 failed** |
+| `tests/` (production wheel) | 245 passed, 26 failed, 1 module uncollectable | **406 passed, 42 skipped, 1 xfailed, 0 failed** |
 | `tests/` (`test-only-kdf` wheel) | 248 passed, 23 failed | **passes; the 3 gated tests run instead of skipping** |
 | voice + audio suites | 210 passed | **210 passed** (unchanged) |
-| Kotlin security layer | did not exist | **35 passed** (JVM, no Android SDK) |
+| Kotlin security layer | did not exist | **43 passed** (JVM, no Android SDK) |
 | `--ignore` needed? | yes | **no** |
 
-New tests added in Phase 2: **167** — Python 132 (identity 35, bridge 50,
-diagnostics/bootstrap 19, audio path 13, release guard 6, plus repaired
-coverage) and Kotlin 35.
+New tests added in Phase 2: **210** — Python 167 and Kotlin 43.
+
+**On the skip count.** 42 skips on a production wheel is not lost coverage: 36
+are the Option-A identity double, which injects a seed through
+`from_seed_bytes` and is therefore gated out of production builds by decision
+B1. The same lifecycle is covered on production by the 35 Rust-backed tests in
+`tests/test_rust_identity_sealing.py`. On a `test-only-kdf` wheel the same suite
+reports **441 passed, 7 skipped, 1 xfailed**.
 
 The 4 skips are the three vault read-back tests on a production wheel (correct —
 their absence *is* the security boundary) and one `importorskip`. The 1 xfail is
