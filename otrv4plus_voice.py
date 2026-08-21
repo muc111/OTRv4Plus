@@ -3369,6 +3369,7 @@ class VoiceCallManager:
         notice it: the health machine has to be asked. One wakeup per second
         per call, which is cheaper than the frame it is watching for.
         """
+        ticks = 0
         try:
             while True:
                 await asyncio.sleep(1.0)
@@ -3377,6 +3378,16 @@ class VoiceCallManager:
                     return
                 if session.health is not None:
                     session.health.tick()
+                ticks += 1
+                # An interim snapshot every 60 s. A long soak that dies part
+                # way through must still leave everything up to the last
+                # minute: a histogram that only ever existed in memory is no
+                # use for a comparison against a baseline.
+                if ticks % 60 == 0 and session.metrics is not None:
+                    try:
+                        session.metrics.write_snapshot("session_snapshot")
+                    except Exception:
+                        pass
         except asyncio.CancelledError:
             pass
         except Exception:
@@ -3695,6 +3706,7 @@ class VoiceCallManager:
             return
         self._start_stats(peer)
         self._start_rekey(peer)
+        self._note_session_open(peer)
         _print("[voice] call active with %s — /hangup to end, /mute to toggle mic"
                % _san(peer, 64))
 
@@ -3771,6 +3783,7 @@ class VoiceCallManager:
 
         self._start_stats(peer)
         self._start_rekey(peer)
+        self._note_session_open(peer)
         _print("[voice] call active with %s — /hangup to end, /mute to toggle mic"
                % _san(peer, 64))
 
@@ -4225,6 +4238,45 @@ class VoiceCallManager:
         except Exception:
             pass
 
+    def _note_session_open(self, peer: str) -> None:
+        """Mark the start of the measured window in the telemetry log."""
+        session = self._calls.get(peer)
+        if session is None or session.metrics is None:
+            return
+        try:
+            session.metrics.event(
+                "session_open",
+                tunnels_in=session.sam_options.get("inbound.quantity", 0),
+                tunnels_out=session.sam_options.get("outbound.quantity", 0),
+                hops_in=session.sam_options.get("inbound.length", 0),
+                hops_out=session.sam_options.get("outbound.length", 0))
+        except Exception:
+            pass
+
+    def _write_final_telemetry(self, session) -> None:
+        """Flush the call's distributions before the session is discarded.
+
+        Without this the histograms die with the object and the JSONL holds
+        only events -- which is exactly the state that would make a soak test
+        produce nothing comparable.
+        """
+        metrics = getattr(session, "metrics", None)
+        if metrics is None:
+            return
+        try:
+            health = getattr(session, "health", None)
+            if health is not None:
+                snap = health.snapshot()
+                metrics.event("session_close",
+                              transitions=snap["transitions"],
+                              seconds_healthy=snap["seconds_healthy"],
+                              seconds_degraded=snap["seconds_degraded"],
+                              seconds_recovering=snap["seconds_recovering"],
+                              seconds_disconnected=snap["seconds_disconnected"])
+            metrics.write_snapshot("session_close")
+        except Exception:
+            pass
+
     def _start_stats(self, peer: str) -> None:
         # The health loop runs whether or not debug is on: it is the stall
         # detector, not a debug aid, and a call that goes silent must be
@@ -4268,6 +4320,7 @@ class VoiceCallManager:
         if session is None:
             _print("[voice] no active call")
             return
+        self._write_final_telemetry(session)
         waiter = getattr(session, "_rekey_waiter", None)
         if waiter is not None and not waiter[1].done():
             waiter[1].cancel()

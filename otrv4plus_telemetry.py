@@ -75,7 +75,7 @@ EVENT_NAMES = frozenset({
     # transport health
     "health_change", "stall_begin", "stall_end",
     # session lifecycle
-    "session_open", "session_close", "stream_lost",
+    "session_open", "session_close", "session_snapshot", "stream_lost",
     # SAM / I2P
     "sam_session_create", "sam_accept", "sam_connect", "sam_error",
     "sam_session_recreate",
@@ -583,8 +583,17 @@ class TransportMetrics:
                 out[name] = snap
         return out
 
-    def write_snapshot(self) -> None:
+    def write_snapshot(self, event: str = "session_close") -> None:
+        """Emit the full distribution set as one record.
+
+        Called periodically during a call as well as at teardown: a four-hour
+        soak that dies in hour three must still leave everything up to the
+        last interim snapshot, and a histogram that only exists in memory is
+        no use to a comparison against a baseline.
+        """
+        if event not in EVENT_NAMES:
+            raise TelemetryValueError("unknown snapshot event %r" % (event,))
         if self.sink.enabled:
             record = self.snapshot()
-            record["event"] = "session_close"
+            record["event"] = event
             self.sink.write(record)
