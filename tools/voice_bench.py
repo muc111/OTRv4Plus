@@ -54,6 +54,15 @@ RTTPCT = re.compile(
     r"p99=(?P<p99>[\d.]+) max=(?P<max>[\d.]+)ms")
 
 CODEC = re.compile(r"codec: Opus (\d+) Hz mono, (\d+) ms frames, (\d+) kbit/s (\w+)")
+
+STAGES = re.compile(r"stages\(p50/p95\): (?P<body>.+)$")
+STAGE_ONE = re.compile(r"(\w+) ([\d.]+)/([\d.]+)")
+LAG = re.compile(r"loop lag: n=\d+ p50=(?P<p50>[\d.]+) p95=(?P<p95>[\d.]+) "
+                 r"p99=(?P<p99>[\d.]+) max=(?P<max>[\d.]+)ms")
+BUDGET = re.compile(
+    r"budget: one-way (?P<oneway>[\d.]+)ms = local send (?P<local>[\d.]+)ms "
+    r"\+ network (?P<net>[\d.]+)ms \((?P<pct>[\d.]+)% local\).*?"
+    r"mouth-to-ear ~(?P<m2e>[\d.]+)ms")
 LEVELS = re.compile(r"levels: speaker peak (\d+)->(\d+) rms (\d+)->(\d+)")
 
 
@@ -72,7 +81,9 @@ def parse(path):
            "spacing_p95": [], "spacing_p99": [],
            "rtt_p95": [], "rtt_p99": [],
            "underrun": 0, "overrun": 0, "discard": 0, "bursts": 0,
-           "speaker_rms": []}
+           "speaker_rms": [],
+           "stages": {}, "lag_p95": [], "lag_p99": [],
+           "local_pct": [], "m2e": [], "net": []}
 
     with open(path, "r", errors="replace") as handle:
         for line in handle:
@@ -108,6 +119,26 @@ def parse(path):
             if m:
                 row["rtt_p95"].append(float(m.group("p95")))
                 row["rtt_p99"].append(float(m.group("p99")))
+                continue
+
+            m = STAGES.search(line)
+            if m:
+                for name, p50, p95 in STAGE_ONE.findall(m.group("body")):
+                    row["stages"].setdefault(name, []).append(
+                        (float(p50), float(p95)))
+                continue
+
+            m = LAG.search(line)
+            if m:
+                row["lag_p95"].append(float(m.group("p95")))
+                row["lag_p99"].append(float(m.group("p99")))
+                continue
+
+            m = BUDGET.search(line)
+            if m:
+                row["local_pct"].append(float(m.group("pct")))
+                row["m2e"].append(float(m.group("m2e")))
+                row["net"].append(float(m.group("net")))
                 continue
 
             m = LEVELS.search(line)
@@ -180,6 +211,31 @@ def report(row):
              _fmt(_pct(row["buf"], .95), "ms"),
              _fmt(max(row["buf"]) if row["buf"] else None, "ms")))
     print()
+    if row["stages"]:
+        print("  PIPELINE  (this device only; p50 / p95 per frame)")
+        for name in ("encode", "seal", "queue", "decrypt", "decode", "play"):
+            samples = row["stages"].get(name)
+            if not samples:
+                continue
+            print("    %-10s       %6.1f / %-6.1f ms"
+                  % (name, _pct([a for a, _ in samples], .50) or 0,
+                     _pct([b for _, b in samples], .95) or 0))
+        print()
+    if row["lag_p95"]:
+        print("  EVENT LOOP  (slixmpp and media share one thread)")
+        print("    scheduling lag     p95 %s  p99 %s"
+              % (_fmt(_pct(row["lag_p95"], .50), "ms"),
+                 _fmt(_pct(row["lag_p99"], .50), "ms")))
+        print("    lag above ~20 ms means XMPP/crypto work on that loop is")
+        print("    delaying media, and it looks exactly like network jitter.")
+        print()
+    if row["local_pct"]:
+        print("  LATENCY BUDGET     <- the question this harness exists for")
+        print("    of the one-way figure, %s%% was produced locally"
+              % _fmt(_pct(row["local_pct"], .50)))
+        print("    network component  %s" % _fmt(_pct(row["net"], .50), "ms"))
+        print("    mouth-to-ear       %s" % _fmt(_pct(row["m2e"], .50), "ms"))
+        print()
     print("  AUDIO")
     print("    speaker rms        p50 %s   (above ~4000 is a comfortable "
           "call)" % _fmt(_pct(row["speaker_rms"], .50)))

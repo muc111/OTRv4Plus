@@ -1792,6 +1792,9 @@ class JitterBuffer:
         # deviation cannot distinguish a steadily late path from a punctual
         # one with a long tail, and only the second is worth buffering for.
         self.spacing = Percentiles()
+        #: Measured arrival-to-playout dwell per frame. This is the jitter
+        #: buffer's real contribution to mouth-to-ear delay.
+        self.dwell = Percentiles()
         self.stats = {"queued": 0, "late": 0, "duplicate": 0,
                       "overflow": 0, "gaps": 0, "drift": 0,
                       "underrun": 0, "burst_drain": 0}
@@ -1871,13 +1874,18 @@ class JitterBuffer:
                 # Playout is behind.  Drop the OLDEST rather than the newest:
                 # stale audio is worthless and keeping it only grows latency.
                 try:
-                    stale_seq, stale_pcm = self._heapq.heappop(self._heap)
+                    stale_seq, stale_pcm, _t = self._heapq.heappop(self._heap)
                     self._seqs.discard(stale_seq)
                     _wipe(stale_pcm)
                 except Exception:
                     pass
                 self.stats["overflow"] += 1
-            self._heapq.heappush(self._heap, (seq, pcm))
+            # Arrival time rides with the frame so dwell is measured per
+            # frame rather than inferred from depth. Depth times frame
+            # duration assumes playout is running exactly on time, and the
+            # moment that assumption breaks is precisely when the number
+            # matters.
+            self._heapq.heappush(self._heap, (seq, pcm, time.monotonic()))
             self._seqs.add(seq)
             self.stats["queued"] += 1
             return True
@@ -1928,15 +1936,16 @@ class JitterBuffer:
                 shed = max(1, -(-excess // self._drain_pops))
                 shed = min(shed, len(self._heap) - 1)
                 for _ in range(max(0, shed)):
-                    stale_seq, stale_pcm = self._heapq.heappop(self._heap)
+                    stale_seq, stale_pcm, _t = self._heapq.heappop(self._heap)
                     self._seqs.discard(stale_seq)
                     _wipe(stale_pcm)
                     self.stats["drift"] += 1
                 if shed > 1:
                     self.stats["burst_drain"] += 1
 
-            seq, pcm = self._heapq.heappop(self._heap)
+            seq, pcm, arrived = self._heapq.heappop(self._heap)
             self._seqs.discard(seq)
+            self.dwell.add((time.monotonic() - arrived) * 1000.0)
             gap = 0
             if self._last_played >= 0:
                 gap = max(0, seq - self._last_played - 1)
@@ -1967,7 +1976,7 @@ class JitterBuffer:
         with self._lock:
             while self._heap:
                 try:
-                    _, pcm = self._heapq.heappop(self._heap)
+                    _, pcm, _t = self._heapq.heappop(self._heap)
                     _wipe(pcm)
                 except Exception:
                     break
@@ -2067,6 +2076,58 @@ class Percentiles:
 
     def clear(self) -> None:
         self._samples.clear()
+
+
+class StageTimers:
+    """Per-stage pipeline timings, in milliseconds, with percentiles.
+
+    The question this exists to answer: a 700-1000 ms one-way reading is
+    either I2P or it is us, and the aggregate number cannot tell them apart.
+    The send stamp goes on right after Opus encode and is read right after
+    AEAD decrypt, so everything between -- seal, the hop to the event loop,
+    the wait for the loop to run the callback, sendto, I2P, receive, verify
+    -- is inside that one figure.
+
+    Timing every stage separately makes the split explicit. If `queue` is
+    300 ms then a third of the one-way delay is our own scheduling and no
+    amount of I2P tuning will touch it. If `queue` is 2 ms then the path
+    really is that slow and the only lever left is the jitter buffer.
+
+    Cheap enough for the real-time path: a monotonic read and a deque append
+    per stage per frame, at 16.7 frames/s.
+    """
+
+    #: Stages, in pipeline order.
+    NAMES = ("encode", "seal", "queue", "decrypt", "dwell", "decode", "play")
+
+    def __init__(self, window=256):
+        self.t = {name: Percentiles(window) for name in self.NAMES}
+
+    def record(self, name: str, seconds: float) -> None:
+        bucket = self.t.get(name)
+        if bucket is not None and seconds >= 0.0:
+            bucket.add(seconds * 1000.0)
+
+    def record_since(self, name: str, start: float) -> None:
+        self.record(name, time.monotonic() - start)
+
+    def summary(self) -> str:
+        parts = []
+        for name in self.NAMES:
+            bucket = self.t[name]
+            if len(bucket):
+                parts.append("%s %.1f/%.1f" % (name,
+                                               bucket.percentile(0.50),
+                                               bucket.percentile(0.95)))
+        return " ".join(parts) if parts else "no samples"
+
+    def local_send_ms(self, q=0.50) -> float:
+        """What the sender adds inside the one-way figure."""
+        return (self.t["seal"].percentile(q) + self.t["queue"].percentile(q))
+
+    def pipeline_ms(self, q=0.50) -> float:
+        """Everything this device adds, both directions, excluding network."""
+        return sum(self.t[n].percentile(q) for n in self.NAMES)
 
 
 class LatencyTracker:
@@ -2385,6 +2446,9 @@ class VoiceCallSession:
         self._dgram_send_addr = None     # (host, port) of the SAM UDP bridge
         self._dgram_send_header = None   # cached "3.0 <session> <dest>\n"
         self._foreign_warned = False
+        #: Pipeline stage timings. See StageTimers -- this is what separates
+        #: "I2P is slow" from "we are slow" inside the one-way figure.
+        self.stages = StageTimers()
         # Level control. Two devices on one call measured 4090 and 31226 for
         # the same microphone self-test, so the far end heard one of them as
         # a quiet, thin call regardless of the codec settings.
@@ -3191,11 +3255,13 @@ class VoiceCallSession:
             # Gain before Opus, not after: the encoder allocates bits by
             # what it is given, so encoding a -18 dBFS signal and amplifying
             # at the far end amplifies the coding noise with it.
+            _t_stage = time.monotonic()
             pcm = self._mic_gain.process(self._mic_comp.process(raw))
             opus_frame = None
             try:
                 opus_frame = bytearray(
                     self._opus_enc.encode(bytes(pcm), VOICE_FRAME_SAMPLES))
+                self.stages.record_since("encode", _t_stage)
                 _wipe(pcm)
                 padded = pad_opus(bytes(opus_frame),
                                   self.latency.call_ms(self._call_t0))
@@ -3271,8 +3337,10 @@ class VoiceCallSession:
         """Seal one padded frame and hand it to the event loop."""
         if padded is None:
             return
+        _t_seal = time.monotonic()
         try:
             packet = self._seal_frame(padded)
+            self.stages.record_since("seal", _t_seal)
         except FrameError as exc:
             # Counter exhaustion is unreachable in practice (2^62 frames) but
             # it is permanent when it happens: every later frame fails the
@@ -3334,6 +3402,12 @@ class VoiceCallSession:
         if self._writer is None and not self._datagram_ready():
             return
         if queued_at is not None:
+            # How long the frame waited between the capture thread handing it
+            # over and this callback running. This is event-loop scheduling
+            # delay, and it counts inside the reported one-way figure -- so a
+            # large value here means the one-way number is measuring us, not
+            # I2P.
+            self.stages.record_since("queue", queued_at)
             if (time.monotonic() - queued_at) > self._SEND_DEADLINE_S:
                 self.stats["stale"] += 1
                 return
@@ -3460,9 +3534,11 @@ class VoiceCallSession:
             sealed = bytes(buf[VOICE_HDR_LEN:VOICE_HDR_LEN + length])
             opus_frame = None
             pcm = None
+            _t_open = time.monotonic()
             try:
                 epoch, counter, plaintext, ftype = self.open_packet(
                     header, sealed)
+                self.stages.record_since("decrypt", _t_open)
                 del buf[:VOICE_HDR_LEN + length]
 
                 if ftype == FRAME_TYPE_PING:
@@ -3574,7 +3650,9 @@ class VoiceCallSession:
                 elif gap > 1:
                     recovered.extend(self._conceal(gap))
 
+                _t_dec = time.monotonic()
                 pcm = self._decode(opus_frame)
+                self.stages.record_since("decode", _t_dec)
                 if pcm is not None:
                     recovered.append(pcm)
 
@@ -3584,7 +3662,13 @@ class VoiceCallSession:
                         if playback is not None:
                             loud = self._speaker_gain.process(
                                 self._speaker_comp.process(chunk))
+                            _t_play = time.monotonic()
                             playback.write_frame(bytes(loud))
+                            # write_frame blocks against the device ring. A
+                            # p95 near the frame duration means playout is
+                            # device-paced and healthy; well above it means
+                            # the device is the bottleneck, not the network.
+                            self.stages.record_since("play", _t_play)
                     except _audio.AudioError as exc:
                         if exc.code == _audio.AUDIO_DEVICE_DISCONNECTED:
                             self._signal_stream_lost(
@@ -3942,6 +4026,9 @@ class VoiceCallManager:
 
     def __init__(self, xmpp_client, loop, sam_host="127.0.0.1", sam_port=7656):
         self.client = xmpp_client
+        #: Event-loop scheduling lag. See _loop_lag_monitor.
+        self.loop_lag = Percentiles(512)
+        self._lag_task = None
         self.loop = loop
         self.sam_host = sam_host
         self.sam_port = sam_port
@@ -4862,6 +4949,31 @@ class VoiceCallManager:
                                   session.jitter.stats["burst_drain"]))
                     self._vdbg(peer, "rtt: %s"
                                % session.latency.rtt_pct.summary())
+                    # The decomposition. p50/p95 per stage, in ms.
+                    self._vdbg(peer, "stages(p50/p95): %s"
+                               % session.stages.summary())
+                    self._vdbg(peer, "dwell: %s | loop lag: %s"
+                               % (session.jitter.dwell.summary(),
+                                  self.loop_lag.summary()))
+                    # The headline: how much of the reported one-way figure
+                    # this device produced rather than the network.
+                    oneway = session.latency.oneway_ms or 0.0
+                    local = session.stages.local_send_ms()
+                    if oneway > 0:
+                        self._vdbg(
+                            peer,
+                            "budget: one-way %.0fms = local send %.0fms + "
+                            "network %.0fms (%.0f%% local) | + dwell %.0fms "
+                            "+ playout %.0fms = mouth-to-ear ~%.0fms"
+                            % (oneway, local, max(0.0, oneway - local),
+                               100.0 * local / oneway,
+                               session.jitter.dwell.percentile(0.50),
+                               session.stages.t["decode"].percentile(0.50)
+                               + session.stages.t["play"].percentile(0.50),
+                               oneway
+                               + session.jitter.dwell.percentile(0.50)
+                               + session.stages.t["decode"].percentile(0.50)
+                               + session.stages.t["play"].percentile(0.50)))
                 except Exception:
                     pass
                 lat = session.latency
@@ -4885,6 +4997,37 @@ class VoiceCallManager:
         except Exception:
             pass
 
+    async def _loop_lag_monitor(self) -> None:
+        """Measure how late the shared event loop runs its own timers.
+
+        otrv4plus_xmpp hands this manager asyncio.get_event_loop() -- the same
+        loop slixmpp runs on. Media sendto, AEAD verify and decrypt for every
+        inbound frame, XMPP TLS and XML, OTR handling including ML-DSA-87
+        verification, and rekey key generation all execute on that one thread,
+        and the GIL means none of it overlaps.
+
+        So XMPP work delays media, and in the existing telemetry that is
+        indistinguishable from network jitter -- both show up as irregular
+        arrival spacing. Sleeping for a known interval and measuring the
+        overshoot separates them: lag here is ours, spacing minus lag is the
+        path's.
+
+        Ten samples a second, one timer each. Negligible against the media
+        work already on this loop, and it is the only way to tell a busy loop
+        from a slow network.
+        """
+        interval = 0.1
+        try:
+            while True:
+                start = time.monotonic()
+                await asyncio.sleep(interval)
+                overshoot = (time.monotonic() - start - interval) * 1000.0
+                self.loop_lag.add(max(0.0, overshoot))
+        except asyncio.CancelledError:
+            pass
+        except Exception:
+            pass
+
     def _start_stats(self, peer: str) -> None:
         if not self.debug:
             return
@@ -4892,6 +5035,10 @@ class VoiceCallManager:
         if task is None or task.done():
             self._stats_tasks[peer] = asyncio.ensure_future(
                 self._stats_loop(peer))
+        # One monitor for the loop, not one per call: it measures the loop,
+        # and there is only one of those.
+        if self._lag_task is None or self._lag_task.done():
+            self._lag_task = asyncio.ensure_future(self._loop_lag_monitor())
 
     def _handle_stream_lost(self, peer: str, call_id: bytes, why: str) -> None:
         """Media path died by itself.
@@ -4954,8 +5101,19 @@ class VoiceCallManager:
         else:
             _print("[voice] no active call")
 
+    def _stop_lag_monitor(self) -> None:
+        """Cancel the loop-lag monitor. Idempotent."""
+        task = self._lag_task
+        self._lag_task = None
+        if task is not None and not task.done():
+            try:
+                task.cancel()
+            except Exception:
+                pass
+
     async def cleanup(self) -> None:
         """End every call gracefully and destroy every media key."""
+        self._stop_lag_monitor()
         for peer in list(self._calls.keys()):
             try:
                 await self.end_call(peer, notify_peer=True)
@@ -4966,6 +5124,7 @@ class VoiceCallManager:
 
     def cleanup_sync(self) -> int:
         """Synchronous teardown for paths with no usable event loop."""
+        self._stop_lag_monitor()
         for peer in list(self._ringers):
             self._stop_ringing(peer)
         count = 0
