@@ -4431,6 +4431,17 @@ class VoiceCallManager:
                               session.jitter.depth(), VOICE_JITTER_MAX,
                               session.schedule.epoch,
                               session.latency.summary()))
+                # A call can run its whole length with rtt=- and oneway=-,
+                # which says only that no probe completed -- not whether the
+                # PINGs went out, whether they were answered, or whether the
+                # answers timed out. Those three are already tracked; printing
+                # them is what turns "no measurement" into a measurement.
+                lat = session.latency
+                if lat.sent and not lat.answered:
+                    self._vdbg(peer,
+                               "probes: %d sent, 0 answered, %d timed out — "
+                               "latency cannot be reported until one "
+                               "completes" % (lat.sent, lat.timed_out))
                 # 5000 // FRAME_MS, not (1000 // FRAME_MS) * 5: at 60 ms the
                 # latter truncates 16.67 to 16 and reports the expectation as
                 # 80 frames instead of 83.

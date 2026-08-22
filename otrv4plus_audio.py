@@ -240,6 +240,32 @@ AAUDIO_SHARING_MODE_SHARED = 1
 AAUDIO_PERFORMANCE_MODE_LOW_LATENCY = 12
 AAUDIO_INPUT_PRESET_VOICE_COMMUNICATION = 7
 AAUDIO_INPUT_PRESET_GENERIC = 1
+
+# Output attributes.  Android 9+ (API 28); absent setters are skipped.
+#
+# The capture stream asks for AAUDIO_INPUT_PRESET_VOICE_COMMUNICATION, which
+# switches on the platform echo canceller, AGC and noise suppression. An echo
+# canceller needs a REFERENCE: the signal being played, so it can subtract it
+# from what the microphone hears. Android pairs that reference with the voice
+# communication output stream.
+#
+# The playback stream used to declare no usage at all, so it defaulted to
+# AAUDIO_USAGE_MEDIA and the AEC had no reference to work from. Two things
+# follow, and both were observed on a live call:
+#
+#   * the call goes half duplex. With no reference the platform cannot tell
+#     the far end's speech coming out of the speaker from the near end's
+#     speech going into the microphone, so the suppressor gates the
+#     microphone whenever the speaker is active. One party talks, then the
+#     other -- never both.
+#   * playback lands on the media volume stream rather than the call one, so
+#     it is quiet and follows the wrong volume keys.
+#
+# Declaring VOICE_COMMUNICATION makes this stream the AEC reference and puts
+# it on the call stream, which is what a phone call is.
+AAUDIO_USAGE_MEDIA = 1
+AAUDIO_USAGE_VOICE_COMMUNICATION = 2
+AAUDIO_CONTENT_TYPE_SPEECH = 3
 AAUDIO_STREAM_STATE_STARTED = 5
 
 AAUDIO_ERROR_DISCONNECTED = -899       # the AAudio analogue of ERROR_DEAD_OBJECT
@@ -308,10 +334,11 @@ def _bind(lib) -> None:
         if f is not None:
             f.argtypes = [p, arg]
             f.restype = None
-    f = getattr(lib, "AAudioStreamBuilder_setInputPreset", None)
-    if f is not None:                  # Android 9+
-        f.argtypes = [p, i32]
-        f.restype = None
+    for fn in ("setInputPreset", "setUsage", "setContentType"):
+        f = getattr(lib, "AAudioStreamBuilder_" + fn, None)
+        if f is not None:              # Android 9+
+            f.argtypes = [p, i32]
+            f.restype = None
     lib.AAudioStreamBuilder_openStream.argtypes = [p, ctypes.POINTER(p)]
     lib.AAudioStreamBuilder_openStream.restype = i32
     lib.AAudioStreamBuilder_delete.argtypes = [p]
@@ -390,7 +417,8 @@ class AAudioStreamBase(AudioStream):
 
     name = "aaudio"
 
-    def __init__(self, direction: int, input_preset=None):
+    def __init__(self, direction: int, input_preset=None, usage=None,
+                 content_type=None):
         lib = _load_aaudio()
         if lib is None:
             raise AudioError(AUDIO_BACKEND_UNAVAILABLE, _LIB_ERROR or "no libaaudio")
@@ -420,9 +448,17 @@ class AAudioStreamBase(AudioStream):
             # enough that latency stays inside a conversation's tolerance.
             lib.AAudioStreamBuilder_setBufferCapacityInFrames(
                 builder, FRAME_SAMPLES * 4)
-            setter = getattr(lib, "AAudioStreamBuilder_setInputPreset", None)
-            if input_preset is not None and setter is not None and callable(setter):
-                setter(builder, input_preset)
+            for name, value in (("setInputPreset", input_preset),
+                                ("setUsage", usage),
+                                ("setContentType", content_type)):
+                if value is None:
+                    continue
+                setter = getattr(lib, "AAudioStreamBuilder_" + name, None)
+                if setter is not None and callable(setter):
+                    # Advisory on Android 9+, absent before it. A device that
+                    # ignores the hint still opens the stream, so this is
+                    # never worth failing over.
+                    setter(builder, value)
 
             stream = ctypes.c_void_p()
             rc = lib.AAudioStreamBuilder_openStream(builder,
@@ -619,13 +655,43 @@ class AAudioCapture(AAudioStreamBase):
                 pass
 
 
+def playback_usage() -> int:
+    """Which AAudio usage the playback stream declares.
+
+    VOICE_COMMUNICATION is right for a call: it makes this stream the echo
+    canceller's reference and puts it on the call volume stream.
+
+    ``OTRV4PLUS_AUDIO_USAGE=media`` restores the old MEDIA usage. Worth
+    keeping reachable because usage also drives routing, and a device that
+    routes voice communication to the earpiece will sound quieter held away
+    from the ear -- on such a device the media stream plus no echo canceller
+    may genuinely be the better trade.
+    """
+    if os.environ.get("OTRV4PLUS_AUDIO_USAGE", "").strip().lower() == "media":
+        return AAUDIO_USAGE_MEDIA
+    return AAUDIO_USAGE_VOICE_COMMUNICATION
+
+
 class AAudioPlayback(AAudioStreamBase):
-    """Speaker playback.  Replaces pacat, and AudioTrack's role."""
+    """Speaker playback.  Replaces pacat, and AudioTrack's role.
+
+    Declares VOICE_COMMUNICATION usage and SPEECH content.  Without a usage
+    the stream defaulted to MEDIA, which left the platform echo canceller
+    with no reference signal: the capture side asks for the
+    VOICE_COMMUNICATION input preset, which turns on AEC, AGC and noise
+    suppression, and an AEC with nothing to subtract gates the microphone
+    whenever the speaker is active.  On a live call that presented as a
+    half-duplex conversation -- one party audible at a time -- with playback
+    also stuck on the media volume keys.
+    """
 
     direction = "output"
 
     def __init__(self):
-        super().__init__(AAUDIO_DIRECTION_OUTPUT, None)
+        self.usage = playback_usage()
+        super().__init__(AAUDIO_DIRECTION_OUTPUT, None,
+                         usage=self.usage,
+                         content_type=AAUDIO_CONTENT_TYPE_SPEECH)
         # Playback runs the conversion the other way: the pipeline produces
         # 16 kHz and the device may want 48 kHz.
         self._resampler = Resampler(SAMPLE_RATE, self.device_rate, 1)
