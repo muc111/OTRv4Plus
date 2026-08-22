@@ -160,6 +160,7 @@ import hashlib
 import hmac
 import os
 import secrets
+import socket as _socket
 import struct
 import threading
 import time
@@ -529,6 +530,40 @@ VOICE_JITTER_MAX = max(4, VOICE_JITTER_MAX_MS // VOICE_FRAME_MS)
 VOICE_JITTER_DRIFT_HIGH = max(VOICE_JITTER_PREFILL + 1,
                               VOICE_JITTER_DRIFT_HIGH_MS // VOICE_FRAME_MS)
 VOICE_JITTER_LATE_TOLERANCE = 2     # frames older than this are discarded
+
+#: Bytes of kernel send buffer to allow on the media socket.
+#:
+#: This is the queue that actually caused a live call to run 24 seconds
+#: behind.  The SAM bridge is a loopback TCP connection, and Linux autotunes
+#: a loopback socket's send buffer up to net.ipv4.tcp_wmem[2] -- 4 MiB on a
+#: stock Android kernel.  At 199 bytes per frame that is over twenty thousand
+#: frames, i.e. about twenty minutes of audio the kernel will accept without
+#: ever telling us, while asyncio's own write buffer reads as empty and every
+#: backpressure check we make passes.  i2pd applies real backpressure at the
+#: far end (SAMSocket does not re-arm its read until the stream has taken the
+#: previous chunk), so the buffer fills and simply stays full.
+#:
+#: Calling setsockopt at all disables autotuning and pins the value.  The
+#: kernel enforces a floor (SOCK_MIN_SNDBUF, ~4.6 KiB) and doubles what is
+#: asked for, so the effective floor is a little over a second of audio; that
+#: is the tightest bound available without leaving SOCK_STREAM behind.
+VOICE_SEND_BUFFER_BYTES = VOICE_PACKET_LEN * 8
+
+
+def limit_media_send_buffer(sock) -> int:
+    """Pin the media socket's kernel send buffer small.  Returns the result.
+
+    Best-effort: a platform that refuses SO_SNDBUF leaves the socket usable,
+    just bloated, so this never raises.  The returned size is what the kernel
+    actually granted, which is what the caller should log -- asking for 1592
+    bytes and being given 4608 is normal and worth seeing.
+    """
+    try:
+        sock.setsockopt(_socket.SOL_SOCKET, _socket.SO_SNDBUF,
+                        VOICE_SEND_BUFFER_BYTES)
+        return sock.getsockopt(_socket.SOL_SOCKET, _socket.SO_SNDBUF)
+    except Exception:
+        return -1
 
 VOICE_REKEY_SECONDS = 120
 VOICE_REKEY_TIMEOUT = 45
@@ -1969,7 +2004,8 @@ class VoiceCallSession:
 
         self.stats = {"sent": 0, "recv": 0, "dropped": 0, "late": 0,
                       "oversize": 0, "backpressure": 0, "auth_fail": 0,
-                      "replay": 0, "resync": 0, "fec_recovered": 0}
+                      "replay": 0, "resync": 0, "fec_recovered": 0,
+                      "stale": 0}
 
     # -- state machine ----------------------------------------------------
 
@@ -2247,6 +2283,7 @@ class VoiceCallSession:
                 # frame boundary is wrong.
                 sam_read_line(sock, SAM_ACCEPT_TIMEOUT)
                 sock.settimeout(None)
+                limit_media_send_buffer(sock)
                 sock.setblocking(False)
                 return sock
             except Exception:
@@ -2281,6 +2318,7 @@ class VoiceCallSession:
                 sam_parse(sam_read_line(sock, SAM_CONNECT_TIMEOUT),
                           "STREAM STATUS ")
                 sock.settimeout(None)
+                limit_media_send_buffer(sock)
                 sock.setblocking(False)
                 return sock
             except Exception:
@@ -2589,7 +2627,10 @@ class VoiceCallSession:
         except Exception:
             return
         try:
-            self.loop.call_soon_threadsafe(self._write_packet, packet)
+            # Probes are exempt from the staleness deadline below: they are
+            # rare, and a probe that waited in the queue is measuring exactly
+            # the delay we want reported.
+            self.loop.call_soon_threadsafe(self._write_packet, packet, None)
         except Exception:
             pass
 
@@ -2625,12 +2666,22 @@ class VoiceCallSession:
             return
         if packet is None:
             return
-        self.loop.call_soon_threadsafe(self._write_packet, packet)
+        self.loop.call_soon_threadsafe(self._write_packet, packet,
+                                       time.monotonic())
 
-    # asyncio buffers writes without limit.  For real-time audio a backlog is
-    # worthless — by the time it drains the audio is stale — so transmission
-    # is bounded and excess frames are discarded rather than queued.
-    _MAX_WRITE_BACKLOG = VOICE_PACKET_LEN * 50
+    # Every queue between here and the peer's speaker has to be bounded in
+    # TIME, because audio that arrives late is not late audio, it is noise.
+    #
+    # This one is asyncio's write buffer.  50 packets is 3 s at 60 ms — long
+    # enough that a call could sound three seconds behind purely on our own
+    # backlog.  8 packets is ~480 ms, which is the same order as the jitter
+    # buffer's own ceiling and therefore the most that can be useful.
+    _MAX_WRITE_BACKLOG = VOICE_PACKET_LEN * 8
+
+    #: A frame still unwritten this long after capture is discarded rather
+    #: than transmitted.  It bounds the queue that call_soon_threadsafe builds
+    #: when the event loop is busy, independently of any socket buffer.
+    _SEND_DEADLINE_S = 0.25
 
     def _signal_stream_lost(self, why: str) -> None:
         """Report a media failure exactly once, on the loop."""
@@ -2646,10 +2697,21 @@ class VoiceCallSession:
         except Exception:
             pass
 
-    def _write_packet(self, packet: bytes) -> None:
-        """Write one framed packet.  Event-loop thread only."""
+    def _write_packet(self, packet: bytes, queued_at=None) -> None:
+        """Write one framed packet.  Event-loop thread only.
+
+        ``queued_at`` is the ``time.monotonic()`` reading taken when the
+        capture thread handed this frame over.  A frame that has been waiting
+        longer than ``_SEND_DEADLINE_S`` is dropped: transmitting it would
+        push a fresher frame further behind, and it is already too late to be
+        played in sequence.  Pass ``None`` to exempt a frame (probes).
+        """
         if not self._running or self._writer is None:
             return
+        if queued_at is not None:
+            if (time.monotonic() - queued_at) > self._SEND_DEADLINE_S:
+                self.stats["stale"] += 1
+                return
         try:
             if self._writer.is_closing():
                 return
@@ -2924,7 +2986,7 @@ class VoiceCallSession:
         audio = self.audio_backend or "-"
         return ("state=%s role=%s audio=%s %s keys=%s epoch=%d pending=%s sent=%d "
                 "recv=%d dropped=%d late=%d authfail=%d replay=%d resync=%d "
-                "backpressure=%d oversize=%d fec=%d "
+                "backpressure=%d stale=%d oversize=%d fec=%d "
                 "jitter=%d/%d (%.0fms) %s ratchets=%d rekeys=%d/%d"
                 % (self.state, self.role, audio, rate,
                    "confirmed" if self.keys_confirmed.is_set() else "pending",
@@ -2933,7 +2995,8 @@ class VoiceCallSession:
                    self.stats["dropped"], self.stats["late"],
                    self.stats["auth_fail"], self.stats["replay"],
                    self.stats["resync"],
-                   self.stats["backpressure"], self.stats["oversize"],
+                   self.stats["backpressure"], self.stats["stale"],
+                   self.stats["oversize"],
                    self.stats["fec_recovered"],
                    self.jitter.depth(), self.jitter.target_depth,
                    self.jitter.jitter_ms, self.latency.summary(),
@@ -4041,15 +4104,29 @@ class VoiceCallManager:
                 cur = session.stats
                 delta = {k: cur.get(k, 0) - last.get(k, 0) for k in cur}
                 last = dict(cur)
-                self._vdbg(peer, "5s: tx=%d rx=%d drop=%d late=%d authfail=%d "
-                           "replay=%d jitter=%d/%d epoch=%d %s"
+                # backpressure and stale are the two counters that tell a
+                # congested path apart from a lossy one: a path that is simply
+                # dropping shows rx far below tx with both at zero, whereas a
+                # path whose queues are full shows them climbing while rx
+                # arrives in bursts. Without them in this line the two look
+                # identical, which is how a 24-second send queue went
+                # undiagnosed across several calls.
+                self._vdbg(peer, "5s: tx=%d rx=%d drop=%d bp=%d stale=%d "
+                           "late=%d authfail=%d replay=%d jitter=%d/%d "
+                           "epoch=%d %s"
                            % (delta.get("sent", 0), delta.get("recv", 0),
-                              delta.get("dropped", 0), delta.get("late", 0),
+                              delta.get("dropped", 0),
+                              delta.get("backpressure", 0),
+                              delta.get("stale", 0),
+                              delta.get("late", 0),
                               delta.get("auth_fail", 0), delta.get("replay", 0),
                               session.jitter.depth(), VOICE_JITTER_MAX,
                               session.schedule.epoch,
                               session.latency.summary()))
-                expect = 1000 // VOICE_FRAME_MS * 5
+                # 5000 // FRAME_MS, not (1000 // FRAME_MS) * 5: at 60 ms the
+                # latter truncates 16.67 to 16 and reports the expectation as
+                # 80 frames instead of 83.
+                expect = 5000 // VOICE_FRAME_MS
                 if delta.get("recv", 0) == 0:
                     self._vdbg(peer, "WARNING: no audio received in 5 s")
                 elif delta.get("recv", 0) < expect // 2:
