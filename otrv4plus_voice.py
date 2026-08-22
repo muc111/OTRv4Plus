@@ -565,6 +565,105 @@ def limit_media_send_buffer(sock) -> int:
     except Exception:
         return -1
 
+# ── Media transport selection ────────────────────────────────────────────────
+#
+# Media used to ride the same SAM STYLE=STREAM connection as everything else.
+# That is a reliable, ordered, retransmitting transport, and for real-time
+# audio those three properties are defects rather than features: congestion
+# cannot show up as loss, so it shows up as unbounded delay instead.
+#
+# Measured on a live call, with drop=0/late=0/authfail=0 throughout:
+#
+#   * one 5 s window received 381 frames against the ~83 sent in it -- a
+#     stream unblocking after a stall, not a network recovering
+#   * one-way delay reached 24 s and RTT 22 s
+#   * recovery was a clean monotonic decay (19320 -> 17344 -> 12697 -> 8018
+#     -> 3666 -> 1472 ms over ~30 s), which is a standing queue draining at a
+#     constant rate
+#   * in between, the same path sustained rtt=1269ms oneway=536ms rx=83/83
+#
+# i2pd fixes INITIAL_RTO at 9000 ms at compile time (libi2pd/Streaming.h) and
+# exposes no I2CP or SAM knob for it, so a single lost segment stalls every
+# frame behind it for nine seconds no matter how the sender is tuned. Bounding
+# our own queues (see _SEND_DEADLINE_S) caps the damage; it cannot remove
+# head-of-line blocking, because the blocking is not in a queue we own.
+#
+# Datagrams remove it at the source: no retransmission, no ordering guarantee,
+# no window. Loss stays loss, which is exactly what Opus concealment and the
+# sequence-aware jitter buffer are already built to absorb.
+#
+# The wire format needs no change. Every media packet is already
+# self-contained -- VOICE_SYNC, an authenticated header carrying epoch,
+# counter, length and type, then the sealed body -- and every property that
+# made it safe over a stream (AEAD authentication, per-epoch replay windows,
+# sequence-aware reordering) is exactly what a datagram transport requires.
+VOICE_TRANSPORT_DATAGRAM = "datagram"
+VOICE_TRANSPORT_STREAM = "stream"
+
+#: UDP port the SAM bridge listens on for outbound datagrams. i2pd's default
+#: is 7655 (sam.udpport); a router that moved it needs this overridden.
+SAM_UDP_PORT = 7655
+
+#: Largest forwarded datagram we will read. A media packet is 199 bytes; the
+#: SAM forwarding header prepends the sender's base64 destination, which is
+#: ~520 bytes for an Ed25519 destination. 4 KiB is generous for both and still
+#: refuses anything that could only be an attempt to make us allocate.
+SAM_DATAGRAM_MAX = 4096
+
+
+def voice_transport_mode() -> str:
+    """Which media transport to use.  Datagram unless explicitly overridden.
+
+    ``OTRV4PLUS_VOICE_TRANSPORT=stream`` restores the old behaviour, which is
+    worth keeping reachable: a router with SAM UDP disabled cannot do
+    datagrams at all, and the stream path is the one with years of use behind
+    it.
+    """
+    choice = os.environ.get("OTRV4PLUS_VOICE_TRANSPORT", "").strip().lower()
+    if choice == VOICE_TRANSPORT_STREAM:
+        return VOICE_TRANSPORT_STREAM
+    return VOICE_TRANSPORT_DATAGRAM
+
+
+def sam_udp_port() -> int:
+    """SAM bridge UDP port, overridable for a router that moved it."""
+    raw = os.environ.get("OTRV4PLUS_SAM_UDP_PORT", "").strip()
+    if raw.isdigit():
+        port = int(raw)
+        if 1 <= port <= 65535:
+            return port
+    return SAM_UDP_PORT
+
+
+def build_datagram_send_header(session_id: str, peer_dest: str) -> bytes:
+    """SAM v3 datagram send header: ``3.0 <session> <destination>\n``.
+
+    The payload follows immediately with no length prefix -- the UDP datagram
+    boundary is the frame boundary, which is the entire point of moving here.
+    """
+    return ("3.0 %s %s\n" % (session_id, peer_dest)).encode("ascii")
+
+
+def split_datagram_receive(data: bytes):
+    """Split a forwarded SAM datagram into (source_destination, payload).
+
+    A repliable datagram arrives as ``<base64 destination>\n<payload>``.
+    Returns (None, data) if there is no header, so a router configured for RAW
+    forwarding still delivers audio -- the payload authenticates either way,
+    and the destination is only ever used as a cheap pre-AEAD filter.
+    """
+    idx = data.find(b"\n")
+    if idx <= 0:
+        return None, data
+    head = data[:idx]
+    try:
+        source = head.decode("ascii")
+    except Exception:
+        return None, data
+    if len(source) < 64 or any(c.isspace() for c in source):
+        return None, data
+    return source, data[idx + 1:]
+
 VOICE_REKEY_SECONDS = 120
 VOICE_REKEY_TIMEOUT = 45
 
@@ -1971,6 +2070,11 @@ class VoiceCallSession:
 
         self._sam_control = None
         self._sam_session_id = None
+        self._transport_mode = voice_transport_mode()
+        self._dgram_sock = None          # our bound UDP receive socket
+        self._dgram_transport = None     # asyncio datagram transport
+        self._dgram_send_addr = None     # (host, port) of the SAM UDP bridge
+        self._dgram_send_header = None   # cached "3.0 <session> <dest>\n"
         self._our_dest = None
         self._media_sock = None
         self._accept_sock = None
@@ -2230,14 +2334,39 @@ class VoiceCallSession:
         if not all((sam_open, sam_read_line, sam_parse)):
             raise RuntimeError("SAM helpers not bound — call bind_host()")
 
+        # In datagram mode the router forwards inbound datagrams to a UDP
+        # port of our choosing, so the socket has to exist -- and its port be
+        # known -- before SESSION CREATE is sent.
+        forward_port = 0
+        if self._transport_mode == VOICE_TRANSPORT_DATAGRAM:
+            try:
+                forward_port = self._bind_datagram_socket()
+            except Exception as exc:
+                _print("[voice] datagram transport unavailable (%s); "
+                       "falling back to the stream transport"
+                       % _san(str(exc), 120))
+                self._transport_mode = VOICE_TRANSPORT_STREAM
+
         def _create():
             ctrl = sam_open(self.sam_host, self.sam_port, SAM_HELLO_TIMEOUT)
             try:
                 session_id = "otrv4voice_%s" % secrets.token_hex(6)
-                ctrl.sendall(
-                    ("SESSION CREATE STYLE=STREAM ID=%s "
-                     "DESTINATION=TRANSIENT SIGNATURE_TYPE=7\n"
-                     % session_id).encode("ascii"))
+                if self._transport_mode == VOICE_TRANSPORT_DATAGRAM:
+                    # STYLE=DATAGRAM is repliable: the sender's destination
+                    # arrives with every packet, which gives a cheap pre-AEAD
+                    # filter and lets the initiator learn the callee's
+                    # destination without extra signalling. PORT/HOST ask the
+                    # router to forward inbound datagrams straight to us
+                    # rather than multiplexing them onto the control socket.
+                    create = ("SESSION CREATE STYLE=DATAGRAM ID=%s "
+                              "DESTINATION=TRANSIENT SIGNATURE_TYPE=7 "
+                              "PORT=%d HOST=127.0.0.1\n"
+                              % (session_id, forward_port))
+                else:
+                    create = ("SESSION CREATE STYLE=STREAM ID=%s "
+                              "DESTINATION=TRANSIENT SIGNATURE_TYPE=7\n"
+                              % session_id)
+                ctrl.sendall(create.encode("ascii"))
                 # i2pd builds a full tunnel set before answering, so this is
                 # minutes rather than seconds on a busy phone.
                 fields = sam_parse(sam_read_line(ctrl, SAM_SESSION_TIMEOUT),
@@ -2258,8 +2387,122 @@ class VoiceCallSession:
             await self.loop.run_in_executor(None, _create))
         return self._our_dest
 
+    # -- datagram transport ------------------------------------------------
+
+    def _bind_datagram_socket(self) -> int:
+        """Bind the UDP socket the router will forward our media to.
+
+        Returns the port, which SESSION CREATE has to carry.  Bound to
+        loopback only: this socket accepts anything the host can send it, and
+        the AEAD is the only thing standing behind it, so it must not be
+        reachable off the device.
+        """
+        sock = _socket.socket(_socket.AF_INET, _socket.SOCK_DGRAM)
+        try:
+            sock.bind(("127.0.0.1", 0))
+            sock.setblocking(False)
+        except Exception:
+            try:
+                sock.close()
+            except Exception:
+                pass
+            raise
+        self._dgram_sock = sock
+        return sock.getsockname()[1]
+
+    def _datagram_ready(self) -> bool:
+        return (self._transport_mode == VOICE_TRANSPORT_DATAGRAM
+                and self._dgram_transport is not None)
+
+    async def open_datagram_endpoint(self) -> None:
+        """Attach the bound UDP socket to the event loop and arm sending."""
+        if self._transport_mode != VOICE_TRANSPORT_DATAGRAM:
+            return
+        if self._dgram_sock is None:
+            raise RuntimeError("datagram socket was never bound")
+
+        session = self
+
+        class _MediaDatagramProtocol(asyncio.DatagramProtocol):
+            def datagram_received(self, data, addr):
+                session._on_datagram(data)
+
+            def error_received(self, exc):
+                # ICMP port-unreachable from the SAM bridge arrives here.  It
+                # is per-packet and recoverable, so it must not tear the call
+                # down; the stats already show the result as silence.
+                session.stats["dropped"] += 1
+
+        transport, _proto = await self.loop.create_datagram_endpoint(
+            _MediaDatagramProtocol, sock=self._dgram_sock)
+        self._dgram_transport = transport
+        self._dgram_send_addr = (self.sam_host, sam_udp_port())
+        self._refresh_datagram_header()
+
+    def _refresh_datagram_header(self) -> None:
+        """Cache the SAM send header once the peer destination is known."""
+        if self._sam_session_id and self._peer_dest:
+            self._dgram_send_header = build_datagram_send_header(
+                self._sam_session_id, self._peer_dest)
+        else:
+            self._dgram_send_header = None
+
+    def _on_datagram(self, data: bytes) -> None:
+        """One forwarded SAM datagram -> AEAD -> jitter buffer.
+
+        A datagram boundary is a frame boundary, so unlike the stream path
+        there is no reassembly and no resynchronisation across packets: a
+        corrupt datagram costs exactly itself.
+        """
+        if not self._running:
+            return
+        source, payload = split_datagram_receive(data)
+        if not payload:
+            return
+        # Cheap pre-AEAD filter.  Not a security boundary -- the AEAD is --
+        # but it keeps an unrelated sender from reaching the cipher at all.
+        if (source is not None and self._peer_dest
+                and source != self._peer_dest):
+            self.stats["dropped"] += 1
+            return
+        before = self.stats["recv"]
+        buf = bytearray(payload)
+        try:
+            self._drain_buffer(buf)
+        except Exception:
+            self.stats["dropped"] += 1
+        finally:
+            _wipe(buf)
+        # The initiator never learns the callee's destination from signalling:
+        # it published one and waited to be connected to.  Latching it from
+        # the first datagram that actually authenticates is safe -- an
+        # attacker cannot produce one -- and saves a signalling round trip.
+        if (source is not None and self._peer_dest is None
+                and self.stats["recv"] > before):
+            self._peer_dest = source
+            self._refresh_datagram_header()
+
+    def _send_datagram(self, packet: bytes) -> bool:
+        """Send one media packet through the SAM UDP bridge."""
+        header = self._dgram_send_header
+        if header is None or self._dgram_transport is None:
+            return False
+        try:
+            self._dgram_transport.sendto(header + packet,
+                                         self._dgram_send_addr)
+            return True
+        except Exception:
+            return False
+
     async def accept_media_stream(self) -> None:
         """Park in STREAM ACCEPT until the peer connects (initiator role)."""
+        if self._transport_mode == VOICE_TRANSPORT_DATAGRAM:
+            # Nothing to accept: datagrams need no connection.  The initiator
+            # cannot send until the callee's first packet arrives and
+            # _on_datagram latches its destination, which happens within one
+            # frame of the callee starting audio.
+            await self.open_datagram_endpoint()
+            return
         sam_open = _HOST["sam_open"]
         sam_read_line = _HOST["sam_read_line"]
         sam_parse = _HOST["sam_parse"]
@@ -2305,6 +2548,10 @@ class VoiceCallSession:
         """STREAM CONNECT to the initiator's destination (responder role)."""
         if not peer_dest or len(peer_dest) < 64:
             raise RuntimeError("peer destination missing or implausibly short")
+        if self._transport_mode == VOICE_TRANSPORT_DATAGRAM:
+            self._peer_dest = peer_dest
+            await self.open_datagram_endpoint()
+            return
         sam_open = _HOST["sam_open"]
         sam_read_line = _HOST["sam_read_line"]
         sam_parse = _HOST["sam_parse"]
@@ -2376,6 +2623,15 @@ class VoiceCallSession:
         _print("[voice] codec: Opus %d Hz mono, %d ms frames, %d kbit/s %s"
                % (VOICE_SAMPLE_RATE, VOICE_FRAME_MS, VOICE_BITRATE // 1000,
                   "CBR" if self.constant_rate else "VBR"))
+        if self._transport_mode == VOICE_TRANSPORT_DATAGRAM:
+            _print("[voice] transport: I2P datagrams — no retransmission, so "
+                   "congestion arrives as loss (concealed) rather than as "
+                   "delay that accumulates.")
+        else:
+            _print("[voice] transport: I2P streams — reliable and ordered, so "
+                   "a lost segment stalls everything behind it for one 9 s "
+                   "retransmit timeout. Unset OTRV4PLUS_VOICE_TRANSPORT for "
+                   "datagrams.")
         if self.constant_rate:
             _print("[voice] application-layer constant-rate shaping active — "
                    "packet size and timing carry no speech information. Call "
@@ -2448,7 +2704,7 @@ class VoiceCallSession:
         single check that makes "no audio before confirmation" structural
         rather than a property of the call ordering.
         """
-        if self._writer is None:
+        if self._writer is None and not self._datagram_ready():
             raise RuntimeError("media stream not established")
         if not self.schedule.ready:
             raise RuntimeError("refusing to start audio: no media keys")
@@ -2472,7 +2728,8 @@ class VoiceCallSession:
         self._playback_thread = threading.Thread(
             target=self._playback_worker, name="voice-playback", daemon=True)
         self._playback_thread.start()
-        self._reader_task = asyncio.ensure_future(self._network_reader())
+        if self._writer is not None:
+            self._reader_task = asyncio.ensure_future(self._network_reader())
 
     # -- capture ----------------------------------------------------------
 
@@ -2706,12 +2963,26 @@ class VoiceCallSession:
         push a fresher frame further behind, and it is already too late to be
         played in sequence.  Pass ``None`` to exempt a frame (probes).
         """
-        if not self._running or self._writer is None:
+        if not self._running:
+            return
+        if self._writer is None and not self._datagram_ready():
             return
         if queued_at is not None:
             if (time.monotonic() - queued_at) > self._SEND_DEADLINE_S:
                 self.stats["stale"] += 1
                 return
+        if self._datagram_ready():
+            if self._dgram_send_header is None:
+                # Initiator, still waiting to learn the callee's destination.
+                # Counted rather than silently discarded so a peer that never
+                # sends is visible in the stats rather than looking like loss.
+                self.stats["backpressure"] += 1
+                return
+            if self._send_datagram(packet):
+                self.stats["sent"] += 1
+            else:
+                self.stats["dropped"] += 1
+            return
         try:
             if self._writer.is_closing():
                 return
@@ -2983,12 +3254,14 @@ class VoiceCallSession:
             cipher = self.schedule.cipher_for_send()
             ratchets = getattr(cipher, "ratchet_steps", 0)
         rate = "constant-rate" if self.constant_rate else "VARIABLE-RATE"
+        transport = self._transport_mode
         audio = self.audio_backend or "-"
-        return ("state=%s role=%s audio=%s %s keys=%s epoch=%d pending=%s sent=%d "
+        return ("state=%s role=%s audio=%s %s transport=%s keys=%s epoch=%d "
+                "pending=%s sent=%d "
                 "recv=%d dropped=%d late=%d authfail=%d replay=%d resync=%d "
                 "backpressure=%d stale=%d oversize=%d fec=%d "
                 "jitter=%d/%d (%.0fms) %s ratchets=%d rekeys=%d/%d"
-                % (self.state, self.role, audio, rate,
+                % (self.state, self.role, audio, rate, transport,
                    "confirmed" if self.keys_confirmed.is_set() else "pending",
                    epoch, "-" if pending is None else pending,
                    self.stats["sent"], self.stats["recv"],
@@ -3025,6 +3298,23 @@ class VoiceCallSession:
             except Exception:
                 pass
             setattr(self, name, None)
+
+        dgram = getattr(self, "_dgram_transport", None)
+        if dgram is not None:
+            try:
+                dgram.close()
+            except Exception:
+                pass
+        self._dgram_transport = None
+        self._dgram_send_header = None
+        # create_datagram_endpoint takes ownership of the socket and closes it
+        # with the transport; closing it again here would hit an unrelated fd.
+        if getattr(self, "_dgram_sock", None) is not None and dgram is None:
+            try:
+                self._dgram_sock.close()
+            except Exception:
+                pass
+        self._dgram_sock = None
 
         release = _HOST["sam_release"]
         for name in ("_accept_sock", "_media_sock", "_sam_control"):
@@ -3126,7 +3416,21 @@ class VoiceCallSession:
         except Exception:
             pass
 
-        # 6. Close the media stream, then the SAM session.
+        # 6. Close the media transport, then the SAM session.
+        if self._dgram_transport is not None:
+            try:
+                self._dgram_transport.close()
+            except Exception:
+                pass
+            self._dgram_transport = None
+            self._dgram_sock = None       # closed with the transport
+        elif self._dgram_sock is not None:
+            try:
+                self._dgram_sock.close()
+            except Exception:
+                pass
+            self._dgram_sock = None
+        self._dgram_send_header = None
         if self._writer is not None:
             try:
                 self._writer.close()
@@ -3557,10 +3861,14 @@ class VoiceCallManager:
         return True
 
     async def _await_media(self, peer: str, session) -> None:
-        """Initiator side: block in STREAM ACCEPT, then start audio.
+        """Initiator side: bring the media transport up, then start audio.
 
-        The media stream can come up before the ACCEPT has been processed, so
-        this waits for mutual key confirmation before any audio starts.
+        On the stream transport this blocks in STREAM ACCEPT.  On datagrams
+        there is nothing to accept, so it returns at once and the session
+        simply cannot send until the callee's first packet authenticates and
+        its destination is latched.  Either way the media path can come up
+        before the ACCEPT has been processed, so this waits for mutual key
+        confirmation before any audio starts.
         """
         try:
             await session.accept_media_stream()

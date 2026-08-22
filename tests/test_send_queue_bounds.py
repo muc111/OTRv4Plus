@@ -102,6 +102,9 @@ def _session_stub(buffered=0):
     session = object.__new__(voice.VoiceCallSession)
     session._running = True
     session._writer = _FakeWriter(buffered)
+    session._transport_mode = voice.VOICE_TRANSPORT_STREAM
+    session._dgram_transport = None
+    session._dgram_send_header = None
     session.stats = {"sent": 0, "dropped": 0, "backpressure": 0, "stale": 0}
     return session
 
