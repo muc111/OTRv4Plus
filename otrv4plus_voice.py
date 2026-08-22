@@ -167,6 +167,31 @@ import time
 
 import otrv4plus_audio as _audio
 
+
+def _env_int(name: str, default: int, lo: int, hi: int) -> int:
+    """Read an integer override, ignoring anything outside its safe range."""
+    raw = os.environ.get(name, "").strip()
+    if raw.isdigit():
+        value = int(raw)
+        if lo <= value <= hi:
+            return value
+    return default
+
+
+def _env_ms(name: str, default_ms: int, lo: int, hi: int) -> int:
+    """Read a millisecond override, ignoring anything implausible.
+
+    Out-of-range and non-numeric values fall back to the default rather than
+    raising: a typo in an environment variable must not stop a call, and a
+    silently clamped value would be worse than an ignored one.
+    """
+    raw = os.environ.get(name, "").strip()
+    if raw.isdigit():
+        value = int(raw)
+        if lo <= value <= hi:
+            return value
+    return default_ms
+
 # ---------------------------------------------------------------------------
 # Host bindings
 # ---------------------------------------------------------------------------
@@ -431,15 +456,15 @@ FRAME_INTERVAL_S = VOICE_FRAME_MS / 1000.0
 #
 # 60 ms at 24 kbit/s is 180 bytes nominal, 225 at the VBR peak, so the slot
 # below had to grow with it. The import-time check enforces the relationship.
-VOICE_BITRATE = 24000
+VOICE_BITRATE = _env_int("OTRV4PLUS_OPUS_BITRATE", 24000, 6000, 64000)
 # 8 rather than 5: the extra CPU is affordable at 16.7 frames/s on aarch64 and
 # buys audible quality, which matters more here than on a low-latency path.
-VOICE_COMPLEXITY = 8
+VOICE_COMPLEXITY = _env_int("OTRV4PLUS_OPUS_COMPLEXITY", 8, 0, 10)
 # In-band FEC repairs a ONE-frame gap only; longer gaps fall through to
 # concealment. The observed failure mode is multi-second starvation, which
 # FEC cannot touch, so 20% of the bitrate was being spent on redundancy that
 # never applied. 5% keeps single-frame repair, which does work.
-VOICE_LOSS_PCT = 5
+VOICE_LOSS_PCT = _env_int("OTRV4PLUS_OPUS_FEC_PCT", 5, 0, 50)
 
 # Constant-rate shaping.  Opus at 16 kbit/s and 60 ms is exactly 120 bytes in
 # CBR; the slot is sized for the VBR peak so a build that refuses vbr=0
@@ -451,10 +476,26 @@ VOICE_LOSS_PCT = 5
 # 16 kbit/s at 60 ms is 120 bytes, exactly filling the remaining 152 slot
 # minus VBR headroom.
 VOICE_TS_LEN = 8
-# Sized for the VBR peak at VOICE_BITRATE and VOICE_FRAME_MS, plus margin.
-# This is a WIRE FORMAT constant: it sets VOICE_PLAIN_LEN and so the packet
-# length, and two peers with different values reject each other's frames.
-VOICE_OPUS_SLOT = 232
+# DERIVED from VOICE_BITRATE and VOICE_FRAME_MS, not hand-set.
+#
+# A hand-set literal was safe only while both were literals too. Now that
+# either can be overridden for benchmarking, a fixed slot would silently
+# either waste bandwidth or -- far worse -- be too small, in which case
+# pad_opus returns None, the capture worker substitutes silence, and the call
+# connects, reports healthy and carries no audio.
+#
+# Nominal bytes per frame is bitrate * ms / 8000; the 5/4 covers the VBR peak
+# a build that refuses vbr=0 will produce; rounding to 8 keeps the packet
+# length tidy. The import-time check below still verifies the result.
+#
+# WIRE FORMAT: set by VOICE_BITRATE and VOICE_FRAME_MS, so both peers must
+# agree on those two.
+def _derive_opus_slot(bitrate: int, frame_ms: int) -> int:
+    peak = (bitrate * frame_ms // 8000) * 5 // 4
+    return ((peak + 7) // 8) * 8
+
+
+VOICE_OPUS_SLOT = _derive_opus_slot(VOICE_BITRATE, VOICE_FRAME_MS)
 VOICE_PLAIN_LEN = 2 + VOICE_TS_LEN + VOICE_OPUS_SLOT
 
 # ── Configuration invariants, checked at import ──────────────────────────────
@@ -512,6 +553,26 @@ VOICE_HDR_FMT = ">BBBQQH"
 VOICE_SEALED_LEN = VOICE_PLAIN_LEN + 16          # ct || GCM tag; nonce derived
 VOICE_PACKET_LEN = VOICE_HDR_LEN + VOICE_SEALED_LEN
 
+#: What the router prepends to a repliable datagram: the sender's
+#: Destination and its signature. Ed25519 (SIGNATURE_TYPE=7) is 391 + 64.
+SAM_REPLIABLE_OVERHEAD = 455
+
+#: Usable payload in one I2P tunnel message. A tunnel message is 1024 bytes;
+#: the delivery instructions and checksum take the rest.
+I2P_TUNNEL_MESSAGE_PAYLOAD = 960
+
+#: What a full media datagram costs the router.
+VOICE_DATAGRAM_LEN = VOICE_PACKET_LEN + SAM_REPLIABLE_OVERHEAD
+
+if VOICE_DATAGRAM_LEN >= I2P_TUNNEL_MESSAGE_PAYLOAD:
+    raise RuntimeError(
+        "a media datagram is %d bytes and would be fragmented across I2P "
+        "tunnel messages (payload %d). Fragmentation multiplies both the "
+        "loss probability and the delivery latency, because every fragment "
+        "must arrive before any of the frame can be used. Lower "
+        "OTRV4PLUS_OPUS_BITRATE or OTRV4PLUS_OPUS_FRAME_MS."
+        % (VOICE_DATAGRAM_LEN, I2P_TUNNEL_MESSAGE_PAYLOAD))
+
 VOICE_MIN_FRAME = VOICE_SEALED_LEN
 VOICE_MAX_FRAME = VOICE_SEALED_LEN
 
@@ -529,9 +590,26 @@ DIR_RESPONDER = 0x02        # callee -> caller
 # Every one of these is a LOCAL playout decision. Unlike VOICE_OPUS_SLOT they
 # are not wire format, so two peers may run different values safely and a
 # device on a worse path can buy itself more cushion without breaking calls.
-VOICE_JITTER_PREFILL_MS = 180       # floor, and what playout waits for
-VOICE_JITTER_MAX_MS = 2000          # hard cap
-VOICE_JITTER_DRIFT_HIGH_MS = 480    # ceiling on the adaptive target
+VOICE_JITTER_PREFILL_MS = _env_ms("OTRV4PLUS_JITTER_MIN_MS", 180, 60, 1000)
+VOICE_JITTER_DRIFT_HIGH_MS = _env_ms("OTRV4PLUS_JITTER_TARGET_MS", 480,
+                                     120, 2000)
+#: Hard cap on queued audio. Not a target -- the adaptive target and the shed
+#: threshold decide steady state -- but the point past which a burst is
+#: discarded outright rather than queued.
+#:
+#: 2000 ms before. A burst that filled it parked two seconds of stale audio
+#: on top of the path's own delay, which for conversation is worse than
+#: having lost it: nothing in a two-second-old frame is worth hearing.
+VOICE_JITTER_MAX_MS = _env_ms("OTRV4PLUS_JITTER_MAX_MS", 1000, 240, 4000)
+
+#: How fast the buffer returns to target after a burst.
+#:
+#: The shed was one frame per pop, which drains at exactly the playout rate:
+#: a 30-frame burst took ~26 pops, 1.5 s, and the whole of that time was
+#: spent at high latency. Observed on a live call as jitter=32/3, buf=1920ms
+#: -- three times the shed threshold, for over a second. Shedding is now
+#: proportional so convergence takes this long regardless of burst size.
+VOICE_JITTER_DRAIN_MS = _env_ms("OTRV4PLUS_JITTER_DRAIN_MS", 400, 100, 2000)
 
 #: Hysteresis above the target before a frame is shed.
 #:
@@ -541,7 +619,8 @@ VOICE_JITTER_DRIFT_HIGH_MS = 480    # ceiling on the adaptive target
 #: the same rate, so nothing else pulls the buffer down -- which made the
 #: observed 840 ms floor (target pinned at 10, plus 4) the design rather than
 #: an accident.
-VOICE_JITTER_SHED_MARGIN_MS = 180
+VOICE_JITTER_SHED_MARGIN_MS = _env_ms("OTRV4PLUS_JITTER_MARGIN_MS", 180,
+                                      60, 1000)
 
 #: Multiplier on the smoothed arrival deviation when sizing the target.
 #:
@@ -551,16 +630,6 @@ VOICE_JITTER_SHED_MARGIN_MS = 180
 #: for a third less delay on every single frame. For conversation that is the
 #: better side of the trade, and it is a trade rather than a free win.
 VOICE_JITTER_SAFETY_FACTOR = 2.0
-
-
-def _env_ms(name: str, default_ms: int, lo: int, hi: int) -> int:
-    """Read a millisecond override, ignoring anything implausible."""
-    raw = os.environ.get(name, "").strip()
-    if raw.isdigit():
-        value = int(raw)
-        if lo <= value <= hi:
-            return value
-    return default_ms
 
 
 VOICE_JITTER_PREFILL = max(2, VOICE_JITTER_PREFILL_MS // VOICE_FRAME_MS)
@@ -1683,7 +1752,8 @@ class JitterBuffer:
                  late_tolerance=VOICE_JITTER_LATE_TOLERANCE,
                  drift_high=VOICE_JITTER_DRIFT_HIGH, adaptive=True,
                  shed_margin=VOICE_JITTER_SHED_MARGIN,
-                 safety_factor=VOICE_JITTER_SAFETY_FACTOR):
+                 safety_factor=VOICE_JITTER_SAFETY_FACTOR,
+                 drain_ms=VOICE_JITTER_DRAIN_MS):
         import heapq
         self._heapq = heapq
         self._heap = []
@@ -1695,6 +1765,11 @@ class JitterBuffer:
         self._drift_high = max(int(prefill) + 1, int(drift_high))
         self._shed_margin = max(1, int(shed_margin))
         self._safety_factor = float(safety_factor)
+        # Pops needed to return to target after a burst. Proportional
+        # shedding divides the excess across this many pops, so convergence
+        # takes the same wall-clock time whether the burst was 5 frames or
+        # 50.
+        self._drain_pops = max(1, int(drain_ms) // max(1, VOICE_FRAME_MS))
         self._primed = False
         self._last_played = -1
 
@@ -1707,8 +1782,19 @@ class JitterBuffer:
         self._jitter_est = 0.0          # seconds, RFC 3550 style smoothing
         self._last_arrival = None
         self._last_seq = None
+        # depth_min/depth_max are held across a reporting window, like the
+        # level meters: an instantaneous depth says nothing about whether the
+        # buffer is stable or swinging between empty and full.
+        self._depth_min = None
+        self._depth_max = 0
+        # Inter-arrival spacing. The smoothed estimate above drives the
+        # target; this records the distribution behind it, because a mean
+        # deviation cannot distinguish a steadily late path from a punctual
+        # one with a long tail, and only the second is worth buffering for.
+        self.spacing = Percentiles()
         self.stats = {"queued": 0, "late": 0, "duplicate": 0,
-                      "overflow": 0, "gaps": 0, "drift": 0}
+                      "overflow": 0, "gaps": 0, "drift": 0,
+                      "underrun": 0, "burst_drain": 0}
 
     @staticmethod
     def sequence(epoch: int, counter: int) -> int:
@@ -1743,6 +1829,7 @@ class JitterBuffer:
                 expected = seq_delta * (FRAME_INTERVAL_S)
                 observed = now - self._last_arrival
                 d = abs(observed - expected)
+                self.spacing.add(observed * 1000.0)
                 self._jitter_est += (d - self._jitter_est) / 16.0
                 frames = ((self._safety_factor * self._jitter_est)
                           / FRAME_INTERVAL_S)
@@ -1810,6 +1897,7 @@ class JitterBuffer:
                 # Re-arm the cushion: resuming instantly after a stall makes
                 # the next burst choppy.
                 self._primed = False
+                self.stats["underrun"] += 1
                 return None
 
             # Shed the oldest while we are above the latency ceiling. One
@@ -1825,11 +1913,27 @@ class JitterBuffer:
             # down and it settles exactly here. That makes the margin a
             # latency decision, not a tuning detail, which is why it is
             # expressed in milliseconds rather than in frames.
-            if len(self._heap) > self.target_depth + self._shed_margin:
-                stale_seq, stale_pcm = self._heapq.heappop(self._heap)
-                self._seqs.discard(stale_seq)
-                _wipe(stale_pcm)
-                self.stats["drift"] += 1
+            excess = len(self._heap) - (self.target_depth + self._shed_margin)
+            if excess > 0:
+                # Proportional, not one-per-pop. One-per-pop drains at exactly
+                # the playout rate, so a 30-frame burst spent 1.5 s at high
+                # latency before recovering -- and every one of those frames
+                # was played late. Dividing the excess across _drain_pops
+                # makes recovery time independent of burst size.
+                #
+                # Discarding is correct here rather than regrettable: a frame
+                # this far back in the queue is already past the point where
+                # it could have been played in sequence, and the gap counter
+                # below hands it to concealment.
+                shed = max(1, -(-excess // self._drain_pops))
+                shed = min(shed, len(self._heap) - 1)
+                for _ in range(max(0, shed)):
+                    stale_seq, stale_pcm = self._heapq.heappop(self._heap)
+                    self._seqs.discard(stale_seq)
+                    _wipe(stale_pcm)
+                    self.stats["drift"] += 1
+                if shed > 1:
+                    self.stats["burst_drain"] += 1
 
             seq, pcm = self._heapq.heappop(self._heap)
             self._seqs.discard(seq)
@@ -1843,7 +1947,20 @@ class JitterBuffer:
 
     def depth(self) -> int:
         with self._lock:
-            return len(self._heap)
+            depth = len(self._heap)
+            self._depth_max = max(self._depth_max, depth)
+            self._depth_min = (depth if self._depth_min is None
+                               else min(self._depth_min, depth))
+            return depth
+
+    def sample_depth(self):
+        """Latch (min, max) depth for the window and start a new one."""
+        with self._lock:
+            lo = 0 if self._depth_min is None else self._depth_min
+            hi = self._depth_max
+            self._depth_min = None
+            self._depth_max = len(self._heap)
+            return lo, hi
 
     def clear(self) -> None:
         """Wipe and discard everything queued.  Never raises."""
@@ -1899,6 +2016,59 @@ def unpad_opus(plain: bytes) -> bytes:
 # Control-plane rate limiting
 # ---------------------------------------------------------------------------
 
+class Percentiles:
+    """Bounded sample window with percentile readout.
+
+    A mean hides exactly what matters for real-time media. A path that
+    delivers at 60 ms with a 900 ms tail and one that delivers steadily at
+    120 ms have similar means and completely different conversations; the
+    tail is what sets the jitter buffer and therefore the delay. p95 and p99
+    are the numbers to engineer against.
+
+    Fixed window rather than all-time: a bad first minute must not describe
+    the call for the next ten.
+    """
+
+    __slots__ = ("_samples", "_n")
+
+    def __init__(self, window=512):
+        import collections
+        self._samples = collections.deque(maxlen=int(window))
+        self._n = 0
+
+    def add(self, value: float) -> None:
+        self._samples.append(float(value))
+        self._n += 1
+
+    def __len__(self) -> int:
+        return len(self._samples)
+
+    def percentile(self, q: float) -> float:
+        if not self._samples:
+            return 0.0
+        ordered = sorted(self._samples)
+        if len(ordered) == 1:
+            return ordered[0]
+        # Nearest-rank. With a few hundred samples the interpolation choice
+        # is noise, and nearest-rank never invents a value between two real
+        # observations.
+        idx = int(round(q * (len(ordered) - 1)))
+        return ordered[max(0, min(idx, len(ordered) - 1))]
+
+    def summary(self, scale=1.0, unit="ms") -> str:
+        if not self._samples:
+            return "n=0"
+        return ("n=%d p50=%.0f p95=%.0f p99=%.0f max=%.0f%s"
+                % (len(self._samples),
+                   self.percentile(0.50) * scale,
+                   self.percentile(0.95) * scale,
+                   self.percentile(0.99) * scale,
+                   max(self._samples) * scale, unit))
+
+    def clear(self) -> None:
+        self._samples.clear()
+
+
 class LatencyTracker:
     """RTT and one-way latency over the media stream.
 
@@ -1944,6 +2114,10 @@ class LatencyTracker:
         # entirely by the ping/pong offset calculation, so it costs nothing.
         self._base = int.from_bytes(secrets.token_bytes(4), "big")
         self._rtt = collections.deque(maxlen=self.RTT_WINDOW)
+        #: Every RTT sample of the call, for the tail. The rolling median
+        #: above is what the buffer reacts to; this is what a benchmark
+        #: reports.
+        self.rtt_pct = Percentiles()
         self._oneway = collections.deque(maxlen=self.ONEWAY_WINDOW)
         self._pending = {}                 # ping_id -> t1
         self._offset_ms = None             # peer clock minus ours
@@ -2025,6 +2199,7 @@ class LatencyTracker:
             if rtt < 0 or rtt > 120000:
                 return False               # implausible; drop rather than skew
             self._rtt.append(rtt)
+            self.rtt_pct.add(rtt)
             self._offset_ms = ((t2 - t1) + (t3 - t4)) / 2.0
             self.answered += 1
         return True
@@ -4666,6 +4841,27 @@ class VoiceCallManager:
                     self._vdbg(peer, "levels: %s %s"
                                % (session._speaker_gain.summary(),
                                   session._speaker_comp.summary()))
+                except Exception:
+                    pass
+                # Distributions, not just the current value. Phase 2 of the
+                # brief asks where every millisecond goes; a single instant
+                # cannot answer that, and the tail is what sets the buffer.
+                try:
+                    lo, hi = session.jitter.sample_depth()
+                    self._vdbg(peer,
+                               "spacing: %s | buffer depth %d-%d frames "
+                               "(%d-%d ms) target %d | underrun=%d "
+                               "overrun=%d discard=%d bursts=%d"
+                               % (session.jitter.spacing.summary(),
+                                  lo, hi, lo * VOICE_FRAME_MS,
+                                  hi * VOICE_FRAME_MS,
+                                  session.jitter.target_depth,
+                                  session.jitter.stats["underrun"],
+                                  session.jitter.stats["overflow"],
+                                  session.jitter.stats["drift"],
+                                  session.jitter.stats["burst_drain"]))
+                    self._vdbg(peer, "rtt: %s"
+                               % session.latency.rtt_pct.summary())
                 except Exception:
                     pass
                 lat = session.latency

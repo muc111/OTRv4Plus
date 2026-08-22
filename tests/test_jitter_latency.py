@@ -257,3 +257,157 @@ class TestBoundedness:
         _fill(buf, 10)
         buf.clear()
         assert buf.depth() == 0
+
+
+# ---------------------------------------------------------------------------
+# Burst recovery
+# ---------------------------------------------------------------------------
+
+class TestBurstRecovery:
+    """A burst must not park the call at high latency while it drains.
+
+    Shedding one frame per pop drains at exactly the playout rate, so a
+    30-frame burst spent ~1.5 s above target and every frame in it played
+    late. Observed on a live call as jitter=32/3, buf=1920ms -- three times
+    the shed threshold, held for over a second.
+    """
+
+    def _bursty(self, burst):
+        buf = _buf(prefill=3, drift_high=8, shed_margin=3, maxlen=200)
+        _fill(buf, burst)
+        pops = 0
+        while buf.depth() > buf.target_depth + 3 and pops < 500:
+            buf.pop()
+            pops += 1
+        return pops
+
+    def test_a_large_burst_drains_in_bounded_time(self):
+        pops = self._bursty(45)
+        settle_ms = pops * voice.VOICE_FRAME_MS
+        assert settle_ms <= voice.VOICE_JITTER_DRAIN_MS * 2, (
+            "took %d ms to return to target" % settle_ms)
+
+    def test_recovery_time_grows_sub_linearly_with_burst_size(self):
+        # The property one-per-pop lacked. Shedding a fixed FRACTION of the
+        # excess decays it geometrically, so recovery grows with the log of
+        # the burst rather than in step with it: quadrupling the burst must
+        # cost far less than quadrupling the time.
+        small = self._bursty(20)
+        large = self._bursty(80)
+        assert large < small * 4, (
+            "20-frame burst took %d pops, 80-frame took %d -- that is not "
+            "sub-linear" % (small, large))
+
+    def test_a_burst_drain_is_counted_distinctly(self):
+        buf = _buf(prefill=3, drift_high=8, shed_margin=3, maxlen=200)
+        _fill(buf, 60)
+        for _ in range(20):
+            buf.pop()
+        assert buf.stats["burst_drain"] > 0
+        assert buf.stats["drift"] > buf.stats["burst_drain"]
+
+    def test_a_small_excess_still_sheds_only_one(self):
+        # Proportional must not become aggressive on a one-frame overshoot.
+        buf = _buf(prefill=3, drift_high=8, shed_margin=3, maxlen=40)
+        _fill(buf, buf.target_depth + 4)
+        before = buf.depth()
+        buf.pop()
+        assert before - buf.depth() <= 2
+
+    def test_shedding_stops_at_the_threshold_rather_than_draining_dry(self):
+        # Draining past the target would stall playout and re-arm the
+        # prefill, turning one burst into a dropout. Shedding must stop when
+        # the excess is gone -- the buffer emptying later, because nothing
+        # more arrived, is a different thing and is not this test.
+        buf = _buf(prefill=2, drift_high=3, shed_margin=1, maxlen=200)
+        _fill(buf, 100)
+        threshold = buf.target_depth + 1
+        while buf.depth() > threshold:
+            buf.pop()
+        assert buf.depth() >= buf.target_depth
+        assert buf.stats["underrun"] == 0
+
+
+class TestHardCapIsBounded:
+    def test_the_cap_is_at_most_one_second(self):
+        # Not a target -- the point past which a burst is discarded rather
+        # than queued. Two seconds of stale audio is worse than losing it.
+        assert voice.VOICE_JITTER_MAX * voice.VOICE_FRAME_MS <= 1000
+
+    def test_the_cap_is_above_the_shed_threshold(self):
+        assert voice.VOICE_JITTER_MAX > (voice.VOICE_JITTER_DRIFT_HIGH
+                                         + voice.VOICE_JITTER_SHED_MARGIN)
+
+
+class TestUnderrunAccounting:
+    def test_draining_dry_is_counted(self):
+        buf = _buf(prefill=2, maxlen=20)
+        _fill(buf, 3)
+        for _ in range(10):
+            buf.pop()
+        assert buf.stats["underrun"] >= 1
+
+    def test_depth_extremes_are_held_across_a_window(self):
+        buf = _buf(prefill=1, maxlen=40)
+        _fill(buf, 12)
+        buf.depth()
+        for _ in range(8):
+            buf.pop()
+            buf.depth()
+        lo, hi = buf.sample_depth()
+        assert hi >= 12
+        assert lo < hi
+
+    def test_sampling_starts_a_new_window(self):
+        buf = _buf(prefill=1, maxlen=40)
+        _fill(buf, 12)
+        buf.depth()
+        buf.sample_depth()
+        lo, hi = buf.sample_depth()
+        assert hi <= 12
+
+
+class TestSpacingIsRecorded:
+    def test_arrival_spacing_feeds_the_percentiles(self):
+        buf = voice.JitterBuffer(prefill=2, maxlen=60, adaptive=True)
+        now = 1000.0
+        for i in range(60):
+            now += voice.FRAME_INTERVAL_S
+            buf._observe_arrival(i, now)
+        assert len(buf.spacing) > 0
+        assert buf.spacing.percentile(0.5) == pytest.approx(
+            voice.VOICE_FRAME_MS, rel=0.2)
+
+
+class TestPercentiles:
+    def test_a_tail_is_visible_where_a_mean_would_hide_it(self):
+        # The reason percentiles are here at all: these two have similar
+        # means and completely different conversations.
+        steady = voice.Percentiles()
+        tailed = voice.Percentiles()
+        for _ in range(90):
+            steady.add(100)
+            tailed.add(10)
+        for _ in range(10):
+            steady.add(100)
+            tailed.add(900)
+        assert steady.percentile(0.95) == 100
+        assert tailed.percentile(0.95) == 900
+
+    def test_it_is_bounded(self):
+        # A bad first minute must not describe the next ten.
+        p = voice.Percentiles(window=100)
+        for i in range(1000):
+            p.add(i)
+        assert len(p) == 100
+        assert p.percentile(0.0) >= 900
+
+    def test_an_empty_window_reports_nothing_rather_than_zero(self):
+        assert voice.Percentiles().summary() == "n=0"
+        assert voice.Percentiles().percentile(0.5) == 0.0
+
+    def test_a_single_sample_is_its_own_percentile(self):
+        p = voice.Percentiles()
+        p.add(42)
+        assert p.percentile(0.5) == 42
+        assert p.percentile(0.99) == 42

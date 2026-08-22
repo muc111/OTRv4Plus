@@ -104,12 +104,30 @@ import time
 SAMPLE_RATE = 16000
 CHANNELS = 1
 SAMPLE_WIDTH = 2                      # PCM_16BIT
-# 60 ms frames: a third fewer packets per second than 40 ms, which is the
-# variable that matters on a congested I2P path. Costs 20 ms of accumulation
-# delay. otrv4plus_voice derives its own frame geometry from these constants
-# rather than redeclaring them, so this is the ONE place frame duration is
-# defined -- see the assertions there.
-FRAME_MS = 60
+def _env_choice(name: str, default: int, allowed) -> int:
+    """Read an integer restricted to a fixed set, else the default."""
+    raw = os.environ.get(name, "").strip()
+    if raw.isdigit() and int(raw) in allowed:
+        return int(raw)
+    return default
+
+
+# Frame duration. THE one place it is defined -- otrv4plus_voice derives its
+# geometry from here rather than redeclaring it.
+#
+# 60 ms by default: a third fewer packets per second than 40 ms, and packet
+# RATE is what I2P charges for, since a media packet and its datagram header
+# occupy one ~1 KB tunnel message at any of these durations. It costs 20 ms
+# of accumulation delay against 40 ms, and 40 ms against 20 ms.
+#
+# Which is actually best on a given path is an empirical question and the
+# answer is not knowable from here -- it depends on that path's burst
+# behaviour. OTRV4PLUS_OPUS_FRAME_MS exists so it can be measured rather than
+# argued about. libopus accepts 2.5/5/10/20/40/60; below 10 ms the packet
+# rate makes constant-rate shaping pointless over I2P.
+#
+# WIRE FORMAT: both peers must use the same value.
+FRAME_MS = _env_choice("OTRV4PLUS_OPUS_FRAME_MS", 60, (10, 20, 40, 60))
 FRAME_SAMPLES = SAMPLE_RATE * FRAME_MS // 1000        # 960
 FRAME_BYTES = FRAME_SAMPLES * CHANNELS * SAMPLE_WIDTH  # 1920
 
