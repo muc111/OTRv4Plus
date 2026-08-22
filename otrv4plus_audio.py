@@ -93,6 +93,7 @@ diagnostics() rather than hidden.
 from __future__ import annotations
 
 import ctypes
+import math
 import os
 import struct
 import threading
@@ -601,6 +602,163 @@ def _env_flag(name: str, default: bool) -> bool:
     return default
 
 
+def dbfs(level: int) -> str:
+    """Format a linear PCM level as dBFS, for logs."""
+    if level <= 0:
+        return "-inf dBFS"
+    return "%.0f dBFS" % (20.0 * math.log10(min(level, PCM_FULL_SCALE)
+                                           / float(PCM_FULL_SCALE)))
+
+
+#: Compressor block size. 10 ms is short enough to catch a syllable's attack
+#: and long enough that six audioop calls cover a 60 ms frame.
+COMP_BLOCK_MS = 10
+
+#: Below this the signal is treated as room noise and makeup gain is withheld.
+#: Without it, +12 dB of makeup lands on the silence between words and the
+#: call hisses.
+COMP_GATE_DBFS = -55.0
+
+#: Compression starts here and rises at COMP_RATIO:1 above it.
+COMP_THRESHOLD_DBFS = -30.0
+COMP_RATIO = 4.0
+
+#: Makeup gain, applied after compression. Compression alone only makes a
+#: signal quieter and more even; makeup is where the loudness comes from.
+#:
+#: None means derive it from the curve: -threshold * (1 - 1/ratio) is the
+#: gain that leaves a full-scale input at full scale, so everything below it
+#: is lifted and the top is left where it was. Picking a number by hand
+#: instead is how the first attempt ended up 12 dB short, pushing peaks into
+#: the limiter, which then pulled whole frames down and made the compressed
+#: path 2.6 dB QUIETER than plain gain.
+COMP_MAKEUP_DB = None
+
+#: Per-block smoothing. Attack fast enough not to let a syllable through
+#: uncompressed, release slow enough not to pump between words.
+COMP_ATTACK = 0.45
+COMP_RELEASE = 0.06
+
+
+class Compressor:
+    """Dynamic range compression for speech, ahead of the gain stage.
+
+    Gain and a limiter cannot make a call loud. Speech has a crest factor of
+    12-18 dB, so normalising the PEAK to just under full scale still leaves
+    the RMS -- which is what the ear reports as loudness -- around -20 dBFS.
+    A live call showed exactly that: playback peaking at 24422 of 32767,
+    2.5 dB from full scale, and still described as barely audible. There was
+    no headroom left to turn up, because the problem was never the peaks.
+
+    Reducing the crest factor is the only thing that helps. Compressing at
+    4:1 above -30 dBFS and applying 12 dB of makeup typically buys 6-10 dB of
+    RMS at the same peak level, which is the difference between a call you
+    strain at and one you do not. It is what every telephone in the world
+    does to the voice channel.
+
+    Operates on 10 ms blocks with a smoothed gain: per-frame gain at 60 ms is
+    coarse enough to pump audibly, and per-sample is not worth the CPU on a
+    phone. A gate withholds makeup below COMP_GATE_DBFS so the quiet between
+    words does not come up as hiss.
+
+    The limiter in GainStage still runs after this and is still what
+    guarantees the output cannot clip.
+    """
+
+    def __init__(self, threshold_dbfs=COMP_THRESHOLD_DBFS, ratio=COMP_RATIO,
+                 makeup_db=COMP_MAKEUP_DB, gate_dbfs=COMP_GATE_DBFS,
+                 block_ms=COMP_BLOCK_MS, enabled=True):
+        self.threshold = float(threshold_dbfs)
+        self.ratio = max(1.0, float(ratio))
+        if makeup_db is None:
+            makeup_db = -self.threshold * (1.0 - 1.0 / self.ratio)
+        self.makeup_db = float(makeup_db)
+        self.gate = float(gate_dbfs)
+        self.block = max(1, int(SAMPLE_RATE * block_ms // 1000)) * SAMPLE_WIDTH
+        self.enabled = bool(enabled)
+        self._gain_db = 0.0
+        self.blocks = 0
+        self.gated_blocks = 0
+
+    def _block_gain_db(self, peak: int) -> float:
+        """Gain for one block, driven by its PEAK.
+
+        An RMS detector does not work here. Makeup gain raises the peak along
+        with everything else, the limiter downstream then pulls the whole
+        frame back, and the net effect measured +0.7 dB -- the compressor was
+        paying CPU to accomplish nothing.
+
+        Driving from the peak is what actually compresses the loud-to-quiet
+        spread: a syllable peaking at -8 dBFS is pulled down 16 dB while a
+        quiet passage at -40 gets the full makeup, so a 32 dB spread becomes
+        8 dB. The quiet parts coming UP is where the loudness is; the loud
+        parts were never the problem.
+        """
+        if peak <= 0:
+            return 0.0
+        level = 20.0 * math.log10(min(peak, PCM_FULL_SCALE)
+                                  / float(PCM_FULL_SCALE))
+        if level < self.gate:
+            self.gated_blocks += 1
+            return 0.0                      # leave noise where it is
+        if level > self.threshold:
+            target = self.threshold + (level - self.threshold) / self.ratio
+        else:
+            target = level
+        return (target - level) + self.makeup_db
+
+    def process(self, pcm) -> bytearray:
+        if not self.enabled or not pcm:
+            return bytearray(pcm or b"")
+        out = bytearray()
+        for start in range(0, len(pcm), self.block):
+            chunk = bytes(pcm[start:start + self.block])
+            if not chunk:
+                continue
+            self.blocks += 1
+            wanted = self._block_gain_db(GainStage._peak(chunk))
+            # Attack when the required gain falls (signal got louder),
+            # release when it rises. Asymmetric on purpose: catching a loud
+            # syllable late is a click, recovering after one too fast pumps.
+            coeff = COMP_ATTACK if wanted < self._gain_db else COMP_RELEASE
+            self._gain_db += (wanted - self._gain_db) * coeff
+            factor = 10.0 ** (self._gain_db / 20.0)
+            out += GainStage._scale(chunk, factor)
+        return out
+
+    def summary(self) -> str:
+        return ("comp %+.1fdB gated=%d/%d"
+                % (self._gain_db, self.gated_blocks, self.blocks))
+
+
+def make_speaker_compressor() -> Compressor:
+    """Playback compression, on by default.
+
+    Applied on playback rather than capture so it fixes what this device
+    hears regardless of what the peer is running.
+    """
+    raw = os.environ.get("OTRV4PLUS_SPEAKER_MAKEUP_DB", "").strip()
+    makeup = _env_float("OTRV4PLUS_SPEAKER_MAKEUP_DB", 0.0, 0.0, 30.0) \
+        if raw else None
+    return Compressor(
+        makeup_db=makeup,
+        enabled=_env_flag("OTRV4PLUS_SPEAKER_COMPRESSOR", True))
+
+
+def make_mic_compressor() -> Compressor:
+    """Capture compression, off by default.
+
+    The capture path already has automatic gain; compressing at both ends of
+    a call is what makes voice sound over-processed and pumpy.
+    """
+    raw = os.environ.get("OTRV4PLUS_MIC_MAKEUP_DB", "").strip()
+    makeup = _env_float("OTRV4PLUS_MIC_MAKEUP_DB", 0.0, 0.0, 30.0) \
+        if raw else None
+    return Compressor(
+        makeup_db=makeup,
+        enabled=_env_flag("OTRV4PLUS_MIC_COMPRESSOR", False))
+
+
 class GainStage:
     """Level control for one PCM_16BIT mono stream.
 
@@ -639,8 +797,24 @@ class GainStage:
         self.target_peak = int(target_peak)
         self.max_auto = float(max_auto)
         self._auto_gain = 1.0
+        # Peak HELD across the reporting window, not the last frame's value.
+        # The device self-test holds its peak over two seconds; this reported
+        # whatever single 60 ms frame happened to coincide with the stats
+        # line, so it read 0 through most of a call and was not comparable
+        # with the self-test it was being compared against.
         self.peak_in = 0
         self.peak_out = 0
+        self._hold_in = 0
+        self._hold_out = 0
+        # RMS matters more than peak for how loud something sounds. Speech
+        # has a crest factor of 12-18 dB, so a signal can peak near full
+        # scale and still be quiet to listen to -- which is exactly the case
+        # this instrumentation failed to show.
+        self.rms_in = 0
+        self.rms_out = 0
+        self._rms_in_acc = 0.0
+        self._rms_out_acc = 0.0
+        self._rms_n = 0
         self.limited_frames = 0
         self.frames = 0
 
@@ -662,6 +836,20 @@ class GainStage:
             if sample > worst:
                 worst = sample
         return worst
+
+    @staticmethod
+    def _rms(pcm) -> int:
+        if not pcm:
+            return 0
+        if _audioop is not None:
+            return _audioop.rms(bytes(pcm), SAMPLE_WIDTH)
+        n = len(pcm) // SAMPLE_WIDTH
+        if n == 0:
+            return 0
+        total = 0
+        for sample in struct.unpack("<%dh" % n, bytes(pcm[:n * SAMPLE_WIDTH])):
+            total += sample * sample
+        return int((total / n) ** 0.5)
 
     @staticmethod
     def _scale(pcm, factor: float) -> bytearray:
@@ -691,7 +879,9 @@ class GainStage:
             return bytearray(pcm or b"")
 
         peak = self._peak(pcm)
-        self.peak_in = peak
+        self._hold_in = max(self._hold_in, peak)
+        self._rms_in_acc += self._rms(pcm)
+        self._rms_n += 1
         self.frames += 1
 
         applied = self.gain
@@ -711,21 +901,46 @@ class GainStage:
         # The limiter. Whatever the configuration asked for, this frame's own
         # peak decides what can actually be applied.
         if peak > 0 and peak * applied > GAIN_CEILING:
-            applied = GAIN_CEILING / float(peak)
+            # One LSB of headroom: both scaling paths round to nearest, so
+            # targeting the ceiling exactly can land one count above it. The
+            # ceiling is a guarantee, and a guarantee that holds to within a
+            # rounding error is not one.
+            applied = (GAIN_CEILING - 1.0) / float(peak)
             self.limited_frames += 1
 
         if abs(applied - 1.0) < 1e-3:
             out = bytearray(pcm)
         else:
             out = self._scale(pcm, applied)
-        self.peak_out = self._peak(out)
+        self._hold_out = max(self._hold_out, self._peak(out))
+        self._rms_out_acc += self._rms(out)
         return out
 
+    def sample(self) -> None:
+        """Latch the held measurements and start a new window.
+
+        Called once per reporting interval. Without it the peak hold would
+        run for the whole call and the first loud moment would mask every
+        quiet stretch after it.
+        """
+        self.peak_in = self._hold_in
+        self.peak_out = self._hold_out
+        n = max(1, self._rms_n)
+        self.rms_in = int(self._rms_in_acc / n)
+        self.rms_out = int(self._rms_out_acc / n)
+        self._hold_in = 0
+        self._hold_out = 0
+        self._rms_in_acc = 0.0
+        self._rms_out_acc = 0.0
+        self._rms_n = 0
+
     def summary(self) -> str:
-        return ("%s: peak_in=%d peak_out=%d fixed=%.2f auto=%.2f "
-                "limited=%d/%d" % (self.name, self.peak_in, self.peak_out,
-                                   self.gain, self._auto_gain,
-                                   self.limited_frames, self.frames))
+        """Levels for the window just closed.  Call sample() first."""
+        return ("%s peak %d->%d rms %d->%d (%s) fixed=%.2f auto=%.2f lim=%d/%d"
+                % (self.name, self.peak_in, self.peak_out,
+                   self.rms_in, self.rms_out, dbfs(self.rms_out),
+                   self.gain, self._auto_gain,
+                   self.limited_frames, self.frames))
 
 
 def make_mic_gain() -> GainStage:
@@ -739,7 +954,11 @@ def make_speaker_gain() -> GainStage:
     """Playback gain.  Fixed by default -- the far end's level is already
     normalised by its own capture stage, so a second automatic stage here
     would chase the first."""
-    return GainStage(gain=_env_float("OTRV4PLUS_SPEAKER_GAIN", 2.0, 0.1, 16.0),
+    # Unity by default. The compressor ahead of this carries the loudness,
+    # and stacking a fixed 2x on top of it only drives the limiter, which
+    # then attenuates the whole frame -- including the quiet blocks the
+    # compressor had just lifted.
+    return GainStage(gain=_env_float("OTRV4PLUS_SPEAKER_GAIN", 1.0, 0.1, 16.0),
                      auto=_env_flag("OTRV4PLUS_SPEAKER_AGC", False),
                      name="speaker")
 

@@ -2215,6 +2215,13 @@ class VoiceCallSession:
         # a quiet, thin call regardless of the codec settings.
         self._mic_gain = _audio.make_mic_gain()
         self._speaker_gain = _audio.make_speaker_gain()
+        # Compression before gain. Peak gain cannot make a call loud: speech
+        # has a 12-18 dB crest factor, so playback measured 24422 of 32767 --
+        # 2.5 dB from full scale -- and was still described as barely
+        # audible. There was no headroom left to turn up because the peaks
+        # were never the problem; the quiet parts were.
+        self._mic_comp = _audio.make_mic_compressor()
+        self._speaker_comp = _audio.make_speaker_compressor()
         self._our_dest = None
         self._media_sock = None
         self._accept_sock = None
@@ -2782,13 +2789,20 @@ class VoiceCallSession:
         _print("[voice] codec: Opus %d Hz mono, %d ms frames, %d kbit/s %s"
                % (VOICE_SAMPLE_RATE, VOICE_FRAME_MS, VOICE_BITRATE // 1000,
                   "CBR" if self.constant_rate else "VBR"))
-        _print("[voice] levels: mic gain %.2f%s, speaker gain %.2f%s — "
-               "OTRV4PLUS_MIC_GAIN / OTRV4PLUS_SPEAKER_GAIN to change, "
-               "output is limited so neither can clip"
+        _print("[voice] levels: mic gain %.2f%s, speaker gain %.2f, "
+               "playback compressor %s (%.0f dB makeup) — output is limited "
+               "so nothing here can clip"
                % (self._mic_gain.gain,
                   " + auto" if self._mic_gain.auto else "",
                   self._speaker_gain.gain,
-                  " + auto" if self._speaker_gain.auto else ""))
+                  "on" if self._speaker_comp.enabled else "off",
+                  self._speaker_comp.makeup_db))
+        if self._playback_usage_is_voice():
+            _print("[voice] playback is declared as VOICE_COMMUNICATION, "
+                   "which some phones route to the EARPIECE rather than the "
+                   "speaker. If the level readings below look healthy but "
+                   "the call is still faint, that is routing, not gain: set "
+                   "OTRV4PLUS_AUDIO_USAGE=media.")
         if self._transport_mode == VOICE_TRANSPORT_DATAGRAM:
             _print("[voice] transport: I2P datagrams — no retransmission, so "
                    "congestion arrives as loss (concealed) rather than as "
@@ -3002,7 +3016,7 @@ class VoiceCallSession:
             # Gain before Opus, not after: the encoder allocates bits by
             # what it is given, so encoding a -18 dBFS signal and amplifying
             # at the far end amplifies the coding noise with it.
-            pcm = self._mic_gain.process(raw)
+            pcm = self._mic_gain.process(self._mic_comp.process(raw))
             opus_frame = None
             try:
                 opus_frame = bytearray(
@@ -3034,6 +3048,14 @@ class VoiceCallSession:
             # failed to encode, or a codec hiccup would also stop latency
             # measurement.
             self._maybe_ping()
+
+    def _playback_usage_is_voice(self) -> bool:
+        """True when playback asked for the voice-communication usage."""
+        try:
+            return (getattr(self._playback, "usage", None)
+                    == _audio.AAUDIO_USAGE_VOICE_COMMUNICATION)
+        except Exception:
+            return False
 
     def _emit_probe(self, frame_type: int, payload: bytes) -> None:
         """Send a PING or PONG as a full-size frame.
@@ -3385,7 +3407,8 @@ class VoiceCallSession:
                     loud = None
                     try:
                         if playback is not None:
-                            loud = self._speaker_gain.process(chunk)
+                            loud = self._speaker_gain.process(
+                                self._speaker_comp.process(chunk))
                             playback.write_frame(bytes(loud))
                     except _audio.AudioError as exc:
                         if exc.code == _audio.AUDIO_DEVICE_DISCONNECTED:
@@ -4635,9 +4658,14 @@ class VoiceCallManager:
                 # several calls; the two devices differed by 17 dB at the
                 # microphone.
                 try:
-                    self._vdbg(peer, "levels: %s | %s"
+                    session._mic_gain.sample()
+                    session._speaker_gain.sample()
+                    self._vdbg(peer, "levels: %s %s"
                                % (session._mic_gain.summary(),
-                                  session._speaker_gain.summary()))
+                                  session._mic_comp.summary()))
+                    self._vdbg(peer, "levels: %s %s"
+                               % (session._speaker_gain.summary(),
+                                  session._speaker_comp.summary()))
                 except Exception:
                     pass
                 lat = session.latency

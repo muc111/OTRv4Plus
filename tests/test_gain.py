@@ -152,13 +152,15 @@ class TestConfiguration:
         stage = audio.make_mic_gain()
         assert stage.auto is True
 
-    def test_the_speaker_defaults_to_a_fixed_boost(self, monkeypatch):
-        # A second automatic stage here would chase the sender's.
+    def test_the_speaker_gain_is_fixed_at_unity(self, monkeypatch):
+        # A second automatic stage here would chase the sender's, and a fixed
+        # boost would fight the compressor ahead of it -- see
+        # TestCompressorConfiguration.test_the_speaker_gain_defaults_to_unity.
         monkeypatch.delenv("OTRV4PLUS_SPEAKER_AGC", raising=False)
         monkeypatch.delenv("OTRV4PLUS_SPEAKER_GAIN", raising=False)
         stage = audio.make_speaker_gain()
         assert stage.auto is False
-        assert stage.gain > 1.0
+        assert stage.gain == 1.0
 
     def test_gain_is_configurable(self, monkeypatch):
         monkeypatch.setenv("OTRV4PLUS_SPEAKER_GAIN", "3.5")
@@ -167,7 +169,7 @@ class TestConfiguration:
     @pytest.mark.parametrize("bad", ["", "loud", "0", "-2", "999", "nan"])
     def test_a_nonsense_gain_falls_back_to_the_default(self, monkeypatch, bad):
         monkeypatch.setenv("OTRV4PLUS_SPEAKER_GAIN", bad)
-        assert audio.make_speaker_gain().gain == 2.0
+        assert audio.make_speaker_gain().gain == 1.0
 
     @pytest.mark.parametrize("value,expected",
                              [("1", True), ("true", True), ("on", True),
@@ -186,14 +188,16 @@ class TestReporting:
     def test_the_summary_carries_the_measured_levels(self):
         stage = audio.GainStage(gain=2.0, name="mic")
         stage.process(tone(4090))
+        stage.sample()
         text = stage.summary()
-        assert "mic" in text and "peak_in=" in text and "peak_out=" in text
+        assert "mic" in text and "peak" in text and "rms" in text
 
     def test_input_and_output_peaks_are_both_recorded(self):
         # The pair is what identifies a quiet device: a low peak_in with a
         # healthy peak_out means the gain stage is doing its job.
         stage = audio.GainStage(gain=4.0)
         stage.process(tone(4090))
+        stage.sample()
         assert stage.peak_in == pytest.approx(4090, abs=30)
         assert stage.peak_out == pytest.approx(16360, rel=0.02)
 
@@ -225,3 +229,226 @@ class TestPurePythonFallbackMatchesAudioop:
         self._without_audioop(monkeypatch)
         stage = audio.GainStage(gain=16.0)
         assert peak_of(stage.process(tone(32000))) <= audio.GAIN_CEILING
+
+
+# ---------------------------------------------------------------------------
+# Metering
+# ---------------------------------------------------------------------------
+
+class TestMeteringHoldsThePeak:
+    """The reported level must cover the window, not one 60 ms frame.
+
+    The device self-test holds its peak over two seconds and read 30430. The
+    in-call meter reported whatever single frame coincided with the stats
+    line, so it read peak_in=0 through most of a call. The two numbers were
+    compared against each other and were never comparable.
+    """
+
+    def test_the_peak_survives_a_later_quiet_frame(self):
+        stage = audio.GainStage(gain=1.0)
+        stage.process(tone(20000))
+        stage.process(b"\x00\x00" * 480)
+        stage.process(b"\x00\x00" * 480)
+        stage.sample()
+        assert stage.peak_in == pytest.approx(20000, abs=40)
+
+    def test_sampling_starts_a_new_window(self):
+        # Otherwise one loud moment masks every quiet stretch afterwards.
+        stage = audio.GainStage(gain=1.0)
+        stage.process(tone(20000))
+        stage.sample()
+        stage.process(tone(1000))
+        stage.sample()
+        assert stage.peak_in == pytest.approx(1000, abs=40)
+
+    def test_rms_is_reported_alongside_peak(self):
+        # Peak alone cannot say whether something is loud: speech has a
+        # 12-18 dB crest factor.
+        stage = audio.GainStage(gain=1.0)
+        stage.process(tone(20000))
+        stage.sample()
+        assert 0 < stage.rms_in < stage.peak_in
+
+    def test_rms_averages_across_the_window(self):
+        stage = audio.GainStage(gain=1.0)
+        stage.process(tone(20000))
+        stage.process(b"\x00\x00" * 480)
+        stage.sample()
+        loud_only = audio.GainStage._rms(tone(20000))
+        assert stage.rms_in < loud_only
+
+    def test_output_levels_are_measured_too(self):
+        stage = audio.GainStage(gain=4.0)
+        stage.process(tone(2000))
+        stage.sample()
+        assert stage.peak_out > stage.peak_in
+        assert stage.rms_out > stage.rms_in
+
+
+class TestDbfsFormatting:
+    def test_full_scale_is_zero(self):
+        assert audio.dbfs(audio.PCM_FULL_SCALE).startswith("0")
+
+    def test_half_scale_is_about_minus_six(self):
+        assert "-6" in audio.dbfs(audio.PCM_FULL_SCALE // 2)
+
+    def test_silence_is_negative_infinity(self):
+        assert "inf" in audio.dbfs(0)
+
+
+# ---------------------------------------------------------------------------
+# Compression
+# ---------------------------------------------------------------------------
+
+def speech_frame(peak, samples=960, seed=None):
+    """A frame with a speech-like crest factor."""
+    import random
+    rng = random.Random(seed if seed is not None else peak)
+    return struct.pack("<%dh" % samples,
+                       *[int(peak * math.sin(i / 3.0) * rng.uniform(0.25, 1.0))
+                         for i in range(samples)])
+
+
+class TestCompressorLiftsQuietSpeech:
+    def _chain(self, compress):
+        comp = audio.make_speaker_compressor() if compress else None
+        gain = audio.GainStage(gain=1.0 if compress else 2.0)
+
+        def run(pcm):
+            return gain.process(comp.process(pcm) if comp else pcm)
+        return run
+
+    def test_quiet_speech_comes_up(self):
+        # The whole point. Peak gain cannot do this: it lifts the loud parts
+        # into the limiter and the quiet parts stay where they were.
+        quiet = speech_frame(400)
+        plain = self._chain(False)
+        comped = self._chain(True)
+        for _ in range(30):
+            a = plain(quiet)
+            b = comped(quiet)
+        assert audio.GainStage._rms(b) > audio.GainStage._rms(a) * 1.8
+
+    def test_loud_speech_is_not_made_louder(self):
+        # It is already near full scale; there is nowhere to go and trying
+        # only engages the limiter.
+        loud = speech_frame(28000)
+        comped = self._chain(True)
+        for _ in range(30):
+            out = comped(loud)
+        assert peak_of(out) <= audio.GAIN_CEILING
+
+    def test_the_loud_to_quiet_spread_narrows(self):
+        comp = audio.make_speaker_compressor()
+        gain = audio.GainStage(gain=1.0)
+
+        def settle(pcm):
+            for _ in range(40):
+                out = gain.process(comp.process(pcm))
+            return audio.GainStage._rms(out)
+
+        loud_in = audio.GainStage._rms(speech_frame(12000))
+        quiet_in = audio.GainStage._rms(speech_frame(400))
+        loud_out = settle(speech_frame(12000))
+        quiet_out = settle(speech_frame(400))
+        spread_in = loud_in / max(quiet_in, 1)
+        spread_out = loud_out / max(quiet_out, 1)
+        assert spread_out < spread_in
+
+
+class TestCompressorDoesNotAmplifyNoise:
+    def test_room_noise_is_left_alone(self):
+        # 12 dB of makeup on the silence between words turns a call into a
+        # hiss; the gate is what stops that.
+        import random
+        rng = random.Random(3)
+        noise = struct.pack("<960h", *[rng.randint(-25, 25) for _ in range(960)])
+        comp = audio.make_speaker_compressor()
+        gain = audio.GainStage(gain=1.0)
+        for _ in range(40):
+            out = gain.process(comp.process(noise))
+        assert (audio.GainStage._rms(out)
+                <= audio.GainStage._rms(noise) * 1.5)
+        assert comp.gated_blocks > 0
+
+    def test_digital_silence_stays_silent(self):
+        comp = audio.make_speaker_compressor()
+        out = comp.process(b"\x00\x00" * 480)
+        assert peak_of(out) == 0
+
+
+class TestMakeupGain:
+    def test_it_is_derived_from_the_curve_by_default(self):
+        # -threshold * (1 - 1/ratio) leaves full scale at full scale.
+        comp = audio.Compressor(threshold_dbfs=-30.0, ratio=4.0,
+                                makeup_db=None)
+        assert comp.makeup_db == pytest.approx(22.5, rel=0.01)
+
+    def test_a_hand_picked_value_is_honoured(self):
+        comp = audio.Compressor(makeup_db=6.0)
+        assert comp.makeup_db == 6.0
+
+    def test_it_is_configurable(self, monkeypatch):
+        monkeypatch.setenv("OTRV4PLUS_SPEAKER_MAKEUP_DB", "9")
+        assert audio.make_speaker_compressor().makeup_db == 9.0
+
+    def test_an_absent_override_derives_it(self, monkeypatch):
+        monkeypatch.delenv("OTRV4PLUS_SPEAKER_MAKEUP_DB", raising=False)
+        assert audio.make_speaker_compressor().makeup_db > 20.0
+
+
+class TestCompressorConfiguration:
+    def test_playback_compression_is_on_by_default(self, monkeypatch):
+        # On playback rather than capture, so it fixes what this device hears
+        # regardless of what the peer is running.
+        monkeypatch.delenv("OTRV4PLUS_SPEAKER_COMPRESSOR", raising=False)
+        assert audio.make_speaker_compressor().enabled is True
+
+    def test_capture_compression_is_off_by_default(self, monkeypatch):
+        # Compressing at both ends is what makes voice sound over-processed.
+        monkeypatch.delenv("OTRV4PLUS_MIC_COMPRESSOR", raising=False)
+        assert audio.make_mic_compressor().enabled is False
+
+    def test_it_can_be_disabled(self, monkeypatch):
+        monkeypatch.setenv("OTRV4PLUS_SPEAKER_COMPRESSOR", "0")
+        comp = audio.make_speaker_compressor()
+        assert comp.enabled is False
+        pcm = speech_frame(4000)
+        assert bytes(comp.process(pcm)) == pcm
+
+    def test_the_speaker_gain_defaults_to_unity(self, monkeypatch):
+        # Stacking a fixed 2x on the compressor drives the limiter, which
+        # then attenuates the whole frame including the blocks the
+        # compressor had just lifted. Measured as a 2.6 dB LOSS.
+        monkeypatch.delenv("OTRV4PLUS_SPEAKER_GAIN", raising=False)
+        assert audio.make_speaker_gain().gain == 1.0
+
+    def test_the_attack_is_faster_than_the_release(self):
+        assert audio.COMP_ATTACK > audio.COMP_RELEASE
+
+    def test_the_block_is_short_enough_to_avoid_pumping(self):
+        # Per-frame gain at 60 ms pumps audibly.
+        assert audio.COMP_BLOCK_MS <= 20
+
+
+class TestCompressorOutputIsWellFormed:
+    def test_the_frame_length_is_preserved(self):
+        comp = audio.make_speaker_compressor()
+        pcm = speech_frame(6000)
+        assert len(comp.process(pcm)) == len(pcm)
+
+    def test_a_partial_block_is_handled(self):
+        comp = audio.make_speaker_compressor()
+        pcm = speech_frame(6000, samples=97)
+        assert len(comp.process(pcm)) == len(pcm)
+
+    def test_an_empty_frame_is_handled(self):
+        assert bytes(audio.make_speaker_compressor().process(b"")) == b""
+
+    def test_the_chain_still_cannot_clip(self):
+        comp = audio.make_speaker_compressor()
+        gain = audio.GainStage(gain=16.0)
+        for level in (100, 4090, 16000, 32767):
+            for _ in range(20):
+                out = gain.process(comp.process(speech_frame(level)))
+            assert peak_of(out) <= audio.GAIN_CEILING
