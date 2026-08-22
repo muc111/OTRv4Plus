@@ -83,7 +83,7 @@ FORMAT
 ======
 
 The voice pipeline is fixed at PCM signed 16-bit, mono, 16 kHz,
-little-endian, in 40 ms frames (640 samples, 1280 bytes).  AAudio is asked
+little-endian, in 60 ms frames (960 samples, 1920 bytes).  AAudio is asked
 for exactly that.  When the device refuses and grants another rate — 48 kHz
 is the common case — the stream is resampled here so the pipeline above
 always sees the canonical format.  The negotiated values are reported by
@@ -103,9 +103,14 @@ import time
 SAMPLE_RATE = 16000
 CHANNELS = 1
 SAMPLE_WIDTH = 2                      # PCM_16BIT
-FRAME_MS = 40
-FRAME_SAMPLES = SAMPLE_RATE * FRAME_MS // 1000        # 640
-FRAME_BYTES = FRAME_SAMPLES * CHANNELS * SAMPLE_WIDTH  # 1280
+# 60 ms frames: a third fewer packets per second than 40 ms, which is the
+# variable that matters on a congested I2P path. Costs 20 ms of accumulation
+# delay. otrv4plus_voice derives its own frame geometry from these constants
+# rather than redeclaring them, so this is the ONE place frame duration is
+# defined -- see the assertions there.
+FRAME_MS = 60
+FRAME_SAMPLES = SAMPLE_RATE * FRAME_MS // 1000        # 960
+FRAME_BYTES = FRAME_SAMPLES * CHANNELS * SAMPLE_WIDTH  # 1920
 
 
 # ---------------------------------------------------------------------------
@@ -542,11 +547,11 @@ class AAudioCapture(AAudioStreamBase):
         self._pending = bytearray()
 
         # Read one hardware burst at a time and let _pending reassemble the
-        # 40 ms frame.  Asking for a non-multiple of framesPerBurst makes
+        # 60 ms frame.  Asking for a non-multiple of framesPerBurst makes
         # AAudio wait on a partially filled burst for every read, which adds
         # jitter and costs frames at the start of a call.  Measured on a
-        # Xiaomi 25028RN03Y: framesPerBurst=480 against a 640-sample frame,
-        # so a 640-frame read straddles 1 1/3 bursts every time.
+        # Xiaomi 25028RN03Y: framesPerBurst=480 against a 960-sample frame,
+        # so a 960-frame read straddles two bursts every time.
         device_frame = max(
             1, int(FRAME_SAMPLES * self.device_rate / float(SAMPLE_RATE)))
         burst = self.frames_per_burst

@@ -403,32 +403,91 @@ def set_kem_provider_for_testing(provider) -> None:
 # FrameError("unsupported protocol version N") before any key material is used.
 VOICE_PROTOCOL_VERSION = 4
 
-VOICE_SAMPLE_RATE = 16000
-VOICE_FRAME_MS = 40
-VOICE_FRAME_SAMPLES = VOICE_SAMPLE_RATE * VOICE_FRAME_MS // 1000     # 640
-VOICE_CHANNELS = 1
-VOICE_FRAME_BYTES = VOICE_FRAME_SAMPLES * VOICE_CHANNELS * 2
+# Frame geometry is DERIVED from otrv4plus_audio, never redeclared.
+#
+# These used to be independent literals in both modules. Nothing linked them,
+# so changing one produced a silent mismatch: read_frame() handed back
+# FRAME_BYTES of PCM while the encoder was told to consume
+# VOICE_FRAME_SAMPLES, and at 40/60 that is Opus reading 1920 bytes out of a
+# 1280-byte buffer on every single frame. Deriving them means the mismatch
+# cannot be expressed.
+VOICE_SAMPLE_RATE = _audio.SAMPLE_RATE
+VOICE_FRAME_MS = _audio.FRAME_MS
+VOICE_FRAME_SAMPLES = _audio.FRAME_SAMPLES
+VOICE_CHANNELS = _audio.CHANNELS
+VOICE_FRAME_BYTES = _audio.FRAME_BYTES
 FRAME_INTERVAL_S = VOICE_FRAME_MS / 1000.0
-# 40 ms at 24 kbit/s is 120 bytes; the slot is 160, so this is free — the
-# packet stays 199 bytes and the rate is unchanged. At 16 kbit/s we were
-# padding half of every frame with zeroes and paying for it anyway.
-VOICE_BITRATE = 24000
-# 8 rather than 5: the extra CPU is affordable at 25 frames/s on aarch64 and
+# 16 kbit/s: wideband mono speech stays intelligible, and 60 ms at 16k is
+# 120 bytes -- inside the 152-byte slot, so the packet stays 199 bytes and
+# the constant-rate property is untouched. What changes is the packet RATE:
+# 16.7/s instead of 25/s, i.e. 26.5 kbit/s on the wire against 39.8 before,
+# a 33% cut in the load offered to a path observed starving (rx=8 of an
+# expected 125 frames in a 5 s window). 24 kbit/s at 60 ms would need 180
+# bytes and overflow the slot; the import-time check below enforces that.
+VOICE_BITRATE = 16000
+# 8 rather than 5: the extra CPU is affordable at 16.7 frames/s on aarch64 and
 # buys audible quality, which matters more here than on a low-latency path.
 VOICE_COMPLEXITY = 8
-VOICE_LOSS_PCT = 20
+# In-band FEC repairs a ONE-frame gap only; longer gaps fall through to
+# concealment. The observed failure mode is multi-second starvation, which
+# FEC cannot touch, so 20% of the bitrate was being spent on redundancy that
+# never applied. 5% keeps single-frame repair, which does work.
+VOICE_LOSS_PCT = 5
 
-# Constant-rate shaping.  Opus at 16 kbit/s and 40 ms is exactly 80 bytes in
+# Constant-rate shaping.  Opus at 16 kbit/s and 60 ms is exactly 120 bytes in
 # CBR; the slot is sized for the VBR peak so a build that refuses vbr=0
 # degrades to 8 kbit/s of padding overhead rather than replacing every single
 # frame with silence and producing a call that carries no audio at all.
 # 8 bytes of the fixed slot carry the sender's monotonic timestamp, used for
 # one-way latency. Taken from padding that was already being transmitted, so
 # the packet stays 199 bytes and the constant-rate property is untouched:
-# 24 kbit/s at 40 ms is 120 bytes, well inside the remaining 152.
+# 16 kbit/s at 60 ms is 120 bytes, exactly filling the remaining 152 slot
+# minus VBR headroom.
 VOICE_TS_LEN = 8
 VOICE_OPUS_SLOT = 152
 VOICE_PLAIN_LEN = 2 + VOICE_TS_LEN + VOICE_OPUS_SLOT
+
+# ── Configuration invariants, checked at import ──────────────────────────────
+#
+# Every one of these has already been violated in practice, and each failed
+# silently rather than loudly:
+#
+#   frame geometry   the two modules held independent literals and drifted
+#   slot vs bitrate  an Opus frame larger than the slot makes pad_opus return
+#                    None, so _capture_worker substitutes silence and counts
+#                    "oversize" -- a call that connects, reports healthy, and
+#                    transmits nothing
+#   Opus frame size  libopus accepts only 2.5/5/10/20/40/60 ms; anything else
+#                    fails per frame at runtime
+#
+# Raising here means a bad combination cannot reach a call.
+_OPUS_VALID_FRAME_MS = (10, 20, 40, 60)
+
+if VOICE_FRAME_MS not in _OPUS_VALID_FRAME_MS:
+    raise RuntimeError(
+        "VOICE_FRAME_MS is %d ms; libopus accepts only %s. It is derived from "
+        "otrv4plus_audio.FRAME_MS -- change it there."
+        % (VOICE_FRAME_MS, list(_OPUS_VALID_FRAME_MS)))
+
+if (VOICE_FRAME_SAMPLES != VOICE_SAMPLE_RATE * VOICE_FRAME_MS // 1000
+        or VOICE_FRAME_BYTES != VOICE_FRAME_SAMPLES * VOICE_CHANNELS * 2):
+    raise RuntimeError(
+        "frame geometry is inconsistent: %d ms, %d samples, %d bytes"
+        % (VOICE_FRAME_MS, VOICE_FRAME_SAMPLES, VOICE_FRAME_BYTES))
+
+#: Bytes one Opus frame occupies at the configured bitrate, plus headroom for
+#: the VBR peak that a build refusing vbr=0 will produce.
+VOICE_OPUS_PEAK_BYTES = (VOICE_BITRATE * VOICE_FRAME_MS // 8000) * 5 // 4
+
+if VOICE_OPUS_PEAK_BYTES > VOICE_OPUS_SLOT:
+    raise RuntimeError(
+        "VOICE_BITRATE %d at %d ms needs up to %d bytes but VOICE_OPUS_SLOT "
+        "is %d. Every frame would exceed the slot, be replaced with silence, "
+        "and the call would carry no audio. Lower the bitrate, shorten the "
+        "frame, or raise the slot (raising it changes the wire format and "
+        "both peers must match)."
+        % (VOICE_BITRATE, VOICE_FRAME_MS, VOICE_OPUS_PEAK_BYTES,
+           VOICE_OPUS_SLOT))
 
 VOICE_SYNC = 0xA7
 FRAME_TYPE_AUDIO = 0x01
@@ -452,14 +511,23 @@ DIR_RESPONDER = 0x02        # callee -> caller
 # Jitter buffer.  Sequence-aware and bounded: an attacker who can inject must
 # not be able to grow it, and a stalled playout device must not accumulate
 # audio nobody will ever hear.
-VOICE_JITTER_PREFILL = 6            # 240 ms before playout starts
-VOICE_JITTER_MAX = 50               # ~2 s hard cap
+# Expressed in MILLISECONDS and converted, because these are depths in frames
+# and a frame is not a fixed duration. Changing VOICE_FRAME_MS from 40 to 60
+# silently stretched a 6-frame floor from 240 ms to 360 ms -- 120 ms of added
+# latency that no constant mentioned and nobody asked for.
+VOICE_JITTER_PREFILL_MS = 240       # before playout starts
+VOICE_JITTER_MAX_MS = 2000          # hard cap
+VOICE_JITTER_DRIFT_HIGH_MS = 600    # above this, claw latency back
+
+VOICE_JITTER_PREFILL = max(2, VOICE_JITTER_PREFILL_MS // VOICE_FRAME_MS)
+VOICE_JITTER_MAX = max(4, VOICE_JITTER_MAX_MS // VOICE_FRAME_MS)
 # Latency ceiling. Without this the buffer keeps whatever depth a burst pushed
 # it to for the rest of the call: playout is paced by the audio device, so it
 # never catches up on its own. Observed at 46/50 and 27/50 on live calls —
-# nearly two seconds parked on top of I2P's own delay. Shedding one 40 ms
+# nearly two seconds parked on top of I2P's own delay. Shedding one 60 ms
 # frame is a click; holding two seconds makes conversation impossible.
-VOICE_JITTER_DRIFT_HIGH = 15        # 600 ms — above this, claw latency back
+VOICE_JITTER_DRIFT_HIGH = max(VOICE_JITTER_PREFILL + 1,
+                              VOICE_JITTER_DRIFT_HIGH_MS // VOICE_FRAME_MS)
 VOICE_JITTER_LATE_TOLERANCE = 2     # frames older than this are discarded
 
 VOICE_REKEY_SECONDS = 120
@@ -2717,7 +2785,7 @@ class VoiceCallSession:
                 # playout is what makes Opus in-band FEC usable: recovering a
                 # lost frame requires the NEXT packet, which does not exist
                 # yet at receive time. It also cuts the buffer's memory by
-                # 8x, since 160 bytes of Opus replaces 1280 of PCM.
+                # 12x, since 152 bytes of Opus replaces 1920 of PCM.
                 _opus, _send_ms = unpad_frame(plaintext)
                 self.latency.observe_frame(_send_ms, self._call_t0)
                 opus_frame = bytearray(_opus)
