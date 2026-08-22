@@ -525,19 +525,63 @@ DIR_RESPONDER = 0x02        # callee -> caller
 # and a frame is not a fixed duration. Changing VOICE_FRAME_MS from 40 to 60
 # silently stretched a 6-frame floor from 240 ms to 360 ms -- 120 ms of added
 # latency that no constant mentioned and nobody asked for.
-VOICE_JITTER_PREFILL_MS = 240       # before playout starts
+#
+# Every one of these is a LOCAL playout decision. Unlike VOICE_OPUS_SLOT they
+# are not wire format, so two peers may run different values safely and a
+# device on a worse path can buy itself more cushion without breaking calls.
+VOICE_JITTER_PREFILL_MS = 180       # floor, and what playout waits for
 VOICE_JITTER_MAX_MS = 2000          # hard cap
-VOICE_JITTER_DRIFT_HIGH_MS = 600    # above this, claw latency back
+VOICE_JITTER_DRIFT_HIGH_MS = 480    # ceiling on the adaptive target
+
+#: Hysteresis above the target before a frame is shed.
+#:
+#: This used to be max(prefill, 4) FRAMES, which at 60 ms was 240 ms of pure
+#: hysteresis stacked on top of a target that already carries its own slack.
+#: Steady-state depth is exactly this threshold -- arrivals and playout run at
+#: the same rate, so nothing else pulls the buffer down -- which made the
+#: observed 840 ms floor (target pinned at 10, plus 4) the design rather than
+#: an accident.
+VOICE_JITTER_SHED_MARGIN_MS = 180
+
+#: Multiplier on the smoothed arrival deviation when sizing the target.
+#:
+#: RFC 3550's J is a smoothed mean absolute deviation. 3x J is roughly 3.75
+#: sigma -- effectively every spike, paid for on every frame for the whole
+#: call. 2x is about 2.5 sigma: a concealed frame now and then, in exchange
+#: for a third less delay on every single frame. For conversation that is the
+#: better side of the trade, and it is a trade rather than a free win.
+VOICE_JITTER_SAFETY_FACTOR = 2.0
+
+
+def _env_ms(name: str, default_ms: int, lo: int, hi: int) -> int:
+    """Read a millisecond override, ignoring anything implausible."""
+    raw = os.environ.get(name, "").strip()
+    if raw.isdigit():
+        value = int(raw)
+        if lo <= value <= hi:
+            return value
+    return default_ms
+
 
 VOICE_JITTER_PREFILL = max(2, VOICE_JITTER_PREFILL_MS // VOICE_FRAME_MS)
 VOICE_JITTER_MAX = max(4, VOICE_JITTER_MAX_MS // VOICE_FRAME_MS)
+VOICE_JITTER_SHED_MARGIN = max(1, VOICE_JITTER_SHED_MARGIN_MS // VOICE_FRAME_MS)
 # Latency ceiling. Without this the buffer keeps whatever depth a burst pushed
 # it to for the rest of the call: playout is paced by the audio device, so it
 # never catches up on its own. Observed at 46/50 and 27/50 on live calls —
 # nearly two seconds parked on top of I2P's own delay. Shedding one 60 ms
 # frame is a click; holding two seconds makes conversation impossible.
-VOICE_JITTER_DRIFT_HIGH = max(VOICE_JITTER_PREFILL + 1,
-                              VOICE_JITTER_DRIFT_HIGH_MS // VOICE_FRAME_MS)
+#
+# OTRV4PLUS_JITTER_MAX_MS raises or lowers this ceiling at runtime. It is the
+# one knob worth having: on a path whose measured jitter genuinely warrants a
+# deep buffer, no amount of tuning elsewhere buys latency back, and the choice
+# between a dropout and a delay belongs to whoever is on the call. The 5 s
+# debug line reports the measured jitter and the target so the choice can be
+# made from data.
+VOICE_JITTER_DRIFT_HIGH = max(
+    VOICE_JITTER_PREFILL + 1,
+    _env_ms("OTRV4PLUS_JITTER_MAX_MS", VOICE_JITTER_DRIFT_HIGH_MS,
+            120, VOICE_JITTER_MAX_MS) // VOICE_FRAME_MS)
 VOICE_JITTER_LATE_TOLERANCE = 2     # frames older than this are discarded
 
 #: Bytes of kernel send buffer to allow on the media socket.
@@ -1637,7 +1681,9 @@ class JitterBuffer:
 
     def __init__(self, prefill=VOICE_JITTER_PREFILL, maxlen=VOICE_JITTER_MAX,
                  late_tolerance=VOICE_JITTER_LATE_TOLERANCE,
-                 drift_high=VOICE_JITTER_DRIFT_HIGH, adaptive=True):
+                 drift_high=VOICE_JITTER_DRIFT_HIGH, adaptive=True,
+                 shed_margin=VOICE_JITTER_SHED_MARGIN,
+                 safety_factor=VOICE_JITTER_SAFETY_FACTOR):
         import heapq
         self._heapq = heapq
         self._heap = []
@@ -1647,6 +1693,8 @@ class JitterBuffer:
         self._maxlen = int(maxlen)
         self._late_tolerance = int(late_tolerance)
         self._drift_high = max(int(prefill) + 1, int(drift_high))
+        self._shed_margin = max(1, int(shed_margin))
+        self._safety_factor = float(safety_factor)
         self._primed = False
         self._last_played = -1
 
@@ -1683,10 +1731,9 @@ class JitterBuffer:
             D = (arrival_delta) - (expected_delta)
             J += (|D| - J) / 16
 
-        The target is three standard-ish deviations of that, plus one frame of
-        slack, clamped so it can never collapse below the floor or run away to
-        the hard cap. Three is the usual choice: it absorbs nearly every
-        spike without paying for the very worst one permanently.
+        The target is VOICE_JITTER_SAFETY_FACTOR deviations of that, plus one
+        frame of slack, clamped so it can never collapse below the floor or
+        run away to the hard cap.
         """
         if not self._adaptive:
             return
@@ -1697,11 +1744,15 @@ class JitterBuffer:
                 observed = now - self._last_arrival
                 d = abs(observed - expected)
                 self._jitter_est += (d - self._jitter_est) / 16.0
-                frames = (3.0 * self._jitter_est) / FRAME_INTERVAL_S
+                frames = ((self._safety_factor * self._jitter_est)
+                          / FRAME_INTERVAL_S)
                 self._target = max(
                     float(self._prefill),
                     min(float(self._drift_high), frames + 1.0))
-        if seq > (self._last_seq or -1):
+        # `self._last_seq or -1` treated a legitimate sequence 0 as -1, since
+        # 0 is falsy. sequence(0, 0) is exactly 0, so the first frame of a
+        # call hit it every time.
+        if self._last_seq is None or seq > self._last_seq:
             self._last_arrival = now
             self._last_seq = seq
 
@@ -1718,9 +1769,11 @@ class JitterBuffer:
         seq = self.sequence(epoch, counter)
         with self._lock:
             self._observe_arrival(seq, time.monotonic())
-            if seq <= self._last_played - self._late_tolerance:
-                self.stats["late"] += 1
-                return False
+            # Anything at or before the last frame played is late by
+            # definition -- playout cannot be undone -- so there is no
+            # tolerance to apply. The guard that tried to
+            # (seq <= last_played - late_tolerance) was strictly subsumed by
+            # this one and never changed an outcome.
             if seq <= self._last_played:
                 self.stats["late"] += 1
                 return False
@@ -1766,12 +1819,13 @@ class JitterBuffer:
             # Shed against the adaptive target rather than a fixed ceiling,
             # so a call that starts on a congested path and then settles gets
             # its latency back instead of carrying the bad minute all night.
-            # Margin of at least 4 frames (160 ms) beyond target before we
-            # reclaim anything. Proportional-to-prefill was too tight on a
-            # small cushion: four frames arriving out of order looked like
-            # accumulated latency and the oldest got shed, reordering the
-            # audio it was there to fix.
-            if len(self._heap) > self.target_depth + max(self._prefill, 4):
+            #
+            # This threshold IS the call's steady-state latency: arrivals and
+            # playout run at the same rate, so nothing else pulls the buffer
+            # down and it settles exactly here. That makes the margin a
+            # latency decision, not a tuning detail, which is why it is
+            # expressed in milliseconds rather than in frames.
+            if len(self._heap) > self.target_depth + self._shed_margin:
                 stale_seq, stale_pcm = self._heapq.heappop(self._heap)
                 self._seqs.discard(stale_seq)
                 _wipe(stale_pcm)
@@ -4550,9 +4604,14 @@ class VoiceCallManager:
                 # arrives in bursts. Without them in this line the two look
                 # identical, which is how a 24-second send queue went
                 # undiagnosed across several calls.
+                # jitter is reported as depth/target with the measured
+                # arrival deviation and the resulting buffer delay beside it.
+                # depth/max said nothing about whether the buffer was sized
+                # for the path or merely parked at its shed threshold, which
+                # is what it was doing at 840 ms.
                 self._vdbg(peer, "5s: tx=%d rx=%d drop=%d bp=%d stale=%d "
                            "foreign=%d late=%d authfail=%d replay=%d "
-                           "jitter=%d/%d epoch=%d %s"
+                           "jitter=%d/%d jit=%.0fms buf=%dms epoch=%d %s"
                            % (delta.get("sent", 0), delta.get("recv", 0),
                               delta.get("dropped", 0),
                               delta.get("backpressure", 0),
@@ -4560,7 +4619,10 @@ class VoiceCallManager:
                               delta.get("foreign", 0),
                               delta.get("late", 0),
                               delta.get("auth_fail", 0), delta.get("replay", 0),
-                              session.jitter.depth(), VOICE_JITTER_MAX,
+                              session.jitter.depth(),
+                              session.jitter.target_depth,
+                              session.jitter.jitter_ms,
+                              session.jitter.depth() * VOICE_FRAME_MS,
                               session.schedule.epoch,
                               session.latency.summary()))
                 # A call can run its whole length with rtt=- and oneway=-,
