@@ -418,14 +418,20 @@ VOICE_FRAME_SAMPLES = _audio.FRAME_SAMPLES
 VOICE_CHANNELS = _audio.CHANNELS
 VOICE_FRAME_BYTES = _audio.FRAME_BYTES
 FRAME_INTERVAL_S = VOICE_FRAME_MS / 1000.0
-# 16 kbit/s: wideband mono speech stays intelligible, and 60 ms at 16k is
-# 120 bytes -- inside the 152-byte slot, so the packet stays 199 bytes and
-# the constant-rate property is untouched. What changes is the packet RATE:
-# 16.7/s instead of 25/s, i.e. 26.5 kbit/s on the wire against 39.8 before,
-# a 33% cut in the load offered to a path observed starving (rx=8 of an
-# expected 125 frames in a 5 s window). 24 kbit/s at 60 ms would need 180
-# bytes and overflow the slot; the import-time check below enforces that.
-VOICE_BITRATE = 16000
+# 24 kbit/s. 16k was chosen while the stream transport was collapsing and
+# the priority was offering the path less; on datagrams the same path now
+# runs drop=0 with rx tracking tx, so the constraint that forced it is gone.
+#
+# The extra bytes are close to free here, which is the part worth stating
+# plainly: I2P moves data in ~1 KB tunnel messages, and a 199-byte datagram
+# and a 279-byte one each occupy exactly one. The packet RATE is what costs
+# tunnel messages, and that is unchanged at 16.7/s. On the wire this is
+# 37.2 kbit/s against 26.5, but in the currency the path actually charges in
+# it is the same 16.7 messages per second either way.
+#
+# 60 ms at 24 kbit/s is 180 bytes nominal, 225 at the VBR peak, so the slot
+# below had to grow with it. The import-time check enforces the relationship.
+VOICE_BITRATE = 24000
 # 8 rather than 5: the extra CPU is affordable at 16.7 frames/s on aarch64 and
 # buys audible quality, which matters more here than on a low-latency path.
 VOICE_COMPLEXITY = 8
@@ -445,7 +451,10 @@ VOICE_LOSS_PCT = 5
 # 16 kbit/s at 60 ms is 120 bytes, exactly filling the remaining 152 slot
 # minus VBR headroom.
 VOICE_TS_LEN = 8
-VOICE_OPUS_SLOT = 152
+# Sized for the VBR peak at VOICE_BITRATE and VOICE_FRAME_MS, plus margin.
+# This is a WIRE FORMAT constant: it sets VOICE_PLAIN_LEN and so the packet
+# length, and two peers with different values reject each other's frames.
+VOICE_OPUS_SLOT = 232
 VOICE_PLAIN_LEN = 2 + VOICE_TS_LEN + VOICE_OPUS_SLOT
 
 # ── Configuration invariants, checked at import ──────────────────────────────
@@ -2147,6 +2156,11 @@ class VoiceCallSession:
         self._dgram_send_addr = None     # (host, port) of the SAM UDP bridge
         self._dgram_send_header = None   # cached "3.0 <session> <dest>\n"
         self._foreign_warned = False
+        # Level control. Two devices on one call measured 4090 and 31226 for
+        # the same microphone self-test, so the far end heard one of them as
+        # a quiet, thin call regardless of the codec settings.
+        self._mic_gain = _audio.make_mic_gain()
+        self._speaker_gain = _audio.make_speaker_gain()
         self._our_dest = None
         self._media_sock = None
         self._accept_sock = None
@@ -2714,6 +2728,13 @@ class VoiceCallSession:
         _print("[voice] codec: Opus %d Hz mono, %d ms frames, %d kbit/s %s"
                % (VOICE_SAMPLE_RATE, VOICE_FRAME_MS, VOICE_BITRATE // 1000,
                   "CBR" if self.constant_rate else "VBR"))
+        _print("[voice] levels: mic gain %.2f%s, speaker gain %.2f%s — "
+               "OTRV4PLUS_MIC_GAIN / OTRV4PLUS_SPEAKER_GAIN to change, "
+               "output is limited so neither can clip"
+               % (self._mic_gain.gain,
+                  " + auto" if self._mic_gain.auto else "",
+                  self._speaker_gain.gain,
+                  " + auto" if self._speaker_gain.auto else ""))
         if self._transport_mode == VOICE_TRANSPORT_DATAGRAM:
             _print("[voice] transport: I2P datagrams — no retransmission, so "
                    "congestion arrives as loss (concealed) rather than as "
@@ -2924,7 +2945,10 @@ class VoiceCallSession:
             if not self._running:
                 break
 
-            pcm = bytearray(raw)
+            # Gain before Opus, not after: the encoder allocates bits by
+            # what it is given, so encoding a -18 dBFS signal and amplifying
+            # at the far end amplifies the coding noise with it.
+            pcm = self._mic_gain.process(raw)
             opus_frame = None
             try:
                 opus_frame = bytearray(
@@ -3304,9 +3328,11 @@ class VoiceCallSession:
                     recovered.append(pcm)
 
                 for chunk in recovered:
+                    loud = None
                     try:
                         if playback is not None:
-                            playback.write_frame(bytes(chunk))
+                            loud = self._speaker_gain.process(chunk)
+                            playback.write_frame(bytes(loud))
                     except _audio.AudioError as exc:
                         if exc.code == _audio.AUDIO_DEVICE_DISCONNECTED:
                             self._signal_stream_lost(
@@ -3315,6 +3341,8 @@ class VoiceCallSession:
                     except Exception:
                         pass
                     finally:
+                        if loud is not None:
+                            _wipe(loud)
                         _wipe(chunk)
                 recovered = []
             except Exception:
@@ -4540,6 +4568,16 @@ class VoiceCallManager:
                 # PINGs went out, whether they were answered, or whether the
                 # answers timed out. Those three are already tracked; printing
                 # them is what turns "no measurement" into a measurement.
+                # Levels. "Hard to hear on one phone, clear on the other"
+                # is a measurable statement and was left unmeasured for
+                # several calls; the two devices differed by 17 dB at the
+                # microphone.
+                try:
+                    self._vdbg(peer, "levels: %s | %s"
+                               % (session._mic_gain.summary(),
+                                  session._speaker_gain.summary()))
+                except Exception:
+                    pass
                 lat = session.latency
                 if lat.sent and not lat.answered:
                     self._vdbg(peer,

@@ -552,6 +552,198 @@ class AAudioStreamBase(AudioStream):
         }
 
 
+# ---------------------------------------------------------------------------
+# Gain
+# ---------------------------------------------------------------------------
+
+try:                                   # removed in Python 3.13 (PEP 594)
+    import audioop as _audioop
+except Exception:                      # pragma: no cover - version dependent
+    _audioop = None
+
+#: Full scale for PCM_16BIT.
+PCM_FULL_SCALE = 32767
+
+#: Ceiling the limiter holds output below, about -1 dBFS. Leaving headroom
+#: rather than running to full scale keeps the resampler and the codec from
+#: clipping on intersample peaks that a sample-domain check cannot see.
+GAIN_CEILING = 29200
+
+#: What automatic gain aims a speech peak at, about -6 dBFS. Loud enough to
+#: use the codec's range, quiet enough that a sudden louder talker has
+#: somewhere to go before the limiter has to work.
+GAIN_TARGET_PEAK = 16384
+
+#: Ceiling on automatic boost, 18 dB. Past this the noise floor comes up as
+#: fast as the speech does and the result is louder but no clearer.
+GAIN_MAX_AUTO = 8.0
+
+
+def _env_float(name: str, default: float, lo: float, hi: float) -> float:
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        value = float(raw)
+    except ValueError:
+        return default
+    if value != value or value < lo or value > hi:   # NaN or out of range
+        return default
+    return value
+
+
+def _env_flag(name: str, default: bool) -> bool:
+    raw = os.environ.get(name, "").strip().lower()
+    if raw in ("1", "true", "yes", "on"):
+        return True
+    if raw in ("0", "false", "no", "off"):
+        return False
+    return default
+
+
+class GainStage:
+    """Level control for one PCM_16BIT mono stream.
+
+    Two devices on the same call measured 4090 and 31226 for the same
+    microphone self-test -- a 17 dB difference in what the hardware hands
+    back for the same speech. Opus encodes what it is given, so on the quiet
+    device the far end hears a quiet, thin call no matter what the codec is
+    doing. The platform AGC is already requested through the
+    VOICE_COMMUNICATION input preset and evidently did not deliver, so this
+    is applied on top.
+
+    Fixed gain, then optional automatic gain, then a limiter -- in that
+    order, and the limiter is not optional. A plain multiply would clip: at
+    4x a -18 dBFS peak lands at -6, but any louder passage lands past full
+    scale and hard clipping is far more destructive to intelligibility than
+    the quietness it was meant to fix. Here the frame's own peak sets a
+    ceiling on the gain actually applied, so output cannot clip regardless of
+    how the gain is configured.
+
+    Automatic gain rises slowly and falls quickly. The reverse pumps: a door
+    slam drops the gain, and a slow recovery leaves the following speech
+    inaudible for a second.
+    """
+
+    #: Per-frame multiplicative limits on automatic gain movement. Up is
+    #: gentle so a pause does not audibly hunt; down is immediate enough that
+    #: the limiter rarely has to intervene twice.
+    _AUTO_RISE = 1.06
+    _AUTO_FALL = 0.80
+
+    def __init__(self, gain=1.0, auto=False, name="gain",
+                 target_peak=GAIN_TARGET_PEAK, max_auto=GAIN_MAX_AUTO):
+        self.name = name
+        self.gain = float(gain)
+        self.auto = bool(auto)
+        self.target_peak = int(target_peak)
+        self.max_auto = float(max_auto)
+        self._auto_gain = 1.0
+        self.peak_in = 0
+        self.peak_out = 0
+        self.limited_frames = 0
+        self.frames = 0
+
+    # -- primitives -------------------------------------------------------
+
+    @staticmethod
+    def _peak(pcm) -> int:
+        if not pcm:
+            return 0
+        if _audioop is not None:
+            return _audioop.max(bytes(pcm), SAMPLE_WIDTH)
+        n = len(pcm) // SAMPLE_WIDTH
+        if n == 0:
+            return 0
+        worst = 0
+        for sample in struct.unpack("<%dh" % n, bytes(pcm[:n * SAMPLE_WIDTH])):
+            if sample < 0:
+                sample = -sample
+            if sample > worst:
+                worst = sample
+        return worst
+
+    @staticmethod
+    def _scale(pcm, factor: float) -> bytearray:
+        if _audioop is not None:
+            # audioop.mul saturates rather than wrapping, so it is a correct
+            # backstop even though the limiter means it should never engage.
+            return bytearray(_audioop.mul(bytes(pcm), SAMPLE_WIDTH, factor))
+        n = len(pcm) // SAMPLE_WIDTH
+        if n == 0:
+            return bytearray()
+        samples = struct.unpack("<%dh" % n, bytes(pcm[:n * SAMPLE_WIDTH]))
+        out = []
+        for sample in samples:
+            scaled = int(sample * factor)
+            if scaled > PCM_FULL_SCALE:
+                scaled = PCM_FULL_SCALE
+            elif scaled < -PCM_FULL_SCALE - 1:
+                scaled = -PCM_FULL_SCALE - 1
+            out.append(scaled)
+        return bytearray(struct.pack("<%dh" % len(out), *out))
+
+    # -- main -------------------------------------------------------------
+
+    def process(self, pcm) -> bytearray:
+        """Apply gain to one frame.  Returns a new buffer; never clips."""
+        if not pcm:
+            return bytearray(pcm or b"")
+
+        peak = self._peak(pcm)
+        self.peak_in = peak
+        self.frames += 1
+
+        applied = self.gain
+
+        if self.auto and peak > 0:
+            desired = self.target_peak / float(peak)
+            if desired < 1.0:
+                desired = 1.0            # only ever boost; never duck speech
+            elif desired > self.max_auto:
+                desired = self.max_auto
+            if desired < self._auto_gain:
+                self._auto_gain = max(desired, self._auto_gain * self._AUTO_FALL)
+            else:
+                self._auto_gain = min(desired, self._auto_gain * self._AUTO_RISE)
+            applied *= self._auto_gain
+
+        # The limiter. Whatever the configuration asked for, this frame's own
+        # peak decides what can actually be applied.
+        if peak > 0 and peak * applied > GAIN_CEILING:
+            applied = GAIN_CEILING / float(peak)
+            self.limited_frames += 1
+
+        if abs(applied - 1.0) < 1e-3:
+            out = bytearray(pcm)
+        else:
+            out = self._scale(pcm, applied)
+        self.peak_out = self._peak(out)
+        return out
+
+    def summary(self) -> str:
+        return ("%s: peak_in=%d peak_out=%d fixed=%.2f auto=%.2f "
+                "limited=%d/%d" % (self.name, self.peak_in, self.peak_out,
+                                   self.gain, self._auto_gain,
+                                   self.limited_frames, self.frames))
+
+
+def make_mic_gain() -> GainStage:
+    """Capture gain.  Automatic by default: device levels vary by 17 dB."""
+    return GainStage(gain=_env_float("OTRV4PLUS_MIC_GAIN", 1.0, 0.1, 16.0),
+                     auto=_env_flag("OTRV4PLUS_MIC_AGC", True),
+                     name="mic")
+
+
+def make_speaker_gain() -> GainStage:
+    """Playback gain.  Fixed by default -- the far end's level is already
+    normalised by its own capture stage, so a second automatic stage here
+    would chase the first."""
+    return GainStage(gain=_env_float("OTRV4PLUS_SPEAKER_GAIN", 2.0, 0.1, 16.0),
+                     auto=_env_flag("OTRV4PLUS_SPEAKER_AGC", False),
+                     name="speaker")
+
+
 class AAudioCapture(AAudioStreamBase):
     """Microphone capture.  Replaces parec.
 
