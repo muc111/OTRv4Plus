@@ -597,6 +597,77 @@ def limit_media_send_buffer(sock) -> int:
 # counter, length and type, then the sealed body -- and every property that
 # made it safe over a stream (AEAD authentication, per-epoch replay windows,
 # sequence-aware reordering) is exactly what a datagram transport requires.
+# ── I2P destinations ─────────────────────────────────────────────────────────
+#
+# SAM v3 answers SESSION CREATE with
+#
+#     SESSION STATUS RESULT=OK DESTINATION=$privkey
+#
+# and $privkey is NOT the destination. Per the SAM v3 specification it is the
+# base64 of
+#
+#     Destination || PrivateKey || SigningPrivateKey
+#
+# -- 679 bytes for SIGNATURE_TYPE=7, which is 908 base64 characters against
+# the 524 of the destination alone. Two things followed from treating that
+# string as if it were a destination:
+#
+#   * it was published to the peer in every INVITE, so the session's own
+#     private keys went out over the wire. The destination is TRANSIENT and
+#     per-call and the INVITE travels inside the established OTR channel, so
+#     only the authenticated peer ever saw it -- but a private key belongs on
+#     one device and it was on two.
+#   * the repliable-datagram source filter compared SAM's reported source, a
+#     524-character destination, against a 908-character private key blob.
+#     They never matched, so the callee dropped every media datagram the
+#     caller sent: rx=0 with drop climbing at the frame rate.
+#
+# Everything that needs a destination -- the INVITE, STREAM CONNECT, the
+# datagram filter -- wants the Destination alone, so it is parsed out once
+# here and the blob is never retained.
+_I2P_B64_TO_STD = str.maketrans("-~", "+/")
+_I2P_B64_FROM_STD = str.maketrans("+/", "-~")
+
+#: KeysAndCert before the certificate body: 256 public + 128 signing public
+#: + 1 certificate type + 2 certificate length.
+_KEYS_AND_CERT_PREFIX = 387
+
+
+def i2p_b64decode(text: str) -> bytes:
+    """Decode I2P's base64 alphabet (+ and / replaced by - and ~)."""
+    import base64
+    padded = text + "=" * (-len(text) % 4)
+    return base64.b64decode(padded.translate(_I2P_B64_TO_STD))
+
+
+def i2p_b64encode(raw: bytes) -> str:
+    """Encode to I2P's base64 alphabet."""
+    import base64
+    return base64.b64encode(raw).decode("ascii").translate(_I2P_B64_FROM_STD)
+
+
+def i2p_public_destination(text: str) -> str:
+    """Return the Destination alone from a destination or a SAM private key.
+
+    Idempotent: handed a bare destination it returns an equivalent string, so
+    it is safe to apply to anything arriving from a peer whether that peer
+    sends the destination or, as this code used to, the whole private blob.
+
+    Raises ValueError on anything that does not parse as a KeysAndCert, which
+    is what a caller wants for a field that came off the wire.
+    """
+    raw = i2p_b64decode(text)
+    if len(raw) < _KEYS_AND_CERT_PREFIX:
+        raise ValueError("destination is %d bytes, too short for a KeysAndCert"
+                         % len(raw))
+    cert_len = int.from_bytes(raw[385:387], "big")
+    total = _KEYS_AND_CERT_PREFIX + cert_len
+    if len(raw) < total:
+        raise ValueError("certificate claims %d bytes but only %d remain"
+                         % (cert_len, len(raw) - _KEYS_AND_CERT_PREFIX))
+    return i2p_b64encode(raw[:total])
+
+
 VOICE_TRANSPORT_DATAGRAM = "datagram"
 VOICE_TRANSPORT_STREAM = "stream"
 
@@ -2075,6 +2146,7 @@ class VoiceCallSession:
         self._dgram_transport = None     # asyncio datagram transport
         self._dgram_send_addr = None     # (host, port) of the SAM UDP bridge
         self._dgram_send_header = None   # cached "3.0 <session> <dest>\n"
+        self._foreign_warned = False
         self._our_dest = None
         self._media_sock = None
         self._accept_sock = None
@@ -2109,7 +2181,7 @@ class VoiceCallSession:
         self.stats = {"sent": 0, "recv": 0, "dropped": 0, "late": 0,
                       "oversize": 0, "backpressure": 0, "auth_fail": 0,
                       "replay": 0, "resync": 0, "fec_recovered": 0,
-                      "stale": 0}
+                      "stale": 0, "foreign": 0}
 
     # -- state machine ----------------------------------------------------
 
@@ -2383,8 +2455,16 @@ class VoiceCallSession:
                     pass
                 raise
 
-        self._sam_control, self._sam_session_id, self._our_dest = (
+        self._sam_control, self._sam_session_id, blob = (
             await self.loop.run_in_executor(None, _create))
+        # SESSION STATUS hands back the private key blob. Nothing after this
+        # point needs it -- the session is bound to the control socket, not to
+        # the key -- so derive the destination and let the blob go.
+        try:
+            self._our_dest = i2p_public_destination(blob)
+        except ValueError as exc:
+            raise RuntimeError("SAM returned an unparseable DESTINATION: %s"
+                               % exc)
         return self._our_dest
 
     # -- datagram transport ------------------------------------------------
@@ -2461,9 +2541,20 @@ class VoiceCallSession:
             return
         # Cheap pre-AEAD filter.  Not a security boundary -- the AEAD is --
         # but it keeps an unrelated sender from reaching the cipher at all.
+        #
+        # Counted separately from "dropped". When this filter was comparing a
+        # destination against a private key blob it discarded every packet of
+        # the call, and folded into the general drop counter that was
+        # indistinguishable from a path losing frames.
         if (source is not None and self._peer_dest
                 and source != self._peer_dest):
-            self.stats["dropped"] += 1
+            self.stats["foreign"] += 1
+            if not self._foreign_warned:
+                self._foreign_warned = True
+                _print("[voice] media datagrams are arriving from a "
+                       "destination other than the peer's and are being "
+                       "discarded — if the call is silent, the two sides "
+                       "disagree about the peer's destination")
             return
         before = self.stats["recv"]
         buf = bytearray(payload)
@@ -3259,7 +3350,7 @@ class VoiceCallSession:
         return ("state=%s role=%s audio=%s %s transport=%s keys=%s epoch=%d "
                 "pending=%s sent=%d "
                 "recv=%d dropped=%d late=%d authfail=%d replay=%d resync=%d "
-                "backpressure=%d stale=%d oversize=%d fec=%d "
+                "backpressure=%d stale=%d foreign=%d oversize=%d fec=%d "
                 "jitter=%d/%d (%.0fms) %s ratchets=%d rekeys=%d/%d"
                 % (self.state, self.role, audio, rate, transport,
                    "confirmed" if self.keys_confirmed.is_set() else "pending",
@@ -3269,7 +3360,7 @@ class VoiceCallSession:
                    self.stats["auth_fail"], self.stats["replay"],
                    self.stats["resync"],
                    self.stats["backpressure"], self.stats["stale"],
-                   self.stats["oversize"],
+                   self.stats["foreign"], self.stats["oversize"],
                    self.stats["fec_recovered"],
                    self.jitter.depth(), self.jitter.target_depth,
                    self.jitter.jitter_ms, self.latency.summary(),
@@ -4060,6 +4151,18 @@ class VoiceCallManager:
         if not caller_dest or len(caller_dest) < 64 or len(caller_dest) > 2048:
             self._signal(peer, "REJECT", (call_id.hex(), "bad-destination"))
             return
+        # Normalise to the Destination alone. A peer running the older code
+        # sends the whole SAM private key blob; the datagram source filter
+        # compares against SAM's reported source, which is always the
+        # destination, so the two have to be in the same form or every media
+        # packet is discarded.
+        try:
+            caller_dest = i2p_public_destination(caller_dest)
+        except ValueError as exc:
+            self._vdbg(peer, "INVITE destination did not parse: %s"
+                       % _san(str(exc), 120))
+            self._signal(peer, "REJECT", (call_id.hex(), "bad-destination"))
+            return
 
         now = time.monotonic()
         if now - self._last_invite.get(peer, 0.0) < VOICE_MIN_INVITE_INTERVAL:
@@ -4420,12 +4523,13 @@ class VoiceCallManager:
                 # identical, which is how a 24-second send queue went
                 # undiagnosed across several calls.
                 self._vdbg(peer, "5s: tx=%d rx=%d drop=%d bp=%d stale=%d "
-                           "late=%d authfail=%d replay=%d jitter=%d/%d "
-                           "epoch=%d %s"
+                           "foreign=%d late=%d authfail=%d replay=%d "
+                           "jitter=%d/%d epoch=%d %s"
                            % (delta.get("sent", 0), delta.get("recv", 0),
                               delta.get("dropped", 0),
                               delta.get("backpressure", 0),
                               delta.get("stale", 0),
+                              delta.get("foreign", 0),
                               delta.get("late", 0),
                               delta.get("auth_fail", 0), delta.get("replay", 0),
                               session.jitter.depth(), VOICE_JITTER_MAX,

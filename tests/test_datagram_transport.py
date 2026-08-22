@@ -135,7 +135,8 @@ def _session(mode=voice.VOICE_TRANSPORT_DATAGRAM):
     s._sam_session_id = "sess-1"
     s._peer_dest = None
     s.stats = {"sent": 0, "recv": 0, "dropped": 0, "backpressure": 0,
-               "stale": 0, "resync": 0}
+               "stale": 0, "resync": 0, "foreign": 0}
+    s._foreign_warned = True          # suppress the console warning in tests
     s.loop = None
     return s
 
@@ -229,7 +230,11 @@ class TestInboundFiltering:
         s._peer_dest = DEST_B
         s._on_datagram(DEST_A.encode() + b"\n" + b"\xa7frame")
         assert drained == []
-        assert s.stats["dropped"] == 1
+        # Counted as foreign, not as a drop: a filter rejecting everything and
+        # a path losing everything are different faults and looked identical
+        # while they shared a counter.
+        assert s.stats["foreign"] == 1
+        assert s.stats["dropped"] == 0
 
     def test_a_datagram_with_no_source_still_reaches_the_cipher(self):
         # RAW forwarding carries no source. The AEAD is the real boundary.
@@ -284,6 +289,7 @@ class TestPeerDestinationLatching:
             "recv", s.stats["recv"] + 1)
         s._on_datagram(DEST_A.encode() + b"\n" + b"\xa7frame")
         assert s._peer_dest == DEST_B
+        assert s.stats["foreign"] == 1
 
 
 async def _body_two_sessions_exchange_frames_through_a_stand_in_bridge():
