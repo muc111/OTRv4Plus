@@ -790,8 +790,10 @@ class OTRv4PlusXMPP(ClientXMPP):
         self.nick = jid.split("@", 1)[0] if jid else "me"
         self._keepalive_task = None
         self._keepalive_ticks = 0        # liveness, shown by /status
-        self._keepalive_last_ok = None   # monotonic time of last good ping
+        self._keepalive_last_ok = None   # monotonic time of last round trip
         self._keepalive_degraded = False
+        self._keepalive_pings = 0        # round trips attempted
+        self._keepalive_ping_fails = 0   # consecutive round-trip timeouts
 
         # Voice call manager (initialized lazily after event loop is available)
         self._voice_manager = None
@@ -1000,55 +1002,162 @@ class OTRv4PlusXMPP(ClientXMPP):
         if self._probe:
             print(message)
 
-    async def _keepalive_loop(self):
-        """Send a whitespace ping every 8 s so idle I2P tunnels stay alive.
+    #: Whitespace cadence. Cheap, and its only job is keeping the I2P tunnel
+    #: from being torn down for idleness.
+    KEEPALIVE_WHITESPACE_S = 8
 
-        The ping is essential: an idle I2P tunnel is torn down, which would
-        drop the session during the long silences of an SMP exchange.
+    #: Round-trip cadence. This is the one that proves the far end exists.
+    KEEPALIVE_PING_S = 60
+
+    #: How long to wait for a ping reply. Generous on purpose: the media path
+    #: shares this event loop, so a reply can be delayed by work rather than
+    #: by a dead stream, and treating a busy loop as a dead server would drop
+    #: a healthy call.
+    KEEPALIVE_PING_TIMEOUT_S = 30
+
+    #: Consecutive round-trip failures before the stream is declared dead.
+    #: Three at 60 s is about three minutes of silence, which is far longer
+    #: than any plausible stall and short enough to reconnect before a rekey
+    #: is missed.
+    KEEPALIVE_PING_FAILS = 3
+
+    async def _probe_stream(self) -> bool:
+        """Round-trip liveness check against our own server (XEP-0199).
+
+        Returns True if the server answered AT ALL. An IqError counts as
+        alive: a server replying `service-unavailable` to a ping has proven
+        the stream works, which is the only thing being asked here. Treating
+        it as death would reconnect against a perfectly good session.
+        """
+        try:
+            await self["xep_0199"].async_ping(
+                self.boundjid.host, timeout=self.KEEPALIVE_PING_TIMEOUT_S)
+            return True
+        except IqError:
+            return True
+        except (IqTimeout, asyncio.TimeoutError):
+            return False
+        except Exception:
+            return False
+
+    def _declare_stream_dead(self, why: str) -> None:
+        """Give up on the stream and let the reconnect logic take over.
+
+        Breaking out of the keepalive loop is not enough on its own -- it
+        only stops pinging. Something has to actually take the stream down so
+        `_on_disconnected` fires and `_reconnect` runs.
+
+        Any call in progress is deliberately left alone. Voice media rides
+        its own I2P datagram session and does not touch XMPP once the call is
+        up; only rekey signalling does, and a rekey that cannot be delivered
+        already fails safe by keeping the committed epoch. Tearing down a
+        working call because the control plane blinked would be the worse
+        outcome by far.
+        """
+        print("[keepalive] %s — reconnecting. Any call in progress keeps "
+              "running: media does not use XMPP." % why)
+        try:
+            result = self.disconnect()
+            # slixmpp returns a coroutine here in some versions.
+            if asyncio.iscoroutine(result):
+                asyncio.ensure_future(result)
+        except Exception as exc:
+            print("[keepalive] disconnect failed: %s" % _sanitise(str(exc), 80))
+
+    async def _keepalive_loop(self):
+        """Keep the stream alive, and notice when it is not.
+
+        Two mechanisms, because they answer different questions.
+
+        **Whitespace, every 8 s.** Keeps an idle I2P tunnel from being torn
+        down, which would drop the session during the long silences of an SMP
+        exchange or a call where nothing is being typed.
+
+        **A round trip, every 60 s.** This is the one that matters, and it
+        was missing. `send_raw` only writes into the local socket buffer: it
+        succeeds whether or not anything is still listening at the far end.
+        Over I2P that is not a corner case -- the SAM stream can be gone
+        while the local socket keeps accepting writes indefinitely -- so a
+        whitespace-only keepalive reports a healthy stream forever, the
+        failure counter never moves, `_on_disconnected` never fires, and
+        reconnect never runs. The session dies silently and the first symptom
+        is the peer appearing to go offline.
+
+        A XEP-0199 ping requires the server to answer, so it proves the whole
+        path rather than the first hop of it. On repeated timeout the stream
+        is taken down explicitly, because breaking out of this loop on its
+        own only stops pinging.
+
+        Calls are never torn down here. Media rides its own I2P datagram
+        session; only rekey signalling uses XMPP, and a rekey that cannot be
+        delivered already fails safe by keeping the committed epoch.
 
         The loop is SILENT while it is working, including under --debug. A
         heartbeat that prints every 8 s forever reports nothing new — after
         the second line it is pure noise, and on a phone screen it buries the
         conversation it exists to protect. What is worth saying is a *change*:
-        a ping that failed, and a ping that started working again. Those are
-        printed unconditionally, because by then something is actually wrong.
+        a probe that failed, and one that started working again.
 
         Set OTRV4PLUS_KEEPALIVE_TRACE=1 to watch every tick; /status reports
-        the tick count and the age of the last successful ping on demand.
-
-        A failure is not fatal on its own — the stream may simply be
-        mid-reconnect — so a few consecutive failures are tolerated before
-        the loop gives up and lets the reconnect logic take over.
+        the counters and the age of the last successful round trip.
         """
         trace = bool(os.environ.get("OTRV4PLUS_KEEPALIVE_TRACE"))
-        consecutive_failures = 0
+        whitespace_failures = 0
+        next_probe = time.monotonic() + self.KEEPALIVE_PING_S
         try:
-            while self.is_connected():
-                await asyncio.sleep(8)
+            while not self._shutting_down:
+                await asyncio.sleep(self.KEEPALIVE_WHITESPACE_S)
+                if not self.is_connected():
+                    # _on_disconnected owns the reconnect; this task is
+                    # cancelled there and restarted by _on_start.
+                    break
                 self._keepalive_ticks += 1
+
                 try:
                     self.send_raw(" ")
-                    self._keepalive_last_ok = time.monotonic()
-                    if consecutive_failures or self._keepalive_degraded:
-                        print("[keepalive] stream responding again after %d "
-                              "failed ping(s)" % consecutive_failures)
-                        self._keepalive_degraded = False
-                    consecutive_failures = 0
+                    whitespace_failures = 0
+                except Exception as exc:
+                    whitespace_failures += 1
+                    if whitespace_failures == 1:
+                        print("[keepalive] whitespace write failed (%s)"
+                              % _sanitise(str(exc), 80))
+                    if whitespace_failures >= 3:
+                        self._declare_stream_dead(
+                            "the local socket stopped accepting writes")
+                        break
+
+                if time.monotonic() < next_probe:
                     if trace:
                         print("[keepalive] tick %d (loop alive)"
                               % self._keepalive_ticks)
-                except Exception as exc:
-                    consecutive_failures += 1
+                    continue
+
+                next_probe = time.monotonic() + self.KEEPALIVE_PING_S
+                self._keepalive_pings += 1
+                alive = await self._probe_stream()
+
+                if alive:
+                    self._keepalive_last_ok = time.monotonic()
+                    if self._keepalive_degraded:
+                        print("[keepalive] server responding again after %d "
+                              "missed round trip(s)"
+                              % self._keepalive_ping_fails)
+                        self._keepalive_degraded = False
+                    self._keepalive_ping_fails = 0
+                    if trace:
+                        print("[keepalive] round trip %d ok"
+                              % self._keepalive_pings)
+                else:
+                    self._keepalive_ping_fails += 1
                     if not self._keepalive_degraded:
-                        # Said once, not once per tick: the I2P tunnel is the
-                        # thing most likely to have gone, and the user needs
-                        # to know before the session silently dies.
+                        # Said once, not once per probe.
                         self._keepalive_degraded = True
-                        print("[keepalive] ping failed (%s) — the I2P tunnel "
-                              "may be dropping" % _sanitise(str(exc), 80))
-                    if consecutive_failures >= 3:
-                        print("[keepalive] stopped after 3 failed pings — "
-                              "reconnect will take over")
+                        print("[keepalive] no reply from the server — the "
+                              "I2P tunnel or the stream may be gone")
+                    if self._keepalive_ping_fails >= self.KEEPALIVE_PING_FAILS:
+                        self._declare_stream_dead(
+                            "%d round trips in a row went unanswered"
+                            % self._keepalive_ping_fails)
                         break
         except asyncio.CancelledError:
             pass
@@ -2276,12 +2385,20 @@ class OTRv4PlusXMPP(ClientXMPP):
         elif lstrip == "/status":
             if peer:
                 self.show_status(peer)
+            # Ticks are whitespace writes and prove only that the local
+            # socket accepts bytes. The round trip is what proves the server
+            # is still there, so both are reported and never conflated.
             if self._keepalive_last_ok is not None:
-                print("[keepalive] %d ticks, last ping OK %.0fs ago"
-                      % (self._keepalive_ticks,
-                         time.monotonic() - self._keepalive_last_ok))
+                print("[keepalive] %d ticks, %d round trips, last reply "
+                      "%.0fs ago%s"
+                      % (self._keepalive_ticks, self._keepalive_pings,
+                         time.monotonic() - self._keepalive_last_ok,
+                         "  DEGRADED" if self._keepalive_degraded else ""))
+            elif self._keepalive_pings:
+                print("[keepalive] %d ticks, %d round trips, NO reply yet"
+                      % (self._keepalive_ticks, self._keepalive_pings))
             elif self._keepalive_ticks:
-                print("[keepalive] %d ticks, no successful ping yet"
+                print("[keepalive] %d ticks, first round trip not due yet"
                       % self._keepalive_ticks)
 
         # --- Roster ---
