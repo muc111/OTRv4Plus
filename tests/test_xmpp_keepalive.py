@@ -306,12 +306,110 @@ class TestNoDuplicateLoops:
         window = source[start:start + 700]
         assert "existing.cancel()" in window
 
-    def test_a_second_disconnect_does_not_race_a_second_reconnect(self):
-        source = open(xmpp.__file__, encoding="utf-8").read()
-        start = source.index("def _on_disconnected")
-        window = source[start:start + 900]
-        assert "_reconnect_task" in window
-        assert "not existing.done()" in window
+    def test_every_path_schedules_through_one_guarded_entry_point(self):
+        # Behavioural, not a source grep: _on_disconnected and
+        # _on_connection_failed both fire during a failed reconnect attempt,
+        # and _on_connection_failed used to schedule WITHOUT recording the
+        # task -- invisible to the other's guard. Two loops with independent
+        # backoffs then both called connect(), and on I2P built two SAM
+        # forwarders for one session.
+        import asyncio as _a
+
+        class Sched:
+            _schedule_reconnect = xmpp.OTRv4PlusXMPP._schedule_reconnect
+            _has_transport_params = xmpp.OTRv4PlusXMPP._has_transport_params
+            _on_disconnected = xmpp.OTRv4PlusXMPP._on_disconnected
+            _on_connection_failed = xmpp.OTRv4PlusXMPP._on_connection_failed
+
+            def __init__(self):
+                self._shutting_down = False
+                self._sam_params = {"server_b32": "x.b32.i2p"}
+                self._tor_params = None
+                self._reconnect_task = None
+                self._keepalive_task = None
+                self.started = 0
+
+            async def _reconnect(self):
+                self.started += 1
+                await _a.sleep(3600)      # still running
+
+        async def _drive():
+            s = Sched()
+            s._on_disconnected(None)          # first: schedules
+            s._on_connection_failed(None)     # second: must NOT duplicate
+            s._on_disconnected(None)          # third: must NOT duplicate
+            await _a.sleep(0)
+            task = s._reconnect_task
+            task.cancel()
+            return s.started
+
+        assert _run(_drive()) == 1
+
+    def test_a_reconnect_is_scheduled_once_the_previous_one_finished(self):
+        # The guard must not wedge the client permanently after a completed
+        # attempt.
+        import asyncio as _a
+
+        class Sched:
+            _schedule_reconnect = xmpp.OTRv4PlusXMPP._schedule_reconnect
+            _has_transport_params = xmpp.OTRv4PlusXMPP._has_transport_params
+
+            def __init__(self):
+                self._shutting_down = False
+                self._sam_params = {"server_b32": "x.b32.i2p"}
+                self._tor_params = None
+                self._reconnect_task = None
+                self.started = 0
+
+            async def _reconnect(self):
+                self.started += 1
+
+        async def _drive():
+            s = Sched()
+            s._schedule_reconnect("first")
+            await _a.sleep(0)
+            await _a.sleep(0)
+            s._schedule_reconnect("second")
+            await _a.sleep(0)
+            await _a.sleep(0)
+            return s.started
+
+        assert _run(_drive()) == 2
+
+    def test_shutdown_stops_any_further_reconnect(self):
+        class Sched:
+            _schedule_reconnect = xmpp.OTRv4PlusXMPP._schedule_reconnect
+            _has_transport_params = xmpp.OTRv4PlusXMPP._has_transport_params
+
+            def __init__(self):
+                self._shutting_down = True
+                self._sam_params = {"server_b32": "x.b32.i2p"}
+                self._tor_params = None
+                self._reconnect_task = None
+
+            async def _reconnect(self):
+                raise AssertionError("scheduled during shutdown")
+
+        Sched()._schedule_reconnect("quit")
+
+    def test_no_transport_parameters_means_no_reconnect(self):
+        # "We do not know how to reconnect" must mean "stay down", never
+        # "reconnect somehow" -- the direct-connect branch would expose the
+        # address of an I2P or Tor session.
+        class Sched:
+            _schedule_reconnect = xmpp.OTRv4PlusXMPP._schedule_reconnect
+            _has_transport_params = xmpp.OTRv4PlusXMPP._has_transport_params
+
+            def __init__(self):
+                self._shutting_down = False
+                self._sam_params = None
+                self._tor_params = None
+                self._reconnect_task = None
+
+            async def _reconnect(self):
+                raise AssertionError("scheduled with no transport")
+
+        Sched()._schedule_reconnect("no params")
 
 
 class TestMediaSurvivesTheWholeCycle:

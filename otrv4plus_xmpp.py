@@ -1376,32 +1376,38 @@ class OTRv4PlusXMPP(ClientXMPP):
         return (self._sam_params is not None
                 or getattr(self, "_tor_params", None) is not None)
 
+    def _schedule_reconnect(self, why: str) -> None:
+        """Start the reconnect loop unless one is already running.
+
+        Every path that wants a reconnect goes through here. _on_disconnected
+        and _on_connection_failed both fire during a failed reconnect attempt,
+        and they used to schedule independently -- one of them without even
+        recording the task, so it was invisible to the other's guard. The
+        result was two loops with independent backoff delays both calling
+        connect(), and on I2P two SAM forwarders being built for one session.
+        """
+        if self._shutting_down or not self._has_transport_params():
+            return
+        existing = self._reconnect_task
+        if existing is not None and not existing.done():
+            return
+        try:
+            loop = asyncio.get_event_loop()
+            self._reconnect_task = loop.create_task(self._reconnect())
+        except Exception as exc:
+            print("[reconnect] could not schedule after %s: %s"
+                  % (why, _sanitise(str(exc), 80)))
+
     def _on_disconnected(self, event):
         print("\n[disconnected]")
         if self._keepalive_task:
             self._keepalive_task.cancel()
-        if not self._shutting_down and self._has_transport_params():
-            existing = self._reconnect_task
-            if existing is not None and not existing.done():
-                # A second disconnect while a reconnect is already backing
-                # off would otherwise race two loops against each other, each
-                # with its own delay, and both calling connect().
-                return
-            try:
-                loop = asyncio.get_event_loop()
-                self._reconnect_task = loop.create_task(self._reconnect())
-            except Exception as e:
-                print(f"[reconnect] could not schedule: {e}")
+        self._schedule_reconnect("disconnect")
 
     def _on_connection_failed(self, event):
         reason = str(event) if event else "unknown"
         print(f"[connection failed] {_sanitise(reason, 256)}")
-        if not self._shutting_down and self._has_transport_params():
-            try:
-                loop = asyncio.get_event_loop()
-                loop.create_task(self._reconnect())
-            except Exception:
-                pass
+        self._schedule_reconnect("connection failure")
 
     # Stream errors that will NEVER succeed on retry. Reconnecting after one
     # of these rebuilds an I2P tunnel every few seconds forever, burning
