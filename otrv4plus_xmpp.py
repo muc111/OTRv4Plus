@@ -1256,6 +1256,20 @@ class OTRv4PlusXMPP(ClientXMPP):
                         )
                         continue
                     self.connect(host, port)
+                elif self._is_i2p:
+                    # Unreachable today: _sam_params and _is_i2p are set
+                    # together, and _on_disconnected only schedules this loop
+                    # when _sam_params is not None. It is guarded anyway
+                    # because of what the fall-through WOULD do -- open a
+                    # direct clearnet connection to the XMPP server from a
+                    # session the user asked to run over I2P, silently
+                    # exposing their address. A transport downgrade must
+                    # never be reachable by one condition drifting.
+                    print("[reconnect] REFUSING to reconnect: this session is "
+                          "I2P but the SAM parameters are missing. Falling "
+                          "back to a direct connection would expose your "
+                          "address, so the session stays down.")
+                    return
                 else:
                     self.connect()
                 print("[reconnect] reconnected.")
