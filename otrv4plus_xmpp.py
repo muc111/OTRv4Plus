@@ -961,6 +961,9 @@ class OTRv4PlusXMPP(ClientXMPP):
         self._keepalive_degraded = False
         self._keepalive_pings = 0        # round trips attempted
         self._keepalive_ping_fails = 0   # consecutive round-trip timeouts
+        self._keepalive_timeouts = 0     # lifetime, survives reconnects
+        self._reconnects_started = 0
+        self._reconnects_completed = 0
 
         # Voice call manager (initialized lazily after event loop is available)
         self._voice_manager = None
@@ -1091,6 +1094,15 @@ class OTRv4PlusXMPP(ClientXMPP):
         self._reconnect_delay = _RECONNECT_BASE
         # Whitespace keepalive to maintain I2P SAM streams during long SMP
         # computations when no application data flows.
+        #
+        # Cancel any predecessor first. _on_start fires on every session
+        # start, and simply reassigning the attribute would orphan a loop
+        # that is still running -- two loops then probe the same stream and
+        # increment the same counter, reaching the disconnect threshold in
+        # half the time for no reason.
+        existing = self._keepalive_task
+        if existing is not None and not existing.done():
+            existing.cancel()
         self._keepalive_task = asyncio.ensure_future(self._keepalive_loop())
 
     # Tracer output that a user needs even when not debugging: long-running
@@ -1271,6 +1283,20 @@ class OTRv4PlusXMPP(ClientXMPP):
         trace = bool(os.environ.get("OTRV4PLUS_KEEPALIVE_TRACE"))
         whitespace_failures = 0
         next_probe = time.monotonic() + self.KEEPALIVE_PING_S
+
+        # A new loop means a new stream, so the failure count starts again.
+        #
+        # It did not, and the effect was measured on a live call: the counter
+        # is cleared only by a SUCCESSFUL probe, so after the first genuine
+        # detection it stayed at the threshold. Every reconnect then began
+        # one failure away from the limit, and a single missed ping
+        # disconnected immediately -- the tolerance of three collapsed to
+        # one. The live trace showed the counter climbing 3, 4, 5 with a
+        # reconnect every ~96 s, which is exactly the ping interval plus the
+        # timeout plus the sleep granularity: the period was this loop's own
+        # signature, not the network's.
+        self._keepalive_ping_fails = 0
+        self._keepalive_degraded = False
         try:
             while not self._shutting_down:
                 await asyncio.sleep(self.KEEPALIVE_WHITESPACE_S)
@@ -1316,6 +1342,10 @@ class OTRv4PlusXMPP(ClientXMPP):
                               % self._keepalive_pings)
                 else:
                     self._keepalive_ping_fails += 1
+                    # Lifetime tally, deliberately NOT reset per session: it
+                    # is what distinguishes "one bad patch" from "this path
+                    # degrades every couple of minutes" across a long call.
+                    self._keepalive_timeouts += 1
                     if not self._keepalive_degraded:
                         # Said once, not once per probe.
                         self._keepalive_degraded = True
@@ -1351,6 +1381,12 @@ class OTRv4PlusXMPP(ClientXMPP):
         if self._keepalive_task:
             self._keepalive_task.cancel()
         if not self._shutting_down and self._has_transport_params():
+            existing = self._reconnect_task
+            if existing is not None and not existing.done():
+                # A second disconnect while a reconnect is already backing
+                # off would otherwise race two loops against each other, each
+                # with its own delay, and both calling connect().
+                return
             try:
                 loop = asyncio.get_event_loop()
                 self._reconnect_task = loop.create_task(self._reconnect())
@@ -1417,7 +1453,20 @@ class OTRv4PlusXMPP(ClientXMPP):
             await asyncio.sleep(delay)
             if self._shutting_down:
                 return
-            print("[reconnect] attempting reconnection...")
+            # The resource is what changes across a reconnect, and the next
+            # live test needs to show whether it changes cleanly. The bare
+            # JID is already on screen from [connected]; only the resource is
+            # added here, and it is server-assigned rather than secret.
+            before = ""
+            try:
+                before = self.boundjid.resource or ""
+            except Exception:
+                pass
+            self._reconnects_started = getattr(self, "_reconnects_started",
+                                               0) + 1
+            print("[reconnect] attempt %d, resource before=%s"
+                  % (self._reconnects_started,
+                     _sanitise(before, 40) or "(none)"))
             try:
                 if self._is_i2p and self._sam_params:
                     p = self._sam_params
@@ -1476,7 +1525,12 @@ class OTRv4PlusXMPP(ClientXMPP):
                     return
                 else:
                     self.connect()
-                print("[reconnect] reconnected.")
+                self._reconnects_completed = getattr(
+                    self, "_reconnects_completed", 0) + 1
+                print("[reconnect] transport re-established (%d/%d). "
+                      "[connected] will report the new resource."
+                      % (self._reconnects_completed,
+                         self._reconnects_started))
                 return  # _on_start resets _reconnect_delay on success
             except Exception as e:
                 print(f"[reconnect] failed: {e}")
@@ -2607,11 +2661,16 @@ class OTRv4PlusXMPP(ClientXMPP):
             # socket accepts bytes. The round trip is what proves the server
             # is still there, so both are reported and never conflated.
             if self._keepalive_last_ok is not None:
-                print("[keepalive] %d ticks, %d round trips, last reply "
-                      "%.0fs ago%s"
+                print("[keepalive] %d ticks, %d round trips, %d timeouts "
+                      "(lifetime), %d consecutive, last reply %.0fs ago%s"
                       % (self._keepalive_ticks, self._keepalive_pings,
+                         self._keepalive_timeouts,
+                         self._keepalive_ping_fails,
                          time.monotonic() - self._keepalive_last_ok,
                          "  DEGRADED" if self._keepalive_degraded else ""))
+                print("[reconnect] %d started, %d completed"
+                      % (self._reconnects_started,
+                         self._reconnects_completed))
             elif self._keepalive_pings:
                 print("[keepalive] %d ticks, %d round trips, NO reply yet"
                       % (self._keepalive_ticks, self._keepalive_pings))

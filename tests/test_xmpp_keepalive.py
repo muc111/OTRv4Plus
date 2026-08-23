@@ -53,6 +53,9 @@ class _FakeClient:
         self._keepalive_degraded = False
         self._keepalive_pings = 0
         self._keepalive_ping_fails = 0
+        self._keepalive_timeouts = 0        # lifetime, survives reconnects
+        self._reconnects_started = 0
+        self._reconnects_completed = 0
         self.raw_writes = 0
         self.disconnected = 0
         self._ping_result = ping_result
@@ -210,3 +213,134 @@ class TestCallsSurviveTheControlPlane:
         out = capsys.readouterr().out
         assert "call" in out.lower(), (
             "the operator needs to be told the call keeps running")
+
+
+# ---------------------------------------------------------------------------
+# Regression: the live call on da691d1
+# ---------------------------------------------------------------------------
+
+class TestFailureCountIsPerSession:
+    """The tolerance of three must survive a reconnect.
+
+    Measured on a live I2P call: the counter is cleared only by a SUCCESSFUL
+    probe, so after the first genuine detection it stayed at the threshold.
+    Every reconnect then began one failure away from the limit and a single
+    missed ping disconnected immediately -- three became one.
+
+    The trace showed 3, then 4, then 5 unanswered round trips, with a
+    reconnect roughly every 96 s. That period is the ping interval plus the
+    timeout plus the sleep granularity, i.e. ONE failed probe: the pattern
+    was the loop's own signature rather than anything the network did.
+    """
+
+    def _drive(self, client, monkeypatch, budget_s):
+        """Run one loop instance on a virtual clock until it disconnects."""
+        now = {"t": getattr(client, "_sim_now", 0.0)}
+        deadline = now["t"] + budget_s
+
+        async def _sleep(seconds):
+            now["t"] += seconds
+            if now["t"] > deadline:
+                client._shutting_down = True
+
+        monkeypatch.setattr(asyncio, "sleep", _sleep)
+        monkeypatch.setattr(xmpp.time, "monotonic", lambda: now["t"])
+        _run(client._keepalive_loop())
+        client._sim_now = now["t"]
+        return now["t"]
+
+    def test_a_reconnect_restores_the_full_tolerance(self, monkeypatch):
+        client = _FakeClient(ping_result="timeout")
+        client._sim_now = 0.0
+
+        self._drive(client, monkeypatch, budget_s=600)
+        first = client._keepalive_ping_fails
+        assert first == client.KEEPALIVE_PING_FAILS, (
+            "first detection should take the full tolerance")
+
+        # Reconnect: _on_start builds a fresh loop against a fresh stream.
+        client._connected = True
+        client._shutting_down = False
+        probes_before = client._keepalive_pings
+        self._drive(client, monkeypatch, budget_s=600)
+
+        assert client._keepalive_ping_fails == client.KEEPALIVE_PING_FAILS, (
+            "counter carried over: %d" % client._keepalive_ping_fails)
+        assert client._keepalive_pings - probes_before >= 2, (
+            "second detection used only %d probe(s) -- the tolerance "
+            "collapsed" % (client._keepalive_pings - probes_before))
+
+    def test_the_counter_does_not_climb_across_reconnects(self, monkeypatch):
+        # The live signature: 3, 4, 5. It must stay 3, 3, 3.
+        client = _FakeClient(ping_result="timeout")
+        client._sim_now = 0.0
+        seen = []
+        for _ in range(3):
+            client._connected = True
+            client._shutting_down = False
+            self._drive(client, monkeypatch, budget_s=600)
+            seen.append(client._keepalive_ping_fails)
+        assert seen == [client.KEEPALIVE_PING_FAILS] * 3, seen
+
+    def test_the_degraded_flag_also_starts_clean(self, monkeypatch):
+        # Otherwise the "responding again" notice is suppressed on the
+        # session that actually recovered.
+        client = _FakeClient(ping_result="timeout")
+        client._sim_now = 0.0
+        self._drive(client, monkeypatch, budget_s=600)
+        assert client._keepalive_degraded is True
+
+        client._connected = True
+        client._shutting_down = False
+        client._ping_result = "ok"
+        self._drive(client, monkeypatch, budget_s=200)
+        assert client._keepalive_degraded is False
+
+
+class TestNoDuplicateLoops:
+    def test_starting_the_keepalive_cancels_any_predecessor(self):
+        # Two loops probing one stream reach the threshold in half the time,
+        # because they share the counter.
+        source = open(xmpp.__file__, encoding="utf-8").read()
+        start = source.index("Whitespace keepalive to maintain")
+        window = source[start:start + 700]
+        assert "existing.cancel()" in window
+
+    def test_a_second_disconnect_does_not_race_a_second_reconnect(self):
+        source = open(xmpp.__file__, encoding="utf-8").read()
+        start = source.index("def _on_disconnected")
+        window = source[start:start + 900]
+        assert "_reconnect_task" in window
+        assert "not existing.done()" in window
+
+
+class TestMediaSurvivesTheWholeCycle:
+    """The live call's most valuable result: audio continued through
+    reconnects. Nothing in this fix may change that."""
+
+    def test_declaring_dead_and_reconnecting_never_touches_the_voice_manager(self):
+        source = open(xmpp.__file__, encoding="utf-8").read()
+        for name in ("def _declare_stream_dead", "def _on_disconnected",
+                     "async def _reconnect"):
+            start = source.index(name)
+            body = source[start:start + 1600]
+            assert "_voice_manager" not in body, (
+                "%s must not touch the voice manager -- media rides its own "
+                "I2P datagram session" % name)
+
+    def test_the_keepalive_loop_never_touches_media_state(self):
+        # Checked against the parsed body, not the text. A first attempt
+        # grepped the source and tripped over the docstring, which mentions
+        # SMP legitimately -- prose is not a control-flow property.
+        import ast
+        import inspect
+        import textwrap
+        # getsource returns the method still indented inside its class.
+        tree = ast.parse(textwrap.dedent(
+            inspect.getsource(xmpp.OTRv4PlusXMPP._keepalive_loop)))
+        touched = {node.attr for node in ast.walk(tree)
+                   if isinstance(node, ast.Attribute)}
+        for name in touched:
+            assert "voice" not in name.lower(), name
+            assert "ratchet" not in name.lower(), name
+            assert "epoch" not in name.lower(), name
