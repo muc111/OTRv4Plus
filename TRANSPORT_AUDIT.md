@@ -9,13 +9,18 @@ devices on real networks, and this document does not claim otherwise.
 
 ## Support matrix
 
-| Transport | IRC (`otrv4+.py`) | XMPP (`otrv4plus_xmpp.py`) | Voice media | Status |
+| Transport | IRC (`otrv4+.py`) | XMPP control | Voice media | Status |
 |---|---|---|---|---|
 | **Clearnet TLS** | yes | **yes** | no | works; not anonymous |
-| **Tor** | yes | **NO** | no | **not implemented for XMPP** |
+| **Tor** | yes | **yes** (SOCKS5) | **no** | implemented; LIVE-UNVERIFIED |
 | **I2P** | yes | **yes** (SAM) | **yes** (SAM datagram) | works |
 
-The headline: **XMPP has no Tor support at all.** `otrv4+.py` — the IRC
+Tor for the XMPP control plane was added after this audit's first pass. Voice
+media remains I2P-only and deliberately so — see "Tor voice" below.
+
+### Historical note (first pass of this audit)
+
+At the time of the first pass, **XMPP had no Tor support at all.** `otrv4+.py` — the IRC
 client — carries a `NetworkConfig` (line 745) that auto-detects clearnet,
 Tor and I2P from the server hostname, with `TOR_PROXY_PORT = 9050` and a
 `.onion` suffix rule. None of that exists in `otrv4plus_xmpp.py`. The XMPP
@@ -30,6 +35,33 @@ I2P or clearnet. There is no SOCKS5 path, no `.onion` handling, and
 requirements list (line 3263). A `.onion` XMPP server would be treated as
 clearnet and the connection would simply fail — it would not silently leak,
 because there is no resolver that would reach it, but it is not support.
+
+### Tor, as implemented
+
+Selection is by address or explicit flag, never inferred from a failure:
+
+```python
+use_tor = (not args.no_tor) and (args.tor or server_b32.endswith(".onion"))
+```
+
+`--tor` with a `.i2p` server, or `--no-tor` with a `.onion` server, both exit
+rather than guess.
+
+`start_tor_socks_forwarder` mirrors `start_i2p_sam_forwarder` exactly: it
+opens a SOCKS5 tunnel and exposes it as a **loopback** TCP endpoint, and
+slixmpp is handed that address. Two consequences, both load-bearing:
+
+* slixmpp's own docstring says *"If an address was provided, disable using
+  DNS SRV lookup"* — so there is no SRV query, and the onion name never
+  reaches slixmpp at all.
+* the destination travels as a **domain name** inside the SOCKS5 CONNECT
+  (`ATYP 0x03`), which is what makes Tor resolve it internally. A `.onion`
+  has no address a resolver could return; resolving locally would be both
+  useless and a disclosure of intent.
+
+PySocks is deliberately **not** used. It routes by assigning
+`socket.socket` globally, which in this process would also capture the I2P
+SAM bridge and every voice media socket. A local tunnel touches nothing else.
 
 ## Runtime paths
 

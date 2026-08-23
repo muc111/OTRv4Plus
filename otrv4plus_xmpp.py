@@ -373,6 +373,171 @@ def _fmt_fp(fp: str) -> str:
 # I2P SAM forwarder
 # =============================================================================
 
+# ---------------------------------------------------------------------------
+# Tor SOCKS5 forwarder
+# ---------------------------------------------------------------------------
+
+#: Tor's default SOCKS port. 9150 is the Tor Browser bundle; 9050 is a system
+#: tor daemon, which is what Termux installs.
+TOR_SOCKS_PORT = 9050
+
+SOCKS5_VERSION = 0x05
+SOCKS5_NO_AUTH = 0x00
+SOCKS5_CONNECT = 0x01
+SOCKS5_ATYP_DOMAIN = 0x03
+SOCKS5_ATYP_IPV4 = 0x01
+SOCKS5_ATYP_IPV6 = 0x04
+
+#: SOCKS5 reply codes worth naming; the rest are reported numerically.
+_SOCKS5_ERRORS = {
+    0x01: "general SOCKS server failure",
+    0x02: "connection not allowed by ruleset",
+    0x03: "network unreachable",
+    0x04: "host unreachable (is the onion service up?)",
+    0x05: "connection refused",
+    0x06: "TTL expired",
+    0x07: "command not supported",
+    0x08: "address type not supported",
+}
+
+
+async def socks5_connect(dest_host: str, dest_port: int,
+                         socks_host: str = "127.0.0.1",
+                         socks_port: int = TOR_SOCKS_PORT,
+                         timeout: float = 60.0):
+    """Open a SOCKS5 tunnel to dest_host:dest_port and return (reader, writer).
+
+    The destination is sent as a DOMAIN NAME (ATYP 0x03), never as an
+    address. That is the whole point: Tor resolves the name itself, inside
+    the network, so a .onion never reaches the system resolver and there is
+    no DNS to leak. Resolving locally first and sending an IP would defeat
+    Tor for .onion entirely -- there is no IP to resolve to.
+
+    PySocks is deliberately not used. It works by replacing socket.socket
+    globally, which in this process would also capture the SAM bridge
+    connection and every voice media socket. A local tunnel touches nothing
+    else.
+    """
+    reader, writer = await asyncio.wait_for(
+        asyncio.open_connection(socks_host, socks_port), timeout=timeout)
+
+    async def _fail(message):
+        writer.close()
+        try:
+            await writer.wait_closed()
+        except Exception:
+            pass
+        raise ConnectionError(message)
+
+    try:
+        # Greeting: one method offered, no authentication. Tor's SOCKS port
+        # is loopback-only and unauthenticated by design.
+        writer.write(bytes([SOCKS5_VERSION, 1, SOCKS5_NO_AUTH]))
+        await writer.drain()
+        reply = await asyncio.wait_for(reader.readexactly(2), timeout=timeout)
+        if reply[0] != SOCKS5_VERSION:
+            await _fail("not a SOCKS5 proxy at %s:%d (version byte 0x%02x)"
+                        % (socks_host, socks_port, reply[0]))
+        if reply[1] != SOCKS5_NO_AUTH:
+            await _fail("SOCKS5 proxy demands authentication method 0x%02x"
+                        % reply[1])
+
+        host_bytes = dest_host.encode("idna" if not dest_host.endswith(".onion")
+                                      else "ascii")
+        if len(host_bytes) > 255:
+            await _fail("destination hostname is too long for SOCKS5")
+
+        writer.write(bytes([SOCKS5_VERSION, SOCKS5_CONNECT, 0x00,
+                            SOCKS5_ATYP_DOMAIN, len(host_bytes)])
+                     + host_bytes
+                     + int(dest_port).to_bytes(2, "big"))
+        await writer.drain()
+
+        head = await asyncio.wait_for(reader.readexactly(4), timeout=timeout)
+        if head[0] != SOCKS5_VERSION:
+            await _fail("malformed SOCKS5 reply")
+        if head[1] != 0x00:
+            await _fail("SOCKS5 CONNECT refused: %s"
+                        % _SOCKS5_ERRORS.get(head[1],
+                                             "code 0x%02x" % head[1]))
+
+        # Drain the bound address so the stream starts at the payload.
+        atyp = head[3]
+        if atyp == SOCKS5_ATYP_IPV4:
+            await reader.readexactly(4)
+        elif atyp == SOCKS5_ATYP_IPV6:
+            await reader.readexactly(16)
+        elif atyp == SOCKS5_ATYP_DOMAIN:
+            length = (await reader.readexactly(1))[0]
+            await reader.readexactly(length)
+        else:
+            await _fail("SOCKS5 reply used unknown address type 0x%02x" % atyp)
+        await reader.readexactly(2)          # bound port
+        return reader, writer
+    except asyncio.IncompleteReadError:
+        await _fail("SOCKS5 proxy closed the connection during the handshake")
+    except (ConnectionError, asyncio.TimeoutError):
+        raise
+    except Exception as exc:
+        await _fail("SOCKS5 handshake failed: %s" % exc)
+
+
+async def start_tor_socks_forwarder(onion_host: str, dest_port: int,
+                                    socks_host: str = "127.0.0.1",
+                                    socks_port: int = TOR_SOCKS_PORT):
+    """Tunnel to a .onion through Tor and expose it as a local TCP endpoint.
+
+    Returns (local_host, local_port). Deliberately the same shape as
+    start_i2p_sam_forwarder, and for the same reason: slixmpp is handed a
+    loopback address, so its SRV lookup is skipped ("If an address was
+    provided, disable using DNS SRV lookup") and the .onion name never
+    reaches a resolver. The name travels only inside the SOCKS5 CONNECT,
+    where Tor is the thing that resolves it.
+
+    Fails closed. If Tor is not reachable this raises, and the caller must
+    not fall back to a direct connection: doing so would send the user's
+    address to a server they asked to reach anonymously.
+    """
+    print("[tor] opening SOCKS5 tunnel to %s:%d via %s:%d ..."
+          % (_sanitise(onion_host, 80), dest_port, socks_host, socks_port))
+    tor_reader, tor_writer = await socks5_connect(
+        onion_host, dest_port, socks_host=socks_host, socks_port=socks_port)
+    print("[tor] tunnel established.")
+
+    async def _handle_local(local_reader, local_writer):
+        async def pump(src, dst):
+            try:
+                while True:
+                    data = await src.read(65536)
+                    if not data:
+                        break
+                    dst.write(data)
+                    await dst.drain()
+            except Exception:
+                pass
+            finally:
+                try:
+                    dst.close()
+                except Exception:
+                    pass
+
+        await asyncio.gather(pump(local_reader, tor_writer),
+                             pump(tor_reader, local_writer),
+                             return_exceptions=True)
+
+    server = await asyncio.start_server(_handle_local, "127.0.0.1", 0)
+    host, port = server.sockets[0].getsockname()[:2]
+    # Held on the loop so neither the server nor the tunnel is collected.
+    _TOR_FORWARDERS.append((server, tor_reader, tor_writer))
+    print("[tor] local bridge ready at %s:%d -> %s"
+          % (host, port, _sanitise(onion_host, 80)))
+    return host, port
+
+
+#: Keeps forwarder objects alive for the process lifetime.
+_TOR_FORWARDERS = []
+
+
 async def start_i2p_sam_forwarder(
     dest_b32: str, dest_port: int, sam_host: str = "127.0.0.1", sam_port: int = 7656
 ):
@@ -769,6 +934,8 @@ class OTRv4PlusXMPP(ClientXMPP):
 
         # Reconnect state (populated by main() before connect()).
         self._sam_params = None   # dict of SAM args for reconnect
+        self._is_tor = False
+        self._tor_params = None   # dict of SOCKS args for reconnect
         self._is_i2p = False
         self._shutting_down = False
         self._reconnect_delay = _RECONNECT_BASE
@@ -1167,11 +1334,23 @@ class OTRv4PlusXMPP(ClientXMPP):
         # Don't retry on bad credentials; reconnect would loop forever.
         self._shutting_down = True
 
+    def _has_transport_params(self) -> bool:
+        """True when reconnect knows which transport to re-establish.
+
+        Reconnect is only scheduled when this holds. Without it the loop
+        would run with no transport configured and take the direct-connect
+        branch, which for an I2P or Tor session means silently exposing the
+        user's address -- so "we do not know how to reconnect" has to mean
+        "stay down", not "reconnect somehow".
+        """
+        return (self._sam_params is not None
+                or getattr(self, "_tor_params", None) is not None)
+
     def _on_disconnected(self, event):
         print("\n[disconnected]")
         if self._keepalive_task:
             self._keepalive_task.cancel()
-        if not self._shutting_down and self._sam_params is not None:
+        if not self._shutting_down and self._has_transport_params():
             try:
                 loop = asyncio.get_event_loop()
                 self._reconnect_task = loop.create_task(self._reconnect())
@@ -1181,7 +1360,7 @@ class OTRv4PlusXMPP(ClientXMPP):
     def _on_connection_failed(self, event):
         reason = str(event) if event else "unknown"
         print(f"[connection failed] {_sanitise(reason, 256)}")
-        if not self._shutting_down and self._sam_params is not None:
+        if not self._shutting_down and self._has_transport_params():
             try:
                 loop = asyncio.get_event_loop()
                 loop.create_task(self._reconnect())
@@ -1256,6 +1435,31 @@ class OTRv4PlusXMPP(ClientXMPP):
                         )
                         continue
                     self.connect(host, port)
+                elif getattr(self, "_is_tor", False) and self._tor_params:
+                    p = self._tor_params
+                    try:
+                        host, port = await start_tor_socks_forwarder(
+                            p["onion_host"],
+                            p["dest_port"],
+                            socks_host=p["socks_host"],
+                            socks_port=p["socks_port"],
+                        )
+                    except Exception as e:
+                        print(f"[reconnect] Tor tunnel failed: {e}")
+                        self._reconnect_delay = min(
+                            self._reconnect_delay * 2, _RECONNECT_MAX
+                        )
+                        continue
+                    self.connect(host, port)
+                elif getattr(self, "_is_tor", False):
+                    # Same reasoning as the I2P guard below: the fall-through
+                    # would open a direct connection from a session the user
+                    # asked to route through Tor.
+                    print("[reconnect] REFUSING to reconnect: this session is "
+                          "Tor but the SOCKS parameters are missing. Falling "
+                          "back to a direct connection would expose your "
+                          "address, so the session stays down.")
+                    return
                 elif self._is_i2p:
                     # Unreachable today: _sam_params and _is_i2p are set
                     # together, and _on_disconnected only schedules this loop
@@ -3934,6 +4138,22 @@ def main():
         help="connect directly (clearnet), do not use I2P SAM",
     )
     ap.add_argument(
+        "--tor",
+        action="store_true",
+        help="route the XMPP control connection through Tor (SOCKS5). "
+             "Implied by a .onion server. Voice media stays on I2P.",
+    )
+    ap.add_argument(
+        "--no-tor",
+        action="store_true",
+        help="never use Tor, even for a .onion server (the connection will "
+             "then fail rather than leak)",
+    )
+    ap.add_argument("--socks-host", default="127.0.0.1",
+                    help="Tor SOCKS5 host")
+    ap.add_argument("--socks-port", type=int, default=TOR_SOCKS_PORT,
+                    help="Tor SOCKS5 port (9050 daemon, 9150 Tor Browser)")
+    ap.add_argument(
         "--insecure-tls",
         action="store_true",
         help="accept expired/self-signed server certs",
@@ -4095,8 +4315,36 @@ def main():
     domain = args.jid.split("@", 1)[-1]
     server_b32 = args.server or domain
     use_i2p = (not args.no_i2p) and server_b32.endswith(".i2p")
+    # Tor is chosen by the address, or asked for explicitly. Never inferred
+    # as a fallback from something else failing.
+    use_tor = (not args.no_tor) and (args.tor
+                                     or server_b32.endswith(".onion"))
 
-    if args.insecure_tls and not use_i2p:
+    if use_i2p and use_tor:
+        sys.exit("[transport] --tor was requested for an .i2p server. Pick "
+                 "one: I2P uses the SAM bridge, Tor uses SOCKS5. Layering "
+                 "them is not a supported configuration and guessing which "
+                 "you meant could send traffic the wrong way.")
+    if args.no_tor and server_b32.endswith(".onion"):
+        sys.exit("[transport] %s is an onion address but --no-tor was given. "
+                 "Refusing: without Tor there is no route to it, and trying "
+                 "anyway would send the lookup to your resolver."
+                 % server_b32)
+    if use_tor and not server_b32.endswith(".onion"):
+        print("[tor] WARNING: %s is not an onion address. Tor will carry the "
+              "connection, but the exit sees a normal TLS session to a "
+              "clearnet host, so the server still learns it is being reached "
+              "over Tor rather than by you directly." % server_b32)
+
+    if args.insecure_tls and use_tor and server_b32.endswith(".onion"):
+        print(
+            "[tls] --insecure-tls with an onion address: the v3 onion name is "
+            "itself the server's public key, so the endpoint is "
+            "cryptographically authenticated by Tor regardless of the "
+            "certificate. That is the same reasoning that makes the flag "
+            "acceptable over I2P."
+        )
+    elif args.insecure_tls and not use_i2p:
         print(
             "[tls] WARNING: --insecure-tls on a CLEARNET connection disables "
             "certificate verification, so an active network attacker can MITM "
@@ -4108,6 +4356,15 @@ def main():
 
     # Store reconnect parameters on the client before first connect.
     client._is_i2p = use_i2p
+    client._is_tor = use_tor
+    client._tor_params = None
+    if use_tor and not args.no_reconnect:
+        client._tor_params = {
+            "onion_host": server_b32,
+            "dest_port": args.port,
+            "socks_host": args.socks_host,
+            "socks_port": args.socks_port,
+        }
     if args.no_reconnect:
         # _sam_params=None means reconnect logic is disabled.
         client._sam_params = None
@@ -4141,6 +4398,28 @@ def main():
                 f"{args.sam_host}:{args.sam_port}? Is the server b32 correct?",
                 file=sys.stderr,
             )
+            sys.exit(1)
+        client.connect(host, port)
+    elif use_tor:
+        try:
+            host, port = loop.run_until_complete(
+                start_tor_socks_forwarder(
+                    server_b32,
+                    args.port,
+                    socks_host=args.socks_host,
+                    socks_port=args.socks_port,
+                )
+            )
+        except Exception as e:
+            print(f"[tor] SOCKS5 tunnel failed: {e}", file=sys.stderr)
+            print(
+                "[tor] Is tor running with a SOCKS port on "
+                f"{args.socks_host}:{args.socks_port}? "
+                "(Termux: pkg install tor, then run tor)",
+                file=sys.stderr,
+            )
+            # Fail closed. Connecting directly here would send this user's
+            # address to a server they asked to reach over Tor.
             sys.exit(1)
         client.connect(host, port)
     else:
