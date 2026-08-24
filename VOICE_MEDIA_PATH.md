@@ -119,3 +119,44 @@ So losing XMPP mid-call does **not** by itself end the media session —
 the call keeps running on the committed epoch. That matches the landmark
 test, where XMPP dropped and audio continued. No change needed; the
 property is verified, not assumed.
+
+### Rekey liveness — the other half of the property
+
+Surviving a failed rekey is not the same as recovering from one. A
+69-minute live call (`call_id=825157dc78cd7c98`, 17 XMPP reconnections)
+rekeyed 12 times, lost one exchange at t≈1781 s, and then failed **all 15
+remaining attempts**. Media was healthy throughout — rx/tx 92–98 %, median
+one-way 494–688 ms — so nothing in the call looked wrong. What was wrong is
+that the last 40 minutes ran on a single epoch with no forward-secrecy
+refresh.
+
+Two distinct wedges, one on each side, both permanent once entered:
+
+* **Responder, lost `REKEYACK`.** The initiator gives up after
+  `VOICE_REKEY_TIMEOUT` (45 s), aborts its pending material and retries the
+  same epoch number. The responder had **no expiry at all**: its `pending`
+  slot stayed set forever, and `_on_rekey`'s pending guard rejected every
+  retry. This is the failure in the log — all 15 retries named epoch 13,
+  which is only possible if the initiator never committed it.
+* **Initiator, lost `REKEYCOMMIT`.** The initiator commits the moment the
+  peer's confirmation verifies, and only then sends `REKEYCOMMIT`. If that
+  one message is lost the peer stays an epoch behind, so every later `REKEY`
+  names an epoch it considers two ahead and the epoch guard rejects it.
+
+Both are repaired symmetrically, with no wire-format, key-schedule or
+crypto change:
+
+* The responder gets the same expiry the initiator already has. A pending
+  epoch younger than `VOICE_REKEY_TIMEOUT` is still protected against
+  duplicates and replays; an older one is aborted (wiping its root and
+  retiring its receive cipher) and the retry is answered. The committed
+  epoch never moves on an unconfirmed rekey, so a superseded exchange costs
+  nothing but itself.
+* The initiator repeats its last `REKEYCOMMIT` immediately before each new
+  `REKEY`. The tag is a public MAC output that already travelled the wire,
+  it can promote only the exact epoch it names, and a peer that already
+  committed that epoch has nothing pending and ignores it. Cost: one small
+  signal per 120 s.
+
+The net effect is that a control-plane blip costs **one** rekey rather than
+every rekey for the rest of the call. Covered by `tests/test_rekey_recovery.py`.

@@ -1566,6 +1566,13 @@ class VoiceKeySchedule:
     def pending_epoch(self):
         return None if self._pending is None else self._pending["epoch"]
 
+    @property
+    def pending_age(self):
+        """Seconds since the pending epoch was derived, or None if idle."""
+        if self._pending is None:
+            return None
+        return max(0.0, time.monotonic() - self._pending["started"])
+
     def current_root(self):
         """The committed root.  Internal: callers must not retain it."""
         if self._root is None:
@@ -1641,7 +1648,8 @@ class VoiceKeySchedule:
                                           self.is_initiator)
         self._ciphers[epoch] = pending_cipher
         self._pending = {"epoch": epoch, "root": pending_root,
-                         "confirms": confirms, "cipher": pending_cipher}
+                         "confirms": confirms, "cipher": pending_cipher,
+                         "started": time.monotonic()}
         return confirms
 
     def expected_peer_confirm(self) -> bytes:
@@ -2437,6 +2445,11 @@ class VoiceCallSession:
         self._mlkem_ct = None              # responder's ciphertext (transcript)
         self._rekey_kex = None
         self._rekey_waiter = None          # (epoch, Future) while in flight
+        # (epoch, confirm_hex) of the last REKEYCOMMIT we sent.  Initiator
+        # only; retransmitted with the next REKEY so a lost commit cannot
+        # strand the responder an epoch behind for the rest of the call.
+        # The tag is a public MAC output that already travelled the wire.
+        self._last_rekey_commit = None
 
         self._sam_control = None
         self._sam_session_id = None
@@ -4690,6 +4703,24 @@ class VoiceCallManager:
         """
         if session.state != CallState.ACTIVE:
             return
+
+        # Re-announce the previous commit before asking for the next epoch.
+        #
+        # We commit an epoch the moment the peer's confirmation verifies and
+        # only then send REKEYCOMMIT.  If that one message is lost the peer
+        # stays an epoch behind forever: every REKEY we send afterwards is for
+        # an epoch it considers two ahead, so it rejects all of them and the
+        # call never rekeys again.  Repeating the last commit costs one small
+        # signal per rekey interval and is idempotent — a peer that already
+        # committed has nothing pending and ignores it.  The tag proves the
+        # same thing it proved the first time, and can promote only the exact
+        # epoch it names.
+        last_commit = getattr(session, "_last_rekey_commit", None)
+        if last_commit is not None:
+            self._signal(peer, "REKEYCOMMIT",
+                         (session.call_id.hex(), last_commit[0],
+                          last_commit[1]))
+
         try:
             epoch, kex = session.begin_rekey_initiator()
         except Exception as exc:
@@ -4742,8 +4773,10 @@ class VoiceCallManager:
         if not session.commit_rekey(epoch, peer_confirm):
             session.abort_rekey()
             return
+        commit_hex = our_confirm.hex()
+        session._last_rekey_commit = (epoch, commit_hex)
         self._signal(peer, "REKEYCOMMIT", (session.call_id.hex(), epoch,
-                                           our_confirm.hex()))
+                                           commit_hex))
         self._vdbg(peer, "rekey %d committed" % epoch)
 
     async def _on_rekey(self, peer: str, fields) -> None:
@@ -4776,9 +4809,28 @@ class VoiceCallManager:
                        % (epoch, session.schedule.epoch + 1))
             return
         if session.schedule.pending_epoch is not None:
-            self._vdbg(peer, "REKEY while epoch %d already pending — ignored"
-                       % session.schedule.pending_epoch)
-            return
+            # A pending epoch that is still young belongs to a REKEY we are
+            # already answering: a duplicate or a replay must not restart it.
+            #
+            # An old one is a different animal.  The initiator gives up on an
+            # unanswered rekey after VOICE_REKEY_TIMEOUT and retries with a
+            # fresh key exchange, but the responder had no expiry at all — so
+            # a single REKEYACK or REKEYCOMMIT lost to a control-plane blip
+            # left `pending` set forever and every later REKEY was ignored.
+            # A 69-minute call rekeyed 12 times, lost one REKEYCOMMIT, and
+            # then failed all 15 remaining attempts: no forward-secrecy
+            # refresh for the last 40 minutes.  Give the responder the same
+            # expiry the initiator has, so a blip costs one rekey, not all of
+            # them.
+            age = session.schedule.pending_age
+            if age is not None and age < VOICE_REKEY_TIMEOUT:
+                self._vdbg(peer, "REKEY while epoch %d already pending — "
+                           "ignored" % session.schedule.pending_epoch)
+                return
+            self._vdbg(peer, "pending epoch %d unconfirmed for %.0fs — "
+                       "superseded" % (session.schedule.pending_epoch,
+                                       age or 0.0))
+            session.abort_rekey()
 
         try:
             our_confirm, mlkem_ct, our_x448 = session.rekey_responder(
@@ -4826,8 +4878,14 @@ class VoiceCallManager:
         epoch = _epoch_field(fields[1])
         peer_confirm = _hex_field(fields[2], CONFIRM_LEN)
         if session.schedule.pending_epoch != epoch:
-            self._vdbg(peer, "REKEYCOMMIT for epoch %d with none pending"
-                       % epoch)
+            if epoch <= session.schedule.epoch:
+                # The initiator repeats its last commit with every REKEY.
+                # Once we have committed that epoch the repeat is a no-op.
+                self._vdbg(peer, "REKEYCOMMIT for epoch %d already applied"
+                           % epoch)
+            else:
+                self._vdbg(peer, "REKEYCOMMIT for epoch %d with none pending"
+                           % epoch)
             return
         if session.commit_rekey(epoch, peer_confirm):
             self._vdbg(peer, "rekey %d committed" % epoch)
