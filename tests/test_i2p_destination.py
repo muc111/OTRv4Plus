@@ -148,7 +148,9 @@ class TestForeignDatagramsAreCountedSeparately:
         s._foreign_warned = True          # suppress the print in tests
         s._sam_session_id = "sid"
         s._dgram_send_header = None
-        s.stats = {"recv": 0, "dropped": 0, "foreign": 0}
+        # From the production key set, not restated: a hand-rolled copy goes
+        # stale the moment a counter is added.
+        s.stats = voice.new_media_stats()
         s._drain_buffer = lambda buf: None
         return s
 
@@ -160,8 +162,19 @@ class TestForeignDatagramsAreCountedSeparately:
         assert s.stats["foreign"] == 1
         assert s.stats["dropped"] == 0
 
-    def test_a_matching_source_is_not_counted_at_all(self):
+    def test_a_matching_source_is_not_rejected(self):
         s = self._session("A" * 516)
         s._on_datagram(("A" * 516).encode() + b"\n" + b"\xa7frame")
         assert s.stats["foreign"] == 0
         assert s.stats["dropped"] == 0
+
+    def test_both_kinds_still_count_as_an_arrival(self):
+        # The raw arrival counter sits before every filter, so it is the one
+        # number that separates "the path is dead" from "the path is fine and
+        # something above it is rejecting".
+        matching = self._session("A" * 516)
+        matching._on_datagram(("A" * 516).encode() + b"\n" + b"\xa7frame")
+        foreign = self._session("A" * 516)
+        foreign._on_datagram(("B" * 516).encode() + b"\n" + b"\xa7frame")
+        assert matching.stats["dgram_in"] == 1
+        assert foreign.stats["dgram_in"] == 1

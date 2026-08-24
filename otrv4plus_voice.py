@@ -944,6 +944,36 @@ def split_datagram_receive(data: bytes):
 VOICE_REKEY_SECONDS = 120
 VOICE_REKEY_TIMEOUT = 45
 
+# -- inbound media liveness -------------------------------------------------
+#
+# A datagram transport has no EOF. When media moved from SAM STYLE=STREAM to
+# STYLE=DATAGRAM (892ef7a) the reader task became conditional on the stream
+# writer, and that task was the ONLY caller of _signal_stream_lost for the
+# receive path. Datagram calls have therefore had no inbound liveness
+# detection at all: a receive path that stops delivering cannot be noticed,
+# because nothing is watching and nothing can fail.
+#
+# Observed on a 33-minute call: inbound audio AND inbound probe replies both
+# stopped at t=1418s, ~15 s into a 70 s reconnect (an outlier among ten, the
+# WiFi-to-mobile transition), and never resumed. The call stayed ACTIVE and
+# kept transmitting for the remaining 9.5 minutes. Rekeys 11-14 committed
+# normally throughout, so the peer and the control plane were healthy; only
+# the media receive path was dead.
+#
+# Thresholds are anchored to constants that already exist rather than picked
+# fresh. The check runs at the media probe cadence; the warning needs three
+# consecutive probe intervals of complete silence; the call is declared dead
+# at VOICE_REKEY_TIMEOUT, which is this project's existing "this is not
+# coming back" horizon. At a 60 ms frame interval that is ~750 consecutive
+# frames, so no plausible loss burst reaches it -- the worst measured stall
+# on the old stream transport was 24 s and would not have tripped this.
+VOICE_RX_CHECK_S = _env_ms("OTRV4PLUS_RX_CHECK_MS", 5000, 1000, 30000) / 1000.0
+VOICE_RX_WARN_S = _env_ms("OTRV4PLUS_RX_WARN_MS", 15000, 3000, 120000) / 1000.0
+VOICE_RX_DEAD_S = max(
+    VOICE_RX_WARN_S,
+    _env_ms("OTRV4PLUS_RX_DEAD_MS", VOICE_REKEY_TIMEOUT * 1000, 5000, 600000)
+    / 1000.0)
+
 # Control-plane DoS bounds.
 VOICE_MAX_CONCURRENT_CALLS = 1
 VOICE_MIN_INVITE_INTERVAL = 10.0    # seconds between accepted INVITEs per peer
@@ -1024,6 +1054,27 @@ _LABEL_VERSION = b"OTRv4+Voice/v3"
 ROOT_LEN = 64
 MEDIA_KEY_LEN = 32
 CONFIRM_LEN = 32
+
+
+def _invalid_tag_type():
+    """The exception AESGCM.decrypt raises when a tag does not verify.
+
+    It is NOT a FrameError, so every AEAD failure was landing in the generic
+    handler and being counted as a plain drop: `authfail` only ever counted
+    the structural rejections above the cipher (wrong epoch, bad length,
+    sub-epoch too far). A tampered or mis-keyed frame -- the one event this
+    counter exists to report -- was invisible in it.
+    """
+    try:
+        from cryptography.exceptions import InvalidTag
+        return InvalidTag
+    except Exception:                      # pragma: no cover - no cryptography
+        class _NeverRaised(Exception):
+            pass
+        return _NeverRaised
+
+
+_INVALID_TAG = _invalid_tag_type()
 
 
 def _hkdf(ikm: bytes, salt: bytes, info: bytes, length: int) -> bytes:
@@ -2473,6 +2524,25 @@ class RateLimiter:
 # Call session
 # ---------------------------------------------------------------------------
 
+#: Every media counter, in one place. Test doubles build their stats from
+#: here rather than restating the keys, so adding a counter cannot leave a
+#: fake behind with a KeyError.
+MEDIA_STAT_KEYS = (
+    "sent", "recv", "dropped", "late", "oversize", "backpressure",
+    "auth_fail", "replay", "resync", "fec_recovered", "stale", "foreign",
+    # Raw arrivals, counted before every filter. Without this, recv=0 with
+    # every rejection counter also at 0 is ambiguous: nothing arrived, or
+    # things arrived and were discarded on a path that counts nothing. The
+    # live failure produced exactly that reading and could not be classified
+    # from it.
+    "dgram_in", "dgram_empty", "dgram_closed",
+)
+
+
+def new_media_stats() -> dict:
+    return {name: 0 for name in MEDIA_STAT_KEYS}
+
+
 class VoiceCallSession:
     """One encrypted call carried over a single bidirectional SAM stream.
 
@@ -2578,6 +2648,10 @@ class VoiceCallSession:
         self._capture_thread = None
         self._playback_thread = None
         self._reader_task = None
+        self._rx_watchdog_task = None
+        self._rx_last_datagram = None   # monotonic: anything at the socket
+        self._rx_last_frame = None      # monotonic: anything that authenticated
+        self._rx_degraded = False       # a warning is outstanding
         self._accept_task = None
         self._prewarm = None
 
@@ -2591,10 +2665,7 @@ class VoiceCallSession:
         self._loss_signalled = False
         self.debug_binding = False
 
-        self.stats = {"sent": 0, "recv": 0, "dropped": 0, "late": 0,
-                      "oversize": 0, "backpressure": 0, "auth_fail": 0,
-                      "replay": 0, "resync": 0, "fec_recovered": 0,
-                      "stale": 0, "foreign": 0}
+        self.stats = new_media_stats()
 
     # -- state machine ----------------------------------------------------
 
@@ -2947,10 +3018,19 @@ class VoiceCallSession:
         there is no reassembly and no resynchronisation across packets: a
         corrupt datagram costs exactly itself.
         """
+        # Counted first, before every filter, and stamped before every
+        # possible return. This is what separates "the router stopped
+        # forwarding" from "datagrams are arriving and being discarded" --
+        # a distinction the previous telemetry could not make, because both
+        # read as rx=0 with every rejection counter at 0.
+        self.stats["dgram_in"] += 1
+        self._rx_last_datagram = time.monotonic()
         if not self._running:
+            self.stats["dgram_closed"] += 1
             return
         source, payload = split_datagram_receive(data)
         if not payload:
+            self.stats["dgram_empty"] += 1
             return
         # Cheap pre-AEAD filter.  Not a security boundary -- the AEAD is --
         # but it keeps an unrelated sender from reaching the cipher at all.
@@ -3248,6 +3328,14 @@ class VoiceCallSession:
         self._playback_thread.start()
         if self._writer is not None:
             self._reader_task = asyncio.ensure_future(self._network_reader())
+        # Both transports. The stream reader only reports a path the peer
+        # CLOSED; a path that simply stops delivering produces no EOF on
+        # either transport, so neither has been covered until now.
+        now = time.monotonic()
+        self._rx_last_datagram = now
+        self._rx_last_frame = now
+        self._rx_degraded = False
+        self._rx_watchdog_task = asyncio.ensure_future(self._rx_watchdog())
 
     # -- capture ----------------------------------------------------------
 
@@ -3553,7 +3641,13 @@ class VoiceCallSession:
             cipher = self.schedule.cipher_for_epoch(epoch)
             if cipher is None:
                 raise FrameError("no live key for epoch %d" % epoch)
-            plaintext = cipher.open(header, sealed)
+            try:
+                plaintext = cipher.open(header, sealed)
+            except _INVALID_TAG:
+                # Rejected exactly as before -- only the accounting changes,
+                # so the frame that fails the tag lands in `authfail` where
+                # an investigation will look for it.
+                raise FrameError("frame failed authentication")
         return epoch, counter, plaintext, ftype
 
     async def _network_reader(self) -> None:
@@ -3600,6 +3694,104 @@ class VoiceCallSession:
         if self._running:
             self._signal_stream_lost("peer closed the media stream")
 
+    # -- inbound liveness --------------------------------------------------
+
+    def _sam_control_state(self) -> str:
+        """Whether the SAM session that owns this transport still exists.
+
+        A SAM v3 session lives exactly as long as its control socket. If the
+        router tears the session down, inbound forwarding to our UDP port
+        stops, while sendto() to the local bridge keeps succeeding -- so the
+        call looks healthy from the transmit side and receives nothing
+        forever. This code never read that socket after SESSION STATUS, so
+        the condition was undetectable. Reading it costs one non-blocking
+        select and turns a hypothesis into a diagnosis.
+
+        Returns "closed", "open", or "unknown". Never raises, never blocks,
+        and never consumes bytes: MSG_PEEK leaves the stream untouched.
+        """
+        sock = self._sam_control
+        if sock is None:
+            return "unknown"
+        try:
+            import select
+            readable, _w, _x = select.select([sock], [], [], 0)
+            if not readable:
+                return "open"          # nothing pending: session still held
+            return "closed" if sock.recv(1, _socket.MSG_PEEK) == b"" else "open"
+        except Exception:
+            return "unknown"
+
+    def _rx_idle_seconds(self, now=None):
+        """Seconds since anything authenticated, or None before audio starts."""
+        if self._rx_last_frame is None:
+            return None
+        return max(0.0, (now or time.monotonic()) - self._rx_last_frame)
+
+    def _rx_diagnosis(self) -> str:
+        """Name the first stage that stopped, from counters rather than guess."""
+        if self._rx_last_datagram is None:
+            arrived = False
+        else:
+            arrived = (self._rx_last_frame is None
+                       or self._rx_last_datagram > self._rx_last_frame)
+        if arrived:
+            # Datagrams are reaching the socket but none authenticate: the
+            # transport is fine and the fault is above it.
+            return ("datagrams are arriving but none authenticate "
+                    "(foreign=%d empty=%d authfail=%d replay=%d)"
+                    % (self.stats["foreign"], self.stats["dgram_empty"],
+                       self.stats["auth_fail"], self.stats["replay"]))
+        state = self._sam_control_state()
+        if state == "closed":
+            return ("no media datagrams are arriving and the SAM session is "
+                    "gone — the router stopped forwarding to us")
+        return ("no media datagrams are arriving at all "
+                "(SAM control socket %s)" % state)
+
+    async def _rx_watchdog(self) -> None:
+        """Notice an inbound media path that has stopped, and act on it.
+
+        The transmit side cannot detect this: a datagram handed to the local
+        SAM bridge is accepted whether or not the session behind it still
+        exists, so `sent` keeps climbing over a dead path. Only the absence of
+        inbound traffic shows it, and before this nothing was watching.
+
+        Two bounded stages. A warning names the failing stage once -- not once
+        per tick, which is how the old debug-only message printed 116 times --
+        and the call is declared lost at VOICE_RX_DEAD_S through the existing
+        _signal_stream_lost path, which ends it and tells the peer.
+        """
+        try:
+            while self._running:
+                await asyncio.sleep(VOICE_RX_CHECK_S)
+                if not self._running:
+                    return
+                idle = self._rx_idle_seconds()
+                if idle is None:
+                    continue
+                if idle < VOICE_RX_WARN_S:
+                    if self._rx_degraded:
+                        self._rx_degraded = False
+                        _print("[voice] inbound audio recovered")
+                    continue
+                if idle >= VOICE_RX_DEAD_S:
+                    self._signal_stream_lost(
+                        "no media received for %ds — %s"
+                        % (int(idle), self._rx_diagnosis()))
+                    return
+                if not self._rx_degraded:
+                    self._rx_degraded = True
+                    _print("[voice] no inbound audio for %ds — %s"
+                           % (int(idle), self._rx_diagnosis()))
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            # The watchdog failing must not take the call with it, but it
+            # must not fail silently either: a dead watchdog means the very
+            # condition it exists to catch would go unnoticed again.
+            _print("[voice] media watchdog stopped: %s" % _san(str(exc), 120))
+
     def _drain_buffer(self, buf: bytearray) -> None:
         """Parse, authenticate and enqueue every complete frame in buf.
 
@@ -3638,6 +3830,11 @@ class VoiceCallSession:
                 epoch, counter, plaintext, ftype = self.open_packet(
                     header, sealed)
                 self.stages.record_since("decrypt", _t_open)
+                # Stamped for every authenticated frame, not only audio: a
+                # PING or PONG proves the receive path just as well, and
+                # during the live failure the probe replies died in the same
+                # instant as the audio.
+                self._rx_last_frame = time.monotonic()
                 del buf[:VOICE_HDR_LEN + length]
 
                 if ftype == FRAME_TYPE_PING:
@@ -3811,14 +4008,15 @@ class VoiceCallSession:
         transport = self._transport_mode
         audio = self.audio_backend or "-"
         return ("state=%s role=%s audio=%s %s transport=%s keys=%s epoch=%d "
-                "pending=%s sent=%d "
+                "pending=%s sent=%d dgram_in=%d "
                 "recv=%d dropped=%d late=%d authfail=%d replay=%d resync=%d "
                 "backpressure=%d stale=%d foreign=%d oversize=%d fec=%d "
                 "jitter=%d/%d (%.0fms) %s ratchets=%d rekeys=%d/%d"
                 % (self.state, self.role, audio, rate, transport,
                    "confirmed" if self.keys_confirmed.is_set() else "pending",
                    epoch, "-" if pending is None else pending,
-                   self.stats["sent"], self.stats["recv"],
+                   self.stats["sent"], self.stats["dgram_in"],
+                   self.stats["recv"],
                    self.stats["dropped"], self.stats["late"],
                    self.stats["auth_fail"], self.stats["replay"],
                    self.stats["resync"],
@@ -3954,7 +4152,8 @@ class VoiceCallSession:
         self._accept_sock = None
 
         # 4. Cancel every asyncio task this session owns.
-        for name in ("_prewarm", "_reader_task", "_accept_task"):
+        for name in ("_prewarm", "_reader_task", "_accept_task",
+                     "_rx_watchdog_task"):
             task = getattr(self, name, None)
             if task is not None and not task.done():
                 task.cancel()
@@ -5359,10 +5558,16 @@ class VoiceCallManager:
                 # depth/max said nothing about whether the buffer was sized
                 # for the path or merely parked at its shed threshold, which
                 # is what it was doing at 840 ms.
-                self._vdbg(peer, "5s: tx=%d rx=%d drop=%d bp=%d stale=%d "
+                # dg= is the raw arrival count. rx=0 with dg=0 means the
+                # path is dead; rx=0 with dg>0 means it is not, and the fault
+                # is above the transport. The live failure could not be
+                # classified because this number did not exist.
+                self._vdbg(peer, "5s: tx=%d dg=%d rx=%d drop=%d bp=%d "
+                           "stale=%d "
                            "foreign=%d late=%d authfail=%d replay=%d "
                            "jitter=%d/%d jit=%.0fms buf=%dms epoch=%d %s"
-                           % (delta.get("sent", 0), delta.get("recv", 0),
+                           % (delta.get("sent", 0), delta.get("dgram_in", 0),
+                              delta.get("recv", 0),
                               delta.get("dropped", 0),
                               delta.get("backpressure", 0),
                               delta.get("stale", 0),

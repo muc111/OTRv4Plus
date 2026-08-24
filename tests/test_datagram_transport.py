@@ -134,8 +134,9 @@ def _session(mode=voice.VOICE_TRANSPORT_DATAGRAM):
     s._dgram_send_header = None
     s._sam_session_id = "sess-1"
     s._peer_dest = None
-    s.stats = {"sent": 0, "recv": 0, "dropped": 0, "backpressure": 0,
-               "stale": 0, "resync": 0, "foreign": 0}
+    # Built from the production key set, not restated here: a hand-rolled
+    # copy went stale the moment a counter was added.
+    s.stats = voice.new_media_stats()
     s._foreign_warned = True          # suppress the console warning in tests
     s.loop = None
     return s

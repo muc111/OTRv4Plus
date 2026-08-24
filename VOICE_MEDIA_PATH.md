@@ -160,3 +160,111 @@ crypto change:
 
 The net effect is that a control-plane blip costs **one** rekey rather than
 every rekey for the rest of the call. Covered by `tests/test_rekey_recovery.py`.
+
+
+## Inbound media liveness
+
+### The failure
+
+A 33-minute live call lost inbound media at t=1418 s and never recovered. The
+call stayed ACTIVE and kept transmitting for the remaining 9.5 minutes.
+
+```
+1412s  tx=86  rx=85
+1417s  tx=85  rx=34     <- cliff
+1422s  tx=84  rx=0
+...    9.5 minutes
+1990s  tx=84  rx=0      <- log ends
+```
+
+Every rejection counter read zero throughout: `drop=0 foreign=0 authfail=0
+replay=0 late=0 stale=0`. Nothing was being rejected, because nothing was
+arriving.
+
+### What the evidence eliminated
+
+* **Rekey and epoch handling.** Rekeys 11-14 committed at 1500 s, 1626 s,
+  1758 s and 1880 s — all *after* the cliff. A commit needs a REKEYACK from
+  the peer, so the peer's client was alive and answering throughout, the
+  control plane was healthy, and the epoch machinery was working.
+* **Anything audio-specific.** The RTT window froze at `n=264` and stayed
+  there for 115 consecutive samples. Probe replies are inbound media
+  datagrams, so PONGs died in the same instant as the audio. Nothing above
+  the transport — Opus, jitter buffer, playout — can explain a failure common
+  to both.
+* **Event-loop starvation.** Loop lag held at p50 1 ms, max 12 ms.
+* **The local I2P router.** The XMPP path built a brand-new SAM session at
+  1478 s, during the dead period. The router was up and accepting sessions.
+* **The receive task dying.** There is no receive task in datagram mode; it
+  is callback-driven, and `sent` proves `_running` was true.
+
+### Root cause
+
+Media rode SAM `STYLE=STREAM` until `892ef7a`, which moved it to
+`STYLE=DATAGRAM` and made the reader task conditional:
+
+```diff
+-        self._reader_task = asyncio.ensure_future(self._network_reader())
++        if self._writer is not None:
++            self._reader_task = asyncio.ensure_future(self._network_reader())
+```
+
+`_network_reader` was the only caller of `_signal_stream_lost` for the
+receive path, and it got its liveness signal for free from stream EOF. A
+datagram has no EOF. **Datagram calls therefore had no inbound liveness
+detection at all** — not a weak one, none. The transmit side cannot supply it
+either: a datagram handed to the local SAM UDP bridge is accepted whether or
+not the session behind it still exists, so `sent` climbs happily over a dead
+path.
+
+The trigger was the network transition. Reconnect 8 took 70.3 s against
+10-30 s for the other nine — the only outlier, and the WiFi-to-mobile switch.
+XMPP recovered because it has a reconnect path. Media did not, because
+nothing was watching and nothing could fail.
+
+### What changed
+
+A watchdog on the session, running in **both** transport modes, checking at
+the media probe cadence:
+
+| Constant | Value | Basis |
+|---|---|---|
+| `VOICE_RX_CHECK_S` | 5 s | the media probe interval |
+| `VOICE_RX_WARN_S` | 15 s | three consecutive probe intervals of silence |
+| `VOICE_RX_DEAD_S` | 45 s | `VOICE_REKEY_TIMEOUT`, the existing "not coming back" horizon |
+
+45 s is ~750 consecutive frames at 60 ms. The worst measured stall on the old
+stream transport was 24 s and would not trip it. Loss is declared through the
+existing `_signal_stream_lost` path, which already ends the call, notifies the
+peer, and is already bound to the call_id.
+
+### The counter that was missing
+
+`rx=0` with every rejection counter at 0 was **ambiguous**: it could mean
+nothing arrived, or that things arrived and were discarded on a path that
+counts nothing — and `_on_datagram` had two such paths. `dgram_in` now counts
+every arrival before every filter, and appears in the telemetry as `dg=`:
+
+* `rx=0 dg=0` — the path is dead.
+* `rx=0 dg>0` — the path is fine and the fault is above it.
+
+Two clocks are kept: `_rx_last_datagram` (anything at the socket) and
+`_rx_last_frame` (anything that authenticated, including PINGs and PONGs).
+The watchdog judges on the second, so a flood of junk cannot keep a dead call
+looking alive; the difference between them is what names the failing stage.
+
+### A second defect, found while testing
+
+`AESGCM.decrypt` raises `InvalidTag`, which is not a `FrameError`, so every
+AEAD authentication failure was landing in the generic handler and being
+counted as a plain `dropped`. `authfail` only ever counted the structural
+rejections above the cipher — wrong epoch, bad length, sub-epoch too far. The
+one event the counter exists to report was invisible in it. The frame is
+rejected exactly as before; only the accounting changed.
+
+### Limitation
+
+The watchdog **detects and ends**; it does not re-establish the media path.
+Recovery would mean building a new SAM datagram session, which yields a new
+transient destination, which the peer must be told about — a new signalling
+verb and a wire change. That is deliberately not in this change.
