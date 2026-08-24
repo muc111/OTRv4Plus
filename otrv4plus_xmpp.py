@@ -965,6 +965,16 @@ class OTRv4PlusXMPP(ClientXMPP):
         self._reconnects_started = 0
         self._reconnects_completed = 0
 
+        # Password re-entry. A rejected password used to be terminal, which
+        # over I2P cost another 30-90 s tunnel build just to correct a typo.
+        self._auth_failures = 0
+        self._password_prompt = None     # prompt text while input is awaited
+
+        # Peers seen to go offline, and when. A peer that never comes back
+        # leaves a ratchet that its replacement session cannot use.
+        self._peer_gone_at = {}
+        self._peer_gone_task = None
+
         # Voice call manager (initialized lazily after event loop is available)
         self._voice_manager = None
         self._voice_sam_host = "127.0.0.1"
@@ -1359,10 +1369,69 @@ class OTRv4PlusXMPP(ClientXMPP):
         except asyncio.CancelledError:
             pass
 
+    MAX_AUTH_ATTEMPTS = 3
+
     def _on_failed_auth(self, event):
-        print("\n[auth failed] check JID and password.", file=sys.stderr)
-        # Don't retry on bad credentials; reconnect would loop forever.
-        self._shutting_down = True
+        """Offer a re-entry instead of ending the session on a typo.
+
+        Retrying automatically with the SAME password would loop forever, so
+        the reconnect loop stays blocked until a new one is supplied: while
+        _password_prompt is set, _schedule_reconnect refuses to run. Only a
+        password the user actually typed unblocks it.
+        """
+        self._auth_failures += 1
+        left = self.MAX_AUTH_ATTEMPTS - self._auth_failures
+        if left <= 0 or not self._can_prompt_for_password():
+            print("\n[auth failed] the server rejected that password.",
+                  file=sys.stderr)
+            if left <= 0:
+                print("[auth failed] %d attempts used — giving up. Check the "
+                      "JID and restart." % self._auth_failures,
+                      file=sys.stderr)
+            self._shutting_down = True
+            return
+        print("\n[auth failed] the server rejected that password.")
+        print("[auth] %d attempt%s left."
+              % (left, "" if left == 1 else "s"))
+        print("[auth] press Enter, then type the password again "
+              "(it will not be shown).")
+        self._password_prompt = "Password for %s: " % (self._own_bare or "?")
+
+    def _can_prompt_for_password(self) -> bool:
+        """True when a hidden prompt can actually be delivered.
+
+        The plain reader owns stdin and can swap in getpass. The TUI draws
+        and echoes its own input line, so a password typed there would be on
+        screen and in any terminal capture; rather than leak it, that mode
+        reports the failure and stays down.
+        """
+        if getattr(self, "_tui_enabled", False):
+            return False
+        try:
+            return bool(sys.stdin.isatty())
+        except Exception:
+            return False
+
+    def supply_password(self, text) -> None:
+        """Accept a re-entered password and resume connecting."""
+        if self._password_prompt is None:
+            return
+        self._password_prompt = None
+        secret = (text or "").strip("\r\n")
+        if not secret:
+            print("[auth] nothing entered — session stays down.")
+            self._shutting_down = True
+            try:
+                self.disconnect()
+            except Exception:
+                pass
+            return
+        # slixmpp's password setter writes credentials['password'], which is
+        # what the next SASL attempt reads.
+        self.password = secret
+        self._reconnect_delay = _RECONNECT_BASE
+        print("[auth] retrying with the new password…")
+        self._schedule_reconnect("password re-entered")
 
     def _has_transport_params(self) -> bool:
         """True when reconnect knows which transport to re-establish.
@@ -1388,6 +1457,10 @@ class OTRv4PlusXMPP(ClientXMPP):
         """
         if self._shutting_down or not self._has_transport_params():
             return
+        if self._password_prompt is not None:
+            # Reconnecting now would present the password the server has
+            # already rejected, and do it every few seconds forever.
+            return
         existing = self._reconnect_task
         if existing is not None and not existing.done():
             return
@@ -1402,6 +1475,9 @@ class OTRv4PlusXMPP(ClientXMPP):
         print("\n[disconnected]")
         if self._keepalive_task:
             self._keepalive_task.cancel()
+        # Our stream is what went away. Every peer will look unavailable for
+        # the duration, and none of them has actually gone anywhere.
+        self._clear_peer_gone("our transport dropped")
         self._schedule_reconnect("disconnect")
 
     def _on_connection_failed(self, event):
@@ -1587,12 +1663,119 @@ class OTRv4PlusXMPP(ClientXMPP):
         status = presence["status"] or ""
         status_s = f" ({_sanitise(status, 64)})" if status else ""
         print(f"[presence] {_sanitise(peer, 128)} is {show}{status_s}")
+        self._peer_is_alive(peer)
 
     def _on_presence_unavailable(self, presence):
         peer = presence["from"].bare
         if peer == self._own_bare:
             return
         print(f"[presence] {_sanitise(peer, 128)} went offline")
+        self._arm_peer_gone(peer)
+
+    # -------------------------------------------------------------------------
+    # Abandoned OTR sessions
+    # -------------------------------------------------------------------------
+    #
+    # A ratchet is shared state. When the peer's client exits, its half is
+    # gone; ours is not, so the next /otr found a live session on our side
+    # only, and the DAKE it tried to start went nowhere. start_otr already
+    # force-resets a stuck session, but only after a failed attempt the user
+    # has to notice and interpret.
+    #
+    # The trigger is a peer that goes offline and stays offline. It is
+    # deliberately NOT "the peer went offline", because that fires constantly
+    # for reasons that have nothing to do with the peer: our own stream
+    # dropping produces the same presence, and this client reconnects often
+    # enough over I2P that tearing down a verified session on a blip would be
+    # far worse than the problem being fixed. So the timer is cancelled by
+    # anything that proves the peer is still there, and by our own reconnects.
+
+    PEER_GONE_SECONDS = 180
+
+    def _peer_is_alive(self, peer: str) -> None:
+        """Any sign of life cancels a pending teardown."""
+        self._peer_gone_at.pop(peer, None)
+
+    def _arm_peer_gone(self, peer: str) -> None:
+        if peer not in self._encrypted:
+            return                       # nothing to clear
+        self._peer_gone_at[peer] = time.monotonic()
+        self._start_peer_gone_sweeper()
+
+    def _clear_peer_gone(self, why: str = "") -> None:
+        """Forget every pending teardown.
+
+        Called when OUR transport drops. The peers looked absent because we
+        were, and their sessions are fine.
+        """
+        if self._peer_gone_at:
+            self._peer_gone_at.clear()
+
+    def _start_peer_gone_sweeper(self) -> None:
+        task = self._peer_gone_task
+        if task is not None and not task.done():
+            return
+        try:
+            loop = asyncio.get_event_loop()
+            self._peer_gone_task = loop.create_task(self._peer_gone_sweeper())
+        except Exception:
+            self._peer_gone_task = None
+
+    async def _peer_gone_sweeper(self) -> None:
+        try:
+            while not self._shutting_down and self._peer_gone_at:
+                await asyncio.sleep(15)
+                now = time.monotonic()
+                for peer, since in list(self._peer_gone_at.items()):
+                    if now - since < self.PEER_GONE_SECONDS:
+                        continue
+                    if self._peer_in_call(peer):
+                        # Media does not use XMPP, so a call can be healthy
+                        # while presence says otherwise. Ending OTR here would
+                        # take the rekey and END signalling with it.
+                        self._peer_gone_at[peer] = now
+                        continue
+                    self._peer_gone_at.pop(peer, None)
+                    self._forget_otr(peer, "offline for %ds"
+                                     % self.PEER_GONE_SECONDS)
+        except asyncio.CancelledError:
+            pass
+        except Exception as exc:
+            print("[otr] session sweeper stopped: %s" % _sanitise(str(exc), 80))
+
+    def _peer_in_call(self, peer: str) -> bool:
+        manager = self._voice_manager
+        if manager is None:
+            return False
+        try:
+            return bool(manager.has_active_call(peer))
+        except Exception:
+            return False
+
+    def _forget_otr(self, peer: str, why: str) -> None:
+        """Drop every trace of an OTR session so /otr can start a fresh one.
+
+        The same reset start_otr performs on a stuck session, done up front
+        instead of after a failure. Nothing here weakens anything: it destroys
+        ratchet state, and the peer's next session has to complete a full DAKE
+        and be SMP-verified again exactly as the first one did. The pinned
+        fingerprint is NOT touched -- that is long-term identity, and forgetting
+        it would turn a reconnect into a fresh trust-on-first-use decision.
+        """
+        if peer not in self._encrypted and peer not in self._pending:
+            return
+        try:
+            self.otr.end_session(peer)
+        except Exception as exc:
+            print("[otr] could not end session with %s: %s"
+                  % (_sanitise(peer, 128), _sanitise(str(exc), 80)))
+        self._encrypted.discard(peer)
+        self._last_dake1.pop(peer, None)
+        self._pending.pop(peer, None)
+        self._smp_reported = {k for k in self._smp_reported if k[0] != peer}
+        print("[otr] cleared the session with %s (%s) — /otr to start a new "
+              "one when they return" % (_sanitise(peer, 128),
+                                        _sanitise(why, 64)))
 
     # -------------------------------------------------------------------------
     # Rate limiting
@@ -1626,6 +1809,10 @@ class OTRv4PlusXMPP(ClientXMPP):
         # Session-local block list check.
         if peer in self._blocked:
             return
+
+        # Anything at all from this peer proves they are still there, which
+        # outranks a presence stanza that said otherwise.
+        self._peer_is_alive(peer)
 
         # Rate limiting check.
         if not self._check_rate_limit(peer):
@@ -3248,6 +3435,15 @@ class OTRv4PlusXMPP(ClientXMPP):
             return
         self._cleaned_up = True
 
+        self._peer_gone_at.clear()
+        task = self._peer_gone_task
+        self._peer_gone_task = None
+        if task is not None and not task.done():
+            try:
+                task.cancel()
+            except Exception:
+                pass
+
         # 1. Tear down voice calls FIRST — this releases the microphone.
         #
         #    cleanup() may run from main()'s finally block, where the event
@@ -3484,12 +3680,29 @@ async def _input_loop(client):
     replaces this when stdin/stdout are a terminal; both share dispatch_line."""
     loop = asyncio.get_event_loop()
     while True:
+        # This is the only stdin reader in plain mode, so the hidden password
+        # prompt has to happen here rather than in a second thread racing it
+        # for the same file descriptor.
+        prompt = getattr(client, "_password_prompt", None)
         try:
-            line = await loop.run_in_executor(None, sys.stdin.readline)
+            if prompt:
+                line = await loop.run_in_executor(
+                    None, getpass.getpass, prompt)
+            else:
+                line = await loop.run_in_executor(None, sys.stdin.readline)
         except (EOFError, KeyboardInterrupt):
             break
+        if prompt:
+            client.supply_password(line)
+            continue
         if not line:
             break
+        if getattr(client, "_password_prompt", None):
+            # The prompt was raised while this read was already blocked, so
+            # the line belongs to the prompt that is no longer there. Drop it
+            # -- the next pass through is the hidden one. This is why the
+            # auth message says "press Enter, then type the password again".
+            continue
         if not client.dispatch_line(client.peer, line.rstrip("\n")):
             break
     client._shutting_down = True

@@ -192,6 +192,90 @@ def _env_ms(name: str, default_ms: int, lo: int, hi: int) -> int:
             return value
     return default_ms
 
+
+# -- latency colour bands --------------------------------------------------
+#
+# Mouth-to-ear delay is the number that decides whether a call is usable, and
+# it is checked more often than anything else in the telemetry. Colouring it
+# turns a reading into a verdict at a glance.
+#
+# The thresholds come from ITU-T G.114, which puts one-way delay under 400 ms
+# in the range "acceptable for most user applications". That is applied here
+# to the full mouth-to-ear figure, because that is what a person actually
+# experiences -- network transit plus our own buffering and playout.
+#
+# 400 ms is optimistic over three I2P hops in each direction, so a healthy
+# call on this transport usually reads yellow. That is the honest signal:
+# workable, not good. A scale calibrated so everything came out green would
+# say nothing at all. Both bands are overridable for retuning after a soak
+# test without touching code.
+M2E_GOOD_MS = _env_ms("OTRV4PLUS_M2E_GOOD_MS", 400, 50, 10000)
+M2E_WARN_MS = max(M2E_GOOD_MS,
+                  _env_ms("OTRV4PLUS_M2E_WARN_MS", 800, 50, 20000))
+
+_ANSI_GREEN = "\033[92m"
+_ANSI_YELLOW = "\033[93m"
+_ANSI_RED = "\033[91m"
+_ANSI_RESET = "\033[0m"
+
+
+def _colour_enabled() -> bool:
+    """Colour only where it will render.
+
+    Honours NO_COLOR (the de-facto standard) and stays off when stdout is
+    redirected, so a piped transcript does not fill with escape sequences.
+    The session transcript strips ANSI on its own, so the terminal keeps the
+    colour and the log file stays plain either way.
+    """
+    if os.environ.get("NO_COLOR"):
+        return False
+    if os.environ.get("OTRV4PLUS_FORCE_COLOR"):
+        return True
+    try:
+        import sys
+        return bool(sys.stdout.isatty())
+    except Exception:
+        return False
+
+
+def latency_band(ms) -> str:
+    """"good", "warn" or "bad" for a millisecond reading."""
+    if ms is None:
+        return "unknown"
+    if ms <= M2E_GOOD_MS:
+        return "good"
+    if ms <= M2E_WARN_MS:
+        return "warn"
+    return "bad"
+
+
+def colour_latency(ms, text=None) -> str:
+    """Render a latency reading in its band's colour.
+
+    ``text`` overrides the rendered label when the caller has already
+    formatted it. An unmeasured value is never coloured -- "-" in red would
+    read as a bad measurement rather than no measurement.
+    """
+    label = text if text is not None else (
+        "-" if ms is None else "%.0fms" % ms)
+    if ms is None or not _colour_enabled():
+        return label
+    band = latency_band(ms)
+    colour = {"good": _ANSI_GREEN, "warn": _ANSI_YELLOW,
+              "bad": _ANSI_RED}.get(band, "")
+    if not colour:
+        return label
+    return "%s%s%s" % (colour, label, _ANSI_RESET)
+
+
+def latency_legend() -> str:
+    return ("mouth-to-ear colour: %s good (<=%dms) %s workable (<=%dms) "
+            "%s poor (>%dms)"
+            % (colour_latency(0, "green"), M2E_GOOD_MS,
+               colour_latency(M2E_WARN_MS, "yellow"), M2E_WARN_MS,
+               colour_latency(M2E_WARN_MS + 1, "red"), M2E_WARN_MS))
+
+
 # ---------------------------------------------------------------------------
 # Host bindings
 # ---------------------------------------------------------------------------
@@ -2313,9 +2397,11 @@ class LatencyTracker:
 
     def summary(self) -> str:
         rtt, ow = self.rtt_ms, self.oneway_ms
+        # Only the one-way figure is banded. RTT is a diagnostic; one-way is
+        # the half of it the listener actually waits through.
         return "rtt=%s oneway=%s" % (
             "%.0fms" % rtt if rtt is not None else "-",
-            "%.0fms" % ow if ow is not None else "-")
+            colour_latency(ow))
 
 
 class RateLimiter:
@@ -5339,20 +5425,19 @@ class VoiceCallManager:
                     oneway = session.latency.oneway_ms or 0.0
                     local = session.stages.local_send_ms()
                     if oneway > 0:
+                        dwell = session.jitter.dwell.percentile(0.50)
+                        playout = (session.stages.t["decode"].percentile(0.50)
+                                   + session.stages.t["play"].percentile(0.50))
+                        m2e = oneway + dwell + playout
                         self._vdbg(
                             peer,
-                            "budget: one-way %.0fms = local send %.0fms + "
+                            "budget: one-way %s = local send %.0fms + "
                             "network %.0fms (%.0f%% local) | + dwell %.0fms "
-                            "+ playout %.0fms = mouth-to-ear ~%.0fms"
-                            % (oneway, local, max(0.0, oneway - local),
-                               100.0 * local / oneway,
-                               session.jitter.dwell.percentile(0.50),
-                               session.stages.t["decode"].percentile(0.50)
-                               + session.stages.t["play"].percentile(0.50),
-                               oneway
-                               + session.jitter.dwell.percentile(0.50)
-                               + session.stages.t["decode"].percentile(0.50)
-                               + session.stages.t["play"].percentile(0.50)))
+                            "+ playout %.0fms = mouth-to-ear ~%s"
+                            % (colour_latency(oneway), local,
+                               max(0.0, oneway - local),
+                               100.0 * local / oneway, dwell, playout,
+                               colour_latency(m2e)))
                 except Exception:
                     pass
                 lat = session.latency
@@ -5412,6 +5497,9 @@ class VoiceCallManager:
             return
         task = self._stats_tasks.get(peer)
         if task is None or task.done():
+            # Once per call, so the colours mean something without having to
+            # remember the thresholds.
+            self._vdbg(peer, latency_legend())
             self._stats_tasks[peer] = asyncio.ensure_future(
                 self._stats_loop(peer))
         # One monitor for the loop, not one per call: it measures the loop,

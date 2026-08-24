@@ -422,6 +422,44 @@ zeroes are exactly what a revoked `RECORD_AUDIO` or a null source produces.
   clamped: 240 ms on a clean path, 600 ms ceiling, and it shrinks back when the
   path recovers.
 
+### Reading the telemetry
+
+`--voice-debug` prints a five-second telemetry block per call. The one-way
+figure in the summary line and the mouth-to-ear total in the `budget:` line
+are colour-banded so a reading is a verdict rather than a number to interpret:
+
+| Colour | Mouth-to-ear | Meaning |
+|---|---|---|
+| green | ≤ 400 ms | ITU-T G.114's "acceptable for most user applications" |
+| yellow | ≤ 800 ms | noticeable delay, still conversational |
+| red | > 800 ms | talk-over territory |
+
+Over three I2P hops in each direction a healthy call usually reads yellow.
+That is the honest signal — workable, not good. A scale calibrated so
+everything came out green would say nothing at all. Retune without touching
+code via `OTRV4PLUS_M2E_GOOD_MS` and `OTRV4PLUS_M2E_WARN_MS`; `NO_COLOR`
+disables the banding, and it is suppressed automatically when stdout is not a
+terminal, so a redirected transcript stays plain.
+
+### Abandoned OTR sessions
+
+A ratchet is shared state, so when the peer's client exits their half is gone
+and ours is not — and the next `/otr` found a live session on this side only.
+
+A peer that goes offline and stays offline for `PEER_GONE_SECONDS` (180 s) now
+has its session cleared automatically, so `/otr` starts cleanly when they come
+back. The trigger is deliberately *not* "the peer went offline": over I2P this
+client reconnects often, and our own stream dropping produces the same presence
+for every peer. The timer is cancelled by anything proving the peer is still
+there — a presence, any inbound message — and by our own disconnect. A peer on
+a live call is never torn down, because media does not use XMPP and ending OTR
+would take the rekey and END signalling with it.
+
+Only session state goes: the ratchet, the SMP result, the DAKE. The **pinned
+fingerprint is kept** — that is long-term identity, and forgetting it would
+turn every reconnect into a fresh trust-on-first-use decision, which is exactly
+where a MITM would want the user.
+
 ### Incoming calls on Android
 
 The phone is usually screen-off and face-down when a call arrives, and a tone

@@ -320,13 +320,17 @@ class TestNoDuplicateLoops:
             _has_transport_params = xmpp.OTRv4PlusXMPP._has_transport_params
             _on_disconnected = xmpp.OTRv4PlusXMPP._on_disconnected
             _on_connection_failed = xmpp.OTRv4PlusXMPP._on_connection_failed
+            _clear_peer_gone = xmpp.OTRv4PlusXMPP._clear_peer_gone
 
             def __init__(self):
                 self._shutting_down = False
                 self._sam_params = {"server_b32": "x.b32.i2p"}
                 self._tor_params = None
                 self._reconnect_task = None
+                self._password_prompt = None
                 self._keepalive_task = None
+                self._password_prompt = None
+                self._peer_gone_at = {}
                 self.started = 0
 
             async def _reconnect(self):
@@ -359,6 +363,7 @@ class TestNoDuplicateLoops:
                 self._sam_params = {"server_b32": "x.b32.i2p"}
                 self._tor_params = None
                 self._reconnect_task = None
+                self._password_prompt = None
                 self.started = 0
 
             async def _reconnect(self):
@@ -386,6 +391,7 @@ class TestNoDuplicateLoops:
                 self._sam_params = {"server_b32": "x.b32.i2p"}
                 self._tor_params = None
                 self._reconnect_task = None
+                self._password_prompt = None
 
             async def _reconnect(self):
                 raise AssertionError("scheduled during shutdown")
@@ -405,6 +411,7 @@ class TestNoDuplicateLoops:
                 self._sam_params = None
                 self._tor_params = None
                 self._reconnect_task = None
+                self._password_prompt = None
 
             async def _reconnect(self):
                 raise AssertionError("scheduled with no transport")
