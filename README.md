@@ -422,12 +422,54 @@ zeroes are exactly what a revoked `RECORD_AUDIO` or a null source produces.
   clamped: 240 ms on a clean path, 600 ms ceiling, and it shrinks back when the
   path recovers.
 
+### Incoming calls on Android
+
+The phone is usually screen-off and face-down when a call arrives, and a tone
+from a backgrounded terminal is easy to miss. So an incoming call rings three
+ways at once: a synthesised double-ring through the same audio backend the
+call will use (no audio file is ever read or written), a Termux:API
+notification at max priority, and an 800 ms vibration.
+
+The notification carries **Answer** and **Decline** buttons. A Termux
+notification action is a shell command run by the Termux app in its own
+process, so the button cannot call into the client directly. It writes one
+line into a FIFO at `~/.otrv4plus/call-ctl` (directory `0700`, pipe `0600`)
+which the client is reading, and that line resolves to exactly the
+`answer_call()` / `reject_call()` the terminal calls. There is no second state
+machine and no second code path.
+
+Three properties make that safe:
+
+- **No peer-derived text ever reaches a shell command.** The action string
+  contains only a path we chose and a token we generated. The peer's JID goes
+  in the notification *body*, where it is stripped of ANSI and control
+  characters and de-fanged so `termux-notification` cannot parse it as one of
+  its own options.
+- **The token is single-use and bound to one `(peer, call_id)`.** A replayed
+  press finds it spent; a press left over from an earlier call cannot answer
+  the call that replaced it.
+- **Every press is re-checked against live session state** on the event loop.
+  A press that lands after the caller hung up, the timeout fired, or the
+  terminal already answered does nothing.
+
+The buttons appear only on Termux with Termux:API installed. Everywhere else
+the notification is posted exactly as before and no FIFO is created — there is
+no partial mode, because a button that cannot be delivered is worse than no
+button. `OTRV4PLUS_RING_PRIVACY=1` replaces the JID with "Open Termux to
+answer" so nothing identifying reaches the lock screen.
+
+A button is not a way past verification. Ringing happens downstream of the SMP
+gate: `_on_invite` refuses to allocate a session at all for a peer SMP has not
+verified, so a notification can only ever act on a call the client had already
+decided to ring.
+
 ### Microphone access
 
 No remote message can open the microphone. Only `start_audio()` opens the
 device, and only `_await_media` (after a local `/call`) and `answer_call`
-(after a local `/answer`) reach it. Ringing opens playback only. This is
-enforced by a test that enumerates every caller, not by inspection.
+(after a local `/answer`, or a local press on the notification's **Answer**
+button) reach it. Ringing opens playback only. This is enforced by a test that
+enumerates every caller, not by inspection.
 
 `/mute` **closes the capture stream** rather than reading and discarding. The
 OS recording indicator goes out. A soft mute leaves the microphone open — the

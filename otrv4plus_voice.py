@@ -4003,6 +4003,279 @@ def _epoch_field(text: str) -> int:
     return epoch
 
 
+class CallControlChannel:
+    """The path from a Termux notification button back into a running call.
+
+    A Termux:API notification action is a shell command the Termux app runs
+    in its own process.  It cannot call answer_call() directly, so the button
+    writes one short line into a FIFO that the client is reading, and the
+    client turns that line into exactly the same call the terminal makes.
+
+    Nothing here is a second state machine.  A command resolves to
+    ``answer_call`` or ``reject_call`` verbatim, so every gate those already
+    enforce still applies — most importantly the SMP check in ``_on_invite``,
+    which rejects an unverified peer before a session exists at all.  A
+    button can only ever act on a call the client already decided to ring.
+
+    Three properties make the channel safe to hand to the Android UI layer:
+
+    * The generated command contains only a path we chose and a token we
+      generated.  No peer-derived text ever reaches a shell command.
+    * The token is single-use and bound to one (peer, call_id).  A stale
+      "answer" from a previous call cannot answer the one that replaced it,
+      and a replayed line finds its token already spent.
+    * Every command is re-checked against live session state on arrival, on
+      the event loop, exactly as ``/answer`` is.
+    """
+
+    VERBS = ("answer", "decline")
+    TOKEN_BYTES = 16
+    MAX_TOKENS = 8
+    TOKEN_TTL = 900.0                 # backstop; disarm() is the normal path
+    MAX_LINE = 256
+    MAX_BUFFER = 4096
+
+    # The FIFO path is embedded in a shell command, so it may contain only
+    # characters that cannot change the command's meaning.  A path failing
+    # this yields no buttons rather than a quoted guess.
+    _PATH_ALLOWED = frozenset(
+        "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+        "_./@+-")
+
+    def __init__(self, loop, path=None, which=None, dispatch=None):
+        self.loop = loop
+        self.path = path or self.default_path()
+        self._which = which
+        self._dispatch = dispatch
+        self._tokens = {}             # token -> (peer, call_id, expiry)
+        self._rfd = None
+        self._wfd = None
+        self._buffer = b""
+        self.error = None
+
+    @staticmethod
+    def default_path() -> str:
+        override = os.environ.get("OTRV4PLUS_CALL_CTL")
+        if override:
+            return override
+        return os.path.join(os.path.expanduser("~"), ".otrv4plus", "call-ctl")
+
+    # -- availability -----------------------------------------------------
+
+    def available(self) -> bool:
+        """True when notification buttons can actually do something.
+
+        Off Termux, or without Termux:API installed, this is False and the
+        ringer posts the notification it always posted.  There is no partial
+        mode: a button that cannot be delivered is worse than no button.
+        """
+        if not hasattr(os, "mkfifo"):
+            return False
+        if not _HOST.get("is_termux"):
+            return False
+        which = self._which or _HOST.get("which")
+        if which is None:
+            return False
+        try:
+            return bool(which("termux-notification"))
+        except Exception:
+            return False
+
+    # -- arming -----------------------------------------------------------
+
+    def arm(self, peer: str, call_id: bytes):
+        """Mint a token for one ringing call.  Returns the button list."""
+        if not self.available():
+            return []
+        if set(self.path) - self._PATH_ALLOWED:
+            self._note("control path has characters a shell command cannot "
+                       "safely carry — buttons disabled")
+            return []
+        if not self._open():
+            return []
+
+        self._expire_tokens()
+        if len(self._tokens) >= self.MAX_TOKENS:
+            return []
+        token = secrets.token_hex(self.TOKEN_BYTES)
+        self._tokens[token] = (peer, bytes(call_id),
+                               time.monotonic() + self.TOKEN_TTL)
+        return [("Answer", self._command("answer", token)),
+                ("Decline", self._command("decline", token))]
+
+    def _command(self, verb: str, token: str) -> str:
+        # `test -p` first: if the client is gone the FIFO is gone with it, so
+        # the button becomes a no-op instead of creating a stray file or
+        # blocking the Termux action shell on a pipe nobody is reading.
+        return ("test -p '%s' && printf '%s %s\\n' > '%s'"
+                % (self.path, verb, token, self.path))
+
+    def disarm(self, peer: str) -> None:
+        """Revoke every token for a peer.  Called when the ringing stops."""
+        for token, (owner, _cid, _exp) in list(self._tokens.items()):
+            if owner == peer:
+                self._tokens.pop(token, None)
+        if not self._tokens:
+            self.close()
+
+    def _expire_tokens(self) -> None:
+        now = time.monotonic()
+        for token, (_p, _c, expiry) in list(self._tokens.items()):
+            if expiry <= now:
+                self._tokens.pop(token, None)
+
+    # -- the pipe ---------------------------------------------------------
+
+    def _open(self) -> bool:
+        if self._rfd is not None:
+            return True
+        try:
+            directory = os.path.dirname(self.path) or "."
+            os.makedirs(directory, mode=0o700, exist_ok=True)
+            try:
+                os.chmod(directory, 0o700)
+            except OSError:
+                pass
+            if os.path.exists(self.path) and not _is_fifo(self.path):
+                # Something else owns the name.  Ours is the only thing that
+                # belongs here, and a regular file would silently swallow
+                # every button press.
+                os.unlink(self.path)
+            if not os.path.exists(self.path):
+                os.mkfifo(self.path, 0o600)
+            os.chmod(self.path, 0o600)
+
+            rfd = os.open(self.path, os.O_RDONLY | os.O_NONBLOCK)
+        except Exception as exc:
+            return self._open_failed(exc)
+        try:
+            # Hold a writer of our own so the reader never sees EOF when the
+            # last button-press shell exits.  Without this the fd reports
+            # readable forever and the loop spins.
+            wfd = os.open(self.path, os.O_WRONLY | os.O_NONBLOCK)
+        except Exception as exc:
+            _close_fd(rfd)
+            return self._open_failed(exc)
+        try:
+            self.loop.add_reader(rfd, self._readable)
+        except Exception as exc:
+            _close_fd(rfd)
+            _close_fd(wfd)
+            return self._open_failed(exc)
+        self._rfd, self._wfd = rfd, wfd
+        return True
+
+    def _open_failed(self, exc) -> bool:
+        self.error = str(exc)
+        self._note("call control channel unavailable: %s" % _san(str(exc), 120))
+        return False
+
+    def close(self) -> None:
+        """Tear the channel down.  Idempotent, never raises."""
+        rfd, self._rfd = self._rfd, None
+        wfd, self._wfd = self._wfd, None
+        self._buffer = b""
+        if rfd is not None:
+            try:
+                self.loop.remove_reader(rfd)
+            except Exception:
+                pass
+        for fd in (rfd, wfd):
+            if fd is not None:
+                try:
+                    os.close(fd)
+                except Exception:
+                    pass
+        try:
+            if os.path.exists(self.path) and _is_fifo(self.path):
+                os.unlink(self.path)
+        except Exception:
+            pass
+
+    def shutdown(self) -> None:
+        self._tokens.clear()
+        self.close()
+
+    # -- reading ----------------------------------------------------------
+
+    def _readable(self) -> None:
+        """One readable event on the FIFO.  Event-loop thread only."""
+        rfd = self._rfd
+        if rfd is None:
+            return
+        try:
+            chunk = os.read(rfd, self.MAX_BUFFER)
+        except BlockingIOError:
+            return
+        except OSError:
+            self.close()
+            return
+        if not chunk:
+            return
+        self._buffer += chunk
+        if len(self._buffer) > self.MAX_BUFFER:
+            # A writer sending unbounded data is not one of our buttons.
+            self._buffer = b""
+            return
+        while b"\n" in self._buffer:
+            line, self._buffer = self._buffer.split(b"\n", 1)
+            self._consume(line)
+
+    def _consume(self, raw: bytes) -> None:
+        if not raw or len(raw) > self.MAX_LINE:
+            return
+        try:
+            text = raw.decode("ascii").strip()
+        except UnicodeDecodeError:
+            return
+        parts = text.split()
+        if len(parts) != 2:
+            return
+        verb, token = parts
+        if verb not in self.VERBS:
+            return
+        if len(token) != self.TOKEN_BYTES * 2:
+            return
+
+        entry = self._tokens.get(token)
+        if entry is None:
+            return
+        peer, call_id, expiry = entry
+        # Single use, whichever button was pressed: the call is being decided
+        # right now, so neither token survives the decision.
+        self.disarm(peer)
+        if expiry <= time.monotonic():
+            return
+        dispatch = self._dispatch
+        if dispatch is None:
+            return
+        try:
+            dispatch(verb, peer, call_id)
+        except Exception as exc:
+            self._note("call control dispatch failed: %s" % _san(str(exc), 120))
+
+    def _note(self, message: str) -> None:
+        try:
+            _print("[voice] %s" % message)
+        except Exception:
+            pass
+
+
+def _close_fd(fd) -> None:
+    try:
+        os.close(fd)
+    except Exception:
+        pass
+
+
+def _is_fifo(path: str) -> bool:
+    try:
+        import stat
+        return stat.S_ISFIFO(os.stat(path).st_mode)
+    except OSError:
+        return False
+
+
 class VoiceCallManager:
     """Voice-call lifecycle, signalling and policy.
 
@@ -4051,6 +4324,11 @@ class VoiceCallManager:
         self._rekey_tasks = {}
         self._last_invite = {}
         self._ringers = {}
+        # Notification ACCEPT/DECLINE. Opened lazily on the first ring and
+        # torn down when nothing is ringing, so a client that never receives
+        # a call never creates the FIFO.
+        self._call_control = CallControlChannel(
+            loop, dispatch=self._on_control_command)
         self._control_limiter = RateLimiter(VOICE_MAX_CONTROL_PER_MIN)
         self._rekey_limiter = RateLimiter(VOICE_MAX_REKEY_PER_MIN)
         self.debug = False
@@ -4576,15 +4854,28 @@ class VoiceCallManager:
         self._calls[peer] = session
         self._arm_timeout(peer, call_id)
 
-        self._start_ringing(peer)
+        self._start_ringing(peer, call_id)
         _print("\n[voice] incoming call from %s" % _san(peer, 64))
-        _print("[voice] /answer to accept, /reject to decline\n")
+        if self._ringers.get(peer) is not None \
+                and getattr(self._ringers[peer], "_actions", None):
+            _print("[voice] Answer/Decline on the notification, or "
+                   "/answer and /reject here\n")
+        else:
+            _print("[voice] /answer to accept, /reject to decline\n")
 
-    def _start_ringing(self, peer: str) -> None:
+    def _start_ringing(self, peer: str, call_id: bytes = b"") -> None:
         """Ring, notify and vibrate for an incoming call."""
         self._stop_ringing(peer)
+        actions = []
+        if call_id:
+            try:
+                actions = self._call_control.arm(peer, call_id)
+            except Exception as exc:
+                # The buttons are a convenience; the tone and /answer are not.
+                self._vdbg(peer, "call control unavailable: %s"
+                           % _san(str(exc), 120))
         try:
-            ringer = _audio.Ringer()
+            ringer = _audio.Ringer(actions=actions)
             ringer.start(peer=peer, which=_HOST["which"],
                          write_all=_HOST["pipe_write_all"])
             self._ringers[peer] = ringer
@@ -4594,6 +4885,10 @@ class VoiceCallManager:
 
     def _stop_ringing(self, peer: str) -> None:
         """Silence the ringer.  Must run before the call opens playback."""
+        try:
+            self._call_control.disarm(peer)
+        except Exception:
+            pass
         ringer = self._ringers.pop(peer, None)
         if ringer is None:
             return
@@ -4601,6 +4896,32 @@ class VoiceCallManager:
             ringer.stop()
         except Exception:
             pass
+
+    def _on_control_command(self, verb: str, peer: str, call_id: bytes) -> None:
+        """One ACCEPT/DECLINE press.  Event-loop thread only.
+
+        The token proved which call the button belonged to; this re-checks
+        that the call is still that call and still ringing, then takes the
+        ordinary path.  A press that arrives after the call moved on — the
+        caller hung up, the timeout fired, the terminal already answered —
+        does nothing at all.
+        """
+        session = self._calls.get(peer)
+        if session is None or session.call_id != call_id:
+            self._vdbg(peer, "notification %s for a call that has gone" % verb)
+            return
+        if session.state != CallState.RINGING:
+            self._vdbg(peer, "notification %s in state %s — ignored"
+                       % (verb, session.state))
+            return
+        _print("[voice] %s from the notification" % verb)
+        # create_task rather than ensure_future: this runs from the reader
+        # callback, so the manager's own loop is the only correct one and
+        # naming it removes any dependence on a current-loop lookup.
+        if verb == "answer":
+            self.loop.create_task(self.answer_call(peer))
+        else:
+            self.loop.create_task(self.reject_call(peer))
 
     async def _on_accept(self, peer: str, fields) -> None:
         if len(fields) != 4:
@@ -5172,6 +5493,10 @@ class VoiceCallManager:
     async def cleanup(self) -> None:
         """End every call gracefully and destroy every media key."""
         self._stop_lag_monitor()
+        try:
+            self._call_control.shutdown()
+        except Exception:
+            pass
         for peer in list(self._calls.keys()):
             try:
                 await self.end_call(peer, notify_peer=True)
@@ -5185,6 +5510,10 @@ class VoiceCallManager:
         self._stop_lag_monitor()
         for peer in list(self._ringers):
             self._stop_ringing(peer)
+        try:
+            self._call_control.shutdown()
+        except Exception:
+            pass
         count = 0
         for peer in list(self._calls.keys()):
             session = self._calls.pop(peer, None)

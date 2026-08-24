@@ -1578,8 +1578,28 @@ class Ringer:
     PATTERN = ((0.4, True), (0.2, False), (0.4, True), (2.0, False))
     AMPLITUDE = 0.28                      # headroom: two summed tones
 
-    def __init__(self, notify=True, vibrate=True):
+    # Flags we pass to termux-notification ourselves.  Anything NOT in this
+    # set is treated as untrusted data and hardened before it becomes an
+    # argument.  Mirrors the same defence in otrv4+.py.
+    _TERMUX_FLAGS = frozenset({
+        "--id", "--title", "--content", "--priority", "--sound",
+        "--button1", "--button1-action", "--button2", "--button2-action",
+    })
+
+    # Button actions are shell commands run by the Termux app.  Nothing
+    # peer-derived may ever reach one, so the only characters permitted are
+    # those our own generated commands are built from: a path, a hex token
+    # and shell punctuation we wrote ourselves.  A command that fails this
+    # is dropped rather than sanitised — silently repairing a command we did
+    # not expect to generate is how injections get through.
+    _ACTION_ALLOWED = frozenset(
+        "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+        "_./@+-'\\ =&|>")
+    MAX_BUTTONS = 2
+
+    def __init__(self, notify=True, vibrate=True, actions=None):
         self._helpers = []              # Termux:API children awaiting reap
+        self._actions = list(actions or ())[:self.MAX_BUTTONS]
         self._stop = threading.Event()
         self._thread = None
         self._stream = None
@@ -1680,25 +1700,72 @@ class Ringer:
 
     # -- Termux:API -------------------------------------------------------
 
+    @classmethod
+    def _clean(cls, value: str, maxlen: int = 96) -> str:
+        """Neutralise untrusted text before it becomes a subprocess argument.
+
+        Strips ANSI/CSI sequences and C0/C1 controls — including NUL and
+        newline — so a hostile JID cannot spoof the notification or smuggle
+        terminal control codes, and caps the length.  Printable Unicode
+        survives.  Option injection is handled separately, in _notify_argv:
+        a value is data, and a value that could be read as a flag is not
+        allowed to be.
+        """
+        import re
+        text = re.sub(r"\x1b\[[0-9;?]*[ -/]*[@-~]", "", str(value))
+        text = "".join(ch for ch in text
+                       if ch == "\t" or (0x20 <= ord(ch) < 0x7F)
+                       or ord(ch) >= 0xA0)
+        return text[:maxlen]
+
+    @classmethod
+    def _action_ok(cls, command: str) -> bool:
+        """A button action must be one of ours, character for character."""
+        if not command or len(command) > 512:
+            return False
+        return set(command) <= cls._ACTION_ALLOWED
+
+    def _notify_argv(self, notif: str, content: str) -> list:
+        """Build the termux-notification command line.
+
+        Every value is cleaned, and a value that begins with '-' is de-fanged
+        so termux-notification cannot parse peer-controlled text as one of
+        its own options.
+        """
+        argv = [notif, "--id", self._notif_id,
+                "--title", "Incoming encrypted call",
+                "--content", content,
+                "--priority", "max", "--sound"]
+        for index, (label, command) in enumerate(self._actions, start=1):
+            if not self._action_ok(command):
+                # Not a command we generated.  Drop the button entirely: the
+                # ring and the terminal still answer the call.
+                continue
+            argv += ["--button%d" % index, self._clean(label, 24),
+                     "--button%d-action" % index, command]
+        safe = []
+        for arg in argv:
+            if arg is not argv[0] and arg not in self._TERMUX_FLAGS \
+                    and str(arg).startswith("-"):
+                arg = " " + str(arg)
+            safe.append(arg)
+        return safe
+
     def _post_notification(self, peer: str, which) -> None:
         """Notification plus vibration, best effort.
 
         OTRV4PLUS_RING_PRIVACY=1 keeps the peer's JID off the lock screen,
         where anyone holding the phone can read it.
         """
-        import subprocess
         which = which or _default_which
         if os.environ.get("OTRV4PLUS_RING_PRIVACY"):
             content = "Open Termux to answer"
         else:
-            content = str(peer)[:96] or "unknown peer"
+            content = self._clean(peer) or "unknown peer"
 
         notif = which("termux-notification")
         if notif:
-            self._spawn([notif, "--id", self._notif_id,
-                         "--title", "Incoming encrypted call",
-                         "--content", content,
-                         "--priority", "max", "--sound"])
+            self._spawn(self._notify_argv(notif, content))
         if self._vibrate:
             vib = which("termux-vibrate")
             if vib:
