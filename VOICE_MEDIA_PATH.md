@@ -348,8 +348,16 @@ easier.
 
 Recovery can **extend** the deadline, never remove it. The dead check is
 suspended only while a rebuild is genuinely in flight, the rebuild is wrapped
-in `wait_for`, and attempts are capped at `VOICE_RECOVER_ATTEMPTS` (2). Worst
-case before teardown is therefore bounded at roughly 15 s + 2 × 150 s.
+in `wait_for`, and attempts are capped at `VOICE_RECOVER_ATTEMPTS` (2).
+
+The worst case is **375 s** (6.2 minutes), not the 15 + 2 × 150 that a naive
+sum gives: each rebuild resets the liveness clock so the new path is not
+judged dead the instant it opens, so the final teardown needs `VOICE_RX_DEAD_S`
+of silence measured from the *last* reset rather than from the original
+failure. `TestTheWorstCaseIsBounded` computes this from the constants and
+fails if this document and the code disagree. `OTRV4PLUS_RECOVER_ATTEMPTS=0`
+disables recovery and restores the plain fail-safe for anyone who would rather
+the call drop than wait.
 
 Success is confirmed by **inbound media resuming**, not by an acknowledgement.
 That is deliberate: an ACK would prove the peer received a message, whereas
@@ -373,6 +381,33 @@ the path is dead and a rebuild may help; `rx=0 dg>0` means the transport is
 fine and a rebuild would discard a working path. The refusal reason for a
 rejected announcement is logged under `--voice-debug` (`MEDIAPATH seq=N
 rejected: ...`), so a refusal is diagnosable rather than silent.
+
+### Two defects the adversarial pass found in the first implementation
+
+**A rebuild was mistaken for recovery.** `rebuild_media_endpoint` re-stamps the
+liveness clock so the new path is not judged dead the instant it opens. The
+watchdog read that small idle as success: it announced "inbound audio
+recovered" over a path that had delivered nothing, and handed the attempt
+budget back. The second half is the serious one — with the budget reset on
+every rebuild the loop never terminated, so a call could sit rebuilding
+indefinitely instead of failing safe, which is precisely the unbounded
+recovery the design was supposed to exclude.
+
+Recovery is now confirmed by a frame that authenticated *after* the rebuild
+(`_rx_authenticated > _rx_mark`), never by the clock. Probe replies count:
+they are inbound media too, and in the original incident they died with the
+audio.
+
+**A cancelled rebuild leaked its SAM session.** `SESSION CREATE` runs in an
+executor. `asyncio.wait_for` cancels the coroutine that awaits it, but not the
+thread — which finishes, returns a live control socket to a caller that no
+longer exists, and leaves the router-side session open for the life of the
+process. Recovery is the first place in this codebase where `create_session`
+is genuinely cancelled, so the exposure arrived with it. The socket is now
+published to the session the moment it exists (`_sam_pending`) so teardown can
+always reclaim it, and recovery passes its own budget as the blocking-read
+timeout so the thread cannot outlive the deadline its caller is held to
+(`SAM_SESSION_TIMEOUT` is 300 s against a 150 s budget).
 
 ### Limitations
 

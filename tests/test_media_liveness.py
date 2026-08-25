@@ -55,6 +55,8 @@ class _Session:
         self._rx_last_datagram = None
         self._rx_last_frame = None
         self._rx_degraded = False
+        self._rx_authenticated = 0
+        self._rx_mark = 0
         self.state = V.CallState.ACTIVE
         # Default: no endpoint to replace, so the watchdog's only option is
         # the fail-safe. Recovery-specific tests opt in.
@@ -241,7 +243,10 @@ class TestSustainedLoss:
             task = asyncio.ensure_future(s._rx_watchdog())
             await asyncio.sleep(V.VOICE_RX_CHECK_S * 2)
             degraded = s._rx_degraded
-            s._rx_last_frame = V.time.monotonic()      # media returns
+            # Media returns: the clock moves AND a frame authenticated. The
+            # clock alone is a rebuild resetting it, not recovery.
+            s._rx_authenticated += 1
+            s._rx_last_frame = V.time.monotonic()
             await asyncio.sleep(V.VOICE_RX_CHECK_S * 2)
             task.cancel()
             try:
@@ -337,6 +342,8 @@ def _real_receiver():
     s._rx_last_datagram = None
     s._rx_last_frame = None
     s._rx_degraded = False
+    s._rx_authenticated = 0
+    s._rx_mark = 0
     s._key_lock = threading.RLock()
     s._call_t0 = V.time.monotonic()
     s.stages = V.StageTimers()

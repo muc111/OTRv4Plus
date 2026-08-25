@@ -2659,6 +2659,13 @@ class VoiceCallSession:
         self._last_rekey_commit = None
 
         self._sam_control = None
+        #: Control sockets whose SESSION CREATE is still in flight. The
+        #: create runs in an executor, so cancelling the coroutine that
+        #: awaits it does NOT stop the thread: it finishes, returns a live
+        #: socket to a caller that has gone, and the router-side session
+        #: stays open for the life of the process. Publishing the socket the
+        #: moment it exists is what makes it reclaimable.
+        self._sam_pending = []
         self._sam_session_id = None
         self._transport_mode = voice_transport_mode()
         self._dgram_sock = None          # our bound UDP receive socket
@@ -2707,6 +2714,13 @@ class VoiceCallSession:
         #: cannot be carried into the call that replaces this one.
         self._endpoint_seq_sent = 0     # last sequence we announced
         self._endpoint_seq_seen = 0     # highest we have accepted
+        #: Authenticated inbound frames, and the reading taken when the media
+        #: path was last rebuilt. A rebuild resets the liveness clock so the
+        #: new path gets a fair chance, which means the clock alone cannot
+        #: distinguish "media resumed" from "we just reset the clock" -- only
+        #: this counter moving past the mark proves anything arrived.
+        self._rx_authenticated = 0
+        self._rx_mark = 0
         self._recover_task = None
         self._recover_attempts = 0
         self._recovering = False        # a rebuild is genuinely in flight
@@ -2941,8 +2955,15 @@ class VoiceCallSession:
 
     # -- SAM transport ----------------------------------------------------
 
-    async def create_session(self) -> str:
-        """Create a TRANSIENT SAM session.  Returns our base64 destination."""
+    async def create_session(self, session_timeout=None) -> str:
+        """Create a TRANSIENT SAM session.  Returns our base64 destination.
+
+        ``session_timeout`` bounds the blocking SESSION STATUS read. Recovery
+        passes its own budget so the executor thread cannot outlive the
+        deadline its caller is held to.
+        """
+        if session_timeout is None:
+            session_timeout = SAM_SESSION_TIMEOUT
         sam_open = _HOST["sam_open"]
         sam_read_line = _HOST["sam_read_line"]
         sam_parse = _HOST["sam_parse"]
@@ -2964,6 +2985,9 @@ class VoiceCallSession:
 
         def _create():
             ctrl = sam_open(self.sam_host, self.sam_port, SAM_HELLO_TIMEOUT)
+            # Reachable from the session before the blocking read starts, so
+            # a cancelled await cannot strand it.
+            self._sam_pending.append(ctrl)
             try:
                 session_id = "otrv4voice_%s" % secrets.token_hex(6)
                 if self._transport_mode == VOICE_TRANSPORT_DATAGRAM:
@@ -2984,7 +3008,7 @@ class VoiceCallSession:
                 ctrl.sendall(create.encode("ascii"))
                 # i2pd builds a full tunnel set before answering, so this is
                 # minutes rather than seconds on a busy phone.
-                fields = sam_parse(sam_read_line(ctrl, SAM_SESSION_TIMEOUT),
+                fields = sam_parse(sam_read_line(ctrl, session_timeout),
                                    "SESSION STATUS ")
                 dest = fields.get("DESTINATION")
                 if not dest:
@@ -2992,14 +3016,17 @@ class VoiceCallSession:
                 ctrl.settimeout(None)
                 return ctrl, session_id, dest
             except Exception:
-                try:
-                    ctrl.close()
-                except Exception:
-                    pass
+                self._discard_pending_sam(ctrl)
                 raise
 
-        self._sam_control, self._sam_session_id, blob = (
-            await self.loop.run_in_executor(None, _create))
+        control, session_id, blob = await self.loop.run_in_executor(
+            None, _create)
+        # Handed over: it is the live session now, not a pending one.
+        try:
+            self._sam_pending.remove(control)
+        except ValueError:
+            pass
+        self._sam_control, self._sam_session_id = control, session_id
         # SESSION STATUS hands back the private key blob. Nothing after this
         # point needs it -- the session is bound to the control socket, not to
         # the key -- so derive the destination and let the blob go.
@@ -3393,6 +3420,7 @@ class VoiceCallSession:
         now = time.monotonic()
         self._rx_last_datagram = now
         self._rx_last_frame = now
+        self._rx_mark = self._rx_authenticated
         self._rx_degraded = False
         self._rx_watchdog_task = asyncio.ensure_future(self._rx_watchdog())
 
@@ -3840,7 +3868,8 @@ class VoiceCallSession:
                                "that can be replaced")
         self._close_datagram_transport()
         self._our_dest = None
-        destination = await self.create_session()
+        destination = await self.create_session(
+            session_timeout=VOICE_RECOVER_TIMEOUT_S)
         if not self._running:
             # Teardown ran while the router was building tunnels. Do not leave
             # the replacement behind.
@@ -3849,10 +3878,28 @@ class VoiceCallSession:
         await self.open_datagram_endpoint()
         now = time.monotonic()
         # The new path has had no chance to deliver anything yet; judging it
-        # by the old clock would declare it dead the moment it opened.
+        # by the old clock would declare it dead the moment it opened. That
+        # reset is also why the clock cannot be used to decide whether the
+        # rebuild worked -- the mark is what the watchdog compares against.
         self._rx_last_datagram = now
         self._rx_last_frame = now
+        self._rx_mark = self._rx_authenticated
         return destination
+
+    def _discard_pending_sam(self, control) -> None:
+        """Close and forget one in-flight control socket.  Never raises."""
+        try:
+            self._sam_pending.remove(control)
+        except ValueError:
+            pass
+        release = _HOST.get("sam_release")
+        try:
+            if release is not None:
+                release(control)
+            else:
+                control.close()
+        except Exception:
+            pass
 
     def _close_datagram_transport(self) -> None:
         """Release the datagram endpoint and its SAM session.  Idempotent."""
@@ -3881,6 +3928,11 @@ class VoiceCallSession:
             except Exception:
                 pass
         self._sam_session_id = None
+        # A create whose await was cancelled leaves its socket here. Draining
+        # is the only thing that can reclaim it, because nothing else still
+        # holds a reference.
+        while self._sam_pending:
+            self._discard_pending_sam(self._sam_pending[-1])
 
     # -- inbound liveness --------------------------------------------------
 
@@ -3965,10 +4017,17 @@ class VoiceCallSession:
                 if idle is None:
                     continue
                 if idle < VOICE_RX_WARN_S:
+                    # Recovery is confirmed by a frame that authenticated
+                    # AFTER the rebuild, never by the clock: rebuilding resets
+                    # the clock, so treating a small idle as success declared
+                    # victory over a path that had delivered nothing and
+                    # handed back the attempt budget, which made the rebuild
+                    # loop unbounded.
                     if self._rx_degraded:
-                        self._rx_degraded = False
-                        self._recover_attempts = 0
-                        _print("[voice] inbound audio recovered")
+                        if self._rx_authenticated > self._rx_mark:
+                            self._rx_degraded = False
+                            self._recover_attempts = 0
+                            _print("[voice] inbound audio recovered")
                     continue
                 if self._recovering:
                     # A rebuild owns the deadline while it runs. It cannot run
@@ -4075,6 +4134,7 @@ class VoiceCallSession:
                 # during the live failure the probe replies died in the same
                 # instant as the audio.
                 self._rx_last_frame = time.monotonic()
+                self._rx_authenticated += 1
                 del buf[:VOICE_HDR_LEN + length]
 
                 if ftype == FRAME_TYPE_PING:

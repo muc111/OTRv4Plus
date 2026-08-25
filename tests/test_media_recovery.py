@@ -411,6 +411,8 @@ class _Watched:
         self._rx_degraded = False
         self._recovering = False
         self._recover_attempts = 0
+        self._rx_authenticated = 0
+        self._rx_mark = 0
         self._sam_control = None
         self._loss_signalled = False
         self._closing = False
@@ -520,8 +522,12 @@ class TestWatchdogDrivesRecovery:
             s.idle_for(V.VOICE_RX_WARN_S + 1.0)
             task = asyncio.ensure_future(s._rx_watchdog())
             await asyncio.sleep(V.VOICE_RX_CHECK_S * 3)
+            # Media genuinely resumes: the clock moves AND a frame
+            # authenticated. The clock alone is not recovery -- see
+            # TestRecoveryIsConfirmedByMediaNotByTheClock.
             s._rx_last_frame = V.time.monotonic()
             s._rx_last_datagram = s._rx_last_frame
+            s._rx_authenticated += 1
             s._recovering = False
             await asyncio.sleep(V.VOICE_RX_CHECK_S * 3)
             task.cancel()
@@ -902,6 +908,7 @@ class TestEndpointTeardown:
         s._dgram_send_header = b"x"
         s._sam_control = None
         s._sam_session_id = "sess"
+        s._sam_pending = []
         s._close_datagram_transport()
         s._close_datagram_transport()
         assert s._sam_session_id is None
@@ -915,6 +922,7 @@ class TestEndpointTeardown:
         s._dgram_send_header = None
         s._sam_control = object()
         s._sam_session_id = "sess"
+        s._sam_pending = []
         saved = V._HOST.get("sam_release")
         V._HOST["sam_release"] = released.append
         try:
@@ -971,6 +979,9 @@ def _media_session(is_initiator, call_id=CALL_ID):
     s._dgram_send_header = None
     s._sam_session_id = "sess-%s" % ("i" if is_initiator else "r")
     s._sam_control = None
+    s._sam_pending = []
+    s._rx_authenticated = 0
+    s._rx_mark = 0
     s._peer_dest = None
     s._our_dest = None
     s.sam_host = "127.0.0.1"
@@ -1264,3 +1275,295 @@ class TestNoStorms:
         second = _endpoint_session(False, call_id=OTHER_CALL_ID)
         assert second._endpoint_seq_seen == 0
         assert second._endpoint_seq_sent == 0
+
+
+# ---------------------------------------------------------------------------
+# 10. what the adversarial pass on ee5dfc8 found
+# ---------------------------------------------------------------------------
+
+class TestRecoveryIsConfirmedByMediaNotByTheClock:
+    """A rebuild resets the liveness clock, and that is not recovery.
+
+    `rebuild_media_endpoint` re-stamps `_rx_last_frame` so the new path is not
+    judged dead the instant it opens. The watchdog then read that small idle
+    as success: it announced "inbound audio recovered" over a path that had
+    delivered nothing, and handed the attempt budget back. Handing the budget
+    back is the serious half -- it makes the rebuild loop unbounded, so a call
+    can sit rebuilding forever instead of failing safe.
+
+    Recovery is therefore confirmed by a frame that authenticated AFTER the
+    rebuild, which is what `_rx_authenticated > _rx_mark` means.
+    """
+
+    def _degraded(self):
+        s = _Watched()
+        s.idle_for(V.VOICE_RX_DEAD_S + 1.0)
+        s._rx_degraded = True
+        s._recover_attempts = 1
+        s._rx_authenticated = 7
+        s._rx_mark = 7                      # nothing since the rebuild
+        return s
+
+    def _rebuilt(self, session, frames=0):
+        """Do what a completed rebuild does to the session."""
+        now = V.time.monotonic()
+        session._rx_last_datagram = now
+        session._rx_last_frame = now
+        session._rx_mark = session._rx_authenticated
+        session._recovering = False
+        session._rx_authenticated += frames
+
+    def test_a_rebuild_with_no_media_is_not_recovery(self):
+        async def _drive():
+            s = self._degraded()
+            self._rebuilt(s, frames=0)
+            await _spin(s, rounds=3)
+            return s
+
+        s = _run(_drive())
+        assert s._rx_degraded is True, "silence was reported as recovery"
+        assert s._recover_attempts == 1, "the attempt budget was handed back"
+
+    def test_a_rebuild_that_delivers_media_is_recovery(self):
+        async def _drive():
+            s = self._degraded()
+            self._rebuilt(s, frames=3)
+            await _spin(s, rounds=3)
+            return s
+
+        s = _run(_drive())
+        assert s._rx_degraded is False
+        assert s._recover_attempts == 0
+
+    def test_the_attempt_budget_still_runs_out_across_rebuilds(self):
+        # The whole point: without this the loop never terminates.
+        async def _drive():
+            s = _Watched()
+            s.idle_for(V.VOICE_RX_DEAD_S + 1.0)
+            task = asyncio.ensure_future(s._rx_watchdog())
+            for _ in range(V.VOICE_RECOVER_ATTEMPTS + 2):
+                await asyncio.sleep(V.VOICE_RX_CHECK_S * 2)
+                self._rebuilt(s, frames=0)      # every rebuild fails to help
+                s.idle_for(V.VOICE_RX_DEAD_S + 1.0)
+                if task.done():
+                    break
+            await asyncio.sleep(V.VOICE_RX_CHECK_S * 3)
+            if not task.done():
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+            return s
+
+        s = _run(_drive(), timeout=10)
+        assert len(s.asked) <= V.VOICE_RECOVER_ATTEMPTS, (
+            "unbounded rebuild loop: %d attempts" % len(s.asked))
+        assert s.lost, "the call never failed safe"
+
+    def test_only_an_authenticated_frame_moves_the_counter(self):
+        s = _media_session(False)
+        before = s._rx_authenticated
+        s._on_datagram(b"junk that never authenticates")
+        assert s._rx_authenticated == before
+        s._peer_dest = None
+        s._on_datagram(_sealed_audio(s))
+        assert s._rx_authenticated == before + 1
+
+    def test_a_probe_reply_counts_as_recovery_evidence(self):
+        # PONGs are inbound media too, and during the live failure they died
+        # with the audio. A path delivering probes is not dead.
+        s = _media_session(False)
+        s.latency.handle_pong = lambda payload: None
+        before = s._rx_authenticated
+        packet = s._peer_cipher.seal(V.pad_opus(b"\x01", send_ts_ms=1),
+                                     frame_type=V.FRAME_TYPE_PONG)
+        s._on_datagram(packet)
+        assert s._rx_authenticated == before + 1
+
+    def test_start_audio_primes_the_mark(self):
+        import inspect
+        src = inspect.getsource(V.VoiceCallSession.start_audio)
+        assert "_rx_mark = self._rx_authenticated" in src
+
+    def test_the_rebuild_sets_the_mark(self):
+        import inspect
+        src = inspect.getsource(V.VoiceCallSession.rebuild_media_endpoint)
+        assert "_rx_mark = self._rx_authenticated" in src
+
+
+class TestNoSamSessionLeakOnACancelledRebuild:
+    """SESSION CREATE runs in an executor; cancelling the await does not stop it.
+
+    `asyncio.wait_for` cancels the coroutine, the thread keeps running, and
+    when it finishes it returns a live control socket to a caller that has
+    gone. Nothing then holds a reference, so the socket -- and the router-side
+    SAM session behind it -- stays open for the life of the process. Recovery
+    is the first place in this codebase where create_session is genuinely
+    cancelled, so the exposure arrived with it.
+    """
+
+    def _host(self, opened, delay=0.4):
+        import socket as _s
+
+        def _open(host, port, timeout):
+            a, b = _s.socketpair()
+            opened.append((a, b))
+            return a
+
+        def _read(sock, timeout):
+            V.time.sleep(delay)
+            body = (b"\x01" * 384) + bytes([5]) + (4).to_bytes(2, "big") \
+                + b"cert"
+            return ("SESSION STATUS RESULT=OK DESTINATION=%s"
+                    % V.i2p_b64encode(body))
+
+        def _parse(line, prefix):
+            return dict(p.split("=", 1) for p in line[len(prefix):].split())
+
+        return _open, _read, _parse
+
+    def _session(self, loop):
+        s = object.__new__(V.VoiceCallSession)
+        s.loop = loop
+        s.sam_host, s.sam_port = "127.0.0.1", 7656
+        s._transport_mode = V.VOICE_TRANSPORT_DATAGRAM
+        s._dgram_sock = None
+        s._dgram_transport = None
+        s._dgram_send_header = None
+        s._sam_control = None
+        s._sam_session_id = None
+        s._our_dest = None
+        s._sam_pending = []
+        return s
+
+    def test_a_cancelled_create_leaves_the_socket_reclaimable(self):
+        opened = []
+        saved = {k: V._HOST[k] for k in ("sam_open", "sam_read_line",
+                                         "sam_parse")}
+
+        async def _drive():
+            s = self._session(asyncio.get_event_loop())
+            with pytest.raises(asyncio.TimeoutError):
+                await asyncio.wait_for(s.create_session(), timeout=0.05)
+            await asyncio.sleep(0.8)        # let the executor thread finish
+            assert s._sam_pending, (
+                "the in-flight socket was not published to the session")
+            s._close_datagram_transport()
+            return s
+
+        _open, _read, _parse = self._host(opened)
+        V.bind_host(sam_open=_open, sam_read_line=_read, sam_parse=_parse)
+        try:
+            asyncio.run(asyncio.wait_for(_drive(), 10))
+        finally:
+            V._HOST.update(saved)
+            live = [a for a, _b in opened if a.fileno() != -1]
+            for a, b in opened:
+                for sock in (a, b):
+                    try:
+                        sock.close()
+                    except Exception:
+                        pass
+        assert live == [], "a SAM control socket outlived the call"
+
+    def test_a_successful_create_leaves_nothing_pending(self):
+        opened = []
+        saved = {k: V._HOST[k] for k in ("sam_open", "sam_read_line",
+                                         "sam_parse")}
+
+        async def _drive():
+            s = self._session(asyncio.get_event_loop())
+            await s.create_session()
+            assert s._sam_control is not None
+            assert s._sam_pending == [], "the live session is still 'pending'"
+            s._close_datagram_transport()
+            return s
+
+        _open, _read, _parse = self._host(opened, delay=0.0)
+        V.bind_host(sam_open=_open, sam_read_line=_read, sam_parse=_parse)
+        try:
+            asyncio.run(asyncio.wait_for(_drive(), 10))
+        finally:
+            V._HOST.update(saved)
+            for a, b in opened:
+                for sock in (a, b):
+                    try:
+                        sock.close()
+                    except Exception:
+                        pass
+
+    def test_the_recovery_budget_bounds_the_blocking_read(self):
+        # Otherwise the executor thread outlives the deadline its caller is
+        # held to -- SAM_SESSION_TIMEOUT is 300 s against a 150 s budget.
+        import inspect
+        src = inspect.getsource(V.VoiceCallSession.rebuild_media_endpoint)
+        assert "session_timeout=VOICE_RECOVER_TIMEOUT_S" in src
+        create = inspect.getsource(V.VoiceCallSession.create_session)
+        assert "sam_read_line(ctrl, session_timeout)" in create
+
+    def test_draining_pending_sockets_is_idempotent(self):
+        s = object.__new__(V.VoiceCallSession)
+        s._dgram_transport = None
+        s._dgram_sock = None
+        s._dgram_send_header = None
+        s._sam_control = None
+        s._sam_session_id = None
+        s._sam_pending = []
+        s._close_datagram_transport()
+        s._close_datagram_transport()
+        assert s._sam_pending == []
+
+
+class TestTheWorstCaseIsBounded:
+    """The time from media death to teardown, computed from the constants.
+
+    Each rebuild resets the liveness clock so the new path is not judged dead
+    the instant it opens. Teardown therefore needs DEAD seconds of silence
+    measured from the LAST reset, not from the original failure -- which makes
+    the bound one detect-interval per attempt longer than a naive
+    WARN + attempts x REBUILD sum suggests.
+    """
+
+    @staticmethod
+    def worst_case_seconds():
+        total = V.VOICE_RX_WARN_S
+        for attempt in range(1, V.VOICE_RECOVER_ATTEMPTS + 1):
+            total += V.VOICE_RECOVER_TIMEOUT_S
+            total += (V.VOICE_RX_WARN_S
+                      if attempt < V.VOICE_RECOVER_ATTEMPTS
+                      else V.VOICE_RX_DEAD_S)
+        return total
+
+    def test_the_bound_is_finite(self):
+        assert self.worst_case_seconds() < 10 * 60
+
+    def test_the_documented_bound_matches_the_constants(self):
+        # VOICE_MEDIA_PATH.md states this number; if a constant moves and the
+        # document does not, this fails rather than the document quietly
+        # becoming wrong.
+        text = open("VOICE_MEDIA_PATH.md", encoding="utf-8").read()
+        assert "%d s" % int(self.worst_case_seconds()) in text, (
+            "the documented worst case does not match the constants "
+            "(computed %d s)" % self.worst_case_seconds())
+
+    def test_every_stage_of_the_bound_is_enforced_somewhere(self):
+        import inspect
+        watchdog = inspect.getsource(V.VoiceCallSession._rx_watchdog)
+        recover = inspect.getsource(V.VoiceCallManager._recover_media)
+        possible = inspect.getsource(V.VoiceCallSession._recovery_possible)
+        assert "VOICE_RX_WARN_S" in watchdog
+        assert "VOICE_RX_DEAD_S" in watchdog
+        assert "timeout=VOICE_RECOVER_TIMEOUT_S" in recover
+        assert "VOICE_RECOVER_ATTEMPTS" in possible
+
+    def test_disabling_recovery_restores_the_plain_fail_safe(self):
+        # OTRV4PLUS_RECOVER_ATTEMPTS=0 is the escape hatch for a user who
+        # would rather the call drop than wait through a rebuild.
+        s = _Stalled()
+        saved = V.VOICE_RECOVER_ATTEMPTS
+        V.VOICE_RECOVER_ATTEMPTS = 0
+        try:
+            assert s._recovery_possible() is False
+        finally:
+            V.VOICE_RECOVER_ATTEMPTS = saved
