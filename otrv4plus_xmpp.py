@@ -2096,51 +2096,6 @@ class OTRv4PlusXMPP(ClientXMPP):
         except Exception:
             return None
 
-    def _handle_otr_in(self, peer, body):
-        """Sync fallback (retained for compatibility; async path is preferred)."""
-        try:
-            out = self.otr.handle_incoming_message(peer, body)
-        except Exception as e:
-            print(f"[otr error] from {peer}: {e}")
-            return
-        self._check_dake_complete(peer)
-        if out:
-            out_b = out.encode("utf-8") if isinstance(out, str) else out
-            if out_b.startswith(OTR_PREFIX_B):
-                self.send_otr_fragmented(peer, out_b.decode("utf-8", errors="replace"))
-            else:
-                text = out_b.decode("utf-8", errors="replace")
-
-                # Call control travels INSIDE the OTR channel, so it surfaces
-                # here as decrypted text and must be routed to the voice
-                # manager before anything else touches it. Without this the
-                # INVITE is rendered as a chat message and the callee never
-                # learns a call is ringing — /answer then reports "no
-                # incoming call" while the caller waits.
-                if text.startswith(VoiceCallManager.CALL_PREFIX):
-                    if self._voice_manager is not None:
-                        asyncio.ensure_future(
-                            self._voice_manager.handle_signal(peer, text))
-                    else:
-                        print("[voice] call signal received before the voice "
-                              "subsystem was ready — ignoring")
-                    return
-
-                smp_ok = (peer, "SUCCEEDED") in self._smp_reported
-                peer_s = _sanitise(peer, 128)
-                text_s = _sanitise(text)
-                if smp_ok:
-                    print(
-                        _colorize("[otr] ", "green")
-                        + _colorize(f"<{peer_s}>", "yellow")
-                        + " "
-                        + _colorize(text_s, "dark_blue")
-                    )
-                else:
-                    print(f"[otr] <{peer_s}> {text_s}")
-        self._report_smp(peer)
-        self._check_dake_complete(peer)
-
     # -------------------------------------------------------------------------
     # DAKE completion -> trust prompt
     # -------------------------------------------------------------------------

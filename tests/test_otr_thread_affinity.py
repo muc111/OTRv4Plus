@@ -113,17 +113,33 @@ class TestEveryOtrEntryPointUsesThatExecutor:
         src = inspect.getsource(xmpp.OTRv4PlusXMPP)
         assert "run_in_executor(self._otr_executor, _do_start)" in src
 
-    def test_no_live_inbound_path_bypasses_it(self):
-        # _handle_otr_in is a retained sync fallback that calls the engine
-        # directly on the event loop. It is dead code, and it must stay dead:
-        # wiring it up would reintroduce exactly this crash.
+    def test_there_is_no_synchronous_otr_engine_fallback(self):
+        """The sync fallback is deleted, not merely uncalled.
+
+        `_handle_otr_in` called the engine directly on the event loop while
+        every live path ran it on the executor. Dead code is the wrong shape
+        of safe here: it reads as a legitimate entry point, so the next person
+        to wire it up reintroduces the thread-affinity crash without ever
+        touching the executor. Asserting on callers would still pass with the
+        trap sitting in the file; asserting on existence does not.
+        """
+        assert not hasattr(xmpp.OTRv4PlusXMPP, "_handle_otr_in"), (
+            "the synchronous OTR fallback is back; it runs the engine on the "
+            "event loop and can move an unsendable DakeOutput across threads")
+
+    def test_the_engine_is_never_called_straight_from_the_event_loop(self):
+        # Any inbound handling must go through run_in_executor. A bare
+        # `self.otr.handle_incoming_message(...)` call is the shape that
+        # bypasses it.
         import inspect
         source = inspect.getsource(xmpp)
-        calls = [line for line in source.split("\n")
-                 if "_handle_otr_in(" in line and "def " not in line]
-        assert calls == [], (
-            "the sync OTR fallback is live again; it runs the engine on the "
-            "event loop while inbound messages run on the executor: %r" % calls)
+        direct = [line.strip() for line in source.split("\n")
+                  if "otr.handle_incoming_message(" in line
+                  and "run_in_executor" not in line
+                  and "_otr_executor" not in line]
+        assert direct == [], (
+            "the OTR engine is called synchronously on the event loop: %r"
+            % direct)
 
     def test_the_default_executor_is_not_used_for_otr(self):
         # run_in_executor(None, ...) would use the shared default pool, whose
@@ -152,3 +168,105 @@ class TestOnlyDakeOutputIsUnsendable:
             "the set of unsendable pyclasses changed: %r. Each one is pinned "
             "to its creating thread, so any new one has to be checked against "
             "the executor boundary." % found)
+
+
+class TestTheDakeOutputLifecycleStaysInbound:
+    """One worker only helps if the whole lifecycle runs on that worker.
+
+    Serialising inbound processing is not enough on its own: if a DakeOutput
+    were created while an inbound message was handled (on the executor) and
+    consumed from an outbound path (on the event loop), it would still cross
+    threads and still panic. So the lifecycle has to be inbound-only:
+
+        created   generate_dake2 / process_dake2
+        stored    session._dake_output
+        consumed  _initialize_ratchet  <- _establish_session
+                                       <- _handle_dake2 / _handle_dake3
+
+    All of which hang off handle_incoming_message, whose single call site is
+    the executor. This test walks the real engine's call graph so the closure
+    is checked rather than asserted.
+    """
+
+    @staticmethod
+    def _call_graph():
+        import ast
+        import pathlib
+        path = pathlib.Path(__file__).resolve().parent.parent / "otrv4+.py"
+        if not path.is_file():
+            pytest.skip("engine source not present")
+        source = path.read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        bodies = {}
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                bodies.setdefault(node.name, []).append(
+                    ast.get_source_segment(source, node) or "")
+        return bodies
+
+    def _reaches(self, bodies, start, target, seen=None, depth=0):
+        seen = seen or set()
+        if start in seen or depth > 8:
+            return False
+        seen = seen | {start}
+        for segment in bodies.get(start, []):
+            if ("%s(" % target) in segment:
+                return True
+            for name in bodies:
+                if name != start and ("%s(" % name) in segment:
+                    if self._reaches(bodies, name, target, seen, depth + 1):
+                        return True
+        return False
+
+    def test_the_handle_is_created_only_while_handling_inbound(self):
+        bodies = self._call_graph()
+        for maker in ("generate_dake2", "process_dake2"):
+            assert self._reaches(bodies, "handle_incoming_message", maker)
+            assert not self._reaches(bodies, "handle_outgoing_message", maker), (
+                "%s is reachable from the outbound path, which runs on the "
+                "event loop rather than the OTR executor" % maker)
+
+    def test_the_handle_is_consumed_only_while_handling_inbound(self):
+        bodies = self._call_graph()
+        assert self._reaches(bodies, "handle_incoming_message",
+                             "_establish_session")
+        assert not self._reaches(bodies, "handle_outgoing_message",
+                                 "_establish_session"), (
+            "the ratchet is built from the outbound path; a DakeOutput "
+            "created on the executor would be consumed on the event loop")
+
+    def test_the_outbound_path_cannot_initialise_a_ratchet(self):
+        """The one route that looks reachable, and why it is not.
+
+        `handle_outgoing_message` does reach `transition_dake`, whose body
+        mentions `_initialize_ratchet` -- so a textual reachability check
+        flags it. The call is guarded by `if new_state ==
+        DAKEState.ESTABLISHED`, and the only site that calls transition_dake
+        from outside passes SENT_DAKE1, so the branch is never taken from the
+        event loop.
+
+        That guard is the invariant, so the guard is what is asserted. If
+        anyone later transitions to ESTABLISHED from an outbound path, this
+        fails and the thread affinity of _dake_output has to be rechecked.
+        """
+        import pathlib
+        import re
+        path = pathlib.Path(__file__).resolve().parent.parent / "otrv4+.py"
+        if not path.is_file():
+            pytest.skip("engine source not present")
+        source = path.read_text(encoding="utf-8")
+        sites = [line.strip() for line in source.split("\n")
+                 if "transition_dake(" in line
+                 and not line.strip().startswith("def ")]
+        assert sites, "transition_dake is never called; the graph has moved"
+        for site in sites:
+            assert "ESTABLISHED" not in site, (
+                "transition_dake(ESTABLISHED) runs _initialize_ratchet, which "
+                "consumes _dake_output. Reached from the event loop that "
+                "crosses threads: %s" % site)
+        # And the guard itself is still what stands between the two.
+        assert re.search(r"if new_state == DAKEState\.ESTABLISHED:\s*\n"
+                         r"(\s+.*\n)*?\s+self\._initialize_ratchet\(\)",
+                         source), (
+            "_initialize_ratchet is no longer guarded by the ESTABLISHED "
+            "transition inside transition_dake")
