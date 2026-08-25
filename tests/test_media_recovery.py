@@ -1541,34 +1541,56 @@ class TestTheWorstCaseIsBounded:
     """
 
     @staticmethod
-    def worst_case_seconds(cold=False):
+    def worst_case_seconds(cold=False, held=False):
         """Media death to teardown, computed from the constants.
 
         `cold` is a call whose media never arrived at all: the wider startup
         grace applies to the first detection AND to every one after a
         rebuild, because a freshly announced endpoint has not carried audio
         either.
+
+        `held` is the true worst case, because the session hold applies
+        whenever the SAM control socket is still open -- and after a rebuild
+        it always is, since the rebuild just opened it. A dead session earns
+        no hold, which is why the unheld figure is still worth computing:
+        it is what a genuinely destroyed session costs.
         """
+        hold = V.VOICE_RX_SESSION_HOLD_S if held else 0.0
         warn = V.VOICE_RX_START_GRACE_S if cold else V.VOICE_RX_WARN_S
         dead = (V.VOICE_RX_START_GRACE_S + V.VOICE_RX_DEAD_S) if cold \
             else V.VOICE_RX_DEAD_S
-        total = warn
+        rebuild = warn + hold
+        dead += hold
+        total = rebuild
         for attempt in range(1, V.VOICE_RECOVER_ATTEMPTS + 1):
             total += V.VOICE_RECOVER_TIMEOUT_S
-            total += warn if attempt < V.VOICE_RECOVER_ATTEMPTS else dead
+            total += rebuild if attempt < V.VOICE_RECOVER_ATTEMPTS else dead
         return total
 
     def test_the_bound_is_finite(self):
-        assert self.worst_case_seconds() < 10 * 60
+        assert self.worst_case_seconds(held=True) < 10 * 60
+
+    def test_the_hold_costs_the_bound_exactly_what_it_promises(self):
+        # The hold is taken once per detection point: the first one and one
+        # after each rebuild. Anything more than that is the hold compounding,
+        # which would be a different and much worse bound.
+        points = V.VOICE_RECOVER_ATTEMPTS + 1
+        for cold in (False, True):
+            grew = (self.worst_case_seconds(cold=cold, held=True)
+                    - self.worst_case_seconds(cold=cold, held=False))
+            assert grew == V.VOICE_RX_SESSION_HOLD_S * points
 
     def test_the_documented_bound_matches_the_constants(self):
-        # VOICE_MEDIA_PATH.md states this number; if a constant moves and the
-        # document does not, this fails rather than the document quietly
+        # VOICE_MEDIA_PATH.md states these numbers; if a constant moves and
+        # the document does not, this fails rather than the document quietly
         # becoming wrong.
         text = open("VOICE_MEDIA_PATH.md", encoding="utf-8").read()
-        assert "%d s" % int(self.worst_case_seconds()) in text, (
-            "the documented worst case does not match the constants "
-            "(computed %d s)" % self.worst_case_seconds())
+        for cold in (False, True):
+            for held in (False, True):
+                secs = self.worst_case_seconds(cold=cold, held=held)
+                assert "%d s" % int(secs) in text, (
+                    "the documented worst case does not match the constants "
+                    "(cold=%s held=%s computed %d s)" % (cold, held, secs))
 
     def test_every_stage_of_the_bound_is_enforced_somewhere(self):
         import inspect
@@ -1579,14 +1601,15 @@ class TestTheWorstCaseIsBounded:
         assert "VOICE_RX_WARN_S" in thresholds
         assert "VOICE_RX_DEAD_S" in thresholds
         assert "VOICE_RX_START_GRACE_S" in thresholds
+        assert "VOICE_RX_SESSION_HOLD_S" in thresholds
         assert "_rx_thresholds()" in watchdog, (
             "the watchdog no longer asks for the thresholds it enforces")
         assert "timeout=VOICE_RECOVER_TIMEOUT_S" in recover
         assert "VOICE_RECOVER_ATTEMPTS" in possible
 
     def test_the_cold_bound_is_finite_and_wider(self):
-        cold = self.worst_case_seconds(cold=True)
-        assert cold > self.worst_case_seconds()
+        cold = self.worst_case_seconds(cold=True, held=True)
+        assert cold > self.worst_case_seconds(held=True)
         assert cold < 20 * 60
 
     def test_disabling_recovery_restores_the_plain_fail_safe(self):
@@ -1928,13 +1951,15 @@ class TestTheStartupGrace:
         return s
 
     def test_a_cold_path_gets_the_wider_window(self):
-        warn, dead = self._cold()._rx_thresholds()
+        warn, rebuild, dead = self._cold()._rx_thresholds()
         assert warn == V.VOICE_RX_START_GRACE_S
+        assert rebuild == warn          # no live session in this fake
         assert dead == V.VOICE_RX_START_GRACE_S + V.VOICE_RX_DEAD_S
 
     def test_a_proven_path_gets_the_steady_state_window(self):
-        warn, dead = self._warm()._rx_thresholds()
-        assert (warn, dead) == (V.VOICE_RX_WARN_S, V.VOICE_RX_DEAD_S)
+        warn, rebuild, dead = self._warm()._rx_thresholds()
+        assert (warn, rebuild, dead) == (V.VOICE_RX_WARN_S, V.VOICE_RX_WARN_S,
+                                         V.VOICE_RX_DEAD_S)
 
     def test_the_grace_covers_the_measured_startup(self):
         # Media first flowed at 96 s on the call that motivated this.
@@ -2059,3 +2084,163 @@ class TestColourIsDiagnosable:
             os.environ.pop("OTRV4PLUS_FORCE_COLOR", None)
             if saved is not None:
                 os.environ["OTRV4PLUS_FORCE_COLOR"] = saved
+
+
+# ---------------------------------------------------------------------------
+# 13. a live SAM session earns the router a chance to finish
+# ---------------------------------------------------------------------------
+
+class TestTheSessionHold:
+    """Our destination belongs to the SAM session, not to the tunnels.
+
+    Measured on a real WiFi-to-mobile switch: inbound died instantly, the
+    watchdog fired 10.6 s later, and the diagnosis read "SAM control socket
+    open" -- the router had never dropped our session, it was rebuilding its
+    own tunnels under an address that was still ours. We replaced it anyway,
+    which cost 21.2 s to build and announce a new session, ~20 s of our own
+    tx sitting at 0 because the transport was closed, and made the peer adopt
+    an address it did not need.
+
+    So a live session is held back before rebuilding. A dead one is not: if
+    the control socket has closed the session is gone and only a rebuild can
+    help, and that path must stay exactly as fast as it was.
+    """
+
+    def _session(self, control_state, authenticated=5):
+        s = _Watched()
+        s._rx_authenticated = authenticated
+        s._rx_mark = 0
+        s._sam_control_state = lambda: control_state
+        return s
+
+    # -- the thresholds ---------------------------------------------------
+
+    def test_a_live_session_delays_the_rebuild(self):
+        warn, rebuild, dead = self._session("open")._rx_thresholds()
+        assert rebuild == warn + V.VOICE_RX_SESSION_HOLD_S
+        assert dead == V.VOICE_RX_DEAD_S + V.VOICE_RX_SESSION_HOLD_S
+
+    def test_a_dead_session_is_unchanged_and_immediate(self):
+        warn, rebuild, dead = self._session("closed")._rx_thresholds()
+        assert rebuild == warn, "a gone session was given time it cannot use"
+        assert (warn, dead) == (V.VOICE_RX_WARN_S, V.VOICE_RX_DEAD_S)
+
+    def test_an_unknown_session_is_treated_as_gone(self):
+        # No evidence the session survived is not evidence that it did.
+        warn, rebuild, dead = self._session("unknown")._rx_thresholds()
+        assert rebuild == warn
+        assert dead == V.VOICE_RX_DEAD_S
+
+    def test_the_warning_is_never_delayed_by_the_hold(self):
+        # Silence with no explanation is the worst state to leave the user in.
+        for state in ("open", "closed", "unknown"):
+            assert self._session(state)._rx_thresholds()[0] == V.VOICE_RX_WARN_S
+
+    def test_the_dead_horizon_moves_with_the_hold(self):
+        # Otherwise holding would eat the recovery window and the call would
+        # be torn down at the moment it was finally allowed to try.
+        _w, rebuild, dead = self._session("open")._rx_thresholds()
+        assert dead > rebuild, "holding consumed the whole recovery window"
+
+    def test_the_hold_applies_to_a_cold_path_too(self):
+        warn, rebuild, dead = self._session("open", authenticated=0)._rx_thresholds()
+        assert warn == V.VOICE_RX_START_GRACE_S
+        assert rebuild == warn + V.VOICE_RX_SESSION_HOLD_S
+
+    def test_the_hold_is_sized_from_the_measured_rebuild_cost(self):
+        # It has to be worth more than the 21.2 s rebuild it might avoid, and
+        # small enough that guessing wrong costs one delay rather than a call.
+        assert V.VOICE_RX_SESSION_HOLD_S >= 21.2
+        assert V.VOICE_RX_SESSION_HOLD_S <= V.VOICE_RX_DEAD_S
+
+    # -- the behaviour ----------------------------------------------------
+
+    def test_a_live_session_is_warned_about_but_not_rebuilt_yet(self):
+        async def _drive():
+            s = self._session("open")
+            s.idle_for(V.VOICE_RX_WARN_S + 1.0)
+            await _spin(s, rounds=4)
+            return s
+
+        s = _run(_drive())
+        assert s._rx_degraded is True, "the user was told nothing"
+        assert s.asked == [], "replaced an endpoint the router still held"
+        assert s.lost == []
+
+    def test_it_is_rebuilt_once_the_hold_expires(self):
+        async def _drive():
+            s = self._session("open")
+            s.idle_for(V.VOICE_RX_WARN_S + V.VOICE_RX_SESSION_HOLD_S + 1.0)
+            await _spin(s, rounds=4)
+            return s
+
+        assert _run(_drive()).asked, "the hold never released"
+
+    def test_a_dead_session_is_rebuilt_at_the_old_moment(self):
+        async def _drive():
+            s = self._session("closed")
+            s.idle_for(V.VOICE_RX_WARN_S + 1.0)
+            await _spin(s, rounds=4)
+            return s
+
+        assert _run(_drive()).asked, (
+            "a session that is gone was made to wait for nothing")
+
+    def test_media_returning_during_the_hold_costs_no_rebuild_at_all(self):
+        # The whole point: the router finishes, media resumes, and the
+        # endpoint was never touched.
+        async def _drive():
+            s = self._session("open")
+            s.idle_for(V.VOICE_RX_WARN_S + 1.0)
+            task = asyncio.ensure_future(s._rx_watchdog())
+            await asyncio.sleep(V.VOICE_RX_CHECK_S * 3)
+            s._rx_authenticated += 1                 # tunnels came back
+            s._rx_last_frame = V.time.monotonic()
+            s._rx_last_datagram = s._rx_last_frame
+            await asyncio.sleep(V.VOICE_RX_CHECK_S * 3)
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+            return s
+
+        s = _run(_drive())
+        assert s.asked == [], "rebuilt anyway after the path healed itself"
+        assert s._rx_degraded is False
+        assert s._recover_attempts == 0
+
+    def test_a_held_path_that_never_returns_still_fails_safe(self):
+        async def _drive():
+            s = self._session("open")
+            s._recover_attempts = V.VOICE_RECOVER_ATTEMPTS
+            s.idle_for(V.VOICE_RX_DEAD_S + V.VOICE_RX_SESSION_HOLD_S + 1.0)
+            await _spin(s, rounds=4)
+            return s
+
+        assert len(_run(_drive()).lost) == 1
+
+    def test_the_hold_can_be_disabled(self):
+        saved = V.VOICE_RX_SESSION_HOLD_S
+        V.VOICE_RX_SESSION_HOLD_S = 0.0
+        try:
+            warn, rebuild, dead = self._session("open")._rx_thresholds()
+            assert rebuild == warn and dead == V.VOICE_RX_DEAD_S
+        finally:
+            V.VOICE_RX_SESSION_HOLD_S = saved
+
+    def test_the_message_explains_the_wait(self):
+        async def _drive():
+            s = self._session("open")
+            s.idle_for(V.VOICE_RX_WARN_S + 1.0)
+            printed = []
+            V._HOST["print"] = lambda *a: printed.append(" ".join(map(str, a)))
+            try:
+                await _spin(s, rounds=3)
+            finally:
+                V._HOST["print"] = print
+            return printed
+
+        printed = _run(_drive())
+        assert any("router still holds our session" in p for p in printed), (
+            "the user is left waiting with no reason given: %r" % printed)

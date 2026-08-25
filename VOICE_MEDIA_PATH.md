@@ -232,6 +232,7 @@ the media probe cadence:
 | `VOICE_RX_CHECK_S` | 5 s | the media probe interval |
 | `VOICE_RX_WARN_S` | 15 s | three consecutive probe intervals of silence |
 | `VOICE_RX_DEAD_S` | 45 s | `VOICE_REKEY_TIMEOUT`, the existing "not coming back" horizon |
+| `VOICE_RX_SESSION_HOLD_S` | 30 s | how long a still-live SAM session earns before its endpoint is replaced |
 
 45 s is ~750 consecutive frames at 60 ms. The worst measured stall on the old
 stream transport was 24 s and would not trip it. Loss is declared through the
@@ -328,7 +329,15 @@ easier.
         +-- stream transport, or attempts exhausted
         |       -> no recovery available; fall through to the dead check
         |
-        +-- nothing arriving at all, attempts remain
+        +-- nothing arriving at all, SAM control socket still open
+        |       -> warn now, but hold the rebuild for
+        |          VOICE_RX_SESSION_HOLD_S (30 s). The destination is still
+        |          ours; the router is rebuilding tunnels under it. The dead
+        |          horizon moves by the same 30 s. If media returns, no
+        |          rebuild happens at all.
+        |
+        +-- nothing arriving at all, hold expired or session gone,
+            attempts remain
                 -> RECOVERING (deadline suspended)
                    close the old session, build a new one,
                    bounded by VOICE_RECOVER_TIMEOUT_S (150 s)
@@ -353,7 +362,53 @@ in `wait_for`, and attempts are capped at `VOICE_RECOVER_ATTEMPTS` (2).
 The worst case is **375 s** (6.2 minutes) for a path that was working and
 stopped — not the 15 + 2 × 150 a naive sum gives, because each rebuild resets
 the liveness clock so the final teardown needs `VOICE_RX_DEAD_S` of silence
-measured from the *last* reset rather than from the original failure.
+measured from the *last* reset rather than from the original failure. With the
+session hold below it is **465 s** (7.8 minutes).
+
+### Not every silent path needs a new endpoint
+
+Rebuilding is the right answer when the session is gone. It is the wrong
+answer when the session is still ours and the router is merely rebuilding the
+tunnels beneath it, and the measured cost of getting that wrong is real: on a
+WiFi-to-mobile transition the diagnosis read `no media datagrams are arriving
+at all (SAM control socket open)` — the session had never been destroyed — and
+the rebuild took 21.2 s to create and announce a replacement, during which our
+own `tx` fell to 0 and the peer had to adopt a destination it did not need.
+
+A SAM session lives exactly as long as its control socket. So the control
+socket is the evidence, and it is the only evidence used here:
+
+* control socket **closed** — the session is gone, nothing but a rebuild can
+  help, and the behaviour is unchanged and immediate.
+* control socket **open** — the destination is still ours. The rebuild is held
+  back by `VOICE_RX_SESSION_HOLD_S` (30 s) to let the router finish.
+
+Three properties keep the hold from becoming a way to lose a call quietly:
+
+1. **The warning is never delayed.** `_rx_thresholds` returns three points,
+   not two, precisely so that telling the user and replacing the endpoint can
+   happen at different times. The user still hears about the silence at 15 s
+   (or at the startup grace on a cold path), and the message says how long the
+   wait is and why.
+2. **The dead horizon moves with the hold.** Holding can only ever spend its
+   own 30 s; it can never shorten the window a rebuild has to work in, and it
+   can never make teardown arrive sooner than it would have.
+3. **It is bounded and it is once.** When the hold expires the rebuild happens
+   exactly as it did before, so guessing wrong costs 30 s, not the call.
+
+30 s is the low end of the 30–120 s the call banner already quotes for a
+tunnel build, and it comfortably covers the 21.2 s a rebuild costs — below
+that the hold would expire before the thing it is waiting for could plausibly
+finish, which would be all cost and no benefit.
+
+The four resulting thresholds:
+
+| | warn | rebuild | dead |
+|---|---|---|---|
+| proven path, session gone | 15 s | 15 s | 45 s |
+| proven path, session alive | 15 s | 45 s | 75 s |
+| cold path, session gone | 120 s | 120 s | 165 s |
+| cold path, session alive | 120 s | 150 s | 195 s |
 
 ### A cold path is not a broken path
 
@@ -372,10 +427,14 @@ moment a single frame authenticates the path is proven and the steady-state
 thresholds apply for the rest of the call.
 
 That makes the cold worst case **705 s** (11.8 minutes) before a call that
-never carries audio is torn down, since a freshly announced endpoint has not
-carried any either and gets the same grace. Both numbers are computed from
-the constants by `TestTheWorstCaseIsBounded`, which fails if this document
-and the code disagree. `OTRV4PLUS_RECOVER_ATTEMPTS=0` disables recovery and
+never carries audio is torn down, or **795 s** (13.2 minutes) with the session
+hold, since a freshly announced endpoint has not carried any either and gets
+the same grace. All four numbers are computed from the constants by
+`TestTheWorstCaseIsBounded`, which fails if this document and the code
+disagree. The held figures are the true bounds — a rebuild opens a control
+socket, so the session is alive at every detection point after one — and the
+hold is charged once per detection point rather than compounding, which is
+itself asserted rather than assumed. `OTRV4PLUS_RECOVER_ATTEMPTS=0` disables recovery and
 restores the plain fail-safe for anyone who would rather the call drop than
 wait.
 

@@ -1016,6 +1016,28 @@ VOICE_RX_DEAD_S = max(
 VOICE_RX_START_GRACE_S = _env_ms("OTRV4PLUS_RX_START_GRACE_MS",
                                  120000, 5000, 600000) / 1000.0
 
+#: Extra time to wait before replacing an endpoint while the SAM session
+#: that owns it is still alive.
+#:
+#: Our destination is bound to the SAM session, not to the tunnels beneath
+#: it. Measured on a real WiFi-to-mobile switch: inbound died instantly, the
+#: watchdog fired 10.6 s later, and the diagnosis read "SAM control socket
+#: open" -- the router had never dropped our session, it was rebuilding its
+#: own tunnels underneath a destination that was still ours. We replaced it
+#: anyway: 21.2 s to build a new session and announce it, ~20 s during which
+#: our own tx fell to 0 because the transport was closed, and the peer had to
+#: adopt a new address it did not need.
+#:
+#: So a live session earns the router a chance to finish. A dead one earns
+#: nothing -- if the control socket has closed, the session is gone and only
+#: a rebuild can help, so that case is unchanged and immediate.
+#:
+#: 30 s is the low end of the 30-120 s the call banner already quotes for a
+#: tunnel build, and it is bounded: when it expires the rebuild happens
+#: exactly as before, so the cost of guessing wrong is 30 s once.
+VOICE_RX_SESSION_HOLD_S = _env_ms("OTRV4PLUS_RX_SESSION_HOLD_MS",
+                                  30000, 0, 300000) / 1000.0
+
 VOICE_RECOVER_ATTEMPTS = _env_int("OTRV4PLUS_RECOVER_ATTEMPTS", 2, 0, 5)
 VOICE_RECOVER_TIMEOUT_S = _env_ms("OTRV4PLUS_RECOVER_TIMEOUT_MS",
                                   150000, 10000, 300000) / 1000.0
@@ -3998,18 +4020,39 @@ class VoiceCallSession:
             return "unknown"
 
     def _rx_thresholds(self):
-        """(warn, dead) for this call, in seconds.
+        """(warn, rebuild, dead) for this call, in seconds.
 
-        Wider until media has ever flowed. A cold I2P path taking its time to
-        deliver the first frame is not a broken path, and treating it as one
-        rebuilt a working endpoint and cost a live call ~70 s of silence.
-        Once a single frame has authenticated the path is proven, and the
-        steady-state thresholds apply for the rest of the call.
+        Three points, not two, because telling the user and replacing the
+        endpoint are different decisions and want different timing.
+
+        `warn` is when to say something. It stays early: silence with no
+        explanation is the worst of the three states to be in.
+
+        `rebuild` is when to actually replace the endpoint, and it is held
+        back while the SAM session that owns our destination is still alive
+        -- the router is rebuilding tunnels under an address that is still
+        ours, and replacing it throws away a working session, stops our own
+        transmission for the duration, and makes the peer adopt an address it
+        did not need.
+
+        `dead` moves with the rebuild point, so holding can never mean the
+        call sits dead for longer than the hold it earned.
+
+        Everything widens until media has ever flowed: a cold I2P path taking
+        its time to deliver the first frame is not a broken path, and
+        treating it as one rebuilt a working endpoint and cost a live call
+        ~70 s of silence.
         """
         if self._rx_authenticated == 0:
-            return (VOICE_RX_START_GRACE_S,
-                    VOICE_RX_START_GRACE_S + VOICE_RX_DEAD_S)
-        return (VOICE_RX_WARN_S, VOICE_RX_DEAD_S)
+            warn = VOICE_RX_START_GRACE_S
+            dead = VOICE_RX_START_GRACE_S + VOICE_RX_DEAD_S
+        else:
+            warn, dead = VOICE_RX_WARN_S, VOICE_RX_DEAD_S
+        rebuild = warn
+        if VOICE_RX_SESSION_HOLD_S and self._sam_control_state() == "open":
+            rebuild += VOICE_RX_SESSION_HOLD_S
+            dead += VOICE_RX_SESSION_HOLD_S
+        return warn, rebuild, dead
 
     def _rx_idle_seconds(self, now=None):
         """Seconds since anything authenticated, or None before audio starts."""
@@ -4065,7 +4108,7 @@ class VoiceCallSession:
                 idle = self._rx_idle_seconds()
                 if idle is None:
                     continue
-                warn_after, dead_after = self._rx_thresholds()
+                warn_after, rebuild_after, dead_after = self._rx_thresholds()
                 if idle < warn_after:
                     # Recovery is confirmed by a frame that authenticated
                     # AFTER the rebuild, never by the clock: rebuilding resets
@@ -4086,12 +4129,18 @@ class VoiceCallSession:
                     continue
                 if not self._rx_degraded:
                     self._rx_degraded = True
-                    _print("[voice] %s for %ds — %s"
+                    held = rebuild_after > warn_after
+                    _print("[voice] %s for %ds — %s%s"
                            % ("no audio yet on a new call"
                               if self._rx_authenticated == 0
                               else "no inbound audio",
-                              int(idle), self._rx_diagnosis()))
-                if self._request_recovery():
+                              int(idle), self._rx_diagnosis(),
+                              ("; the router still holds our session, giving "
+                               "it %ds to rebuild its tunnels before we "
+                               "replace the endpoint"
+                               % int(rebuild_after - warn_after))
+                              if held else ""))
+                if idle >= rebuild_after and self._request_recovery():
                     continue
                 if idle >= dead_after:
                     self._signal_stream_lost(
