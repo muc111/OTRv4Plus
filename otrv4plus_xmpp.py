@@ -961,6 +961,9 @@ class OTRv4PlusXMPP(ClientXMPP):
         self._keepalive_degraded = False
         self._keepalive_pings = 0        # round trips attempted
         self._keepalive_ping_fails = 0   # consecutive round-trip timeouts
+        #: When the stream last delivered ANYTHING. Any inbound stanza proves
+        #: the whole path works, which outranks a slow ping reply.
+        self._last_inbound = time.monotonic()
         self._keepalive_timeouts = 0     # lifetime, survives reconnects
         self._reconnects_started = 0
         self._reconnects_completed = 0
@@ -1031,6 +1034,10 @@ class OTRv4PlusXMPP(ClientXMPP):
         self.auto_subscribe = False
 
         # --- Event handlers ---
+        # Every inbound stanza, before any handler. This is the evidence the
+        # keepalive judges on; a filter is the only place that sees all of it.
+        self.add_filter("in", self._note_inbound)
+
         self.add_event_handler("session_start",      self._on_start)
         self.add_event_handler("message",            self._on_message)
         self.add_event_handler("failed_auth",        self._on_failed_auth)
@@ -1195,20 +1202,63 @@ class OTRv4PlusXMPP(ClientXMPP):
     #: from being torn down for idleness.
     KEEPALIVE_WHITESPACE_S = 8
 
-    #: Round-trip cadence. This is the one that proves the far end exists.
+    #: Round-trip cadence, used only once the stream has gone quiet.
     KEEPALIVE_PING_S = 60
 
-    #: How long to wait for a ping reply. Generous on purpose: the media path
-    #: shares this event loop, so a reply can be delayed by work rather than
-    #: by a dead stream, and treating a busy loop as a dead server would drop
-    #: a healthy call.
-    KEEPALIVE_PING_TIMEOUT_S = 30
+    #: How long the stream must have received NOTHING before a probe is worth
+    #: sending.
+    #:
+    #: The first version of this keepalive probed unconditionally every 60 s
+    #: and scored a slow reply as a failure. Measured on a 33-minute call that
+    #: produced ten self-inflicted disconnects: in one case a rekey completed
+    #: a full REKEY -> REKEYACK -> REKEYCOMMIT round trip through the server
+    #: 3.2 s before the keepalive declared that same stream dead on "3 round
+    #: trips in a row went unanswered" -- a verdict that takes ~3 minutes to
+    #: accumulate. The stream was carrying bidirectional traffic throughout
+    #: the window in which it was being scored as dead.
+    #:
+    #: The cause was already documented in this project before the keepalive
+    #: existed, in VoiceCallManager: "IQ round-trips were deliberately
+    #: avoided: over a 3-hop I2P path an IQ frequently exceeds slixmpp's reply
+    #: timeout, whereas a <message> is fire-and-forget and traverses
+    #: reliably." XEP-0199 is an IQ round trip.
+    #:
+    #: So a probe is now a last resort rather than a metronome. Any inbound
+    #: stanza -- presence, a message, an OTR frame, rekey signalling -- is
+    #: proof the whole path works, and proof outranks a slow ping. 180 s sits
+    #: above VOICE_REKEY_SECONDS (120 s), so a live call refreshes this from
+    #: its own signalling and never probes at all.
+    KEEPALIVE_QUIET_S = 180
 
-    #: Consecutive round-trip failures before the stream is declared dead.
-    #: Three at 60 s is about three minutes of silence, which is far longer
-    #: than any plausible stall and short enough to reconnect before a rekey
-    #: is missed.
-    KEEPALIVE_PING_FAILS = 3
+    #: How long to wait for a ping reply. Sized for a 3-hop I2P round trip
+    #: under load rather than for a LAN: the old 30 s was shorter than the
+    #: path's own latency and turned slowness into a verdict.
+    KEEPALIVE_PING_TIMEOUT_S = 60
+
+    #: Consecutive probe failures before the stream is declared dead. Each one
+    #: already means KEEPALIVE_QUIET_S of total silence plus an unanswered
+    #: ping, so two is strong evidence and the worst case is ~8 minutes.
+    #:
+    #: The bias is deliberate. Declaring a healthy stream dead costs a
+    #: reconnect storm and an I2P tunnel rebuild; being slow to notice a
+    #: genuinely dead one costs a delayed rekey, and a rekey that cannot be
+    #: delivered already fails safe on the committed epoch. Media does not use
+    #: XMPP at all.
+    KEEPALIVE_PING_FAILS = 2
+
+    def _note_inbound(self, stanza):
+        """Record that the stream delivered something.  Returns it unchanged.
+
+        Registered as a slixmpp inbound filter, so it sees presence, messages,
+        IQs and everything else before any handler runs. It must never drop or
+        alter a stanza -- returning it unchanged is the contract.
+        """
+        self._last_inbound = time.monotonic()
+        return stanza
+
+    def _stream_quiet_for(self) -> float:
+        """Seconds since the stream last delivered anything."""
+        return max(0.0, time.monotonic() - self._last_inbound)
 
     async def _probe_stream(self) -> bool:
         """Round-trip liveness check against our own server (XEP-0199).
@@ -1329,10 +1379,28 @@ class OTRv4PlusXMPP(ClientXMPP):
                             "the local socket stopped accepting writes")
                         break
 
+                # Traffic is the best possible liveness evidence: it proves
+                # the whole path, end to end, without asking the server for
+                # anything. While it is arriving there is nothing to probe.
+                quiet = self._stream_quiet_for()
+                if quiet < self.KEEPALIVE_QUIET_S:
+                    if self._keepalive_ping_fails or self._keepalive_degraded:
+                        print("[keepalive] stream is delivering again "
+                              "(traffic %.0fs ago)" % quiet)
+                        self._keepalive_ping_fails = 0
+                        self._keepalive_degraded = False
+                    self._keepalive_last_ok = time.monotonic()
+                    if trace:
+                        print("[keepalive] tick %d (traffic %.0fs ago)"
+                              % (self._keepalive_ticks, quiet))
+                    continue
+
                 if time.monotonic() < next_probe:
                     if trace:
-                        print("[keepalive] tick %d (loop alive)"
-                              % self._keepalive_ticks)
+                        print("[keepalive] tick %d (quiet %.0fs, probe due "
+                              "in %.0fs)"
+                              % (self._keepalive_ticks, quiet,
+                                 next_probe - time.monotonic()))
                     continue
 
                 next_probe = time.monotonic() + self.KEEPALIVE_PING_S
@@ -1350,6 +1418,16 @@ class OTRv4PlusXMPP(ClientXMPP):
                     if trace:
                         print("[keepalive] round trip %d ok"
                               % self._keepalive_pings)
+                elif self._stream_quiet_for() < self.KEEPALIVE_QUIET_S:
+                    # The reply never came, but something else did while we
+                    # waited. The path works and the ping was merely slow --
+                    # which over three I2P hops is ordinary, not a fault.
+                    self._keepalive_last_ok = time.monotonic()
+                    self._keepalive_ping_fails = 0
+                    self._keepalive_degraded = False
+                    if trace:
+                        print("[keepalive] probe %d unanswered but traffic "
+                              "arrived — not counted" % self._keepalive_pings)
                 else:
                     self._keepalive_ping_fails += 1
                     # Lifetime tally, deliberately NOT reset per session: it

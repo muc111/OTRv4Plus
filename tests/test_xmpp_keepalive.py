@@ -40,13 +40,22 @@ class _FakeClient:
     KEEPALIVE_PING_S = xmpp.OTRv4PlusXMPP.KEEPALIVE_PING_S
     KEEPALIVE_PING_TIMEOUT_S = xmpp.OTRv4PlusXMPP.KEEPALIVE_PING_TIMEOUT_S
     KEEPALIVE_PING_FAILS = xmpp.OTRv4PlusXMPP.KEEPALIVE_PING_FAILS
+    KEEPALIVE_QUIET_S = xmpp.OTRv4PlusXMPP.KEEPALIVE_QUIET_S
 
     _probe_stream = xmpp.OTRv4PlusXMPP._probe_stream
     _declare_stream_dead = xmpp.OTRv4PlusXMPP._declare_stream_dead
     _keepalive_loop = xmpp.OTRv4PlusXMPP._keepalive_loop
+    _note_inbound = xmpp.OTRv4PlusXMPP._note_inbound
+    _stream_quiet_for = xmpp.OTRv4PlusXMPP._stream_quiet_for
 
-    def __init__(self, ping_result="ok", writable=True):
+    def __init__(self, ping_result="ok", writable=True, delivering=False):
         self._shutting_down = False
+        # A dead stream delivers nothing, so by default the fake is silent
+        # and the probe path is reachable. `delivering=True` models a stream
+        # that is carrying traffic, which is what a live call looks like.
+        self._delivering = delivering
+        self._last_inbound = (xmpp.time.monotonic() if delivering
+                              else xmpp.time.monotonic() - 10_000)
         self._connected = True
         self._keepalive_ticks = 0
         self._keepalive_last_ok = None
@@ -70,6 +79,9 @@ class _FakeClient:
         if not self._writable:
             raise OSError("socket is gone")
         self.raw_writes += 1
+        if self._delivering:
+            # Stand-in for the server's own traffic arriving between ticks.
+            self._last_inbound = xmpp.time.monotonic()
 
     def disconnect(self):
         self.disconnected += 1
@@ -449,3 +461,147 @@ class TestMediaSurvivesTheWholeCycle:
             assert "voice" not in name.lower(), name
             assert "ratchet" not in name.lower(), name
             assert "epoch" not in name.lower(), name
+
+
+# ---------------------------------------------------------------------------
+# Traffic outranks a slow ping
+# ---------------------------------------------------------------------------
+
+def _run_loop(client, ticks, monkeypatch=None):
+    """Run the real keepalive loop with sleeps and the clock collapsed.
+
+    The clock advances by one whitespace interval per tick, so the quiet
+    window and the probe cadence are exercised at their real proportions.
+    """
+    import asyncio as _a
+    now = {"t": 1000.0}
+    real_sleep = _a.sleep
+    real_monotonic = xmpp.time.monotonic
+    # Rebase whatever the caller set onto the collapsed clock, rather than
+    # overwriting it: a test that fed the client a stanza must keep that
+    # evidence, or it proves nothing about _note_inbound.
+    age = max(0.0, real_monotonic() - client._last_inbound)
+    client._last_inbound = now["t"] - age
+
+    async def _sleep(_seconds):
+        now["t"] += client.KEEPALIVE_WHITESPACE_S
+        if client._keepalive_ticks >= ticks:
+            client._shutting_down = True
+
+    _a.sleep = _sleep
+    xmpp.time.monotonic = lambda: now["t"]
+    try:
+        _run(client._keepalive_loop())
+    finally:
+        _a.sleep = real_sleep
+        xmpp.time.monotonic = real_monotonic
+
+
+class TestALiveStreamIsNeverDeclaredDead:
+    """The regression that produced ten self-inflicted disconnects.
+
+    The first version of this keepalive probed every 60 s and scored a slow
+    reply as a failure. Measured on a 33-minute call: in one case a rekey
+    completed a full REKEY -> REKEYACK -> REKEYCOMMIT round trip through the
+    server 3.2 s before the keepalive declared that same stream dead on "3
+    round trips in a row went unanswered" -- a verdict that needs about three
+    minutes of failed pings to accumulate. The stream was carrying
+    bidirectional traffic for the whole window in which it was scored dead.
+
+    The cause was already written down in this project before the keepalive
+    existed, in VoiceCallManager's docstring: an IQ round trip over three I2P
+    hops frequently exceeds the reply timeout. XEP-0199 is an IQ round trip.
+
+    So traffic is the evidence and the probe is the fallback. These tests pin
+    that ordering.
+    """
+
+    def test_a_stream_delivering_traffic_is_never_probed(self):
+        # The probe is what was producing false verdicts, so on a healthy
+        # stream it must not even be reached.
+        client = _FakeClient(ping_result="timeout", delivering=True)
+        _run_loop(client, ticks=40)
+        assert client._keepalive_pings == 0, "probed a stream that was live"
+        assert client.disconnected == 0
+
+    def test_traffic_arriving_clears_an_outstanding_failure(self):
+        client = _FakeClient(ping_result="timeout")
+        client._keepalive_ping_fails = client.KEEPALIVE_PING_FAILS - 1
+        client._keepalive_degraded = True
+        client._delivering = True
+        client._last_inbound = xmpp.time.monotonic()
+        _run_loop(client, ticks=6)
+        assert client._keepalive_ping_fails == 0
+        assert client._keepalive_degraded is False
+        assert client.disconnected == 0
+
+    def test_a_rekey_round_trip_would_have_saved_the_stream(self):
+        """Exactly the live sequence: probes failing, then a rekey lands.
+
+        The evidence goes in through _note_inbound, the real filter, so this
+        fails if inbound stanzas stop being recorded at all.
+        """
+        client = _FakeClient(ping_result="timeout")
+        client._keepalive_ping_fails = client.KEEPALIVE_PING_FAILS - 1
+        client._keepalive_degraded = True
+        client._note_inbound(object())          # REKEYACK arrives
+        _run_loop(client, ticks=4)
+        assert client.disconnected == 0, (
+            "a stream that had just carried a rekey was declared dead")
+        assert client._keepalive_ping_fails == 0, (
+            "the rekey did not clear the outstanding failure")
+
+    def test_the_filter_is_what_supplies_the_evidence(self):
+        # Without _note_inbound updating the clock, a stream carrying traffic
+        # looks silent and the probe path is reached anyway.
+        client = _FakeClient(ping_result="timeout")
+        client._last_inbound = xmpp.time.monotonic() - 10_000
+        for _ in range(5):
+            client._note_inbound(object())
+        assert client._stream_quiet_for() < 1.0, (
+            "inbound stanzas are not being recorded")
+
+    def test_a_genuinely_silent_stream_is_still_taken_down(self):
+        # The other half: this must not become a keepalive that never fires.
+        client = _FakeClient(ping_result="timeout")
+        _run_loop(client, ticks=200)
+        assert client.disconnected == 1
+        assert client._keepalive_ping_fails >= client.KEEPALIVE_PING_FAILS
+
+    def test_the_quiet_window_sits_above_the_rekey_interval(self):
+        # A call rekeys every VOICE_REKEY_SECONDS, and that signalling is
+        # inbound traffic. If the window were shorter, a healthy call would
+        # probe -- and probing is what went wrong.
+        import otrv4plus_voice as voice
+        assert xmpp.OTRv4PlusXMPP.KEEPALIVE_QUIET_S > voice.VOICE_REKEY_SECONDS
+
+    def test_the_ping_timeout_is_sized_for_i2p_not_a_lan(self):
+        assert xmpp.OTRv4PlusXMPP.KEEPALIVE_PING_TIMEOUT_S >= 60
+
+    def test_the_filter_never_drops_a_stanza(self):
+        # slixmpp DROPS any stanza an inbound filter returns None for, so a
+        # careless filter here would silently eat the conversation it exists
+        # to protect.
+        client = _FakeClient()
+        for stanza in (object(), "presence", 0, "", None):
+            assert client._note_inbound(stanza) is stanza
+
+    def test_the_filter_is_registered_for_inbound_stanzas(self):
+        import inspect
+        src = inspect.getsource(xmpp.OTRv4PlusXMPP.__init__)
+        assert 'add_filter("in", self._note_inbound)' in src
+
+    def test_an_unanswered_probe_during_traffic_is_not_counted(self):
+        # The narrow race: the probe times out, but something arrived while
+        # we were waiting for it.
+        client = _FakeClient(ping_result="timeout")
+        client._last_inbound = xmpp.time.monotonic() - 10_000
+
+        async def _probe_then_traffic():
+            client._last_inbound = xmpp.time.monotonic()
+            return False
+
+        client._probe_stream = _probe_then_traffic
+        _run_loop(client, ticks=30)
+        assert client._keepalive_ping_fails == 0
+        assert client.disconnected == 0

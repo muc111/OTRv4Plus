@@ -211,3 +211,56 @@ keepalive says so explicitly when it disconnects.
 2. Leave voice on I2P. It is the only transport of the three that can carry
    datagram media with the anonymity property the project requires.
 3. Do not add automatic transport fallback of any kind.
+
+
+## Keepalive: traffic outranks a slow ping
+
+The XEP-0199 keepalive added in `624bbca` fixed a real bug — a whitespace-only
+keepalive reports a healthy stream forever, so a dead stream died silently —
+but it overcorrected into the opposite failure: **it disconnected healthy
+streams.**
+
+Measured on a 33-minute call that produced ten disconnects:
+
+| Last proven XMPP round trip | Stream declared dead | Gap |
+|---|---|---|
+| rekey 1 committed, 194.0 s | 216.2 s | 22.2 s |
+| rekey 3 committed, 440.1 s | 457.4 s | 17.3 s |
+| rekey 5 committed, 685.3 s | 688.5 s | **3.2 s** |
+| rekey 8 committed, 1129.6 s | 1161.2 s | 31.6 s |
+| rekey 10 committed, 1375.8 s | 1397.6 s | 21.8 s |
+
+A rekey commit is `REKEY` → `REKEYACK` → `REKEYCOMMIT`: bidirectional traffic
+through the server, on the stream being probed. The verdict needs ~3 minutes
+of failed pings to accumulate. So the stream was carrying traffic throughout
+the window in which it was being scored as dead.
+
+The cause was already documented in this project before the keepalive existed,
+in `VoiceCallManager`'s docstring:
+
+> IQ round-trips were deliberately avoided: over a 3-hop I2P path an IQ
+> frequently exceeds slixmpp's reply timeout, whereas a `<message>` is
+> fire-and-forget and traverses reliably.
+
+XEP-0199 is an IQ round trip, and it was given a 30 s timeout — shorter than
+the path's own latency under load.
+
+**The fix inverts the priority.** Any inbound stanza — presence, a message, an
+OTR frame, rekey signalling — proves the whole path end to end, and that
+outranks a slow ping. A slixmpp inbound filter records the arrival time; the
+probe is sent only after `KEEPALIVE_QUIET_S` (180 s) of *total* silence, which
+sits above `VOICE_REKEY_SECONDS` (120 s) so a live call refreshes it from its
+own signalling and never probes at all. A probe that times out while something
+else arrived is not counted.
+
+| Constant | Was | Now | Why |
+|---|---|---|---|
+| quiet window before probing | — | 180 s | above the rekey interval |
+| ping timeout | 30 s | 60 s | sized for a 3-hop I2P round trip |
+| failures before dead | 3 | 2 | each now means 180 s of silence too |
+
+Worst case to notice a genuinely dead stream is ~8 minutes. The bias is
+deliberate: declaring a healthy stream dead costs a reconnect storm and an
+I2P tunnel rebuild, while being slow to notice a dead one costs a delayed
+rekey — and a rekey that cannot be delivered already fails safe on the
+committed epoch. Media does not use XMPP at all.
