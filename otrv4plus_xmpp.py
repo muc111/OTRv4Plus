@@ -1022,11 +1022,33 @@ class OTRv4PlusXMPP(ClientXMPP):
         cfg = OTRConfig(test_mode=True)
         self.otr = EnhancedSessionManager(config=cfg, tracer=tracer)
 
-        # Dedicated single-thread executor for OTR/SMP crypto. SMP runs
+        # Dedicated SINGLE-thread executor for OTR/SMP crypto. SMP runs
         # multi-minute 3072-bit DH computations; a separate pool keeps the
         # event loop free so keepalive/network stay alive throughout.
+        #
+        # max_workers is 1 and must stay 1. It was 2, which contradicted the
+        # comment above it and crashed a live handshake:
+        #
+        #   DakeOutput is unsendable, but sent to another thread
+        #   left: ThreadId(3)  right: ThreadId(2)
+        #
+        # otrv4_core::dake::DakeOutput is #[pyclass(unsendable)] -- PyO3
+        # records the creating thread and panics on access from any other.
+        # The handle is created while one inbound message is processed
+        # (generate_dake2 / process_dake2), stored on the session, and
+        # consumed while a LATER one is (building the ratchet). A second
+        # worker only spawns when a task is submitted while the first is
+        # busy, so over I2P, where DAKE messages usually arrive far apart,
+        # one thread handled everything and nothing went wrong. The crash
+        # came when a fragmented DAKE and DAKE3 arrived back to back.
+        #
+        # Serialising is also correct independently of PyO3: OTR is a
+        # stateful ratchet, and processing two messages for one peer
+        # concurrently races the ratchet, skipped-key handling and the SMP
+        # state machine. Nothing submitted here re-submits here, so one
+        # worker cannot deadlock.
         self._otr_executor = ThreadPoolExecutor(
-            max_workers=2, thread_name_prefix="otr-crypto"
+            max_workers=1, thread_name_prefix="otr-crypto"
         )
 
         # Security: never auto-approve subscription requests.
