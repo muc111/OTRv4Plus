@@ -337,7 +337,14 @@ class _Stalled:
         self._rx_last_frame = now - 60
         self._rx_last_datagram = now if arriving else now - 60
         self.asked = []
-        self.on_media_stalled = lambda p, c: self.asked.append((p, c))
+        # The callback contract returns True when recovery actually started;
+        # a falsy return refunds the attempt (the manager declines when there
+        # is no signalling path to announce a new endpoint on).
+        self.on_media_stalled = self._accept
+
+    def _accept(self, peer, call_id):
+        self.asked.append((peer, call_id))
+        return True
 
 
 class TestWhenRecoveryIsAttempted:
@@ -421,12 +428,16 @@ class _Watched:
         self.lost = []
         self.asked = []
         self.on_stream_lost = lambda p, c, why: self.lost.append(why)
-        self.on_media_stalled = lambda p, c: self.asked.append(c)
+        self.on_media_stalled = self._accept
         self.loop = types.SimpleNamespace(
             call_soon_threadsafe=lambda cb, *a: cb(*a))
         now = V.time.monotonic()
         self._rx_last_frame = now
         self._rx_last_datagram = now
+
+    def _accept(self, peer, call_id):
+        self.asked.append(call_id)
+        return True
 
     def idle_for(self, seconds):
         base = V.time.monotonic() - seconds
@@ -601,6 +612,7 @@ def _managed(loop, is_initiator=False, call_id=CALL_ID):
     session._recover_task = None
     session._recovering = False
     session._recover_attempts = 0
+    session._endpoint_announce_pending = False
     session._running = True
     mgr._calls[PEER] = session
     return mgr, session
@@ -1567,3 +1579,299 @@ class TestTheWorstCaseIsBounded:
             assert s._recovery_possible() is False
         finally:
             V.VOICE_RECOVER_ATTEMPTS = saved
+
+
+# ---------------------------------------------------------------------------
+# 11. media recovery depends on the control plane, and must say so
+# ---------------------------------------------------------------------------
+
+class _Client2(_Client):
+    """A client whose XMPP liveness and OTR state can be steered."""
+
+    def __init__(self, connected=True, encrypted=True, deliver=True):
+        super().__init__()
+        self._connected = connected
+        self._deliver = deliver
+        self.otr = self._make_otr(encrypted, deliver)
+
+    def _make_otr(self, encrypted, deliver):
+        class _O(_OTR):
+            def has_encrypted_session(_self, peer):
+                return encrypted
+
+            def handle_outgoing_message(_self, peer, body):
+                if not deliver:
+                    return None, False
+                return body, True
+        return _O()
+
+    def is_connected(self):
+        return self._connected
+
+
+def _stalled(loop, connected=True, encrypted=True, deliver=True):
+    mgr, session = _managed(loop)
+    mgr.client = _Client2(connected, encrypted, deliver)
+    session.peer = PEER
+    session._our_dest = DEST_B
+    now = V.time.monotonic()
+    session._rx_last_datagram = now - 60
+    session._rx_last_frame = now - 60
+    session._transport_mode = V.VOICE_TRANSPORT_DATAGRAM
+    session.on_media_stalled = mgr._handle_media_stalled
+    rebuilds = []
+
+    async def _rebuild():
+        rebuilds.append(1)
+        session._our_dest = DEST_C
+        return DEST_C
+
+    session.rebuild_media_endpoint = _rebuild
+    return mgr, session, rebuilds
+
+
+async def _settle(session, rounds=6):
+    for _ in range(rounds):
+        await asyncio.sleep(0)
+    task = session._recover_task
+    if task is not None and not task.done():
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+
+class TestRecoveryNeedsTheControlPlane:
+    """Replacing our endpoint without telling the peer is worse than nothing.
+
+    Recovery is not local: it destroys our destination and then announces the
+    replacement. Doing the first half without the second leaves the peer
+    addressing an endpoint that no longer exists, and removes the old one that
+    might have come back when the router rebuilt its tunnels.
+
+    A WiFi-to-mobile transition takes both planes down together -- the media
+    watchdog fires at 15 s while XMPP reconnects in 10-70 s -- so recovery
+    running with no signalling path is the common case, not a corner one.
+    """
+
+    def test_no_signalling_path_means_no_rebuild(self):
+        async def _drive():
+            mgr, session, rebuilds = _stalled(asyncio.get_event_loop(),
+                                              connected=False)
+            started = session._request_recovery()
+            await _settle(session)
+            return started, rebuilds, session
+
+        started, rebuilds, session = _run(_drive())
+        assert started is False
+        assert rebuilds == [], "destroyed our endpoint with no way to announce"
+        assert session._our_dest == DEST_B, "our destination moved anyway"
+
+    def test_a_deferred_recovery_costs_no_attempt(self):
+        # The budget bounds rebuilds, not how often the watchdog asks.
+        async def _drive():
+            mgr, session, _r = _stalled(asyncio.get_event_loop(),
+                                        connected=False)
+            for _ in range(V.VOICE_RECOVER_ATTEMPTS + 3):
+                session._request_recovery()
+            await _settle(session)
+            return session
+
+        session = _run(_drive())
+        assert session._recover_attempts == 0
+        assert session._recovering is False
+
+    def test_recovery_resumes_once_signalling_returns(self):
+        async def _drive():
+            mgr, session, rebuilds = _stalled(asyncio.get_event_loop(),
+                                              connected=False)
+            assert session._request_recovery() is False
+            mgr.client._connected = True            # XMPP comes back
+            started = session._request_recovery()
+            await _settle(session)
+            return started, rebuilds
+
+        started, rebuilds = _run(_drive())
+        assert started is True
+        assert len(rebuilds) == 1
+
+    def test_a_missing_otr_session_also_defers(self):
+        # Being connected is not enough: the announcement is authenticated
+        # inside OTR and is never sent in the clear.
+        async def _drive():
+            mgr, session, rebuilds = _stalled(asyncio.get_event_loop(),
+                                              encrypted=False)
+            started = session._request_recovery()
+            await _settle(session)
+            return started, rebuilds
+
+        started, rebuilds = _run(_drive())
+        assert started is False
+        assert rebuilds == []
+
+    def test_deferral_does_not_suspend_the_fail_safe(self):
+        # If signalling never returns the call must still end: without it
+        # there is no rekey and no recovery, so the call is finished anyway.
+        async def _drive():
+            mgr, session, _r = _stalled(asyncio.get_event_loop(),
+                                        connected=False)
+            session._request_recovery()
+            await _settle(session)
+            return session
+
+        session = _run(_drive())
+        assert session._recovering is False, (
+            "a deferred recovery left the watchdog deadline suspended")
+
+
+class TestAnAnnouncementThatNeverLeft:
+    """XMPP can die during the rebuild, which takes as long as a tunnel build."""
+
+    def test_a_failed_announcement_is_remembered(self):
+        async def _drive():
+            mgr, session, _r = _stalled(asyncio.get_event_loop())
+            session._recovering = True
+            mgr.client._deliver = False         # stream dies mid-rebuild
+            mgr.client.otr = mgr.client._make_otr(True, False)
+            await mgr._recover_media(PEER, CALL_ID)
+            return session
+
+        session = _run(_drive())
+        assert session._endpoint_announce_pending is True
+        assert session._recovering is False
+
+    def test_a_failed_announcement_refunds_the_attempt(self):
+        async def _drive():
+            mgr, session, _r = _stalled(asyncio.get_event_loop())
+            session._recover_attempts = 1
+            session._recovering = True
+            mgr.client.otr = mgr.client._make_otr(True, False)
+            await mgr._recover_media(PEER, CALL_ID)
+            return session
+
+        session = _run(_drive())
+        assert session._recover_attempts == 0
+
+    def test_the_retry_announces_without_rebuilding_again(self):
+        # Rebuilding again would strand a second endpoint for nothing.
+        async def _drive():
+            mgr, session, rebuilds = _stalled(asyncio.get_event_loop())
+            session._endpoint_announce_pending = True
+            session._recovering = True
+            await mgr._recover_media(PEER, CALL_ID)
+            return session, rebuilds, mgr
+
+        session, rebuilds, mgr = _run(_drive())
+        assert rebuilds == [], "rebuilt an endpoint that was already fresh"
+        assert [f for f in mgr.client.sent if "MEDIAPATH" in str(f)]
+        assert session._endpoint_announce_pending is False
+
+    def test_a_delivered_announcement_clears_the_flag(self):
+        async def _drive():
+            mgr, session, _r = _stalled(asyncio.get_event_loop())
+            session._endpoint_announce_pending = True
+            session._recovering = True
+            await mgr._recover_media(PEER, CALL_ID)
+            return session
+
+        assert _run(_drive())._endpoint_announce_pending is False
+
+    def test_signal_reports_whether_it_left(self):
+        loop = asyncio.new_event_loop()
+        try:
+            mgr, _session, _r = _stalled(loop)
+            assert mgr._signal(PEER, "END", ("aa",)) is True
+            mgr.client.otr = mgr.client._make_otr(True, False)
+            assert mgr._signal(PEER, "END", ("aa",)) is False
+        finally:
+            loop.close()
+
+    def test_signal_reports_a_transport_exception(self):
+        loop = asyncio.new_event_loop()
+        try:
+            mgr, _session, _r = _stalled(loop)
+
+            def _boom(peer, frame):
+                raise OSError("stream is gone")
+
+            mgr.client.send_otr_fragmented = _boom
+            assert mgr._signal(PEER, "END", ("aa",)) is False
+        finally:
+            loop.close()
+
+
+class TestThePlanesStayIndependent:
+    """Neither path may stand in as evidence for the other.
+
+    They are separate SAM sessions over separate I2P tunnels and they fail
+    independently -- which is the whole reason the media watchdog and the
+    XMPP keepalive both exist.
+    """
+
+    def test_the_keepalive_reads_no_media_state(self):
+        import ast
+        import inspect
+        import otrv4plus_xmpp as X
+        for name in ("_keepalive_loop", "_note_inbound", "_stream_quiet_for",
+                     "_probe_stream"):
+            src = inspect.getsource(getattr(X.OTRv4PlusXMPP, name)).lstrip()
+            body = ast.parse(src).body[0].body
+            if body and isinstance(body[0], ast.Expr) and isinstance(
+                    getattr(body[0], "value", None), ast.Constant):
+                body = body[1:]                       # drop the docstring
+            code = "\n".join(ast.unparse(n) for n in body).lower()
+            for banned in ("voice", "_voice_manager", "has_active_call",
+                           "datagram", "media"):
+                assert banned not in code, (
+                    "%s judges the XMPP stream on media state" % name)
+
+    def test_keepalive_evidence_is_xmpp_traffic_only(self):
+        import inspect
+        import otrv4plus_xmpp as X
+        src = inspect.getsource(X.OTRv4PlusXMPP._note_inbound)
+        assert "_last_inbound" in src
+        # Registered as a slixmpp inbound stanza filter, so the only thing it
+        # can ever see is XMPP.
+        init = inspect.getsource(X.OTRv4PlusXMPP.__init__)
+        assert 'add_filter("in", self._note_inbound)' in init
+
+    def test_the_media_watchdog_reads_no_xmpp_state(self):
+        import ast
+        import inspect
+        for name in ("_rx_watchdog", "_rx_idle_seconds", "_recovery_possible"):
+            src = inspect.getsource(
+                getattr(V.VoiceCallSession, name)).lstrip()
+            body = ast.parse(src).body[0].body
+            if body and isinstance(body[0], ast.Expr) and isinstance(
+                    getattr(body[0], "value", None), ast.Constant):
+                body = body[1:]
+            code = "\n".join(ast.unparse(n) for n in body).lower()
+            for banned in ("is_connected", "keepalive", "boundjid",
+                           "_last_inbound"):
+                assert banned not in code, (
+                    "%s judges the media path on XMPP state" % name)
+
+    def test_a_healthy_call_does_not_keep_a_dead_stream_alive(self):
+        # The XMPP keepalive must still fire while a call is running, or a
+        # dead control plane would go unnoticed for as long as audio flows.
+        import otrv4plus_xmpp as X
+        import inspect
+        src = inspect.getsource(X.OTRv4PlusXMPP._keepalive_loop)
+        assert "has_active_call" not in src
+        assert "_voice_manager" not in src
+
+    def test_control_plane_readiness_is_only_used_to_gate_recovery(self):
+        # It must gate the ACTION that needs signalling, never the detection
+        # of a dead media path.
+        import inspect
+        callers = [name for name in dir(V.VoiceCallManager)
+                   if not name.startswith("__")
+                   and callable(getattr(V.VoiceCallManager, name, None))
+                   and "_control_plane_ready" in
+                   (inspect.getsource(getattr(V.VoiceCallManager, name))
+                    if inspect.isfunction(getattr(V.VoiceCallManager, name))
+                    else "")]
+        assert set(callers) == {"_control_plane_ready", "_handle_media_stalled"}, (
+            "control-plane readiness leaked outside the recovery gate: %r"
+            % callers)

@@ -2724,6 +2724,11 @@ class VoiceCallSession:
         self._recover_task = None
         self._recover_attempts = 0
         self._recovering = False        # a rebuild is genuinely in flight
+        #: The endpoint was replaced but the peer was never told, because the
+        #: control plane was down when the announcement went out. Rebuilding
+        #: again would destroy a second endpoint for nothing; what is missing
+        #: is the announcement, so that is what gets retried.
+        self._endpoint_announce_pending = False
         self.on_media_stalled = None    # set by the manager, call_id-bound
         self._accept_task = None
         self._prewarm = None
@@ -4080,11 +4085,20 @@ class VoiceCallSession:
         self._recovering = True
         self._recover_attempts += 1
         try:
-            callback(self.peer, self.call_id)
+            started = callback(self.peer, self.call_id)
         except Exception as exc:
             self._recovering = False
+            self._recover_attempts -= 1
             self._vlog("media recovery could not start: %s"
                        % _san(str(exc), 120))
+            return False
+        if not started:
+            # Declined -- the control plane cannot carry the announcement
+            # yet. Refund the attempt: nothing was rebuilt, so nothing was
+            # spent, and the budget exists to bound rebuilds rather than
+            # to bound asking.
+            self._recovering = False
+            self._recover_attempts -= 1
             return False
         return True
 
@@ -4922,8 +4936,13 @@ class VoiceCallManager:
         _print("[voice-dbg %6.2fs] %s: %s"
                % (elapsed, _san(peer, 40), _san(message, 200)))
 
-    def _signal(self, peer: str, verb: str, fields=()) -> None:
+    def _signal(self, peer: str, verb: str, fields=()) -> bool:
         """Send one control message INSIDE the OTR channel.
+
+        Returns True only if the frame was handed to the transport. Most
+        callers ignore it -- a lost REKEY already fails safe on the committed
+        epoch -- but media recovery must not, because it changes our own
+        destination before telling the peer where it went.
 
         Call setup is never sent as plaintext.  An eavesdropper on the XMPP
         link — including the server operator — would otherwise learn who
@@ -4938,13 +4957,23 @@ class VoiceCallManager:
         except Exception as exc:
             _print("[voice] could not encrypt call signal: %s"
                    % _san(str(exc), 120))
-            return
+            return False
         if not (should_send and frame):
             _print("[voice] call signal dropped — OTR channel unavailable "
                    "(signalling is never sent in the clear)")
-            return
-        self.client.send_otr_fragmented(
-            peer, frame if isinstance(frame, str) else frame.decode())
+            return False
+        try:
+            self.client.send_otr_fragmented(
+                peer, frame if isinstance(frame, str) else frame.decode())
+        except Exception as exc:
+            # A dropped signal used to be indistinguishable from a delivered
+            # one. Media recovery cannot afford that: it changes our own
+            # destination and then tells the peer, so a silent failure leaves
+            # the peer addressing an endpoint that no longer exists.
+            _print("[voice] call signal could not be sent: %s"
+                   % _san(str(exc), 120))
+            return False
+        return True
 
     # -- policy -----------------------------------------------------------
 
@@ -6007,21 +6036,54 @@ class VoiceCallManager:
 
     # -- media endpoint recovery -------------------------------------------
 
-    def _handle_media_stalled(self, peer: str, call_id: bytes) -> None:
+    def _control_plane_ready(self, peer: str) -> bool:
+        """Whether an authenticated signal can actually reach the peer now.
+
+        Media recovery is not a local operation: it replaces our destination
+        and then tells the peer where it moved. Doing the first half without
+        the second is strictly worse than doing nothing -- the peer keeps
+        addressing an endpoint we have just destroyed, and the old one can no
+        longer come back when the router rebuilds its tunnels.
+
+        A WiFi-to-mobile transition takes both planes down together, and the
+        media watchdog fires at 15 s while XMPP reconnects in 10-70 s, so
+        this is the common case rather than a corner one.
+        """
+        client = self.client
+        try:
+            is_connected = getattr(client, "is_connected", None)
+            if is_connected is not None and not is_connected():
+                return False
+        except Exception:
+            return False
+        try:
+            return bool(client.otr.has_encrypted_session(peer))
+        except Exception:
+            return False
+
+    def _handle_media_stalled(self, peer: str, call_id: bytes) -> bool:
         """The session's watchdog wants its media endpoint replaced.
 
-        Called on the event loop from the watchdog. Starts at most one
-        recovery task per session; the session already counted the attempt
-        and set _recovering, and the task clears it however it ends.
+        Called on the event loop from the watchdog. Returns True only if a
+        recovery task was actually started; False refunds the attempt, since
+        the budget bounds rebuilds rather than bounding how often we ask.
+
+        Starts at most one task per session; the session set _recovering and
+        counted the attempt, and the task clears the flag however it ends.
         """
         session = self._calls.get(peer)
         if session is None or session.call_id != call_id:
-            return
+            return False
         existing = session._recover_task
         if existing is not None and not existing.done():
-            return
+            return False
+        if not self._control_plane_ready(peer):
+            self._vdbg(peer, "media recovery deferred — no signalling path "
+                             "to announce a new endpoint on")
+            return False
         session._recover_task = self.loop.create_task(
             self._recover_media(peer, call_id))
+        return True
 
     async def _recover_media(self, peer: str, call_id: bytes) -> None:
         """Replace our media endpoint and tell the peer where it moved.
@@ -6034,27 +6096,36 @@ class VoiceCallManager:
         session = self._calls.get(peer)
         if session is None or session.call_id != call_id:
             return
-        _print("[voice] rebuilding the media path (%d/%d) — this takes as "
-               "long as a new I2P tunnel"
-               % (session._recover_attempts, VOICE_RECOVER_ATTEMPTS))
+        # An endpoint we already replaced but never managed to announce needs
+        # the announcement, not another endpoint.
+        announce_only = bool(session._endpoint_announce_pending
+                             and session._our_dest)
+        if announce_only:
+            _print("[voice] re-announcing the media path — the signalling "
+                   "channel was down when it moved")
+        else:
+            _print("[voice] rebuilding the media path (%d/%d) — this takes as "
+                   "long as a new I2P tunnel"
+                   % (session._recover_attempts, VOICE_RECOVER_ATTEMPTS))
         # The deadline is handed back on EVERY exit, including cancellation.
         # A suspended deadline that is never returned would leave the call
         # dead and silent forever, which is the condition all of this exists
         # to remove -- so it is structural rather than something to get right
         # at each of five return paths.
         try:
-            try:
-                await asyncio.wait_for(session.rebuild_media_endpoint(),
-                                       timeout=VOICE_RECOVER_TIMEOUT_S)
-            except asyncio.CancelledError:
-                raise
-            except asyncio.TimeoutError:
-                self._vdbg(peer, "media rebuild timed out")
-                return
-            except Exception as exc:
-                self._vdbg(peer, "media rebuild failed: %s"
-                           % _san(str(exc), 120))
-                return
+            if not announce_only:
+                try:
+                    await asyncio.wait_for(session.rebuild_media_endpoint(),
+                                           timeout=VOICE_RECOVER_TIMEOUT_S)
+                except asyncio.CancelledError:
+                    raise
+                except asyncio.TimeoutError:
+                    self._vdbg(peer, "media rebuild timed out")
+                    return
+                except Exception as exc:
+                    self._vdbg(peer, "media rebuild failed: %s"
+                               % _san(str(exc), 120))
+                    return
 
             # Re-resolve: the call may have ended or been replaced while the
             # router was building tunnels.
@@ -6068,10 +6139,19 @@ class VoiceCallManager:
                 self._vdbg(peer, "endpoint announcement failed: %s"
                            % _san(str(exc), 120))
                 return
-            self._signal(peer, "MEDIAPATH", (call_id.hex(), epoch, seq,
-                                             destination, tag.hex()))
-            self._vdbg(peer, "announced media endpoint seq=%d epoch=%d"
-                       % (seq, epoch))
+            if self._signal(peer, "MEDIAPATH", (call_id.hex(), epoch, seq,
+                                                destination, tag.hex())):
+                session._endpoint_announce_pending = False
+                self._vdbg(peer, "announced media endpoint seq=%d epoch=%d"
+                           % (seq, epoch))
+            else:
+                # The endpoint moved and the peer does not know. Rebuilding
+                # again would strand a second one; retry the announcement.
+                session._endpoint_announce_pending = True
+                session._recover_attempts = max(
+                    0, session._recover_attempts - 1)
+                self._vdbg(peer, "endpoint announcement could not be sent — "
+                                 "will retry when signalling returns")
         finally:
             self._finish_recovery(peer, call_id)
 

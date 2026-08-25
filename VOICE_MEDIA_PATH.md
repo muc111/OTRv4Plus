@@ -409,6 +409,55 @@ always reclaim it, and recovery passes its own budget as the blocking-read
 timeout so the thread cannot outlive the deadline its caller is held to
 (`SAM_SESSION_TIMEOUT` is 300 s against a 150 s budget).
 
+### Recovery depends on the control plane — and now says so
+
+Replacing our endpoint without telling the peer is **worse than doing
+nothing**: the peer keeps addressing an endpoint we have just destroyed, and
+the old one can no longer come back when the router rebuilds its tunnels.
+
+A WiFi-to-mobile transition takes both planes down together. The media
+watchdog fires at 15 s; XMPP reconnected in 10–70 s on the logged call. So
+recovery running with no signalling path is the common case, not a corner
+one — and the first implementation did exactly that: it rebuilt, the
+`MEDIAPATH` announcement was silently dropped by `_signal`, and a recovery
+attempt was consumed. Two attempts later the call was torn down, having
+stranded its own endpoint twice.
+
+Two changes close it:
+
+* `_signal` now returns whether the frame reached the transport. Most callers
+  ignore it — a lost `REKEY` already fails safe on the committed epoch — but
+  recovery must not, because it changes our destination *before* announcing.
+* `_handle_media_stalled` refuses to start a rebuild unless XMPP is connected
+  **and** an OTR session exists (the announcement is authenticated inside OTR
+  and is never sent in the clear). A refusal refunds the attempt: the budget
+  bounds rebuilds, not how often the watchdog asks.
+
+If XMPP dies *during* the rebuild — which takes as long as a tunnel build —
+the endpoint is already gone. Rebuilding again would strand a second one, so
+the announcement alone is retried (`_endpoint_announce_pending`).
+
+Deferral does **not** suspend the fail-safe. If signalling never returns the
+call still ends at the dead horizon, which is correct: without a control
+plane there is no rekey and no recovery, so the call is finished regardless.
+
+### The two planes stay independent
+
+Neither path is ever used as evidence for the other. They are separate SAM
+sessions over separate I2P tunnels and they fail independently — which is why
+both the media watchdog and the XMPP keepalive exist.
+
+| | Judged on |
+|---|---|
+| XMPP keepalive | inbound **XMPP stanzas** only (a slixmpp `in` filter) |
+| Media watchdog | authenticated **inbound media frames** only |
+
+`_control_plane_ready` is the single exception, and it gates only the
+*action* that genuinely needs signalling — never the detection of a dead
+media path. A test enumerates its callers and fails if it leaks anywhere
+else. Measured during a live call, event-loop lag was p50 2 ms / max 36 ms,
+so media does not starve XMPP callbacks either.
+
 ### Limitations
 
 * Only the datagram transport has an endpoint that can be replaced. The
