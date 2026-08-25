@@ -47,6 +47,7 @@ class _Session:
     _on_datagram = V.VoiceCallSession._on_datagram
     _recovery_possible = V.VoiceCallSession._recovery_possible
     _request_recovery = V.VoiceCallSession._request_recovery
+    _rx_thresholds = V.VoiceCallSession._rx_thresholds
     _vlog = V.VoiceCallSession._vlog
 
     def __init__(self, sam_control=None, recoverable=False):
@@ -55,7 +56,11 @@ class _Session:
         self._rx_last_datagram = None
         self._rx_last_frame = None
         self._rx_degraded = False
-        self._rx_authenticated = 0
+        # A path that has already carried audio. Every test in this file is
+        # about one that was working and then stopped; a path that has never
+        # delivered anything gets the wider startup grace instead, and is
+        # covered by TestTheStartupGrace in test_media_recovery.py.
+        self._rx_authenticated = 1
         self._rx_mark = 0
         self.state = V.CallState.ACTIVE
         # Default: no endpoint to replace, so the watchdog's only option is

@@ -350,14 +350,34 @@ Recovery can **extend** the deadline, never remove it. The dead check is
 suspended only while a rebuild is genuinely in flight, the rebuild is wrapped
 in `wait_for`, and attempts are capped at `VOICE_RECOVER_ATTEMPTS` (2).
 
-The worst case is **375 s** (6.2 minutes), not the 15 + 2 × 150 that a naive
-sum gives: each rebuild resets the liveness clock so the new path is not
-judged dead the instant it opens, so the final teardown needs `VOICE_RX_DEAD_S`
-of silence measured from the *last* reset rather than from the original
-failure. `TestTheWorstCaseIsBounded` computes this from the constants and
-fails if this document and the code disagree. `OTRV4PLUS_RECOVER_ATTEMPTS=0`
-disables recovery and restores the plain fail-safe for anyone who would rather
-the call drop than wait.
+The worst case is **375 s** (6.2 minutes) for a path that was working and
+stopped — not the 15 + 2 × 150 a naive sum gives, because each rebuild resets
+the liveness clock so the final teardown needs `VOICE_RX_DEAD_S` of silence
+measured from the *last* reset rather than from the original failure.
+
+### A cold path is not a broken path
+
+The thresholds above assume a path that has already carried audio. One that
+has never carried any is a different question, and treating it the same way
+cost a live call ~70 s: media first flowed at t=96 s while the watchdog fired
+at 26.6 s and rebuilt an endpoint that was merely still coming up. The tunnels
+are built before `start_audio`, but the peer still has to learn our
+destination and the first datagram still has to cross three hops each way.
+
+So until one frame has authenticated, `VOICE_RX_START_GRACE_S` (120 s)
+replaces the warning threshold and the dead horizon moves with it. 120 s is
+the budget call setup already allows the media path — the key-confirmation
+wait uses it, and the call banner tells the user 30–120 s is normal. The
+moment a single frame authenticates the path is proven and the steady-state
+thresholds apply for the rest of the call.
+
+That makes the cold worst case **705 s** (11.8 minutes) before a call that
+never carries audio is torn down, since a freshly announced endpoint has not
+carried any either and gets the same grace. Both numbers are computed from
+the constants by `TestTheWorstCaseIsBounded`, which fails if this document
+and the code disagree. `OTRV4PLUS_RECOVER_ATTEMPTS=0` disables recovery and
+restores the plain fail-safe for anyone who would rather the call drop than
+wait.
 
 Success is confirmed by **inbound media resuming**, not by an acknowledgement.
 That is deliberate: an ACK would prove the peer received a message, whereas

@@ -408,6 +408,7 @@ class _Watched:
     _signal_stream_lost = V.VoiceCallSession._signal_stream_lost
     _recovery_possible = V.VoiceCallSession._recovery_possible
     _request_recovery = V.VoiceCallSession._request_recovery
+    _rx_thresholds = V.VoiceCallSession._rx_thresholds
     _vlog = V.VoiceCallSession._vlog
 
     def __init__(self, mode=V.VOICE_TRANSPORT_DATAGRAM):
@@ -418,7 +419,9 @@ class _Watched:
         self._rx_degraded = False
         self._recovering = False
         self._recover_attempts = 0
-        self._rx_authenticated = 0
+        # Proven by default: these tests are about a path that worked and
+        # then stopped. TestTheStartupGrace opts back into the cold case.
+        self._rx_authenticated = 1
         self._rx_mark = 0
         self._sam_control = None
         self._loss_signalled = False
@@ -1538,13 +1541,21 @@ class TestTheWorstCaseIsBounded:
     """
 
     @staticmethod
-    def worst_case_seconds():
-        total = V.VOICE_RX_WARN_S
+    def worst_case_seconds(cold=False):
+        """Media death to teardown, computed from the constants.
+
+        `cold` is a call whose media never arrived at all: the wider startup
+        grace applies to the first detection AND to every one after a
+        rebuild, because a freshly announced endpoint has not carried audio
+        either.
+        """
+        warn = V.VOICE_RX_START_GRACE_S if cold else V.VOICE_RX_WARN_S
+        dead = (V.VOICE_RX_START_GRACE_S + V.VOICE_RX_DEAD_S) if cold \
+            else V.VOICE_RX_DEAD_S
+        total = warn
         for attempt in range(1, V.VOICE_RECOVER_ATTEMPTS + 1):
             total += V.VOICE_RECOVER_TIMEOUT_S
-            total += (V.VOICE_RX_WARN_S
-                      if attempt < V.VOICE_RECOVER_ATTEMPTS
-                      else V.VOICE_RX_DEAD_S)
+            total += warn if attempt < V.VOICE_RECOVER_ATTEMPTS else dead
         return total
 
     def test_the_bound_is_finite(self):
@@ -1561,13 +1572,22 @@ class TestTheWorstCaseIsBounded:
 
     def test_every_stage_of_the_bound_is_enforced_somewhere(self):
         import inspect
+        thresholds = inspect.getsource(V.VoiceCallSession._rx_thresholds)
         watchdog = inspect.getsource(V.VoiceCallSession._rx_watchdog)
         recover = inspect.getsource(V.VoiceCallManager._recover_media)
         possible = inspect.getsource(V.VoiceCallSession._recovery_possible)
-        assert "VOICE_RX_WARN_S" in watchdog
-        assert "VOICE_RX_DEAD_S" in watchdog
+        assert "VOICE_RX_WARN_S" in thresholds
+        assert "VOICE_RX_DEAD_S" in thresholds
+        assert "VOICE_RX_START_GRACE_S" in thresholds
+        assert "_rx_thresholds()" in watchdog, (
+            "the watchdog no longer asks for the thresholds it enforces")
         assert "timeout=VOICE_RECOVER_TIMEOUT_S" in recover
         assert "VOICE_RECOVER_ATTEMPTS" in possible
+
+    def test_the_cold_bound_is_finite_and_wider(self):
+        cold = self.worst_case_seconds(cold=True)
+        assert cold > self.worst_case_seconds()
+        assert cold < 20 * 60
 
     def test_disabling_recovery_restores_the_plain_fail_safe(self):
         # OTRV4PLUS_RECOVER_ATTEMPTS=0 is the escape hatch for a user who
@@ -1875,3 +1895,167 @@ class TestThePlanesStayIndependent:
         assert set(callers) == {"_control_plane_ready", "_handle_media_stalled"}, (
             "control-plane readiness leaked outside the recovery gate: %r"
             % callers)
+
+
+# ---------------------------------------------------------------------------
+# 12. a cold path is not a broken path
+# ---------------------------------------------------------------------------
+
+class TestTheStartupGrace:
+    """A path that has never carried audio is a different question.
+
+    Measured on a live call: media first flowed at t=96 s, while the watchdog
+    fired at 26.6 s and spent ~70 s rebuilding an endpoint that was merely
+    still coming up. The tunnels are built before start_audio, but the peer
+    still has to learn our destination and the first datagram still has to
+    traverse three hops each way.
+
+    So the thresholds widen until a single frame has authenticated, and
+    narrow again the moment one has -- at which point the path is proven and
+    a stall really is a stall.
+    """
+
+    def _cold(self):
+        s = _Watched()
+        s._rx_authenticated = 0
+        s._rx_mark = 0
+        return s
+
+    def _warm(self):
+        s = _Watched()
+        s._rx_authenticated = 5
+        s._rx_mark = 0
+        return s
+
+    def test_a_cold_path_gets_the_wider_window(self):
+        warn, dead = self._cold()._rx_thresholds()
+        assert warn == V.VOICE_RX_START_GRACE_S
+        assert dead == V.VOICE_RX_START_GRACE_S + V.VOICE_RX_DEAD_S
+
+    def test_a_proven_path_gets_the_steady_state_window(self):
+        warn, dead = self._warm()._rx_thresholds()
+        assert (warn, dead) == (V.VOICE_RX_WARN_S, V.VOICE_RX_DEAD_S)
+
+    def test_the_grace_covers_the_measured_startup(self):
+        # Media first flowed at 96 s on the call that motivated this.
+        assert V.VOICE_RX_START_GRACE_S >= 96.0
+
+    def test_the_grace_is_wider_than_the_steady_state_warning(self):
+        assert V.VOICE_RX_START_GRACE_S > V.VOICE_RX_WARN_S
+
+    def test_a_cold_path_is_not_rebuilt_inside_the_grace(self):
+        async def _drive():
+            s = self._cold()
+            s.idle_for(V.VOICE_RX_WARN_S + 5.0)      # past the WARM warning
+            await _spin(s, rounds=4)
+            return s
+
+        s = _run(_drive())
+        assert s.asked == [], (
+            "rebuilt an endpoint that had simply not delivered its first "
+            "frame yet")
+        assert s.lost == []
+
+    def test_a_cold_path_is_still_rebuilt_once_the_grace_expires(self):
+        async def _drive():
+            s = self._cold()
+            s.idle_for(V.VOICE_RX_START_GRACE_S + 1.0)
+            await _spin(s, rounds=3)
+            return s
+
+        assert _run(_drive()).asked, "a call that never gets audio must act"
+
+    def test_a_cold_path_that_never_works_still_fails_safe(self):
+        async def _drive():
+            s = self._cold()
+            s._recover_attempts = V.VOICE_RECOVER_ATTEMPTS
+            s.idle_for(V.VOICE_RX_START_GRACE_S + V.VOICE_RX_DEAD_S + 1.0)
+            await _spin(s, rounds=4)
+            return s
+
+        assert len(_run(_drive()).lost) == 1
+
+    def test_one_authenticated_frame_narrows_the_window_immediately(self):
+        s = self._cold()
+        assert s._rx_thresholds()[0] == V.VOICE_RX_START_GRACE_S
+        s._rx_authenticated = 1
+        assert s._rx_thresholds()[0] == V.VOICE_RX_WARN_S
+
+    def test_a_warm_path_still_reacts_at_the_normal_threshold(self):
+        # The grace must not leak into steady state.
+        async def _drive():
+            s = self._warm()
+            s.idle_for(V.VOICE_RX_WARN_S + 1.0)
+            await _spin(s, rounds=3)
+            return s
+
+        assert _run(_drive()).asked, "a proven path stopped being watched"
+
+    def test_the_cold_message_says_it_is_a_new_call(self):
+        async def _drive():
+            s = self._cold()
+            s.idle_for(V.VOICE_RX_START_GRACE_S + 1.0)
+            printed = []
+            V._HOST["print"] = lambda *a: printed.append(" ".join(map(str, a)))
+            try:
+                await _spin(s, rounds=3)
+            finally:
+                V._HOST["print"] = print
+            return printed
+
+        printed = _run(_drive())
+        assert any("no audio yet on a new call" in p for p in printed)
+
+
+class TestColourIsDiagnosable:
+    """Colour silently did nothing on a real device for a whole call.
+
+    The engine's own colouring came through in the same log -- it does no tty
+    check at all -- so the only evidence was an absence of output. A decision
+    this cheap should say what it decided.
+    """
+
+    def _state(self, **env):
+        saved = {k: os.environ.get(k) for k in
+                 ("NO_COLOR", "OTRV4PLUS_FORCE_COLOR")}
+        for k in saved:
+            os.environ.pop(k, None)
+        os.environ.update({k: v for k, v in env.items() if v is not None})
+        try:
+            return V._colour_state()
+        finally:
+            for k, v in saved.items():
+                os.environ.pop(k, None)
+                if v is not None:
+                    os.environ[k] = v
+
+    def test_a_redirect_is_reported_not_silent(self):
+        enabled, reason = self._state()
+        assert enabled is False          # pytest captures stdout
+        assert "not a terminal" in reason
+        assert "OTRV4PLUS_FORCE_COLOR" in reason, (
+            "the reason must name the way out, or the next person is stuck "
+            "where the last one was")
+
+    def test_no_color_is_reported_by_name(self):
+        enabled, reason = self._state(NO_COLOR="1")
+        assert enabled is False and "NO_COLOR" in reason
+
+    def test_the_override_works_and_says_so(self):
+        enabled, reason = self._state(OTRV4PLUS_FORCE_COLOR="1")
+        assert enabled is True and "OTRV4PLUS_FORCE_COLOR" in reason
+
+    def test_the_legend_carries_the_state(self):
+        legend = V.latency_legend()
+        assert "[colour " in legend
+        assert ("colour on:" in legend) or ("colour OFF:" in legend)
+
+    def test_the_override_actually_produces_escapes(self):
+        saved = os.environ.get("OTRV4PLUS_FORCE_COLOR")
+        os.environ["OTRV4PLUS_FORCE_COLOR"] = "1"
+        try:
+            assert "\033[" in V.colour_latency(2000)
+        finally:
+            os.environ.pop("OTRV4PLUS_FORCE_COLOR", None)
+            if saved is not None:
+                os.environ["OTRV4PLUS_FORCE_COLOR"] = saved

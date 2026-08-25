@@ -219,23 +219,35 @@ _ANSI_RED = "\033[91m"
 _ANSI_RESET = "\033[0m"
 
 
-def _colour_enabled() -> bool:
-    """Colour only where it will render.
+def _colour_state():
+    """(enabled, reason).  The reason is printed once so it is diagnosable.
 
-    Honours NO_COLOR (the de-facto standard) and stays off when stdout is
-    redirected, so a piped transcript does not fill with escape sequences.
-    The session transcript strips ANSI on its own, so the terminal keeps the
-    colour and the log file stays plain either way.
+    Colour is on for a terminal and off for a redirect, so a piped transcript
+    does not fill with escape sequences; the session transcript strips ANSI
+    itself, so it stays plain either way.
+
+    The reason exists because this silently did the wrong thing on a real
+    device: no latency colour reached the terminal for a whole call, while
+    the engine's own colouring -- which does no tty check at all -- came
+    through in the same log. That left nothing to look at but the absence of
+    output. A decision this cheap should say what it decided.
     """
     if os.environ.get("NO_COLOR"):
-        return False
+        return False, "NO_COLOR is set"
     if os.environ.get("OTRV4PLUS_FORCE_COLOR"):
-        return True
+        return True, "OTRV4PLUS_FORCE_COLOR is set"
     try:
         import sys
-        return bool(sys.stdout.isatty())
-    except Exception:
-        return False
+        if sys.stdout.isatty():
+            return True, "stdout is a terminal"
+        return False, ("stdout is not a terminal — set OTRV4PLUS_FORCE_COLOR=1 "
+                       "if this is a pty that does not report as one")
+    except Exception as exc:
+        return False, "stdout could not be inspected (%s)" % type(exc).__name__
+
+
+def _colour_enabled() -> bool:
+    return _colour_state()[0]
 
 
 def latency_band(ms) -> str:
@@ -269,11 +281,13 @@ def colour_latency(ms, text=None) -> str:
 
 
 def latency_legend() -> str:
+    enabled, reason = _colour_state()
     return ("mouth-to-ear colour: %s good (<=%dms) %s workable (<=%dms) "
-            "%s poor (>%dms)"
+            "%s poor (>%dms) [colour %s: %s]"
             % (colour_latency(0, "green"), M2E_GOOD_MS,
                colour_latency(M2E_WARN_MS, "yellow"), M2E_WARN_MS,
-               colour_latency(M2E_WARN_MS + 1, "red"), M2E_WARN_MS))
+               colour_latency(M2E_WARN_MS + 1, "red"), M2E_WARN_MS,
+               "on" if enabled else "OFF", reason))
 
 
 # ---------------------------------------------------------------------------
@@ -986,6 +1000,22 @@ VOICE_RX_DEAD_S = max(
 # a device that is probably already struggling. When they are exhausted the
 # call is torn down through the same path a call with no recovery would take:
 # recovery can extend the deadline, never remove it.
+#: How long the FIRST inbound frame of a call is allowed to take.
+#:
+#: The steady-state thresholds assume a path that has already carried audio,
+#: and a path that has never carried any is a different question. Measured on
+#: a live call: media first flowed at t=96 s, while the watchdog fired at
+#: 26.6 s and spent ~70 s rebuilding an endpoint that was merely still coming
+#: up. The tunnels are built before start_audio, but the peer still has to
+#: learn our destination and the first datagram still has to traverse.
+#:
+#: 120 s is what call setup already allows the media path elsewhere -- the
+#: key-confirmation wait uses it, and the call banner tells the user that
+#: 30-120 s is normal -- so this is the budget the rest of the code already
+#: agreed on rather than a new number.
+VOICE_RX_START_GRACE_S = _env_ms("OTRV4PLUS_RX_START_GRACE_MS",
+                                 120000, 5000, 600000) / 1000.0
+
 VOICE_RECOVER_ATTEMPTS = _env_int("OTRV4PLUS_RECOVER_ATTEMPTS", 2, 0, 5)
 VOICE_RECOVER_TIMEOUT_S = _env_ms("OTRV4PLUS_RECOVER_TIMEOUT_MS",
                                   150000, 10000, 300000) / 1000.0
@@ -3967,6 +3997,20 @@ class VoiceCallSession:
         except Exception:
             return "unknown"
 
+    def _rx_thresholds(self):
+        """(warn, dead) for this call, in seconds.
+
+        Wider until media has ever flowed. A cold I2P path taking its time to
+        deliver the first frame is not a broken path, and treating it as one
+        rebuilt a working endpoint and cost a live call ~70 s of silence.
+        Once a single frame has authenticated the path is proven, and the
+        steady-state thresholds apply for the rest of the call.
+        """
+        if self._rx_authenticated == 0:
+            return (VOICE_RX_START_GRACE_S,
+                    VOICE_RX_START_GRACE_S + VOICE_RX_DEAD_S)
+        return (VOICE_RX_WARN_S, VOICE_RX_DEAD_S)
+
     def _rx_idle_seconds(self, now=None):
         """Seconds since anything authenticated, or None before audio starts."""
         if self._rx_last_frame is None:
@@ -4021,7 +4065,8 @@ class VoiceCallSession:
                 idle = self._rx_idle_seconds()
                 if idle is None:
                     continue
-                if idle < VOICE_RX_WARN_S:
+                warn_after, dead_after = self._rx_thresholds()
+                if idle < warn_after:
                     # Recovery is confirmed by a frame that authenticated
                     # AFTER the rebuild, never by the clock: rebuilding resets
                     # the clock, so treating a small idle as success declared
@@ -4041,11 +4086,14 @@ class VoiceCallSession:
                     continue
                 if not self._rx_degraded:
                     self._rx_degraded = True
-                    _print("[voice] no inbound audio for %ds — %s"
-                           % (int(idle), self._rx_diagnosis()))
+                    _print("[voice] %s for %ds — %s"
+                           % ("no audio yet on a new call"
+                              if self._rx_authenticated == 0
+                              else "no inbound audio",
+                              int(idle), self._rx_diagnosis()))
                 if self._request_recovery():
                     continue
-                if idle >= VOICE_RX_DEAD_S:
+                if idle >= dead_after:
                     self._signal_stream_lost(
                         "no media received for %ds — %s"
                         % (int(idle), self._rx_diagnosis()))
