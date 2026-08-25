@@ -1,5 +1,11 @@
 # MAC fix review
 
+> **Status note (v10.12.0) — historical review, conclusions not retracted.** The
+> suite figures quoted below are from the date of the review. Current: **1431
+> passed, 43 skipped, 1 xfailed** from the repository root, **65 passed** in
+> Rust.
+
+
 Independent review of commit `ded35ac` — *"fix(L1): derive MKmac per OTRv4
 §4.4.2; add voice latency measurement"* — as merged into the Android branch.
 

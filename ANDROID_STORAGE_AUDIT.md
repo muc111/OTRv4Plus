@@ -1,5 +1,11 @@
 # Sensitive storage audit
 
+> **Status note (v10.12.0).** This audit covers at-rest storage for the Android
+> application. It does not cover voice key material, which is per-call,
+> in-memory only, and never written to disk — see [SECURITY.md](SECURITY.md) for
+> how it is held and wiped. No finding below is retracted.
+
+
 Phase 2 deliverable (§13). Every sensitive data category the current codebase
 handles, what happens to it today, and what replaces it on Android.
 

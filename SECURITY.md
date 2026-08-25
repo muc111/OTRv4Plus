@@ -10,8 +10,12 @@ Threat model, known issues, and reporting.
 | Active MITM at first contact | Hybrid PQC SMP zero-knowledge proof out-of-band (user types same secret on both sides); classical Schnorr ZKP wrapped in ML-KEM-1024 + ML-DSA-87 binding |
 | Long-term key compromise after the fact | Per-message forward secrecy via double ratchet; PCS via DH ratchet at 100-message / 24-hour boundaries |
 | Future quantum adversary recording today | ML-KEM-1024 hybrid in DAKE; ML-DSA-87 hybrid signatures; hybrid PQC SMP (ML-KEM-1024 + ML-DSA-87 binding the identity proof) |
-| Python heap inspection (post-exploitation) | Long-term private bytes live inside Rust `SecretBytes<N>` (ZeroizeOnDrop); session keys move Rust-to-Rust via the `DakeOutput` opaque handle; no Python cryptography library holds key material |
-| AES-GCM nonce reuse | Counter-based nonce per ratchet step, KDF-derived; nonce never reused across messages |
+| Python heap inspection (post-exploitation) | Long-term private bytes live inside Rust `SecretBytes<N>` (ZeroizeOnDrop); session keys move Rust-to-Rust via the `DakeOutput` opaque handle. **Chat only** — voice key material is held Python-side (see caveat 11). |
+| AES-GCM nonce reuse | Counter-based nonce per ratchet step, KDF-derived; nonce never reused across messages. For voice the nonce is `epoch ‖ counter`, derived from authenticated header fields and never transmitted |
+| Recording a voice call for later quantum decryption | Voice media root requires **both** X448 and ML-KEM-1024; neither alone suffices |
+| Forged, replayed or rolled-back voice endpoint address | `MEDIAPATH` announcements carry a tag derived from the committed epoch root over call_id, epoch, sequence, destination and role; sequence must strictly increase, and no state moves before the tag verifies |
+| Reflection of a voice frame back at its sender | The direction byte is in the AAD but not on the wire, so a reflected frame fails authentication |
+| Speech-dependent traffic analysis on voice | Constant 279-byte packet every 60 ms for the whole call; mute sends digital silence; DTX and variable packet sizing are off in the privacy profile |
 
 ## What OTRv4+ does not defend against
 
@@ -25,6 +29,9 @@ Threat model, known issues, and reporting.
 | Traffic analysis | Visible message size and timing leak metadata. Use a transport that pads (I2P with destinations does some of this; Tor does less). |
 | Replay across sessions | DAKE includes both peers' fresh randomness, so a replay of an old DAKE produces a different session. Replay within a session is rejected by ratchet message counters. |
 | State actor with quantum capability today | ML-KEM-1024 and ML-DSA-87 are best-current-knowledge post-quantum primitives. They are not formally proven; future cryptanalysis could break them. |
+| Real-time MITM of a voice call by a quantum adversary | The ephemeral voice keys are authenticated by the surrounding OTR channel, so live voice authentication is only as post-quantum as the DAKE. Recorded calls stay protected by ML-KEM-1024. |
+| Voice call metadata | Constant-rate shaping removes speech-dependent size and timing, not the fact of the call. Start, end, duration, loss, congestion and tunnel behaviour remain observable, and the XMPP server sees that two JIDs exchanged encrypted stanzas. |
+| Loss of a voice call to a hostile network | Media liveness detection and authenticated endpoint recovery (v10.12.0) handle a path that *stops*. An adversary who can persistently block the media path can still end the call; the design fails closed rather than downgrading transport. |
 
 ## Memory safety model (v10.7)
 
@@ -45,7 +52,26 @@ Threat model, known issues, and reporting.
 | SMP ML-DSA-87 signing key | Rust heap, hybrid PQC SMP | `ZeroizeOnDrop` |
 | SMP pq_binding_key | Rust `SecretBytes<32>` | `ZeroizeOnDrop`, wiped per step |
 
-No long-term private key material appears on the Python heap as `bytes` or `bytearray` during normal session operation. As of v10.7 there is no Python cryptography library in the codebase, so no key material transits an OpenSSL-backed Python object.
+The table above covers **chat**. No long-term private key material appears on the Python heap as `bytes` or `bytearray` during normal chat operation, and no chat key material transits an OpenSSL-backed Python object.
+
+### Voice key material (v10.11.0 onward)
+
+Voice does not meet that standard, and this section previously did not say so.
+
+| Key material | Storage | Wiping |
+|---|---|---|
+| Voice epoch root (64 B) | Python `bytearray` | explicit `_wipe()` on epoch teardown |
+| Directional media keys (2 × 32 B per epoch) | Python `bytearray` | explicit `zeroize()` on epoch teardown |
+| Voice X448 shared secret | Python `bytearray` | explicit `_wipe()` immediately after use |
+| Voice ML-KEM shared secret | Python `bytearray` | explicit `_wipe()` immediately after use |
+| Voice ML-KEM decapsulation key (3168 B) | Python `bytearray` | explicit `_wipe()` once decapsulation is done |
+| Voice X448 **private** key | OpenSSL-backed `cryptography` object | **not wipeable from Python**; reference released in a `finally` as soon as the shared secret exists |
+| Live AES-GCM cipher objects | `cryptography` `AESGCM` instances | dropped on teardown; the key copy inside OpenSSL is not ours to wipe |
+
+Explicit wiping is best-effort in CPython: the allocator may have copied a
+`bytearray` before it is overwritten. Everything here is per-call, per-epoch and
+short-lived — an epoch rekeys every 120 s — but none of it is Rust-owned. See
+caveat 11 and the ROADMAP item *Voice: consolidate onto the Rust core*.
 
 ## Build-time invariants
 
@@ -93,7 +119,7 @@ Two helper functions were removed at v10.6.17: `_verify_ed448_rust_compat()` and
    - **v10.7.4 (5.3i-D)** — `aead.rs` migrated off the deprecated `aes-gcm` `GenericArray::from_slice` helper to `Aes256Gcm::new_from_slice` and `Nonce::from(*&[u8;12])`.  Zero-warning Rust build restored.
    - **v10.7.4 (5.3k)** — the `otr4_ed448_ct` import was deleted (it had no callers; it was loaded as a defensive ground-truth but every Ed448 operation already ran in Rust).  The `.c`/`.h`/`.so` files and `setup_otr4.py` were removed from the repository.  Seven test files in `tests/` were rewritten onto Rust `otrv4_core` (the C-extension-only `test_otr.py` was deleted; the pre-broken `test_v10_4_security_fixes.py` is unrelated and tracked separately).
 
-   The architectural consequence: there is now a **single cryptographic implementation surface** in OTRv4+.  No second backend to drift against, no compile-time conditionals selecting between paths, no "Rust verified against C" comparison checks.  Whatever the Rust core computes is what gets transmitted on the wire; there is nothing else for a reviewer to look at.
+   The architectural consequence: there is a **single cryptographic implementation surface** for chat.  No second backend to drift against, no compile-time conditionals selecting between paths, no "Rust verified against C" comparison checks.  Whatever the Rust core computes is what gets transmitted on a chat message; there is nothing else for a reviewer to look at.  *(This was true of the whole project when written.  The voice subsystem added at v10.11.0 broke it — see caveat 11.)*
 
 5. **Ephemeral identity is a deliberate design choice, not a missing feature.** OTRv4+ regenerates identity keys at every launch; fingerprints do not persist across sessions. Rationale:
    - **Threat model fits ephemeral.** OTRv4+ runs over I2P for an IRC channel; the assumption is short-lived sessions, not long-term identity binding.
@@ -118,6 +144,12 @@ Two helper functions were removed at v10.6.17: `_verify_ed448_rust_compat()` and
 Open a GitHub issue at <https://github.com/muc111/OTRv4Plus/issues>. For anything that looks like an actual security flaw (key disclosure, signature forgery, MITM bypass, panic on adversarial input), tag the issue `security` and include reproduction steps. If you would prefer to disclose privately first, the maintainer is on I2P (see the GitHub profile for an `i2p` contact).
 
 There is no bug bounty. The project is solo and unfunded.
+
+11. **The voice path is not Rust-core-only, and this document previously implied it was (v10.12.0).**  `otrv4plus_voice.py` uses the Python `cryptography` library for three things: the media AES-256-GCM, the HKDF-SHA512 voice key schedule, and the X448 half of the voice key exchange.  Voice ML-KEM-1024 does route through `otrv4_core`.  The consequences are concrete rather than theoretical: (a) there are two AES-256-GCM implementations in the tree, so the "no second implementation to drift against" property holds for chat and not for voice; (b) the voice root, the directional media keys and the ML-KEM decapsulation key are Python `bytearray`s overwritten by an explicit `zeroize()`/`_wipe()` on teardown rather than by Rust `ZeroizeOnDrop`, and explicit wiping is best-effort in CPython because the allocator may have copied the buffer first; (c) the ephemeral voice X448 *private* key is an OpenSSL-backed `cryptography` object, released as soon as the shared secret exists but not wipeable from Python.  All of this material is per-call and short-lived.  Consolidating the voice path onto the Rust core is tracked on the ROADMAP.
+
+12. **Voice media liveness and endpoint recovery change no cryptography (v10.12.0).**  A call whose inbound media stopped used to stay "up" indefinitely, because a datagram handed to the local SAM UDP bridge is accepted whether or not the session behind it still exists — the transmit counters kept climbing over a dead path.  v10.12.0 detects that and can replace the media endpoint mid-call, announcing the new destination in an authenticated `MEDIAPATH` control message.  What this explicitly does **not** change: the cryptographic primitives, the key schedule, media authentication, the replay window, epoch ordering, the call-identity binding, or endpoint authentication.  It changes *when* a rebuild is requested, never what a rebuild does or how its announcement is proven.  Three properties matter for review: no media key derives from the destination (the transcript covers call_id, OTR binding, both fingerprints, the X448 and ML-KEM material and the epoch, and nothing else), so moving the address invalidates no key and a packet already accepted stays rejected; the announcement tag comes from the *committed* epoch root and the sequence must strictly increase, so forgery, replay and rollback are refused; and no state moves before the tag verifies, so a forged announcement costs nothing.  Recovery is confirmed by inbound media resuming rather than by an acknowledgement, and the whole state machine is bounded (465 s proven path / 795 s cold) with `OTRV4PLUS_RECOVER_ATTEMPTS=0` restoring the plain fail-safe.
+
+13. **Voice liveness and signalling liveness are separate, deliberately.**  The XMPP keepalive does not read voice state and voice recovery does not read keepalive state.  Neither plane may stand in as evidence for the other: healthy media does not prove the XMPP stream is alive, and a healthy XMPP stream does not prove the SAM datagram session is alive.  The v10.12.0 keepalive work (quiet threshold 180 s, ping timeout 60 s, two consecutive failures required) widened the thresholds to stop false positives over three I2P hops; it did not make either plane conditional on the other.
 
 ## What "audit closed" means
 

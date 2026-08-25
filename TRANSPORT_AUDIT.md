@@ -3,9 +3,22 @@
 Audit of commit `624bbca`. Findings from tracing runtime paths, not from
 module names or configuration options.
 
-**Nothing here has been tested on a live network.** Everything below is code
-tracing plus unit tests. Live TLS, Tor and I2P operation still require real
-devices on real networks, and this document does not claim otherwise.
+**Nothing here had been tested on a live network at the time of the audit.**
+Everything below is code tracing plus unit tests, and it is preserved as
+written.
+
+> **Status update (v10.12.0).** Two rows of the matrix have since been exercised
+> for real and the audit's own caveat no longer applies to them:
+>
+> * **I2P voice media** — live two-way calls between two Android phones,
+>   including a 4-hour continuous soak ([VOICE_SOAK_TEST.md](VOICE_SOAK_TEST.md))
+>   and a Wi-Fi-to-mobile transition from which authenticated media recovered in
+>   51 s.
+> * **I2P XMPP control plane** — live, including 31-minute calls with zero
+>   disconnects after the keepalive thresholds were widened.
+>
+> **Tor remains LIVE-UNVERIFIED**, exactly as this document says. Clearnet TLS
+> is unchanged. Nothing else in the audit's findings is retracted.
 
 ## Support matrix
 

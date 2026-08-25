@@ -1,5 +1,20 @@
 # OTRv4+ voice subsystem — audit, repair and hybrid-PQ upgrade
 
+> **Status banner added at v10.12.0 — this is a historical audit; its findings
+> are not retracted.** Two of the rows below were closed by the work the audit
+> prompted, and are recorded here so the table is not read as current state:
+> media confidentiality is now hybrid post-quantum (X448 **and** ML-KEM-1024,
+> both mandatory, neither alone sufficient), and the media header is
+> authenticated — the AAD is
+> `"OTRv4+Voice/AAD/v3" || LP(call_id) || dir_byte || header[0..21]`, not a
+> constant. The current protocol is specified in [SPEC.md §9](SPEC.md); the
+> current media path, including liveness detection and authenticated endpoint
+> recovery, is in [VOICE_MEDIA_PATH.md](VOICE_MEDIA_PATH.md). Test counts quoted
+> below are from the date of the audit and have moved, as has the wire
+> geometry: the 199-byte/40 ms packet quoted later is the then-default; the
+> current default is 279 bytes every 60 ms.
+
+
 Source inspected: `otrv4plus_xmpp.py` (6199 lines), `lib.rs`, `kdf.rs`, `aead.rs`,
 `mlkem.rs`, `secure_mem.rs`, plus `dake.rs`, `smp.rs`, `ratchet.rs`,
 `key_handles.rs`, `mldsa.rs`, `ring_sig.rs`, `error.rs`, `smp_vault.rs`,

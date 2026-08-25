@@ -1,5 +1,11 @@
 # Android I2P architecture (working design)
 
+> **Status note (v10.12.0).** Architecture proposal, unchanged. The
+> "[requires measurement]" markers below are still unmeasured: they concern an
+> in-APK router, and the voice measurements the project now has were taken under
+> Termux against an external I2P app.
+
+
 Decision 3: proceed with the bundled-router architecture. This is the working
 design, not an implementation — no transport code was changed, and no direct
 non-I2P fallback was added.

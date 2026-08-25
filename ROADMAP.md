@@ -4,6 +4,8 @@ What's next for OTRv4+. Ordered roughly by priority, not by ease.
 
 ## Recently shipped
 
+- **v10.12.0** **Voice media liveness, diagnosis and authenticated recovery.** A call whose inbound media died used to stay "up" forever — the transmit side keeps succeeding over a dead SAM session, so nothing failed. A watchdog now measures silence since the last *authenticated* frame, and when nothing is arriving the endpoint is rebuilt and the new destination announced in an authenticated `MEDIAPATH` control message tagged from the committed epoch root. No media key derives from the destination, so recovery costs no key state. The rebuild is held back while the SAM control socket is open, because on a network transition I2P rebuilds tunnels under a session that is still ours (measured: rebuilding anyway cost 21.2 s plus ~20 s of our own `tx` at zero). Cold paths get a 120 s startup grace after a live call lost ~70 s to a rebuild of an endpoint that was merely still coming up. Worst case bounded at 465 s proven / 795 s cold, pinned by a test that fails if the docs and code disagree. Also: the PyO3 `DakeOutput` thread-affinity crash fixed by serialising the OTR executor to one worker; the XMPP keepalive stopped disconnecting streams that were working; rekey no longer wedges on one lost message; Termux incoming-call notification with ACCEPT/DECLINE; latency colour banding. `VERSIONING.md` added and version strings reconciled — five files had disagreed. Python 1431 passed, Rust 65 passed; the session-hold invariants mutation-tested.
+- **v10.10.0 – v10.11.1** XMPP transport, its security hardening, the fail-closed Tor control-plane route, and the first working encrypted voice path over I2P. These shipped without changelog entries; see the note in [CHANGELOG.md](CHANGELOG.md).
 - **v10.9.2** Formal protocol specification (`SPEC.md`) added — byte-level wire layouts for DAKE1/2/3 and ClientProfile, the KDF usage-ID table, the normative session-key derivation order, the full hybrid PQC SMP construction, fragmentation, state machines, and the RFC 3526 prime. Documentation pass across README (added "Why vs alternatives" comparison + 30-second pitch), SECURITY, and WHY for the hybrid SMP. `termux_install.sh` rewritten Rust-only. No wire change.
 - **v10.9.1** SMP session timeout raised to 45 min (from 10) for the hybrid-PQ wire overhead over I2P. I2P transport tuned against irc.postman.i2p: fragment size 450→380 B (postman truncated the DAKE1 tail), send pacing changed to a 2-fragment / 6-second batch after per-fragment delays all triggered Excess Flood. Per-panel scroll fix (`_scroll_history` was global, mixing channels). IRCv3 P2P typing notifications. Measured: DAKE+SMP ~15–16 min over I2P, <6 min over TLS.
 - **v10.9.0** **Hybrid post-quantum SMP.** The classical four-step Schnorr ZKP over the 3072-bit group is wrapped in an ML-KEM-1024 + ML-DSA-87 binding layer: SMP1 carries the KEM encapsulation key and an ML-DSA-87 public key, SMP2 derives `pq_binding_key` from the KEM shared secret and signs the wire body with ML-DSA-87, SMP3/4 verify-then-sign. Forging "verified" now requires breaking the discrete log, ML-KEM-1024, and ML-DSA-87 simultaneously. Wire-versioned 0x01/0x02, no silent downgrade. A KEM-key-mixing bug (initiator derived the secret scalar without the KEM key, responder with it → false-negative SMP) was found in live two-session testing and fixed by removing the KEM key from secret derivation entirely. 15 new SMP tests, 30+ total.
@@ -81,7 +83,15 @@ Staged so each piece could be live-tested in isolation before the next began:
 
 ### Architectural consequence
 
-After 5.3i + 5.3k, OTRv4+ has **a single cryptographic implementation surface** — the Rust `otrv4_core` PyO3 module.  No second crypto backend, no compile-time conditionals selecting between paths, no "Rust verified against C" comparison checks at boot.  The earlier multi-backend complexity that the audit had to reason about is gone.
+After 5.3i + 5.3k, the **chat** path has a single cryptographic implementation surface — the Rust `otrv4_core` PyO3 module.  No second crypto backend, no compile-time conditionals selecting between paths, no "Rust verified against C" comparison checks at boot.  The earlier multi-backend complexity that the audit had to reason about is gone from messaging.
+
+> **Status note (v10.12.0).** The entries above are accurate as history and were
+> accurate for the whole project when written. They are no longer accurate for
+> the whole project: the voice subsystem added at v10.11.0 reintroduced the
+> Python `cryptography` library for the media AES-256-GCM, the HKDF-SHA512 voice
+> key schedule and the voice X448. So "no OpenSSL-backed Python crypto in any
+> code path" holds for chat and not for voice. Closing that is tracked below
+> under *Voice: consolidate onto the Rust core*.
 
 ## Phase 5.3g — ephemeral identity by design (DECIDED at v10.6.18)
 
@@ -110,15 +120,56 @@ Out of OTRv4 scope. OMEMO or MLS would be a separate project.
 
 ### Native Android APK
 
-Building a signed `.apk` containing the Python interpreter and the Rust `.so` has been investigated (see DEVELOPMENT.md). Possible but non-trivial. Termux is the supported dev environment; a native APK is future work.
+**Partly done, not finished.** A Gradle project, a Chaquopy configuration, a typed
+Kotlin↔Python bridge and a Kotlin application security layer exist under
+`android/` and `android_bridge/`, and the storage and architecture questions have
+been audited (`ANDROID_ARCHITECTURE_AUDIT.md`, `ANDROID_STORAGE_AUDIT.md`,
+`ANDROID_PHASE2_REPORT.md`). What does not exist is a shipped signed APK, an
+in-APK I2P router, or any voice testing inside the APK — voice is verified under
+Termux, which is a different process model. Termux remains the supported
+environment. Do not read "voice works" as "voice works in the APK".
 
 ### Tor onion service transport
 
-I2P SAM bridge works today. Adding an alternative Tor `.onion` transport would broaden the deployment options. The current architecture (transport plugged into `Connection` class) supports this without crypto changes.
+**Control plane done, live-unverified; voice deliberately excluded.** The XMPP
+control plane routes over Tor SOCKS5, fail-closed and with no DNS leak, and IRC
+has had Tor support for longer. Neither has been verified on a live `.onion`
+service, so the status is "implemented, unverified" rather than "works".
+
+Voice over Tor is **not** planned. There is no Tor UDP transport, and carrying
+constant-rate media over TCP would trade the property the datagram transport
+exists to provide. I2P remains the only transport that carries voice.
+
+### Voice: consolidate onto the Rust core
+
+`otrv4plus_voice.py` uses the Python `cryptography` library for the media
+AES-256-GCM, the HKDF-SHA512 key schedule, and the voice X448. That is a second
+implementation of AES-256-GCM in a project whose stated architecture is one
+cryptographic surface, and it puts voice key material in Python `bytearray`s
+wiped best-effort rather than in Rust `ZeroizeOnDrop` buffers. The Rust core
+already exposes `aes256gcm_encrypt`/`_decrypt` and `X448KeyHandle`; the KDF would
+need an HKDF-SHA512 binding. This is the largest open architectural item on the
+voice path.
+
+### Voice: classify authentication failures
+
+`authfail` currently cannot distinguish "no live key for epoch N" — an ordinary
+consequence of a rekey in flight — from a genuine AEAD tag failure, which is an
+attack signal. They are counted together, so the interesting one is invisible
+inside the boring one. Splitting them is a telemetry and diagnosis fix, not a
+cryptographic change.
+
+### Voice: latency
+
+Median mouth-to-ear on the I2P path is about 917 ms, against ITU-T G.114's
+400 ms "acceptable" bound. Opus is not the bottleneck (`OPUS_AUDIT.md`). The
+playout path shows a p50 of about 93 ms during degraded periods, which is worth
+understanding before anything else is tuned. **Reducing the I2P hop count is not
+an option** — the 3-hop configuration is the reason the project exists.
 
 ### Formal review
 
-The crypto path is now small enough to be reviewable: ~3500 lines of Rust across `dake.rs`, `ratchet.rs`, `smp.rs`, `smp_vault.rs`, `ring_sig.rs`, `key_handles.rs`, `mldsa.rs`, `mlkem.rs`, `aead.rs`, `secure_mem.rs`, `kdf.rs`. As of v10.7.5 the entire cryptographic surface is Rust — the Python `cryptography` library was removed at v10.7 and all C extensions at v10.7.5 (Phase 5.3k). As of v10.7.6 (Phase 5.4) the SMP modular exponentiation is constant-time via `crypto-bigint`, and as of v10.9.0 the SMP is hybrid post-quantum. A formal third-party review would significantly increase confidence. No funding for this; expression of interest welcome.
+The chat crypto path is now small enough to be reviewable: ~3500 lines of Rust across `dake.rs`, `ratchet.rs`, `smp.rs`, `smp_vault.rs`, `ring_sig.rs`, `key_handles.rs`, `mldsa.rs`, `mlkem.rs`, `aead.rs`, `secure_mem.rs`, `kdf.rs`. The Python `cryptography` library was removed from that path at v10.7 and all C extensions at v10.7.5 (Phase 5.3k). A review scoped to chat should note that the **voice** key schedule and media AEAD live in Python (`otrv4plus_voice.py`) and are not covered by reading the Rust alone. As of v10.7.6 (Phase 5.4) the SMP modular exponentiation is constant-time via `crypto-bigint`, and as of v10.9.0 the SMP is hybrid post-quantum. A formal third-party review would significantly increase confidence. No funding for this; expression of interest welcome.
 
 ### Full post-quantum SMP / PQ-PAKE
 

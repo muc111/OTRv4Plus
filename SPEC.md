@@ -1,6 +1,6 @@
 # OTRv4+ Protocol Specification
 
-**Version:** 10.10.4
+**Version:** 10.12.0
 **Status:** Draft / Research Prototype
 **Repository:** github.com/muc111/OTRv4Plus
 
@@ -31,6 +31,8 @@ extensions defined here are:
 4. ML-DSA-87 (FIPS 204) hybrid signatures in DAKE3.
 5. Hybrid post-quantum Socialist Millionaire Protocol (SMP) using ML-KEM-1024
    and ML-DSA-87 wrapping the classical Schnorr ZKP.
+6. An encrypted voice protocol (§9), keyed by a hybrid X448 + ML-KEM-1024
+   exchange negotiated inside the OTR channel and carried over I2P datagrams.
 
 ### 0.3 Terminology
 
@@ -387,7 +389,7 @@ match it.
 **ML-DSA-87 over the transcript.** When the DAKE3 ML-DSA flag is `0x01`, the
 ML-DSA-87 signature is computed over the same transcript `t` and MUST also verify
 for the handshake to succeed. Unlike the ring signature, the ML-DSA-87 signature
-is attributable and therefore not deniable (§9.1).
+is attributable and therefore not deniable (§10.1).
 
 ---
 
@@ -867,7 +869,234 @@ and zeroizes all SMP secret state.
 
 ---
 
-## 9. Security Requirements for Implementations
+## 9. Encrypted Voice
+
+Voice is a separate protocol keyed from, and authenticated by, an established
+OTR session. It has its own wire version, its own key schedule, and its own
+transport. Nothing in this section changes anything in §1–§8.
+
+### 9.1 Preconditions
+
+A voice call MUST NOT be offered or accepted unless, in this order:
+
+1. the transport is connected;
+2. an OTR session is established (DAKE complete, §4);
+3. SMP has completed and the engine's own verification predicate reports
+   VERIFIED (§6).
+
+The predicate MUST be the cryptographic state, never a UI string, a log line,
+or any peer-supplied text. There is no shortcut and no downgrade: if the
+predicate is false the call is refused.
+
+### 9.2 Roles
+
+Roles are fixed by who sent the INVITE and never change for the life of the
+call. INITIATOR is the caller; RESPONDER is the callee. The initiator generates
+the ephemeral ML-KEM-1024 keypair and decapsulates; the responder encapsulates.
+That direction is chosen so the 1568-byte encapsulation key rides the INVITE and
+the 1568-byte ciphertext rides the ACCEPT — neither side sends both.
+
+### 9.3 Control Messages
+
+Control messages travel **inside** the established OTR channel and are never
+sent in the clear. If the OTR channel is unavailable the message is dropped, not
+downgraded. Each is a text body:
+
+```
+"?OTRv4-CALL:" || VERB || ":" || field ("|" field)*
+```
+
+| Verb | Fields |
+|---|---|
+| `INVITE` | call_id, dest_b64, x448_pub, mlkem_ek |
+| `ACCEPT` | call_id, x448_pub, mlkem_ct, confirm_responder |
+| `CONFIRM` | call_id, confirm_initiator |
+| `REJECT` | call_id, reason |
+| `REKEY` | call_id, epoch, x448_pub, mlkem_ek |
+| `REKEYACK` | call_id, epoch, x448_pub, mlkem_ct, confirm_responder |
+| `REKEYCOMMIT` | call_id, epoch, confirm_initiator |
+| `MEDIAPATH` | call_id, epoch, seq, destination, tag |
+| `END` | call_id |
+
+Every message carries the call_id and MUST be discarded if it does not match
+the receiver's current call. Key confirmation is two-way and role-labelled: the
+responder proves possession first (ACCEPT), the initiator second (CONFIRM).
+Neither side starts audio before the exchange completes, so a key mismatch can
+never cause a frame to be emitted under a key the peer does not hold.
+
+### 9.4 Key Derivation
+
+`LP(x)` is a 4-byte big-endian length prefix followed by `x`. `u64(n)` is an
+8-byte big-endian integer. Every field is length-prefixed, so no two distinct
+field sets serialise to the same byte string.
+
+```
+transcript = LP("OTRv4+Voice/v3")
+          || LP(call_id)
+          || LP(otr_binding)
+          || LP(fp_low) || LP(fp_high)            # sorted — symmetric
+          || LP(initiator_x448_pub)
+          || LP(responder_x448_pub)
+          || LP(mlkem_ek) || LP(mlkem_ct)
+          || u64(epoch)
+
+ikm  = LP(x448_shared) || LP(mlkem_shared)        # BOTH mandatory
+salt = SHA-512("OTRv4+Voice/Salt/v3" || transcript)
+root = HKDF-SHA512(ikm, salt, info = "OTRv4+Voice/Initial/v1" || transcript)
+```
+
+`root` is 64 bytes. The construction is a concatenation KDF: an adversary MUST
+break X448 **and** ML-KEM-1024 to recover it, and it is not weakened if either
+primitive is later broken. An implementation MUST NOT derive the root from
+either input alone.
+
+The fingerprints are sorted before hashing so both endpoints produce identical
+bytes; the X448 publics are ordered by role rather than by local/remote for the
+same reason.
+
+Directional media keys:
+
+```
+K_dir = HKDF-SHA512(root, salt = call_id,
+                    info = "OTRv4+Voice/Media/v1" || LP(call_id)
+                           || u64(epoch) || dir_byte)
+
+dir_byte = 0x01  initiator -> responder
+           0x02  responder -> initiator
+```
+
+The two directions never share a key, so both counters may start at zero.
+
+Confirmation tags use `"OTRv4+Voice/Confirm/v1" || LP(call_id) || u64(epoch)`,
+producing 2 × 32 bytes, one per role. Rekey derives a new root from the old one
+under `"OTRv4+Voice/Rekey/v1"`.
+
+### 9.5 Media Frame
+
+```
+off  0  sync        u8      0xA7
+off  1  version     u8      0x04
+off  2  frame_type  u8      0x01 AUDIO | 0x02 PING | 0x03 PONG
+off  3  epoch       u64 BE
+off 11  counter     u64 BE
+off 19  length      u16 BE  (sealed length; constant for the call)
+off 21  ciphertext || GCM tag
+```
+
+Header length is 21 bytes. The AEAD is AES-256-GCM.
+
+```
+AAD   = "OTRv4+Voice/AAD/v3" || LP(call_id) || dir_byte || header[0..21]
+nonce = u32BE(epoch mod 2^32) || u64BE(counter)
+```
+
+The nonce is **derived, not transmitted**: it costs no bytes and cannot be
+tampered with independently of the header. `dir_byte` is **not** on the wire —
+the receiver supplies the peer's direction locally, so a frame reflected back at
+its own sender fails authentication.
+
+Every security-relevant header field is inside the AAD. Flipping the epoch,
+counter, length or frame type causes a tag failure.
+
+A receiver MUST reject a frame whose version byte is not `0x04`. Version
+mismatch MUST be reported as a version error, distinguishable from a
+cryptographic failure.
+
+**Wire geometry** is fixed for the call and MUST match on both endpoints. With
+the defaults — Opus 16 kHz mono, 60 ms frames, 24 kbit/s CBR — the Opus slot is
+232 bytes, the plaintext 242 bytes, the sealed body 258 bytes, and the packet
+279 bytes, sent at 16.7 packets/s. The slot is derived from bitrate and frame
+duration, not hand-set; peers configured differently establish a call, report it
+healthy, and carry no audio.
+
+Packet size and rate are **constant for the whole call**. Muting encodes digital
+silence rather than suspending transmission. DTX and variable packet sizing MUST
+NOT be enabled in the privacy profile: both make packet timing and size depend
+on speech.
+
+### 9.6 Replay, Ordering, and the Symmetric Ratchet
+
+Each epoch runs a symmetric ratchet every 500 frames (30 s at the 60 ms
+default), giving forward secrecy within an epoch. The ratchet cannot provide
+post-compromise security; that comes only from a successful hybrid rekey.
+
+A sliding replay window rejects a counter already accepted. A limited number of
+sub-epochs is retained for reordering; the forward-hashing jump from a single
+bad frame is bounded. A frame that fails authentication MUST NOT advance any
+state.
+
+### 9.7 Endpoint Announcement (`MEDIAPATH`)
+
+An endpoint MAY move mid-call — an I2P SAM session can be lost while the OTR
+channel survives. The new destination is announced with:
+
+```
+tag = HKDF-SHA512(root, salt = call_id,
+                  info = "OTRv4+Voice/Endpoint/v1" || LP(call_id)
+                         || u64(epoch) || u64(seq)
+                         || LP(destination_ascii)
+                         || u8(1 if from_initiator else 0))
+```
+
+32 bytes, from the **committed epoch root**. A receiver MUST, in this order:
+
+1. reject unless the call is ACTIVE;
+2. reject `seq` less than or equal to the highest already seen — this covers
+   replay, control-channel reordering, and any attempt to reinstate a
+   destination already moved past;
+3. reject an unparseable destination;
+4. verify the tag, and only then adopt the destination.
+
+No state may move before the tag verifies, so a forged or replayed announcement
+costs nothing and changes nothing. Announcements MUST be rate-limited.
+
+**No media key derives from the destination.** The transcript in §9.4 covers the
+call_id, the OTR binding, both fingerprints, the X448 and ML-KEM material and
+the epoch, and nothing else. Moving the address therefore invalidates no key:
+epoch, replay window, ratchet state and call identity all survive an endpoint
+change, and a packet already accepted stays rejected afterwards. An
+implementation MUST NOT tie an address change to a rekey.
+
+### 9.8 Transport
+
+Media is carried over I2P SAM v3 repliable datagrams under a transient
+destination created for the call. Signalling is carried over the OTR channel on
+whatever transport that session uses.
+
+An implementation MUST NOT fall back from I2P to a less private transport for
+media, silently or otherwise. Failure MUST be closed, not downgraded. Voice over
+Tor is not specified: there is no Tor UDP transport here, and carrying media
+over TCP is out of scope.
+
+### 9.9 What This Protocol Claims
+
+Claimed:
+
+* Confidentiality and integrity of media against a classical adversary,
+  contingent on X448.
+* Confidentiality against a store-now-decrypt-later quantum adversary,
+  contingent on ML-KEM-1024. Both are required; neither alone suffices.
+* Forward secrecy within a call from the symmetric ratchet, and across rekeys
+  from the ephemeral hybrid exchange.
+* Post-compromise recovery at each successful hybrid rekey.
+* Authentication of the media endpoint address against forgery, replay and
+  rollback.
+
+Not claimed:
+
+* **Real-time authentication is only as post-quantum as the DAKE.** The
+  ephemeral voice keys are authenticated by the surrounding OTR channel. A
+  quantum adversary able to forge that authentication *live* could MITM a call
+  in progress; recorded calls remain protected by ML-KEM-1024.
+* **Metadata is reduced, not eliminated.** Constant-rate shaping removes
+  speech-dependent size and timing. Call start, end, duration, loss, congestion
+  and tunnel behaviour remain observable, and the signalling server still sees
+  that two identities exchanged encrypted stanzas.
+* Anything about latency. See §9.5 for the shape of the traffic, not its speed.
+
+---
+
+## 10. Security Requirements for Implementations
 
 An implementation claiming conformance MUST:
 
@@ -900,7 +1129,7 @@ An implementation claiming conformance MUST:
 10. Enforce the skipped-key bounds (`MAX_SKIP`, `MAX_MESSAGE_KEYS`) and reject
     replayed `(dh_pub, msg_num)` pairs (§5.5).
 
-### 9.1 Known Limitations (Non-Normative)
+### 10.1 Known Limitations (Non-Normative)
 
 - The SMP Schnorr ZKP scalar arithmetic (the `d = r - c*x` computation) uses
   variable-time big-integer arithmetic in the reference implementation. The
@@ -912,7 +1141,7 @@ An implementation claiming conformance MUST:
 
 ---
 
-## 10. Test Vectors
+## 11. Test Vectors
 
 Conforming implementations SHOULD validate against:
 
@@ -956,6 +1185,6 @@ Order `q = (p - 1) / 2`. Generator `g = 2`.
 
 ---
 
-*End of specification. This document describes OTRv4+ v10.10.4 as implemented. It is
+*End of specification. This document describes OTRv4+ v10.12.0 as implemented. It is
 a research prototype specification and has not undergone formal cryptographic
 review.*

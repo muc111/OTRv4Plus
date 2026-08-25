@@ -11,6 +11,61 @@ and any manual steps.
 
 ---
 
+## To v10.12.0 (from v10.11.1)
+
+**Both peers must update if you use voice.** `MEDIAPATH` is a new control
+message. A v10.12.0 peer whose media path fails will announce a replacement
+endpoint; a v10.11.1 peer does not understand the message, ignores it, and will
+keep sending to an address that has gone away — so the recovery silently does
+nothing and the call still dies. Nothing is *unsafe* about the mismatch (the
+announcement is authenticated and an old peer simply drops it), but the feature
+does not work one-sided.
+
+No media frame, key-schedule, replay-window or transcript change in this cycle.
+Verified: `VOICE_PROTOCOL_VERSION`, `VOICE_HDR_LEN`, `VOICE_PLAIN_LEN`,
+`VOICE_OPUS_SLOT`, `VOICE_TS_LEN` and `VOICE_PACKET_LEN` are all unchanged
+across `f129578..HEAD`. A frame produced by either build decodes on the other.
+
+One caveat on that statement: the version strings had drifted across five files
+before this release (see [VERSIONING.md](VERSIONING.md)), so "v10.11.1" cannot be
+pinned to an exact commit. The frame-format guarantee above is stated against
+the commit range, which is checkable; treat it as authoritative over the version
+label.
+
+Chat is unchanged. The Rust core moved `0.10.21 → 0.10.22`, but only to catch up
+with the MKmac and revealed-MAC-key work that had already shipped without a
+crate bump — if you built after those landed, your `.so` is already current.
+
+Check your wire geometry matches on both phones before blaming the network:
+
+```bash
+python3.12 -c "import otrv4plus_voice as v; print(v.VOICE_FRAME_MS, v.VOICE_BITRATE, v.VOICE_PACKET_LEN)"
+# expected on both ends: 60 24000 279
+```
+
+Peers configured differently establish a call, report it healthy, and carry no
+audio. `OTRV4PLUS_OPUS_FRAME_MS` and `OTRV4PLUS_OPUS_BITRATE` are wire-format
+settings; everything else in `Rust/VOICE_TUNING.md` is local.
+
+New environment switches, all optional:
+
+| Variable | Default | Effect |
+|---|---|---|
+| `OTRV4PLUS_RX_SESSION_HOLD_MS` | `30000` | how long a still-live SAM session delays an endpoint rebuild; `0` disables the hold |
+| `OTRV4PLUS_RX_START_GRACE_MS` | `120000` | how long a call that has never carried audio is given before its path is judged |
+| `OTRV4PLUS_RECOVER_ATTEMPTS` | `2` | endpoint rebuild attempts; `0` disables recovery and restores the plain fail-safe |
+| `OTRV4PLUS_M2E_GOOD_MS` / `_WARN_MS` | `400` / `800` | latency colour bands; `NO_COLOR` disables banding |
+
+If you are building voice for the first time, note that it needs the Python
+`cryptography` package and `libopus`, which chat does not. See
+[SECURITY.md](SECURITY.md) caveat 11 for why that is the case and what it costs.
+
+## To v10.10.0 – v10.11.1
+
+Not documented at the time. These releases introduced the XMPP transport and
+the first encrypted voice path; both are breaking against v10.9.x. Treat an
+upgrade across this range as "update both peers, rebuild, re-verify SMP".
+
 ## To v10.9.2 (from v10.9.1)
 
 No protocol or wire change. Documentation only: `SPEC.md` added, README /
@@ -46,7 +101,8 @@ Rebuild the Rust core and copy both the new `smp.rs` (via rebuild) and
 
 ## Build & Test
 
-As of v10.7.5, OTRv4+ is Rust-core-only — there are no C extensions to build.
+As of v10.7.5 there are no C extensions to build, and chat is Rust-core-only.
+Voice additionally needs the Python `cryptography` package and `libopus`.
 
 ```bash
 # Production build:

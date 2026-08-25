@@ -24,6 +24,37 @@ What you get at the end of those minutes:
 
 No other widely deployable tool gives you all of this simultaneously. Signal is faster and better for async use. This is for the sessions where both parties are present, traces are unacceptable, and you need to know with cryptographic certainty that you are talking to exactly who you think you are.
 
+## And then we made it talk
+
+Text was the whole project for a long time. It isn't any more: OTRv4+ carries
+encrypted voice over I2P, and it goes endpoint → I2P → endpoint with no carrier
+leg at any point. There is no PSTN, so no call detail record is created
+anywhere. Neither party learns the other's IP. There is no phone number involved
+at either end. The media key is hybrid — X448 **and** ML-KEM-1024, both
+mandatory — so someone recording the call today and building a quantum computer
+later still cannot play it back.
+
+The honest part: **it is slow.** Median mouth-to-ear is about 917 ms, where the
+ITU calls 400 ms the edge of comfortable and 800 ms the edge of usable. You
+notice it. You talk over each other occasionally. That is three I2P hops in each
+direction, and it is not a codec problem — Opus contributes almost none of it.
+The obvious fix would be to use fewer hops, and that is exactly the thing this
+project will not do. A fast anonymous call that isn't anonymous is not the
+trade I want.
+
+So this is not a phone replacement. It is a way for two people who both already
+run OTRv4+ to have a conversation that no carrier, no server operator and no
+future quantum adversary gets to sit in on, and to pay about a second of
+latency for it. Some conversations are worth a second.
+
+There is one more thing worth saying about calls: a network changes under you.
+You walk out of Wi-Fi and onto mobile mid-sentence. Earlier versions handled
+that by looking perfectly healthy while carrying nothing at all — the transmit
+side kept succeeding over a session that no longer existed. It now notices,
+says so, tells the peer where the new endpoint is with a message the peer can
+verify, and picks the conversation back up. Measured on a real switch: audio
+back in 51 seconds.
+
 ## Where can you run this?
 
 | Platform | Method |
@@ -43,7 +74,7 @@ We are entering an era where **owning your hardware and software** is the only w
 
 - **Portable**: The core crypto compiles anywhere `cargo` runs
 - **Auditable**: The security-critical code is in Rust, not a black-box app
-- **Self-hostable**: No central servers — just IRC + I2P
+- **Self-hostable**: No central servers — just IRC or XMPP, plus I2P
 - **Future-proof**: Post-quantum cryptography is baked in today, not bolted on later
 
 This is the communication tool I wanted for myself. I'm sharing it because others may need it too.

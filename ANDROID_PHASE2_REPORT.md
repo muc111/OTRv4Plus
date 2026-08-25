@@ -1,5 +1,13 @@
 # OTRv4+ Android — Phase 2 report
 
+> **Status note (v10.12.0) — historical report, results not retracted.** The test
+> counts in the tables below are Phase 2 measurements. Current figures from a
+> repo-root run are **1431 passed, 43 skipped, 1 xfailed** (Python 3.12) and
+> **65 passed** (Rust). Phase 2 also predates encrypted voice being hardened:
+> voice is verified under **Termux**, not inside the APK, and nothing in this
+> report should be read as evidence that voice works in the Android application.
+
+
 **Status: INCOMPLETE — blocked on environment, not on design.**
 
 Phase 2 asked for a production-viable Android foundation. Everything that could

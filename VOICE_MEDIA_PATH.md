@@ -1,5 +1,11 @@
 # Media path audit
 
+The *protocol* — frame layout, key schedule, transcript, control messages and
+the `MEDIAPATH` endpoint tag — is specified in [SPEC.md §9](SPEC.md). This
+document covers the *path*: where time goes, how a dead path is detected, and
+what recovery is allowed to do about it.
+
+
 Phase 1 deliverable. Written before any change in this pass, from reading
 the code rather than from the telemetry.
 

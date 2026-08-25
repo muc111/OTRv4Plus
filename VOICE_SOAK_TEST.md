@@ -48,6 +48,14 @@ The reported figures were cross-checked against the constants in
 | Session length from rekey count | 117 × `VOICE_REKEY_SECONDS = 120` | 14,040 s = 3.90 h |
 | Rekeys implied by duration | 14,600 s ÷ 120 s | ~122 — 117 observed, consistent allowing for setup and teardown |
 | Wire rate | 199 B/frame × 25 fps | ~39.8 kbit/s one direction |
+
+> **Geometry note (v10.12.0).** This run was made at the then-default 40 ms
+> frame. The production default has since moved to 60 ms — 279 B/frame at
+> 16.7 fps, ~37.2 kbit/s — chosen because I2P charges by the packet rather
+> than the byte. The figures above are left as measured; they are a record of
+> that run, not a description of the current wire format. See
+> [Rust/VOICE_TUNING.md](Rust/VOICE_TUNING.md).
+
 | Media bitrate | `VOICE_BITRATE = 24000` | 24 kbit/s Opus |
 
 The two independent derivations of session length — from frame count and from

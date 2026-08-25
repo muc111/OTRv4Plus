@@ -1,5 +1,15 @@
 # OTRv4+ audit handoff
 
+> **Status note (v10.12.0) — the scope statement below needs one addition.** This
+> handoff describes a review of the Rust core. Since it was written, the voice
+> subsystem has become a significant cryptographic surface that is **not** in
+> Rust: `otrv4plus_voice.py` implements the voice key schedule (HKDF-SHA512), the
+> media AEAD (AES-256-GCM), the hybrid X448 + ML-KEM-1024 exchange, the replay
+> window and the authenticated `MEDIAPATH` endpoint announcement, in Python,
+> using the `cryptography` library. A paid review scoped to "read the Rust" would
+> miss all of it. The voice protocol is specified in [SPEC.md §9](SPEC.md).
+
+
 Prepared to brief a professional security audit. Read this first. It states
 what an AI-assisted source review did and did NOT cover, the architecture and
 trust boundaries, the issues already fixed, the properties checked by hand, and

@@ -1,5 +1,12 @@
 # Android I2P / SAM feasibility
 
+> **Status note (v10.12.0).** Feasibility study, unchanged. Voice over I2P has
+> since been implemented and live-tested **under Termux**, where the I2P router
+> is a separate app providing the SAM bridge. That does not answer the question
+> this document asks, which is about an I2P router inside the APK. That remains
+> open.
+
+
 Phase 2 deliverable for blocker **B3**. The instruction is explicit: do not
 replace I2P with a direct transport to simplify Android development, and do not
 weaken the transport. This establishes feasibility and proposes an architecture;

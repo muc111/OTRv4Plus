@@ -1,5 +1,13 @@
 # OTRv4+ audio backend: PulseAudio → AAudio
 
+> **Status note (v10.12.0) — historical report, conclusions not retracted.** The
+> AAudio backend described here shipped and is in production use. One figure has
+> moved: the report speaks of 40 ms frames, which was the default at the time.
+> The production default is now **60 ms** (`OTRV4PLUS_OPUS_FRAME_MS`), so the
+> resampler and the capture/playback loop handle 960 samples per frame, not 640.
+> Nothing else changes.
+
+
 ## The requested architecture cannot be built in this repository
 
 The brief asks for `android.media.AudioRecord` behind a Python → Rust →

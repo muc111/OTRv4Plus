@@ -1,5 +1,15 @@
 # OTRv4+ Android — Phase 1 Repository Audit & Architecture Proposal
 
+> **Status note (v10.12.0) — historical audit, findings not retracted.** Test
+> counts below (`45 passed` for Rust, the Python baselines) are from the date of
+> this audit; the current figures are 65 Rust and 1431 Python passed. The
+> architectural findings stand. Note also that this audit predates the voice
+> subsystem's arrival, so its account of the cryptographic surface — "everything
+> in Rust" — does not cover `otrv4plus_voice.py`, which uses the Python
+> `cryptography` library for the media AEAD, the HKDF-SHA512 voice key schedule
+> and the voice X448 (see [SECURITY.md](SECURITY.md) caveat 11).
+
+
 **Status:** Phase 1 deliverable. No cryptographic code was modified. Awaiting approval before
 any architectural change.
 **Date:** 2026-08-17
