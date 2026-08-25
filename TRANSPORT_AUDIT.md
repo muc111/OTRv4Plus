@@ -91,7 +91,13 @@ backoff and retries, and never falls through to a direct connection.
 Independent of the XMPP transport. `VoiceCallSession` creates its **own** SAM
 session (`SESSION CREATE STYLE=DATAGRAM ... SIGNATURE_TYPE=7`) and its own
 transient destination. XMPP carries only signalling: INVITE, ACCEPT, REJECT,
-REKEY, REKEYCOMMIT, REKEYACK, END.
+REKEY, REKEYCOMMIT, REKEYACK, MEDIAPATH, END.
+
+The independence cuts both ways. Because the media session is separate, an
+XMPP reconnect never disturbs healthy audio — but a network transition that
+kills the media session is invisible to the XMPP reconnect that recovers
+alongside it. MEDIAPATH is what lets media rebuild its own session and tell
+the peer where it moved; `VOICE_MEDIA_PATH.md` has the state machine.
 
 This is why losing XMPP mid-call does not drop audio, and why the keepalive
 in `624bbca` says so on the console when it declares a stream dead.

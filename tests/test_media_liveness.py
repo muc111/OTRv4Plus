@@ -45,13 +45,26 @@ class _Session:
     _sam_control_state = V.VoiceCallSession._sam_control_state
     _signal_stream_lost = V.VoiceCallSession._signal_stream_lost
     _on_datagram = V.VoiceCallSession._on_datagram
+    _recovery_possible = V.VoiceCallSession._recovery_possible
+    _request_recovery = V.VoiceCallSession._request_recovery
+    _vlog = V.VoiceCallSession._vlog
 
-    def __init__(self, sam_control=None):
+    def __init__(self, sam_control=None, recoverable=False):
         self._running = True
         self.stats = V.new_media_stats()
         self._rx_last_datagram = None
         self._rx_last_frame = None
         self._rx_degraded = False
+        self.state = V.CallState.ACTIVE
+        # Default: no endpoint to replace, so the watchdog's only option is
+        # the fail-safe. Recovery-specific tests opt in.
+        self._transport_mode = (V.VOICE_TRANSPORT_DATAGRAM if recoverable
+                                else V.VOICE_TRANSPORT_STREAM)
+        self._recovering = False
+        self._recover_attempts = 0
+        self._recover_task = None
+        self.on_media_stalled = None
+        self.stalled = []
         self._sam_control = sam_control
         self._peer_dest = None
         self._foreign_warned = True

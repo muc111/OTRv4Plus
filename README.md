@@ -373,8 +373,17 @@ anyone counting packets.
   twice is not.
 
 Every control message (INVITE, ACCEPT, CONFIRM, REJECT, REKEY, REKEYACK,
-REKEYCOMMIT, END) carries and is matched against the `call_id`, so a message
-from a previous call cannot act on the current one.
+REKEYCOMMIT, MEDIAPATH, END) carries and is matched against the `call_id`, so
+a message from a previous call cannot act on the current one.
+
+**MEDIAPATH** announces a replacement media endpoint after a network
+transition. Arriving over the OTR-encrypted signalling channel is not enough
+to be acted on: it carries a tag derived from the committed media epoch root,
+so producing one requires the media secret rather than write access to
+signalling. The tag covers the call, the epoch, a strictly increasing
+sequence, the destination and the direction — so a forged, reflected,
+replayed or rolled-back announcement cannot move where audio is sent. See
+`VOICE_MEDIA_PATH.md`.
 
 ### Audio backend
 

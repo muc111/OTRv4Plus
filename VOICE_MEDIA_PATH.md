@@ -262,9 +262,124 @@ rejections above the cipher — wrong epoch, bad length, sub-epoch too far. The
 one event the counter exists to report was invisible in it. The frame is
 rejected exactly as before; only the accounting changed.
 
-### Limitation
+## Media endpoint recovery
 
-The watchdog **detects and ends**; it does not re-establish the media path.
-Recovery would mean building a new SAM datagram session, which yields a new
-transient destination, which the peer must be told about — a new signalling
-verb and a wire change. That is deliberately not in this change.
+The watchdog above detects a dead receive path. Ending the call was the
+correct fail-safe but the wrong outcome: the path can usually be rebuilt.
+
+### Why a local rebuild alone is useless
+
+A SAM datagram session is bound to a transient destination. Replacing the
+session yields a **new destination the peer has never heard of**, so the peer
+keeps sending to an endpoint that no longer receives. Recovery is therefore
+not a local operation: it needs the peer to be told where we moved.
+
+### Why the announcement needs its own authentication
+
+The announcement rides the XMPP control channel, so arriving over it proves
+nothing — the same channel carries whatever the server, or a compromised
+account, puts there. Accepting an endpoint change on that basis would let
+anyone with write access to the signalling path redirect a call's media.
+
+The tag is derived from the **committed epoch root**, which exists only
+because the hybrid X448 + ML-KEM agreement succeeded. Producing one needs the
+media secret, not access to signalling. It is the same HKDF hierarchy and the
+same construction as `derive_confirmations`, deliberately: a second trust
+model for endpoints would be a second thing to get wrong.
+
+    MEDIAPATH: call_id | epoch | seq | destination | tag
+
+    tag = HKDF(root_epoch, call_id,
+               "OTRv4+Voice/Endpoint/v1" || call_id || epoch || seq
+                                         || destination || direction)
+
+Everything that decides whether to act is inside the tag:
+
+| Field | Stops |
+|---|---|
+| `call_id` | a tag crossing calls, or resurrecting an ended one |
+| `epoch` | an announcement outliving a rekey |
+| `seq` | replay, reordering, and endpoint rollback |
+| `destination` | substituting a different endpoint under a valid tag |
+| direction | reflecting our own announcement back at us |
+
+`seq` is strictly increasing per call and checked **before** the tag, so a
+replay costs no cryptography. Nothing moves until the tag verifies.
+
+### Why this is an announcement and not a rekey
+
+No media key derives from the destination — `build_transcript` covers the
+call_id, the OTR binding, both fingerprints, the X448 and ML-KEM material and
+the epoch, and nothing else. Moving the address invalidates no key. So the
+epoch, the replay windows, the ratchet and the call identity all survive
+recovery untouched, and a packet already accepted stays rejected afterwards.
+Tying an address change to a rekey would spend a hybrid exchange to solve a
+routing problem, and would make the replay state harder to reason about, not
+easier.
+
+### The state machine
+
+    ACTIVE, inbound idle >= VOICE_RX_WARN_S (15 s)
+        |
+        +-- datagrams arriving but not authenticating
+        |       -> NOT a transport fault; no rebuild. The path works and
+        |          discarding it would fix nothing.
+        |
+        +-- stream transport, or attempts exhausted
+        |       -> no recovery available; fall through to the dead check
+        |
+        +-- nothing arriving at all, attempts remain
+                -> RECOVERING (deadline suspended)
+                   close the old session, build a new one,
+                   bounded by VOICE_RECOVER_TIMEOUT_S (150 s)
+                        |
+                        +-- rebuild failed or timed out
+                        |       -> deadline handed back, watchdog resumes
+                        |
+                        +-- rebuilt
+                                -> announce MEDIAPATH, deadline handed back
+                                   |
+                                   +-- inbound resumes -> ACTIVE,
+                                   |   attempt budget reset
+                                   |
+                                   +-- still silent at VOICE_RX_DEAD_S
+                                       and attempts exhausted
+                                           -> _signal_stream_lost -> teardown
+
+Recovery can **extend** the deadline, never remove it. The dead check is
+suspended only while a rebuild is genuinely in flight, the rebuild is wrapped
+in `wait_for`, and attempts are capped at `VOICE_RECOVER_ATTEMPTS` (2). Worst
+case before teardown is therefore bounded at roughly 15 s + 2 × 150 s.
+
+Success is confirmed by **inbound media resuming**, not by an acknowledgement.
+That is deliberate: an ACK would prove the peer received a message, whereas
+resumed media proves the path actually works, which is the thing being fixed.
+
+### Lifecycle binding
+
+A rebuild takes as long as an I2P tunnel build, so the call it started for can
+end, be torn down, or be replaced while the router works. Every step that
+outlives an `await` re-resolves the session and re-checks the `call_id`, so a
+late rebuild cannot announce for, or resurrect, the call that replaced it. The
+recovery task is registered with the session's teardown, is cancellable, and
+`_recovering` is cleared on every exit path — including failure and timeout,
+because a suspended deadline that is never handed back would leave the call
+dead and silent forever, which is the bug this all exists to remove.
+
+### Diagnostics
+
+`dg=` in the 5-second telemetry is the raw arrival count. `rx=0 dg=0` means
+the path is dead and a rebuild may help; `rx=0 dg>0` means the transport is
+fine and a rebuild would discard a working path. The refusal reason for a
+rejected announcement is logged under `--voice-debug` (`MEDIAPATH seq=N
+rejected: ...`), so a refusal is diagnosable rather than silent.
+
+### Limitations
+
+* Only the datagram transport has an endpoint that can be replaced. The
+  stream transport falls straight through to the fail-safe.
+* Recovery cannot help if the peer's inbound is the broken direction — but it
+  does not need to: that side runs the same watchdog and rebuilds its own.
+* The thresholds are reasoned from existing constants and exercised by
+  deterministic tests. They have not yet been observed against a real network
+  transition.

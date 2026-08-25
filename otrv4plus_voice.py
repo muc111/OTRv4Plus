@@ -974,6 +974,23 @@ VOICE_RX_DEAD_S = max(
     _env_ms("OTRV4PLUS_RX_DEAD_MS", VOICE_REKEY_TIMEOUT * 1000, 5000, 600000)
     / 1000.0)
 
+# -- media endpoint recovery ------------------------------------------------
+#
+# Replacing a SAM datagram session means building new I2P tunnels, which the
+# call banner already describes as "30-120 s and can be longer on a busy
+# phone". The per-attempt bound is the one the call-setup path already uses
+# for exactly this operation (the prewarm shield), so recovery is not given a
+# budget the original connection was never given.
+#
+# Attempts are bounded because an unbounded retry is a tunnel-build storm on
+# a device that is probably already struggling. When they are exhausted the
+# call is torn down through the same path a call with no recovery would take:
+# recovery can extend the deadline, never remove it.
+VOICE_RECOVER_ATTEMPTS = _env_int("OTRV4PLUS_RECOVER_ATTEMPTS", 2, 0, 5)
+VOICE_RECOVER_TIMEOUT_S = _env_ms("OTRV4PLUS_RECOVER_TIMEOUT_MS",
+                                  150000, 10000, 300000) / 1000.0
+VOICE_MAX_MEDIAPATH_PER_MIN = 4
+
 # Control-plane DoS bounds.
 VOICE_MAX_CONCURRENT_CALLS = 1
 VOICE_MIN_INVITE_INTERVAL = 10.0    # seconds between accepted INVITEs per peer
@@ -1048,6 +1065,7 @@ _LABEL_REKEY = b"OTRv4+Voice/Rekey/v1"
 _LABEL_MEDIA = b"OTRv4+Voice/Media/v1"
 _LABEL_CONFIRM = b"OTRv4+Voice/Confirm/v1"
 _LABEL_RATCHET = b"OTRv4+Voice/Ratchet/v1"
+_LABEL_ENDPOINT = b"OTRv4+Voice/Endpoint/v1"
 _LABEL_AAD = b"OTRv4+Voice/AAD/v3"
 _LABEL_VERSION = b"OTRv4+Voice/v3"
 
@@ -1175,6 +1193,39 @@ def derive_confirmations(root, call_id: bytes, epoch: int):
     info = _LABEL_CONFIRM + _lp(call_id) + _u64(epoch)
     raw = _hkdf(bytes(root), call_id, info, CONFIRM_LEN * 2)
     return raw[:CONFIRM_LEN], raw[CONFIRM_LEN:]
+
+
+def derive_endpoint_tag(root, call_id: bytes, epoch: int, seq: int,
+                       destination: str, from_initiator: bool) -> bytes:
+    """Authenticate one media-endpoint announcement.
+
+    A peer whose local I2P session is replaced gets a new transient
+    destination, and the other side has to be told where to send. That
+    announcement travels the XMPP control channel, so arriving over it proves
+    nothing on its own: the same channel carries anything the server or a
+    peer's compromised account can put there.
+
+    The tag is derived from the committed epoch root, which exists only
+    because the hybrid X448 + ML-KEM agreement succeeded, so producing one
+    requires the media secret rather than access to the signalling path. It
+    is the same key hierarchy and the same construction as
+    derive_confirmations -- deliberately, because a second trust model for
+    endpoints would be a second thing to get wrong.
+
+    Everything that decides whether the announcement should be acted on is
+    inside the tag:
+
+      call_id      the exact call instance, so a tag cannot cross calls
+      epoch        the media generation, so it cannot outlive a rekey
+      seq          strictly increasing, so an older announcement cannot
+                   replace a newer endpoint or roll one back
+      destination  the endpoint itself, so it cannot be substituted
+      direction    which side sent it, so it cannot be reflected back
+    """
+    info = (_LABEL_ENDPOINT + _lp(call_id) + _u64(epoch) + _u64(seq)
+            + _lp(destination.encode("ascii"))
+            + struct.pack(">B", 1 if from_initiator else 0))
+    return _hkdf(bytes(root), call_id, info, CONFIRM_LEN)
 
 
 def ratchet_key(key) -> bytearray:
@@ -2652,6 +2703,14 @@ class VoiceCallSession:
         self._rx_last_datagram = None   # monotonic: anything at the socket
         self._rx_last_frame = None      # monotonic: anything that authenticated
         self._rx_degraded = False       # a warning is outstanding
+        #: Media-endpoint announcements. Both counters are per call, so they
+        #: cannot be carried into the call that replaces this one.
+        self._endpoint_seq_sent = 0     # last sequence we announced
+        self._endpoint_seq_seen = 0     # highest we have accepted
+        self._recover_task = None
+        self._recover_attempts = 0
+        self._recovering = False        # a rebuild is genuinely in flight
+        self.on_media_stalled = None    # set by the manager, call_id-bound
         self._accept_task = None
         self._prewarm = None
 
@@ -3694,6 +3753,135 @@ class VoiceCallSession:
         if self._running:
             self._signal_stream_lost("peer closed the media stream")
 
+    # -- media endpoint announcements --------------------------------------
+
+    def _endpoint_tag(self, epoch: int, seq: int, destination: str,
+                      from_initiator: bool) -> bytes:
+        """Tag an announcement under the committed epoch root."""
+        with self._key_lock:
+            if self.schedule.epoch != epoch:
+                raise FrameError("endpoint epoch %d is not the committed one"
+                                 % epoch)
+            return derive_endpoint_tag(self.schedule.current_root(),
+                                       self.call_id, epoch, seq, destination,
+                                       from_initiator)
+
+    def build_endpoint_announcement(self):
+        """Describe our current media endpoint.  Returns (epoch, seq, dest, tag).
+
+        The sequence advances on every announcement and is inside the tag, so
+        the peer can order two announcements that overtake each other on the
+        control channel and refuse the older one.
+        """
+        destination = self._our_dest
+        if not destination:
+            raise FrameError("no local media destination to announce")
+        with self._key_lock:
+            epoch = self.schedule.epoch
+        self._endpoint_seq_sent += 1
+        seq = self._endpoint_seq_sent
+        return epoch, seq, destination, self._endpoint_tag(
+            epoch, seq, destination, self.is_initiator)
+
+    def accept_endpoint(self, epoch: int, seq: int, destination: str,
+                        tag: bytes) -> str:
+        """Validate a peer announcement and adopt it.  Returns a reason string.
+
+        "ok" means the peer destination was replaced. Everything else names
+        why it was refused, so a refusal is diagnosable rather than silent.
+
+        The order is deliberate: everything cheap and non-cryptographic first,
+        the tag last, and no state moves until the tag verifies. A forged or
+        replayed announcement therefore costs nothing and changes nothing.
+        """
+        if self.state != CallState.ACTIVE:
+            return "call is not active"
+        if seq <= self._endpoint_seq_seen:
+            # Covers replays, reordering on the control channel, and a
+            # deliberate attempt to reinstate an endpoint we have moved past.
+            return "stale sequence %d (already at %d)" % (
+                seq, self._endpoint_seq_seen)
+        try:
+            destination = i2p_public_destination(destination)
+        except ValueError:
+            return "unparseable destination"
+        if destination == self._peer_dest:
+            return "endpoint unchanged"
+        try:
+            expected = self._endpoint_tag(epoch, seq, destination,
+                                          not self.is_initiator)
+        except FrameError as exc:
+            return str(exc)
+        except Exception:
+            return "no committed media key"
+        if not hmac.compare_digest(bytes(tag or b""), expected):
+            return "authentication failed"
+
+        self._peer_dest = destination
+        self._endpoint_seq_seen = seq
+        self._refresh_datagram_header()
+        return "ok"
+
+    async def rebuild_media_endpoint(self) -> str:
+        """Replace the local SAM datagram session.  Returns the new destination.
+
+        The old session is closed first and unconditionally. Leaving it open
+        would hold a router-side session and a bound UDP socket for the rest
+        of the call, and create_session() overwrites both handles, so anything
+        not closed here is leaked rather than merely idle.
+
+        Nothing cryptographic changes: the media keys, the epoch, the replay
+        windows and the call identity all survive. Only where our packets
+        arrive changes, which is why this needs an announcement rather than a
+        rekey.
+        """
+        if self._transport_mode != VOICE_TRANSPORT_DATAGRAM:
+            raise RuntimeError("only the datagram transport has an endpoint "
+                               "that can be replaced")
+        self._close_datagram_transport()
+        self._our_dest = None
+        destination = await self.create_session()
+        if not self._running:
+            # Teardown ran while the router was building tunnels. Do not leave
+            # the replacement behind.
+            self._close_datagram_transport()
+            raise RuntimeError("call ended while the media path was rebuilding")
+        await self.open_datagram_endpoint()
+        now = time.monotonic()
+        # The new path has had no chance to deliver anything yet; judging it
+        # by the old clock would declare it dead the moment it opened.
+        self._rx_last_datagram = now
+        self._rx_last_frame = now
+        return destination
+
+    def _close_datagram_transport(self) -> None:
+        """Release the datagram endpoint and its SAM session.  Idempotent."""
+        if self._dgram_transport is not None:
+            try:
+                self._dgram_transport.close()
+            except Exception:
+                pass
+            self._dgram_transport = None
+            self._dgram_sock = None       # closed with the transport
+        elif self._dgram_sock is not None:
+            try:
+                self._dgram_sock.close()
+            except Exception:
+                pass
+            self._dgram_sock = None
+        self._dgram_send_header = None
+        release = _HOST.get("sam_release")
+        control, self._sam_control = self._sam_control, None
+        if control is not None:
+            try:
+                if release is not None:
+                    release(control)
+                else:
+                    control.close()
+            except Exception:
+                pass
+        self._sam_session_id = None
+
     # -- inbound liveness --------------------------------------------------
 
     def _sam_control_state(self) -> str:
@@ -3757,10 +3945,16 @@ class VoiceCallSession:
         exists, so `sent` keeps climbing over a dead path. Only the absence of
         inbound traffic shows it, and before this nothing was watching.
 
-        Two bounded stages. A warning names the failing stage once -- not once
-        per tick, which is how the old debug-only message printed 116 times --
-        and the call is declared lost at VOICE_RX_DEAD_S through the existing
+        Three bounded stages. A warning names the failing stage once -- not
+        once per tick, which is how the old debug-only message printed 116
+        times. Recovery is then attempted, and only if that is impossible or
+        exhausted is the call declared lost through the existing
         _signal_stream_lost path, which ends it and tells the peer.
+
+        Recovery can extend the deadline, never remove it: the dead check is
+        suspended only while a rebuild is genuinely in flight, and the rebuild
+        itself is bounded by VOICE_RECOVER_TIMEOUT_S and by a fixed number of
+        attempts.
         """
         try:
             while self._running:
@@ -3773,17 +3967,25 @@ class VoiceCallSession:
                 if idle < VOICE_RX_WARN_S:
                     if self._rx_degraded:
                         self._rx_degraded = False
+                        self._recover_attempts = 0
                         _print("[voice] inbound audio recovered")
+                    continue
+                if self._recovering:
+                    # A rebuild owns the deadline while it runs. It cannot run
+                    # forever -- it is wrapped in wait_for -- and when it ends
+                    # this check resumes on the next tick.
+                    continue
+                if not self._rx_degraded:
+                    self._rx_degraded = True
+                    _print("[voice] no inbound audio for %ds — %s"
+                           % (int(idle), self._rx_diagnosis()))
+                if self._request_recovery():
                     continue
                 if idle >= VOICE_RX_DEAD_S:
                     self._signal_stream_lost(
                         "no media received for %ds — %s"
                         % (int(idle), self._rx_diagnosis()))
                     return
-                if not self._rx_degraded:
-                    self._rx_degraded = True
-                    _print("[voice] no inbound audio for %ds — %s"
-                           % (int(idle), self._rx_diagnosis()))
         except asyncio.CancelledError:
             raise
         except Exception as exc:
@@ -3791,6 +3993,44 @@ class VoiceCallSession:
             # must not fail silently either: a dead watchdog means the very
             # condition it exists to catch would go unnoticed again.
             _print("[voice] media watchdog stopped: %s" % _san(str(exc), 120))
+
+    def _recovery_possible(self) -> bool:
+        """Whether replacing our endpoint could plausibly help.
+
+        Only the datagram transport has an endpoint to replace, and only a
+        path delivering nothing at all is one a new endpoint could fix. If
+        datagrams are arriving and failing to authenticate, the transport is
+        working and rebuilding it would discard a healthy path for nothing.
+        """
+        if self._transport_mode != VOICE_TRANSPORT_DATAGRAM:
+            return False
+        if self._recover_attempts >= VOICE_RECOVER_ATTEMPTS:
+            return False
+        if self._rx_last_datagram is not None and self._rx_last_frame is not None \
+                and self._rx_last_datagram > self._rx_last_frame:
+            return False
+        return self.state == CallState.ACTIVE
+
+    def _request_recovery(self) -> bool:
+        """Ask the manager to rebuild the media path.  True if it was asked."""
+        if not self._recovery_possible():
+            return False
+        callback = self.on_media_stalled
+        if callback is None:
+            return False
+        self._recovering = True
+        self._recover_attempts += 1
+        try:
+            callback(self.peer, self.call_id)
+        except Exception as exc:
+            self._recovering = False
+            self._vlog("media recovery could not start: %s"
+                       % _san(str(exc), 120))
+            return False
+        return True
+
+    def _vlog(self, message: str) -> None:
+        _print("[voice] %s" % message)
 
     def _drain_buffer(self, buf: bytearray) -> None:
         """Parse, authenticate and enqueue every complete frame in buf.
@@ -4153,7 +4393,7 @@ class VoiceCallSession:
 
         # 4. Cancel every asyncio task this session owns.
         for name in ("_prewarm", "_reader_task", "_accept_task",
-                     "_rx_watchdog_task"):
+                     "_rx_watchdog_task", "_recover_task"):
             task = getattr(self, name, None)
             if task is not None and not task.done():
                 task.cancel()
@@ -4170,20 +4410,7 @@ class VoiceCallSession:
             pass
 
         # 6. Close the media transport, then the SAM session.
-        if self._dgram_transport is not None:
-            try:
-                self._dgram_transport.close()
-            except Exception:
-                pass
-            self._dgram_transport = None
-            self._dgram_sock = None       # closed with the transport
-        elif self._dgram_sock is not None:
-            try:
-                self._dgram_sock.close()
-            except Exception:
-                pass
-            self._dgram_sock = None
-        self._dgram_send_header = None
+        self._close_datagram_transport()
         if self._writer is not None:
             try:
                 self._writer.close()
@@ -4200,7 +4427,7 @@ class VoiceCallSession:
                     except Exception:
                         pass
         self._media_sock = None
-        self._sam_control = None
+        self._sam_control = None       # _close_datagram_transport cleared it
 
         # 7. Destroy every key last.
         try:
@@ -4616,6 +4843,9 @@ class VoiceCallManager:
             loop, dispatch=self._on_control_command)
         self._control_limiter = RateLimiter(VOICE_MAX_CONTROL_PER_MIN)
         self._rekey_limiter = RateLimiter(VOICE_MAX_REKEY_PER_MIN)
+        # Endpoint changes are rare by nature. A tighter bound than the
+        # general control limiter keeps a peer from forcing endpoint churn.
+        self._endpoint_limiter = RateLimiter(VOICE_MAX_MEDIAPATH_PER_MIN)
         self.debug = False
         self._debug_t0 = {}
 
@@ -4862,6 +5092,7 @@ class VoiceCallManager:
                    % _san(str(exc), 200))
             return False
         session.on_stream_lost = self._handle_stream_lost
+        session.on_media_stalled = self._handle_media_stalled
         session.otr_material = material
         session.debug_binding = self.debug
         session.transition(CallState.INVITING)
@@ -5041,6 +5272,7 @@ class VoiceCallManager:
             "REKEYACK": self._on_rekey_ack,
             "REKEYCOMMIT": self._on_rekey_commit,
             "END": self._on_end,
+            "MEDIAPATH": self._on_media_path,
         }
         handler = handlers.get(verb)
         if handler is None:
@@ -5121,6 +5353,7 @@ class VoiceCallManager:
             self._vdbg(peer, "could not build session: %s" % _san(str(exc), 120))
             return
         session.on_stream_lost = self._handle_stream_lost
+        session.on_media_stalled = self._handle_media_stalled
         session.otr_material = material
         session.debug_binding = self.debug
         session._peer_dest = caller_dest
@@ -5711,6 +5944,109 @@ class VoiceCallManager:
         # and there is only one of those.
         if self._lag_task is None or self._lag_task.done():
             self._lag_task = asyncio.ensure_future(self._loop_lag_monitor())
+
+    # -- media endpoint recovery -------------------------------------------
+
+    def _handle_media_stalled(self, peer: str, call_id: bytes) -> None:
+        """The session's watchdog wants its media endpoint replaced.
+
+        Called on the event loop from the watchdog. Starts at most one
+        recovery task per session; the session already counted the attempt
+        and set _recovering, and the task clears it however it ends.
+        """
+        session = self._calls.get(peer)
+        if session is None or session.call_id != call_id:
+            return
+        existing = session._recover_task
+        if existing is not None and not existing.done():
+            return
+        session._recover_task = self.loop.create_task(
+            self._recover_media(peer, call_id))
+
+    async def _recover_media(self, peer: str, call_id: bytes) -> None:
+        """Replace our media endpoint and tell the peer where it moved.
+
+        Bound to the call_id at every step that can outlive an await: a
+        rebuild takes as long as an I2P tunnel build, and the call it started
+        for can end, be replaced, or be torn down while the router works.
+        Nothing here may act on the call that replaced this one.
+        """
+        session = self._calls.get(peer)
+        if session is None or session.call_id != call_id:
+            return
+        _print("[voice] rebuilding the media path (%d/%d) — this takes as "
+               "long as a new I2P tunnel"
+               % (session._recover_attempts, VOICE_RECOVER_ATTEMPTS))
+        # The deadline is handed back on EVERY exit, including cancellation.
+        # A suspended deadline that is never returned would leave the call
+        # dead and silent forever, which is the condition all of this exists
+        # to remove -- so it is structural rather than something to get right
+        # at each of five return paths.
+        try:
+            try:
+                await asyncio.wait_for(session.rebuild_media_endpoint(),
+                                       timeout=VOICE_RECOVER_TIMEOUT_S)
+            except asyncio.CancelledError:
+                raise
+            except asyncio.TimeoutError:
+                self._vdbg(peer, "media rebuild timed out")
+                return
+            except Exception as exc:
+                self._vdbg(peer, "media rebuild failed: %s"
+                           % _san(str(exc), 120))
+                return
+
+            # Re-resolve: the call may have ended or been replaced while the
+            # router was building tunnels.
+            session = self._calls.get(peer)
+            if session is None or session.call_id != call_id:
+                return
+            try:
+                epoch, seq, destination, tag = \
+                    session.build_endpoint_announcement()
+            except Exception as exc:
+                self._vdbg(peer, "endpoint announcement failed: %s"
+                           % _san(str(exc), 120))
+                return
+            self._signal(peer, "MEDIAPATH", (call_id.hex(), epoch, seq,
+                                             destination, tag.hex()))
+            self._vdbg(peer, "announced media endpoint seq=%d epoch=%d"
+                       % (seq, epoch))
+        finally:
+            self._finish_recovery(peer, call_id)
+
+    def _finish_recovery(self, peer: str, call_id: bytes) -> None:
+        """Hand the deadline back to the watchdog.  Idempotent."""
+        session = self._calls.get(peer)
+        if session is None or session.call_id != call_id:
+            return
+        session._recovering = False
+
+    async def _on_media_path(self, peer: str, fields) -> None:
+        """The peer's media endpoint moved.  Adopt it if it authenticates."""
+        if len(fields) != 5:
+            raise SignalError("MEDIAPATH takes 5 fields")
+        session = self._call_for(peer, fields[0])
+        if session is None:
+            return
+        if not self._endpoint_limiter.allow(peer):
+            self._vdbg(peer, "endpoint announcement rate limit hit — dropped")
+            return
+        epoch = _epoch_field(fields[1])
+        seq = _epoch_field(fields[2])
+        destination = fields[3]
+        if not destination or len(destination) > 2048:
+            self._vdbg(peer, "MEDIAPATH carried no usable destination")
+            return
+        tag = _hex_field(fields[4], CONFIRM_LEN)
+        reason = session.accept_endpoint(epoch, seq, destination, tag)
+        if reason != "ok":
+            self._vdbg(peer, "MEDIAPATH seq=%d rejected: %s"
+                       % (seq, _san(reason, 80)))
+            return
+        _print("[voice] %s moved its media path — audio should resume"
+               % _san(peer, 64))
+        self._vdbg(peer, "adopted endpoint seq=%d epoch=%d" % (seq, epoch))
 
     def _handle_stream_lost(self, peer: str, call_id: bytes, why: str) -> None:
         """Media path died by itself.
