@@ -2212,6 +2212,24 @@ class JitterBuffer:
                     self._seqs.discard(stale_seq)
                     _wipe(stale_pcm)
                     self.stats["drift"] += 1
+                    # Do NOT let our own shedding look like transit loss.
+                    #
+                    # `gap` below is computed from the sequence numbers, so a
+                    # shed frame left a hole and the playback worker answered
+                    # it with FEC or concealment -- writing TWO frames to the
+                    # device for one pop. Each write blocks about a frame
+                    # period, so the pop rate halved, the buffer grew, and the
+                    # shedder fired harder: measured at 13.0 pops/s against
+                    # 16.2 arriving, shedding 19.8% and synthesising
+                    # replacements for the very frames it had just discarded.
+                    #
+                    # Concealment exists for frames that never arrived. These
+                    # arrived and were dropped deliberately to cut latency, so
+                    # spending more device time reconstructing them is exactly
+                    # backwards. Advancing the marker says "consumed, not
+                    # lost".
+                    if stale_seq > self._last_played:
+                        self._last_played = stale_seq
                 if shed > 1:
                     self.stats["burst_drain"] += 1
 
