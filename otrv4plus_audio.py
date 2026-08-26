@@ -844,6 +844,13 @@ def make_speaker_compressor() -> Compressor:
 
     Applied on playback rather than capture so it fixes what this device
     hears regardless of what the peer is running.
+
+    NOTE on ``OTRV4PLUS_SPEAKER_MAKEUP_DB``: it REPLACES the automatic makeup,
+    it does not add to it. Left unset the compressor computes its own from the
+    threshold and ratio, which at the shipped -30 dBFS and 4:1 comes to
+    22.5 dB. So setting a plausible-looking 12 makes a call QUIETER, not
+    louder -- measured at +0.9 dB of output RMS against +7.4 dB for the
+    default. Anything below the automatic value turns the compressor down.
     """
     raw = os.environ.get("OTRV4PLUS_SPEAKER_MAKEUP_DB", "").strip()
     makeup = _env_float("OTRV4PLUS_SPEAKER_MAKEUP_DB", 0.0, 0.0, 30.0) \

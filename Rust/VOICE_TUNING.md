@@ -1,5 +1,49 @@
 # Voice tuning over I2P
 
+## Making a call louder
+
+Measured on a 3-second speech-shaped signal peaking at -14 dBFS, through the
+real playback chain:
+
+| setting | output RMS | output peak | vs input |
+|---|---|---|---|
+| as shipped | -17.5 dBFS | -3.5 dBFS | **+7.4 dB** |
+| `SPEAKER_MAKEUP_DB=12` | -24.0 dBFS | -12.9 dBFS | +0.9 dB |
+| `SPEAKER_MAKEUP_DB=18` | -20.0 dBFS | -7.3 dBFS | +4.9 dB |
+| `SPEAKER_MAKEUP_DB=24` | -16.7 dBFS | -2.5 dBFS | +8.2 dB |
+| `SPEAKER_GAIN=2.0` | -12.8 dBFS | -1.0 dBFS | +12.1 dB |
+
+Two things fall out of that table.
+
+**The digital path is nearly maxed already.** The default output peaks at
+-3.5 dBFS, so there is about 3.5 dB of headroom before the limiter starts
+working for a living. The compressor is doing +7.4 dB unaided.
+
+**`OTRV4PLUS_SPEAKER_MAKEUP_DB` replaces the automatic makeup rather than
+adding to it.** Unset, the compressor derives 22.5 dB from its threshold and
+ratio. Setting 12 therefore makes the call *quieter*. Only values above ~22
+increase loudness, and above 24 the limiter takes back what you added.
+
+So if a call is still too quiet, the cause is usually **which Android stream
+it is on**, not the DSP:
+
+1. **Press volume-up during an active call.** Playback declares
+   `VOICE_COMMUNICATION`, which puts it on the *call* volume stream — a
+   different slider from media, and often left low. This costs nothing and
+   fixes it more often than any setting here.
+2. **`OTRV4PLUS_AUDIO_USAGE=media`** routes to the media stream instead, which
+   is louder on most handsets and avoids an earpiece route. **It costs the
+   platform echo canceller**, so expect echo if both ends are on speaker in
+   one room. On a device that routes voice-communication to the earpiece this
+   is genuinely the better trade.
+3. Only then reach for `OTRV4PLUS_SPEAKER_GAIN` (try 1.5 before 2.0). It is
+   blunt: it drives the limiter, which then attenuates the whole frame
+   including the quiet parts the compressor just lifted.
+
+Every one of these is **local**. None changes the wire, and the two phones need
+not agree.
+
+
 > **Playback burst alignment (v10.12.0).** Before touching anything below, know
 > that a device-side mismatch cost more audio than every setting here combined.
 > A handset reported `framesPerBurst=1920` at 16 kHz — a 120 ms transfer unit —

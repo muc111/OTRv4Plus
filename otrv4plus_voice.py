@@ -3505,6 +3505,34 @@ class VoiceCallSession:
         except Exception:
             pass
 
+        # Loudness, spelled out, because "it is too quiet" has one digital
+        # answer and two Android ones and they are not interchangeable. The
+        # compressor is already worth about +7 dB of RMS and leaves only a few
+        # dB of headroom, so when a call is still quiet the cause is usually
+        # the stream it is routed to rather than anything measured here.
+        try:
+            comp = self._speaker_comp
+            gain = self._speaker_gain
+            usage = _audio.playback_usage()
+            on_call_stream = (usage == getattr(
+                _audio, "AAUDIO_USAGE_VOICE_COMMUNICATION", None))
+            _print("[voice] loudness: compressor %s (makeup %.1f dB, %.0f:1 "
+                   "above %.0f dBFS), speaker gain x%.2f"
+                   % ("on" if getattr(comp, "enabled", False) else "OFF",
+                      getattr(comp, "makeup_db", 0.0),
+                      getattr(comp, "ratio", 1.0),
+                      getattr(comp, "threshold", 0.0),
+                      getattr(gain, "gain", 1.0)))
+            if on_call_stream:
+                _print("[voice] loudness: routed to the CALL stream — the "
+                       "volume keys during a call")
+                _print("[voice]   change this, not the media volume. For the "
+                       "louder media route:")
+                _print("[voice]   OTRV4PLUS_AUDIO_USAGE=media  (costs the "
+                       "platform echo canceller)")
+        except Exception:
+            pass
+
     async def start_audio(self) -> None:
         """Bring the media path up.
 
