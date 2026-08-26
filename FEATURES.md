@@ -1,6 +1,6 @@
 # Features
 
-What's implemented as of v10.12.0.
+What's implemented as of v10.13.0.
 
 ## Cryptography
 
@@ -12,9 +12,10 @@ What's implemented as of v10.12.0.
 | X448 | Ephemeral DH (DAKE and ratchet) | `x448` 0.6 (pure Rust) — both the DAKE and the double-ratchet DH run on this crate as of v10.6.21 |
 | ML-KEM-1024 | Post-quantum KEM (DAKE brace key, ratchet rekey, hybrid SMP binding) | `pqcrypto-mlkem` 0.1.1 (FIPS 203) — pure Rust.  v10.7.3 moved `MLKEM1024BraceKEM` off the `otr4_crypto_ext` C extension onto Rust via `src/mlkem.rs`; v10.7.4 (5.3k) deleted the C extension. |
 | ML-DSA-87 | Post-quantum signature (hybrid DAKE auth + per-step hybrid SMP signatures) | `pqcrypto-mldsa` 0.1.2 (FIPS 204) — pure Rust (v10.6.18 retired the `otr4_mldsa_ext` C extension). |
-| SHAKE-256 | KDF, ring sig challenge, transcript hash, **and the SMP passphrase→scalar derivation (50,000 iterated rounds)** | `sha3` 0.10 |
+| SHAKE-256 | KDF, ring sig challenge, transcript hash; also the SMP passphrase→scalar stretch on **legacy** wire version 0x02 (50,000 iterated rounds) | `sha3` 0.10 |
 | AES-256-GCM | Message encryption + SMP-secrets store + secure-file-destroy | `aes-gcm` 0.10 via Rust `Rust/src/aead.rs` PyO3 bindings (v10.6.19 retired the `cryptography.AESGCM` runtime uses; v10.7.4 (5.3i-D) moved off the deprecated `from_slice` helper to `new_from_slice`). |
-| Argon2id | **At-rest only**: the SMP-secrets file and key storage on disk | Python `argon2-cffi` in `otrv4+.py::_derive_key`, **falling back to `hashlib.scrypt` when it is not installed** — that fallback now prints a warning naming the reason, and `kdf_backend()` reports which one was actually used. There is no Argon2 in the Rust core, and `src/smp_vault.rs` is an in-memory zeroizing store with no KDF in it at all — an earlier version of this table said otherwise. |
+| Argon2id (SMP) | **The SMP passphrase→scalar derivation on wire version 0x03**, salted with the session ID and both fingerprints | `argon2` 0.5 (pure Rust) in `Rust/src/smp.rs::stretch_argon2id`, m=64 MiB / t=3 / p=4. New at v10.13.0; the 0x02 SHAKE stretch above is retained for peers that have not updated. |
+| Argon2id (at rest) | The SMP-secrets file and key storage on disk | Python `argon2-cffi` in `otrv4+.py::_derive_key`, same cost parameters, **falling back to `hashlib.scrypt` when it is not installed** — that fallback prints a warning naming the reason, and `kdf_backend()` reports which one was actually used. `src/smp_vault.rs` remains an in-memory zeroizing store with no KDF in it; a table here once said otherwise. |
 | SHA3-512 | Fingerprint hash | `hashlib` (Python stdlib) |
 | HKDF-SHA512 | Voice key schedule (root, media keys, confirmation, endpoint tags) | Python `cryptography` — **not** the Rust core |
 | X448 (voice) | Ephemeral DH for the voice key exchange | Python `cryptography` — **not** the Rust core |

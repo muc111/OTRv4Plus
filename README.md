@@ -6,7 +6,7 @@
 <p align="center"><strong>Post-quantum hybrid encryption for Off The Record (OTR) chat <em>and voice calls</em> over IRC and XMPP. Experimental, unaudited research prototype.</strong></p>
 
 <p align="center">
-<code>v10.12.0 · Rust crypto core · hybrid PQC SMP (ML-KEM-1024 + ML-DSA-87) · voice (X448 + ML-KEM-1024, AES-256-GCM) · I2P SAM · AAudio · TUI</code>
+<code>v10.13.0 · Rust crypto core · hybrid PQC SMP (ML-KEM-1024 + ML-DSA-87) · voice (X448 + ML-KEM-1024, AES-256-GCM) · I2P SAM · AAudio · TUI</code>
 </p>
 
 ---
@@ -768,7 +768,7 @@ Signalling for a call (INVITE/ACCEPT/CONFIRM/REKEY/MEDIAPATH/END) rides the OTR
 channel in the box above and is never sent in the clear; only media uses the
 datagram transport.
 
-**One cryptographic surface for chat.** The Python `cryptography` library was removed from the messaging path at v10.7 and the last C extensions (`otr4_crypto_ext`, `otr4_ed448_ct`, `otr4_mldsa_ext`) retired at v10.7.5. Every chat operation — ML-KEM-1024 (FIPS 203), ML-DSA-87 (FIPS 204), Ed448 and X448 (`ed448-goldilocks-plus`, `x448`), AES-256-GCM (`aes-gcm`) and SHAKE-256 (`sha3`) — runs inside `otrv4_core`. (An earlier version of this paragraph also claimed an Argon2id KDF in there. There is none: Argon2 is used only Python-side for at-rest storage, and `smp_vault.rs` is an in-memory zeroizing store with no KDF.) **Voice is the exception**: its AES-256-GCM, HKDF-SHA512 and X448 come from the Python `cryptography` library, so on the voice path there *are* two implementations of AES-256-GCM in the tree. That is a documented gap, not a design intent. Wiping uses Rust `zeroize::Zeroize` on Rust-owned buffers and `ctypes.memset` for the bytearrays still held Python-side.
+**One cryptographic surface for chat.** The Python `cryptography` library was removed from the messaging path at v10.7 and the last C extensions (`otr4_crypto_ext`, `otr4_ed448_ct`, `otr4_mldsa_ext`) retired at v10.7.5. Every chat operation — ML-KEM-1024 (FIPS 203), ML-DSA-87 (FIPS 204), Ed448 and X448 (`ed448-goldilocks-plus`, `x448`), AES-256-GCM (`aes-gcm`), SHAKE-256 (`sha3`) and, as of v10.13.0, Argon2id (`argon2`) for the SMP passphrase stretch — runs inside `otrv4_core`. (An earlier version of this paragraph claimed an Argon2id KDF protecting the SMP *vault*. That was wrong when written: `smp_vault.rs` is an in-memory zeroizing store with no KDF, and it still is. The Argon2 in the core is in `smp.rs`, and it arrived at v10.13.0.) **Voice is the exception**: its AES-256-GCM, HKDF-SHA512 and X448 come from the Python `cryptography` library, so on the voice path there *are* two implementations of AES-256-GCM in the tree. That is a documented gap, not a design intent. Wiping uses Rust `zeroize::Zeroize` on Rust-owned buffers and `ctypes.memset` for the bytearrays still held Python-side.
 
 ## Key exchange (DAKE)
 
@@ -920,7 +920,7 @@ assert the valid one still works.
 
 6. **Wire-incompatible with stock OTRv4.** Implementations such as `pidgin-otr4` and CoyIM cannot talk to OTRv4+. The ML-DSA-87 extension, the ML-KEM-1024 brace key, and the SHAKE-256 transcript hashing are OTRv4+ additions and there is no negotiation path. Both peers must run OTRv4+.
 
-7. **Voice is the newest and least-tested surface.** The hybrid voice key exchange, two-phase rekey, and AAudio backend landed in v10.11.0; the security fixes above landed in v10.11.1. v10.12.0 added liveness detection and authenticated endpoint recovery around it. Coverage is 239 Python tests in the root voice/audio suites (113 adversarial voice-protocol, 61 audio backend, 48 voice/audio integration, 17 MAC-key-revelation) inside a repo total of 1483 passed / 43 skipped / 1 xfailed, plus 65 Rust tests. Two-way audio has been verified live between two Android phones over I2P, with mid-call hybrid rekeys, a 4-hour soak, and a Wi-Fi-to-mobile transition from which authenticated media recovered in 51 s. That is still one pair of devices on a small number of network paths — unit tests and a working call are not the same as review. Treat voice as more experimental than chat, which is itself marked experimental.
+7. **Voice is the newest and least-tested surface.** The hybrid voice key exchange, two-phase rekey, and AAudio backend landed in v10.11.0; the security fixes above landed in v10.11.1. v10.12.0 added liveness detection and authenticated endpoint recovery around it. Coverage is 239 Python tests in the root voice/audio suites (113 adversarial voice-protocol, 61 audio backend, 48 voice/audio integration, 17 MAC-key-revelation) inside a repo total of 1633 passed / 43 skipped / 1 xfailed, plus 77 Rust tests. Two-way audio has been verified live between two Android phones over I2P, with mid-call hybrid rekeys, a 4-hour soak, and a Wi-Fi-to-mobile transition from which authenticated media recovered in 51 s. That is still one pair of devices on a small number of network paths — unit tests and a working call are not the same as review. Treat voice as more experimental than chat, which is itself marked experimental.
 
 8. **Termux/aarch64 specific build flags.** Both `pqcrypto-mlkem` and `pqcrypto-mldsa` are pinned to `default-features = false, features = ["std"]` because their NEON-optimised C paths trigger `SIGILL` on some aarch64 phones. The portable C reference is correct on any platform; the speed difference is invisible at session scale.
 

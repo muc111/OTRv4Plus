@@ -1066,6 +1066,26 @@ def _generate_instance_tag() -> int:
             return tag
 
 
+SMP_VERSION_MISMATCH_HELP = (
+    "⚠ SMP stopped: version mismatch. The two devices are running different "
+    "OTRv4+ builds, so they derive different secrets from the same "
+    "passphrase.\n"
+    "   This is NOT a wrong passphrase. Update both devices to the same "
+    "version (git pull, then rebuild the Rust core) and run  /smp start  "
+    "again."
+)
+
+
+def _is_smp_version_mismatch(exc: BaseException) -> bool:
+    """Recognise the Rust core's SMP version-mismatch abort.
+
+    Matched on the error text because PyO3 raises it as a plain ValueError.
+    Kept deliberately narrow: this only changes which local help line is
+    printed, never whether anything is trusted or verified.
+    """
+    return "version mismatch" in str(exc).lower()
+
+
 class OTRv4TLV:
     """Single TLV (Type-Length-Value) record inside an OTRv4 encrypted message.
 
@@ -1442,7 +1462,7 @@ class OTRv4DataMessage:
             raise ValueError(f"Failed to decode message: {e }")
 
 
-VERSION = "OTRv4+ 10.12.0"
+VERSION = "OTRv4+ 10.13.0"
 
 if not hasattr(hashlib, "sha3_512"):
     raise RuntimeError(
@@ -6656,9 +6676,19 @@ class EnhancedOTRSession:
             self.auto_smp_started = False
             self.auto_smp_completed = False
             self.smp_step = 0
-            self._smp_progress_notify(
-                0, 4, f"❌ SMP error: {str (e )[:60 ]}", role=None, color="red"
-            )
+            # A version mismatch is the one SMP failure that is NOT about the
+            # passphrase, and it is the whole reason SMP carries a version
+            # byte.  The generic handler truncates to 60 characters, which
+            # would cut the message off before it says what to do about it.
+            if _is_smp_version_mismatch(e):
+                self._smp_progress_notify(
+                    0, 4, SMP_VERSION_MISMATCH_HELP,
+                    role=None, color="yellow", final=True,
+                )
+            else:
+                self._smp_progress_notify(
+                    0, 4, f"❌ SMP error: {str (e )[:60 ]}", role=None, color="red"
+                )
             return
 
         if resp_bytes is not None and out_type is not None:

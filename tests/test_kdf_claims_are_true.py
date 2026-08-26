@@ -10,6 +10,11 @@ and not checked.
 
 A wrong KDF claim is worse than a missing one -- it invites a reader to assume
 a passphrase is protected by a memory-hard function when it is not.
+
+v10.13.0 then made the claim true, in the one place it actually mattered: SMP
+wire version 0x03 derives the secret scalar with Argon2id, salted with the
+session id and both fingerprints.  The guards below were written to fire on
+exactly that change, and they did; they now pin the new shape instead.
 """
 
 import os
@@ -30,19 +35,31 @@ def _rust_sources():
             for f in os.listdir(d) if f.endswith(".rs")}
 
 
-class TestArgon2IsNotInTheRustCore:
+class TestArgon2IsInTheRustCore:
 
-    def test_it_is_not_a_crate_dependency(self):
+    def test_it_is_a_crate_dependency(self):
         cargo = open(os.path.join(ROOT, "Rust", "Cargo.toml"),
                      encoding="utf-8").read()
-        assert not re.search(r"(?m)^\s*argon2\s*=", cargo), (
-            "argon2 is now a Rust dependency; the documentation that says it "
-            "is not needs updating with it")
+        assert re.search(r"(?m)^\s*argon2\s+=", cargo), (
+            "argon2 is no longer a Rust dependency -- SMP 0x03 cannot work "
+            "without it, and it must not silently fall back to 0x02")
 
-    def test_no_rust_source_uses_it(self):
-        users = [f for f, src in _rust_sources().items()
-                 if "argon2" in src.lower()]
-        assert users == [], "argon2 appears in %s" % users
+    def test_it_is_used_by_smp_and_not_by_the_vault(self):
+        users = sorted(f for f, src in _rust_sources().items()
+                       if "argon2" in src.lower())
+        assert users == ["smp.rs"], (
+            "argon2 should appear in smp.rs and nowhere else; found %s" % users)
+
+    def test_the_low_level_api_is_used_not_the_phc_string(self):
+        """A wire protocol needs raw bytes both peers agree on.
+
+        `hash_password` returns a PHC string carrying its own encoded salt and
+        parameters; two peers formatting it differently would derive different
+        scalars.  `hash_password_into` writes the raw output.
+        """
+        smp = _rust_sources()["smp.rs"]
+        assert "hash_password_into" in smp
+        assert "PasswordHasher" not in smp
 
     def test_the_vault_has_no_kdf(self):
         src = _rust_sources()["smp_vault.rs"].lower()
@@ -58,12 +75,21 @@ class TestTheDocumentationSaysSo:
         return open(os.path.join(ROOT, name), encoding="utf-8").read()
 
     def test_features_no_longer_puts_argon2_in_the_vault(self):
-        line = [l for l in self._doc("FEATURES.md").split("\n")
-                if l.startswith("| Argon2id ")]
-        assert line, "the Argon2 row vanished; it should say where it IS used"
-        assert "smp_vault.rs`. |" not in line[0], (
-            "FEATURES.md still credits src/smp_vault.rs with an Argon2 KDF")
-        assert "At-rest" in line[0]
+        rows = [l for l in self._doc("FEATURES.md").split("\n")
+                if l.startswith("| Argon2id")]
+        assert rows, "the Argon2 rows vanished; they should say where it IS used"
+        for row in rows:
+            assert "smp_vault.rs`. |" not in row, (
+                "FEATURES.md still credits src/smp_vault.rs with an Argon2 KDF")
+
+    def test_features_separates_the_smp_and_at_rest_uses(self):
+        """Two different KDFs doing two different jobs; conflating them is how
+        the false claim got written in the first place."""
+        rows = [l for l in self._doc("FEATURES.md").split("\n")
+                if l.startswith("| Argon2id")]
+        joined = "\n".join(rows)
+        assert "Argon2id (SMP)" in joined and "0x03" in joined
+        assert "Argon2id (at rest)" in joined
 
     def test_readme_no_longer_claims_it_runs_in_the_rust_core(self):
         doc = self._doc("README.md")
@@ -85,27 +111,42 @@ class TestWhereTheKdfsReallyAre:
         assert "hash_secret_raw" in src and "Type as _ArgonType" in src
         assert "scrypt" in src, "the documented fallback is gone"
 
-    def test_the_smp_passphrase_derivation_is_iterated_shake_not_memory_hard(self):
-        """The thing a memory-hard KDF would actually be for.
-
-        SMP transcripts permit an offline dictionary attack on the shared
-        passphrase, and 50,000 rounds of SHAKE-256 is CPU-only work that
-        parallelises freely. This test does not claim that is wrong -- it
-        pins what it IS, so a change to it is deliberate and versioned.
-        """
+    def test_the_smp_passphrase_derivation_is_memory_hard_under_0x03(self):
         smp = open(os.path.join(ROOT, "Rust", "src", "smp.rs"),
                    encoding="utf-8").read()
+        assert "fn stretch_argon2id(" in smp
+        assert "Algorithm::Argon2id" in smp
+
+    def test_the_legacy_shake_stretch_is_still_available_for_0x02_peers(self):
+        smp = open(os.path.join(ROOT, "Rust", "src", "smp.rs"),
+                   encoding="utf-8").read()
+        assert "fn stretch_shake_legacy(" in smp
         m = re.search(r"const KDF_ROUNDS:\s*u32\s*=\s*([0-9_]+);", smp)
-        assert m, "KDF_ROUNDS is gone; the derivation changed"
+        assert m, "KDF_ROUNDS is gone; 0x02 peers can no longer be talked to"
         assert int(m.group(1).replace("_", "")) == 50_000
-        assert "argon2" not in smp.lower(), (
-            "smp.rs now uses argon2 -- this is a WIRE CHANGE and needs a new "
-            "SMP version byte, both peers updated, and SPEC 6.4 rewritten")
+
+    def test_the_argon2_cost_is_the_same_as_the_at_rest_cost(self):
+        """Two cost profiles in one codebase is one more thing to get wrong."""
+        smp = open(os.path.join(ROOT, "Rust", "src", "smp.rs"),
+                   encoding="utf-8").read()
+        assert "const ARGON2_M_COST_KIB: u32 = 65_536;" in smp
+        assert "const ARGON2_T_COST:     u32 = 3;" in smp
+        assert "const ARGON2_P_COST:     u32 = 4;" in smp
+
+        import inspect
+        at_rest = inspect.getsource(otr._derive_key)
+        assert "memory_cost=65536" in at_rest
+        assert "time_cost=3" in at_rest
+        assert "parallelism=4" in at_rest
 
     def test_the_spec_documents_the_derivation_that_is_implemented(self):
         spec = open(os.path.join(ROOT, "SPEC.md"), encoding="utf-8").read()
         i = spec.index("### 6.4 Secret Derivation")
-        section = spec[i:i + 1200]
+        section = spec[i:i + 4000]
+        assert "Argon2id" in section
+        assert "0x03" in section
+        # The 0x02 derivation must stay documented for as long as the code can
+        # still speak it.
         assert "50,000" in section and "SHAKE-256" in section
 
 
@@ -147,19 +188,18 @@ class TestTheDowngradeIsNotSilent:
         assert "pip install argon2-cffi" in src
 
 
-class TestTheSmpStretchIsUnsalted:
-    """The 50k-round stretch buys less than it looks like it buys.
+class TestTheSmpStretchIsSalted:
+    """0x03 puts the session and the peer pair inside the expensive part.
 
-    ``set_secret`` stretches ``"OTRv4+SMP-v2\\0" || raw_secret`` for 50,000
-    rounds of SHAKE-256 and only THEN binds in the session id and both
-    fingerprints, with a single HMAC.  Nothing user-specific enters the
-    expensive part, so an attacker builds ``stretch(candidate)`` once and
-    reuses it against every OTRv4Plus user and every session forever; testing
-    a candidate against a captured transcript then costs one HMAC.
+    Under 0x02 the 50,000 SHAKE-256 rounds hashed the passphrase alone, so
+    ``stretch(candidate)`` was computed once and reused against every user and
+    every session; the session and fingerprint binding that followed was a
+    single HMAC.  Under 0x03 the session id and both fingerprints are in the
+    Argon2id salt, so no precomputation survives.
 
-    These tests do not assert that this is fine.  They pin the shape of the
-    construction so that if someone fixes it -- or makes it worse -- the
-    change is deliberate and the docs move with it.
+    These tests pin the shape of the construction, because any of it moving is
+    a wire break: it needs a new version byte, both peers updated together,
+    and SPEC 6.4 rewritten.
     """
 
     def _smp(self):
@@ -171,20 +211,38 @@ class TestTheSmpStretchIsUnsalted:
         body = src.split("pub fn set_secret(", 1)[1]
         return body.split("\n    pub fn ", 1)[0]
 
-    def test_the_stretch_input_is_only_the_domain_tag_and_the_secret(self):
-        body = self._set_secret()
-        stretch = body.split("Step 1", 1)[1].split("Step 2", 1)[0]
-        for user_specific in ("session_id", "our_fp", "peer_fp"):
-            assert user_specific not in stretch, (
-                "%s now enters the 50k-round stretch -- good, but that is a "
-                "WIRE CHANGE: it needs a new SMP version byte, both peers "
-                "updated together, and SPEC 6.4 rewritten" % user_specific)
+    def _argon2_fn(self):
+        """Just stretch_argon2id -- it is the last helper before set_secret,
+        so splitting only on "\n    fn " runs straight into it."""
+        body = self._smp().split("fn stretch_argon2id(", 1)[1]
+        return re.split(r"\n    (?:pub )?fn ", body, maxsplit=1)[0]
 
-    def test_the_binding_happens_after_the_stretch(self):
-        body = self._set_secret()
-        assert body.index("KDF_ROUNDS") < body.index("Hmac::<Sha3_512>"), (
-            "binding moved ahead of the stretch -- that changes the derived "
-            "scalar and is a wire break")
+    def test_the_session_and_peers_reach_the_expensive_part(self):
+        fn = self._argon2_fn()
+        salt = fn.split("let mut salt", 1)[1].split("let params", 1)[0]
+        for user_specific in ("session_id", "first_fp", "second_fp"):
+            assert user_specific in salt, (
+                "%s no longer reaches the Argon2 salt -- precomputation is "
+                "back, and this is a wire change either way" % user_specific)
+
+    def test_the_salt_is_length_prefixed(self):
+        """Otherwise ("ab","c") and ("a","bc") collide into one salt."""
+        fn = self._argon2_fn()
+        assert "(field.len() as u64).to_be_bytes()" in fn
+
+    def test_the_salt_is_deterministic_not_random(self):
+        """Both peers must land on the same scalar with no salt on the wire."""
+        fn = self._argon2_fn()
+        for rng in ("OsRng", "rand::", "SaltString::generate", "random"):
+            assert rng not in fn, (
+                "%s in the salt derivation would make SMP fail outright, not "
+                "merely differ" % rng)
+
+    def test_argon2_failure_does_not_fall_back_to_the_weaker_stretch(self):
+        """Failing open here would be worse than the problem 0x03 fixes."""
+        fn = self._argon2_fn()
+        assert "stretch_shake_legacy" not in fn
+        assert "unwrap_or" not in fn and "ok()" not in fn
 
     def test_the_cost_is_still_the_documented_50k(self):
         assert "const KDF_ROUNDS:           u32   = 50_000;" in self._smp(), (

@@ -1,6 +1,6 @@
 # OTRv4+ Protocol Specification
 
-**Version:** 10.12.0
+**Version:** 10.13.0
 **Status:** Draft / Research Prototype
 **Repository:** github.com/muc111/OTRv4Plus
 
@@ -600,13 +600,82 @@ The SMP secret scalar is derived from the user's shared passphrase, the session
 ID, and both fingerprints. This is purely classical and symmetric (it does NOT
 incorporate ML-KEM material; see §6.7 for the rationale).
 
-**Step 1: SHAKE-256 iterated KDF (50,000 rounds):**
+**Step 1 depends on the negotiated wire version** (§6.1). Wire version `0x03`
+stretches with Argon2id; `0x01` and `0x02` use the iterated SHAKE-256
+construction. The two produce different scalars from the same passphrase, which
+is why this required a version byte rather than a silent upgrade: a peer pair
+that disagrees MUST abort at the version check (§6.1) and MUST NOT proceed to
+report a passphrase mismatch, because the passphrase may well be correct.
+
+#### Step 1a: Argon2id stretch (wire version 0x03)
+
+```
+(first, second) = (our_fp, peer_fp) if our_fp <= peer_fp
+                  else (peer_fp, our_fp)              // lexicographic ordering
+
+salt = SHA3-512( "OTRv4+SMP-ARGON2-SALT-v3" || 0x00
+               || LEN(session_id) || session_id
+               || LEN(first)      || first
+               || LEN(second)     || second )[0..32]  // LEN = 8-byte BE length
+
+state = Argon2id( password = raw_secret,
+                  salt     = salt,
+                  m        = 65536 KiB,   // 64 MiB
+                  t        = 3,
+                  p        = 4,
+                  outlen   = 64 )         // Argon2 version 0x13
+```
+
+Where `"OTRv4+SMP-ARGON2-SALT-v3"` is the 24-byte ASCII literal followed by a
+`0x00` byte.
+
+Every field entering the salt is length-prefixed. Without this, a
+`(session_id, first, second)` triple could be re-split into a different triple
+with the same concatenation and derive the same salt.
+
+The Argon2 cost parameters are part of the wire format. Both peers MUST use
+identical values; differing parameters yield different scalars and SMP fails
+with an ordinary "no match", indistinguishable from a wrong passphrase.
+Changing any of them requires a new wire version byte.
+
+The salt is deterministic rather than random, and MUST be. Both peers have to
+arrive at the same scalar, and SMP has no message in which to carry a salt. The
+salt's role in Argon2 is domain separation between derivations, not secrecy;
+`session_id` is per-DAKE, so even the same two peers re-running SMP derive
+under a fresh salt.
+
+Implementations MUST NOT fall back to Step 1b if Argon2id fails. Every length
+involved is fixed by the constants above, so a failure is an implementation
+bug; degrading to the weaker stretch would require both peers to make the same
+mistake in order to still interoperate, and would silently undo the property
+this version exists to provide.
+
+#### Step 1b: SHAKE-256 iterated KDF, 50,000 rounds (wire versions 0x01, 0x02)
+
 ```
 state = SHAKE-256( "OTRv4+SMP-v2" || 0x00 || raw_secret )   // 64-byte output
 for i in 0 .. 49998:                                          // KDF_ROUNDS - 1
     state = SHAKE-256( INT(i) || state )                      // INT = 4-byte BE
 ```
 Where `"OTRv4+SMP-v2"` is the 12-byte ASCII literal followed by a `0x00` byte.
+
+This construction is retained verbatim for interoperability with peers that
+have not been updated, and implementations MUST NOT alter it while they still
+speak `0x02`.
+
+Its weakness is not the round count. Nothing user-specific enters the expensive
+part: the session ID and fingerprints are mixed in afterwards by Step 2, a
+single HMAC. An attacker therefore computes `state` once per candidate
+passphrase and reuses it against every user and every session, after which
+testing a candidate against a captured SMP transcript costs one HMAC. The
+iteration count buys far less than it appears to. Wire version `0x03` addresses
+this by moving the session ID and fingerprints into the Argon2id salt, and adds
+memory-hardness on top.
+
+Note that SMP transcripts permit an offline dictionary attack on the shared
+passphrase by any party who completes SMP with the user. A memory-hard,
+per-session-salted KDF raises the cost of that attack; it does not remove it.
+Passphrases SHOULD still be chosen accordingly.
 
 **Step 2: HMAC-SHA3-512 session binding:**
 ```
@@ -618,6 +687,10 @@ binding = HMAC-SHA3-512(hmac_key, first || second || state)
 
 The fingerprints are ordered lexicographically so both parties derive the same
 secret regardless of role. Implementations MUST NOT use role-dependent ordering.
+
+Under `0x03` the session ID and fingerprints are already bound into the salt, so
+Step 2 is redundant there. It is retained for all versions so that the path from
+`state` to the scalar is identical regardless of which stretch produced it.
 
 **Step 3: reduce mod order:**
 ```
@@ -690,10 +763,26 @@ The hybrid PQ layer wraps the classical SMP with ML-KEM-1024 and ML-DSA-87.
 **Wire version byte:** every hybrid-PQ SMP message is prefixed conceptually with
 a version indicator:
 - `0x01` = classical SMP only
-- `0x02` = hybrid post-quantum
+- `0x02` = hybrid post-quantum, iterated SHAKE-256 secret derivation (§6.4 Step 1b)
+- `0x03` = hybrid post-quantum, Argon2id secret derivation (§6.4 Step 1a)
 
-A version mismatch between peers MUST abort the session. No silent downgrade to
-classical mode is permitted.
+`0x03` is the default for new sessions. Implementations MUST NOT select a lower
+version automatically.
+
+`0x02` and `0x03` have **identical message layouts**; both carry the ML-KEM and
+ML-DSA payloads described below, and message sizes are unchanged between them.
+They differ only in §6.4 Step 1, and therefore derive different secret scalars
+from the same passphrase.
+
+A version mismatch between peers MUST abort the session, at the version check
+and before any comparison of secrets. No silent downgrade to classical mode, and
+no silent downgrade from `0x03` to `0x02`, is permitted.
+
+Because `0x02` and `0x03` derive different scalars, a mismatched pair that was
+allowed to continue would complete the protocol and report that the passphrases
+do not match, when they may be identical. Implementations MUST therefore
+distinguish the two conditions in anything shown to the user: a version mismatch
+means the peers are running different builds, not that the passphrase is wrong.
 
 **SMP1 (hybrid):** the initiator additionally generates an ML-KEM-1024 keypair and
 an ML-DSA-87 keypair. The encapsulation key (1568 bytes) and the ML-DSA-87 public

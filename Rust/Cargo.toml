@@ -1,6 +1,6 @@
 [package]
 name        = "otrv4_core"
-version     = "0.10.22"
+version     = "0.10.23"
 edition     = "2021"
 authors     = ["OTRv4+ contributors"]
 description = "Post-quantum OTRv4 cryptographic core (Rust/PyO3)"
@@ -51,6 +51,7 @@ pq-rust = [
     "x448",
     "getrandom",
     "ed448-goldilocks-plus",
+    "argon2",
 ]
 
 # v10.6.18.1: declared so rustc stops emitting unexpected_cfgs warnings
@@ -144,6 +145,12 @@ ed448-goldilocks-plus = {
     default-features = false,
     features         = ["alloc", "signing", "pkcs8"],
 }
+# v10.13.0: Argon2id for the SMP passphrase stretch (SMP wire version 0x03).
+# default-features = false drops the `password-hash`/`rand` surface -- we only
+# use the low-level Argon2::hash_password_into, and the PHC string format has
+# no place in a wire protocol where both sides must derive identical bytes.
+# `alloc` is what actually supplies the memory blocks; `zeroize` wipes them.
+argon2        = { version = "0.5",   optional = true, default-features = false, features = ["alloc", "zeroize"] }
 
 [profile.release]
 opt-level     = 3

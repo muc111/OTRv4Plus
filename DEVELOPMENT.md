@@ -1,6 +1,6 @@
 # DEVELOPMENT.md
 
-Build environment, architecture, and test plan for OTRv4+ as of v10.12.0.
+Build environment, architecture, and test plan for OTRv4+ as of v10.13.0.
 
 There are no C extensions to compile and no prebuilt binaries in the repository.
 Everything is built from source with `cargo`. (Earlier versions used three C
@@ -135,7 +135,7 @@ reference path is selected instead.
 ```bash
 cd Rust
 cargo test --release --no-default-features --features pq-rust
-# expected: 65 passed; 0 failed  (as of v10.12.0)
+# expected: 77 passed; 0 failed  (as of v10.13.0)
 ```
 
 Expected: **65 tests pass, 0 failures.** The suite includes:
@@ -149,13 +149,19 @@ Expected: **65 tests pass, 0 failures.** The suite includes:
   both modes, version-mismatch rejection, ML-DSA-87 context sign/verify, wrong-
   context rejection, ML-KEM-1024 encaps/decaps roundtrip, `pq_binding_key`
   determinism
+- Argon2id SMP derivation (wire `0x03`, v10.13.0): that the salt binds the
+  session ID and both fingerprints, that it is role-independent, that salt
+  field boundaries cannot collide, that Argon2id and the legacy SHAKE stretch
+  derive different scalars, that a mixed `0x02`/`0x03` pair aborts with an
+  actionable error, and a frozen vector for the `0x02` stretch cross-checked
+  against an independent Python implementation
 
 Python suite — run from the repository root, not from `tests/`, or the root-level
 voice and audio suites are silently skipped:
 
 ```bash
 python3.12 -m pytest -q
-# expected: 1483 passed, 43 skipped, 1 xfailed   (as of v10.12.0)
+# expected: 1633 passed, 43 skipped, 1 xfailed   (as of v10.13.0)
 ```
 
 The skips are environment-gated (no audio device, no Termux:API, no live SAM

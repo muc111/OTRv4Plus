@@ -10,12 +10,12 @@ the project was on. This document exists so that cannot happen quietly again.
 
 | Track | Where | Current | Why it is separate |
 |---|---|---|---|
-| **Client** | `otrv4+.py` `VERSION`, `otrv4plus_xmpp.py` `XMPP_VERSION` | `10.12.0` | The thing a user runs and a peer must match. |
-| **Crypto core** | `Rust/Cargo.toml`, `Rust/pyproject.toml` | `0.10.22` | A crate with its own release history; it is `0.x` because its API is not stable for outside consumers. |
-| **Android app** | `android/app/build.gradle.kts` | `0.3.0-phase2+core.10.12.0` | An APK at an earlier maturity than the Termux client. Its own track, with the client version it embeds recorded as semver build metadata. |
+| **Client** | `otrv4+.py` `VERSION`, `otrv4plus_xmpp.py` `XMPP_VERSION` | `10.13.0` | The thing a user runs and a peer must match. |
+| **Crypto core** | `Rust/Cargo.toml`, `Rust/pyproject.toml` | `0.10.23` | A crate with its own release history; it is `0.x` because its API is not stable for outside consumers. |
+| **Android app** | `android/app/build.gradle.kts` | `0.3.0-phase2+core.10.13.0` | An APK at an earlier maturity than the Termux client. Its own track, with the client version it embeds recorded as semver build metadata. |
 
 The crate and the client are bumped together at a release, so a changelog entry
-reads `VERSION → 10.12.0, otrv4_core 0.10.22`. The Android `versionCode` is a
+reads `VERSION → 10.13.0, otrv4_core 0.10.23`. The Android `versionCode` is a
 monotonically increasing integer because Android requires that; it carries no
 other meaning.
 
@@ -51,7 +51,7 @@ mark a release**:
 | `OTRConstants.PROTOCOL_VERSION` | `4` | ClientProfile / DAKE format |
 | `OTRv4DataMessage.PROTOCOL_VERSION` | `0x0005` | data-message format (incremented by the MKmac fix) |
 | `VOICE_PROTOCOL_VERSION` | `4` | voice frame header |
-| SMP wire byte | `0x01` / `0x02` | classical / hybrid-PQ SMP |
+| SMP wire byte | `0x01` / `0x02` / `0x03` | classical / hybrid-PQ (SHAKE stretch) / hybrid-PQ (Argon2id stretch) |
 
 Bumping one of these invalidates every peer that speaks the old format. Bump it
 when, and only when, that format actually changes — and add a test that pins the
@@ -74,9 +74,27 @@ grep -rn 'VERSION = "OTRv4+\|^XMPP_VERSION\|^version' \
      otrv4+.py otrv4plus_xmpp.py Rust/Cargo.toml Rust/pyproject.toml
 ```
 
-## Why v10.12.0
+## Why v10.13.0
 
-v10.11.1 → v10.12.0 is a MINOR bump: end-to-end encrypted voice over I2P moved
+v10.12.0 → v10.13.0 is a MINOR bump: SMP wire version `0x03` derives the secret
+scalar with Argon2id, salted with the session ID and both fingerprints, where
+`0x02` stretched the passphrase alone through 50,000 rounds of SHAKE-256. That
+is new capability — memory-hardness, and a salt that makes a precomputed
+dictionary worthless — not a fix to existing behaviour.
+
+It is *not* MAJOR. Under the rule above, breaking the wire is not what makes a
+release major, because OTRv4+ has never promised cross-version compatibility.
+Nothing else changed: no other key schedule, no message authentication rule, no
+replay window, no ratchet, no voice cryptography. The `0x02` derivation is
+retained byte-for-byte and pinned by a frozen test vector, so the change is
+confined to which stretch a `0x03` session selects.
+
+It is not PATCH, because `0x03` is a new wire format and both peers must be
+updated together for SMP to complete at all.
+
+### Why v10.12.0
+
+v10.11.1 → v10.12.0 was a MINOR bump: end-to-end encrypted voice over I2P moved
 from "newest and least-tested surface" to a path with detection, diagnosis and
 authenticated recovery around it, and none of that existed in v10.11.1.
 

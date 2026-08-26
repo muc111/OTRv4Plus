@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "otrv4_core"
-version = "0.10.22"
+version = "0.10.23"
 description = "OTRv4+ double ratchet core (Rust)"
 # The Rust extension itself is abi3-py39 and would load on 3.9, but the
 # OTRv4+ application layer it exists to serve does NOT: otrv4+.py uses PEP 701
