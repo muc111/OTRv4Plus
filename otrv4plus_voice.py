@@ -2344,7 +2344,8 @@ class StageTimers:
     """
 
     #: Stages, in pipeline order.
-    NAMES = ("encode", "seal", "queue", "decrypt", "dwell", "decode", "play")
+    NAMES = ("encode", "seal", "queue", "decrypt", "dwell", "decode",
+             "conv", "write", "play")
 
     def __init__(self, window=256):
         self.t = {name: Percentiles(window) for name in self.NAMES}
@@ -3438,6 +3439,28 @@ class VoiceCallSession:
                   ", resampling to %d Hz" % VOICE_SAMPLE_RATE
                   if cap.get("resampling") else ""))
 
+        # The playback side, spelled out, on every call rather than only when
+        # someone thinks to run /audioprobe.  A playout deficit is invisible in
+        # the frame counters -- the buffer sheds the surplus and the call reads
+        # as healthy -- so the device parameters that decide how long a write
+        # blocks belong in the same log as the symptom.
+        try:
+            play = self._playback.diagnostics()
+            cap_frames = play.get("buffer_capacity_frames") or 0
+            rate = play.get("device_rate") or VOICE_SAMPLE_RATE
+            held_ms = (1000.0 * cap_frames / float(rate)) if cap_frames and rate else 0.0
+            _print("[voice] playout: %s Hz / %s ch%s, burst %s frames, "
+                   "capacity %s frames (%.0f ms) vs %d ms per packet"
+                   % (play.get("device_rate"), play.get("device_channels"),
+                      " (resampling)" if play.get("resampling") else "",
+                      play.get("frames_per_burst"), cap_frames or "?",
+                      held_ms, VOICE_FRAME_MS))
+            if held_ms and held_ms < VOICE_FRAME_MS:
+                _print("[voice] playout: the device buffer holds less than one "
+                       "packet, so every write waits on the device")
+        except Exception:
+            pass
+
     async def start_audio(self) -> None:
         """Bring the media path up.
 
@@ -4376,6 +4399,18 @@ class VoiceCallSession:
                             # device-paced and healthy; well above it means
                             # the device is the bottleneck, not the network.
                             self.stages.record_since("play", _t_play)
+                            # Split it, because "play is slow" has two very
+                            # different causes and opposite fixes: `conv` is
+                            # CPU we are burning on resample/upmix before the
+                            # device is involved at all, `write` is the device
+                            # declining to accept audio faster than it plays
+                            # it. Reading only the total led an analysis to
+                            # blame sender clock drift for what turned out to
+                            # be a playout deficit.
+                            self.stages.record(
+                                "conv", getattr(playback, "last_convert_s", 0.0))
+                            self.stages.record(
+                                "write", getattr(playback, "last_device_s", 0.0))
                     except _audio.AudioError as exc:
                         if exc.code == _audio.AUDIO_DEVICE_DISCONNECTED:
                             self._signal_stream_lost(
@@ -6027,7 +6062,7 @@ class VoiceCallManager:
                     self._vdbg(peer,
                                "spacing: %s | buffer depth %d-%d frames "
                                "(%d-%d ms) target %d | underrun=%d "
-                               "overrun=%d discard=%d bursts=%d"
+                               "overflow=%d shed=%d bursts=%d"
                                % (session.jitter.spacing.summary(),
                                   lo, hi, lo * VOICE_FRAME_MS,
                                   hi * VOICE_FRAME_MS,

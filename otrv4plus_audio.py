@@ -421,6 +421,15 @@ class AudioStream:
     def read_frame(self, timeout_ms: int = 200):
         raise NotImplementedError
 
+    #: Split of the last write_frame call, in seconds.  `convert` is the
+    #: pure-Python resample/upmix; `device` is the blocking handoff to the
+    #: audio device.  Measured separately because they fail for opposite
+    #: reasons and the fix for one is not the fix for the other: a slow
+    #: convert is CPU we are spending, a slow device write is the device
+    #: refusing to take audio any faster than it plays it.
+    last_convert_s = 0.0
+    last_device_s = 0.0
+
     def write_frame(self, pcm) -> bool:
         raise NotImplementedError
 
@@ -1129,13 +1138,17 @@ class AAudioPlayback(AAudioStreamBase):
     def write_frame(self, pcm, timeout_ms: int = 200) -> bool:
         if self._closed or self._stream is None:
             return False
+        _t0 = time.monotonic()
         data = self._resampler.process(bytes(pcm))
         if self._upmix > 1:
             data = self._duplicate_channels(data, self._upmix)
+        self.last_convert_s = time.monotonic() - _t0
+        self.last_device_s = 0.0
         if not data:
             return True
         total = len(data) // (SAMPLE_WIDTH * self._upmix)
         buf = (ctypes.c_char * len(data)).from_buffer_copy(data)
+        _t1 = time.monotonic()
         written = 0
         while written < total:
             offset = written * SAMPLE_WIDTH * self._upmix
@@ -1150,12 +1163,15 @@ class AAudioPlayback(AAudioStreamBase):
                                  "playback stream disconnected")
             if got < 0:
                 if got == AAUDIO_ERROR_TIMEOUT:
+                    self.last_device_s = time.monotonic() - _t1
                     return False
                 raise AudioError(AUDIO_PLAYBACK_INITIALIZATION_FAILED,
                                  "write failed: %s" % _result_text(got))
             if got == 0:
+                self.last_device_s = time.monotonic() - _t1
                 return False
             written += got
+        self.last_device_s = time.monotonic() - _t1
         return True
 
     @staticmethod
@@ -1489,8 +1505,31 @@ def probe(duration: float = 2.0, verbose: bool = True) -> dict:
             if stream is not None:
                 stream.stop()
         report["playback"][backend] = entry
-        say("[audio] %-11s playback %s" % (backend,
-            "OK" if entry["opened"] else "FAILED  %s" % entry["error"]["code"]))
+        if entry["opened"]:
+            d = entry.get("diagnostics", {})
+            # These four were collected and discarded before v10.12.0, which
+            # is why a playout stall could not be diagnosed from a probe run.
+            # burst and capacity are what a blocking write actually waits on;
+            # resample and channels are what the conversion costs before it.
+            say("[audio] %-11s playback OK  rate=%s ch=%s resample=%s "
+                "burst=%s capacity=%s frames"
+                % (backend, d.get("device_rate"), d.get("device_channels"),
+                   d.get("resampling"), d.get("frames_per_burst"),
+                   d.get("buffer_capacity_frames")))
+            cap = d.get("buffer_capacity_frames") or 0
+            rate = d.get("device_rate") or SAMPLE_RATE
+            if cap and rate:
+                held = 1000.0 * cap / float(rate)
+                say("           capacity holds %.0f ms of audio (%d ms per "
+                    "frame at %d ms packetisation)" % (held, FRAME_MS, FRAME_MS))
+                if held < FRAME_MS:
+                    say("           WARNING: capacity is smaller than one "
+                        "frame, so every write must wait for the device")
+        else:
+            say("[audio] %-11s playback FAILED  %s"
+                % (backend, entry["error"]["code"]))
+            if entry["error"].get("detail"):
+                say("           %s" % entry["error"]["detail"])
 
     for backend in BACKEND_ORDER:
         cap = report["capture"].get(backend, {})
