@@ -1231,9 +1231,12 @@ class OTRv4PlusXMPP(ClientXMPP):
             self.send_presence_subscription(pto=self.peer)
             print(f"[subscribe] requested presence from {self.peer}")
         print(
-            "[ready] /otr to start encryption. After DAKE you'll be asked to "
-            "trust the fingerprint, then to set the SMP passphrase.\n"
-            "[ready] Type /help for the full command list.\n"
+            "[ready] /otr to start encryption. After DAKE the peer's "
+            "fingerprint is pinned automatically\n"
+            "[ready] (first contact) or checked against the pin, then you set "
+            "the SMP passphrase.\n"
+            "[ready] /identity shows what is pinned. Type /help for the full "
+            "command list.\n"
         )
         # Reset reconnect backoff on successful connection.
         self._reconnect_delay = _RECONNECT_BASE
