@@ -1,5 +1,25 @@
 # Voice tuning over I2P
 
+> **Playback burst alignment (v10.12.0).** Before touching anything below, know
+> that a device-side mismatch cost more audio than every setting here combined.
+> A handset reported `framesPerBurst=1920` at 16 kHz — a 120 ms transfer unit —
+> while the pipeline wrote 60 ms packets. Every write blocked for a p50 of
+> 95–100 ms, playout ran at 9.3 fps against a 16.7 fps stream, and the jitter
+> buffer shed **32% of all received audio** while the network lost 2.7%.
+> Writes are now accumulated to a whole burst. Check `[voice] playout:` in a
+> `--voice-debug` log and the `write` figure in the stages line before
+> concluding anything is a network problem.
+>
+> | Variable | Default | Effect |
+> |---|---|---|
+> | `OTRV4PLUS_AAUDIO_ALIGN_WRITES` | `1` | `0` writes packet-at-a-time again, which is the only way to reproduce the stall |
+> | `OTRV4PLUS_AAUDIO_OUTPUT_BURSTS` | `2` | playback buffer size in device bursts; two is the floor for a blocking writer |
+> | `OTRV4PLUS_AAUDIO_OUTPUT_CAPACITY` | `8` | requested capacity in our frames; a ceiling, not a latency |
+>
+> These are **local** settings. They change nothing on the wire and the two
+> phones need not agree on them.
+
+
 Every parameter here, its safe range, and what it trades against what.
 
 Two rules before anything else:

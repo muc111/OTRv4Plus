@@ -112,6 +112,24 @@ def _env_choice(name: str, default: int, allowed) -> int:
     return default
 
 
+def _env_flag(name: str, default: bool) -> bool:
+    raw = os.environ.get(name, "").strip().lower()
+    if raw in ("1", "true", "yes", "on"):
+        return True
+    if raw in ("0", "false", "no", "off"):
+        return False
+    return default
+
+
+def _env_int(name: str, default: int, lo: int, hi: int) -> int:
+    """Read an integer clamped to [lo, hi], else the default."""
+    raw = os.environ.get(name, "").strip()
+    try:
+        return max(lo, min(hi, int(raw)))
+    except (TypeError, ValueError):
+        return default
+
+
 # Frame duration. THE one place it is defined -- otrv4plus_voice derives its
 # geometry from here rather than redeclaring it.
 #
@@ -129,6 +147,49 @@ def _env_choice(name: str, default: int, allowed) -> int:
 # WIRE FORMAT: both peers must use the same value.
 FRAME_MS = _env_choice("OTRV4PLUS_OPUS_FRAME_MS", 60, (10, 20, 40, 60))
 FRAME_SAMPLES = SAMPLE_RATE * FRAME_MS // 1000        # 960
+
+#: Align playback writes to the device's burst.  On by default because the
+#: alternative is measured: a device with framesPerBurst=1920 at 16 kHz took a
+#: p50 of 95-100 ms to accept a 960-frame write, playout ran at 9.3 fps against
+#: a 16.7 fps stream, and the jitter buffer shed 32% of received audio.  Set to
+#: 0 to write frame-at-a-time again, which is the only way to reproduce that.
+ALIGN_WRITES = _env_flag("OTRV4PLUS_AAUDIO_ALIGN_WRITES", True)
+
+#: Playback buffer size, in device bursts.  Two is the documented floor for a
+#: blocking writer -- below it a write cannot get ahead of the device however
+#: well aligned it is.  More costs device-side latency.
+OUTPUT_BURSTS = _env_int("OTRV4PLUS_AAUDIO_OUTPUT_BURSTS", 2, 2, 8)
+
+#: Requested playback capacity, in frames of ours.  A ceiling, not a latency:
+#: the stream runs at the buffer SIZE above.  Headroom here stops the device
+#: granting exactly two bursts and leaving no room to set a size at all.
+OUTPUT_CAPACITY_FRAMES = _env_int("OTRV4PLUS_AAUDIO_OUTPUT_CAPACITY", 8, 4, 32)
+
+
+def alignment_frames(frames_per_burst: int, device_frames_per_packet: int = None,
+                     enabled: bool = None) -> int:
+    """How many DEVICE frames to accumulate per write, or 0 to write as we go.
+
+    A device whose transfer unit is larger than our packet makes every write
+    wait on a burst boundary. Rounding UP to a whole number of our packets
+    matters as much as aligning at all: a unit that is not a packet multiple
+    would split a packet and strand the remainder indefinitely.
+
+    Everything here is in DEVICE frames, including the packet size, because
+    `framesPerBurst` is. Comparing a device burst against `FRAME_SAMPLES` --
+    our count, at our 16 kHz -- is only correct when the device runs at 16 kHz
+    too, and silently wrong when it does not: on a 48 kHz device a 1920-frame
+    burst is 40 ms, comfortably under our 60 ms packet and needing no
+    alignment at all, yet it compares as larger than 960 and would align to
+    two thirds of a packet.
+    """
+    if enabled is None:
+        enabled = ALIGN_WRITES
+    burst = int(frames_per_burst or 0)
+    packet = int(device_frames_per_packet or FRAME_SAMPLES)
+    if not enabled or packet <= 0 or burst <= packet:
+        return 0
+    return -(-burst // packet) * packet
 FRAME_BYTES = FRAME_SAMPLES * CHANNELS * SAMPLE_WIDTH  # 1920
 
 
@@ -373,6 +434,14 @@ def _bind(lib) -> None:
     lib.AAudioStream_read.restype = i32
     lib.AAudioStream_write.argtypes = [p, ctypes.c_void_p, i32, i64]
     lib.AAudioStream_write.restype = i32
+    # Buffer SIZE is a runtime setter, unlike capacity which is a builder
+    # call.  It has to be: the right size is a multiple of framesPerBurst,
+    # and framesPerBurst is only knowable after the stream opens.
+    f = getattr(lib, "AAudioStream_setBufferSizeInFrames", None)
+    if f is not None:
+        f.argtypes = [p, i32]
+        f.restype = i32
+
     for fn in ("getSampleRate", "getChannelCount", "getFormat", "getState",
                "getBufferCapacityInFrames", "getFramesPerBurst",
                "getBufferSizeInFrames", "getPerformanceMode"):
@@ -446,7 +515,7 @@ class AAudioStreamBase(AudioStream):
     name = "aaudio"
 
     def __init__(self, direction: int, input_preset=None, usage=None,
-                 content_type=None):
+                 content_type=None, capacity_frames=None):
         lib = _load_aaudio()
         if lib is None:
             raise AudioError(AUDIO_BACKEND_UNAVAILABLE, _LIB_ERROR or "no libaaudio")
@@ -471,11 +540,13 @@ class AAudioStreamBase(AudioStream):
                 builder, AAUDIO_SHARING_MODE_SHARED)
             lib.AAudioStreamBuilder_setPerformanceMode(
                 builder, AAUDIO_PERFORMANCE_MODE_LOW_LATENCY)
-            # Four frames of capacity.  getMinBufferSize()'s role: enough
-            # slack that a scheduling hiccup does not drop audio, small
-            # enough that latency stays inside a conversation's tolerance.
+            # Capacity is a ceiling, not a latency: what the stream actually
+            # runs at is the buffer SIZE, set after opening once framesPerBurst
+            # is known.  Asking for headroom here costs nothing and stops the
+            # device granting exactly two bursts, which leaves a blocking
+            # writer no room to get ahead.
             lib.AAudioStreamBuilder_setBufferCapacityInFrames(
-                builder, FRAME_SAMPLES * 4)
+                builder, int(capacity_frames or FRAME_SAMPLES * 4))
             for name, value in (("setInputPreset", input_preset),
                                 ("setUsage", usage),
                                 ("setContentType", content_type)):
@@ -502,6 +573,7 @@ class AAudioStreamBase(AudioStream):
         self.device_format = self._get("getFormat", AAUDIO_FORMAT_PCM_I16)
         self.buffer_capacity = self._get("getBufferCapacityInFrames", 0)
         self.frames_per_burst = self._get("getFramesPerBurst", 0)
+        self.buffer_size = self._get("getBufferSizeInFrames", 0)
 
         if self.device_format != AAUDIO_FORMAT_PCM_I16:
             self._close_locked()
@@ -572,7 +644,9 @@ class AAudioStreamBase(AudioStream):
             "device_channels": getattr(self, "device_channels", None),
             "encoding": "PCM_16BIT",
             "buffer_capacity_frames": getattr(self, "buffer_capacity", None),
+            "buffer_size_frames": getattr(self, "buffer_size", None),
             "frames_per_burst": getattr(self, "frames_per_burst", None),
+            "write_align_frames": getattr(self, "_align_frames", 0),
             "state": self._get("getState", -1),
             "resampling": getattr(self, "device_rate", SAMPLE_RATE) != SAMPLE_RATE,
             "disconnected": self.disconnected,
@@ -618,15 +692,6 @@ def _env_float(name: str, default: float, lo: float, hi: float) -> float:
     if value != value or value < lo or value > hi:   # NaN or out of range
         return default
     return value
-
-
-def _env_flag(name: str, default: bool) -> bool:
-    raw = os.environ.get(name, "").strip().lower()
-    if raw in ("1", "true", "yes", "on"):
-        return True
-    if raw in ("0", "false", "no", "off"):
-        return False
-    return default
 
 
 def dbfs(level: int) -> str:
@@ -1129,11 +1194,56 @@ class AAudioPlayback(AAudioStreamBase):
         self.usage = playback_usage()
         super().__init__(AAUDIO_DIRECTION_OUTPUT, None,
                          usage=self.usage,
-                         content_type=AAUDIO_CONTENT_TYPE_SPEECH)
+                         content_type=AAUDIO_CONTENT_TYPE_SPEECH,
+                         capacity_frames=FRAME_SAMPLES * OUTPUT_CAPACITY_FRAMES)
         # Playback runs the conversion the other way: the pipeline produces
         # 16 kHz and the device may want 48 kHz.
         self._resampler = Resampler(SAMPLE_RATE, self.device_rate, 1)
         self._upmix = max(1, self.device_channels)
+
+        # Write in whole bursts.
+        #
+        # Measured on a live call: the device reported framesPerBurst=1920 at
+        # 16 kHz -- a 120 ms transfer unit -- while the pipeline wrote 960
+        # frames (60 ms) at a time.  Feeding half a burst per call made every
+        # write block for a p50 of 95-100 ms against a 60 ms frame period, so
+        # playout ran at 9.3 fps against a 16.7 fps stream and the jitter
+        # buffer shed 32% of all received audio to keep latency bounded.  The
+        # network was losing 2.7% over the same call.
+        #
+        # Buffering to a burst boundary costs one frame of accumulation and
+        # removes the stall.  When the device's burst is already <= our frame
+        # there is nothing to align and this is a no-op.
+        # One packet of ours, counted in the device's frames -- which is what
+        # the resampler above has already produced by the time a write happens.
+        self._device_frames_per_packet = max(
+            1, int(round(FRAME_SAMPLES * self.device_rate / float(SAMPLE_RATE))))
+        self._align_frames = alignment_frames(
+            getattr(self, "frames_per_burst", 0),
+            self._device_frames_per_packet)
+        self._pending_pcm = bytearray()
+
+        # Buffer size is what the stream actually runs at, and it must be a
+        # multiple of the burst or the device rounds it anyway. Two bursts is
+        # the documented floor for a blocking writer; without the room, a
+        # write cannot get ahead of the device even when aligned.
+        self._set_buffer_size(max(2, OUTPUT_BURSTS) *
+                              int(getattr(self, "frames_per_burst", 0) or 0))
+
+    def _set_buffer_size(self, frames: int) -> None:
+        """Ask for a working buffer size. Advisory: the device clamps it."""
+        setter = getattr(self._lib, "AAudioStream_setBufferSizeInFrames", None)
+        if setter is None or not frames or self._stream is None:
+            return
+        cap = int(getattr(self, "buffer_capacity", 0) or 0)
+        if cap:
+            frames = min(int(frames), cap)
+        try:
+            got = setter(self._stream, ctypes.c_int32(int(frames)))
+        except Exception:
+            return
+        if got and got > 0:
+            self.buffer_size = int(got)
 
     def write_frame(self, pcm, timeout_ms: int = 200) -> bool:
         if self._closed or self._stream is None:
@@ -1142,6 +1252,18 @@ class AAudioPlayback(AAudioStreamBase):
         data = self._resampler.process(bytes(pcm))
         if self._upmix > 1:
             data = self._duplicate_channels(data, self._upmix)
+        if self._align_frames:
+            # Hold back until there is a whole burst to hand over. The
+            # remainder stays for the next frame; nothing is dropped.
+            self._pending_pcm += data
+            need = self._align_frames * SAMPLE_WIDTH * self._upmix
+            if len(self._pending_pcm) < need:
+                self.last_convert_s = time.monotonic() - _t0
+                self.last_device_s = 0.0
+                return True
+            whole = (len(self._pending_pcm) // need) * need
+            data = bytes(self._pending_pcm[:whole])
+            del self._pending_pcm[:whole]
         self.last_convert_s = time.monotonic() - _t0
         self.last_device_s = 0.0
         if not data:
@@ -1173,6 +1295,47 @@ class AAudioPlayback(AAudioStreamBase):
             written += got
         self.last_device_s = time.monotonic() - _t1
         return True
+
+    def flush(self) -> None:
+        """Hand over any partial burst being held, padded with silence.
+
+        Alignment holds back up to one burst of audio. At teardown that would
+        be the last words of the call, so it is padded out and written rather
+        than dropped -- the padding is silence the listener would have heard
+        anyway once the talker stopped.
+        """
+        if not self._pending_pcm or self._closed or self._stream is None:
+            self._pending_pcm = bytearray()
+            return
+        need = self._align_frames * SAMPLE_WIDTH * self._upmix
+        if need and len(self._pending_pcm) < need:
+            self._pending_pcm += b"\x00" * (need - len(self._pending_pcm))
+        data = bytes(self._pending_pcm)
+        self._pending_pcm = bytearray()
+        try:
+            total = len(data) // (SAMPLE_WIDTH * self._upmix)
+            buf = (ctypes.c_char * len(data)).from_buffer_copy(data)
+            written = 0
+            while written < total:
+                got = self._lib.AAudioStream_write(
+                    self._stream,
+                    ctypes.byref(buf, written * SAMPLE_WIDTH * self._upmix),
+                    ctypes.c_int32(total - written),
+                    ctypes.c_int64(200 * 1000000))
+                if got <= 0:
+                    return
+                written += got
+        except Exception:
+            # Teardown is not the place to raise. Losing the tail of a call
+            # that is already ending costs nothing worth an exception.
+            pass
+
+    def stop(self) -> None:
+        try:
+            self.flush()
+        except Exception:
+            pass
+        super().stop()
 
     @staticmethod
     def _duplicate_channels(pcm: bytes, channels: int) -> bytes:
