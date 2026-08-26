@@ -2317,6 +2317,60 @@ class OTRv4PlusXMPP(ClientXMPP):
         self._pending[peer] = None
         self._prompt_smp_secret(peer)
 
+    def show_identity(self):
+        """Everything TOFU depends on, in one screen.
+
+        Written because "it still asks me to trust the fingerprint" has three
+        very different causes -- an older build at one end, an answer that was
+        not `y`, or a peer whose identity really is changing -- and telling them
+        apart previously meant finding and reading a JSON file on both phones.
+        """
+        print("-" * 60)
+        persistent = bool(getattr(self, "identity_persistent", False))
+        print("[identity] local identity : %s"
+              % ("PERSISTENT — the same every run" if persistent
+                 else "EPHEMERAL — regenerates every run"))
+        if not persistent:
+            print("[identity]   Peers cannot pin a fingerprint that changes every")
+            print("[identity]   launch. XMPP should be persistent; if this says")
+            print("[identity]   ephemeral you are on a build older than v10.12.0.")
+        print("[identity] your fingerprint: %s" % _fmt_fp(self._local_fp()))
+        try:
+            cfg = self.otr.config
+            print("[identity] identity record: %s" % getattr(cfg, "identity_path", "?"))
+            print("[identity] trust store    : %s%s"
+                  % (self.otr.trust_db.db_path,
+                     "" if self.otr.trust_db.persistent else "  (IN MEMORY ONLY)"))
+        except Exception:
+            pass
+
+        try:
+            entries = self.otr.trust_db.list_trusted()
+        except Exception as exc:
+            print("[identity] trust store unreadable: %s" % type(exc).__name__)
+            entries = {}
+
+        print("-" * 60)
+        if not entries:
+            print("[identity] No fingerprints pinned yet.")
+            print("[identity]   The FIRST session with a peer always asks. Being")
+            print("[identity]   asked a SECOND time means the pin did not stick, or")
+            print("[identity]   the peer's identity changed.")
+        else:
+            print("[identity] Pinned fingerprints (%d):" % len(entries))
+            for jid, fp in sorted(entries.items()):
+                live = self._remote_fp(jid) if jid in self._encrypted else None
+                if live and live != "unavailable":
+                    state = "matches now" if live == fp else "!! DIFFERS FROM LIVE !!"
+                else:
+                    state = "not in session"
+                print("[identity]   %-32s %s  [%s]" % (jid, _fmt_fp(fp), state))
+        if self._fingerprint_changed:
+            print("[identity] UNRESOLVED identity change for: %s"
+                  % ", ".join(sorted(self._fingerprint_changed)))
+            print("[identity]   Voice is refused for these until /trust-reset <jid>.")
+        print("-" * 60)
+
     def _voice_blocked_by_tofu(self, peer) -> bool:
         """Refuse a call to a peer whose pinned fingerprint changed.
 
@@ -2948,6 +3002,7 @@ class OTRv4PlusXMPP(ClientXMPP):
             "  /smp <secret>        set secret and start SMP\n"
             "  /smp-secret <s>      store secret for auto-respond\n"
             "  /trust-reset <jid>   clear a pinned fingerprint (deliberate)\n"
+            "  /identity            your identity and every pinned fingerprint\n"
             "  /trust               re-show fingerprint trust prompt\n"
             "  /msg <jid> <text>    send plaintext message\n"
             "  /status              show session state\n"
@@ -3240,6 +3295,9 @@ class OTRv4PlusXMPP(ClientXMPP):
                         self._voice_manager._start_stats(p_)
             else:
                 print("[voice] not initialised")
+        elif lstrip in ("/identity", "/whoami"):
+            self.show_identity()
+
         elif lstrip in ("/smpstate", "/smpstatus"):
             if not peer:
                 print("[smp] no active peer")

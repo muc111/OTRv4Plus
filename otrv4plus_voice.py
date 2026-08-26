@@ -554,6 +554,32 @@ FRAME_INTERVAL_S = VOICE_FRAME_MS / 1000.0
 #
 # 60 ms at 24 kbit/s is 180 bytes nominal, 225 at the VBR peak, so the slot
 # below had to grow with it. The import-time check enforces the relationship.
+# Raising this is the obvious way to improve audio quality, and the tempting
+# argument is that on I2P the extra bytes are free: the router moves the media
+# packet plus a 455-byte repliable-datagram header inside one ~960-byte tunnel
+# message, so at 24 kbit/s the 734-byte datagram leaves 226 bytes of every
+# tunnel message paid for and empty. 32 kbit/s fills 806 B at the same 16.7
+# packets/s, for the same tunnel-message count.
+#
+# That argument is a THEORY, and there is DATA against it: a live call starved
+# at 39.8 kbit/s -- 8 frames received where ~125 were expected -- which
+# `tests/test_voice_frame_geometry.py` pins as a regression bound. That
+# starvation happened at 25 packets/s rather than 16.7, so it may well have
+# been the packet rate and not the byte rate, but "may well have been" is not
+# evidence and a live call is what settles it.
+#
+# So the default stays where it was measured to work. To try more, set this on
+# BOTH phones and watch `rx` against `tx` in --voice-debug:
+#
+#     OTRV4PLUS_OPUS_BITRATE=32000     806 B datagram, 46.8 kbit/s offered
+#     OTRV4PLUS_OPUS_BITRATE=40000     878 B datagram, 56.4 kbit/s offered
+#
+# 48000 reaches 958 B, close enough to the tunnel-message limit that one
+# unexpected byte of overhead fragments the datagram and doubles the messages.
+# If 32000 holds up on a real path, this default and that test bound should
+# move together, with the log that justifies it.
+#
+# WIRE FORMAT: both peers must use the same value.
 VOICE_BITRATE = _env_int("OTRV4PLUS_OPUS_BITRATE", 24000, 6000, 64000)
 # 8 rather than 5: the extra CPU is affordable at 16.7 frames/s on aarch64 and
 # buys audible quality, which matters more here than on a low-latency path.
