@@ -29,14 +29,25 @@ XEP SUPPORT (slixmpp plugins):
   XEP-0198  Stream management (stanza acks; graceful degradation if unsupported)
   XEP-0199  XMPP Ping (peer reachability check via /ping)
 
-POST-DAKE FLOW (identical to the IRC client):
+POST-DAKE FLOW (NOT identical to the IRC client -- see below):
   1. DAKE completes -> session ENCRYPTED.
-  2. Both fingerprints are shown; you are asked "Trust this fingerprint? y/n".
-     - y -> fingerprint pinned as VERIFIED (TOFU trust DB).
-     - n -> encrypted-only.
+  2. Both fingerprints are shown, then TOFU decides what to ask:
+     - first contact  -> "Pin this fingerprint? y/n"; y pins it for this JID.
+     - same as pinned -> nothing is asked; it just says it matches.
+     - CHANGED        -> a warning. The pin is NOT replaced, there is no y/n,
+                         SMP setup does not continue, and voice is refused for
+                         that peer until you deliberately run /trust-reset.
   3. You are prompted for the Socialist Millionaire Protocol passphrase, which
      is stored for AUTO-RESPOND. Press Enter / "skip" to skip.
   4. Once BOTH sides have stored the passphrase, EITHER side runs /smp start.
+
+  This differs from the IRC client on purpose. A JID is a durable name, so XMPP
+  keeps a persistent identity and pins peer fingerprints; an IRC nick is not,
+  so IRC keeps a fresh identity every run and pins nothing. Being asked to pin
+  on EVERY connection means one of: you are on a build older than v10.12.0
+  (the old wording was "Trust this fingerprint?"), you answered something other
+  than y, or the peer is on an older build and their identity is still
+  regenerating -- BOTH ends need v10.12.0 for a stable fingerprint.
 
 ROSTER / SUBSCRIPTION FLOW:
   Subscription requests are NEVER auto-approved. They queue in /pending; use
