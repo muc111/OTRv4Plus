@@ -171,8 +171,11 @@ class TestRemoteInputCannotBecomeASecret:
         assert callers, "nothing prompts for the secret any more"
         # Every caller must be reached from local input or local session state,
         # never from a decoded peer message.
+        # dispatch_line is local by definition: it is the user's own typed
+        # command. The point of this test is that nothing reachable from a
+        # DECODED PEER MESSAGE can arm the prompt.
         allowed = {"_check_dake_complete", "_handle_trust_answer",
-                   "_apply_tofu", "store_smp_secret"}
+                   "_apply_tofu", "store_smp_secret", "dispatch_line"}
         assert set(callers) <= allowed, (
             "the secret prompt is armed from %s, which is not a local flow"
             % (set(callers) - allowed))

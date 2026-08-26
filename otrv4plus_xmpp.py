@@ -2432,10 +2432,43 @@ class OTRv4PlusXMPP(ClientXMPP):
         )
         print("[smp] After both have stored it, run  /smp start  (either side).")
         print("[smp] Press Enter or type  skip  to skip for now.")
+        print("[smp] What you type is hidden — it is a shared secret, not a "
+              "command.")
         self._pending[peer] = "smp_secret"
+        self._mask_next_input(True)
+
+    def _mask_next_input(self, on: bool) -> None:
+        """Hide the next typed line, in whichever front end owns stdin.
+
+        The SMP passphrase is a shared secret and was being echoed: into the
+        terminal, into scrollback, into the TUI's recallable command history,
+        and into any `script` capture of the session. It reached a bug report
+        that way, which is how this was noticed.
+
+        The plain reader can swap in getpass; the TUI draws its own line and
+        gets a mask flag. Both are best-effort -- if neither is available the
+        caller still gets the line, because refusing to take a passphrase at
+        all would be a worse failure than showing it.
+        """
+        self._mask_input = bool(on)
+        # The engine owns the raw-mode input line the TUI draws.
+        try:
+            setter = getattr(_otr, "set_input_mask", None)
+            if setter is not None:
+                setter(bool(on))
+        except Exception:
+            pass
+        # The standalone TUI, when that is the front end instead.
+        screen = getattr(self, "_screen", None)
+        if screen is not None:
+            try:
+                screen.mask_input = bool(on)
+            except Exception:
+                pass
 
     def _handle_smp_secret_answer(self, peer, secret):
         self._pending[peer] = None
+        self._mask_next_input(False)
         if not secret or secret.strip().lower() == "skip":
             print("[smp] skipped - you can set it later with  /smp-secret <secret>.")
             return
@@ -2782,6 +2815,20 @@ class OTRv4PlusXMPP(ClientXMPP):
         elif not should_send:
             print(f"[queued] will send once OTR with {peer} is ready")
 
+    def _warn_inline_secret(self):
+        """Say that an inline passphrase was just echoed.
+
+        The engine clears the input line on Enter, so it vanishes from the
+        screen -- but a `script` capture records the keystrokes as they were
+        echoed, before the erase, so the passphrase is in the file regardless.
+        Better to say so than to let it look like it was never shown.
+        """
+        print("[smp] NOTE: that passphrase was typed in the clear, so it is in "
+              "this terminal's")
+        print("[smp] scrollback and in any session capture. Use  /smp-secret  "
+              "with no argument")
+        print("[smp] to be prompted for it hidden instead.")
+
     def store_smp_secret(self, peer, secret):
         """/smp-secret: store passphrase for auto-respond without starting SMP."""
         if not self.otr.has_encrypted_session(peer):
@@ -3004,7 +3051,8 @@ class OTRv4PlusXMPP(ClientXMPP):
             "  /otr [jid]           start OTR session (DAKE)\n"
             "  /smp start           begin SMP verification\n"
             "  /smp <secret>        set secret and start SMP\n"
-            "  /smp-secret <s>      store secret for auto-respond\n"
+            "  /smp-secret          prompt for the SMP passphrase (hidden)\n"
+            "  /smp-secret <s>      store it inline (ECHOED — prefer the above)\n"
             "  /trust-reset <jid>   clear a pinned fingerprint (deliberate)\n"
             "  /identity            your identity and every pinned fingerprint\n"
             "  /trust               re-show fingerprint trust prompt\n"
@@ -3125,16 +3173,31 @@ class OTRv4PlusXMPP(ClientXMPP):
             rest = lstrip[len("/trust-reset"):].strip()
             self.trust_reset(rest or peer)
 
+        elif lstrip in ("/smp-secret", "/smpsecret"):
+            # No argument: prompt for it hidden. The argument form below is
+            # typed in the clear, so this is the one to reach for.
+            if peer:
+                self._prompt_smp_secret(peer)
+            else:
+                print("usage: /smp-secret            (prompts, hidden)")
+                print("       /smp-secret <jid>      (prompts, hidden)")
+
         elif lstrip.startswith("/smp-secret "):
             rest = lstrip[len("/smp-secret "):].strip()
             first = rest.split(" ", 1)[0]
             if "@" in first and " " in rest:
-                t, s = rest.split(" ", 1)
-                self.store_smp_secret(t, s)
+                t, sec = rest.split(" ", 1)
+                self.store_smp_secret(t, sec)
+                self._warn_inline_secret()
+            elif "@" in first and " " not in rest:
+                # A JID and nothing else: they want to be asked, hidden.
+                self._prompt_smp_secret(first)
             elif peer:
                 self.store_smp_secret(peer, rest)
+                self._warn_inline_secret()
             else:
-                print("usage: /smp-secret <jid> <secret>")
+                print("usage: /smp-secret            (prompts, hidden)")
+                print("       /smp-secret <jid>      (prompts, hidden)")
         elif lstrip.startswith("/smp "):
             rest = lstrip[5:].strip()
             if rest == "start":
@@ -4012,10 +4075,20 @@ async def _input_loop(client):
         # prompt has to happen here rather than in a second thread racing it
         # for the same file descriptor.
         prompt = getattr(client, "_password_prompt", None)
+        # A pending SMP passphrase is hidden the same way. It is a shared
+        # secret, not a command, and echoing it put it in scrollback and in
+        # `script` captures of the session.
+        secret_prompt = (None if prompt
+                         else ("[smp] passphrase: "
+                               if getattr(client, "_mask_input", False)
+                               else None))
         try:
             if prompt:
                 line = await loop.run_in_executor(
                     None, getpass.getpass, prompt)
+            elif secret_prompt:
+                line = await loop.run_in_executor(
+                    None, getpass.getpass, secret_prompt)
             else:
                 line = await loop.run_in_executor(None, sys.stdin.readline)
         except (EOFError, KeyboardInterrupt):

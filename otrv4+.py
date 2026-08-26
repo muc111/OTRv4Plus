@@ -1543,6 +1543,30 @@ _print_lock = threading.Lock()
 _current_prompt: str = ""
 
 _input_buffer: List[str] = []
+
+#: Render the input line as dots instead of characters.
+#:
+#: The SMP passphrase is a shared secret and was being echoed like any
+#: command: onto the terminal, into scrollback, and into any `script` capture
+#: of the session. It reached a bug report that way. Set while a passphrase is
+#: being typed; every redraw path below asks _display_buffer() rather than
+#: joining the buffer itself, so a new redraw site cannot quietly leak it.
+_mask_input: bool = False
+
+
+def set_input_mask(on: bool) -> None:
+    """Hide or show what is typed on the input line."""
+    global _mask_input
+    _mask_input = bool(on)
+
+
+def _display_buffer() -> str:
+    """What the input line should SHOW. Never what it should submit."""
+    if _mask_input:
+        return "\u2022" * len(_input_buffer)
+    return "".join(_input_buffer)
+
+
 _input_pos: int = 0
 
 _raw_mode_active = False
@@ -1728,7 +1752,7 @@ def _handle_input_char(ch: str):
             while _input_buffer and _input_buffer[-1] != " ":
                 _input_buffer.pop()
             _input_pos = len(_input_buffer)
-            sys.stdout.write("\r\033[2K" + _current_prompt + "".join(_input_buffer))
+            sys.stdout.write("\r\033[2K" + _current_prompt + _display_buffer())
             sys.stdout.flush()
         return None
 
@@ -1772,11 +1796,13 @@ def _handle_input_char(ch: str):
         with _print_lock:
             _input_buffer.insert(_input_pos, ch)
             _input_pos += 1
+            _shown = "\u2022" if _mask_input else ch
             if _input_pos == len(_input_buffer):
-                sys.stdout.write(ch)
+                sys.stdout.write(_shown)
             else:
-                after = "".join(_input_buffer[_input_pos:])
-                sys.stdout.write(f"{ch }{after }\x1b[{len (after )}D")
+                _after_raw = "".join(_input_buffer[_input_pos:])
+                after = ("\u2022" * len(_after_raw)) if _mask_input else _after_raw
+                sys.stdout.write(f"{_shown }{after }\x1b[{len (after )}D")
             sys.stdout.flush()
         try:
             _c = getattr(__import__("builtins"), "_active_client", None)
@@ -1796,7 +1822,7 @@ def _set_prompt(prompt: str) -> None:
     """Write a prompt string, preserving the user's typed text."""
     global _current_prompt
     with _print_lock:
-        buf = "".join(_input_buffer)
+        buf = _display_buffer()
         if _current_prompt or buf:
             sys.stdout.write("\x1b[1G\x1b[2K")
         _current_prompt = prompt
@@ -1909,7 +1935,7 @@ def _emit_line(text: str) -> None:
         _scroll_buffer.append(wrapped)
 
         with _print_lock:
-            buf = "".join(_input_buffer)
+            buf = _display_buffer()
             sys.stdout.write("\r\033[2K")
             sys.stdout.write(
                 f"\033[33m[PAUSED - {len (_scroll_buffer )} buffered]\033[0m "
@@ -1921,7 +1947,7 @@ def _emit_line(text: str) -> None:
 
     try:
         with _print_lock:
-            buf = "".join(_input_buffer)
+            buf = _display_buffer()
             sys.stdout.write("\r\x1b[2K")
             sys.stdout.write(wrapped + "\n")
             _scroll_history.append(wrapped)
@@ -1951,7 +1977,7 @@ def _show_scrollback(pos: int, page: int) -> None:
                 colorize(f"── SCROLL [{_pct }%] PgUp=back PgDn=fwd Ctrl+P/S=live ──", "yellow")
                 + "\n"
             )
-            sys.stdout.write(_current_prompt + "".join(_input_buffer))
+            sys.stdout.write(_current_prompt + _display_buffer())
             sys.stdout.flush()
         except Exception:
             pass
@@ -1965,7 +1991,7 @@ def _scroll_unlock() -> None:
         sys.stdout.write("\r\033[2K")
         while _scroll_buffer:
             sys.stdout.write(_scroll_buffer.popleft() + "\n")
-        buf = "".join(_input_buffer)
+        buf = _display_buffer()
         if _current_prompt or buf:
             sys.stdout.write(_current_prompt + buf)
         sys.stdout.flush()
@@ -1979,7 +2005,7 @@ def _flush_display_queue() -> None:
     if not _display_queue:
         return
     with _print_lock:
-        buf = "".join(_input_buffer)
+        buf = _display_buffer()
         sys.stdout.write("\r\033[2K")
         while _display_queue:
             sys.stdout.write(_display_queue.popleft() + "\n")
@@ -1993,7 +2019,7 @@ def safe_print(*args, **kwargs):
     kwargs["flush"] = True
     try:
         with _print_lock:
-            buf = "".join(_input_buffer)
+            buf = _display_buffer()
             if (_current_prompt or buf) and _raw_mode_active:
                 sys.stdout.write("\x1b[1G\x1b[2K")
             print(*args, **kwargs)
@@ -5214,7 +5240,7 @@ class Screen:
         return out
 
     def _input_line(self) -> str:
-        buf = "".join(_input_buffer)
+        buf = _display_buffer()
         return (_current_prompt or "") + buf
 
     def _chrome(self, tabs):
@@ -5265,7 +5291,7 @@ class Screen:
                 out.append(f"\033[{1 +i };1H\033[K")
                 out.append(ln)
             _input_r = self.rows
-            _buf = "".join(_input_buffer)
+            _buf = _display_buffer()
             out.append(f"\033[{_input_r };1H\033[2K")
             out.append((_current_prompt or "") + _buf)
             out.append("\0338")
@@ -11641,7 +11667,7 @@ class OTRv4IRCClient:
         _sep_str = colorize("─" * min(_cols, 80), "dim")
         with _print_lock:
             try:
-                buf = "".join(_input_buffer)
+                buf = _display_buffer()
                 if _current_prompt or buf:
                     sys.stdout.write("\x1b[1G\x1b[2K")
                 for ln in lines_out:
