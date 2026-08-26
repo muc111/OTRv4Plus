@@ -4292,15 +4292,55 @@ class RustDAKEAdapter:
         return keys.copy()
 
 
+_KDF_LAST_BACKEND = "unused"
+_KDF_DOWNGRADE_WARNED = False
+
+
+def kdf_backend() -> str:
+    """Which at-rest KDF the most recent :func:`_derive_key` call really used.
+
+    ``"argon2id"`` or ``"scrypt"``.  This exists so the downgrade is
+    inspectable rather than something you have to infer from an import-time
+    warning that scrolled past twenty minutes ago.
+    """
+    return _KDF_LAST_BACKEND
+
+
+def _warn_kdf_downgrade(reason: str) -> None:
+    """Say out loud, once, that at-rest storage is no longer memory-hard."""
+    global _KDF_DOWNGRADE_WARNED
+    if _KDF_DOWNGRADE_WARNED:
+        return
+    _KDF_DOWNGRADE_WARNED = True
+    print(
+        "WARNING: at-rest key derivation fell back to scrypt (%s).\n"
+        "         scrypt n=16384 r=8 p=1 costs an attacker ~16 MiB per guess;\n"
+        "         Argon2id t=3 m=64MiB p=4 costs ~64 MiB and resists GPUs "
+        "better.\n"
+        "         Install it with:  pip install argon2-cffi" % reason,
+        file=sys.stderr,
+    )
+
+
 def _derive_key(password: bytes, salt: bytes, dklen: int = 32) -> bytes:
     """Derive an encryption key from password material.
 
     Uses Argon2id when available (memory-hard, GPU/ASIC resistant).
-    Falls back to scrypt if argon2-cffi is not installed.
+    Falls back to scrypt if argon2-cffi is not installed, or if Argon2 itself
+    fails -- on a memory-pressured handset a 64 MiB allocation genuinely can
+    fail.  That fallback is deliberate (losing access to your own SMP secrets
+    is worse than a weaker KDF here), but it is no longer silent: it warns,
+    with the reason, and :func:`kdf_backend` reports what was actually used.
+
+    This is the AT-REST KDF only.  The SMP passphrase itself is stretched on
+    the wire by 50,000 iterated rounds of SHAKE-256 in ``Rust/src/smp.rs``,
+    which is CPU-hard but NOT memory-hard.  Argon2 is not involved there and
+    putting it there would be a wire break -- see SPEC 6.4.
 
     Argon2id parameters: time_cost=3, memory_cost=65536 (64MB), parallelism=4
     scrypt parameters: n=16384, r=8, p=1 (Termux memory safe)
     """
+    global _KDF_LAST_BACKEND
     if ARGON2_AVAILABLE:
         try:
             from argon2.low_level import hash_secret_raw, Type as _ArgonType
@@ -4314,10 +4354,14 @@ def _derive_key(password: bytes, salt: bytes, dklen: int = 32) -> bytes:
                 hash_len=dklen,
                 type=_ArgonType.ID,
             )
+            _KDF_LAST_BACKEND = "argon2id"
             return key
-        except Exception:
-            pass
+        except Exception as exc:
+            _warn_kdf_downgrade("argon2 raised %s" % type(exc).__name__)
+    else:
+        _warn_kdf_downgrade("argon2-cffi is not installed")
 
+    _KDF_LAST_BACKEND = "scrypt"
     return hashlib.scrypt(password, salt=salt, n=16384, r=8, p=1, dklen=dklen)
 
 

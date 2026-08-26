@@ -107,3 +107,86 @@ class TestWhereTheKdfsReallyAre:
         i = spec.index("### 6.4 Secret Derivation")
         section = spec[i:i + 1200]
         assert "50,000" in section and "SHAKE-256" in section
+
+
+class TestTheDowngradeIsNotSilent:
+    """If at-rest storage stops being memory-hard, you should be told."""
+
+    def _src(self):
+        return open(os.path.join(ROOT, "otrv4+.py"), encoding="utf-8").read()
+
+    def test_argon2_failure_is_no_longer_swallowed(self):
+        src = self._src()
+        assert "except Exception:\n            pass\n\n    return hashlib.scrypt" not in src, (
+            "an argon2 failure silently degraded to scrypt with no warning")
+        assert "_warn_kdf_downgrade" in src
+
+    def test_both_downgrade_paths_warn(self):
+        """Missing argon2-cffi AND a raising argon2 must each warn."""
+        src = self._src()
+        body = src.split("def _derive_key(", 1)[1].split("\nclass ", 1)[0]
+        assert body.count("_warn_kdf_downgrade(") == 2, (
+            "one of the two ways to end up on scrypt does not warn")
+
+    def test_the_backend_actually_used_is_reportable(self):
+        src = self._src()
+        assert "def kdf_backend(" in src
+        assert '_KDF_LAST_BACKEND = "argon2id"' in src
+        assert '_KDF_LAST_BACKEND = "scrypt"' in src
+
+    def test_derive_key_docstring_does_not_claim_argon2_protects_smp_wire(self):
+        """The at-rest KDF must not be confused with the protocol KDF."""
+        src = self._src()
+        doc = src.split("def _derive_key(", 1)[1].split('"""', 2)[1]
+        assert "AT-REST" in doc
+        assert "50,000" in doc and "SHAKE-256" in doc, (
+            "the docstring should name the protocol KDF it is NOT")
+
+    def test_warning_names_a_remedy(self):
+        src = self._src()
+        assert "pip install argon2-cffi" in src
+
+
+class TestTheSmpStretchIsUnsalted:
+    """The 50k-round stretch buys less than it looks like it buys.
+
+    ``set_secret`` stretches ``"OTRv4+SMP-v2\\0" || raw_secret`` for 50,000
+    rounds of SHAKE-256 and only THEN binds in the session id and both
+    fingerprints, with a single HMAC.  Nothing user-specific enters the
+    expensive part, so an attacker builds ``stretch(candidate)`` once and
+    reuses it against every OTRv4Plus user and every session forever; testing
+    a candidate against a captured transcript then costs one HMAC.
+
+    These tests do not assert that this is fine.  They pin the shape of the
+    construction so that if someone fixes it -- or makes it worse -- the
+    change is deliberate and the docs move with it.
+    """
+
+    def _smp(self):
+        return open(os.path.join(ROOT, "Rust", "src", "smp.rs"),
+                    encoding="utf-8").read()
+
+    def _set_secret(self):
+        src = self._smp()
+        body = src.split("pub fn set_secret(", 1)[1]
+        return body.split("\n    pub fn ", 1)[0]
+
+    def test_the_stretch_input_is_only_the_domain_tag_and_the_secret(self):
+        body = self._set_secret()
+        stretch = body.split("Step 1", 1)[1].split("Step 2", 1)[0]
+        for user_specific in ("session_id", "our_fp", "peer_fp"):
+            assert user_specific not in stretch, (
+                "%s now enters the 50k-round stretch -- good, but that is a "
+                "WIRE CHANGE: it needs a new SMP version byte, both peers "
+                "updated together, and SPEC 6.4 rewritten" % user_specific)
+
+    def test_the_binding_happens_after_the_stretch(self):
+        body = self._set_secret()
+        assert body.index("KDF_ROUNDS") < body.index("Hmac::<Sha3_512>"), (
+            "binding moved ahead of the stretch -- that changes the derived "
+            "scalar and is a wire break")
+
+    def test_the_cost_is_still_the_documented_50k(self):
+        assert "const KDF_ROUNDS:           u32   = 50_000;" in self._smp(), (
+            "KDF_ROUNDS changed; both peers must agree or SMP fails, and "
+            "SPEC 6.4 quotes this number")
