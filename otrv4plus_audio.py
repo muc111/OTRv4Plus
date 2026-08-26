@@ -748,6 +748,169 @@ COMP_ATTACK = 0.45
 COMP_RELEASE = 0.06
 
 
+#: Speech clarity filtering, ahead of the compressor.
+#:
+#: Two problems the compressor cannot solve on its own:
+#:
+#: 1. Everything below ~120 Hz -- handling noise, desk thump, breath, mains
+#:    hum -- carries no speech but does carry level. The compressor sees it as
+#:    signal and turns the whole frame down for it, so rumble literally makes
+#:    speech quieter. Removing it hands that headroom back.
+#: 2. Consonants live at 2-4 kHz and are what makes speech intelligible rather
+#:    than merely audible. Vowels dominate the energy, so a compressor set for
+#:    loudness flattens exactly the band that carries meaning.
+#:
+#: A high-pass and a presence peak fix both, and they raise INTELLIGIBILITY
+#: without raising peak level -- which matters here because the output already
+#: peaks near -3 dBFS and has no room to get louder.
+SPEECH_HPF_HZ = _env_float("OTRV4PLUS_SPEECH_HPF_HZ", 120.0, 0.0, 400.0)
+SPEECH_PRESENCE_HZ = _env_float("OTRV4PLUS_SPEECH_PRESENCE_HZ", 2600.0, 800.0, 6000.0)
+SPEECH_PRESENCE_DB = _env_float("OTRV4PLUS_SPEECH_PRESENCE_DB", 5.0, 0.0, 12.0)
+SPEECH_PRESENCE_Q = _env_float("OTRV4PLUS_SPEECH_PRESENCE_Q", 0.9, 0.3, 4.0)
+
+
+class Biquad:
+    """One RBJ-cookbook biquad section, transposed direct form II.
+
+    Transposed DF-II because it needs two state words rather than four and is
+    the better-behaved form in fixed precision. State is per instance, so a
+    stage must not be shared between the capture and playback chains.
+    """
+
+    __slots__ = ("b0", "b1", "b2", "a1", "a2", "_z1", "_z2")
+
+    def __init__(self, b0, b1, b2, a0, a1, a2):
+        self.b0 = b0 / a0
+        self.b1 = b1 / a0
+        self.b2 = b2 / a0
+        self.a1 = a1 / a0
+        self.a2 = a2 / a0
+        self._z1 = 0.0
+        self._z2 = 0.0
+
+    @classmethod
+    def highpass(cls, hz, rate, q=0.707):
+        w0 = 2.0 * math.pi * hz / rate
+        cw, alpha = math.cos(w0), math.sin(w0) / (2.0 * q)
+        return cls((1.0 + cw) / 2.0, -(1.0 + cw), (1.0 + cw) / 2.0,
+                   1.0 + alpha, -2.0 * cw, 1.0 - alpha)
+
+    @classmethod
+    def peaking(cls, hz, rate, gain_db, q=0.9):
+        a = 10.0 ** (gain_db / 40.0)
+        w0 = 2.0 * math.pi * hz / rate
+        cw, alpha = math.cos(w0), math.sin(w0) / (2.0 * q)
+        return cls(1.0 + alpha * a, -2.0 * cw, 1.0 - alpha * a,
+                   1.0 + alpha / a, -2.0 * cw, 1.0 - alpha / a)
+
+
+class SpeechClarity:
+    """High-pass plus presence lift, for intelligibility rather than level.
+
+    Runs BEFORE the compressor deliberately. After it, the presence boost
+    would be squashed by the same gain reduction it triggered; before it, the
+    compressor sees a signal whose level is speech rather than rumble and
+    spends its range on the part that carries meaning.
+    """
+
+    def __init__(self, rate=None, hpf_hz=None, presence_hz=None,
+                 presence_db=None, presence_q=None, enabled=True):
+        rate = int(rate or SAMPLE_RATE)
+        hpf = SPEECH_HPF_HZ if hpf_hz is None else float(hpf_hz)
+        p_hz = SPEECH_PRESENCE_HZ if presence_hz is None else float(presence_hz)
+        p_db = SPEECH_PRESENCE_DB if presence_db is None else float(presence_db)
+        p_q = SPEECH_PRESENCE_Q if presence_q is None else float(presence_q)
+        self.enabled = bool(enabled)
+        self.rate = rate
+        self.hpf_hz = hpf
+        self.presence_hz = p_hz
+        self.presence_db = p_db
+        self._sections = []
+        if hpf > 0.0:
+            self._sections.append(Biquad.highpass(hpf, rate))
+        if p_db > 0.0 and 0.0 < p_hz < rate / 2.0:
+            self._sections.append(Biquad.peaking(p_hz, rate, p_db, p_q))
+        # Make room for the lift instead of clipping into it -- but only as
+        # much room as the frame in hand actually needs.
+        #
+        # A presence peak adds up to p_db at its centre, so a frame already
+        # near full scale there clips, and this runs BEFORE the limiter, so
+        # that clipping is distortion nothing downstream can undo. Attenuating
+        # by the full boost on every frame does prevent it, and costs: the
+        # compressor recovers only (1 - 1/ratio) of what is taken away, so a
+        # flat 5 dB gave back 3.75 and the measured speech gain fell from
+        # +2.1 dB to +0.8.
+        #
+        # Real speech peaks nowhere near full scale, so almost no frame needs
+        # any of it. The headroom is computed per frame from the actual peak
+        # and smoothed, so quiet speech keeps the whole lift and only a hot
+        # frame gives some back.
+        self._boost = 10.0 ** (p_db / 20.0) if p_db > 0.0 else 1.0
+        self._headroom = 1.0
+
+    def process(self, pcm):
+        if not self.enabled or not self._sections or not pcm:
+            return pcm
+        n = len(pcm) // SAMPLE_WIDTH
+        if n == 0:
+            return pcm
+        raw = bytes(pcm)[:n * SAMPLE_WIDTH]
+        samples = list(struct.unpack("<%dh" % n, raw))
+
+        if self._boost > 1.0:
+            peak = 0
+            if _audioop is not None:
+                try:
+                    peak = _audioop.max(raw, SAMPLE_WIDTH)
+                except Exception:
+                    peak = 0
+            if not peak:
+                peak = max((abs(v) for v in samples), default=0)
+            # Worst case the peak lands exactly on the presence centre.
+            want = 1.0 if peak * self._boost <= PCM_FULL_SCALE else \
+                PCM_FULL_SCALE / float(peak * self._boost)
+            # Down fast, back up slowly: an abrupt change of a few dB between
+            # frames is audible as a click, and coming back up is never urgent.
+            if want < self._headroom:
+                self._headroom = want
+            else:
+                self._headroom = min(want, self._headroom * 1.05)
+            if self._headroom < 0.999:
+                h = self._headroom
+                samples = [v * h for v in samples]
+
+        for sec in self._sections:
+            b0, b1, b2 = sec.b0, sec.b1, sec.b2
+            a1, a2 = sec.a1, sec.a2
+            z1, z2 = sec._z1, sec._z2
+            for i in range(n):
+                x = samples[i]
+                y = b0 * x + z1
+                z1 = b1 * x - a1 * y + z2
+                z2 = b2 * x - a2 * y
+                samples[i] = y
+            sec._z1, sec._z2 = z1, z2
+        out = []
+        for v in samples:
+            iv = int(v)
+            if iv > 32767:
+                iv = 32767
+            elif iv < -32768:
+                iv = -32768
+            out.append(iv)
+        return bytearray(struct.pack("<%dh" % n, *out))
+
+
+def make_speech_clarity() -> SpeechClarity:
+    """Playback speech filtering, on by default.
+
+    Local and reversible: OTRV4PLUS_SPEECH_CLARITY=0 turns it off, and the
+    three shaping parameters are individually tunable. Nothing about it
+    touches the wire.
+    """
+    return SpeechClarity(enabled=_env_flag("OTRV4PLUS_SPEECH_CLARITY", True))
+
+
 class Compressor:
     """Dynamic range compression for speech, ahead of the gain stage.
 

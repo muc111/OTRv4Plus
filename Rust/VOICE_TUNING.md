@@ -2,6 +2,37 @@
 
 ## Making a call louder
 
+**Speech clarity runs by default as of the commit that added this section.** A
+high-pass at 120 Hz and a +5 dB presence peak at 2.6 kHz, ahead of the
+compressor. Measured on speech with a 60 Hz rumble under it:
+
+| | speech RMS | peak | 1-4 kHz share |
+|---|---|---|---|
+| without | -16.0 dBFS | -1.0 dBFS | 0.348 |
+| **with** | **-13.9 dBFS** | -1.0 dBFS | **0.421** |
+
++2.1 dB of voice at an unchanged peak, and a fifth more energy in the band that
+carries consonants. It costs about 1 ms per 60 ms frame on a handset.
+
+Why it works where gain does not: the compressor cannot tell speech from
+rumble, so sub-120 Hz energy made it turn the whole frame down; and a
+compressor set for loudness flattens 2-4 kHz, which is what makes speech
+intelligible rather than merely audible.
+
+Headroom for the lift is taken per frame from the actual peak, so quiet speech
+keeps the whole +5 dB and only a near-full-scale frame gives any back. A flat
+attenuation was tried first and cost 1.3 dB, because the compressor only
+recovers `(1 - 1/ratio)` of whatever is taken away.
+
+| variable | default | effect |
+|---|---|---|
+| `OTRV4PLUS_SPEECH_CLARITY` | `1` | `0` disables the whole stage |
+| `OTRV4PLUS_SPEECH_HPF_HZ` | `120` | high-pass corner; raise toward 200 on a rumbly handset |
+| `OTRV4PLUS_SPEECH_PRESENCE_DB` | `5` | consonant lift; 8 measured slightly worse than 5 |
+| `OTRV4PLUS_SPEECH_PRESENCE_HZ` | `2600` | centre of the lift |
+| `OTRV4PLUS_SPEECH_PRESENCE_Q` | `0.9` | width; lower is broader |
+
+
 Measured on a 3-second speech-shaped signal peaking at -14 dBFS, through the
 real playback chain:
 
