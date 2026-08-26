@@ -263,12 +263,28 @@ class TestTheTunablesAreReal:
         assert audio.ALIGN_WRITES is True
         assert audio.OUTPUT_BURSTS >= 2, (
             "two bursts is the floor for a blocking writer")
-        assert audio.OUTPUT_CAPACITY_FRAMES >= 4
 
-    def test_capacity_leaves_room_for_the_buffer_size(self):
-        # Capacity 3840 (2 bursts) is what the handset granted before this
-        # change, which left no room to set a size at all.
-        assert audio.FRAME_SAMPLES * audio.OUTPUT_CAPACITY_FRAMES >= 1920 * 3
+    def test_the_capacity_request_is_small_because_bigger_made_it_worse(self):
+        """Capacity is not free headroom, which is what it was assumed to be.
+
+        Measured on the handset, twice, framesPerBurst came back as exactly
+        half the capacity granted:
+
+            requested 3840 (4 frames)  ->  capacity 3840, burst 1920 (120 ms)
+            requested 7680 (8 frames)  ->  capacity 7680, burst 3840 (240 ms)
+
+        So asking for more enlarged the transfer unit and with it the audio
+        that must be accumulated before a write. Going 4 -> 8 left playout at
+        13.0 fps against the 16.7 needed. This bound stops the request drifting
+        upward again on the old, wrong reasoning.
+        """
+        assert audio.OUTPUT_CAPACITY_FRAMES <= 4, (
+            "a large capacity request buys a large burst on at least one real "
+            "device; raise it only with a log showing the burst did not follow")
+
+    def test_the_request_is_still_big_enough_for_the_buffer_size(self):
+        # Buffer size is OUTPUT_BURSTS bursts and cannot exceed capacity.
+        assert audio.OUTPUT_CAPACITY_FRAMES >= 2
 
     def test_the_buffer_size_setter_is_bound(self):
         src = __import__("inspect").getsource(audio._bind)

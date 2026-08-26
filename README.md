@@ -531,8 +531,11 @@ and an IRC nick are not the same kind of name.
 
 **XMPP — trust on first use.** Your identity persists across restarts, so the
 peer's does too, and a fingerprint that changes is worth knowing about. On first
-contact with a JID the fingerprint is shown and you are asked once whether to
-pin it. After that a matching fingerprint says so and asks nothing.
+contact with a JID the fingerprint is shown and pinned automatically. After that
+a matching fingerprint says so. **You are never asked to approve a fingerprint**
+— faced with one you have never seen there is nothing to check it against, so
+the only available answer is yes, and a question always answered yes trains the
+reflex that makes the one that matters useless.
 
 If the fingerprint **changes**, the session stops there:
 
@@ -544,8 +547,8 @@ If the fingerprint **changes**, the session stops there:
 [trust] The pinned fingerprint has NOT been replaced.
 ```
 
-The stored pin is not overwritten, there is no `y` to press, SMP setup does not
-continue, and voice is refused for that peer. Accepting a new identity is a
+The stored pin is not overwritten, SMP setup does not continue, and voice is
+refused for that peer. There is no keystroke that waves this through. Accepting a new identity is a
 separate, typed, peer-named action: `/trust-reset <jid>`. That asymmetry is the
 point — a prompt answerable with the keystroke you already press reflexively is
 not a decision.

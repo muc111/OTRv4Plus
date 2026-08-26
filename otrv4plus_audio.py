@@ -160,10 +160,26 @@ ALIGN_WRITES = _env_flag("OTRV4PLUS_AAUDIO_ALIGN_WRITES", True)
 #: well aligned it is.  More costs device-side latency.
 OUTPUT_BURSTS = _env_int("OTRV4PLUS_AAUDIO_OUTPUT_BURSTS", 2, 2, 8)
 
-#: Requested playback capacity, in frames of ours.  A ceiling, not a latency:
-#: the stream runs at the buffer SIZE above.  Headroom here stops the device
-#: granting exactly two bursts and leaving no room to set a size at all.
-OUTPUT_CAPACITY_FRAMES = _env_int("OTRV4PLUS_AAUDIO_OUTPUT_CAPACITY", 8, 4, 32)
+#: Requested playback capacity, in frames of ours.
+#:
+#: This is NOT free headroom, which is what it was first assumed to be.  On the
+#: handset this was measured on, the device derives its burst from the capacity
+#: it grants -- framesPerBurst came back as exactly half of it, twice:
+#:
+#:     requested 3840 (4 frames)  ->  capacity 3840, burst 1920 (120 ms)
+#:     requested 7680 (8 frames)  ->  capacity 7680, burst 3840 (240 ms)
+#:
+#: So asking for more made the transfer unit bigger, and with it the amount of
+#: audio that has to be accumulated before a write.  Raising this from 4 to 8
+#: doubled the alignment quantum and left playout at 13.0 fps against 16.7.
+#:
+#: 2 asks for the smallest useful capacity, in the expectation that the burst
+#: comes back at 960 frames -- exactly one packet -- at which point no
+#: alignment is needed at all and each write simply paces at one frame.  A
+#: device with a larger minimum will clamp this upward and is no worse off than
+#: before.  Sweep it (2, 4, 8) and read `burst` from the `[voice] playout:`
+#: line if this device behaves differently.
+OUTPUT_CAPACITY_FRAMES = _env_int("OTRV4PLUS_AAUDIO_OUTPUT_CAPACITY", 2, 2, 32)
 
 
 def alignment_frames(frames_per_burst: int, device_frames_per_packet: int = None,

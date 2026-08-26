@@ -31,12 +31,16 @@ XEP SUPPORT (slixmpp plugins):
 
 POST-DAKE FLOW (NOT identical to the IRC client -- see below):
   1. DAKE completes -> session ENCRYPTED.
-  2. Both fingerprints are shown, then TOFU decides what to ask:
-     - first contact  -> "Pin this fingerprint? y/n"; y pins it for this JID.
-     - same as pinned -> nothing is asked; it just says it matches.
-     - CHANGED        -> a warning. The pin is NOT replaced, there is no y/n,
-                         SMP setup does not continue, and voice is refused for
-                         that peer until you deliberately run /trust-reset.
+  2. Both fingerprints are shown, then TOFU acts. Nothing is asked:
+     - first contact  -> pinned automatically for this JID, and it says so.
+     - same as pinned -> it says it matches.
+     - CHANGED        -> a warning. The pin is NOT replaced, SMP setup does
+                         not continue, and voice is refused for that peer
+                         until you deliberately run /trust-reset.
+     There is no y/n at any point. Approving a fingerprint you have never seen
+     has nothing to check it against, so the only available answer is yes --
+     and a question always answered yes trains the reflex that makes the
+     CHANGED case useless. /identity shows what is pinned.
   3. You are prompted for the Socialist Millionaire Protocol passphrase, which
      is stored for AUTO-RESPOND. Press Enter / "skip" to skip.
   4. Once BOTH sides have stored the passphrase, EITHER side runs /smp start.
@@ -2286,43 +2290,41 @@ class OTRv4PlusXMPP(ClientXMPP):
         if pinned_and_trusted:
             print("[trust] Fingerprint matches the pinned identity for this JID.")
             self._prompt_smp_secret(peer)
-        else:
-            print("[trust] First contact with this JID. No fingerprint is pinned yet.")
-            print("[trust] Pin this fingerprint? Type  y  or  n :")
-            self._pending[peer] = "trust"
+            return
 
-    def _handle_trust_answer(self, peer, answer):
-        """Answer to the first-contact pin question. Reached only on first contact.
-
-        A changed fingerprint never routes here -- `_apply_tofu` returns before
-        arming this prompt -- so `y` can pin a new identity but can never
-        replace a pinned one.
-        """
-        ans = answer.strip().lower()
-        if ans in ("y", "yes"):
-            ok = False
-            try:
-                remote_fp = self._remote_fp(peer)
-                ok = self.otr.trust_fingerprint(peer, remote_fp)
-            except Exception as e:
-                print(f"[trust] error saving trust: {e}")
-            if ok:
-                print("[trust] Fingerprint PINNED for this JID. A change will be "
-                      "reported from now on.")
-            else:
-                print("[trust] Could not store the pin, continuing encrypted-only.")
+        # First contact: pin it and say so. No question.
+        #
+        # The prompt is gone because it never carried the security. Asked to
+        # approve a fingerprint you have never seen, there is nothing to check
+        # it against -- the only available answer is yes, and a question whose
+        # answer is always yes trains the reflex that makes the question that
+        # DOES matter useless. Signal, WhatsApp and every other TOFU deployment
+        # pin silently for the same reason.
+        #
+        # What protects you is the second half, and it is untouched: a pinned
+        # fingerprint that CHANGES still stops the session, still refuses
+        # voice, still cannot be waved through with a keystroke, and still
+        # needs a deliberate /trust-reset. That is the branch above, and it is
+        # where a machine-in-the-middle actually shows up.
+        ok = False
+        try:
+            ok = self.otr.trust_fingerprint(peer, remote_fp)
+        except Exception as exc:
+            print("[trust] could not pin the fingerprint: %s" % type(exc).__name__)
+        if ok:
+            print("[trust] First contact — fingerprint PINNED for this JID.")
+            print("[trust] A change will be reported and will block voice.")
         else:
-            print("[trust] Not pinned - encrypted only. You will be asked again "
-                  "next session.")
-        self._pending[peer] = None
+            print("[trust] First contact — the fingerprint could NOT be pinned,")
+            print("[trust] so a change cannot be detected. /identity for why.")
         self._prompt_smp_secret(peer)
 
     def show_identity(self):
         """Everything TOFU depends on, in one screen.
 
         Written because "it still asks me to trust the fingerprint" has three
-        very different causes -- an older build at one end, an answer that was
-        not `y`, or a peer whose identity really is changing -- and telling them
+        very different causes -- an older build at one end, a pin that did not
+        stick, or a peer whose identity really is changing -- and telling them
         apart previously meant finding and reading a JSON file on both phones.
         """
         print("-" * 60)
@@ -2353,9 +2355,8 @@ class OTRv4PlusXMPP(ClientXMPP):
         print("-" * 60)
         if not entries:
             print("[identity] No fingerprints pinned yet.")
-            print("[identity]   The FIRST session with a peer always asks. Being")
-            print("[identity]   asked a SECOND time means the pin did not stick, or")
-            print("[identity]   the peer's identity changed.")
+            print("[identity]   First contact pins silently. If nothing is listed")
+            print("[identity]   after a session, the pin did not stick.")
         else:
             print("[identity] Pinned fingerprints (%d):" % len(entries))
             for jid, fp in sorted(entries.items()):
@@ -3051,16 +3052,13 @@ class OTRv4PlusXMPP(ClientXMPP):
     def feed_pending(self, peer, line):
         """If `peer` has a pending prompt (trust / smp_secret), consume line."""
         state = self._pending.get(peer)
-        if state == "trust":
-            self._handle_trust_answer(peer, line)
-            return True
         if state == "smp_secret":
             self._handle_smp_secret_answer(peer, line)
             return True
         return False
 
     def has_pending(self, peer):
-        return self._pending.get(peer) in ("trust", "smp_secret")
+        return self._pending.get(peer) == "smp_secret"
 
     # -------------------------------------------------------------------------
     # Shared command dispatch

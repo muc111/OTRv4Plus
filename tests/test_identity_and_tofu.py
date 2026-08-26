@@ -311,6 +311,9 @@ class _FakeOtr:
     def __init__(self, db):
         self.trust_db = db
 
+    def trust_fingerprint(self, peer, fp):
+        return self.trust_db.add_trust(peer, fp)
+
 
 class _FakeClient:
     """The smallest object `_apply_tofu` can run against.
@@ -345,12 +348,49 @@ class TestTheClientRefusesAChangedFingerprint:
         return otr.TrustDatabase(os.path.join(statedir, "trust.json"),
                                  persistent=True)
 
-    def test_first_contact_arms_the_pin_prompt(self, statedir, monkeypatch):
+    def test_first_contact_pins_without_asking(self, statedir, monkeypatch):
+        """No prompt on first contact, by design.
+
+        Asked to approve a fingerprint never seen before there is nothing to
+        check it against, so the only available answer is yes -- and a question
+        whose answer is always yes trains the reflex that makes the question
+        that DOES matter useless.
+        """
         db = self._db(statedir)
         c = _FakeClient(db)
         _run_tofu(c, "alice@x", "AAAA", monkeypatch)
-        assert c._pending.get("alice@x") == "trust"
+        assert c._pending.get("alice@x") is None, "a prompt was armed"
         assert c._fingerprint_changed == {}
+        assert self._db(statedir).check_or_pin("alice@x", "AAAA") is True, (
+            "first contact did not pin the fingerprint")
+
+    def test_first_contact_moves_straight_on_to_smp(self, statedir, monkeypatch):
+        db = self._db(statedir)
+        c = _FakeClient(db)
+        _run_tofu(c, "alice@x", "AAAA", monkeypatch)
+        assert c.prompted == ["alice@x"]
+
+    def test_the_pin_survives_into_the_next_session(self, statedir, monkeypatch):
+        db = self._db(statedir)
+        c1 = _FakeClient(db)
+        _run_tofu(c1, "alice@x", "AAAA", monkeypatch)
+        c2 = _FakeClient(self._db(statedir))
+        _run_tofu(c2, "alice@x", "AAAA", monkeypatch)
+        assert "matches the pinned identity" in "\n".join(c2.printed)
+
+    def test_there_is_no_prompt_state_left_to_arm(self, statedir):
+        """The y/n path is gone, not merely unused.
+
+        Dead code that can still consume the next line typed is worse than no
+        code: it is a capture the user cannot see and nothing exercises.
+        """
+        import inspect
+        xmpp = pytest.importorskip("otrv4plus_xmpp")
+        src = inspect.getsource(xmpp.OTRv4PlusXMPP)
+        assert '_pending[peer] = "trust"' not in src
+        assert "_handle_trust_answer" not in src
+        feed = inspect.getsource(xmpp.OTRv4PlusXMPP.feed_pending)
+        assert '"trust"' not in feed
 
     def test_a_matching_pin_asks_nothing(self, statedir, monkeypatch):
         db = self._db(statedir)

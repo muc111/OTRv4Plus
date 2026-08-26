@@ -50,7 +50,9 @@ def _make_client(d):
     # slixmpp's XMLStream.__del__ touches these. The object here is built with
     # __new__ so no slixmpp constructor ran, and without them every collection
     # raises inside __del__ and pytest reports an unraisable exception.
-    c._run_out_filters = False
+    class _NoTask:
+        def cancel(self): pass
+    c._run_out_filters = _NoTask()
     c._run_filters = None
     return c
 
@@ -83,7 +85,9 @@ class TestItAnswersTheQuestionThatWasAsked:
     def test_an_empty_store_explains_what_a_second_prompt_means(self, client, capsys):
         out = report(client, capsys)
         assert "No fingerprints pinned" in out
-        assert "SECOND time" in out
+        assert "pins silently" in out, (
+            "the empty-store text must say first contact is silent, or it "
+            "reads as though a prompt was missed")
 
     def test_it_lists_pinned_peers(self, client, capsys):
         client.otr.trust_db.add_trust("alice@x", "AAAA")
