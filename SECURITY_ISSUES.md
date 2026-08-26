@@ -250,6 +250,13 @@ implementations are not trivially interchangeable.
 
 **Status: RESOLVED. Option B implemented — sealing happens inside Rust.**
 
+**Now in use beyond Android (v10.12.0).** The XMPP client persists its
+identity through this same mechanism via `otrv4plus_identity.py`, so the
+seed stays inside Rust on Termux too. What differs from the Android design
+is key custody: the DEK is a 0600 file rather than a Keystore-wrapped key,
+so the at-rest protection there is filesystem permissions. IRC persists no
+identity at all and is unaffected.
+
 Regression tests: `tests/test_rust_identity_sealing.py` (35 tests covering all
 nine required proofs).
 

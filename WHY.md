@@ -19,6 +19,10 @@ What you get at the end of those minutes:
 - **Quantum-safe forward secrecy**: ML-KEM-1024 rotated at every ratchet step. Someone who records your traffic today and builds a quantum computer in 2035 cannot decrypt it.
 - **Post-quantum authentication**: ML-DSA-87 alongside Ed448 ring signatures. Your peer's identity is verified against a standard that survives Shor's algorithm.
 - **Hybrid post-quantum identity proof**: SMP runs four Rust-computed steps over I2P, with the classical Schnorr zero-knowledge proof wrapped in an ML-KEM-1024 + ML-DSA-87 binding layer. Your shared passphrase is never sent over the wire and never leaves Rust-owned memory. To forge a false "verified" result an attacker would need to break the 3072-bit discrete log, ML-KEM-1024, and ML-DSA-87 simultaneously. The modular exponentiation is constant-time, so step timing does not leak your secret.
+- **Continuity you can check**: on XMPP the identity behind a JID persists, so
+  its fingerprint is pinned the first time you talk and a later change is
+  reported rather than absorbed. On IRC the identity is fresh every run by
+  design — a nick is not a name worth pinning to.
 - **Network anonymity**: Your I2P destination is unique to this session. The server sees a b32.i2p address it has never seen before and will never see again.
 - **Deniability**: Ed448 ring signatures mean neither party can prove to a third party who said what. The transcript is cryptographically repudiable.
 

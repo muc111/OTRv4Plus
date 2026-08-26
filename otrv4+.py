@@ -1090,6 +1090,20 @@ class OTRv4TLV:
 
     SMP_TYPES = frozenset({SMP_MSG_1, SMP_MSG_2, SMP_MSG_3, SMP_MSG_4, SMP_ABORT, SMP_MSG_1Q})
 
+    # Optional SMP_ABORT payload naming WHY the abort happened.
+    #
+    # The TLV payload was always empty and receivers ignored it, so adding a
+    # reason is additive: an older peer drops it exactly as before. It exists
+    # because "aborted" collapsed three different situations into one message
+    # -- the peer has no secret configured, the peer has the wrong secret, or
+    # something genuinely failed -- and only the first is fixed by the user
+    # typing a command.
+    #
+    # It is a DIAGNOSTIC, never a predicate. Nothing branches on it beyond the
+    # wording of a line printed locally: it is attacker-controlled text like
+    # any other field a peer sends.
+    SMP_ABORT_NO_SECRET = b"NOSECRET"
+
     def __init__(self, tlv_type: int, value: bytes = b""):
         if not (0 <= tlv_type <= 0xFFFF):
             raise ValueError(f"TLV type out of range: {tlv_type :#06x}")
@@ -2017,6 +2031,32 @@ class OTRConfig:
     nickserv_register: bool = False
     nickserv_nick: Optional[str] = None
     nickserv_pass: Optional[str] = None
+
+    # -- Identity and trust persistence -----------------------------------
+    #
+    # Both default OFF, and that default is the IRC behaviour: a fresh Ed448
+    # identity every process and no trust record that outlives it.  That is
+    # deliberate (ROADMAP Phase 5.3g) and not a limitation to be fixed -- an
+    # IRC nick is ephemeral, so pinning a fingerprint to one means pinning it
+    # to nothing.
+    #
+    # XMPP turns both on.  A JID is a durable name, so an identity that changes
+    # under it is a fact worth noticing, and TOFU is only meaningful once the
+    # local identity stops changing too.
+    #
+    # These are separate switches because they fail independently: identity
+    # persistence can be unavailable (no writable state directory) while trust
+    # pinning is still wanted for the session, and a caller that wants neither
+    # should not have to opt out of both by accident.
+    persist_identity: bool = False
+    persist_trust: bool = False
+
+    #: Sealed long-term identity record.  Only read when persist_identity.
+    identity_path: Optional[str] = None
+    #: Device-local key protecting `identity_path`.  Only read when
+    #: persist_identity.  See TermuxFileDekProvider for what this does and,
+    #: more importantly, what it does not do.
+    identity_dek_path: Optional[str] = None
 
 
 @dataclass
@@ -4659,15 +4699,35 @@ class TrustDatabase:
                 "This may indicate a MITM attack. Session aborted."
             )
 
-    def __init__(self, db_path: Optional[str] = None):
+    def __init__(self, db_path: Optional[str] = None, persistent: bool = True):
+        """`persistent` false keeps the whole database in memory for this process.
+
+        That is the IRC mode, and it is not a degraded version of the XMPP one.
+        An IRC identity is regenerated every run by design, so a fingerprint
+        written to disk can never match anything on a later run -- it can only
+        accumulate, and worse, `add_trust` raises FingerprintMismatchError when
+        it does not match, which turned every reconnect with a previously
+        trusted nick into a "This may indicate a MITM attack" line.  Training a
+        user to dismiss that message costs more than the record was ever worth.
+
+        In-memory still means a `y` answer sticks for the rest of the session,
+        so a reconnect inside one run does not re-prompt.  Nothing survives
+        exit, which is the honest representation of what an ephemeral identity
+        can promise.
+        """
         self._lock = threading.RLock()
+        self.persistent = bool(persistent)
         self.db_path = db_path or os.path.expanduser("~/.otrv4plus/trust.json")
         self._db: Dict[str, dict] = {}
-        self._load()
+        if self.persistent:
+            self._load()
 
     def _load(self):
         """Load database from disk with error handling"""
         with self._lock:
+            if not self.persistent:
+                self._db = {}
+                return
             if not os.path.exists(self.db_path):
                 self._db = {}
                 return
@@ -4694,6 +4754,11 @@ class TrustDatabase:
 
     def _save(self):
         """Save database to disk atomically with error handling"""
+        if not self.persistent:
+            # In-memory mode: the trust map lives and dies with the
+            # process. Writing here would recreate exactly the file
+            # this mode exists to not create.
+            return
         with self._lock:
             try:
                 _db_dir = os.path.dirname(self.db_path) or "."
@@ -6355,8 +6420,24 @@ class EnhancedOTRSession:
                         "NO_SECRET",
                         "SMP1 received but no secret set - aborting",
                     )
+                    # Tell the local user what happened and what to type.
+                    #
+                    # This deliberately does NOT arm the pending-secret prompt.
+                    # That prompt consumes the next line typed, ahead of every
+                    # command except /quit, so letting a remote SMP1 arm it
+                    # would let a peer decide that the user's next sentence --
+                    # possibly meant for someone else -- becomes a secret. The
+                    # secret is supplied by an explicit local command instead.
+                    self._smp_progress_notify(
+                        0, 4,
+                        "SMP requested by peer, but no passphrase is stored "
+                        "for them. Run  /smp-secret <secret>  with the secret "
+                        "you both agreed, then  /smp start .",
+                        role=None, color="yellow",
+                    )
                     self._queued_smp_response = self.encrypt_with_tlvs(
-                        "", [OTRv4TLV(OTRv4TLV.SMP_ABORT, b"")]
+                        "", [OTRv4TLV(OTRv4TLV.SMP_ABORT,
+                                      OTRv4TLV.SMP_ABORT_NO_SECRET)]
                     )
                     return
                 self._smp_progress_notify(
@@ -6470,12 +6551,32 @@ class EnhancedOTRSession:
                 self.auto_smp_started = False
                 self.auto_smp_completed = False
                 self.smp_step = 0
+                # The reason, if the peer sent one, only chooses the wording of
+                # a local line. It is peer-controlled text and is never trusted
+                # as a security predicate: either way the SMP session is over
+                # and nothing is verified.
+                no_secret = (
+                    bytes(getattr(tlv, "value", b"") or b"")
+                    == OTRv4TLV.SMP_ABORT_NO_SECRET
+                )
                 self.tracer.trace(
-                    self.peer, "SMP", "ABORTED", "PEER_ABORT", "Remote peer aborted SMP"
+                    self.peer, "SMP", "ABORTED",
+                    "PEER_NO_SECRET" if no_secret else "PEER_ABORT",
+                    "Remote peer has no SMP secret configured" if no_secret
+                    else "Remote peer aborted SMP",
                 )
-                self._smp_progress_notify(
-                    0, 4, "⚠ SMP aborted by remote peer", role=None, color="red"
-                )
+                if no_secret:
+                    self._smp_progress_notify(
+                        0, 4,
+                        "SMP stopped: your peer has not stored the passphrase "
+                        "yet. Ask them to run  /smp-secret <secret>  and try "
+                        "again. This is not a wrong-passphrase failure.",
+                        role=None, color="yellow",
+                    )
+                else:
+                    self._smp_progress_notify(
+                        0, 4, "⚠ SMP aborted by remote peer", role=None, color="red"
+                    )
                 return
 
         except Exception as e:
@@ -7054,11 +7155,16 @@ class SessionManager:
         self.config = config or OTRConfig(test_mode=True)
         self.logger = logger or NullLogger()
 
-        self.trust_db = TrustDatabase(self.config.trust_db_path)
+        self.trust_db = TrustDatabase(self.config.trust_db_path,
+                                      persistent=self.config.persist_trust)
         self.smp_storage = SMPAutoRespondStorage(self.config.smp_secrets_path)
         self.key_storage = SecureKeyStorage(self.config.key_storage_path)
 
-        self.client_profile = ClientProfile()
+        # Identity.  Ephemeral unless the caller explicitly asked otherwise,
+        # because ephemeral is the IRC contract and IRC must not acquire a
+        # persistent identity by inheriting a default.
+        self.identity_is_persistent = False
+        self.client_profile = self._build_client_profile()
 
         self.lock = threading.RLock()
 
@@ -7083,6 +7189,53 @@ class SessionManager:
         except Exception:
             pass
 
+    def _build_client_profile(self):
+        """Return the ClientProfile this manager will use.
+
+        Two behaviours, chosen by config and never by guesswork:
+
+        * ``persist_identity`` false -- a fresh Ed448 identity, as OTRv4+ has
+          always done (ROADMAP Phase 5.3g).  This is the IRC contract: a nick
+          is ephemeral, so an identity pinned to one is pinned to nothing.
+        * ``persist_identity`` true -- the same identity every run, loaded from
+          a sealed record.  This is the XMPP contract: a JID is durable, so an
+          identity that changed under it every launch made TOFU meaningless and
+          made every reconnect look like a MITM.
+
+        Failure is closed.  If persistence was asked for and cannot be
+        delivered this raises, rather than quietly handing back an ephemeral
+        identity -- a silent fallback would change the local fingerprint with no
+        indication, and every peer holding a pin would see the change TOFU
+        exists to report.
+        """
+        if not self.config.persist_identity:
+            return ClientProfile()
+
+        # Imported here, not at module scope: the IRC client must never load
+        # the persistence machinery at all, and an import that only happens on
+        # the opted-in path makes that checkable rather than a promise.
+        from otrv4plus_identity import load_or_create_identity, IdentityUnavailable
+
+        try:
+            identity, prekey, _pub = load_or_create_identity(
+                self.config.identity_path, self.config.identity_dek_path)
+        except IdentityUnavailable:
+            self._trace_identity("FAILED",
+                                 "persistent identity unavailable - failing closed")
+            raise
+
+        self.identity_is_persistent = True
+        self._trace_identity("READY", "persistent identity loaded")
+        return ClientProfile(identity_key=identity, prekey=prekey)
+
+    def _trace_identity(self, state: str, detail: str) -> None:
+        """Trace without assuming this manager has a tracer (SessionManager does not)."""
+        tracer = getattr(self, "tracer", None)
+        if tracer is not None:
+            try:
+                tracer.trace("SYSTEM", "IDENTITY", None, state, detail)
+            except Exception:
+                pass
     def _store_identity(self):
         """Store client profile in secure storage.
 
@@ -7571,11 +7724,16 @@ class EnhancedSessionManager:
         self.tracer = tracer or OTRTracer(enabled=True)
         self.logger = logger or NullLogger()
 
-        self.trust_db = TrustDatabase(self.config.trust_db_path)
+        self.trust_db = TrustDatabase(self.config.trust_db_path,
+                                      persistent=self.config.persist_trust)
         self.smp_storage = SMPAutoRespondStorage(self.config.smp_secrets_path)
         self.key_storage = SecureKeyStorage(self.config.key_storage_path)
 
-        self.client_profile = ClientProfile()
+        # Identity.  Ephemeral unless the caller explicitly asked otherwise,
+        # because ephemeral is the IRC contract and IRC must not acquire a
+        # persistent identity by inheriting a default.
+        self.identity_is_persistent = False
+        self.client_profile = self._build_client_profile()
 
         self.sessions: Dict[str, EnhancedOTRSession] = {}
         self.dake_engines: Dict[str, RustDAKEAdapter] = {}
@@ -7589,6 +7747,53 @@ class EnhancedSessionManager:
 
         self.tracer.trace("SYSTEM", "MANAGER", None, "READY", "session manager initialized")
 
+    def _build_client_profile(self):
+        """Return the ClientProfile this manager will use.
+
+        Two behaviours, chosen by config and never by guesswork:
+
+        * ``persist_identity`` false -- a fresh Ed448 identity, as OTRv4+ has
+          always done (ROADMAP Phase 5.3g).  This is the IRC contract: a nick
+          is ephemeral, so an identity pinned to one is pinned to nothing.
+        * ``persist_identity`` true -- the same identity every run, loaded from
+          a sealed record.  This is the XMPP contract: a JID is durable, so an
+          identity that changed under it every launch made TOFU meaningless and
+          made every reconnect look like a MITM.
+
+        Failure is closed.  If persistence was asked for and cannot be
+        delivered this raises, rather than quietly handing back an ephemeral
+        identity -- a silent fallback would change the local fingerprint with no
+        indication, and every peer holding a pin would see the change TOFU
+        exists to report.
+        """
+        if not self.config.persist_identity:
+            return ClientProfile()
+
+        # Imported here, not at module scope: the IRC client must never load
+        # the persistence machinery at all, and an import that only happens on
+        # the opted-in path makes that checkable rather than a promise.
+        from otrv4plus_identity import load_or_create_identity, IdentityUnavailable
+
+        try:
+            identity, prekey, _pub = load_or_create_identity(
+                self.config.identity_path, self.config.identity_dek_path)
+        except IdentityUnavailable:
+            self._trace_identity("FAILED",
+                                 "persistent identity unavailable - failing closed")
+            raise
+
+        self.identity_is_persistent = True
+        self._trace_identity("READY", "persistent identity loaded")
+        return ClientProfile(identity_key=identity, prekey=prekey)
+
+    def _trace_identity(self, state: str, detail: str) -> None:
+        """Trace without assuming this manager has a tracer (SessionManager does not)."""
+        tracer = getattr(self, "tracer", None)
+        if tracer is not None:
+            try:
+                tracer.trace("SYSTEM", "IDENTITY", None, state, detail)
+            except Exception:
+                pass
     def _store_identity(self):
         """Store client identity in secure storage.
 

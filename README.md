@@ -524,6 +524,46 @@ fail-safe. Full detail in [VOICE_MEDIA_PATH.md](VOICE_MEDIA_PATH.md).
 
 Verified in the field: Wi-Fi off mid-call, authenticated media resumed 51 s later.
 
+### Fingerprints and trust
+
+The two protocols answer the fingerprint question differently, because a JID
+and an IRC nick are not the same kind of name.
+
+**XMPP — trust on first use.** Your identity persists across restarts, so the
+peer's does too, and a fingerprint that changes is worth knowing about. On first
+contact with a JID the fingerprint is shown and you are asked once whether to
+pin it. After that a matching fingerprint says so and asks nothing.
+
+If the fingerprint **changes**, the session stops there:
+
+```
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+[trust] THE FINGERPRINT FOR THIS JID HAS CHANGED.
+[trust]   pinned : ....
+[trust]   now    : ....
+[trust] The pinned fingerprint has NOT been replaced.
+```
+
+The stored pin is not overwritten, there is no `y` to press, SMP setup does not
+continue, and voice is refused for that peer. Accepting a new identity is a
+separate, typed, peer-named action: `/trust-reset <jid>`. That asymmetry is the
+point — a prompt answerable with the keystroke you already press reflexively is
+not a decision.
+
+It also looks exactly like your peer reinstalling, so it is a question and not a
+verdict. Confirm the new fingerprint with them over a channel that is not this
+one before clearing the pin.
+
+**IRC — nothing is pinned.** The identity is regenerated every run by design, so
+a fingerprint pinned to a nick is pinned to nothing. Your `y` holds for the rest
+of the session and is not written to disk. Before v10.12.0 IRC *did* write
+those records, which meant the second session with any peer raised a fingerprint
+mismatch and printed a MITM warning as normal behaviour.
+
+**Neither is authentication.** A matching pin tells you the identity did not
+change; it does not tell you who it belongs to. SMP does that, and SMP remains
+the only thing that authorises a voice call.
+
 ### Abandoned OTR sessions
 
 A ratchet is shared state, so when the peer's client exits their half is gone
@@ -873,11 +913,11 @@ assert the valid one still works.
 
 4. **Chat is Rust-core-only since v10.7.5; voice is not.** Every C extension (`otr4_crypto_ext`, `otr4_ed448_ct`, `otr4_mldsa_ext`) has been retired and the Python `cryptography` library was removed from the messaging path at v10.7, which lives entirely inside the Rust `otrv4_core` PyO3 module. **Voice does not meet that standard**: its media AES-256-GCM, HKDF-SHA512 key schedule and X448 come from the Python `cryptography` library, so there are two AES-256-GCM implementations in the tree and voice key material sits in Python `bytearray`s wiped best-effort rather than in Rust `ZeroizeOnDrop` buffers. See [SECURITY.md](SECURITY.md) caveat 11. As of v10.7.6 (Phase 5.4) the SMP modular exponentiation is constant-time via `crypto-bigint` `DynResidue`, intended to close a timing side-channel on the secret SMP exponents (not independently verified to be constant-time on every target). As of v10.9.1 the SMP protocol is hybrid post-quantum. As of v10.10.4 the XMPP transport has production-grade security hardening (subscription approval gate, rate limiting, SMP secret validation, block list, stream management, delivery receipts, and I2P-aware reconnect). See the CHANGELOG for the full migration history.
 
-5. **Ephemeral identity by design.** Identity keys regenerate at every launch. Fingerprints change on every restart. This is a deliberate threat-model choice for an I2P-based privacy IRC client, not a missing feature. Tor Browser, Cwtch (default), and Briar (before user opt-in) all keep identities short-lived for similar reasons. See ROADMAP Phase 5.3g.
+5. **Ephemeral identity on IRC, persistent identity on XMPP.** IRC regenerates identity keys at every launch and fingerprints change on every restart — a deliberate threat-model choice for an I2P privacy client, not a missing feature. Tor Browser, Cwtch (default) and Briar all keep identities short-lived for similar reasons. **XMPP is the opposite as of v10.12.0**: a JID is a durable name, so the identity behind it persists and peer fingerprints are pinned. Its at-rest protection is filesystem permissions, not a passphrase — see [SECURITY.md](SECURITY.md) caveat 5b. See ROADMAP Phase 5.3g for both halves.
 
 6. **Wire-incompatible with stock OTRv4.** Implementations such as `pidgin-otr4` and CoyIM cannot talk to OTRv4+. The ML-DSA-87 extension, the ML-KEM-1024 brace key, and the SHAKE-256 transcript hashing are OTRv4+ additions and there is no negotiation path. Both peers must run OTRv4+.
 
-7. **Voice is the newest and least-tested surface.** The hybrid voice key exchange, two-phase rekey, and AAudio backend landed in v10.11.0; the security fixes above landed in v10.11.1. v10.12.0 added liveness detection and authenticated endpoint recovery around it. Coverage is 239 Python tests in the root voice/audio suites (113 adversarial voice-protocol, 61 audio backend, 48 voice/audio integration, 17 MAC-key-revelation) inside a repo total of 1431 passed / 43 skipped / 1 xfailed, plus 65 Rust tests. Two-way audio has been verified live between two Android phones over I2P, with mid-call hybrid rekeys, a 4-hour soak, and a Wi-Fi-to-mobile transition from which authenticated media recovered in 51 s. That is still one pair of devices on a small number of network paths — unit tests and a working call are not the same as review. Treat voice as more experimental than chat, which is itself marked experimental.
+7. **Voice is the newest and least-tested surface.** The hybrid voice key exchange, two-phase rekey, and AAudio backend landed in v10.11.0; the security fixes above landed in v10.11.1. v10.12.0 added liveness detection and authenticated endpoint recovery around it. Coverage is 239 Python tests in the root voice/audio suites (113 adversarial voice-protocol, 61 audio backend, 48 voice/audio integration, 17 MAC-key-revelation) inside a repo total of 1483 passed / 43 skipped / 1 xfailed, plus 65 Rust tests. Two-way audio has been verified live between two Android phones over I2P, with mid-call hybrid rekeys, a 4-hour soak, and a Wi-Fi-to-mobile transition from which authenticated media recovered in 51 s. That is still one pair of devices on a small number of network paths — unit tests and a working call are not the same as review. Treat voice as more experimental than chat, which is itself marked experimental.
 
 8. **Termux/aarch64 specific build flags.** Both `pqcrypto-mlkem` and `pqcrypto-mldsa` are pinned to `default-features = false, features = ["std"]` because their NEON-optimised C paths trigger `SIGILL` on some aarch64 phones. The portable C reference is correct on any platform; the speed difference is invisible at session scale.
 

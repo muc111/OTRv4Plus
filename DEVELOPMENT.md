@@ -155,7 +155,7 @@ voice and audio suites are silently skipped:
 
 ```bash
 python3.12 -m pytest -q
-# expected: 1431 passed, 43 skipped, 1 xfailed   (as of v10.12.0)
+# expected: 1483 passed, 43 skipped, 1 xfailed   (as of v10.12.0)
 ```
 
 The skips are environment-gated (no audio device, no Termux:API, no live SAM

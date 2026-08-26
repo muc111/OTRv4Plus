@@ -215,6 +215,84 @@ def voice_available() -> "tuple[bool, str]":
 
 XMPP_VERSION = "10.12.0"
 
+# ---------------------------------------------------------------------------
+# XMPP-private state directory
+# ---------------------------------------------------------------------------
+#
+# XMPP and IRC used to share ~/.otrv4plus/trust.json, and that was not merely
+# untidy. IRC regenerates its Ed448 identity every run by design, so every IRC
+# fingerprint written there is stale the moment the process exits; on the next
+# run `add_trust` raised FingerprintMismatchError and the user was told "This
+# may indicate a MITM attack" for what was actually normal IRC behaviour.
+#
+# The two protocols have opposite identity contracts, so they get separate
+# stores. XMPP owns everything under ~/.otrv4plus/xmpp/ and IRC keeps the
+# legacy paths for its SMP secrets while persisting no trust at all.
+XMPP_STATE_DIR = os.path.expanduser(
+    os.environ.get("OTRV4PLUS_XMPP_STATE_DIR", "~/.otrv4plus/xmpp"))
+
+
+def _xmpp_state_path(name: str) -> str:
+    return os.path.join(XMPP_STATE_DIR, name)
+
+
+def _migrate_legacy_smp_secrets() -> None:
+    """Move a pre-split SMP secret store into the XMPP directory, once.
+
+    The secrets are sealed under a key derived from `.smp_seed` in the *same*
+    directory, so the seed has to travel with them or the copy is unopenable.
+    Copies rather than moves: the IRC client still reads the legacy pair, and
+    silently removing its stored secrets is not this function's business.
+    """
+    legacy_dir = os.path.expanduser("~/.otrv4plus")
+    legacy_secrets = os.path.join(legacy_dir, "smp_secrets.json")
+    legacy_seed = os.path.join(legacy_dir, ".smp_seed")
+    target_secrets = _xmpp_state_path("smp_secrets.json")
+    target_seed = _xmpp_state_path(".smp_seed")
+
+    if os.path.exists(target_secrets) or not os.path.exists(legacy_secrets):
+        return
+    if not os.path.exists(legacy_seed):
+        # Ciphertext with no key: copying it would just move an unopenable
+        # file. Leave it and let the user re-enter secrets.
+        return
+    try:
+        os.makedirs(XMPP_STATE_DIR, mode=0o700, exist_ok=True)
+        for src, dst in ((legacy_seed, target_seed),
+                         (legacy_secrets, target_secrets)):
+            with open(src, "rb") as fh:
+                blob = fh.read()
+            fd = os.open(dst, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            try:
+                os.write(fd, blob)
+            finally:
+                os.close(fd)
+        print("[smp] migrated stored passphrases into %s" % XMPP_STATE_DIR)
+    except FileExistsError:
+        pass
+    except OSError as exc:
+        print("[smp] could not migrate stored passphrases (%s); "
+              "re-enter them with /smp-secret" % exc.__class__.__name__)
+
+
+def _xmpp_otr_config():
+    """OTRConfig for XMPP: persistent identity, persistent trust, own paths.
+
+    This is the only place the two protocols diverge in configuration, and the
+    divergence is deliberate. See XMPP_STATE_DIR above.
+    """
+    _migrate_legacy_smp_secrets()
+    return OTRConfig(
+        test_mode=True,
+        persist_identity=True,
+        persist_trust=True,
+        trust_db_path=_xmpp_state_path("trust.json"),
+        smp_secrets_path=_xmpp_state_path("smp_secrets.json"),
+        identity_path=_xmpp_state_path("identity.sealed"),
+        identity_dek_path=_xmpp_state_path(".identity_dek"),
+    )
+
+
 OTR_MODULE = "otrv4plus"  # symlink -> otrv4+.py
 try:
     _otr = __import__(OTR_MODULE)
@@ -913,6 +991,9 @@ class OTRv4PlusXMPP(ClientXMPP):
 
         # Per-peer UI state.
         self._pending = {}         # peer -> 'trust' | 'smp_secret' | None
+        # peer -> previously pinned fingerprint, while a mismatch is
+        # unresolved. Presence in this map refuses voice for that peer.
+        self._fingerprint_changed = {}
         self._encrypted = set()    # peers whose DAKE has completed
         self._smp_reported = set() # (peer, state) already announced
         # Display only.  Populated by _tui_route_output matching
@@ -1019,8 +1100,18 @@ class OTRv4PlusXMPP(ClientXMPP):
                 except Exception:
                     pass
             tracer.set_emit_callback(_trace_emit)
-        cfg = OTRConfig(test_mode=True)
-        self.otr = EnhancedSessionManager(config=cfg, tracer=tracer)
+        cfg = _xmpp_otr_config()
+        try:
+            self.otr = EnhancedSessionManager(config=cfg, tracer=tracer)
+        except Exception as exc:
+            # Fail closed. Persistent identity is what makes TOFU mean
+            # anything; starting anyway with a fresh identity would change our
+            # fingerprint silently and every peer holding a pin would see it
+            # as the identity change TOFU exists to report.
+            print("[identity] XMPP could not start: %s" % exc)
+            raise
+        self.identity_persistent = bool(
+            getattr(self.otr, "identity_is_persistent", False))
 
         # Dedicated SINGLE-thread executor for OTR/SMP crypto. SMP runs
         # multi-minute 3072-bit DH computations; a separate pool keeps the
@@ -2124,20 +2215,78 @@ class OTRv4PlusXMPP(ClientXMPP):
         print(f"  Their fingerprint : {_colorize(_fmt_fp(remote_fp), 'yellow')}")
         print("-" * 60)
 
-        already = False
-        try:
-            already = self.otr.is_peer_trusted(peer)
-        except Exception:
-            already = False
+        self._apply_tofu(peer, remote_fp)
 
-        if already:
-            print("[trust] Fingerprint already trusted - VERIFIED.")
+    # -------------------------------------------------------------------------
+    # TOFU (XMPP only)
+    # -------------------------------------------------------------------------
+
+    def _apply_tofu(self, peer, remote_fp):
+        """Trust-on-first-use against the pinned fingerprint.
+
+        Three outcomes, and they are genuinely different situations rather than
+        three shades of the same prompt:
+
+        first contact   nothing pinned -> show it, ask once, pin on `y`
+        same key        pinned and matching -> say so, ask nothing
+        changed key     pinned and DIFFERENT -> refuse, keep the old pin
+
+        The third case never auto-repins and never offers `y` as a way through.
+        A prompt that can be answered `y` is a prompt that will be answered `y`,
+        and the whole point of pinning is that this particular `y` should cost
+        the user some deliberate effort somewhere else.
+
+        This is identity *continuity*, not authentication. SMP remains what
+        authenticates a peer, and `_smp_verified` remains the only gate on
+        voice -- a matching pin authorises nothing by itself.
+        """
+        if not remote_fp:
+            print("[trust] no peer fingerprint available - encrypted only.")
+            self._prompt_smp_secret(peer)
+            return
+
+        try:
+            pinned_and_trusted = self.otr.trust_db.check_or_pin(peer, remote_fp)
+        except Exception as exc:
+            if type(exc).__name__ != "FingerprintMismatchError":
+                print("[trust] trust store unusable (%s) - encrypted only."
+                      % type(exc).__name__)
+                self._prompt_smp_secret(peer)
+                return
+            self._fingerprint_changed[peer] = getattr(exc, "stored", "")
+            print("")
+            print("!" * 60)
+            print("[trust] THE FINGERPRINT FOR THIS JID HAS CHANGED.")
+            print("[trust]   pinned : %s" % _fmt_fp(getattr(exc, "stored", "")))
+            print("[trust]   now    : %s" % _fmt_fp(remote_fp))
+            print("[trust] The pinned fingerprint has NOT been replaced.")
+            print("[trust] This is what a machine-in-the-middle looks like. It")
+            print("[trust] also looks exactly like your peer reinstalling, so")
+            print("[trust] it is a question, not a verdict - but confirm the")
+            print("[trust] new fingerprint with them over a channel that is")
+            print("[trust] not this one before you accept it.")
+            print("[trust] To accept deliberately:  /trust-reset %s" % peer)
+            print("[trust] Voice is refused for this peer until you do.")
+            print("!" * 60)
+            print("")
+            return
+
+        self._fingerprint_changed.pop(peer, None)
+        if pinned_and_trusted:
+            print("[trust] Fingerprint matches the pinned identity for this JID.")
             self._prompt_smp_secret(peer)
         else:
-            print("[trust] Trust this fingerprint? Type  y  or  n :")
+            print("[trust] First contact with this JID. No fingerprint is pinned yet.")
+            print("[trust] Pin this fingerprint? Type  y  or  n :")
             self._pending[peer] = "trust"
 
     def _handle_trust_answer(self, peer, answer):
+        """Answer to the first-contact pin question. Reached only on first contact.
+
+        A changed fingerprint never routes here -- `_apply_tofu` returns before
+        arming this prompt -- so `y` can pin a new identity but can never
+        replace a pinned one.
+        """
         ans = answer.strip().lower()
         if ans in ("y", "yes"):
             ok = False
@@ -2147,13 +2296,56 @@ class OTRv4PlusXMPP(ClientXMPP):
             except Exception as e:
                 print(f"[trust] error saving trust: {e}")
             if ok:
-                print("[trust] Fingerprint TRUSTED - identity pinned (VERIFIED).")
+                print("[trust] Fingerprint PINNED for this JID. A change will be "
+                      "reported from now on.")
             else:
-                print("[trust] Could not store trust, continuing encrypted-only.")
+                print("[trust] Could not store the pin, continuing encrypted-only.")
         else:
-            print("[trust] Fingerprint NOT trusted - encrypted only.")
+            print("[trust] Not pinned - encrypted only. You will be asked again "
+                  "next session.")
         self._pending[peer] = None
         self._prompt_smp_secret(peer)
+
+    def _voice_blocked_by_tofu(self, peer) -> bool:
+        """Refuse a call to a peer whose pinned fingerprint changed.
+
+        This is an ADDITIONAL refusal, layered on top of the SMP gate rather
+        than replacing any part of it. `_smp_verified` remains the only thing
+        that authorises voice; a matching pin has never authorised anything and
+        still does not. What this adds is that a *mismatched* pin refuses
+        early, so an unresolved identity change cannot be walked past by
+        completing SMP against whoever is on the other end.
+        """
+        if peer not in self._fingerprint_changed:
+            return False
+        print("[voice] refused: the pinned fingerprint for %s has changed and "
+              "the change is unresolved." % peer)
+        print("[voice] Confirm the new fingerprint with them out of band, then "
+              "/trust-reset %s" % peer)
+        return True
+
+    def trust_reset(self, peer):
+        """Deliberately drop a pin so the next contact re-pins (`/trust-reset`).
+
+        Separate from the `y` prompt on purpose. Accepting a changed identity
+        should cost a distinct, typed, peer-named action rather than the same
+        keystroke the user already presses reflexively.
+        """
+        if not peer:
+            print("usage: /trust-reset <jid>")
+            return
+        try:
+            removed = self.otr.trust_db.remove_trust(peer)
+        except Exception as exc:
+            print("[trust] could not clear the pin: %s" % type(exc).__name__)
+            return
+        self._fingerprint_changed.pop(peer, None)
+        if removed:
+            print("[trust] Pin cleared for %s. The next session will treat it as "
+                  "first contact." % peer)
+            print("[trust] Run /otr again to re-establish and pin.")
+        else:
+            print("[trust] No pin was stored for %s." % peer)
 
     # -------------------------------------------------------------------------
     # SMP passphrase prompt
@@ -2744,6 +2936,7 @@ class OTRv4PlusXMPP(ClientXMPP):
             "  /smp start           begin SMP verification\n"
             "  /smp <secret>        set secret and start SMP\n"
             "  /smp-secret <s>      store secret for auto-respond\n"
+            "  /trust-reset <jid>   clear a pinned fingerprint (deliberate)\n"
             "  /trust               re-show fingerprint trust prompt\n"
             "  /msg <jid> <text>    send plaintext message\n"
             "  /status              show session state\n"
@@ -2861,6 +3054,10 @@ class OTRv4PlusXMPP(ClientXMPP):
                 self.smp_start(peer)
             else:
                 print("no --peer set")
+        elif lstrip.startswith("/trust-reset"):
+            rest = lstrip[len("/trust-reset"):].strip()
+            self.trust_reset(rest or peer)
+
         elif lstrip.startswith("/smp-secret "):
             rest = lstrip[len("/smp-secret "):].strip()
             first = rest.split(" ", 1)[0]
@@ -2973,6 +3170,8 @@ class OTRv4PlusXMPP(ClientXMPP):
         # --- Voice calls ---
         elif lstrip == "/call":
             if peer and self._voice_manager:
+                if self._voice_blocked_by_tofu(peer):
+                    return True
                 asyncio.ensure_future(self._voice_manager.start_call(peer))
             elif not self._voice_manager:
                 print("[voice] not initialized — connect first")
@@ -2981,11 +3180,15 @@ class OTRv4PlusXMPP(ClientXMPP):
         elif lstrip.startswith("/call "):
             jid = lstrip[6:].strip()
             if jid and self._voice_manager:
+                if self._voice_blocked_by_tofu(jid):
+                    return True
                 asyncio.ensure_future(self._voice_manager.start_call(jid))
             else:
                 print("usage: /call <jid>")
         elif lstrip == "/answer":
             if peer and self._voice_manager:
+                if self._voice_blocked_by_tofu(peer):
+                    return True
                 asyncio.ensure_future(self._voice_manager.answer_call(peer))
             else:
                 print("[voice] no incoming call")

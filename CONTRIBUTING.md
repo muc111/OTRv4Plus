@@ -47,7 +47,7 @@ voice and audio suites are not under `tests/` and are otherwise skipped
 silently:
 
 ```bash
-python3.12 -m pytest -q          # 1431 passed, 43 skipped, 1 xfailed
+python3.12 -m pytest -q          # 1483 passed, 43 skipped, 1 xfailed
 cd Rust && cargo test --lib      # 65 passed
 ```
 

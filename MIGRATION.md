@@ -13,6 +13,49 @@ and any manual steps.
 
 ## To v10.12.0 (from v10.11.1)
 
+### Identity and trust (XMPP only)
+
+**Your XMPP fingerprint changes once, on the first run after upgrading, and then
+never again.** Before this version it changed on every launch. Tell your peers
+to expect one change; after that a change is worth asking about.
+
+New state lives in `~/.otrv4plus/xmpp/`:
+
+| File | What it is |
+|---|---|
+| `identity.sealed` | your Ed448 identity, sealed (AES-256-GCM, seed never leaves Rust) |
+| `.identity_dek` | the key protecting it — **0600 file, no passphrase** |
+| `trust.json` | fingerprints you have pinned |
+| `smp_secrets.json`, `.smp_seed` | migrated from `~/.otrv4plus/` on first run |
+
+**Back up `identity.sealed` and `.identity_dek` together or not at all.** Either
+one without the other is useless, and losing them means a new identity — which
+every peer who pinned you will report as a fingerprint change.
+
+**The at-rest protection is filesystem permissions.** Anyone who can read your
+home directory can read both files and therefore your identity. Termux has no
+keyring; this is the same posture your SMP secrets have always had.
+
+If the identity cannot be loaded the client **refuses to start** rather than
+minting a new one silently. To start over deliberately, move `identity.sealed`
+aside — and expect peers to warn.
+
+Your old `~/.otrv4plus/trust.json` is not migrated and does not need to be:
+every fingerprint in it was pinned against an identity that has since been
+regenerated, so none of it can match anything. It is left in place, unused, for
+you to delete.
+
+**IRC is unchanged**, except that it no longer writes trust records at all. That
+is what removes the `FINGERPRINT MISMATCH … This may indicate a MITM attack`
+line that used to appear on every reconnect with a previously trusted nick.
+
+New command: `/trust-reset <jid>` clears a pinned fingerprint so the next
+session re-pins. It is the only way to accept a changed identity, deliberately
+separate from the ordinary `y`.
+
+### Voice and wire format
+
+
 **Both peers must update if you use voice.** `MEDIAPATH` is a new control
 message. A v10.12.0 peer whose media path fails will announce a replacement
 endpoint; a v10.11.1 peer does not understand the message, ignores it, and will

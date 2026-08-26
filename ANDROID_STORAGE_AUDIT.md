@@ -1,5 +1,17 @@
 # Sensitive storage audit
 
+> **Status note (v10.12.0).** Row 1 below — "OTR identity … not persisted at
+> all … regenerated every launch" — was true for the whole project when
+> written, and is still true of **IRC**. It is no longer true of **XMPP**,
+> which now persists a sealed Ed448 identity under `~/.otrv4plus/xmpp/`. The
+> Termux arrangement reuses the same Rust sealing this audit's B1 decision
+> produced, but its DEK comes from a 0600 file rather than an Android Keystore
+> wrapping key: **on Termux the at-rest protection is filesystem permissions,
+> not hardware-backed key custody.** The Android column of row 1 still
+> describes the Android design and is unchanged. See [SECURITY.md](SECURITY.md)
+> caveat 5b.
+
+
 > **Status note (v10.12.0).** This audit covers at-rest storage for the Android
 > application. It does not cover voice key material, which is per-call,
 > in-memory only, and never written to disk — see [SECURITY.md](SECURITY.md) for
@@ -26,7 +38,7 @@ enumerated from the actual write sites in `otrv4+.py`, `otrv4plus_log.py` and
 | 1 | **OTR identity (Ed448 seed, X448 prekey)** | **not persisted at all** | n/a | n/a | none on disk; regenerated every launch | `SealedStore` record `otr.identity`, DEK wrapped by Keystore | 2 (interfaces) / 4 (vault) |
 | 2 | **Device seed** (`~/.otrv4plus/keys/.device_seed`) | file, mode 0600 | **none — plaintext 32 bytes** | itself: it *is* the credential | **full** — whoever reads the file derives the storage key | deleted; replaced by Keystore-wrapped DEK | 4 |
 | 3 | **Stored keys** (`~/.otrv4plus/keys/*.bin`) | files, 0600 | AES-256-GCM (Rust) | Argon2id/scrypt over the plaintext device seed (#2) | effectively full — key material is one file read away | `SealedStore`, same AEAD, Keystore-held key | 4 |
-| 4 | **Trust database** (`~/.otrv4plus/trust.json`) | JSON file | **none — plaintext** | n/a | **full** — peer JIDs and pinned fingerprints readable | `SealedStore` record `otr.trust` | 4 |
+| 4 | **Trust database** (XMPP: `~/.otrv4plus/xmpp/trust.json` as of v10.12.0; IRC: not persisted at all) | JSON file | **none — plaintext** | n/a | **full** — peer JIDs and pinned fingerprints readable | `SealedStore` record `otr.trust` | 4 |
 | 5 | **SMP auto-respond secrets** (`~/.otrv4plus/smp_secrets.json`) | file | AES-256-GCM (Rust) | same plaintext device-seed pattern as #2 | effectively full | `SealedStore` record `otr.smp`; reconsider persisting at all | 4 |
 | 6 | **Channel / message logs** (`~/.otrv4plus/logs/channels/*.enc`) | files | **hand-rolled AEAD** — SHAKE-256 keystream XOR + HMAC-SHA3-512 truncated to 16 bytes | **plaintext key file** `~/.otrv4plus/channel_log.key` (0600) | effectively full — and this file holds **complete message bodies** | `SealedStore` record `otr.message` using the Rust AES-256-GCM; bespoke construction removed | 4 |
 | 7 | **Application log** (`~/.otrv4plus/logs/otrv4plus.log`) | rotating file, 0600 | **none — plaintext** | n/a | protocol state and errors; no message bodies observed | no file logging in release; dev-only structured logging | 2 (bridge) / 3 |

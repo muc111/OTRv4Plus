@@ -4,7 +4,7 @@ What's next for OTRv4+. Ordered roughly by priority, not by ease.
 
 ## Recently shipped
 
-- **v10.12.0** **Voice media liveness, diagnosis and authenticated recovery.** A call whose inbound media died used to stay "up" forever — the transmit side keeps succeeding over a dead SAM session, so nothing failed. A watchdog now measures silence since the last *authenticated* frame, and when nothing is arriving the endpoint is rebuilt and the new destination announced in an authenticated `MEDIAPATH` control message tagged from the committed epoch root. No media key derives from the destination, so recovery costs no key state. The rebuild is held back while the SAM control socket is open, because on a network transition I2P rebuilds tunnels under a session that is still ours (measured: rebuilding anyway cost 21.2 s plus ~20 s of our own `tx` at zero). Cold paths get a 120 s startup grace after a live call lost ~70 s to a rebuild of an endpoint that was merely still coming up. Worst case bounded at 465 s proven / 795 s cold, pinned by a test that fails if the docs and code disagree. Also: the PyO3 `DakeOutput` thread-affinity crash fixed by serialising the OTR executor to one worker; the XMPP keepalive stopped disconnecting streams that were working; rekey no longer wedges on one lost message; Termux incoming-call notification with ACCEPT/DECLINE; latency colour banding. `VERSIONING.md` added and version strings reconciled — five files had disagreed. Python 1431 passed, Rust 65 passed; the session-hold invariants mutation-tested.
+- **v10.12.0** **Voice media liveness, diagnosis and authenticated recovery.** A call whose inbound media died used to stay "up" forever — the transmit side keeps succeeding over a dead SAM session, so nothing failed. A watchdog now measures silence since the last *authenticated* frame, and when nothing is arriving the endpoint is rebuilt and the new destination announced in an authenticated `MEDIAPATH` control message tagged from the committed epoch root. No media key derives from the destination, so recovery costs no key state. The rebuild is held back while the SAM control socket is open, because on a network transition I2P rebuilds tunnels under a session that is still ours (measured: rebuilding anyway cost 21.2 s plus ~20 s of our own `tx` at zero). Cold paths get a 120 s startup grace after a live call lost ~70 s to a rebuild of an endpoint that was merely still coming up. Worst case bounded at 465 s proven / 795 s cold, pinned by a test that fails if the docs and code disagree. Also: the PyO3 `DakeOutput` thread-affinity crash fixed by serialising the OTR executor to one worker; the XMPP keepalive stopped disconnecting streams that were working; rekey no longer wedges on one lost message; Termux incoming-call notification with ACCEPT/DECLINE; latency colour banding. `VERSIONING.md` added and version strings reconciled — five files had disagreed. Python 1483 passed, Rust 65 passed; the session-hold, identity, TOFU and SMP invariants mutation-tested.
 - **v10.10.0 – v10.11.1** XMPP transport, its security hardening, the fail-closed Tor control-plane route, and the first working encrypted voice path over I2P. These shipped without changelog entries; see the note in [CHANGELOG.md](CHANGELOG.md).
 - **v10.9.2** Formal protocol specification (`SPEC.md`) added — byte-level wire layouts for DAKE1/2/3 and ClientProfile, the KDF usage-ID table, the normative session-key derivation order, the full hybrid PQC SMP construction, fragmentation, state machines, and the RFC 3526 prime. Documentation pass across README (added "Why vs alternatives" comparison + 30-second pitch), SECURITY, and WHY for the hybrid SMP. `termux_install.sh` rewritten Rust-only. No wire change.
 - **v10.9.1** SMP session timeout raised to 45 min (from 10) for the hybrid-PQ wire overhead over I2P. I2P transport tuned against irc.postman.i2p: fragment size 450→380 B (postman truncated the DAKE1 tail), send pacing changed to a 2-fragment / 6-second batch after per-fragment delays all triggered Excess Flood. Per-panel scroll fix (`_scroll_history` was global, mixing channels). IRCv3 P2P typing notifications. Measured: DAKE+SMP ~15–16 min over I2P, <6 min over TLS.
@@ -93,9 +93,31 @@ After 5.3i + 5.3k, the **chat** path has a single cryptographic implementation s
 > code path" holds for chat and not for voice. Closing that is tracked below
 > under *Voice: consolidate onto the Rust core*.
 
-## Phase 5.3g — ephemeral identity by design (DECIDED at v10.6.18)
+## Phase 5.3g — ephemeral identity by design (DECIDED at v10.6.18, SPLIT PER PROTOCOL at v10.12.0)
 
-OTRv4+ keeps **ephemeral identities** by design. Fingerprints regenerate at every launch; there is no on-disk identity vault.
+> **Amended, not reversed (v10.12.0).** The decision below was made when OTRv4+
+> was an IRC client. It still stands for IRC and is unchanged there. It does
+> **not** hold for XMPP, and holding it there was actively harmful:
+>
+> A JID is a durable name. An identity that changed under it every launch made
+> a changed fingerprint meaningless, so TOFU could not work — and because the
+> two protocols shared `~/.otrv4plus/trust.json`, `add_trust` raised
+> `FingerprintMismatchError` on the second session with any peer, printing
+> "This may indicate a MITM attack" as normal behaviour. A warning shown on
+> every reconnect is a warning that will be ignored when it is real.
+>
+> So the two protocols now differ, deliberately:
+>
+> | | identity | trust |
+> |---|---|---|
+> | **IRC** | fresh Ed448 every run | in-memory for the session, nothing on disk |
+> | **XMPP** | persistent, sealed Ed448 | pinned fingerprints under `~/.otrv4plus/xmpp/` |
+>
+> The rationale below is why IRC keeps ephemeral identity. Read points 1 and 4
+> as the IRC case: an IRC nick is not a durable name, and pinning a fingerprint
+> to one pins it to nothing.
+
+OTRv4+ keeps **ephemeral identities** for IRC by design. Fingerprints regenerate at every launch; there is no on-disk identity vault for that protocol.
 
 Rationale:
 
@@ -106,7 +128,15 @@ Rationale:
 
 SMP trust binding is meaningful within a session. Across sessions, peers must re-verify on each connection. This is correct behaviour for the project's design intent, not a limitation.
 
-If a user explicitly wants persistence in the future, the `Ed448KeyHandle.from_seed_bytes()` and `X448KeyHandle.from_priv_bytes()` constructors already support reconstructing a handle from raw bytes — so an external user-managed vault is possible without further code changes in OTRv4+ itself.
+**How XMPP persistence was implemented (v10.12.0).** Not through
+`from_seed_bytes()`, which would have put the seed on the Python heap and cost
+the property that makes the Rust core worth having. It reuses the Android B1
+mechanism instead: `Rust/src/identity.rs` seals and unseals inside Rust, so only
+ciphertext crosses into Python and no `get_seed()` accessor exists or may be
+added. `otrv4plus_identity.py` supplies the Termux-side wiring and the
+data-encryption key. **The at-rest protection is filesystem permissions**, not a
+passphrase — see SECURITY.md caveat 5b for exactly what that does and does not
+defend against.
 
 ## Other planned work
 

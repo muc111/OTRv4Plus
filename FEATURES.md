@@ -68,7 +68,9 @@ established fails closed rather than falling back to a less private one. See
 | OTRv4 message fragmentation | Yes (380 B per fragment on I2P, 450 B on TLS/Tor; SMP2 is ~49 fragments on I2P) |
 | Out-of-order message handling | Yes (up to 1000 skipped keys cached) |
 | Session resume after disconnect | No (each connect produces fresh DAKE) |
-| Stable identity across launches | No (deliberate — see ROADMAP Phase 5.3g) |
+| Stable identity across launches | **XMPP: yes** (sealed Ed448, reloaded each run). **IRC: no**, deliberate — see ROADMAP Phase 5.3g |
+| Pinned peer fingerprints (TOFU) | **XMPP: yes** — pinned on first contact; a change refuses voice and needs `/trust-reset`. **IRC: no**, nothing written to disk |
+| Separate state per protocol | Yes — XMPP owns `~/.otrv4plus/xmpp/`; IRC persists no trust at all |
 
 ## Encrypted voice
 
