@@ -118,6 +118,116 @@ class TestTheClientTurnsItOn:
             "the non-TUI reader still echoes the passphrase")
 
 
+class TestTheTerminalItselfStopsEchoing:
+    """The only mechanism that works once the reader is blocked.
+
+    In plain mode the loop is inside sys.stdin.readline() from BEFORE the
+    prompt was raised, and the echo comes from the terminal driver in the
+    kernel. A flag set afterwards changes nothing -- the first version of this
+    fix printed "what you type is hidden" and then showed the passphrase in the
+    session capture anyway.
+    """
+
+    def test_echo_is_cleared_and_restored_on_a_real_pty(self):
+        """Run in a clean interpreter: conftest stubs `pty` and `termios`.
+
+        Those stubs make an in-process check meaningless -- every attribute
+        answers, so the code would appear to work whether or not it does. The
+        whole point here is that a real terminal driver changes state.
+        """
+        import subprocess, textwrap
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        prog = textwrap.dedent("""
+            import os, pty, select, sys, termios, time
+            sys.path.insert(0, __ROOT__)
+            pid, fd = pty.fork()
+            if pid == 0:
+                try:
+                    import otrv4plus_xmpp as XX
+                    c = XX.OTRv4PlusXMPP.__new__(XX.OTRv4PlusXMPP)
+                    c._tui_enabled = False
+                    c._mask_input = False
+                    before = bool(termios.tcgetattr(0)[3] & termios.ECHO)
+                    ok = XX.OTRv4PlusXMPP._mask_next_input(c, True)
+                    during = bool(termios.tcgetattr(0)[3] & termios.ECHO)
+                    XX.OTRv4PlusXMPP._mask_next_input(c, False)
+                    after = bool(termios.tcgetattr(0)[3] & termios.ECHO)
+                    print("RESULT %d %d %d %d" % (before, ok, during, after))
+                except Exception as exc:
+                    print("RESULT-ERROR %r" % (exc,))
+                finally:
+                    sys.stdout.flush()
+                    os._exit(0)
+            out = b""
+            deadline = time.time() + 25
+            while time.time() < deadline:
+                r, _w, _x = select.select([fd], [], [], 0.3)
+                if not r:
+                    if os.waitpid(pid, os.WNOHANG)[0]:
+                        break
+                    continue
+                try:
+                    chunk = os.read(fd, 4096)
+                except OSError:
+                    break
+                if not chunk:
+                    break
+                out += chunk
+            sys.stderr.write(out.decode("utf-8", "replace"))
+        """).replace("__ROOT__", repr(root))
+        r = subprocess.run([sys.executable, "-c", prog],
+                           capture_output=True, text=True, timeout=120)
+        text = r.stderr
+        assert "RESULT " in text, "child produced no result: %r" % text[-2000:]
+        before, ok, during, after = [
+            int(v) for v in text.split("RESULT ")[1].split()[:4]]
+        assert before == 1, "the pty started with echo already off"
+        assert ok == 1, "masking reported itself ineffective on a real tty"
+        assert during == 0, "ECHO was still set while a passphrase was expected"
+        assert after == 1, (
+            "echo was not restored -- the user's shell is left unusable, "
+            "which is worse than showing the passphrase")
+
+
+class TestItNeverPromisesWhatItCannotDo:
+
+    def test_a_non_tty_reports_masking_as_ineffective(self):
+        """Piped stdin cannot hide anything, and must say so."""
+        c = xmpp.OTRv4PlusXMPP.__new__(xmpp.OTRv4PlusXMPP)
+        c._tui_enabled = False
+        c._mask_input = False
+        # pytest replaces stdin with a non-tty object.
+        try:
+            assert xmpp.OTRv4PlusXMPP._mask_next_input(c, True) is False
+        finally:
+            # The engine's mask is module-global; leaving it on would hide
+            # every later test's input line and was caught doing exactly that.
+            otr.set_input_mask(False)
+
+    def test_the_prompt_branches_on_the_return_value(self):
+        src = inspect.getsource(xmpp.OTRv4PlusXMPP._prompt_smp_secret)
+        assert "hidden = self._mask_next_input(True)" in src
+        assert "if hidden:" in src
+        low = src.lower()
+        assert "warning" in low and "will be" in low, (
+            "when hiding fails the user must be told plainly, not told the "
+            "opposite")
+
+    def test_the_claim_and_the_warning_are_mutually_exclusive(self):
+        import ast, textwrap
+        fn = ast.parse(textwrap.dedent(
+            inspect.getsource(xmpp.OTRv4PlusXMPP._prompt_smp_secret))).body[0]
+        branch = [n for n in ast.walk(fn) if isinstance(n, ast.If)
+                  and isinstance(n.test, ast.Name) and n.test.id == "hidden"]
+        assert branch, "the promise is not guarded by whether it is true"
+        assert branch[0].orelse, "there is no else branch for the failure case"
+
+    def test_echo_restoration_is_registered_for_exit(self):
+        src = inspect.getsource(xmpp.OTRv4PlusXMPP._mask_next_input)
+        assert "atexit" in src, (
+            "nothing restores echo if the process dies mid-prompt")
+
+
 class TestTheInlineFormIsDiscouraged:
 
     def test_a_bare_command_prompts_instead_of_storing(self):

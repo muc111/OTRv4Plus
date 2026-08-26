@@ -2432,39 +2432,99 @@ class OTRv4PlusXMPP(ClientXMPP):
         )
         print("[smp] After both have stored it, run  /smp start  (either side).")
         print("[smp] Press Enter or type  skip  to skip for now.")
-        print("[smp] What you type is hidden — it is a shared secret, not a "
-              "command.")
+        hidden = self._mask_next_input(True)
+        if hidden:
+            print("[smp] What you type is hidden — it is a shared secret, not "
+                  "a command.")
+        else:
+            print("[smp] WARNING: this terminal cannot hide input, so what you "
+                  "type WILL be")
+            print("[smp] visible here and in any capture of this session.")
         self._pending[peer] = "smp_secret"
-        self._mask_next_input(True)
 
-    def _mask_next_input(self, on: bool) -> None:
-        """Hide the next typed line, in whichever front end owns stdin.
+    @staticmethod
+    def _set_tty_echo(on: bool) -> bool:
+        """Turn terminal echo off or on. True if it took effect.
+
+        This is the only thing that works once the reader is already blocked.
+        In plain mode the loop sits inside sys.stdin.readline() from BEFORE
+        the prompt was raised, and the echo is done by the terminal driver in
+        the kernel, not by any code here -- so a flag set afterwards changes
+        nothing and the passphrase appears anyway. That is exactly what
+        happened: the client printed "what you type is hidden" and then showed
+        it.
+
+        The account password sidesteps the same race by discarding the line
+        and asking the user to type it again, which is why its prompt says so.
+        Clearing ECHO takes effect immediately instead, with TCSANOW, wherever
+        the reader happens to be.
+        """
+        try:
+            import termios
+            fd = sys.stdin.fileno()
+            if not os.isatty(fd):
+                return False
+            attrs = termios.tcgetattr(fd)
+            if on:
+                attrs[3] |= termios.ECHO
+            else:
+                attrs[3] &= ~termios.ECHO
+            termios.tcsetattr(fd, termios.TCSANOW, attrs)
+            return True
+        except Exception:
+            return False
+
+    def _mask_next_input(self, on: bool) -> bool:
+        """Hide the next typed line. Returns whether hiding actually works.
 
         The SMP passphrase is a shared secret and was being echoed: into the
         terminal, into scrollback, into the TUI's recallable command history,
         and into any `script` capture of the session. It reached a bug report
         that way, which is how this was noticed.
 
-        The plain reader can swap in getpass; the TUI draws its own line and
-        gets a mask flag. Both are best-effort -- if neither is available the
-        caller still gets the line, because refusing to take a passphrase at
-        all would be a worse failure than showing it.
+        Three front ends, three mechanisms, and the return value says whether
+        any of them took. The caller must not promise the user that typing is
+        hidden unless it is -- the first attempt at this printed exactly that
+        promise and then showed the passphrase anyway.
         """
         self._mask_input = bool(on)
+        effective = False
+
+        tui = bool(getattr(self, "_tui_enabled", False))
+
+        # Plain mode: the terminal driver does the echoing, so stop it at the
+        # driver. This is the only mechanism that works when the reader is
+        # already blocked inside readline(), which it always is.
+        if not tui:
+            if self._set_tty_echo(not on):
+                effective = True
+            if on and effective and not getattr(self, "_echo_restore_hooked", False):
+                # Leaving a shell with echo off is worse than showing a
+                # passphrase, so make restoring it unconditional.
+                import atexit
+                atexit.register(self._set_tty_echo, True)
+                self._echo_restore_hooked = True
+
         # The engine owns the raw-mode input line the TUI draws.
         try:
             setter = getattr(_otr, "set_input_mask", None)
             if setter is not None:
                 setter(bool(on))
+                if tui:
+                    effective = True
         except Exception:
             pass
+
         # The standalone TUI, when that is the front end instead.
         screen = getattr(self, "_screen", None)
         if screen is not None:
             try:
                 screen.mask_input = bool(on)
+                effective = True
             except Exception:
                 pass
+
+        return effective
 
     def _handle_smp_secret_answer(self, peer, secret):
         self._pending[peer] = None
