@@ -349,3 +349,165 @@ class TestTheKexMatchesTheLibraryItReplaced:
         kex = V.VoiceKeyExchange(True)
         assert isinstance(kex._kex, C.RustVoiceKex)
         assert bytes(kex.public) == bytes(kex._kex.public)
+
+
+# --------------------------------------------------------------------------
+# The epoch root (v10.13.2, step 3)
+# --------------------------------------------------------------------------
+
+def _reference_root(x448_shared, mlkem_shared, transcript):
+    """The voice root from primitives, not from the module under test.
+
+    Same discipline as `_reference_media_key`: written out from the spec so
+    it cannot follow a change in the Rust derivation.
+    """
+    import hashlib
+    import struct
+    from cryptography.hazmat.primitives import hashes
+    from cryptography.hazmat.primitives.kdf.hkdf import HKDF
+
+    def lp(b):
+        return struct.pack(">I", len(b)) + bytes(b)
+
+    ikm = lp(x448_shared) + lp(mlkem_shared)
+    salt = hashlib.sha512(b"OTRv4+Voice/Salt/v3" + transcript).digest()
+    info = b"OTRv4+Voice/Initial/v1" + transcript
+    return HKDF(algorithm=hashes.SHA512(), length=64,
+                salt=salt, info=info).derive(ikm)
+
+
+X_SS = b"\x11" * 56
+K_SS = b"\x22" * 32
+TRANSCRIPT = b"a-fixed-transcript-for-tests"
+
+
+class TestTheRootDerivationMatchesTheSpec:
+
+    def test_the_initial_root_matches(self):
+        rust = C.RustVoiceRoot.from_initial_agreement(X_SS, K_SS, TRANSCRIPT)
+        ref = C.RustVoiceRoot.from_bytes(
+            _reference_root(X_SS, K_SS, TRANSCRIPT))
+        assert rust.confirmations(CALL, 0) == ref.confirmations(CALL, 0), (
+            "the Rust initial-root derivation no longer matches the spec")
+
+    def test_a_cipher_from_the_root_opens_a_reference_frame(self):
+        """End to end: reference root -> reference key -> Rust opens it."""
+        root_bytes = _reference_root(X_SS, K_SS, TRANSCRIPT)
+        rust = C.RustVoiceRoot.from_initial_agreement(X_SS, K_SS, TRANSCRIPT)
+        cipher = rust.make_cipher(CALL, 0, False)          # responder
+        hdr = V.pack_media_header(0, 0, V.VOICE_SEALED_LEN)
+        aad = V.media_aad(CALL, V.DIR_INITIATOR, hdr)
+        sealed = _reference_seal(root_bytes, CALL, 0, V.DIR_INITIATOR, 0,
+                                 PLAIN, aad)
+        assert cipher.open(sealed, aad, 0) == PLAIN
+
+    def test_the_rekey_chain_is_deterministic(self):
+        a = C.RustVoiceRoot.from_initial_agreement(X_SS, K_SS, TRANSCRIPT)
+        b = C.RustVoiceRoot.from_initial_agreement(X_SS, K_SS, TRANSCRIPT)
+        ra = a.derive_rekey(b"\x33" * 56, b"\x44" * 32, TRANSCRIPT)
+        rb = b.derive_rekey(b"\x33" * 56, b"\x44" * 32, TRANSCRIPT)
+        assert ra.confirmations(CALL, 1) == rb.confirmations(CALL, 1)
+
+    def test_the_rekey_chain_depends_on_the_old_root(self):
+        """Chaining is what makes a rekey an upgrade, not a replacement."""
+        a = C.RustVoiceRoot.from_initial_agreement(X_SS, K_SS, TRANSCRIPT)
+        b = C.RustVoiceRoot.from_initial_agreement(b"\x99" * 56, K_SS,
+                                                   TRANSCRIPT)
+        ra = a.derive_rekey(b"\x33" * 56, b"\x44" * 32, TRANSCRIPT)
+        rb = b.derive_rekey(b"\x33" * 56, b"\x44" * 32, TRANSCRIPT)
+        assert ra.confirmations(CALL, 1) != rb.confirmations(CALL, 1), (
+            "the new root does not depend on the old one, so a rekey is a "
+            "replacement rather than an upgrade")
+
+    def test_deriving_a_rekey_does_not_consume_the_old_root(self):
+        """A rekey that fails to confirm must leave the call running."""
+        root = C.RustVoiceRoot.from_initial_agreement(X_SS, K_SS, TRANSCRIPT)
+        before = root.confirmations(CALL, 0)
+        root.derive_rekey(b"\x33" * 56, b"\x44" * 32, TRANSCRIPT)
+        assert root.spent is False
+        assert root.confirmations(CALL, 0) == before
+
+    def test_both_hybrid_secrets_are_mandatory(self):
+        for x, k in ((b"\x11" * 55, K_SS), (X_SS, b"\x22" * 31),
+                     (b"", K_SS), (X_SS, b"")):
+            with pytest.raises(ValueError):
+                C.RustVoiceRoot.from_initial_agreement(x, k, TRANSCRIPT)
+
+    def test_the_confirmations_differ_by_side(self):
+        """One shared tag could be reflected back to satisfy the other side."""
+        root = C.RustVoiceRoot.from_initial_agreement(X_SS, K_SS, TRANSCRIPT)
+        ci, cr = root.confirmations(CALL, 0)
+        assert bytes(ci) != bytes(cr)
+
+    def test_the_endpoint_tag_binds_everything_it_claims_to(self):
+        root = C.RustVoiceRoot.from_initial_agreement(X_SS, K_SS, TRANSCRIPT)
+        base = bytes(root.endpoint_tag(CALL, 1, 1, "a.b32.i2p", True))
+        variants = [
+            root.endpoint_tag(CALL, 2, 1, "a.b32.i2p", True),      # epoch
+            root.endpoint_tag(CALL, 1, 2, "a.b32.i2p", True),      # seq
+            root.endpoint_tag(CALL, 1, 1, "b.b32.i2p", True),      # dest
+            root.endpoint_tag(CALL, 1, 1, "a.b32.i2p", False),     # direction
+            root.endpoint_tag(b"\xff" * 16, 1, 1, "a.b32.i2p", True),  # call
+        ]
+        for i, v in enumerate(variants):
+            assert bytes(v) != base, (
+                "endpoint tag field %d is not bound into the tag" % i)
+
+
+class TestTheRootStaysInRust:
+
+    def test_there_is_no_accessor(self):
+        root = C.RustVoiceRoot.from_initial_agreement(X_SS, K_SS, TRANSCRIPT)
+        with pytest.raises(TypeError):
+            bytes(root)
+        for attr in dir(root):
+            low = attr.lower()
+            if low in ("from_bytes", "from_initial_agreement"):
+                continue          # take material IN, which is the safe way
+            assert not any(bad in low for bad in
+                           ("expose", "raw", "material", "secret")), attr
+
+    def test_the_repr_says_nothing(self):
+        root = C.RustVoiceRoot.from_initial_agreement(X_SS, K_SS, TRANSCRIPT)
+        assert repr(root) == "<RustVoiceRoot spent=false>"
+
+    def test_zeroize_makes_it_unusable(self):
+        root = C.RustVoiceRoot.from_initial_agreement(X_SS, K_SS, TRANSCRIPT)
+        root.zeroize()
+        assert root.spent is True
+        with pytest.raises(RuntimeError):
+            root.confirmations(CALL, 0)
+        with pytest.raises(RuntimeError):
+            root.make_cipher(CALL, 0, True)
+
+    def test_zeroize_is_idempotent(self):
+        root = C.RustVoiceRoot.from_initial_agreement(X_SS, K_SS, TRANSCRIPT)
+        root.zeroize()
+        root.zeroize()
+
+    def test_the_shared_secrets_are_wiped_by_rust(self):
+        """The caller's bytearray is zeroed before the call returns, so the
+        wipe cannot be forgotten or defeated by an intervening copy."""
+        x = bytearray(X_SS)
+        k = bytearray(K_SS)
+        C.RustVoiceRoot.from_initial_agreement(x, k, TRANSCRIPT)
+        assert bytes(x) == bytes(56)
+        assert bytes(k) == bytes(32)
+
+    def test_the_rekey_secrets_are_wiped_too(self):
+        root = C.RustVoiceRoot.from_initial_agreement(X_SS, K_SS, TRANSCRIPT)
+        x = bytearray(b"\x33" * 56)
+        k = bytearray(b"\x44" * 32)
+        root.derive_rekey(x, k, TRANSCRIPT)
+        assert bytes(x) == bytes(56)
+        assert bytes(k) == bytes(32)
+
+    def test_the_schedule_holds_a_handle_not_bytes(self):
+        sched = V.VoiceKeySchedule(CALL, True)
+        sched.install_initial(bytes(range(64)))
+        assert isinstance(sched.current_root(), C.RustVoiceRoot)
+
+    def test_a_media_key_cannot_be_extracted_from_a_handle(self):
+        root = C.RustVoiceRoot.from_initial_agreement(X_SS, K_SS, TRANSCRIPT)
+        with pytest.raises(TypeError, match="point of the handle"):
+            V.derive_media_key(root, CALL, 0, V.DIR_INITIATOR)

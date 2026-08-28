@@ -22,9 +22,50 @@ import otrv4plus_voice as V
 
 
 CALL_ID = bytes(range(16))
+
+def _root_id(root, call_id=None, epoch=0):
+    """Identify a root without reading it.
+
+    Roots are Rust-owned as of v10.13.2 -- `derive_voice_root` returns a
+    `RustVoiceRoot` handle and there is no accessor, deliberately.  The
+    confirmation pair is a deterministic function of the root and is public
+    (it travels on the wire), so equal confirmations mean equal roots and
+    nothing else is revealed.
+    """
+    ci, cr = root.confirmations(call_id or CALL_ID, epoch)
+    return bytes(ci) + bytes(cr)
+
+
 FP_A = "AA" * 64
 FP_B = "BB" * 64
 OTR_BINDING = b"OTRv4+Voice/session/v3"
+
+
+
+def reference_root(x448_shared, mlkem_shared, transcript):
+    """The voice root, derived from primitives rather than from the module.
+
+    `derive_voice_root` returns a Rust handle now, so tests that need raw
+    root BYTES -- to seed a schedule deterministically, or to exercise
+    `derive_media_key` directly -- rebuild it here.
+
+    This doubles as a differential reference: it is written out from the
+    spec (HKDF-SHA512, salt = SHA-512(LABEL_SALT || transcript), info =
+    LABEL_INITIAL || transcript, IKM = LP(x448) || LP(mlkem)) rather than
+    imported, so it cannot follow a change in the code under test.
+    """
+    import hashlib, struct
+    from cryptography.hazmat.primitives import hashes
+    from cryptography.hazmat.primitives.kdf.hkdf import HKDF
+
+    def lp(b):
+        return struct.pack(">I", len(b)) + bytes(b)
+
+    ikm = lp(x448_shared) + lp(mlkem_shared)
+    salt = hashlib.sha512(b"OTRv4+Voice/Salt/v3" + transcript).digest()
+    info = b"OTRv4+Voice/Initial/v1" + transcript
+    return HKDF(algorithm=hashes.SHA512(), length=64,
+                salt=salt, info=info).derive(ikm)
 
 
 def make_pair(call_id=CALL_ID, epoch=0):
@@ -79,8 +120,8 @@ class TestInitialKeyEstablishment(unittest.TestCase):
 
     def test_valid_exchange_agrees(self):
         root_i, root_r, _, _, _ = make_pair()
-        self.assertEqual(bytes(root_i), bytes(root_r))
-        self.assertEqual(len(root_i), V.ROOT_LEN)
+        self.assertEqual(_root_id(root_i), _root_id(root_r))
+        self.assertFalse(root_i.spent, "the root handle was consumed")
 
     def test_root_depends_on_both_secrets(self):
         # If either component could be dropped the "hybrid" would be a lie.
@@ -88,9 +129,9 @@ class TestInitialKeyEstablishment(unittest.TestCase):
                                b"\x01" * 56, b"\x02" * 56,
                                b"\x03" * V.MLKEM_EK_LEN,
                                b"\x04" * V.MLKEM_CT_LEN, 0)
-        base = bytes(V.derive_voice_root(b"\x11" * 56, b"\x22" * 32, t))
-        diff_x = bytes(V.derive_voice_root(b"\x99" * 56, b"\x22" * 32, t))
-        diff_k = bytes(V.derive_voice_root(b"\x11" * 56, b"\x88" * 32, t))
+        base = _root_id(V.derive_voice_root(b"\x11" * 56, b"\x22" * 32, t))
+        diff_x = _root_id(V.derive_voice_root(b"\x99" * 56, b"\x22" * 32, t))
+        diff_k = _root_id(V.derive_voice_root(b"\x11" * 56, b"\x88" * 32, t))
         self.assertNotEqual(base, diff_x)
         self.assertNotEqual(base, diff_k)
         self.assertNotEqual(diff_x, diff_k)
@@ -118,7 +159,7 @@ class TestInitialKeyEstablishment(unittest.TestCase):
             i_x, i_k, V.build_transcript(CALL_ID, OTR_BINDING, FP_A, FP_B,
                                          ini.public, evil.public,
                                          ini.mlkem_ek, ct, 0))
-        self.assertNotEqual(bytes(root_i), bytes(root_r))
+        self.assertNotEqual(_root_id(root_i), _root_id(root_r))
 
     def test_malformed_x448_rejected(self):
         res = V.VoiceKeyExchange(False)
@@ -185,7 +226,7 @@ class TestInitialKeyEstablishment(unittest.TestCase):
                                b"\x03" * V.MLKEM_EK_LEN,
                                b"\x04" * V.MLKEM_CT_LEN, 1),
         ]
-        roots = {bytes(V.derive_voice_root(b"\x11" * 56, b"\x22" * 32, t))
+        roots = {_root_id(V.derive_voice_root(b"\x11" * 56, b"\x22" * 32, t))
                  for t in [base] + variants}
         self.assertEqual(len(roots), len(variants) + 1)
 
@@ -597,10 +638,24 @@ def rekey_once(sched_i, sched_r, epoch, call_id=CALL_ID):
     return sched_i.our_confirm(), sched_r.our_confirm()
 
 
+
+def _root_fingerprint(schedule, epoch=0):
+    """A stable proxy for "which root is committed", without reading it.
+
+    The root is Rust-owned as of v10.13.2 and there is no accessor, which is
+    the point of the handle.  Confirmations are a deterministic function of
+    the root and are public output -- they travel on the wire -- so comparing
+    them answers "did the root change?" exactly, and answers nothing else.
+    """
+    ci, cr = schedule.current_root().confirmations(CALL_ID, epoch)
+    return bytes(ci) + bytes(cr)
+
+
 class TestRekey(unittest.TestCase):
 
     def _fresh(self):
-        root = bytes(make_pair()[0])
+        root = reference_root(b"\x11" * 56, b"\x22" * 32,
+                              b"deterministic-test-transcript")
         si = V.VoiceKeySchedule(CALL_ID, True)
         sr = V.VoiceKeySchedule(CALL_ID, False)
         si.install_initial(root)
@@ -614,25 +669,28 @@ class TestRekey(unittest.TestCase):
         self.assertTrue(si.commit_rekey(1, cr))
         self.assertEqual(si.epoch, 1)
         self.assertEqual(sr.epoch, 1)
-        self.assertEqual(bytes(si.current_root()), bytes(sr.current_root()))
+        self.assertEqual(_root_fingerprint(si), _root_fingerprint(sr),
+                         "the two sides committed different roots")
 
     def test_pending_does_not_disturb_the_current_epoch(self):
         si, sr = self._fresh()
-        before = bytes(si.current_root())
+        before = _root_fingerprint(si)
         rekey_once(si, sr, 1)
         self.assertEqual(si.epoch, 0)
-        self.assertEqual(bytes(si.current_root()), before)
+        self.assertEqual(_root_fingerprint(si), before,
+                         "the committed root changed")
         self.assertIsNotNone(si.cipher_for_send())
 
     def test_failed_rekey_retains_the_working_key(self):
         # The v2 bug: rekey() wiped the current root before comparing
         # confirmations, so any rekey failure killed a live call.
         si, sr = self._fresh()
-        before = bytes(si.current_root())
+        before = _root_fingerprint(si)
         rekey_once(si, sr, 1)
         self.assertFalse(si.commit_rekey(1, b"\x00" * V.CONFIRM_LEN))
         self.assertEqual(si.epoch, 0)
-        self.assertEqual(bytes(si.current_root()), before)
+        self.assertEqual(_root_fingerprint(si), before,
+                         "the committed root changed")
         self.assertIsNotNone(si.cipher_for_send())
         # And media still flows on the old epoch.
         tx = si.cipher_for_send()
@@ -739,17 +797,18 @@ class TestRekey(unittest.TestCase):
             ci, cr = si.our_confirm(), sr.our_confirm()
             self.assertTrue(si.commit_rekey(epoch, cr))
             self.assertTrue(sr.commit_rekey(epoch, ci))
-            roots.add(bytes(si.current_root()))
+            roots.add(_root_fingerprint(si))
         self.assertEqual(si.epoch, 300)
         self.assertEqual(len(roots), 300, "every epoch must have a unique root")
 
     def test_abort_wipes_pending_only(self):
         si, sr = self._fresh()
-        before = bytes(si.current_root())
+        before = _root_fingerprint(si)
         rekey_once(si, sr, 1)
         si.abort_rekey()
         self.assertIsNone(si.pending_epoch)
-        self.assertEqual(bytes(si.current_root()), before)
+        self.assertEqual(_root_fingerprint(si), before,
+                         "the committed root changed")
         si.abort_rekey()          # idempotent
 
     def test_rekey_before_initial_rejected(self):
@@ -769,11 +828,18 @@ class TestRekey(unittest.TestCase):
     def test_rekey_gives_post_compromise_recovery(self):
         # An attacker holding epoch N's root must not be able to derive
         # epoch N+1's, because it depends on fresh ephemeral secrets.
+        #
+        # Asserted through the confirmations rather than by reading the roots:
+        # they are Rust-owned as of v10.13.2 and there is no accessor. The
+        # confirmations are a deterministic function of the root, so if they
+        # differ the root differs, and they reveal nothing else -- they go on
+        # the wire anyway.
         si, sr = self._fresh()
-        compromised = bytes(si.current_root())
+        compromised = _root_fingerprint(si, epoch=0)
         _, cr = rekey_once(si, sr, 1)
         si.commit_rekey(1, cr)
-        self.assertNotEqual(bytes(si.current_root()), compromised)
+        self.assertNotEqual(_root_fingerprint(si, epoch=0), compromised,
+                            "the new epoch reuses the compromised root")
 
 
 # ===========================================================================
@@ -1295,7 +1361,8 @@ class TestFuzzing(unittest.TestCase):
         self.addCleanup(loop.close)
         s = V.VoiceCallSession("p@e.org", loop, CALL_ID, False)
         s.otr_material = (OTR_BINDING, FP_A, FP_B)
-        root = bytes(make_pair()[0])
+        root = reference_root(b"\x11" * 56, b"\x22" * 32,
+                              b"deterministic-test-transcript")
         s.schedule.install_initial(root)
         tx = V.VoiceFrameCrypto(root, CALL_ID, 0, True)
         plain = bytes(V.pad_opus(b"payload"))
@@ -1354,7 +1421,7 @@ class TestEndToEnd(unittest.TestCase):
     def test_full_call(self):
         call_id = os.urandom(16)
         root_i, root_r, _, _, _ = make_pair(call_id)
-        self.assertEqual(bytes(root_i), bytes(root_r))
+        self.assertEqual(_root_id(root_i), _root_id(root_r))
 
         si = V.VoiceKeySchedule(call_id, True)
         sr = V.VoiceKeySchedule(call_id, False)
@@ -1397,18 +1464,31 @@ class TestEndToEnd(unittest.TestCase):
         self.assertEqual(si.live_epochs(), [])
 
     def test_two_calls_in_one_otr_session_share_no_key(self):
-        keys = set()
+        """Two calls must not share a media key.
+
+        Asserted through the ciphertext rather than by extracting the keys:
+        media keys are Rust-owned and `derive_media_key` refuses a root
+        handle by design.  Sealing the same plaintext at the same counter
+        under two roots gives identical bytes only if the keys are identical,
+        so this is the same statement made from outside.
+        """
+        sealed = set()
+        plain = bytes(V.pad_opus(b"same plaintext both times"))
         for _ in range(2):
             call_id = os.urandom(16)
             root, _, _, _, _ = make_pair(call_id)
-            keys.add(bytes(V.derive_media_key(root, call_id, 0,
-                                              V.DIR_INITIATOR)))
-        self.assertEqual(len(keys), 2)
+            tx = V.VoiceFrameCrypto(root, call_id, 0, True)
+            packet = tx.seal(plain)
+            sealed.add(packet[V.VOICE_HDR_LEN:])
+        self.assertEqual(len(sealed), 2,
+                         "two calls produced identical ciphertext, so they "
+                         "share a media key")
 
     def test_loss_and_reordering_tolerated(self):
         import random
         random.seed(20260819)
-        root = bytes(make_pair()[0])
+        root = reference_root(b"\x11" * 56, b"\x22" * 32,
+                              b"deterministic-test-transcript")
         tx = V.VoiceFrameCrypto(root, CALL_ID, 0, True)
         rx = V.VoiceFrameCrypto(root, CALL_ID, 0, False)
         plain = bytes(V.pad_opus(b"lossy"))

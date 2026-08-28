@@ -78,9 +78,9 @@ SecretBytes<N> and SecretVec derive ZeroizeOnDrop; their Debug impls print [REDA
 **Status:** `PARTIAL`  
 **Enforced by:** `tests/test_release_guard.py`, `tests/test_rust_zeroization.py`, `tests/test_voice_rust_parity.py`
 
-Ed448 seeds, ratchet keys, SMP scalars and -- since v10.13.2 -- voice media keys and the voice X448 scalar never cross the PyO3 boundary; the legacy getters are compiled out.
+Ed448 seeds, ratchet keys, SMP scalars and -- since v10.13.2 -- voice media keys, the voice epoch root and the voice X448 scalar never cross the PyO3 boundary; the legacy getters are compiled out.
 
-**Limit:** The voice epoch ROOT is still a Python bytearray: it is the input to the Rust cipher, and moving it needs the key schedule to move too.  The account password is a Python str and cannot be wiped at all.
+**Limit:** The typed SMP passphrase and the account password are Python `str` before anything can touch them, and a `str` cannot be wiped.  The identity DEK and the device seeds are Python `bytes` read from disk.  Everything derived from them is Rust-owned.
 
 ### INV-09 — XMPP persistent identity and IRC ephemeral identity are separate stores.
 
@@ -140,7 +140,7 @@ A receive key is retired only once the peer has demonstrably stopped sending und
 
 ## Where secrets live
 
-Updated at v10.13.2, when the voice path moved.
+Updated at v10.13.2, when the voice path finished moving.
 
 | Material | Owner | Representation | Wipeable |
 |---|---|---|---|
@@ -148,18 +148,20 @@ Updated at v10.13.2, when the voice path moved.
 | DAKE session keys | Rust | opaque `DakeOutput` | yes, on drop |
 | SMP secret scalar | Rust | `SecretVec` | yes, on drop |
 | Ed448 identity seed | Rust | `SecretBytes<57>` | yes, on drop |
+| Voice epoch root | Rust | `SecretBytes<64>` | yes, on drop |
 | Voice media keys | Rust | `SecretBytes<32>` | yes, on drop |
 | Voice X448 private scalar | Rust | `SecretBytes<56>` | yes, on drop |
-| Voice epoch root | **Python** | `bytearray` | best-effort |
+| X448 / ML-KEM shared secrets | Python → Rust | `bytearray`, wiped by Rust | yes |
 | SMP passphrase (typed) | Python → Rust | `str` → `bytearray` → Rust | the `str` cannot be |
 | Account password | Python | `str` | **no** |
-| Identity DEK, device seeds | Python | `bytes` | **no** |
+| Identity DEK, device seeds | Python | `bytes` from disk | **no** |
 
-The Python rows are not oversights. The account password must be a `str`
-because slixmpp's SASL path requires one; the typed passphrase is a `str`
-before anything else can touch it. Both are stated as limitations rather than
-engineered around, and `tests/test_secret_at_rest.py` pins those statements so
-they cannot quietly become claims.
+The remaining Python rows are not oversights. The account password must be a
+`str` because slixmpp's SASL path requires one; the typed passphrase is a
+`str` before anything else can touch it; the DEK and seeds are read from
+files. Everything *derived* from them is Rust-owned, and
+`tests/test_secret_at_rest.py` pins those statements so they cannot quietly
+become claims.
 
 ## Rules that follow from these
 
@@ -183,6 +185,12 @@ keystroke does.
 wrong length prefix started comparing Rust against Rust and a reintroduced bug
 passed clean. Reference implementations in tests are built from primitives,
 not imported from the module under test.
+
+**Prove a secret changed without reading it.** Tests that used to compare
+epoch roots byte for byte now compare the confirmation pair, which is a
+deterministic function of the root and travels on the wire anyway. Where that
+is not possible, assert the observable consequence — two calls that share a
+media key produce identical ciphertext for identical plaintext.
 
 **Fail closed.** A failure to determine SMP state does not authorise a call
 (INV-12). An unrecognised log line is not written (INV-03). A rekey that

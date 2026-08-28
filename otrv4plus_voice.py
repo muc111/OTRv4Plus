@@ -1157,11 +1157,34 @@ _LABEL_REKEY = b"OTRv4+Voice/Rekey/v1"
 try:
     from otrv4_core import RustVoiceCipher as _RustVoiceCipher
     from otrv4_core import RustVoiceKex as _RustVoiceKex
+    from otrv4_core import RustVoiceRoot as _RustVoiceRoot
     RUST_VOICE_AVAILABLE = True
 except ImportError:                                            # pragma: no cover
     _RustVoiceCipher = None
     _RustVoiceKex = None
+    _RustVoiceRoot = None
     RUST_VOICE_AVAILABLE = False
+
+
+def _as_root_handle(root):
+    """Accept a `RustVoiceRoot`, or wrap raw bytes into one.
+
+    Production always passes a handle: the root is derived inside Rust by
+    `RustVoiceRoot.from_initial_agreement` and never becomes a Python object.
+    Raw bytes are accepted so tests can build a schedule from a fixed root
+    without a full hybrid agreement -- that path copies the bytes into Rust
+    immediately, which is the best that can be done with material Python has
+    already seen.
+    """
+    _require_rust_voice()
+    if isinstance(root, _RustVoiceRoot):
+        return root
+    if root is None:
+        raise ValueError("epoch root must be %d bytes" % ROOT_LEN)
+    raw = bytes(root)
+    if len(raw) != ROOT_LEN:
+        raise ValueError("epoch root must be %d bytes" % ROOT_LEN)
+    return _RustVoiceRoot.from_bytes(raw)
 
 
 def _require_rust_voice():
@@ -1245,20 +1268,21 @@ def _salt_for(transcript: bytes) -> bytes:
     return hashlib.sha512(_LABEL_SALT + transcript).digest()
 
 
-def derive_voice_root(x448_shared, mlkem_shared, transcript: bytes) -> bytearray:
-    """Hybrid root from the initial exchange.  Both secrets are mandatory."""
-    if not x448_shared or len(x448_shared) != 56:
-        raise ValueError("X448 shared secret must be 56 bytes")
-    if not mlkem_shared or len(mlkem_shared) != MLKEM_SS_LEN:
-        raise ValueError("ML-KEM shared secret must be %d bytes" % MLKEM_SS_LEN)
-    ikm = bytearray()
-    ikm += _lp(bytes(x448_shared))
-    ikm += _lp(bytes(mlkem_shared))
-    try:
-        return bytearray(_hkdf(bytes(ikm), _salt_for(transcript),
-                               _LABEL_INITIAL + transcript, ROOT_LEN))
-    finally:
-        _wipe(ikm)
+def derive_voice_root(x448_shared, mlkem_shared, transcript: bytes):
+    """Hybrid root from the initial exchange.  Both secrets are mandatory.
+
+    Returns a `RustVoiceRoot` handle, not bytes.  The root is the input every
+    media key for the epoch derives from, so a copy of it is a copy of every
+    key -- and it used to sit in a Python bytearray for the whole call.  It is
+    now derived inside Rust and never becomes a Python object at all.
+
+    The two shared secrets are consumed: Rust zeroes the caller's buffers
+    before returning, so the `finally: _wipe(...)` at the call sites is belt
+    and braces rather than the only wipe.
+    """
+    _require_rust_voice()
+    return _RustVoiceRoot.from_initial_agreement(x448_shared, mlkem_shared,
+                                                 transcript)
 
 
 def derive_rekey_root(old_root, x448_shared, mlkem_shared,
@@ -1270,6 +1294,12 @@ def derive_rekey_root(old_root, x448_shared, mlkem_shared,
     ephemerals gains nothing, and one who holds only the old root is locked
     out by the fresh X448 and ML-KEM secrets.
     """
+    # A root handle chains inside Rust, where neither root is ever a Python
+    # object.  Raw bytes are still accepted for the tests that build a
+    # schedule from a fixed root.
+    if isinstance(old_root, _RustVoiceRoot):
+        return old_root.derive_rekey(bytes(x448_shared), bytes(mlkem_shared),
+                                     transcript)
     if not old_root or len(old_root) != ROOT_LEN:
         raise ValueError("old root must be %d bytes" % ROOT_LEN)
     if not x448_shared or len(x448_shared) != 56:
@@ -1291,6 +1321,10 @@ def derive_media_key(root, call_id: bytes, epoch: int, direction: int) -> bytear
     """One directional AES-256-GCM key for one epoch."""
     if direction not in (DIR_INITIATOR, DIR_RESPONDER):
         raise ValueError("direction must be DIR_INITIATOR or DIR_RESPONDER")
+    if isinstance(root, _RustVoiceRoot):
+        raise TypeError(
+            "a media key cannot be extracted from a root handle -- that is "
+            "the point of the handle. Use root.make_cipher(...) instead.")
     info = (_LABEL_MEDIA + _lp(call_id) + _u64(epoch)
             + struct.pack(">B", direction))
     return bytearray(_hkdf(bytes(root), call_id, info, MEDIA_KEY_LEN))
@@ -1303,6 +1337,8 @@ def derive_confirmations(root, call_id: bytes, epoch: int):
     one side cannot simply be reflected back to satisfy the other.  Each side
     computes both, transmits its own and checks the peer's.
     """
+    if isinstance(root, _RustVoiceRoot):
+        return root.confirmations(call_id, epoch)
     info = _LABEL_CONFIRM + _lp(call_id) + _u64(epoch)
     raw = _hkdf(bytes(root), call_id, info, CONFIRM_LEN * 2)
     return raw[:CONFIRM_LEN], raw[CONFIRM_LEN:]
@@ -1335,6 +1371,9 @@ def derive_endpoint_tag(root, call_id: bytes, epoch: int, seq: int,
       destination  the endpoint itself, so it cannot be substituted
       direction    which side sent it, so it cannot be reflected back
     """
+    if isinstance(root, _RustVoiceRoot):
+        return root.endpoint_tag(call_id, epoch, seq, destination,
+                                 from_initiator)
     info = (_LABEL_ENDPOINT + _lp(call_id) + _u64(epoch) + _u64(seq)
             + _lp(destination.encode("ascii"))
             + struct.pack(">B", 1 if from_initiator else 0))
@@ -1684,8 +1723,6 @@ class VoiceFrameCrypto:
     MAX_COUNTER = (1 << 62)
 
     def __init__(self, root, call_id: bytes, epoch: int, is_initiator: bool):
-        if not root or len(root) != ROOT_LEN:
-            raise ValueError("epoch root must be %d bytes" % ROOT_LEN)
         if not call_id or len(call_id) < 16:
             raise ValueError("call_id must be at least 16 bytes")
         if epoch < 0 or epoch >= (1 << 64):
@@ -1713,8 +1750,8 @@ class VoiceFrameCrypto:
         # same length prefixes -- and `tests/test_voice_rust_parity.py` runs
         # both implementations against each other to keep it that way.
         _require_rust_voice()
-        self._rust = _RustVoiceCipher(bytes(root), self.call_id, self.epoch,
-                                      self.is_initiator)
+        self._rust = _as_root_handle(root).make_cipher(
+            self.call_id, self.epoch, self.is_initiator)
 
         self._send_counter = 0
         self._replay = ReplayWindow()
@@ -1952,13 +1989,11 @@ class VoiceKeySchedule:
         """Commit epoch 0.  Returns (confirm_initiator, confirm_responder)."""
         if self._root is not None:
             raise RuntimeError("initial epoch already installed")
-        if len(root) != ROOT_LEN:
-            raise ValueError("root must be %d bytes" % ROOT_LEN)
-        self._root = bytearray(root)
+        self._root = _as_root_handle(root)
         self._epoch = 0
         self._ciphers[0] = VoiceFrameCrypto(self._root, self.call_id, 0,
                                             self.is_initiator)
-        return derive_confirmations(self._root, self.call_id, 0)
+        return self._root.confirmations(self.call_id, 0)
 
     # -- rekey ------------------------------------------------------------
 
@@ -1985,11 +2020,8 @@ class VoiceKeySchedule:
         if self._pending is not None:
             raise RuntimeError("a rekey is already pending for epoch %d"
                                % self._pending["epoch"])
-        if len(root) != ROOT_LEN:
-            raise ValueError("root must be %d bytes" % ROOT_LEN)
-
-        pending_root = bytearray(root)
-        confirms = derive_confirmations(pending_root, self.call_id, epoch)
+        pending_root = _as_root_handle(root)
+        confirms = pending_root.confirmations(self.call_id, epoch)
 
         # Build the pending cipher NOW and register it for RECEIVE, while
         # leaving _epoch alone so we keep sending on the committed epoch.
@@ -2056,7 +2088,7 @@ class VoiceKeySchedule:
             cipher = VoiceFrameCrypto(pending["root"], self.call_id, epoch,
                                       self.is_initiator)
         self._ciphers[epoch] = cipher
-        _wipe(self._root)
+        self._root.zeroize()
         self._root = pending["root"]
         self._epoch = epoch
         self.rekeys_committed += 1
@@ -2092,7 +2124,7 @@ class VoiceKeySchedule:
         """
         if self._pending is None:
             return
-        _wipe(self._pending["root"])
+        self._pending["root"].zeroize()
         cipher = self._pending.get("cipher")
         if cipher is not None and discard_receive:
             self._ciphers.pop(self._pending["epoch"], None)
@@ -2124,7 +2156,7 @@ class VoiceKeySchedule:
             except Exception:
                 self._ciphers.pop(epoch, None)
         if self._root is not None:
-            _wipe(self._root)
+            self._root.zeroize()
             self._root = None
         self._epoch = -1
 
@@ -3041,10 +3073,9 @@ class VoiceCallSession:
             _wipe(kem_ss)
             self.kex.destroy()
 
-        try:
-            confirm_i, confirm_r = self.schedule.install_initial(root)
-        finally:
-            _wipe(root)
+        # The schedule owns the handle from here; zeroize() on teardown is
+        # what destroys it, so there is nothing to wipe locally.
+        confirm_i, confirm_r = self.schedule.install_initial(root)
 
         self._mlkem_ct = mlkem_ct
         self._peer_x448 = peer_x448_pub
@@ -3074,10 +3105,9 @@ class VoiceCallSession:
             _wipe(kem_ss)
             self.kex.destroy()
 
-        try:
-            confirm_i, confirm_r = self.schedule.install_initial(root)
-        finally:
-            _wipe(root)
+        # The schedule owns the handle from here; zeroize() on teardown is
+        # what destroys it, so there is nothing to wipe locally.
+        confirm_i, confirm_r = self.schedule.install_initial(root)
 
         self._mlkem_ct = mlkem_ct
         self._peer_x448 = peer_x448_pub
@@ -3143,12 +3173,13 @@ class VoiceCallSession:
             transcript = self._transcript(epoch, peer_x448_pub, kex.public,
                                           peer_mlkem_ek, mlkem_ct)
             with self._key_lock:
-                new_root = derive_rekey_root(self.schedule.current_root(), x_ss,
-                                             kem_ss, transcript)
-                try:
-                    self.schedule.begin_rekey(epoch, new_root)
-                finally:
-                    _wipe(new_root)
+                # derive_rekey chains inside Rust: neither the old root nor
+                # the new one is ever a Python object.  The schedule takes
+                # ownership of the handle, so there is nothing left here to
+                # wipe -- abort_rekey and commit_rekey zeroize it.
+                new_root = self.schedule.current_root().derive_rekey(
+                    x_ss, kem_ss, transcript)
+                self.schedule.begin_rekey(epoch, new_root)
                 our_confirm = self.schedule.our_confirm()
         finally:
             _wipe(x_ss)
@@ -3173,12 +3204,9 @@ class VoiceCallSession:
             transcript = self._transcript(epoch, kex.public, peer_x448_pub,
                                           kex.mlkem_ek, mlkem_ct)
             with self._key_lock:
-                new_root = derive_rekey_root(self.schedule.current_root(), x_ss,
-                                             kem_ss, transcript)
-                try:
-                    self.schedule.begin_rekey(epoch, new_root)
-                finally:
-                    _wipe(new_root)
+                new_root = self.schedule.current_root().derive_rekey(
+                    x_ss, kem_ss, transcript)
+                self.schedule.begin_rekey(epoch, new_root)
                 return (self.schedule.our_confirm(),
                         self.schedule.expected_peer_confirm())
         finally:
@@ -4090,9 +4118,8 @@ class VoiceCallSession:
             if self.schedule.epoch != epoch:
                 raise FrameError("endpoint epoch %d is not the committed one"
                                  % epoch)
-            return derive_endpoint_tag(self.schedule.current_root(),
-                                       self.call_id, epoch, seq, destination,
-                                       from_initiator)
+            return self.schedule.current_root().endpoint_tag(
+                self.call_id, epoch, seq, destination, from_initiator)
 
     def build_endpoint_announcement(self):
         """Describe our current media endpoint.  Returns (epoch, seq, dest, tag).

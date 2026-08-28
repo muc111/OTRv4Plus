@@ -64,8 +64,17 @@ use crate::secure_mem::SecretBytes;
 
 // ─── constants (must match otrv4plus_voice.py) ───────────────────────────────
 
-const LABEL_MEDIA:   &[u8] = b"OTRv4+Voice/Media/v1";
-const LABEL_RATCHET: &[u8] = b"OTRv4+Voice/Ratchet/v1";
+const LABEL_MEDIA:    &[u8] = b"OTRv4+Voice/Media/v1";
+const LABEL_RATCHET:  &[u8] = b"OTRv4+Voice/Ratchet/v1";
+const LABEL_SALT:     &[u8] = b"OTRv4+Voice/Salt/v3";
+const LABEL_INITIAL:  &[u8] = b"OTRv4+Voice/Initial/v1";
+const LABEL_REKEY:    &[u8] = b"OTRv4+Voice/Rekey/v1";
+const LABEL_CONFIRM:  &[u8] = b"OTRv4+Voice/Confirm/v1";
+const LABEL_ENDPOINT: &[u8] = b"OTRv4+Voice/Endpoint/v1";
+
+const CONFIRM_LEN:  usize = 32;
+const MLKEM_SS_LEN: usize = 32;
+const X448_SS_LEN:  usize = 56;
 
 const ROOT_LEN:      usize = 64;
 const MEDIA_KEY_LEN: usize = 32;
@@ -423,6 +432,247 @@ impl PyVoiceCipher {
 impl Drop for PyVoiceCipher {
     fn drop(&mut self) {
         self.call_id.zeroize();
+    }
+}
+
+/// Take a shared secret from Python and wipe the caller's buffer.
+///
+/// Accepts `bytes` or `bytearray`.  A `bytearray` is what `RustVoiceKex.agree`
+/// hands back and what the voice module carries shared secrets in precisely so
+/// they can be wiped, so this zeroes it here rather than relying on the
+/// caller's `finally` -- one fewer place the wipe can be forgotten or, as had
+/// already happened twice elsewhere, defeated by an intervening copy.
+fn take_shared(value: &Bound<'_, PyAny>, expect_len: usize, what: &str)
+    -> PyResult<Vec<u8>>
+{
+    let bytes: Vec<u8> = value.extract().map_err(|_| {
+        PyValueError::new_err(format!("{} must be bytes or bytearray", what))
+    })?;
+    if bytes.len() != expect_len {
+        return Err(PyValueError::new_err(
+            format!("{} must be {} bytes", what, expect_len)));
+    }
+    if let Ok(buf) = value.downcast::<PyByteArray>() {
+        let n = buf.len();
+        for i in 0..n {
+            buf.set_item(i, 0u8)?;
+        }
+    }
+    Ok(bytes)
+}
+
+// ─── the epoch root ──────────────────────────────────────────────────────────
+
+/// One committed voice epoch root, owned by Rust.
+///
+/// The root was the last secret in the voice path Python still held.  It is
+/// the input every media key derives from, so a copy of it is a copy of every
+/// key for that epoch -- and it lived in a `bytearray` for the whole call.
+///
+/// Python now holds this handle instead.  It can ask the root to produce a
+/// cipher, a confirmation pair or an endpoint tag; it cannot ask for the root.
+/// The rekey STATE MACHINE stays in Python deliberately: it is protocol
+/// logic, it owns the convergence properties fixed at v10.13.1, and moving it
+/// would put freshly-audited behaviour through an unnecessary rewrite.
+#[pyclass(name = "RustVoiceRoot")]
+pub struct PyVoiceRoot {
+    root: Option<SecretBytes<ROOT_LEN>>,
+}
+
+impl PyVoiceRoot {
+    fn expose(&self) -> PyResult<&[u8]> {
+        self.root.as_ref().map(|r| r.expose_slice()).ok_or_else(|| {
+            PyRuntimeError::new_err("this epoch root has been zeroized")
+        })
+    }
+
+    fn from_bytes(bytes: &[u8]) -> PyResult<Self> {
+        SecretBytes::<ROOT_LEN>::from_slice(bytes)
+            .map(|r| Self { root: Some(r) })
+            .ok_or_else(|| PyValueError::new_err("epoch root must be 64 bytes"))
+    }
+}
+
+/// `SHA-512(LABEL_SALT || transcript)`, matching `_salt_for`.
+fn salt_for(transcript: &[u8]) -> [u8; 64] {
+    use sha2::Digest;
+    let mut h = Sha512::new();
+    h.update(LABEL_SALT);
+    h.update(transcript);
+    let out = h.finalize();
+    let mut salt = [0u8; 64];
+    salt.copy_from_slice(&out);
+    salt
+}
+
+#[pymethods]
+impl PyVoiceRoot {
+    /// Derive the initial root from the hybrid agreement.
+    ///
+    /// Both secrets are mandatory: an X448-only root would be classically
+    /// secure and post-quantum worthless, which is the whole reason the
+    /// exchange is hybrid.
+    #[staticmethod]
+    fn from_initial_agreement(
+        x448_shared:  &Bound<'_, PyAny>,
+        mlkem_shared: &Bound<'_, PyAny>,
+        transcript:   &[u8],
+    ) -> PyResult<Self> {
+        let mut x = take_shared(x448_shared, X448_SS_LEN,
+                                "X448 shared secret")?;
+        let mut k = take_shared(mlkem_shared, MLKEM_SS_LEN,
+                                "ML-KEM shared secret")?;
+
+        let mut ikm = Vec::with_capacity(8 + X448_SS_LEN + MLKEM_SS_LEN);
+        let built = lp(&x, &mut ikm).and_then(|_| lp(&k, &mut ikm));
+        x.zeroize();
+        k.zeroize();
+        built.map_err(PyValueError::new_err)?;
+
+        let mut info = Vec::with_capacity(LABEL_INITIAL.len() + transcript.len());
+        info.extend_from_slice(LABEL_INITIAL);
+        info.extend_from_slice(transcript);
+
+        let mut root = [0u8; ROOT_LEN];
+        let derived = hkdf_sha512(&ikm, &salt_for(transcript), &info, &mut root);
+        ikm.zeroize();
+        derived.map_err(PyValueError::new_err)?;
+
+        let held = SecretBytes::new(root);
+        root.zeroize();
+        Ok(Self { root: Some(held) })
+    }
+
+    /// Derive the next epoch's root, chained onto this one.
+    ///
+    /// Chaining is what makes a rekey an upgrade rather than a replacement:
+    /// an attacker who compromised neither the old root nor the new
+    /// ephemerals gains nothing, and one holding only the old root is locked
+    /// out by the fresh X448 and ML-KEM secrets.
+    ///
+    /// The old root is NOT consumed -- a rekey that fails to confirm must
+    /// leave the call running on the epoch it already had.
+    fn derive_rekey(
+        &self,
+        x448_shared:  &Bound<'_, PyAny>,
+        mlkem_shared: &Bound<'_, PyAny>,
+        transcript:   &[u8],
+    ) -> PyResult<Self> {
+        let mut x = take_shared(x448_shared, X448_SS_LEN,
+                                "X448 shared secret")?;
+        let mut k = take_shared(mlkem_shared, MLKEM_SS_LEN,
+                                "ML-KEM shared secret")?;
+        let old = self.expose()?;
+
+        let mut ikm = Vec::with_capacity(12 + ROOT_LEN + X448_SS_LEN + MLKEM_SS_LEN);
+        let built = lp(old, &mut ikm)
+            .and_then(|_| lp(&x, &mut ikm))
+            .and_then(|_| lp(&k, &mut ikm));
+        x.zeroize();
+        k.zeroize();
+        built.map_err(PyValueError::new_err)?;
+
+        let mut info = Vec::with_capacity(LABEL_REKEY.len() + transcript.len());
+        info.extend_from_slice(LABEL_REKEY);
+        info.extend_from_slice(transcript);
+
+        let mut root = [0u8; ROOT_LEN];
+        let derived = hkdf_sha512(&ikm, &salt_for(transcript), &info, &mut root);
+        ikm.zeroize();
+        derived.map_err(PyValueError::new_err)?;
+
+        let held = SecretBytes::new(root);
+        root.zeroize();
+        Ok(Self { root: Some(held) })
+    }
+
+    /// Build the media cipher for one epoch.  The root never leaves Rust.
+    fn make_cipher(&self, call_id: &[u8], epoch: u64, is_initiator: bool)
+        -> PyResult<PyVoiceCipher>
+    {
+        PyVoiceCipher::new(self.expose()?, call_id, epoch, is_initiator)
+    }
+
+    /// `(confirm_initiator, confirm_responder)` for this root and epoch.
+    ///
+    /// Two distinct tags rather than one shared value, so a tag observed
+    /// from one side cannot be reflected back to satisfy the other.
+    fn confirmations<'py>(&self, py: Python<'py>, call_id: &[u8], epoch: u64)
+        -> PyResult<(Bound<'py, PyBytes>, Bound<'py, PyBytes>)>
+    {
+        let mut info = Vec::with_capacity(LABEL_CONFIRM.len() + 4 + call_id.len() + 8);
+        info.extend_from_slice(LABEL_CONFIRM);
+        lp(call_id, &mut info).map_err(PyValueError::new_err)?;
+        info.extend_from_slice(&epoch.to_be_bytes());
+
+        let mut raw = [0u8; CONFIRM_LEN * 2];
+        hkdf_sha512(self.expose()?, call_id, &info, &mut raw)
+            .map_err(PyValueError::new_err)?;
+        let out = (PyBytes::new(py, &raw[..CONFIRM_LEN]),
+                   PyBytes::new(py, &raw[CONFIRM_LEN..]));
+        raw.zeroize();
+        Ok(out)
+    }
+
+    /// Authenticate one media-endpoint announcement.
+    ///
+    /// The announcement travels the XMPP control channel, so arriving over it
+    /// proves nothing on its own.  The tag comes from the committed epoch
+    /// root, which exists only because the hybrid agreement succeeded, and
+    /// binds the call, the epoch, a strictly increasing sequence, the
+    /// destination and the direction -- so it cannot cross calls, outlive a
+    /// rekey, roll back, be substituted or be reflected.
+    fn endpoint_tag<'py>(
+        &self,
+        py: Python<'py>,
+        call_id: &[u8],
+        epoch: u64,
+        seq: u64,
+        destination: &str,
+        from_initiator: bool,
+    ) -> PyResult<Bound<'py, PyBytes>> {
+        let mut info = Vec::new();
+        info.extend_from_slice(LABEL_ENDPOINT);
+        lp(call_id, &mut info).map_err(PyValueError::new_err)?;
+        info.extend_from_slice(&epoch.to_be_bytes());
+        info.extend_from_slice(&seq.to_be_bytes());
+        if !destination.is_ascii() {
+            return Err(PyValueError::new_err(
+                "destination must be ASCII"));
+        }
+        lp(destination.as_bytes(), &mut info).map_err(PyValueError::new_err)?;
+        info.push(if from_initiator { 1 } else { 0 });
+
+        let mut tag = [0u8; CONFIRM_LEN];
+        hkdf_sha512(self.expose()?, call_id, &info, &mut tag)
+            .map_err(PyValueError::new_err)?;
+        let out = PyBytes::new(py, &tag);
+        tag.zeroize();
+        Ok(out)
+    }
+
+    /// Wrap raw bytes as a root handle.
+    ///
+    /// Takes material IN, which is the safe direction -- there is no matching
+    /// accessor and there will not be one.  Production does not use this: the
+    /// root is derived by `from_initial_agreement` or `derive_rekey` and never
+    /// exists as a Python object.  This exists so tests can build a schedule
+    /// from a fixed root without a full hybrid agreement, and so a caller
+    /// holding a root from an older build can hand it over rather than keep it.
+    #[staticmethod]
+    #[pyo3(name = "from_bytes")]
+    fn py_from_bytes(bytes: &[u8]) -> PyResult<Self> {
+        Self::from_bytes(bytes)
+    }
+
+    /// Destroy the root.  Idempotent.
+    fn zeroize(&mut self) { self.root = None; }
+
+    #[getter]
+    fn spent(&self) -> bool { self.root.is_none() }
+
+    fn __repr__(&self) -> String {
+        format!("<RustVoiceRoot spent={}>", self.root.is_none())
     }
 }
 

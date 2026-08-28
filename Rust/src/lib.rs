@@ -41,6 +41,7 @@ fn otrv4_core(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     // v10.13.2: media keys and the voice X448 scalar leave Python.
     m.add_class::<voice::PyVoiceCipher>()?;
     m.add_class::<voice::PyVoiceKex>()?;
+    m.add_class::<voice::PyVoiceRoot>()?;
     // Ring signature (Phase 5.3c)
     m.add_function(wrap_pyfunction!(ring_sig::py_ring_sign,   m)?)?;
     m.add_function(wrap_pyfunction!(ring_sig::py_ring_verify, m)?)?;

@@ -112,13 +112,14 @@ INVARIANTS: Tuple[Invariant, ...] = (
         tests=("test_release_guard.py", "test_rust_zeroization.py",
                "test_voice_rust_parity.py"),
         rationale="Ed448 seeds, ratchet keys, SMP scalars and -- since "
-                  "v10.13.2 -- voice media keys and the voice X448 scalar "
-                  "never cross the PyO3 boundary; the legacy getters are "
-                  "compiled out.",
-        limits="The voice epoch ROOT is still a Python bytearray: it is the "
-               "input to the Rust cipher, and moving it needs the key "
-               "schedule to move too.  The account password is a Python str "
-               "and cannot be wiped at all.",
+                  "v10.13.2 -- voice media keys, the voice epoch root and "
+                  "the voice X448 scalar never cross the PyO3 boundary; the "
+                  "legacy getters are compiled out.",
+        limits="The typed SMP passphrase and the account password are Python "
+               "`str` before anything can touch them, and a `str` cannot be "
+               "wiped.  The identity DEK and the device seeds are Python "
+               "`bytes` read from disk.  Everything derived from them is "
+               "Rust-owned.",
     ),
     Invariant(
         id="INV-09",
