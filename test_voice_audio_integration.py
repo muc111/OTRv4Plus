@@ -522,13 +522,36 @@ class TestRekeyReceiveWindow(IntegrationBase):
         self.assertEqual(session.stats["recv"], 25)
         self.assertEqual(session.stats["resync"], 0)
 
-    def test_aborted_rekey_withdraws_the_receive_cipher(self):
+    def test_a_timeout_abort_keeps_the_receive_cipher(self):
+        """Superseded at v10.13.1.
+
+        This used to assert that ANY abort withdrew the receive cipher.  That
+        is right when the peer's confirmation tag failed -- evidence the
+        material is wrong -- and wrong when the rekey merely timed out, which
+        is silence.  The initiator commits as soon as our tag verifies and
+        only then sends REKEYCOMMIT, so it is already SENDING on the new
+        epoch while we still have it pending.  Withdrawing the cipher on a
+        timeout made every one of those frames undecryptable.
+        """
         si, sr = self._pair()
         self._derive(si, sr, 1)
         self.assertIsNotNone(sr.cipher_for_epoch(1))
         sr.abort_rekey()
+        self.assertIsNotNone(sr.cipher_for_epoch(1),
+                             "a timeout destroyed a key the peer may already "
+                             "be sending under")
+        self.assertEqual(sr.epoch, 0, "an abort moved the committed epoch")
+        self.assertIsNone(sr.schedule.pending_epoch
+                          if hasattr(sr, "schedule") else sr.pending_epoch,
+                          "the abort did not stop us sending on it")
+
+    def test_a_confirmation_failure_does_withdraw_the_receive_cipher(self):
+        si, sr = self._pair()
+        self._derive(si, sr, 1)
+        self.assertIsNotNone(sr.cipher_for_epoch(1))
+        sr.abort_rekey(discard_receive=True)
         self.assertIsNone(sr.cipher_for_epoch(1),
-                          "a failed rekey must not leave a live key behind")
+                          "material whose tag failed can still decrypt")
         self.assertEqual(sr.epoch, 0)
 
 

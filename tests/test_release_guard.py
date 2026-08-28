@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
-"""
-Release-boundary assertions for the shipped otrv4_core artifact.
+"""INV-08, INV-15 -- Release-boundary assertions for the shipped otrv4_core artifact.
 
 Two independent controls guard the `test-only-kdf` feature, one on each side of
 the build:

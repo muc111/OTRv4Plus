@@ -2,7 +2,7 @@
 """
 OTRv4+ XMPP - full OTR + SMP over XMPP, transported over I2P SAM
 ================================================================
-Version: 10.13.0
+Version: 10.13.1
 
 
 Post-quantum OTRv4+ end-to-end encryption over XMPP, reusing the IRC client's
@@ -228,7 +228,7 @@ def voice_available() -> "tuple[bool, str]":
             "no audio backend: libaaudio.so unavailable and parec/pacat "
             "missing  (run /audioprobe for details)")
 
-XMPP_VERSION = "10.13.0"
+XMPP_VERSION = "10.13.1"
 
 # ---------------------------------------------------------------------------
 # XMPP-private state directory
@@ -377,21 +377,77 @@ def _sanitise(text, max_len: int = 1024) -> str:
     return text[:max_len]
 
 
-# Lines carrying actual message content are redacted from the on-disk
-# transcript so cleartext bodies never touch disk.
+# --------------------------------------------------------------------------
+# Session transcript: what may be written, not what must be stripped
+# --------------------------------------------------------------------------
+#
+# This used to be one regex that redacted `[otr] <peer> body` lines and wrote
+# everything else verbatim.  That fails open: a `print()` added anywhere in
+# the client carrying a passphrase, a key or a token reaches the file with
+# nothing objecting, and these are the files people paste into bug reports.
+# A denylist has to enumerate every way a secret can look; an allowlist has
+# to enumerate the ways a diagnostic can look, and there are far fewer of
+# those and they change far less often.
+#
+# So: a line is written only if its shape is recognised.  Anything else is
+# recorded as its tag and its length, which is enough to see that something
+# happened and where, and not enough to leak what.
+
+#: Message-content lines.  The prefix is kept, the body is not: knowing that
+#: a message arrived from a peer at a time is the diagnostic value; the words
+#: are the thing being protected.
 _LOG_CONTENT_RE = re.compile(r"^(\[(?:otr|plain)\] <[^>]*>)\s(.*)$", re.DOTALL)
+
+#: Tags whose lines are wholly diagnostic and carry no user or key material.
+#: Adding one is a deliberate act: whatever that subsystem prints becomes
+#: readable on disk, so the reviewer's question is "can this tag ever print a
+#: secret", not "does it today".
+_LOG_SAFE_TAGS = frozenset({
+    "audio", "auth", "call", "dake", "identity", "i2p", "jitter", "log",
+    "media", "net", "otr", "ping", "presence", "rekey", "sam", "smp",
+    "trust", "tui", "voice", "xmpp",
+})
+
+#: Bare structural lines: rules, banners and blank separators.
+_LOG_STRUCTURAL_RE = re.compile(r"^[\s\-=!*_.#|+>]*$")
+
+#: `[tag] free text` -- the shape of essentially every diagnostic here.
+_LOG_TAGGED_RE = re.compile(r"^\[([a-z0-9 _-]{1,16})\](.*)$", re.DOTALL)
+
+
+def _log_line_for_file(msg: str) -> str:
+    """The text to write for `msg`, or a redacted stand-in.
+
+    Pure and side-effect free so the tests can drive it directly with
+    candidate leaks rather than through a file handle.
+    """
+    clean = _ANSI_RE.sub("", msg)
+
+    m = _LOG_CONTENT_RE.match(clean)
+    if m:
+        return "%s <message body redacted: %d chars>" % (m.group(1),
+                                                         len(m.group(2)))
+
+    if _LOG_STRUCTURAL_RE.match(clean):
+        return clean
+
+    m = _LOG_TAGGED_RE.match(clean)
+    if m and m.group(1).strip().lower() in _LOG_SAFE_TAGS:
+        return clean
+
+    # Unrecognised shape.  Something printed it, and the transcript should
+    # show that -- but not its content, because nothing here knows what it
+    # is.  A password prompt, a traceback, a third-party library's warning
+    # and a leaked key all arrive through this branch.
+    return "<unlogged line: %d chars>" % len(clean)
 
 
 def _log_to_file(msg):
     if _SESSION_LOG_FH is None:
         return
     try:
-        clean = _ANSI_RE.sub("", msg)
-        m = _LOG_CONTENT_RE.match(clean)
-        if m:
-            clean = f"{m.group(1)} <message body redacted: {len(m.group(2))} chars>"
         ts = time.strftime("%Y-%m-%d %H:%M:%S")
-        _SESSION_LOG_FH.write(f"{ts} {clean}\n")
+        _SESSION_LOG_FH.write("%s %s\n" % (ts, _log_line_for_file(msg)))
         _SESSION_LOG_FH.flush()
     except Exception:
         pass
@@ -1005,7 +1061,10 @@ class OTRv4PlusXMPP(ClientXMPP):
         self.peer = peer
 
         # Per-peer UI state.
-        self._pending = {}         # peer -> 'trust' | 'smp_secret' | None
+        # Locally-armed one-shot secret prompt: the JID a /smp-secret
+        # command is collecting for, or None.  Only _request_smp_secret
+        # sets it and only take_secret_request clears it.
+        self._secret_request = None
         # peer -> previously pinned fingerprint, while a mismatch is
         # unresolved. Presence in this map refuses voice for that peer.
         self._fingerprint_changed = {}
@@ -1200,7 +1259,7 @@ class OTRv4PlusXMPP(ClientXMPP):
         # Ephemeral encrypted per-session log: key zeroed and files deleted on exit,
         # matching the IRC client wipe behaviour. Within-session scrollback is backed
         # by the encrypted file so panels load their full history on tab open.
-        self.channel_log = _ChannelLogManager(persistent=False) if _LOG_AVAILABLE else None
+        self.channel_log = _ChannelLogManager() if _LOG_AVAILABLE else None
         self._cleaned_up = False
         # Register globally so print() can route to channel_log even when
         # the TUI is never started (plain mode is now the default).
@@ -1971,7 +2030,7 @@ class OTRv4PlusXMPP(ClientXMPP):
         fingerprint is NOT touched -- that is long-term identity, and forgetting
         it would turn a reconnect into a fresh trust-on-first-use decision.
         """
-        if peer not in self._encrypted and peer not in self._pending:
+        if peer not in self._encrypted:
             return
         try:
             self.otr.end_session(peer)
@@ -1980,7 +2039,9 @@ class OTRv4PlusXMPP(ClientXMPP):
                   % (_sanitise(peer, 128), _sanitise(str(exc), 80)))
         self._encrypted.discard(peer)
         self._last_dake1.pop(peer, None)
-        self._pending.pop(peer, None)
+        if self._secret_request == peer:
+            self._secret_request = None
+            self._mask_next_input(False)
         self._smp_reported = {k for k in self._smp_reported if k[0] != peer}
         print("[otr] cleared the session with %s (%s) — /otr to start a new "
               "one when they return" % (_sanitise(peer, 128),
@@ -2260,7 +2321,7 @@ class OTRv4PlusXMPP(ClientXMPP):
         """
         if not remote_fp:
             print("[trust] no peer fingerprint available - encrypted only.")
-            self._prompt_smp_secret(peer)
+            self._announce_smp_needed(peer)
             return
 
         try:
@@ -2269,7 +2330,7 @@ class OTRv4PlusXMPP(ClientXMPP):
             if type(exc).__name__ != "FingerprintMismatchError":
                 print("[trust] trust store unusable (%s) - encrypted only."
                       % type(exc).__name__)
-                self._prompt_smp_secret(peer)
+                self._announce_smp_needed(peer)
                 return
             self._fingerprint_changed[peer] = getattr(exc, "stored", "")
             print("")
@@ -2292,7 +2353,7 @@ class OTRv4PlusXMPP(ClientXMPP):
         self._fingerprint_changed.pop(peer, None)
         if pinned_and_trusted:
             print("[trust] Fingerprint matches the pinned identity for this JID.")
-            self._prompt_smp_secret(peer)
+            self._announce_smp_needed(peer)
             return
 
         # First contact: pin it and say so. No question.
@@ -2320,7 +2381,7 @@ class OTRv4PlusXMPP(ClientXMPP):
         else:
             print("[trust] First contact — the fingerprint could NOT be pinned,")
             print("[trust] so a change cannot be detected. /identity for why.")
-        self._prompt_smp_secret(peer)
+        self._announce_smp_needed(peer)
 
     def show_identity(self):
         """Everything TOFU depends on, in one screen.
@@ -2420,27 +2481,62 @@ class OTRv4PlusXMPP(ClientXMPP):
     # SMP passphrase prompt
     # -------------------------------------------------------------------------
 
-    def _prompt_smp_secret(self, peer):
+    def _announce_smp_needed(self, peer):
+        """Tell the user SMP is available.  Arm NOTHING.
+
+        This is reached from `_handle_otr_in_async` -> `_check_dake_complete`
+        -> `_apply_tofu`, which is to say: a remote peer decides when it runs.
+        It therefore may not change what the next line the user types means.
+
+        It used to.  It set `_pending[peer] = "smp_secret"`, and `dispatch_line`
+        consumed the pending state before any command parsing, so a peer who
+        completed a DAKE could make the user's next keystroke -- a message, a
+        command, anything but /quit -- be swallowed and stored as a shared
+        secret.  The user's only warning was a prompt they may have scrolled
+        past.
+
+        Supplying the secret now requires the user to type `/smp-secret`
+        themselves.  See `_request_smp_secret`.
+        """
         print("-" * 60)
         print(
-            "[smp] SOCIALIST MILLIONAIRE PROTOCOL setup "
+            "[smp] SOCIALIST MILLIONAIRE PROTOCOL is available for this peer "
             "(hybrid PQC: ML-KEM-1024 + ML-DSA-87 + ZKP)."
         )
         print(
             f"[smp] Passphrase: {SMP_MIN_LEN}-{SMP_MAX_LEN} chars. "
-            "Both sides must use the SAME secret."
+            "Both sides must use the SAME secret, agreed out of band."
         )
-        print("[smp] After both have stored it, run  /smp start  (either side).")
-        print("[smp] Press Enter or type  skip  to skip for now.")
+        print("[smp] To set it:   /smp-secret        (prompts, hidden)")
+        print("[smp] Then, once BOTH sides have:   /smp start")
+        print("[smp] Until you run that command, what you type is an ordinary "
+              "message.")
+
+    def _request_smp_secret(self, peer):
+        """Arm the hidden one-line read.  LOCAL COMMAND ONLY.
+
+        The arming is the second half of a command the user just typed, which
+        is what makes it safe: `/smp-secret` on one line, the secret on the
+        next, the way `passwd` and `sudo` have always worked.  Nothing a peer
+        sends reaches this method -- `test_no_remote_input_capture.py` walks
+        the inbound call graph and fails if that stops being true.
+
+        Single use.  `dispatch_line` clears the request before doing anything
+        with the line, so it cannot survive into a later one, and no code path
+        re-arms it except this method.
+        """
+        if not self.otr.has_encrypted_session(peer):
+            print(f"[smp] no encrypted session with {peer}. Run /otr first.")
+            return
         hidden = self._mask_next_input(True)
+        self._secret_request = peer
         if hidden:
-            print("[smp] What you type is hidden — it is a shared secret, not "
-                  "a command.")
+            print("[smp] Passphrase (hidden), or Enter to cancel:")
         else:
-            print("[smp] WARNING: this terminal cannot hide input, so what you "
-                  "type WILL be")
+            print("[smp] WARNING: this terminal cannot hide input, so the "
+                  "passphrase WILL be")
             print("[smp] visible here and in any capture of this session.")
-        self._pending[peer] = "smp_secret"
+            print("[smp] Passphrase, or Enter to cancel:")
 
     @staticmethod
     def _set_tty_echo(on: bool) -> bool:
@@ -2527,10 +2623,15 @@ class OTRv4PlusXMPP(ClientXMPP):
         return effective
 
     def _handle_smp_secret_answer(self, peer, secret):
-        self._pending[peer] = None
+        """Consume one hidden line as the SMP passphrase.
+
+        `secret` is a Python str and cannot be zeroized; it is handed to the
+        engine, which copies it into a Rust-owned zeroizing buffer, and no
+        reference is kept here.  See SECURITY.md on the residual limit.
+        """
         self._mask_next_input(False)
-        if not secret or secret.strip().lower() == "skip":
-            print("[smp] skipped - you can set it later with  /smp-secret <secret>.")
+        if not secret or secret.strip().lower() in ("skip", "cancel"):
+            print("[smp] cancelled - set it later with  /smp-secret")
             return
         secret = secret.strip()
         err = self._validate_smp_secret(secret)
@@ -2833,7 +2934,9 @@ class OTRv4PlusXMPP(ClientXMPP):
                 self.otr.end_session(peer)
                 self._encrypted.discard(peer)
                 self._last_dake1.pop(peer, None)
-                self._pending.pop(peer, None)
+                if self._secret_request == peer:
+                    self._secret_request = None
+                    self._mask_next_input(False)
                 self._smp_reported = {k for k in self._smp_reported if k[0] != peer}
             except Exception as e:
                 print(f"[otr] reset error: {e}")
@@ -3160,16 +3263,26 @@ class OTRv4PlusXMPP(ClientXMPP):
     # Pending-input dispatch
     # -------------------------------------------------------------------------
 
-    def feed_pending(self, peer, line):
-        """If `peer` has a pending prompt (trust / smp_secret), consume line."""
-        state = self._pending.get(peer)
-        if state == "smp_secret":
-            self._handle_smp_secret_answer(peer, line)
-            return True
-        return False
+    def take_secret_request(self):
+        """Consume the locally-armed secret request, if any.
 
-    def has_pending(self, peer):
-        return self._pending.get(peer) == "smp_secret"
+        Always clears.  A request survives exactly one dispatched line, so a
+        cancelled or mistyped prompt cannot leave the client quietly waiting
+        to swallow something later.
+        """
+        peer, self._secret_request = self._secret_request, None
+        return peer
+
+    def has_pending(self, peer=None):
+        """True while a LOCALLY armed /smp-secret prompt is outstanding.
+
+        Kept as a predicate for the front ends, which need to know not to
+        echo the line into the transcript panel.  It is deliberately not
+        keyed by peer any more: a per-peer map was what let one peer's
+        protocol traffic arm capture for a conversation the user was not
+        looking at.
+        """
+        return self._secret_request is not None
 
     # -------------------------------------------------------------------------
     # Shared command dispatch
@@ -3181,11 +3294,16 @@ class OTRv4PlusXMPP(ClientXMPP):
         Returns True to keep running, False to quit. Single source of truth
         for command behaviour; both the plain stdin loop and the TUI call this
         so both front-ends behave identically."""
-        # Pending trust/SMP prompts consume the line first.
-        if peer and self.has_pending(peer):
-            if line.strip() == "/quit":
-                return False
-            self.feed_pending(peer, line)
+        # A secret prompt that THIS USER armed with /smp-secret consumes the
+        # next line.  Taken unconditionally so it can never persist past one
+        # line, and checked before command parsing because a passphrase may
+        # legitimately begin with "/".
+        #
+        # Nothing a remote peer sends can set this; see _request_smp_secret.
+        secret_for = self.take_secret_request()
+        if secret_for is not None:
+            self._mask_next_input(False)
+            self._handle_smp_secret_answer(secret_for, line)
             return True
 
         if not line:
@@ -3237,7 +3355,7 @@ class OTRv4PlusXMPP(ClientXMPP):
             # No argument: prompt for it hidden. The argument form below is
             # typed in the clear, so this is the one to reach for.
             if peer:
-                self._prompt_smp_secret(peer)
+                self._request_smp_secret(peer)
             else:
                 print("usage: /smp-secret            (prompts, hidden)")
                 print("       /smp-secret <jid>      (prompts, hidden)")
@@ -3251,7 +3369,7 @@ class OTRv4PlusXMPP(ClientXMPP):
                 self._warn_inline_secret()
             elif "@" in first and " " not in rest:
                 # A JID and nothing else: they want to be asked, hidden.
-                self._prompt_smp_secret(first)
+                self._request_smp_secret(first)
             elif peer:
                 self.store_smp_secret(peer, rest)
                 self._warn_inline_secret()
@@ -3474,7 +3592,7 @@ class OTRv4PlusXMPP(ClientXMPP):
             if scr:
                 scr.scroll_down(999999)
 
-        # --- Log / History: read from encrypted channel_log (works in any mode) ---
+        # --- Log / History: in-memory scrollback (works in any mode) ---
         elif lstrip in ("/log", "/history"):
             target_peer = None
             if self.panel_manager is not None:
@@ -4135,12 +4253,16 @@ async def _input_loop(client):
         # prompt has to happen here rather than in a second thread racing it
         # for the same file descriptor.
         prompt = getattr(client, "_password_prompt", None)
-        # A pending SMP passphrase is hidden the same way. It is a shared
-        # secret, not a command, and echoing it put it in scrollback and in
-        # `script` captures of the session.
+        # A /smp-secret prompt the USER armed is hidden the same way.  It is
+        # a shared secret, not a command, and echoing it put it in scrollback
+        # and in `script` captures of the session.
+        #
+        # Driven by the explicit request rather than by the mask flag: the
+        # flag is a display concern that several things can set, and a hidden
+        # read is not something a stray display state should be able to start.
         secret_prompt = (None if prompt
                          else ("[smp] passphrase: "
-                               if getattr(client, "_mask_input", False)
+                               if getattr(client, "_secret_request", None)
                                else None))
         try:
             if prompt:

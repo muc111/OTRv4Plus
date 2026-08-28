@@ -178,15 +178,78 @@ class TestResponderPendingExpiry(_RekeyBase):
             self.age_pending(V.VOICE_REKEY_TIMEOUT + 1)
         self.assertEqual(len(self.signals("REKEYACK")), 5)
 
-    def test_epoch_guard_still_holds_after_a_supersede(self):
+    def test_an_epoch_ahead_of_ours_is_a_catch_up_not_a_rejection(self):
+        """Superseded at v10.13.1, and this is the fix, not a relaxation.
+
+        The old assertion was that a REKEY two epochs ahead must be ignored.
+        That is what stranded a live call: the initiator commits as soon as
+        our REKEYACK verifies, so if the REKEYCOMMIT is lost it moves on and
+        we do not.  Every REKEY afterwards is then "two ahead" -- including
+        the ones that would have repaired us -- and the responder never
+        rekeys again.  A 69-minute call lost forward secrecy for its last 40
+        minutes exactly this way.
+
+        Accepting it costs nothing: REKEY arrives inside the authenticated
+        OTR channel, and committing still needs a confirmation tag only the
+        real peer can produce.  The tests below hold that line.
+        """
         self._offer()
         self.age_pending(V.VOICE_REKEY_TIMEOUT + 1)
-        _, skipped = self.rekey_offer(3)         # two ahead — not ours
-        self.deliver(self.mgr._on_rekey(self.peer, skipped))
-        self.assertEqual(len(self.signals("REKEYACK")), 1)
-        self.assertEqual(self.session.schedule.pending_epoch, 1,
-                         "a skipped epoch disturbed the pending exchange")
+        _, ahead = self.rekey_offer(3)
+        self.deliver(self.mgr._on_rekey(self.peer, ahead))
+        self.assertEqual(len(self.signals("REKEYACK")), 2,
+                         "the responder refused to catch up")
+        self.assertEqual(self.session.schedule.pending_epoch, 3)
+        self.assertEqual(self.session.schedule.epoch, 0,
+                         "catching up committed without a confirmation tag")
+
+    def test_catching_up_abandons_the_stale_pending_first(self):
+        """Found by a surviving mutant: nothing covered this.
+
+        A responder catching up already holds a pending epoch for the round
+        it never finished.  Deriving the new one without abandoning that
+        leaves two pending epochs, and `begin_rekey` refuses the second, so
+        the catch-up silently does nothing.
+        """
+        self._offer()
+        self.assertEqual(self.session.schedule.pending_epoch, 1)
+        stale = self.session.schedule.cipher_for_epoch(1)
+        self.age_pending(V.VOICE_REKEY_TIMEOUT + 1)
+        _, ahead = self.rekey_offer(4)
+        self.deliver(self.mgr._on_rekey(self.peer, ahead))
+        self.assertEqual(self.session.schedule.pending_epoch, 4,
+                         "the stale pending blocked the catch-up")
+        self.assertIsNotNone(stale, "no cipher was built for epoch 1")
+
+    def test_catching_up_keeps_the_abandoned_receive_key(self):
+        """The peer may be sending under the epoch we abandoned."""
+        self._offer()
+        self.age_pending(V.VOICE_REKEY_TIMEOUT + 1)
+        _, ahead = self.rekey_offer(4)
+        self.deliver(self.mgr._on_rekey(self.peer, ahead))
+        self.assertIsNotNone(self.session.schedule.cipher_for_epoch(1),
+                             "catching up destroyed a key the peer may "
+                             "still be sending under")
+
+    def test_an_epoch_we_already_hold_is_still_refused(self):
+        """The replay half of the old guard, which must NOT be relaxed."""
+        self._offer()
+        before = len(self.signals("REKEYACK"))
+        _, replayed = self.rekey_offer(0)
+        self.deliver(self.mgr._on_rekey(self.peer, replayed))
+        self.assertEqual(len(self.signals("REKEYACK")), before,
+                         "a REKEY for an epoch we already hold was answered")
         self.assertEqual(self.session.schedule.epoch, 0)
+
+    def test_an_implausible_jump_is_still_refused(self):
+        self._offer()
+        self.age_pending(V.VOICE_REKEY_TIMEOUT + 1)
+        before = len(self.signals("REKEYACK"))
+        _, absurd = self.rekey_offer(V.VOICE_REKEY_MAX_CATCHUP + 5)
+        self.deliver(self.mgr._on_rekey(self.peer, absurd))
+        self.assertEqual(len(self.signals("REKEYACK")), before,
+                         "a peer claiming to be arbitrarily far ahead was "
+                         "answered")
 
 
 # ===========================================================================

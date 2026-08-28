@@ -143,7 +143,8 @@ it in Phase 2 so the suite is usable as a regression gate for the Android work.
   management, a trust database, an ANSI terminal renderer, a pager, a tab bar, and two IRC client
   classes. The session layer is reusable; it is not currently *separable*.
 - **`print()` is globally shadowed.** `otrv4plus_xmpp.py:307` replaces the builtin so every output
-  line is routed to the TUI *and* appended to an encrypted channel log. UI state is inferred by
+  line is routed to the TUI *and* appended to an in-memory channel ring (encrypted on disk
+  until v10.13.1, when the storage was removed entirely). UI state is inferred by
   **substring-matching printed English text** (`_latch_smp_from_trace`, `_tui_route_output`
   matching `"SMP VERIFIED"`). This is the single largest refactor item — an Android UI cannot
   scrape terminal strings.
@@ -411,7 +412,7 @@ This is the weakest area and the one requiring the most Android work.
 | `SecureKeyStorage` | otrv4+.py:4130 | `~/.otrv4plus/keys/*.bin` | AES-256-GCM (Rust) | **Argon2id/scrypt over a plaintext `.device_seed` file (0600)** | ⚠️ Replace key protection. **Also currently unused** — see §8.1 |
 | `SMPAutoRespondStorage` | otrv4+.py:4355 | `~/.otrv4plus/smp_secrets.json` | AES-256-GCM (Rust) | same plaintext device-seed pattern | ⚠️ Replace key protection |
 | `TrustDatabase` | otrv4+.py:4510 | `~/.otrv4plus/trust.json` | **NONE — plaintext JSON** | n/a | ❌ **Must be encrypted** |
-| `ChannelLogManager` | otrv4plus_log.py | `~/.otrv4plus/logs/channels/*.enc` | **Hand-rolled AEAD** | **plaintext `channel_log.key` (0600)** | ❌ **Must be replaced** |
+| `ChannelLogManager` | otrv4plus_log.py | in memory only | none — nothing is stored | none | ✅ **Resolved at v10.13.1 by deletion.** The files, the key file and the hand-rolled AEAD were all removed; see ANDROID_STORAGE_AUDIT.md row 6. |
 | OTR identity keys | — | not persisted | n/a | n/a | See §8.1 |
 | Ratchet / session state | — | memory only (Rust) | n/a | ZeroizeOnDrop | ✅ Correct |
 

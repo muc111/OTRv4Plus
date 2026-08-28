@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""The SMP passphrase must not be echoed.
+"""INV-04, INV-05 -- The SMP passphrase must not be echoed.
 
 It never was hidden -- neither client ever masked it -- and that surfaced the
 hard way: five of six session captures sent in a bug report contained a line
@@ -86,7 +86,7 @@ class TestTheEngineCanHideIt:
 class TestTheClientTurnsItOn:
 
     def test_the_prompt_masks(self):
-        src = inspect.getsource(xmpp.OTRv4PlusXMPP._prompt_smp_secret)
+        src = inspect.getsource(xmpp.OTRv4PlusXMPP._request_smp_secret)
         assert "_mask_next_input(True)" in src
 
     def test_the_answer_unmasks(self):
@@ -114,8 +114,11 @@ class TestTheClientTurnsItOn:
 
     def test_the_plain_reader_uses_getpass_for_it(self):
         src = inspect.getsource(xmpp._input_loop)
-        assert "_mask_input" in src and "getpass" in src, (
-            "the non-TUI reader still echoes the passphrase")
+        assert "getpass" in src, "the non-TUI reader still echoes the passphrase"
+        assert "_secret_request" in src, (
+            "the hidden read is driven by the display mask rather than by the "
+            "explicit request; a stray display state must not be able to "
+            "start a hidden read")
 
 
 class TestTheTerminalItselfStopsEchoing:
@@ -205,7 +208,7 @@ class TestItNeverPromisesWhatItCannotDo:
             otr.set_input_mask(False)
 
     def test_the_prompt_branches_on_the_return_value(self):
-        src = inspect.getsource(xmpp.OTRv4PlusXMPP._prompt_smp_secret)
+        src = inspect.getsource(xmpp.OTRv4PlusXMPP._request_smp_secret)
         assert "hidden = self._mask_next_input(True)" in src
         assert "if hidden:" in src
         low = src.lower()
@@ -216,7 +219,7 @@ class TestItNeverPromisesWhatItCannotDo:
     def test_the_claim_and_the_warning_are_mutually_exclusive(self):
         import ast, textwrap
         fn = ast.parse(textwrap.dedent(
-            inspect.getsource(xmpp.OTRv4PlusXMPP._prompt_smp_secret))).body[0]
+            inspect.getsource(xmpp.OTRv4PlusXMPP._request_smp_secret))).body[0]
         branch = [n for n in ast.walk(fn) if isinstance(n, ast.If)
                   and isinstance(n.test, ast.Name) and n.test.id == "hidden"]
         assert branch, "the promise is not guarded by whether it is true"
@@ -233,7 +236,7 @@ class TestTheInlineFormIsDiscouraged:
     def test_a_bare_command_prompts_instead_of_storing(self):
         src = inspect.getsource(xmpp.OTRv4PlusXMPP.dispatch_line)
         i = src.index('"/smp-secret", "/smpsecret"')
-        assert "_prompt_smp_secret" in src[i:i + 400], (
+        assert "_request_smp_secret" in src[i:i + 400], (
             "/smp-secret with no argument does not offer the hidden prompt")
 
     def test_the_inline_form_warns_that_it_was_echoed(self):

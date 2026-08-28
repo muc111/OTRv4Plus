@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""XMPP persistent identity, IRC ephemerality, and TOFU trust.
+"""INV-09, INV-11 -- XMPP persistent identity, IRC ephemerality, and TOFU trust.
 
 The invariant these tests exist to protect is a split, not a feature:
 
@@ -327,11 +327,11 @@ class _FakeClient:
     def __init__(self, db):
         self.otr = _FakeOtr(db)
         self._fingerprint_changed = {}
-        self._pending = {}
+        self._secret_request = None
         self.prompted = []
         self.printed = []
 
-    def _prompt_smp_secret(self, peer):
+    def _announce_smp_needed(self, peer):
         self.prompted.append(peer)
 
 
@@ -359,7 +359,7 @@ class TestTheClientRefusesAChangedFingerprint:
         db = self._db(statedir)
         c = _FakeClient(db)
         _run_tofu(c, "alice@x", "AAAA", monkeypatch)
-        assert c._pending.get("alice@x") is None, "a prompt was armed"
+        assert c._secret_request is None, "a prompt was armed"
         assert c._fingerprint_changed == {}
         assert self._db(statedir).check_or_pin("alice@x", "AAAA") is True, (
             "first contact did not pin the fingerprint")
@@ -389,7 +389,7 @@ class TestTheClientRefusesAChangedFingerprint:
         src = inspect.getsource(xmpp.OTRv4PlusXMPP)
         assert '_pending[peer] = "trust"' not in src
         assert "_handle_trust_answer" not in src
-        feed = inspect.getsource(xmpp.OTRv4PlusXMPP.feed_pending)
+        feed = inspect.getsource(xmpp.OTRv4PlusXMPP.take_secret_request)
         assert '"trust"' not in feed
 
     def test_a_matching_pin_asks_nothing(self, statedir, monkeypatch):
@@ -397,7 +397,7 @@ class TestTheClientRefusesAChangedFingerprint:
         db.add_trust("alice@x", "AAAA")
         c = _FakeClient(db)
         _run_tofu(c, "alice@x", "AAAA", monkeypatch)
-        assert c._pending.get("alice@x") is None
+        assert c._secret_request is None
         assert c.prompted == ["alice@x"], "the SMP step was skipped"
 
     def test_a_changed_fingerprint_does_not_repin(self, statedir, monkeypatch):
@@ -416,7 +416,7 @@ class TestTheClientRefusesAChangedFingerprint:
         db.add_trust("alice@x", "AAAA")
         c = _FakeClient(db)
         _run_tofu(c, "alice@x", "BBBB", monkeypatch)
-        assert c._pending.get("alice@x") is None, (
+        assert c._secret_request is None, (
             "a changed identity can be accepted with the ordinary y keystroke")
 
     def test_a_changed_fingerprint_records_the_block(self, statedir, monkeypatch):

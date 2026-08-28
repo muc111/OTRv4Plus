@@ -983,6 +983,11 @@ def split_datagram_receive(data: bytes):
 
 VOICE_REKEY_SECONDS = 120
 VOICE_REKEY_TIMEOUT = 45
+#: How far ahead of us a peer's REKEY may be and still be accepted as a
+#: catch-up rather than rejected as implausible.  At one rekey per
+#: VOICE_REKEY_SECONDS this is over two hours of missed rounds, which is
+#: longer than any control-plane outage that leaves the media path alive.
+VOICE_REKEY_MAX_CATCHUP = 64
 
 # -- inbound media liveness -------------------------------------------------
 #
@@ -1514,7 +1519,58 @@ class ReplayWindow:
 # ---------------------------------------------------------------------------
 
 class FrameError(ValueError):
-    """A media frame failed parsing, authentication or replay checks."""
+    """A media frame failed parsing, authentication or replay checks.
+
+    `reason` says WHICH, and that distinction is operational, not cosmetic.
+    Every rejection used to be counted as `auth_fail` unless its message text
+    happened to contain the word "replay", so a live call reporting
+    `authfail=87` could mean any of:
+
+      * the peer rekeyed and we have no key for the epoch it is sending on
+        (a state-machine problem, and the one that actually happened);
+      * a frame arrived from an epoch we have already retired (ordinary, and
+        expected around every rekey);
+      * a forged or corrupted frame failed its AES-256-GCM tag (an attack, or
+        a broken path);
+      * the header did not parse at all (a desynchronised byte stream).
+
+    Only the third is an authentication failure.  Reading them as one number
+    is what made the rekey divergence take a 69-minute call to notice.
+
+    Classifying a rejection does NOT soften it: every reason below still
+    discards the frame.  Nothing here accepts unauthenticated media.
+    """
+
+    #: Header did not parse: bad sync, version, type or length.
+    MALFORMED = "malformed"
+    #: We hold no cipher for the epoch the frame claims.  Usually means the
+    #: peer has moved ahead of us, or is behind and we have retired it.
+    NO_KEY = "no_key"
+    #: The epoch is one we hold, but the frame belongs to a retired sub-epoch.
+    RETIRED = "retired"
+    #: The counter has been seen, or is below the replay window.
+    REPLAY = "replay"
+    #: The AES-256-GCM tag did not verify.  This one is an attack signal.
+    AUTH = "auth"
+    #: Structurally valid, but not for this call.
+    FOREIGN = "foreign"
+
+    #: reason -> the counter in MEDIA_STAT_KEYS that owns it.
+    STAT_FOR_REASON = {
+        MALFORMED: "rej_malformed",
+        NO_KEY:    "rej_no_key",
+        RETIRED:   "rej_retired",
+        REPLAY:    "replay",
+        AUTH:      "auth_fail",
+        FOREIGN:   "foreign",
+    }
+
+    def __init__(self, message, reason=None):
+        super().__init__(message)
+        #: Defaults to MALFORMED so a raise site that forgets to classify is
+        #: counted as "we could not even parse it" rather than silently
+        #: inflating the authentication-failure count.
+        self.reason = reason or self.MALFORMED
 
 
 def pack_media_header(epoch: int, counter: int, length: int,
@@ -1530,21 +1586,21 @@ def parse_media_header(raw: bytes):
     over the whole header verifies.
     """
     if len(raw) < VOICE_HDR_LEN:
-        raise FrameError("short header")
+        raise FrameError("short header", FrameError.MALFORMED)
     sync, version, ftype, epoch, counter, length = struct.unpack(
         VOICE_HDR_FMT, raw[:VOICE_HDR_LEN])
     if sync != VOICE_SYNC:
-        raise FrameError("bad sync byte")
+        raise FrameError("bad sync byte", FrameError.MALFORMED)
     if version != VOICE_PROTOCOL_VERSION:
-        raise FrameError("unsupported protocol version %d" % version)
+        raise FrameError("unsupported protocol version %d" % version, FrameError.MALFORMED)
     if ftype not in _FRAME_TYPES:
-        raise FrameError("unsupported frame type 0x%02x" % ftype)
+        raise FrameError("unsupported frame type 0x%02x" % ftype, FrameError.MALFORMED)
     # Mute, silence and speech are all AUDIO, so the field still says nothing
     # about what the microphone is doing. PING/PONG are the only exceptions
     # and they are the same 199 bytes on the same cadence, so an observer
     # learns that a probe happened, not anything about the conversation.
     if not (VOICE_MIN_FRAME <= length <= VOICE_MAX_FRAME):
-        raise FrameError("implausible sealed length %d" % length)
+        raise FrameError("implausible sealed length %d" % length, FrameError.MALFORMED)
     return epoch, counter, length, ftype
 
 
@@ -1638,7 +1694,8 @@ class VoiceFrameCrypto:
     def seal(self, plaintext: bytes, frame_type: int = FRAME_TYPE_AUDIO) -> bytes:
         """Encrypt one padded frame.  Returns the complete wire packet."""
         if self._zeroized:
-            raise FrameError("media cipher already zeroized")
+            raise FrameError("media cipher already zeroized",
+                             FrameError.NO_KEY)
         if self._send_counter >= self.MAX_COUNTER:
             raise FrameError("frame counter exhausted")
 
@@ -1653,7 +1710,7 @@ class VoiceFrameCrypto:
         sealed = self._send_gcm.encrypt(media_nonce(self.epoch, counter),
                                         plaintext, aad)
         if len(sealed) != VOICE_SEALED_LEN:
-            raise FrameError("sealed frame has the wrong length")
+            raise FrameError("sealed frame has the wrong length", FrameError.MALFORMED)
         self._send_counter += 1
         return header + sealed
 
@@ -1679,19 +1736,20 @@ class VoiceFrameCrypto:
         counter, because nothing commits until the tag verifies.
         """
         if self._zeroized:
-            raise FrameError("media cipher already zeroized")
+            raise FrameError("media cipher already zeroized",
+                             FrameError.NO_KEY)
         epoch, counter, length, ftype = parse_media_header(header)
         if epoch != self.epoch:
             raise FrameError("frame epoch %d is not this cipher's epoch %d"
-                             % (epoch, self.epoch))
+                             % (epoch, self.epoch), FrameError.NO_KEY)
         if length != len(sealed):
-            raise FrameError("declared length does not match the frame")
+            raise FrameError("declared length does not match the frame", FrameError.MALFORMED)
         if self._replay.seen(counter):
-            raise FrameError("replayed or stale frame counter %d" % counter)
+            raise FrameError("replayed or stale frame counter %d" % counter, FrameError.REPLAY)
 
         sub = counter // self.RATCHET_INTERVAL
         if sub > self._recv_sub + self._MAX_SUBEPOCH_JUMP:
-            raise FrameError("sub-epoch too far ahead")
+            raise FrameError("sub-epoch too far ahead", FrameError.RETIRED)
 
         aad = media_aad(self.call_id, self.recv_dir, header)
         nonce = media_nonce(epoch, counter)
@@ -1717,7 +1775,7 @@ class VoiceFrameCrypto:
                 _wipe(probe)
             self._advance_recv(sub)
         else:
-            raise FrameError("frame from an expired sub-epoch")
+            raise FrameError("frame from an expired sub-epoch", FrameError.RETIRED)
 
         # Committed only now, after authentication.
         self._replay.check_and_set(counter)
@@ -1805,6 +1863,12 @@ class VoiceKeySchedule:
 
     RETAIN_EPOCHS = 1
     MAX_EPOCH = (1 << 63)
+    #: A responder that missed one or more REKEYCOMMITs is behind the
+    #: initiator and must be able to rejoin; a peer claiming to be
+    #: arbitrarily far ahead must not be able to make us derive forever.
+    #: Mirrors VOICE_REKEY_MAX_CATCHUP, which bounds the same jump at the
+    #: signalling layer.
+    MAX_CATCHUP = 64
 
     def __init__(self, call_id: bytes, is_initiator: bool):
         self.call_id = bytes(call_id)
@@ -1875,10 +1939,17 @@ class VoiceKeySchedule:
         """
         if self._root is None:
             raise RuntimeError("cannot rekey before the initial agreement")
-        if epoch != self._epoch + 1:
+        if epoch <= self._epoch:
+            # The epoch counter only ever moves forward.  Re-deriving one we
+            # already hold would replace a key the peer may still be using.
             raise ValueError(
-                "rekey epoch must be exactly current+1 (%d), got %d"
-                % (self._epoch + 1, epoch))
+                "rekey epoch must be ahead of the committed one (%d), got %d"
+                % (self._epoch, epoch))
+        if epoch > self._epoch + self.MAX_CATCHUP:
+            # A gap this large is not a peer that missed a few commits.
+            raise ValueError(
+                "rekey epoch %d is more than %d ahead of %d"
+                % (epoch, self.MAX_CATCHUP, self._epoch))
         if epoch >= self.MAX_EPOCH:
             raise ValueError("epoch space exhausted")
         if self._pending is not None:
@@ -1941,7 +2012,9 @@ class VoiceKeySchedule:
             return False
         expected = self.expected_peer_confirm()
         if not hmac.compare_digest(bytes(peer_confirm or b""), expected):
-            self.abort_rekey()
+            # A tag that does not verify is evidence, not silence: nothing
+            # legitimate will ever be encrypted under this root.
+            self.abort_rekey(discard_receive=True)
             return False
 
         pending = self._pending
@@ -1960,15 +2033,38 @@ class VoiceKeySchedule:
         self._retire_old_epochs()
         return True
 
-    def abort_rekey(self) -> None:
-        """Discard pending material.  Idempotent."""
+    def abort_rekey(self, discard_receive: bool = False) -> None:
+        """Stop sending on the pending epoch.  Idempotent.
+
+        `discard_receive` decides whether the pending cipher is also removed
+        from the RECEIVE set, and the distinction is the whole point.
+
+        A rekey can end for two very different reasons.
+
+        *The peer's confirmation tag did not verify.*  That is evidence: the
+        material is wrong, or the message was forged.  Nothing legitimate
+        will ever be encrypted under that root, so the cipher goes -- pass
+        `discard_receive=True`.
+
+        *Nothing arrived before the timeout, or a newer REKEY superseded it.*
+        That is the ABSENCE of evidence, and treating it as failure is what
+        broke long calls.  The initiator commits the moment the responder's
+        tag verifies and only then sends REKEYCOMMIT; if that message is lost
+        the initiator is already SENDING on the new epoch while the responder
+        still has it merely pending.  A responder that then discarded the
+        receive cipher could no longer decrypt anything the peer sent, and
+        every frame landed in `auth_fail` -- one-way audio that reads exactly
+        like a broken tunnel.  So by default the receive cipher STAYS, under
+        the normal retirement policy, and only the intent to send is dropped.
+
+        Retaining it costs nothing: a frame still has to pass its AEAD tag,
+        and `_retire_old_epochs` drops the key once the epoch moves on.
+        """
         if self._pending is None:
             return
         _wipe(self._pending["root"])
         cipher = self._pending.get("cipher")
-        if cipher is not None:
-            # Registered for receive by begin_rekey; a failed rekey must take
-            # it back out so a stale epoch cannot keep decrypting.
+        if cipher is not None and discard_receive:
             self._ciphers.pop(self._pending["epoch"], None)
             cipher.zeroize()
         self._pending = None
@@ -1989,7 +2085,7 @@ class VoiceKeySchedule:
     def zeroize(self) -> None:
         """Destroy every root and cipher.  Idempotent, never raises."""
         try:
-            self.abort_rekey()
+            self.abort_rekey(discard_receive=True)
         except Exception:
             self._pending = None
         for epoch in list(self._ciphers):
@@ -2678,6 +2774,11 @@ class RateLimiter:
 MEDIA_STAT_KEYS = (
     "sent", "recv", "dropped", "late", "oversize", "backpressure",
     "auth_fail", "replay", "resync", "fec_recovered", "stale", "foreign",
+    # Rejection causes, split out at v10.13.1.  `auth_fail` used to absorb
+    # all of these, so "authfail=87" could equally mean a forged frame or a
+    # peer that had rekeyed ahead of us.  Only `auth_fail` is now an
+    # authentication failure; the others are state, not attack.
+    "rej_no_key", "rej_retired", "rej_malformed",
     # Raw arrivals, counted before every filter. Without this, recv=0 with
     # every rejection counter also at 0 is ambiguous: nothing arrived, or
     # things arrived and were discarded on a path that counts nothing. The
@@ -3058,9 +3159,9 @@ class VoiceCallSession:
         with self._key_lock:
             return self.schedule.commit_rekey(epoch, peer_confirm)
 
-    def abort_rekey(self) -> None:
+    def abort_rekey(self, discard_receive: bool = False) -> None:
         with self._key_lock:
-            self.schedule.abort_rekey()
+            self.schedule.abort_rekey(discard_receive=discard_receive)
 
     # -- SAM transport ----------------------------------------------------
 
@@ -3893,14 +3994,17 @@ class VoiceCallSession:
         with self._key_lock:
             cipher = self.schedule.cipher_for_epoch(epoch)
             if cipher is None:
-                raise FrameError("no live key for epoch %d" % epoch)
+                raise FrameError("no live key for epoch %d" % epoch, FrameError.NO_KEY)
             try:
                 plaintext = cipher.open(header, sealed)
             except _INVALID_TAG:
-                # Rejected exactly as before -- only the accounting changes,
-                # so the frame that fails the tag lands in `authfail` where
-                # an investigation will look for it.
-                raise FrameError("frame failed authentication")
+                # The ONLY rejection that is an authentication failure: a
+                # frame we hold the key for, whose AES-256-GCM tag did not
+                # verify.  Everything else is state -- wrong epoch, retired
+                # epoch, unparseable header -- and counting those here is
+                # what made "authfail=87" unreadable.
+                raise FrameError("frame failed authentication",
+                                 FrameError.AUTH)
         return epoch, counter, plaintext, ftype
 
     async def _network_reader(self) -> None:
@@ -4179,9 +4283,16 @@ class VoiceCallSession:
         if arrived:
             # Datagrams are reaching the socket but none authenticate: the
             # transport is fine and the fault is above it.
+            # Split by cause, because the causes need different actions.
+            # nokey dominating means the peers disagree about the epoch --
+            # a rekey problem.  authfail dominating means frames are being
+            # forged or corrupted.  They used to be the same number.
             return ("datagrams are arriving but none authenticate "
-                    "(foreign=%d empty=%d authfail=%d replay=%d)"
+                    "(foreign=%d empty=%d nokey=%d retired=%d malformed=%d "
+                    "authfail=%d replay=%d)"
                     % (self.stats["foreign"], self.stats["dgram_empty"],
+                       self.stats["rej_no_key"], self.stats["rej_retired"],
+                       self.stats["rej_malformed"],
                        self.stats["auth_fail"], self.stats["replay"]))
         state = self._sam_control_state()
         if state == "closed":
@@ -4386,11 +4497,13 @@ class VoiceCallSession:
                 else:
                     self.stats["late"] += 1
             except FrameError as exc:
-                text = str(exc)
-                if "replay" in text:
-                    self.stats["replay"] += 1
-                else:
-                    self.stats["auth_fail"] += 1
+                # Classified by the raise site.  This used to read
+                # `if "replay" in str(exc)` and count everything else as an
+                # authentication failure, which meant a rekey the peer had
+                # moved ahead of was indistinguishable from a forged frame.
+                self.stats[FrameError.STAT_FOR_REASON.get(
+                    getattr(exc, "reason", FrameError.MALFORMED),
+                    "rej_malformed")] += 1
                 self.stats["dropped"] += 1
                 del buf[:1]
                 self.stats["resync"] += 1
@@ -4542,7 +4655,8 @@ class VoiceCallSession:
         audio = self.audio_backend or "-"
         return ("state=%s role=%s audio=%s %s transport=%s keys=%s epoch=%d "
                 "pending=%s sent=%d dgram_in=%d "
-                "recv=%d dropped=%d late=%d authfail=%d replay=%d resync=%d "
+                "recv=%d dropped=%d late=%d nokey=%d retired=%d "
+                "malformed=%d authfail=%d replay=%d resync=%d "
                 "backpressure=%d stale=%d foreign=%d oversize=%d fec=%d "
                 "jitter=%d/%d (%.0fms) %s ratchets=%d rekeys=%d/%d"
                 % (self.state, self.role, audio, rate, transport,
@@ -4551,6 +4665,8 @@ class VoiceCallSession:
                    self.stats["sent"], self.stats["dgram_in"],
                    self.stats["recv"],
                    self.stats["dropped"], self.stats["late"],
+                   self.stats["rej_no_key"], self.stats["rej_retired"],
+                   self.stats["rej_malformed"],
                    self.stats["auth_fail"], self.stats["replay"],
                    self.stats["resync"],
                    self.stats["backpressure"], self.stats["stale"],
@@ -5914,7 +6030,7 @@ class VoiceCallManager:
             self._vdbg(peer, "rekey %d confirmation mismatch — pending key "
                        "discarded, call continues on epoch %d"
                        % (epoch, session.schedule.epoch))
-            session.abort_rekey()
+            session.abort_rekey(discard_receive=True)
             return
 
         if not session.commit_rekey(epoch, peer_confirm):
@@ -5948,13 +6064,40 @@ class VoiceCallManager:
         peer_x448 = _hex_field(fields[2], VoiceKeyExchange.PUB_LEN)
         peer_ek = _hex_field(fields[3], MLKEM_EK_LEN)
 
-        if epoch != session.schedule.epoch + 1:
-            # Old, duplicate, skipped and implausible-future epochs all land
-            # here.  An unauthenticated REKEY must not be able to move the
-            # epoch counter at all.
-            self._vdbg(peer, "REKEY epoch %d rejected (expected %d)"
-                       % (epoch, session.schedule.epoch + 1))
+        if epoch <= session.schedule.epoch:
+            # Old and duplicate epochs.  The counter only ever moves forward,
+            # so a REKEY for an epoch we already hold proves nothing and is
+            # the shape a replay takes.
+            self._vdbg(peer, "REKEY epoch %d rejected (already at %d)"
+                       % (epoch, session.schedule.epoch))
             return
+        if epoch > session.schedule.epoch + VOICE_REKEY_MAX_CATCHUP:
+            # An implausible jump.  Bounded so a peer cannot make us derive
+            # arbitrarily far ahead, and so the epoch space cannot be burned.
+            self._vdbg(peer, "REKEY epoch %d rejected (more than %d ahead of %d)"
+                       % (epoch, VOICE_REKEY_MAX_CATCHUP,
+                          session.schedule.epoch))
+            return
+        if epoch > session.schedule.epoch + 1:
+            # The peer is AHEAD of us, not merely next.
+            #
+            # This used to be rejected together with replays, and that is how
+            # a long call lost forward secrecy permanently.  The initiator
+            # commits an epoch as soon as our tag verifies; if the REKEYCOMMIT
+            # that tells us so goes missing, it moves on and we do not.  Every
+            # REKEY afterwards is for an epoch we consider two ahead, so we
+            # rejected all of them -- and no later message could ever repair
+            # it, because the repair was the thing being rejected.
+            #
+            # Catching up is safe.  REKEY arrives inside the authenticated OTR
+            # channel, so only the real peer can send one; accepting it only
+            # DERIVES a pending epoch, and committing still requires a
+            # confirmation tag that only the real peer can produce.  Nothing
+            # is rolled back: the epoch strictly increases either way.
+            self._vdbg(peer, "REKEY epoch %d is ahead of ours (%d) — "
+                       "catching up" % (epoch, session.schedule.epoch))
+            if session.schedule.pending_epoch is not None:
+                session.abort_rekey()
         if session.schedule.pending_epoch is not None:
             # A pending epoch that is still young belongs to a REKEY we are
             # already answering: a duplicate or a replay must not restart it.
@@ -5985,7 +6128,7 @@ class VoiceCallManager:
         except Exception as exc:
             self._vdbg(peer, "rekey %d rejected: %s"
                        % (epoch, _san(str(exc), 120)))
-            session.abort_rekey()
+            session.abort_rekey(discard_receive=True)
             return
 
         self._signal(peer, "REKEYACK", (session.call_id.hex(), epoch,
@@ -6105,7 +6248,7 @@ class VoiceCallManager:
                 # classified because this number did not exist.
                 self._vdbg(peer, "5s: tx=%d dg=%d rx=%d drop=%d bp=%d "
                            "stale=%d "
-                           "foreign=%d late=%d authfail=%d replay=%d "
+                           "foreign=%d late=%d nokey=%d authfail=%d replay=%d "
                            "jitter=%d/%d jit=%.0fms buf=%dms epoch=%d %s"
                            % (delta.get("sent", 0), delta.get("dgram_in", 0),
                               delta.get("recv", 0),
@@ -6114,6 +6257,7 @@ class VoiceCallManager:
                               delta.get("stale", 0),
                               delta.get("foreign", 0),
                               delta.get("late", 0),
+                              delta.get("rej_no_key", 0),
                               delta.get("auth_fail", 0), delta.get("replay", 0),
                               session.jitter.depth(),
                               session.jitter.target_depth,

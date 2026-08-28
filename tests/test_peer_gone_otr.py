@@ -59,13 +59,19 @@ class _FakeClient:
     def __init__(self, encrypted=(PEER,), in_call=()):
         self.otr = _FakeOTR()
         self._encrypted = set(encrypted)
-        self._pending = {}
+        self._secret_request = None
+        self.mask_calls = []
         self._last_dake1 = {}
         self._smp_reported = {(PEER, "SUCCEEDED"), (OTHER, "SUCCEEDED")}
         self._peer_gone_at = {}
         self._peer_gone_task = None
         self._shutting_down = False
         self._voice_manager = _FakeVoice(in_call)
+
+    def _mask_next_input(self, on):
+        """Real forget() lifts the echo mask when it drops a request."""
+        self.mask_calls.append(bool(on))
+        return True
 
     def _start_peer_gone_sweeper(self):
         pass                       # the sweeper is driven directly in tests
@@ -133,11 +139,12 @@ class TestForget:
 
     def test_it_clears_every_piece_of_per_session_state(self):
         c = _FakeClient()
-        c._pending[PEER] = "smp_secret"
+        c._secret_request = PEER
         c._last_dake1[PEER] = "?OTRv4..."
         c._forget_otr(PEER, "offline")
         assert PEER not in c._encrypted
-        assert PEER not in c._pending
+        assert c._secret_request is None, (
+            "a secret prompt outlived the session it belonged to")
         assert PEER not in c._last_dake1
         assert not [k for k in c._smp_reported if k[0] == PEER]
 

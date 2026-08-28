@@ -634,11 +634,24 @@ class TestRekey(unittest.TestCase):
         with self.assertRaises(ValueError):
             si.begin_rekey(0, b"\x00" * V.ROOT_LEN)
 
-    def test_skipped_and_future_epochs_rejected(self):
+    def test_backward_and_implausible_epochs_rejected(self):
+        """Superseded at v10.13.1: a bounded forward jump is now a catch-up.
+
+        Epochs 2 and 5 used to be rejected alongside 1000.  Rejecting them is
+        what left a responder permanently behind after one lost REKEYCOMMIT,
+        because the repair was itself a forward jump.  Backwards and absurd
+        still raise; a peer that is merely ahead does not.
+        """
         si, _ = self._fresh()
-        for bad in (2, 5, 1000):
+        for bad in (0, -1, V.VoiceKeySchedule.MAX_CATCHUP + 2, 1000):
             with self.assertRaises(ValueError):
                 si.begin_rekey(bad, b"\x00" * V.ROOT_LEN)
+
+    def test_a_bounded_forward_jump_is_accepted(self):
+        si, _ = self._fresh()
+        si.begin_rekey(3, b"\x00" * V.ROOT_LEN)
+        self.assertEqual(si.pending_epoch, 3)
+        self.assertEqual(si.epoch, 0, "deriving ahead committed the epoch")
 
     def test_duplicate_rekey_rejected(self):
         si, sr = self._fresh()

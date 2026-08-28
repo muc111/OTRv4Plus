@@ -1,6 +1,6 @@
 [package]
 name        = "otrv4_core"
-version     = "0.10.23"
+version     = "0.10.24"
 edition     = "2021"
 authors     = ["OTRv4+ contributors"]
 description = "Post-quantum OTRv4 cryptographic core (Rust/PyO3)"

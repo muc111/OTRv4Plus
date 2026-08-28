@@ -147,7 +147,7 @@ import shutil
 import logging
 import logging.handlers
 from typing import Optional, Dict, Any, Tuple, List, Set, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from collections import defaultdict, deque
 from enum import IntEnum
 import concurrent.futures
@@ -1462,7 +1462,7 @@ class OTRv4DataMessage:
             raise ValueError(f"Failed to decode message: {e }")
 
 
-VERSION = "OTRv4+ 10.13.0"
+VERSION = "OTRv4+ 10.13.1"
 
 if not hasattr(hashlib, "sha3_512"):
     raise RuntimeError(
@@ -2066,7 +2066,9 @@ class OTRConfig:
     port: int = 0
     use_tls: bool = False
     sasl_user: Optional[str] = None
-    sasl_pass: Optional[str] = None
+    # repr=False: a dataclass repr prints every field, and this one
+    # ends up in debug output and exception text.
+    sasl_pass: Optional[str] = field(default=None, repr=False)
     channel: str = "#otr"
     log_level: str = "INFO"
     dake_timeout: float = 120.0
@@ -2076,7 +2078,7 @@ class OTRConfig:
     nickserv_login: bool = False
     nickserv_register: bool = False
     nickserv_nick: Optional[str] = None
-    nickserv_pass: Optional[str] = None
+    nickserv_pass: Optional[str] = field(default=None, repr=False)
 
     # -- Identity and trust persistence -----------------------------------
     #
@@ -9538,7 +9540,7 @@ class OTRv4IRCClient:
         self.message_router = MessageRouter(self.panel_manager)
         self.event_handler = EventHandler(self.panel_manager)
         # Ephemeral per-channel log: new key per session, files wiped on exit
-        self.channel_log = _ChannelLogManager(persistent=False) if _LOG_AVAILABLE else None
+        self.channel_log = _ChannelLogManager() if _LOG_AVAILABLE else None
 
         self.server = self.config.server
         if self.config.nickserv_nick:

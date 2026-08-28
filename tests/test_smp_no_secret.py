@@ -150,43 +150,55 @@ class TestRemoteInputCannotBecomeASecret:
         assert "_pending" not in src, (
             "an inbound SMP message reaches the pending-input state; a peer "
             "could make the user's next typed line a secret")
-        assert "_prompt_smp_secret" not in src
+        assert "_request_smp_secret" not in src
 
     def test_nothing_in_the_engine_arms_it(self):
         """The engine handles remote input. The prompt belongs to the UI."""
         import otrv4_
         src = inspect.getsource(otrv4_)
-        assert "_prompt_smp_secret" not in src, (
+        assert "_request_smp_secret" not in src, (
             "the protocol engine can arm the secret prompt")
 
-    def test_only_local_flows_arm_it_in_the_client(self):
+    def test_only_the_explicit_command_arms_the_prompt(self):
+        """Superseded and tightened at v10.13.1.
+
+        The previous version of this test allowed `_apply_tofu` and
+        `_check_dake_complete` in the set of "local flows" that may arm the
+        prompt.  That was wrong: both are reached from
+        `_handle_otr_in_async`, so a remote peer decided when they ran.  The
+        test passed while the property it was named for was false.
+
+        The rule now is the narrow one -- only a command the user typed may
+        arm it -- and the call-graph proof lives in
+        `test_no_remote_input_capture.py`, which walks the inbound handlers
+        transitively rather than checking a hand-maintained allow-list.
+        """
         xmpp = pytest.importorskip("otrv4plus_xmpp")
         callers = []
         tree = ast.parse(inspect.getsource(xmpp))
         for node in ast.walk(tree):
             if not isinstance(node, ast.FunctionDef):
                 continue
-            if _calls_named(node, "_prompt_smp_secret"):
+            if _calls_named(node, "_request_smp_secret"):
                 callers.append(node.name)
         assert callers, "nothing prompts for the secret any more"
-        # Every caller must be reached from local input or local session state,
-        # never from a decoded peer message.
-        # dispatch_line is local by definition: it is the user's own typed
-        # command. The point of this test is that nothing reachable from a
-        # DECODED PEER MESSAGE can arm the prompt.
-        allowed = {"_check_dake_complete", "_handle_trust_answer",
-                   "_apply_tofu", "store_smp_secret", "dispatch_line"}
-        assert set(callers) <= allowed, (
-            "the secret prompt is armed from %s, which is not a local flow"
-            % (set(callers) - allowed))
+        assert set(callers) == {"dispatch_line"}, (
+            "the secret prompt is armed from %s; only the user's own typed "
+            "command may arm it" % sorted(callers))
 
-    def test_pending_input_still_takes_precedence_once_locally_armed(self):
-        # The precedence itself is fine and wanted -- it is only dangerous if a
-        # remote peer can arm it. Pin the precedence so the fix is understood
-        # as "control who arms it", not "make the prompt weaker".
+    def test_the_prompt_is_single_use_rather_than_a_pending_state(self):
+        """The old mechanism was sticky: once armed it consumed every line
+        until answered, and only `/quit` escaped.  The replacement is taken
+        unconditionally on the next dispatched line, so a prompt cannot
+        outlive the line it was armed for."""
         xmpp = pytest.importorskip("otrv4plus_xmpp")
         src = inspect.getsource(xmpp.OTRv4PlusXMPP.dispatch_line)
-        assert "has_pending" in src.split("lstrip = line.strip()")[0]
+        head = src.split("lstrip = line.strip()")[0]
+        assert "take_secret_request()" in head, (
+            "the secret request must be taken before command parsing, "
+            "because a passphrase may legitimately begin with '/'")
+        assert "/quit" not in head, (
+            "a /quit escape hatch means the prompt is sticky again")
 
     def test_the_explicit_command_still_exists(self):
         xmpp = pytest.importorskip("otrv4plus_xmpp")

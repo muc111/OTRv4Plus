@@ -1,6 +1,6 @@
 # Features
 
-What's implemented as of v10.13.0.
+What's implemented as of v10.13.1.
 
 ## Cryptography
 

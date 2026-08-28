@@ -10,12 +10,12 @@ the project was on. This document exists so that cannot happen quietly again.
 
 | Track | Where | Current | Why it is separate |
 |---|---|---|---|
-| **Client** | `otrv4+.py` `VERSION`, `otrv4plus_xmpp.py` `XMPP_VERSION` | `10.13.0` | The thing a user runs and a peer must match. |
-| **Crypto core** | `Rust/Cargo.toml`, `Rust/pyproject.toml` | `0.10.23` | A crate with its own release history; it is `0.x` because its API is not stable for outside consumers. |
-| **Android app** | `android/app/build.gradle.kts` | `0.3.0-phase2+core.10.13.0` | An APK at an earlier maturity than the Termux client. Its own track, with the client version it embeds recorded as semver build metadata. |
+| **Client** | `otrv4+.py` `VERSION`, `otrv4plus_xmpp.py` `XMPP_VERSION` | `10.13.1` | The thing a user runs and a peer must match. |
+| **Crypto core** | `Rust/Cargo.toml`, `Rust/pyproject.toml` | `0.10.24` | A crate with its own release history; it is `0.x` because its API is not stable for outside consumers. |
+| **Android app** | `android/app/build.gradle.kts` | `0.3.0-phase2+core.10.13.1` | An APK at an earlier maturity than the Termux client. Its own track, with the client version it embeds recorded as semver build metadata. |
 
 The crate and the client are bumped together at a release, so a changelog entry
-reads `VERSION → 10.13.0, otrv4_core 0.10.23`. The Android `versionCode` is a
+reads `VERSION → 10.13.1, otrv4_core 0.10.24`. The Android `versionCode` is a
 monotonically increasing integer because Android requires that; it carries no
 other meaning.
 
@@ -73,6 +73,20 @@ A grep that should return one version and no other:
 grep -rn 'VERSION = "OTRv4+\|^XMPP_VERSION\|^version' \
      otrv4+.py otrv4plus_xmpp.py Rust/Cargo.toml Rust/pyproject.toml
 ```
+
+## Why v10.13.1
+
+A PATCH bump: security hardening within existing capabilities, no new
+capability and no wire change.  SMP wire version `0x03` is untouched; the
+media frame format is untouched.  The changes are a remotely armable input
+capture removed, a hand-rolled Python cipher deleted, the log boundary made
+fail-closed, media rejections classified by cause, and two rekey
+state-machine defects fixed.  Sixteen security invariants are now enforced by
+`tests/security_invariants.py` and `SECURITY_INVARIANTS.md`.
+
+Both peers should still be updated together, for the same reason as always:
+the rekey fixes change what one side does with the other's messages, and a
+mixed pair gets the old behaviour in one direction.
 
 ## Why v10.13.0
 
