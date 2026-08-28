@@ -23,6 +23,7 @@ pub mod mldsa;            // v10.6.18: ML-DSA-87 PyO3 bindings (Phase 5.3j)
 pub mod aead;             // v10.6.19: AES-256-GCM PyO3 bindings (Phase 5.3h, part B)
 pub mod mlkem;            // v10.7.3: ML-KEM-1024 PyO3 bindings (Phase 5.3i-C)
 pub mod identity;         // Android B1 (option B): Rust-owned identity sealing (additive)
+pub mod voice;            // v10.13.2: Rust-owned media keys and voice X448
 
 use pyo3::prelude::*;
 use pyo3::wrap_pyfunction;
@@ -36,6 +37,10 @@ fn otrv4_core(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<smp_vault::PySMPVault>()?;
     // Ratchet
     m.add_class::<ratchet::RustDoubleRatchet>()?;
+
+    // v10.13.2: media keys and the voice X448 scalar leave Python.
+    m.add_class::<voice::PyVoiceCipher>()?;
+    m.add_class::<voice::PyVoiceKex>()?;
     // Ring signature (Phase 5.3c)
     m.add_function(wrap_pyfunction!(ring_sig::py_ring_sign,   m)?)?;
     m.add_function(wrap_pyfunction!(ring_sig::py_ring_verify, m)?)?;

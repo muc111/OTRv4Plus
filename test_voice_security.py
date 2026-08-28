@@ -273,8 +273,23 @@ class TestDirectionalKeys(unittest.TestCase):
         p2 = res.seal(b"B" * V.VOICE_PLAIN_LEN)
         self.assertEqual(p1[:V.VOICE_HDR_LEN], p2[:V.VOICE_HDR_LEN])  # same hdr
         self.assertNotEqual(p1[V.VOICE_HDR_LEN:], p2[V.VOICE_HDR_LEN:])
-        self.assertEqual(bytes(ini._send_key), bytes(res._recv_key))
-        self.assertEqual(bytes(res._send_key), bytes(ini._recv_key))
+
+        # "The initiator's send key equals the responder's receive key" used
+        # to be asserted by comparing `ini._send_key` with `res._recv_key`.
+        # Those attributes are gone: the keys are Rust-owned as of v10.13.2
+        # and there is no getter, deliberately.
+        #
+        # Tested behaviourally instead, which is the stronger statement --
+        # it proves the keys match AND that the nonce and AAD agree, which
+        # comparing two byte strings never did.
+        self.assertEqual(
+            res.open(p1[:V.VOICE_HDR_LEN], p1[V.VOICE_HDR_LEN:]),
+            b"A" * V.VOICE_PLAIN_LEN,
+            "the responder cannot open what the initiator sealed")
+        self.assertEqual(
+            ini.open(p2[:V.VOICE_HDR_LEN], p2[V.VOICE_HDR_LEN:]),
+            b"B" * V.VOICE_PLAIN_LEN,
+            "the initiator cannot open what the responder sealed")
 
     def test_nonce_unique_per_counter(self):
         seen = {V.media_nonce(0, c) for c in range(2000)}

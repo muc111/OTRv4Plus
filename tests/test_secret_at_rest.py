@@ -164,3 +164,51 @@ class TestPasswordsNeverReachDisk:
                 assert cred not in text, (
                     "%s appears in a %s() call at line %d"
                     % (cred, name, node.lineno))
+
+
+class TestTheSmpPassphraseIsNotCopied:
+    """The wipe used to be defeated one line before it ran.
+
+        raw = bytearray(secret.encode("utf-8"))
+        try:
+            self.smp_vault.store("smp_secret", bytes(raw))   # unwipeable copy
+            ...
+        finally:
+            for i in range(len(raw)): raw[i] = 0             # wrong object
+
+    The bytearray existed so it could be wiped, and it was wiped -- but
+    `bytes(raw)` had already made an immutable copy that outlived the block.
+    """
+
+    def test_the_vault_takes_a_bytearray_and_wipes_it(self):
+        core = pytest.importorskip("otrv4_core")
+        vault = core.RustSMPVault()
+        buf = bytearray(b"correct-horse-battery-staple")
+        vault.store_from_bytearray("smp_secret", buf)
+        assert bytes(buf) == b"\x00" * 28, (
+            "the caller's buffer survived the store")
+        assert vault.has("smp_secret")
+
+    def test_it_wipes_even_when_the_store_is_rejected(self):
+        """A rejected secret is still a secret."""
+        core = pytest.importorskip("otrv4_core")
+        vault = core.RustSMPVault()
+        buf = bytearray(b"rejected-but-still-secret")
+        with pytest.raises(ValueError):
+            vault.store_from_bytearray("", buf)      # empty name
+        assert bytes(buf) == b"\x00" * 25
+
+    def test_the_engine_no_longer_makes_the_copy(self):
+        import inspect
+        src = inspect.getsource(otr.EnhancedOTRSession.set_smp_secret)
+        assert 'store("smp_secret", bytes(raw))' not in src, (
+            "the immutable copy is back, so the wipe below it is decorative")
+        assert "store_from_bytearray" in src
+
+    def test_the_belt_and_braces_wipe_is_still_there(self):
+        """store_from_bytearray wipes, and this still runs if it raised
+        before reaching Rust."""
+        import inspect
+        src = inspect.getsource(otr.EnhancedOTRSession.set_smp_secret)
+        assert "finally:" in src
+        assert "raw[i] = 0" in src

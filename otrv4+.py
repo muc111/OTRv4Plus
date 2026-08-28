@@ -1462,7 +1462,7 @@ class OTRv4DataMessage:
             raise ValueError(f"Failed to decode message: {e }")
 
 
-VERSION = "OTRv4+ 10.13.1"
+VERSION = "OTRv4+ 10.13.2"
 
 if not hasattr(hashlib, "sha3_512"):
     raise RuntimeError(
@@ -7161,8 +7161,15 @@ class EnhancedOTRSession:
 
             raw = bytearray(secret.encode("utf-8"))
             try:
-
-                self.smp_vault.store("smp_secret", bytes(raw))
+                # store_from_bytearray, not store(bytes(raw)).
+                #
+                # The bytearray exists so it can be wiped, and the `finally`
+                # below does wipe it -- but `bytes(raw)` had already made an
+                # immutable copy that nothing can overwrite, so the wipe was
+                # cleaning the one object that no longer mattered.  Handing
+                # the bytearray straight down means Rust copies it into a
+                # ZeroizeOnDrop entry and zeroes our buffer before returning.
+                self.smp_vault.store_from_bytearray("smp_secret", raw)
 
                 ok = self.rust_smp.set_secret_from_vault(
                     self.smp_vault, "smp_secret", sid, local_fp, remote_fp
@@ -7170,7 +7177,8 @@ class EnhancedOTRSession:
                 if not ok:
                     raise RuntimeError("Vault key not found after store - internal error")
             finally:
-
+                # Belt and braces: store_from_bytearray already zeroed it, and
+                # this still runs if the call raised before reaching Rust.
                 for i in range(len(raw)):
                     raw[i] = 0
                 del raw

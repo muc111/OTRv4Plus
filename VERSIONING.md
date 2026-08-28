@@ -10,12 +10,12 @@ the project was on. This document exists so that cannot happen quietly again.
 
 | Track | Where | Current | Why it is separate |
 |---|---|---|---|
-| **Client** | `otrv4+.py` `VERSION`, `otrv4plus_xmpp.py` `XMPP_VERSION` | `10.13.1` | The thing a user runs and a peer must match. |
-| **Crypto core** | `Rust/Cargo.toml`, `Rust/pyproject.toml` | `0.10.24` | A crate with its own release history; it is `0.x` because its API is not stable for outside consumers. |
-| **Android app** | `android/app/build.gradle.kts` | `0.3.0-phase2+core.10.13.1` | An APK at an earlier maturity than the Termux client. Its own track, with the client version it embeds recorded as semver build metadata. |
+| **Client** | `otrv4+.py` `VERSION`, `otrv4plus_xmpp.py` `XMPP_VERSION` | `10.13.2` | The thing a user runs and a peer must match. |
+| **Crypto core** | `Rust/Cargo.toml`, `Rust/pyproject.toml` | `0.10.25` | A crate with its own release history; it is `0.x` because its API is not stable for outside consumers. |
+| **Android app** | `android/app/build.gradle.kts` | `0.3.0-phase2+core.10.13.2` | An APK at an earlier maturity than the Termux client. Its own track, with the client version it embeds recorded as semver build metadata. |
 
 The crate and the client are bumped together at a release, so a changelog entry
-reads `VERSION → 10.13.1, otrv4_core 0.10.24`. The Android `versionCode` is a
+reads `VERSION → 10.13.2, otrv4_core 0.10.25`. The Android `versionCode` is a
 monotonically increasing integer because Android requires that; it carries no
 other meaning.
 
@@ -73,6 +73,21 @@ A grep that should return one version and no other:
 grep -rn 'VERSION = "OTRv4+\|^XMPP_VERSION\|^version' \
      otrv4+.py otrv4plus_xmpp.py Rust/Cargo.toml Rust/pyproject.toml
 ```
+
+## Why v10.13.2
+
+A PATCH bump: no new capability, and nothing on the wire moved.  Voice media
+keys and the voice X448 private scalar moved from Python into Rust-owned
+zeroizing memory, and the SMP passphrase stopped being copied into an
+immutable `bytes` on its way to the vault.  The media-key derivation is
+byte-identical -- same HKDF-SHA512, same labels, same four-byte length
+prefixes -- and `tests/test_voice_rust_parity.py` proves it against a
+reference built from primitives rather than from the code under test.
+
+**Both peers must run the same build anyway.**  Not because the format
+changed, but because this is the first release where the media path is
+Rust-only: a peer whose `otrv4_core` predates `RustVoiceCipher` cannot make a
+call at all, and fails at startup rather than mid-call.
 
 ## Why v10.13.1
 

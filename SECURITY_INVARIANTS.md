@@ -76,11 +76,11 @@ SecretBytes<N> and SecretVec derive ZeroizeOnDrop; their Debug impls print [REDA
 ### INV-08 — Python does not receive long-lived private key material that Rust can own instead.
 
 **Status:** `PARTIAL`  
-**Enforced by:** `tests/test_release_guard.py`, `tests/test_rust_zeroization.py`
+**Enforced by:** `tests/test_release_guard.py`, `tests/test_rust_zeroization.py`, `tests/test_voice_rust_parity.py`
 
-Ed448 seeds, ratchet keys and SMP scalars never cross the PyO3 boundary; the legacy getters are compiled out.
+Ed448 seeds, ratchet keys, SMP scalars and -- since v10.13.2 -- voice media keys and the voice X448 scalar never cross the PyO3 boundary; the legacy getters are compiled out.
 
-**Limit:** Voice keys ARE Python-owned (bytearray, best-effort wipe). Documented gap, SECURITY.md caveat 11.
+**Limit:** The voice epoch ROOT is still a Python bytearray: it is the input to the Rust cipher, and moving it needs the key schedule to move too.  The account password is a Python str and cannot be wiped at all.
 
 ### INV-09 — XMPP persistent identity and IRC ephemeral identity are separate stores.
 
@@ -138,6 +138,29 @@ A receive key is retired only once the peer has demonstrably stopped sending und
 
 **Limit:** Proven against the modelled message sequences, not against live I2P.  See the rekey analysis in SECURITY.md.
 
+## Where secrets live
+
+Updated at v10.13.2, when the voice path moved.
+
+| Material | Owner | Representation | Wipeable |
+|---|---|---|---|
+| Ratchet root / chain keys | Rust | `SecretBytes<32>` | yes, on drop |
+| DAKE session keys | Rust | opaque `DakeOutput` | yes, on drop |
+| SMP secret scalar | Rust | `SecretVec` | yes, on drop |
+| Ed448 identity seed | Rust | `SecretBytes<57>` | yes, on drop |
+| Voice media keys | Rust | `SecretBytes<32>` | yes, on drop |
+| Voice X448 private scalar | Rust | `SecretBytes<56>` | yes, on drop |
+| Voice epoch root | **Python** | `bytearray` | best-effort |
+| SMP passphrase (typed) | Python → Rust | `str` → `bytearray` → Rust | the `str` cannot be |
+| Account password | Python | `str` | **no** |
+| Identity DEK, device seeds | Python | `bytes` | **no** |
+
+The Python rows are not oversights. The account password must be a `str`
+because slixmpp's SASL path requires one; the typed passphrase is a `str`
+before anything else can touch it. Both are stated as limitations rather than
+engineered around, and `tests/test_secret_at_rest.py` pins those statements so
+they cannot quietly become claims.
+
 ## Rules that follow from these
 
 **Before changing a security-sensitive subsystem**, search the repository for
@@ -155,13 +178,20 @@ module did not need to encrypt anything.
 choosing when a prompt appears is a peer choosing what the user's next
 keystroke does.
 
+**A differential test must not compare an implementation with itself.** When
+`VoiceFrameCrypto` began delegating to Rust, the parity test that had caught a
+wrong length prefix started comparing Rust against Rust and a reintroduced bug
+passed clean. Reference implementations in tests are built from primitives,
+not imported from the module under test.
+
 **Fail closed.** A failure to determine SMP state does not authorise a call
 (INV-12). An unrecognised log line is not written (INV-03). A rekey that
-cannot complete leaves the committed epoch alone (INV-16).
+cannot complete leaves the committed epoch alone (INV-16). A missing
+`RustVoiceCipher` means no voice rather than a Python fallback.
 
 **Do not claim more than the implementation provides.** At-rest protection for
 the identity, the SMP secrets and the device seeds is filesystem permissions,
 not cryptography: an attacker who can read the home directory can read all of
-them. Python `str` cannot be zeroized. Voice key material is Python-owned and
-wiped best-effort. All three are recorded in `SECURITY.md`, and the tests pin
-those statements so they cannot quietly become stronger.
+them. Rust ownership does not defend against a compromised kernel, root-level
+malware, or an unlocked device — it stops keys outliving their use and being
+reachable by ordinary introspection, which is a narrower and real thing.

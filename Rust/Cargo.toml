@@ -1,6 +1,6 @@
 [package]
 name        = "otrv4_core"
-version     = "0.10.24"
+version     = "0.10.25"
 edition     = "2021"
 authors     = ["OTRv4+ contributors"]
 description = "Post-quantum OTRv4 cryptographic core (Rust/PyO3)"
@@ -111,6 +111,11 @@ zeroize      = { version = "1.8",  features = ["derive", "alloc"] }
 aes-gcm      = { version = "0.10", features = ["aes"] }
 sha3         = { version = "0.10" }
 hmac         = { version = "0.12" }
+# v10.13.2: the voice key schedule is HKDF-SHA512, so the Rust side needs
+# SHA-2 alongside the SHA-3 the chat protocol uses.  Both stay: they are
+# different hash families used by different protocols, not a duplication.
+hkdf         = { version = "0.12" }
+sha2         = { version = "0.10" }
 subtle       = { version = "2.5"  }
 rand_core    = { version = "0.6"  }
 rand         = { version = "0.8"  }

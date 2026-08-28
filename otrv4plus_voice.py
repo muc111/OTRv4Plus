@@ -1145,6 +1145,36 @@ def sorted_fingerprints(local_fp, remote_fp):
 _LABEL_SALT = b"OTRv4+Voice/Salt/v3"
 _LABEL_INITIAL = b"OTRv4+Voice/Initial/v1"
 _LABEL_REKEY = b"OTRv4+Voice/Rekey/v1"
+# ---------------------------------------------------------------------------
+# Rust-owned media cryptography
+# ---------------------------------------------------------------------------
+#
+# Hard requirement, not a preference.  There is no Python fallback: media keys
+# living in Python is the defect this replaced, so falling back to it on an
+# import error would silently restore the thing being fixed.  A missing core
+# means no voice, which is the correct failure.
+
+try:
+    from otrv4_core import RustVoiceCipher as _RustVoiceCipher
+    from otrv4_core import RustVoiceKex as _RustVoiceKex
+    RUST_VOICE_AVAILABLE = True
+except ImportError:                                            # pragma: no cover
+    _RustVoiceCipher = None
+    _RustVoiceKex = None
+    RUST_VOICE_AVAILABLE = False
+
+
+def _require_rust_voice():
+    if not RUST_VOICE_AVAILABLE:
+        raise RuntimeError(
+            "otrv4_core does not provide RustVoiceCipher/RustVoiceKex. "
+            "Voice media keys are Rust-owned as of v10.13.2 and there is no "
+            "Python fallback. Rebuild the core:\n"
+            "  cd Rust && maturin build --release "
+            "--features pyo3/extension-module\n"
+            "  pip install --force-reinstall Rust/target/wheels/otrv4_core-*.whl")
+
+
 _LABEL_MEDIA = b"OTRv4+Voice/Media/v1"
 _LABEL_CONFIRM = b"OTRv4+Voice/Confirm/v1"
 _LABEL_RATCHET = b"OTRv4+Voice/Ratchet/v1"
@@ -1342,17 +1372,22 @@ class VoiceKeyExchange:
     PUB_LEN = 56          # X448 public key
 
     def __init__(self, is_initiator: bool, kem=None):
-        from cryptography.hazmat.primitives.asymmetric import x448
-        from cryptography.hazmat.primitives import serialization
-
-        self._x448 = x448
-        self._ser = serialization
         self.is_initiator = bool(is_initiator)
         self._kem = kem if kem is not None else kem_provider()
 
-        self._private = x448.X448PrivateKey.generate()
-        self.public = self._private.public_key().public_bytes(
-            serialization.Encoding.Raw, serialization.PublicFormat.Raw)
+        # The X448 private scalar is Rust-owned as of v10.13.2.
+        #
+        # It was a `cryptography` X448PrivateKey: an OpenSSL object Python
+        # could neither wipe nor reach, so the one private value in the voice
+        # path with no cleanup at all.  `RustVoiceKex` holds it as
+        # `SecretBytes<56>`, zeroizes on drop, and is single-use -- an
+        # ephemeral scalar that has been offered to a peer is spent, and
+        # retrying with a different peer key is the shape of a small-subgroup
+        # probe.
+        _require_rust_voice()
+        self._kex = _RustVoiceKex()
+        self.public = bytes(self._kex.public)
+        self._private = self._kex        # legacy attribute name, same object
 
         # Initiator only: the ML-KEM keypair it will decapsulate with.
         self.mlkem_ek = b""
@@ -1378,13 +1413,16 @@ class VoiceKeyExchange:
             raise ValueError("peer echoed our own X448 public key")
         if peer_public == b"\x00" * self.PUB_LEN:
             raise ValueError("peer sent an all-zero X448 public key")
+        # Every check that used to live here is now inside `raw_agree`: the
+        # reflection test, the all-zero peer key, the on-curve check, and the
+        # RFC 7748 requirement that a degenerate (all-zero) shared secret
+        # abort the exchange rather than be used.  They are repeated above
+        # anyway, because a check that runs twice costs nothing and a check
+        # that runs nowhere costs everything.
         try:
-            peer_key = self._x448.X448PublicKey.from_public_bytes(peer_public)
-            shared = bytearray(self._private.exchange(peer_key))
+            shared = bytearray(self._kex.agree(peer_public))
         finally:
             self._private = None
-        # X448 outputs all-zero for low-order input; RFC 7748 requires the
-        # exchange be aborted rather than the result used.
         if len(shared) != 56 or shared == bytearray(56):
             _wipe(shared)
             raise ValueError("degenerate X448 shared secret — aborting")
@@ -1653,43 +1691,60 @@ class VoiceFrameCrypto:
         if epoch < 0 or epoch >= (1 << 64):
             raise ValueError("epoch out of range")
 
-        from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-        self._AESGCM = AESGCM
-
         self.call_id = bytes(call_id)
         self.epoch = int(epoch)
         self.is_initiator = bool(is_initiator)
         self.send_dir = DIR_INITIATOR if is_initiator else DIR_RESPONDER
         self.recv_dir = DIR_RESPONDER if is_initiator else DIR_INITIATOR
 
-        self._send_key = derive_media_key(root, self.call_id, self.epoch,
-                                          self.send_dir)
-        self._send_gcm = AESGCM(bytes(self._send_key))
+        # The media keys live in Rust from here on.
+        #
+        # They used to be Python bytearrays, wiped on each ratchet step -- and
+        # then handed to OpenSSL as `AESGCM(bytes(key))`, an immutable copy
+        # that could not be wiped and that the AESGCM object kept anyway.  One
+        # such copy per direction per sub-epoch: about 276 of them over a
+        # 69-minute call, all waiting on the garbage collector.
+        #
+        # `RustVoiceCipher` holds the keys as `SecretBytes<32>`, rebuilds its
+        # AES-256-GCM instance from the one copy that exists, and zeroizes on
+        # drop.  There is no getter for a key and adding one would defeat it.
+        #
+        # The derivation is byte-identical -- same HKDF-SHA512, same labels,
+        # same length prefixes -- and `tests/test_voice_rust_parity.py` runs
+        # both implementations against each other to keep it that way.
+        _require_rust_voice()
+        self._rust = _RustVoiceCipher(bytes(root), self.call_id, self.epoch,
+                                      self.is_initiator)
+
         self._send_counter = 0
-        self._send_sub = 0
-
-        self._recv_key = derive_media_key(root, self.call_id, self.epoch,
-                                          self.recv_dir)
-        self._recv_gcm = AESGCM(bytes(self._recv_key))
-        self._recv_sub = 0
-        self._recv_prev_key = None
-        self._recv_prev_gcm = None
-
         self._replay = ReplayWindow()
-        self.ratchet_steps = 0
         self.last_frame_type = FRAME_TYPE_AUDIO
         self._zeroized = False
 
-    # -- send -------------------------------------------------------------
+    @property
+    def _recv_sub(self) -> int:
+        """Receive-chain sub-epoch.  A counter, so it stays readable.
 
-    def _advance_send(self, sub: int) -> None:
-        while self._send_sub < sub:
-            new_key = ratchet_key(self._send_key)
-            _wipe(self._send_key)
-            self._send_key = new_key
-            self._send_sub += 1
-            self.ratchet_steps += 1
-        self._send_gcm = self._AESGCM(bytes(self._send_key))
+        Kept under the old private name because the security tests that
+        assert a forged frame cannot advance the chain were written against
+        it, and re-pointing them at a new name would have obscured that the
+        property is unchanged.
+        """
+        return int(self._rust.recv_sub)
+
+    @property
+    def _send_sub(self) -> int:
+        return int(self._rust.send_sub)
+
+    @property
+    def ratchet_steps(self) -> int:
+        """Sub-epoch advances, counted Rust-side where they happen."""
+        try:
+            return int(self._rust.ratchet_steps)
+        except Exception:
+            return 0
+
+    # -- send -------------------------------------------------------------
 
     def seal(self, plaintext: bytes, frame_type: int = FRAME_TYPE_AUDIO) -> bytes:
         """Encrypt one padded frame.  Returns the complete wire packet."""
@@ -1699,33 +1754,22 @@ class VoiceFrameCrypto:
         if self._send_counter >= self.MAX_COUNTER:
             raise FrameError("frame counter exhausted")
 
-        sub = self._send_counter // self.RATCHET_INTERVAL
-        if sub != self._send_sub:
-            self._advance_send(sub)
-
         counter = self._send_counter
         header = pack_media_header(self.epoch, counter, VOICE_SEALED_LEN,
                                    frame_type=frame_type)
         aad = media_aad(self.call_id, self.send_dir, header)
-        sealed = self._send_gcm.encrypt(media_nonce(self.epoch, counter),
-                                        plaintext, aad)
+        try:
+            _counter, sealed = self._rust.seal(plaintext, aad)
+        except RuntimeError as exc:
+            raise FrameError(str(exc), FrameError.NO_KEY)
+        except ValueError as exc:
+            raise FrameError(str(exc), FrameError.MALFORMED)
         if len(sealed) != VOICE_SEALED_LEN:
             raise FrameError("sealed frame has the wrong length", FrameError.MALFORMED)
         self._send_counter += 1
         return header + sealed
 
     # -- receive ----------------------------------------------------------
-
-    def _advance_recv(self, sub: int) -> None:
-        while self._recv_sub < sub:
-            if self._recv_prev_key is not None:
-                _wipe(self._recv_prev_key)
-            self._recv_prev_key = self._recv_key
-            self._recv_prev_gcm = self._recv_gcm
-            self._recv_key = ratchet_key(self._recv_key)
-            self._recv_gcm = self._AESGCM(bytes(self._recv_key))
-            self._recv_sub += 1
-            self.ratchet_steps += 1
 
     def open(self, header: bytes, sealed: bytes) -> bytes:
         """Authenticate and decrypt one frame.
@@ -1734,6 +1778,12 @@ class VoiceFrameCrypto:
         replay test, then authentication, and only then any state mutation.
         A forged frame can neither push the ratchet forward nor consume a
         counter, because nothing commits until the tag verifies.
+
+        The sub-epoch handling moved into Rust with the keys; the speculative
+        advance is still speculative there, committing only after the frame
+        authenticates.  Everything above the AEAD -- header parsing, the
+        epoch check, the replay window -- stays here, because none of it
+        touches key material and all of it is already tested here.
         """
         if self._zeroized:
             raise FrameError("media cipher already zeroized",
@@ -1747,35 +1797,16 @@ class VoiceFrameCrypto:
         if self._replay.seen(counter):
             raise FrameError("replayed or stale frame counter %d" % counter, FrameError.REPLAY)
 
-        sub = counter // self.RATCHET_INTERVAL
-        if sub > self._recv_sub + self._MAX_SUBEPOCH_JUMP:
-            raise FrameError("sub-epoch too far ahead", FrameError.RETIRED)
-
         aad = media_aad(self.call_id, self.recv_dir, header)
-        nonce = media_nonce(epoch, counter)
-
-        if sub == self._recv_sub:
-            plaintext = self._recv_gcm.decrypt(nonce, sealed, aad)
-        elif (sub == self._recv_sub - self._EPOCH_GRACE
-              and self._recv_prev_gcm is not None):
-            plaintext = self._recv_prev_gcm.decrypt(nonce, sealed, aad)
-        elif sub > self._recv_sub:
-            # Speculative: derive forward on a scratch copy and commit the
-            # ratchet only once the frame authenticates, so a forged frame
-            # cannot advance our chain and lock the genuine peer out.
-            probe = bytearray(self._recv_key)
-            try:
-                for _ in range(sub - self._recv_sub):
-                    nxt = ratchet_key(probe)
-                    _wipe(probe)
-                    probe = nxt
-                plaintext = self._AESGCM(bytes(probe)).decrypt(
-                    nonce, sealed, aad)
-            finally:
-                _wipe(probe)
-            self._advance_recv(sub)
-        else:
-            raise FrameError("frame from an expired sub-epoch", FrameError.RETIRED)
+        try:
+            plaintext = self._rust.open(sealed, aad, counter)
+        except RuntimeError as exc:
+            raise FrameError(str(exc), FrameError.NO_KEY)
+        except ValueError as exc:
+            text = str(exc)
+            if "sub-epoch" in text:
+                raise FrameError(text, FrameError.RETIRED)
+            raise FrameError(text, FrameError.AUTH)
 
         # Committed only now, after authentication.
         self._replay.check_and_set(counter)
@@ -1791,13 +1822,12 @@ class VoiceFrameCrypto:
     def zeroize(self) -> None:
         """Destroy every key this epoch holds.  Idempotent, never raises."""
         self._zeroized = True
-        self._send_gcm = None
-        self._recv_gcm = None
-        self._recv_prev_gcm = None
-        for name in ("_send_key", "_recv_key", "_recv_prev_key"):
-            key = getattr(self, name, None)
-            if key is not None:
-                _wipe(key)
+        rust = getattr(self, "_rust", None)
+        if rust is not None:
+            try:
+                rust.zeroize()
+            except Exception:
+                pass
                 setattr(self, name, None)
 
 

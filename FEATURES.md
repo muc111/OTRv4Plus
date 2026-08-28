@@ -1,6 +1,6 @@
 # Features
 
-What's implemented as of v10.13.1.
+What's implemented as of v10.13.2.
 
 ## Cryptography
 
@@ -17,9 +17,9 @@ What's implemented as of v10.13.1.
 | Argon2id (SMP) | **The SMP passphrase→scalar derivation on wire version 0x03**, salted with the session ID and both fingerprints | `argon2` 0.5 (pure Rust) in `Rust/src/smp.rs::stretch_argon2id`, m=64 MiB / t=3 / p=4. New at v10.13.0; the 0x02 SHAKE stretch above is retained for peers that have not updated. |
 | Argon2id (at rest) | The SMP-secrets file and key storage on disk | Python `argon2-cffi` in `otrv4+.py::_derive_key`, same cost parameters, **falling back to `hashlib.scrypt` when it is not installed** — that fallback prints a warning naming the reason, and `kdf_backend()` reports which one was actually used. `src/smp_vault.rs` remains an in-memory zeroizing store with no KDF in it; a table here once said otherwise. |
 | SHA3-512 | Fingerprint hash | `hashlib` (Python stdlib) |
-| HKDF-SHA512 | Voice key schedule (root, media keys, confirmation, endpoint tags) | Python `cryptography` — **not** the Rust core |
-| X448 (voice) | Ephemeral DH for the voice key exchange | Python `cryptography` — **not** the Rust core |
-| AES-256-GCM (voice media) | Per-frame media AEAD | Python `cryptography` — **not** the Rust core |
+| HKDF-SHA512 | Voice key schedule. Media keys and the sub-epoch ratchet derive in `Rust/src/voice.rs` (`hkdf` 0.12 + `sha2` 0.10) as of v10.13.2; the epoch **root**, confirmation and endpoint tags are still Python `cryptography` |
+| X448 (voice) | Ephemeral DH for the voice key exchange | `x448` 0.6 (pure Rust) via `RustVoiceKex` as of v10.13.2. The private scalar is `SecretBytes<56>`, single-use, zeroized on drop; it was previously an OpenSSL object Python could neither wipe nor reach |
+| AES-256-GCM (voice media) | Per-frame media AEAD | `aes-gcm` 0.10 via `RustVoiceCipher` as of v10.13.2. Media keys are `SecretBytes<32>` with no getter; Python calls `seal`/`open` and never holds a key. Byte-for-byte identical to the Python construction it replaced, pinned by `tests/test_voice_rust_parity.py` against a reference built from primitives |
 | Opus | Voice codec (16 kHz mono, 60 ms, 24 kbit/s CBR, FEC on, DTX off) | `libopus` via `ctypes` |
 | RFC 8032 Ed448 vectors | Build-time correctness gate | `src/test_vectors.rs` (Rust `#[cfg(test)]`) |
 | RFC 7748 X448 vector | Build-time correctness gate (ratchet desync guard) | `src/key_handles.rs` (Rust `#[cfg(test)]`) |
