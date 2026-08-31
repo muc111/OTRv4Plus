@@ -20,6 +20,10 @@ written.
 > **Tor remains LIVE-UNVERIFIED**, exactly as this document says. Clearnet TLS
 > is unchanged. Nothing else in the audit's findings is retracted.
 
+> This document records what the code **does**, traced from runtime paths.
+> [TRANSPORT_POLICY.md](TRANSPORT_POLICY.md) records what it is **allowed**
+> to do. Where they disagree, one of them is a bug.
+
 ## Support matrix
 
 | Transport | IRC (`otrv4+.py`) | XMPP control | Voice media | Status |

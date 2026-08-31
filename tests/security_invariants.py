@@ -194,6 +194,50 @@ INVARIANTS: Tuple[Invariant, ...] = (
         limits="Proven against the modelled message sequences, not against "
                "live I2P.  See the rekey analysis in SECURITY.md.",
     ),
+    Invariant(
+        id="INV-17",
+        statement="A transport failure or degradation never selects a less "
+                  "private transport.",
+        status="ENFORCED",
+        tests=("test_transport_failclosed.py", "test_transport_policy.py"),
+        rationale="Selection is by address suffix or explicit flag, checked "
+                  "before connecting, and contradictory flags exit rather "
+                  "than guess.  There is no fallback ladder and no "
+                  "latency-triggered switch: I2P that cannot carry a call "
+                  "means no call.",
+    ),
+    Invariant(
+        id="INV-18",
+        statement="The transport class is fixed for the lifetime of a call.  "
+                  "An endpoint may change within a class if the change is "
+                  "authenticated; a class change requires ending the call.",
+        status="PARTIAL",
+        tests=("test_transport_policy.py",),
+        rationale="MEDIAPATH moves the media endpoint within the I2P class, "
+                  "authenticated from the committed epoch root -- which is "
+                  "what recovered the Wi-Fi-to-mobile transition.  The "
+                  "forbidden transitions are I2P->TLS, Tor->TLS and "
+                  "TLS->I2P; the matrix is an allowlist.",
+        limits="Enforced today by there being exactly one media transport "
+               "class, so no cross-class transition is reachable.  The "
+               "structural guarantee -- binding TransportClass into the "
+               "voice transcript so a mismatched pair never keys -- is "
+               "specified in TRANSPORT_POLICY.md section 5 and deferred "
+               "until the I2P voice and rekey work completes live-device "
+               "validation.",
+    ),
+    Invariant(
+        id="INV-19",
+        statement="A proxy route is never presented as anonymity, and a "
+                  "clearnet transport is never described as weak encryption.",
+        status="ENFORCED",
+        tests=("test_transport_policy.py",),
+        rationale="Encryption, anonymity and routing are three properties, "
+                  "not three points on one scale.  A proxy is routing: the "
+                  "operator can log, identify, inject or be compromised.  "
+                  "Clearnet TLS 1.3 is strong encryption with no anonymity, "
+                  "and calling it 'less secure' teaches the wrong lesson.",
+    ),
 )
 
 

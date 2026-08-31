@@ -138,6 +138,29 @@ A receive key is retired only once the peer has demonstrably stopped sending und
 
 **Limit:** Proven against the modelled message sequences, not against live I2P.  See the rekey analysis in SECURITY.md.
 
+### INV-17 — A transport failure or degradation never selects a less private transport.
+
+**Status:** `ENFORCED`  
+**Enforced by:** `tests/test_transport_failclosed.py`, `tests/test_transport_policy.py`
+
+Selection is by address suffix or explicit flag, checked before connecting, and contradictory flags exit rather than guess.  There is no fallback ladder and no latency-triggered switch: I2P that cannot carry a call means no call.
+
+### INV-18 — The transport class is fixed for the lifetime of a call.  An endpoint may change within a class if the change is authenticated; a class change requires ending the call.
+
+**Status:** `PARTIAL`  
+**Enforced by:** `tests/test_transport_policy.py`
+
+MEDIAPATH moves the media endpoint within the I2P class, authenticated from the committed epoch root -- which is what recovered the Wi-Fi-to-mobile transition.  The forbidden transitions are I2P->TLS, Tor->TLS and TLS->I2P; the matrix is an allowlist.
+
+**Limit:** Enforced today by there being exactly one media transport class, so no cross-class transition is reachable.  The structural guarantee -- binding TransportClass into the voice transcript so a mismatched pair never keys -- is specified in TRANSPORT_POLICY.md section 5 and deferred until the I2P voice and rekey work completes live-device validation.
+
+### INV-19 — A proxy route is never presented as anonymity, and a clearnet transport is never described as weak encryption.
+
+**Status:** `ENFORCED`  
+**Enforced by:** `tests/test_transport_policy.py`
+
+Encryption, anonymity and routing are three properties, not three points on one scale.  A proxy is routing: the operator can log, identify, inject or be compromised.  Clearnet TLS 1.3 is strong encryption with no anonymity, and calling it 'less secure' teaches the wrong lesson.
+
 ## Where secrets live
 
 Updated at v10.13.2, when the voice path finished moving.
@@ -191,6 +214,14 @@ epoch roots byte for byte now compare the confirmation pair, which is a
 deterministic function of the root and travels on the wire anyway. Where that
 is not possible, assert the observable consequence — two calls that share a
 media key produce identical ciphertext for identical plaintext.
+
+**Encryption, anonymity and routing are three properties** (INV-19). A proxy
+is routing: it moves who-sees-what, it does not remove it, and the operator can
+log, identify, inject or be compromised. Clearnet TLS 1.3 is strong encryption
+with no anonymity — calling it "less secure" is wrong and teaches the wrong
+lesson. [TRANSPORT_POLICY.md](TRANSPORT_POLICY.md) holds the full policy,
+including the transition matrix and the two fallback sequences that must never
+exist.
 
 **Fail closed.** A failure to determine SMP state does not authorise a call
 (INV-12). An unrecognised log line is not written (INV-03). A rekey that

@@ -1157,6 +1157,16 @@ media, silently or otherwise. Failure MUST be closed, not downgraded. Voice over
 Tor is not specified: there is no Tor UDP transport here, and carrying media
 over TCP is out of scope.
 
+The transport class carrying a call MUST NOT change while the call is running.
+An implementation MAY move the media endpoint within a class when the change is
+authenticated by §9.7; it MUST NOT change class, in either direction, including
+to a more private one. A class change requires ending the call.
+
+Binding the transport class into the key derivation of §9.4 — so that two peers
+who disagree about the class cannot derive the same media key — is specified in
+`TRANSPORT_POLICY.md` §5 and is NOT part of this version of the wire format. It
+requires a voice wire-version bump.
+
 ### 9.9 What This Protocol Claims
 
 Claimed:

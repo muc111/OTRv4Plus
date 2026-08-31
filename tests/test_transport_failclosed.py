@@ -1,4 +1,4 @@
-"""Transport selection must be explicit and fail-closed.
+"""INV-17: transport selection must be explicit and fail-closed.
 
 Application-layer encryption protects message content. It does nothing to
 hide which address is talking to which server, so a session the user asked to
@@ -7,6 +7,10 @@ reconnect, not because one condition drifted.
 
 These are code-path tests. They do not prove live I2P, Tor or TLS operation;
 that needs real devices on real networks.
+
+The policy these enforce is written out in TRANSPORT_POLICY.md; the rest of
+it -- the transition matrix and the wording rules -- is in
+tests/test_transport_policy.py.
 """
 
 import asyncio
@@ -113,15 +117,25 @@ class TestTransportSelectionIsExplicit:
                                ("someonion.onion", False)):
             assert host.endswith(".i2p") is expected
 
-    def test_xmpp_has_no_tor_path(self):
-        # Recorded as a fact, not a wish. otrv4+.py (IRC) has SOCKS5/.onion
-        # handling; otrv4plus_xmpp.py has none, so a .onion XMPP server is
-        # treated as clearnet and simply fails to resolve. Should Tor support
-        # be added, this test should be replaced by real Tor path tests --
-        # not deleted to make room for an untested claim.
+    def test_tor_is_not_applied_process_wide(self):
+        # This test used to be called test_xmpp_has_no_tor_path and recorded
+        # the absence of Tor support as a fact. Tor for the XMPP control
+        # plane now exists, so the fact has changed -- but the assertion has
+        # not, and for a different and better reason.
+        #
+        # PySocks routes by assigning socket.socket globally. In this process
+        # that would also capture the I2P SAM bridge and every voice media
+        # socket, so a Tor XMPP session would silently drag the media path
+        # through Tor as well. The implementation is a hand-rolled SOCKS5
+        # CONNECT to a loopback forwarder instead: applied to one connection
+        # or not at all. TRANSPORT_POLICY.md section 6 states the rule.
         source = open(xmpp.__file__, encoding="utf-8").read()
         assert "PROXY_TYPE_SOCKS5" not in source
         assert "set_proxy" not in source
+        assert "socks5_connect" in source, (
+            "the Tor path is gone; if it was removed, say so in "
+            "TRANSPORT_POLICY.md section 8 rather than leaving this test "
+            "asserting the absence of something for the wrong reason")
 
     def test_the_clearnet_insecure_flag_is_opt_in(self):
         source = open(xmpp.__file__, encoding="utf-8").read()
