@@ -38,7 +38,7 @@ Sealed with AES-256-GCM under an Argon2id-derived key, AAD b'smp_secrets_v1', wr
 
 Collected with getpass, held only for the connection attempt, dropped afterwards.
 
-**Limit:** Dropping a Python str releases the reference but cannot overwrite the buffer.  See INV-14.
+**Limit:** Dropping a Python str releases the reference but cannot overwrite the buffer.  Unfixable while credential handling is Python-side -- slixmpp for XMPP, otrv4+.py for IRC -- and not merely by moving storage into Rust, since getpass returns a str.  See INV-08.
 
 ### INV-03 — No secret value reaches any log sink.
 
@@ -192,6 +192,15 @@ The remaining Python rows are not oversights. The account password must be a
 files. Everything *derived* from them is Rust-owned, and
 `tests/test_secret_at_rest.py` pins those statements so they cannot quietly
 become claims.
+
+The account-password row is scoped, not permanent. It is unfixable **while
+credential handling is Python-side** — slixmpp for XMPP, `otrv4+.py` for IRC —
+rather than unfixable in principle. Note what a fix would actually take:
+moving the *storage* into Rust is not enough, because `getpass.getpass()`
+returns a `str` and the credential exists in that buffer before anything else
+can touch it. The capture has to move too. slixmpp is a test dependency and
+the production XMPP client is planned to be Rust-hardened; until that lands
+this is a limitation, not a plan.
 
 ## Rules that follow from these
 

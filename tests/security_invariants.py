@@ -60,7 +60,10 @@ INVARIANTS: Tuple[Invariant, ...] = (
         rationale="Collected with getpass, held only for the connection "
                   "attempt, dropped afterwards.",
         limits="Dropping a Python str releases the reference but cannot "
-               "overwrite the buffer.  See INV-14.",
+               "overwrite the buffer.  Unfixable while credential "
+               "handling is Python-side -- slixmpp for XMPP, "
+               "otrv4+.py for IRC -- and not merely by moving storage "
+               "into Rust, since getpass returns a str.  See INV-08.",
     ),
     Invariant(
         id="INV-03",
