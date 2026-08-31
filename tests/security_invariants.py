@@ -238,6 +238,22 @@ INVARIANTS: Tuple[Invariant, ...] = (
                   "Clearnet TLS 1.3 is strong encryption with no anonymity, "
                   "and calling it 'less secure' teaches the wrong lesson.",
     ),
+    Invariant(
+        id="INV-20",
+        statement="OTRv4+ client identification is display metadata.  It "
+                  "never authenticates, confers trust, or unlocks a "
+                  "capability.",
+        status="ENFORCED",
+        tests=("test_irc_names_list.py",),
+        rationale="The blue /names marker comes from the realname (gecos) "
+                  "the peer's own client sent at registration and the server "
+                  "relayed in RPL_WHOREPLY.  Nobody checks it and nobody "
+                  "can: any user may put that string in their own gecos.  It "
+                  "answers 'is this peer likely to understand /otr' and "
+                  "nothing else.  The DAKE authenticates, TOFU pins "
+                  "identity, SMP authorises voice; the renderer is a pure "
+                  "function with no client to promote anything on.",
+    ),
 )
 
 

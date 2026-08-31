@@ -1462,7 +1462,181 @@ class OTRv4DataMessage:
             raise ValueError(f"Failed to decode message: {e }")
 
 
-VERSION = "OTRv4+ 10.13.2"
+VERSION = "OTRv4+ 10.13.3"
+
+# --- OTRv4+ client identification over IRC -------------------------------
+#
+# CTCP VERSION is deliberately refused (see _CTCP_BLOCKED), so the realname
+# ("gecos") field sent in the USER registration line is this client's only
+# identification channel.  The server relays it verbatim in RPL_WHOREPLY
+# (352) and RPL_WHOISUSER (311), which is where /names picks it up.
+#
+# THIS IS SELF-ASSERTED AND IS NOT AUTHENTICATION.  Any IRC user can put the
+# tag plus a version in their own gecos; the server does not check it and
+# neither can we.  It answers "is this peer likely to understand /otr" and
+# nothing else.  It MUST NOT gate encryption, mark a peer trusted, satisfy
+# TOFU, stand in for SMP verification, or enable voice -- see INV-20 and
+# SECURITY.md.  The blue marker in /names is a hint about which peers are
+# worth starting a DAKE with, and the DAKE is what authenticates them.
+OTRV4_CLIENT_TAG = "OTRv4+"
+
+# Matches the tag followed by a dotted version, as real_name() emits it.  A
+# bare substring test would also fire on "I don't use OTRv4+" typed into a
+# gecos, which is a lower bar than the format this project actually
+# advertises.  Still trivially forgeable -- see above.
+_OTRV4_CLIENT_RE = re.compile(r"OTRv4\+[ \t]+(\d+(?:\.\d+)+)")
+
+
+def otrv4_client_version(realname: Optional[str]) -> Optional[str]:
+    """Return the OTRv4+ version a realname advertises, or None.
+
+    The value is remote-controlled text.  It is safe to display (callers
+    sanitise it) and unsafe to believe.
+    """
+    if not realname:
+        return None
+    m = _OTRV4_CLIENT_RE.search(realname)
+    return m.group(1) if m else None
+
+
+def advertises_otrv4(realname: Optional[str]) -> bool:
+    """Whether a realname claims to be an OTRv4+ client.  Not authentication."""
+    return otrv4_client_version(realname) is not None
+
+
+# IRC prefixes carried in RPL_NAMREPLY.  "multi-prefix" is negotiated (see
+# IRCV3_CAPS), so a nick can arrive as "@+nick" with several of them.
+NAMES_PREFIXES = "~&@%+"
+_NAMES_OP_PREFIXES = "~&@"
+_NAMES_VOICE_PREFIXES = "%+"
+
+
+def split_names_entry(entry: str) -> Tuple[str, str]:
+    """Split one RPL_NAMREPLY entry into (prefixes, nick).
+
+    Returns ("", "") for anything that is not a usable entry, so a malformed
+    or hostile NAMES line drops the entry rather than the whole render.
+    """
+    if not entry:
+        return "", ""
+    i = 0
+    while i < len(entry) and entry[i] in NAMES_PREFIXES:
+        i += 1
+    prefixes, nick = entry[:i], entry[i:]
+    if not nick or any(c in nick for c in " \r\n\x00"):
+        return "", ""
+    return prefixes, nick
+
+
+def format_names_list(entries, otrv4_map=None, total=None, width=56,
+                      selectable=False):
+    """Render a channel user list.  Pure: builds lines, prints nothing.
+
+    `entries` are raw RPL_NAMREPLY tokens ("@alice", "+bob", "carol").
+    `otrv4_map` maps nick -> truthy when that nick's realname advertised
+    OTRv4+ in RPL_WHOREPLY.  `total` is the server's count, which may exceed
+    the number of entries when the local list was capped.
+
+    OTRv4+ users are marked with a blue bullet and listed first within their
+    privilege group.  The marker is CLIENT IDENTIFICATION ONLY -- see
+    otrv4_client_version() for why it is not, and cannot be, authentication.
+
+    With `selectable`, the first nine OTRv4+ nicks are numbered and returned
+    alongside the lines as (lines, picks) so the pager can offer /otr on a
+    keypress.  Without it, a bare list of lines is returned.
+    """
+    otrv4_map = otrv4_map or {}
+    ops, voiced, regular = [], [], []
+    seen = set()
+    for entry in entries or []:
+        prefixes, nick = split_names_entry(entry)
+        if not nick or nick in seen:
+            continue
+        seen.add(nick)
+        shown = prefixes[:1]
+        if any(c in _NAMES_OP_PREFIXES for c in prefixes):
+            ops.append((shown, nick))
+        elif any(c in _NAMES_VOICE_PREFIXES for c in prefixes):
+            voiced.append((shown, nick))
+        else:
+            regular.append((shown, nick))
+
+    # OTRv4+ first, then alphabetical, so the actionable names are together
+    # at the top of each group rather than scattered through it.
+    def _order(group):
+        group.sort(key=lambda pn: (not bool(otrv4_map.get(pn[1])), pn[1].lower()))
+
+    for group in (ops, voiced, regular):
+        _order(group)
+
+    listed = ops + voiced + regular
+    otr_count = sum(1 for _, nick in listed if otrv4_map.get(nick))
+    shown_count = len(listed)
+    if total is None:
+        total = shown_count
+    other = max(0, total - otr_count)
+
+    picks = [nick for _, nick in listed if otrv4_map.get(nick)][:9] if selectable else []
+    pick_index = {nick: i + 1 for i, nick in enumerate(picks)}
+
+    lines = []
+    summary = (
+        colorize(f"\U0001F535 {otr_count } OTRv4+", "blue")
+        + colorize("   \u2022   ", "dim")
+        + colorize(f"{other } other client(s)", "white")
+    )
+    lines.append(summary)
+    if otr_count:
+        lines.append(
+            colorize("  blue = advertises OTRv4+ in its realname; "
+                     "identification only, not verified", "dim")
+        )
+        if picks:
+            lines.append(
+                colorize("  press 1-%d to /otr that user, or /otr <nick>"
+                         % len(picks), "dim")
+            )
+        else:
+            lines.append(colorize("  /otr <nick> starts an encrypted session", "dim"))
+    if total > shown_count:
+        lines.append(
+            colorize(
+                f"  \u26a0 {total } users in channel \u2014 showing the first {shown_count }",
+                "yellow",
+            )
+        )
+    lines.append("")
+
+    col_width = 20
+    cols = max(1, width // col_width)
+
+    def _group(label, members, color):
+        if not members:
+            return
+        lines.append(colorize(f"  {label } ({len (members )}):", color))
+        row = []
+        for prefix, nick in members:
+            disp = _sanitise(f"{prefix }{nick }", col_width - 3)
+            if otrv4_map.get(nick):
+                n = pick_index.get(nick)
+                tag = f"\U0001F535{n }" if n else "\U0001F535 "
+                cell = colorize(f"{tag }{disp :<{col_width -3 }}", "blue")
+            else:
+                cell = colorize(f"   {disp :<{col_width -3 }}", color)
+            row.append(cell)
+            if len(row) >= cols:
+                lines.append("".join(row))
+                row = []
+        if row:
+            lines.append("".join(row))
+
+    _group("Operators", ops, "bold_green")
+    _group("Voiced", voiced, "yellow")
+    _group("Users", regular, "white")
+
+    if not listed:
+        lines.append(colorize("  (no users reported)", "dim"))
+    return (lines, picks) if selectable else lines
 
 if not hasattr(hashlib, "sha3_512"):
     raise RuntimeError(
@@ -1856,6 +2030,31 @@ _ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 def _visible_len(text: str) -> int:
     """Return the visible character count, ignoring ANSI colour codes."""
     return len(_ANSI_RE.sub("", text))
+
+
+def _truncate_visible(text: str, width: int) -> str:
+    """Truncate to *width* visible columns, keeping ANSI codes intact.
+
+    Truncating by len() would count the escape bytes as visible characters,
+    so a coloured line gets cut far too early -- and, worse, loses its reset
+    sequence, bleeding the colour into everything printed afterwards.  The
+    reset is re-appended here for that reason.
+    """
+    if width <= 0 or _visible_len(text) <= width:
+        return text
+    out = []
+    seen = 0
+    i = 0
+    while i < len(text) and seen < width:
+        m = _ANSI_RE.match(text, i)
+        if m:
+            out.append(m.group(0))
+            i = m.end()
+            continue
+        out.append(text[i])
+        seen += 1
+        i += 1
+    return "".join(out) + UIConstants.COLORS["reset"]
 
 
 def _word_wrap(text: str, width: int) -> str:
@@ -5173,11 +5372,19 @@ class Pager:
         self.lines_per_page = lines_per_page if not IS_TERMUX else 15
         self.active = False
 
-    def display(self, lines: List[str], header: str = "", footer: str = ""):
-        """Display lines with inline pager controls."""
+    def display(self, lines: List[str], header: str = "", footer: str = "",
+                choices: Optional[List[str]] = None):
+        """Display lines with inline pager controls.
+
+        `choices` makes the page selectable: pressing 1-9 picks the matching
+        entry, closes the pager and returns it.  Returns None otherwise, so
+        callers that ignore the result behave exactly as before.
+        """
         if not lines:
             safe_print(colorize("  (empty)", "dim"))
-            return
+            return None
+        choices = choices or []
+        chosen = None
 
         self.active = True
         total_pages = (len(lines) + self.lines_per_page - 1) // self.lines_per_page
@@ -5195,19 +5402,26 @@ class Pager:
                 )
 
                 for line in lines[start:end]:
-                    if len(line) > TERMINAL_WIDTH:
-                        line = line[: TERMINAL_WIDTH - 3] + "..."
-                    safe_print("[IRC line suppressed]")
+                    # This printed the literal string "[IRC line suppressed]"
+                    # from v10.11.0 until v10.13.3, discarding the line it had
+                    # just measured and truncated.  Every pager consumer was
+                    # affected -- /names, /list and /help alike -- which is why
+                    # the channel user list looked like a suppression policy
+                    # rather than a bug.
+                    safe_print(_truncate_visible(line, TERMINAL_WIDTH))
 
                 if footer:
                     safe_print(colorize(footer, "dim"))
                 safe_print(colorize("─" * 42, "cyan"))
 
-                if total_pages <= 1:
+                if total_pages <= 1 and not choices:
                     self.active = False
                     break
 
-                safe_print(colorize("  [n]ext  [p]rev  [q]uit", "dim"), end="  ", flush=True)
+                _keys = "  [n]ext  [p]rev  [q]uit" if total_pages > 1 else "  [q]uit"
+                if choices:
+                    _keys += "   [1-%d] /otr" % len(choices)
+                safe_print(colorize(_keys, "dim"), end="  ", flush=True)
                 try:
                     if _raw_mode_active:
 
@@ -5220,7 +5434,10 @@ class Pager:
                 except (EOFError, KeyboardInterrupt):
                     ch = "q"
 
-                if ch in ("n", "\r", "\n", " "):
+                if choices and ch.isdigit() and ch != "0" and int(ch) <= len(choices):
+                    chosen = choices[int(ch) - 1]
+                    self.active = False
+                elif ch in ("n", "\r", "\n", " "):
                     page = min(page + 1, total_pages - 1)
                     if page >= total_pages - 1 and ch == "n":
                         self.active = False
@@ -5251,6 +5468,7 @@ class Pager:
                     _cr._prompt_refresh_cb()
             except Exception:
                 pass
+        return chosen
 
 
 class Screen:
@@ -9505,15 +9723,23 @@ class TwentySevenClubNick:
 
     @classmethod
     def real_name(cls, nick: str) -> str:
-        """Return display name for /whois.
+        """Return the realname (gecos) advertised at USER registration.
 
-        Legacy 27 Club nicks get their real identity.
-        Generated nicks get a plausible format.
+        Legacy 27 Club nicks keep their real identity; generated nicks get a
+        plausible format.  Every form ends with VERSION, because this string
+        is the client's only identification channel over IRC -- CTCP VERSION
+        is refused -- and /names reads it back out of RPL_WHOREPLY.
+
+        Before v10.13.3 the 27 Club branch returned "... - 27 Club" with no
+        version, and a NickServ nick advertised the bare nick, so two whole
+        classes of OTRv4+ user were undetectable by their own peers.  A
+        detection mechanism the client does not consistently feed is not a
+        detection mechanism.
         """
         base = nick.rstrip("_0123456789")
         if base in cls._LOOKUP:
             real, band = cls._LOOKUP[base]
-            return f"{real } ({band }) - 27 Club"
+            return f"{real } ({band }) - 27 Club - {VERSION }"
         return f"{nick } - {VERSION }"
 
     @classmethod
@@ -9553,7 +9779,10 @@ class OTRv4IRCClient:
         self.server = self.config.server
         if self.config.nickserv_nick:
             self.nick = self.config.nickserv_nick
-            self.realname = self.nick
+            # Not the bare nick: the realname is what identifies this client
+            # to peers running /names, and a registered nick is no reason to
+            # go dark.  See TwentySevenClubNick.real_name.
+            self.realname = f"{self .nick } - {VERSION }"
         else:
             self.nick = TwentySevenClubNick.generate()
             self.realname = TwentySevenClubNick.real_name(self.nick)
@@ -10657,6 +10886,9 @@ class OTRv4IRCClient:
                 for ch, info in self.channels.items():
                     if sender in info["users"]:
                         info["users"].discard(sender)
+                # Someone else may take the nick; a stale entry would mark
+                # them as an OTRv4+ client on no evidence at all.
+                getattr(self, "_otrv4_users", {}).pop(sender, None)
 
                 if self.session_manager.has_session(sender):
                     self._on_peer_disconnected(sender, reason)
@@ -10670,6 +10902,12 @@ class OTRv4IRCClient:
                     if sender in ch_info["users"]:
                         ch_info["users"].discard(sender)
                         ch_info["users"].add(new_nick)
+                # The OTRv4+ map is keyed by nick, so a rename would
+                # otherwise leave the marker on a nick nobody is using and
+                # strip it from the person who still has the same client.
+                _o = getattr(self, "_otrv4_users", None)
+                if _o is not None and sender in _o:
+                    _o[new_nick] = _o.pop(sender)
                 if sender == self.nick:
                     self.nick = new_nick
                     self.add_message(
@@ -10933,15 +11171,16 @@ class OTRv4IRCClient:
                     _who_real = _who_real[2:]
                 if not hasattr(self, "_otrv4_users"):
                     self._otrv4_users: Dict[str, bool] = {}
+                # Client identification only.  See otrv4_client_version().
                 if _who_nick:
-                    self._otrv4_users[_who_nick] = "OTRv4+" in _who_real
+                    self._otrv4_users[_who_nick] = advertises_otrv4(_who_real)
                 if getattr(self, "_who_pending", False):
                     _wc = getattr(self, "_who_count", 0)
                     if _wc == 0:
                         self._who_count = 0
                     if _wc < _WHO_DISPLAY_MAX:
                         _wp2 = self.panel_manager.active_panel or "system"
-                        _m = colorize(" 🔒", "blue") if "OTRv4+" in _who_real else ""
+                        _m = colorize(" 🔵", "blue") if advertises_otrv4(_who_real) else ""
                         self.add_message(
                             _wp2,
                             f"  {colorize (_who_nick or '?','cyan'):<20}{_sanitise (_who_user +'@'+_who_host ,50 ):<40}{_sanitise (_who_real ,40 )}{_m }",
@@ -10999,12 +11238,19 @@ class OTRv4IRCClient:
                 return
 
             if code == 353:
+                # ":server 353 me = #chan :@alice +bob carol"
                 channel = params[2] if len(params) > 2 else ""
-                users = trailing.split() if trailing else []
+                if not channel:
+                    return
+                users = [u for u in (trailing.split() if trailing else [])
+                         if split_names_entry(u)[1]]
                 if channel not in self.names_data:
                     self.names_data[channel] = []
                 if not hasattr(self, "_names_total"):
                     self._names_total = {}
+                # The server's count, kept whole even when the local list is
+                # capped, so the header reports the channel rather than the
+                # slice of it we chose to render.
                 self._names_total[channel] = self._names_total.get(channel, 0) + len(users)
                 _nlim = getattr(self, "_names_limit", 500)
                 _cur = len(self.names_data[channel])
@@ -11012,81 +11258,39 @@ class OTRv4IRCClient:
                     self.names_data[channel].extend(users[: _nlim - _cur])
                 if channel in self.channels:
                     for u in users:
-                        self.channels[channel]["users"].add(u.lstrip("@+&~"))
+                        self.channels[channel]["users"].add(split_names_entry(u)[1])
                 return
 
             if code == 366:
                 channel = params[1] if len(params) > 1 else ""
-                if getattr(self, "_pending_names_pager", None) == channel:
-                    self._pending_names_pager = None
-                    raw_users = self.names_data.get(channel, [])
-
-                    ops = []
-                    voiced = []
-                    regular = []
-                    for u in raw_users:
-                        prefix = u[0] if u and u[0] in "@+~&%" else ""
-                        nick = u.lstrip("@+~&%")
-                        if prefix in ("@", "~", "&"):
-                            ops.append((prefix, nick))
-                        elif prefix in ("+", "%"):
-                            voiced.append((prefix, nick))
-                        else:
-                            regular.append(("", nick))
-
-                    ops.sort(key=lambda x: x[1].lower())
-                    voiced.sort(key=lambda x: x[1].lower())
-                    regular.sort(key=lambda x: x[1].lower())
-
-                    _real_total = getattr(self, "_names_total", {}).pop(channel, len(raw_users))
-                    total = _real_total
-                    _otrv4_map = getattr(self, "_otrv4_users", {})
-                    _otr_count = sum(1 for _, n in ops + voiced + regular if _otrv4_map.get(n))
-                    _plines = []
-                    if _otr_count:
-                        _plines.append(
-                            colorize(
-                                f"  🔒 = OTRv4+ ({_otr_count} user(s)) - /otr <nick> to encrypt",
-                                "blue",
-                            )
-                        )
-
-                    def _grp(label, users, color):
-                        if not users:
-                            return
-                        _plines.append(colorize(f"  {label } ({len (users )}):", color))
-                        col_width = 20
-                        cols = max(1, 56 // col_width)
-                        row = []
-                        for pfx, nk in users:
-                            disp = f"{pfx }{nk }"
-                            entry = (
-                                colorize(f"  🔒{disp :<{col_width -1 }}", "blue")
-                                if _otrv4_map.get(nk)
-                                else colorize(f"  {disp :<{col_width }}", color)
-                            )
-                            row.append(entry)
-                            if len(row) >= cols:
-                                _plines.append("".join(row))
-                                row = []
-                        if row:
-                            _plines.append("".join(row))
-
-                    _grp("Operators", ops, "bold_green")
-                    _grp("Voiced", voiced, "yellow")
-                    _grp("Users", regular, "white")
-                    _nlim = getattr(self, "_names_limit", 500)
-                    _shown = len(raw_users)
-                    if total > _shown:
-                        _plines.insert(
-                            0,
-                            colorize(
-                                f"  ⚠ {total } users in channel - showing first {_shown } (q to quit, /names for full list)",
-                                "yellow",
-                            ),
-                        )
-                    self.names_data[channel] = []
-                    self.pager.display(_plines, f"Users in {_sanitise (channel ,64 )} ({total })")
+                raw_users = self.names_data.get(channel, [])
+                total = getattr(self, "_names_total", {}).pop(channel, None)
+                if total is None:
+                    total = len(raw_users)
+                self.names_data[channel] = []
+                if getattr(self, "_pending_names_pager", None) != channel:
+                    # NAMES also arrives unsolicited on JOIN.  Accumulated
+                    # state is still cleared above, or it grows for the life
+                    # of the process and the next /names reports a stale
+                    # total.
+                    return
+                self._pending_names_pager = None
+                lines, picks = format_names_list(
+                    raw_users,
+                    getattr(self, "_otrv4_users", {}),
+                    total=total,
+                    selectable=True,
+                )
+                chosen = self.pager.display(
+                    lines,
+                    f"Users in {_sanitise (channel ,64 )} ({total })",
+                    choices=picks,
+                )
+                if chosen:
+                    # Starting a DAKE, which is what actually authenticates
+                    # the peer.  Selecting a blue entry is a shortcut for
+                    # typing /otr <nick>; it confers no trust of its own.
+                    self.start_guided_otr_session(chosen)
                 return
 
             if code == 311:
@@ -11094,18 +11298,33 @@ class OTRv4IRCClient:
                 user = params[2] if len(params) > 2 else ""
                 host = params[3] if len(params) > 3 else ""
                 real = trailing or ""
-                display_real = TwentySevenClubNick.real_name(target)
-                if display_real == target:
-                    display_real = real
+                # Both fields used to be computed from the local nick:
+                # `Client` printed our own VERSION whatever the peer ran, and
+                # `Name` printed TwentySevenClubNick.real_name(target), which
+                # returns "<nick> - OTRv4+ <version>" for any nick at all.  So
+                # /whois on a mIRC user reported them as an OTRv4+ client --
+                # a claim derived from the nick, which is exactly the
+                # inference this must not make.  Both now come off the wire.
+                _peer_version = otrv4_client_version(real)
+                if _peer_version:
+                    _client = colorize("OTRv4+ %s" % _peer_version, "blue")
+                else:
+                    _client = colorize("not advertised", "dim")
+                # Same reliable metadata as RPL_WHOREPLY, so /whois keeps the
+                # /names marker current for that nick.
+                if target:
+                    if not hasattr(self, "_otrv4_users"):
+                        self._otrv4_users: Dict[str, bool] = {}
+                    self._otrv4_users[target] = _peer_version is not None
                 _wp = self.panel_manager.active_panel or "system"
                 self._whois_panel = _wp
                 self.add_message(_wp, colorize("── WHOIS ─────────────────────────────────", "dim"))
                 self.add_message(_wp, f"  Nick     : {colorize_username (target )}")
-                self.add_message(_wp, f"  Client   : {colorize (VERSION ,'cyan')}")
+                self.add_message(_wp, f"  Client   : {_client }")
                 self.add_message(
                     _wp, f"  User     : {_sanitise (user ,64 )}@{_sanitise (host ,128 )}"
                 )
-                self.add_message(_wp, f"  Name     : {_sanitise (display_real ,128 )}")
+                self.add_message(_wp, f"  Name     : {_sanitise (real ,128 )}")
                 return
 
             if code == 312:
@@ -12369,7 +12588,7 @@ class OTRv4IRCClient:
                 "  /part [#ch]          Leave channel",
                 "  /nick <name>         Change nickname",
                 "  /msg <nick> <text>   Private message",
-                "  /names [#ch]         List users - pager, q to quit",
+                "  /names [#ch]         List users - \U0001F535 = OTRv4+ client, 1-9 to /otr",
                 "  /list                List channels - pager, q to quit",
                 "  /who [#ch]           WHO query with OTRv4+ detection",
                 "  /whois <nick>        User info",
@@ -12427,7 +12646,7 @@ class OTRv4IRCClient:
                 "    /join #channel     Join a channel",
                 "    /otr <nick>        Start encrypted chat",
                 "    /smp <secret>      Verify identity",
-                "    /names             List users in channel - pager",
+                "    /names             List users - \U0001F535 = OTRv4+ (identification only)",
                 "    /list              List all channels - pager",
                 "    /quit              Exit",
                 "",

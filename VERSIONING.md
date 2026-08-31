@@ -10,9 +10,9 @@ the project was on. This document exists so that cannot happen quietly again.
 
 | Track | Where | Current | Why it is separate |
 |---|---|---|---|
-| **Client** | `otrv4+.py` `VERSION`, `otrv4plus_xmpp.py` `XMPP_VERSION` | `10.13.2` | The thing a user runs and a peer must match. |
+| **Client** | `otrv4+.py` `VERSION`, `otrv4plus_xmpp.py` `XMPP_VERSION` | `10.13.3` | The thing a user runs and a peer must match. |
 | **Crypto core** | `Rust/Cargo.toml`, `Rust/pyproject.toml` | `0.10.25` | A crate with its own release history; it is `0.x` because its API is not stable for outside consumers. |
-| **Android app** | `android/app/build.gradle.kts` | `0.3.0-phase2+core.10.13.2` | An APK at an earlier maturity than the Termux client. Its own track, with the client version it embeds recorded as semver build metadata. |
+| **Android app** | `android/app/build.gradle.kts` | `0.3.0-phase2+core.10.13.3` | An APK at an earlier maturity than the Termux client. Its own track, with the client version it embeds recorded as semver build metadata. |
 
 The crate and the client are bumped together at a release, so a changelog entry
 reads `VERSION → 10.13.2, otrv4_core 0.10.25`. The Android `versionCode` is a
@@ -73,6 +73,26 @@ A grep that should return one version and no other:
 grep -rn 'VERSION = "OTRv4+\|^XMPP_VERSION\|^version' \
      otrv4+.py otrv4plus_xmpp.py Rust/Cargo.toml Rust/pyproject.toml
 ```
+
+## Why v10.13.3
+
+v10.13.2 → v10.13.3 is a PATCH bump: a fix and its hardening within an existing
+capability. `otrv4_core` is **unchanged at 0.10.25** — nothing in this release
+touches Rust, so bumping the crate would claim a release it did not have.
+
+The client number moves for two reasons, one of them visible on the wire:
+
+* `/names`, `/list` and `/help` printed the literal string
+  `[IRC line suppressed]` in place of every line, from v10.11.0 onwards.
+* the realname (gecos) this client advertises at registration now always ends
+  with the version. It did not for 27 Club nicks or for a NickServ-registered
+  nick, so those users were undetectable as OTRv4+ by their peers. Other IRC
+  users will see the changed realname, which is why this is a client-version
+  change rather than a silent fix.
+
+Neither is a protocol change. A v10.13.2 peer and a v10.13.3 peer interoperate
+exactly as before — the same-version rule above is unaffected by this release,
+though it still applies for every other reason.
 
 ## Why v10.13.2
 

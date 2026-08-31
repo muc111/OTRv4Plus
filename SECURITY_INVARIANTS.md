@@ -161,6 +161,13 @@ MEDIAPATH moves the media endpoint within the I2P class, authenticated from the 
 
 Encryption, anonymity and routing are three properties, not three points on one scale.  A proxy is routing: the operator can log, identify, inject or be compromised.  Clearnet TLS 1.3 is strong encryption with no anonymity, and calling it 'less secure' teaches the wrong lesson.
 
+### INV-20 — OTRv4+ client identification is display metadata.  It never authenticates, confers trust, or unlocks a capability.
+
+**Status:** `ENFORCED`  
+**Enforced by:** `tests/test_irc_names_list.py`
+
+The blue /names marker comes from the realname (gecos) the peer's own client sent at registration and the server relayed in RPL_WHOREPLY.  Nobody checks it and nobody can: any user may put that string in their own gecos.  It answers 'is this peer likely to understand /otr' and nothing else.  The DAKE authenticates, TOFU pins identity, SMP authorises voice; the renderer is a pure function with no client to promote anything on.
+
 ## Where secrets live
 
 Updated at v10.13.2, when the voice path finished moving.
@@ -222,6 +229,12 @@ with no anonymity — calling it "less secure" is wrong and teaches the wrong
 lesson. [TRANSPORT_POLICY.md](TRANSPORT_POLICY.md) holds the full policy,
 including the transition matrix and the two fallback sequences that must never
 exist.
+
+**Identification is not authentication** (INV-20). The blue OTRv4+ marker in
+`/names` is the realname the peer's own client sent at registration; the server
+relays it and nobody checks it. It says "this peer probably understands /otr".
+The DAKE authenticates, TOFU pins identity, SMP authorises voice. Wiring a
+marker into any of those would make a self-asserted string a security decision.
 
 **Fail closed.** A failure to determine SMP state does not authorise a call
 (INV-12). An unrecognised log line is not written (INV-03). A rekey that
