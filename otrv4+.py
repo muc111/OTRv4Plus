@@ -4553,10 +4553,19 @@ def _derive_key(password: bytes, salt: bytes, dklen: int = 32) -> bytes:
     is worse than a weaker KDF here), but it is no longer silent: it warns,
     with the reason, and :func:`kdf_backend` reports what was actually used.
 
-    This is the AT-REST KDF only.  The SMP passphrase itself is stretched on
-    the wire by 50,000 iterated rounds of SHAKE-256 in ``Rust/src/smp.rs``,
-    which is CPU-hard but NOT memory-hard.  Argon2 is not involved there and
-    putting it there would be a wire break -- see SPEC 6.4.
+    This is the AT-REST KDF only, and must not be confused with the protocol
+    KDF that stretches the SMP passphrase on the wire in ``Rust/src/smp.rs``.
+    Under wire versions 0x01 and 0x02 that stretch is 50,000 iterated rounds
+    of SHAKE-256, which is CPU-hard but NOT memory-hard, and this docstring
+    used to add that "Argon2 is not involved there and putting it there would
+    be a wire break".  Half of that is now out of date: the wire break was
+    taken deliberately at v10.13.0, and wire version 0x03 -- the default for
+    new sessions -- stretches with Argon2id over a salt binding the session id
+    and both fingerprints.  0x02 still exists for older peers, so both
+    derivations are live.  See SPEC 6.4.
+
+    The two Argon2id cost profiles are deliberately identical (m=64 MiB, t=3,
+    p=4); ``tests/test_kdf_claims_are_true.py`` fails if they diverge.
 
     Argon2id parameters: time_cost=3, memory_cost=65536 (64MB), parallelism=4
     scrypt parameters: n=16384, r=8, p=1 (Termux memory safe)

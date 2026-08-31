@@ -61,7 +61,16 @@ For someone who wants to try it in about ten minutes on Termux (Android, aarch64
 
 ```bash
 pkg install python rust openssl clang git
+pip install argon2-cffi
 ```
+
+`argon2-cffi` is not optional in practice. Without it the at-rest key
+derivation for stored SMP secrets and the sealed identity falls back to scrypt
+— which still works and warns loudly on every derivation, but is not
+memory-hard. The warning names the remedy; there is currently no command that
+reports the backend after the fact, so if you scrolled past it, the safe
+assumption is that you are on scrypt until you have installed this and
+restarted.
 
 Python **3.12 or newer** is required — `otrv4+.py` uses PEP 701 f-string syntax
 that does not parse on 3.11, so an older interpreter fails with a `SyntaxError`
@@ -70,12 +79,20 @@ inside an import rather than a clear message.
 For **voice calls**, two more:
 
 ```bash
-pkg install opus termux-api          # libopus, and Termux:API for the ringer
-pip install cryptography             # the voice media AEAD, HKDF and X448
+pkg install libopus termux-api       # the Opus codec, and Termux:API for the ringer
+pip install opuslib                  # the Python binding to libopus
 ```
 
-Chat needs neither. See the note under *Clone and build* on why the voice path
-still uses the Python `cryptography` library when chat does not.
+The Termux package is `libopus`, not `opus` — `pkg install opus` fails with
+*Unable to locate package*.
+
+Chat needs neither. Voice needs no Python cryptography library: since v10.13.2
+the whole voice key path — media AES-256-GCM, the HKDF-SHA512 schedule and the
+X448 exchange — runs inside `otrv4_core`. Earlier revisions of this section
+told you to `pip install cryptography` for voice; that is no longer true, and
+`cryptography` is now only needed to run the **test suite**, where
+`tests/test_voice_rust_parity.py` uses it to build an independent reference
+derivation to check the Rust one against.
 
 For **clearnet/TLS** (fastest, no extra setup):
 ```bash
@@ -107,7 +124,9 @@ costs one flag on the build line and makes the test suite reachable.
 
 As of v10.7.5 there are no C extensions to compile. The **chat** path is Rust-core-only: every cryptographic operation behind messaging runs inside `otrv4_core`.
 
-The **voice** path is not, and earlier versions of this README said otherwise. `otrv4plus_voice.py` uses the Python `cryptography` library for three things: the media AES-256-GCM, the HKDF-SHA512 voice key schedule, and the X448 half of the voice key exchange. ML-KEM-1024 for voice goes through `otrv4_core` like everything else, with a pure-Python fallback that live calls refuse unless explicitly enabled. So if you build voice, `pip install cryptography` is a real dependency and there are two AES-256-GCM implementations in the tree. Consolidating the voice path onto the Rust core is open work; until it happens, saying "one cryptographic surface" would be false.
+The **voice** path was the exception until v10.13.2, and this paragraph used to say so. `otrv4plus_voice.py` used the Python `cryptography` library for the media AES-256-GCM, the HKDF-SHA512 voice key schedule and the X448 half of the voice key exchange — so there were two AES-256-GCM implementations in the tree and "one cryptographic surface" would have been false. All three moved into `otrv4_core` at v10.13.2: the epoch root is `SecretBytes<64>` behind a handle with no accessor, media keys are `SecretBytes<32>` with no getter, and the X448 private scalar is `SecretBytes<56>`, single-use. `_require_rust_voice()` is a hard requirement with no Python fallback, because falling back would restore exactly what was removed.
+
+So voice no longer needs `cryptography` at run time, and the library is a **test** dependency rather than a runtime one. What remains Python-side in the voice path touches no key material: the frame header, the AAD construction, the replay window, the jitter buffer and the rekey state machine.
 
 ### 3. Verify the build (recommended)
 
@@ -744,24 +763,27 @@ After that, the peer tab is green (encrypted + verified) and your typed messages
 └─────────────────────────────────────────────┘
 ```
 
-Voice sits alongside this stack rather than inside it, and its cryptography is
-Python-side:
+Voice sits alongside this stack rather than inside it, but since v10.13.2 its
+cryptography is in the same Rust core:
 
 ```
 ┌─────────────────────────────────────────────┐
 │  I2P SAM DATAGRAM transport (media only)    │
 ├─────────────────────────────────────────────┤
-│  otrv4plus_voice.py — VOICE                 │
-│  hybrid X448 + ML-KEM-1024 key exchange     │
-│  HKDF-SHA512 key schedule, media ratchet    │
-│  AES-256-GCM media, replay window           │
+│  otrv4plus_voice.py — VOICE (protocol only) │
+│  call state machine, rekey state machine    │
+│  frame header + AAD, replay window          │
+│  jitter buffer, liveness watchdog           │
 │  MEDIAPATH endpoint authentication          │
-│  liveness watchdog + endpoint recovery      │
-├──────────────────────┬──────────────────────┤
-│ Python cryptography  │  otrv4_core          │
-│ AES-256-GCM, HKDF,   │  ML-KEM-1024 only    │
-│ X448   ← the gap     │                      │
-└──────────────────────┴──────────────────────┘
+│  holds handles, never key bytes             │
+├─────────────────────────────────────────────┤
+│  Rust core (otrv4_core) — voice.rs          │
+│  RustVoiceRoot   SecretBytes<64>, no getter │
+│  RustVoiceCipher SecretBytes<32> per key    │
+│  RustVoiceKex    SecretBytes<56>, one use   │
+│  HKDF-SHA512, AES-256-GCM, X448, ML-KEM     │
+│  ZeroizeOnDrop everywhere                   │
+└─────────────────────────────────────────────┘
 ```
 
 Signalling for a call (INVITE/ACCEPT/CONFIRM/REKEY/MEDIAPATH/END) rides the OTR
