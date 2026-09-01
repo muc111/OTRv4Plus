@@ -26,6 +26,21 @@ The message contents are encrypted and authenticated entirely by the existing
 two-party channel of SPEC.md. This document adds no confidentiality mechanism
 of its own.
 
+**One distinction to carry through every discussion of this protocol:**
+
+| Component | Role |
+|---|---|
+| **AES-256-GCM** | the symmetric cipher that encrypts payload bytes |
+| **ML-KEM-1024** | post-quantum **key establishment**, in the two-party channel |
+| **X448** | classical key establishment, alongside ML-KEM |
+| **Ed448** | signatures over group state — never over message content |
+
+ML-KEM is **not** a message cipher and never encrypts a payload. It
+establishes key material inside the two-party handshake and ratchet; AES-256-GCM
+is what a message is actually encrypted with. Describing this protocol as
+"ML-KEM encrypted" would be wrong in a way that matters, because it implies a
+PQ mechanism operating where there is none.
+
 ### 0.2 Why there is no group key
 
 The audit in [GROUP_CRYPTO_AUDIT.md](GROUP_CRYPTO_AUDIT.md) established that
@@ -341,6 +356,28 @@ counted; every other member re-tallies them independently and rejects the
 commit if the evidence does not meet the threshold. No member is trusted to
 report a result.
 
+### 7.1.1 How `evidence` is encoded
+
+Under-specified in the first draft of this document and pinned here because
+`tests/group_vectors/group_vectors_v1.json` §18 now depends on it.
+
+```
+evidence = (vote ‖ vote_signature) ‖ (vote ‖ vote_signature) ‖ …
+```
+
+sorted ascending by `voter_identity_pub` as unsigned bytes — the same rule
+and the same reason as the member set in §2, so two members counting the same
+votes produce the same bytes and therefore the same `commit_id`.
+
+There is no separator and no count field, and none is needed: every field of
+a `vote` is fixed-length or length-prefixed, so a `vote` is exactly 215 bytes
+and a record exactly 329. A parser MUST reject `evidence` whose length is not
+a multiple of 329, and MUST reject a repeated `voter_identity_pub` rather than
+counting it twice.
+
+`evidence` is empty for every transition the policy does not require votes
+for, including every transition under ADMIN_ONLY.
+
 ### 7.2 Suspicion is not revocation
 
 A SECURITY_CONCERN is a proposal, and nothing more. This protocol has no
@@ -357,14 +394,37 @@ as having one. What a completed REVOKE establishes is narrower and real:
 Two members can commit against the same parent at the same time. That is
 normal, not an attack, and must be distinguished from one that is.
 
+**The rule that must not be misread:**
+
+> `lowest(commit_id)` is a **convergence** rule. It is not an **equivocation**
+> rule. It resolves a disagreement between honest members. It must never be
+> allowed to resolve, hide, or silently pick a winner from, two commits by the
+> same signer.
+
+Applying the tie-break to the §8.2 case would let an attacker equivocate and
+have the protocol quietly clean up after them — the group would converge, and
+nobody would learn that one member had signed two futures. An implementation
+MUST therefore branch on **who signed**, before it compares any `commit_id`.
+
+```
+two valid commits, same previous_state_hash
+                │
+      ┌─────────┴─────────┐
+ different signers    same signer
+      │                   │
+   §8.1 converge       §8.2 EQUIVOCATION
+   lowest commit_id    never auto-resolved
+```
+
 ### 8.1 Concurrent commits — benign
 
 Two **different** signers, two valid commits, same `previous_state_hash`.
 
 Resolution is deterministic: the commit with the numerically **lower
-`commit_id`** wins. The loser's transition is discarded, and its proposer MAY
-re-propose it against the new head. Every member reaches the same answer
-without communicating, because `commit_id` is a hash of bytes they all have.
+`commit_id`** wins, comparing the 64 bytes as unsigned big-endian. The loser's
+transition is discarded, and its proposer MAY re-propose it against the new
+head. Every member reaches the same answer without communicating, because
+`commit_id` is a hash of bytes they all have.
 
 An implementation MUST NOT resolve this by arrival order, timestamp, or
 sender preference.
@@ -372,12 +432,26 @@ sender preference.
 ### 8.2 Equivocation — an attack
 
 The **same** signer producing two different valid commits from the same
-parent. The two signatures are proof of misbehaviour attributable to one key.
+parent.
 
-This MUST be surfaced as a security event, MUST NOT be auto-resolved by the
-tie-break of §8.1, and both commits MUST be retained as evidence. Whether the
-group revokes the equivocating device is a policy decision made by §7, not by
-the protocol.
+The two commits, with their signatures, are self-contained cryptographic proof
+of misbehaviour attributable to one identity key. Anyone holding both can
+verify it without trusting the reporter.
+
+An implementation MUST:
+
+* detect it — which requires retaining, per epoch, the set of
+  `(signer, previous_state_hash)` pairs it has already seen a commit for;
+* surface it as a security event naming the signer;
+* retain **both** commits and both signatures as evidence;
+* refuse to advance the epoch on either of them until a human or a policy
+  decision resolves it.
+
+An implementation MUST NOT apply §8.1 to this case, MUST NOT discard the
+losing commit, and MUST NOT treat "the group converged" as a resolution.
+
+Whether the group revokes the equivocating device is a §7 policy decision, not
+something the protocol performs by itself.
 
 ### 8.3 Fork
 
@@ -423,6 +497,20 @@ property with a non-deniable one for no gain in the group's own guarantees.
 Membership **transitions**, by contrast, must be signed: their whole purpose
 is to be verifiable by a third member who did not witness them. §13.3 states
 what that costs.
+
+The split is not an accident of implementation; it follows from what each
+object has to accomplish:
+
+| Object | Authentication | Why |
+|---|---|---|
+| OTR DAKE | **deniable** | ring signature, by design (SPEC.md §4.5) |
+| Group message | **deniable** | inherited from the two-party channel |
+| Membership commit | **non-deniable** | must be verifiable by members who did not witness it |
+| Vote / proposal evidence | **non-deniable** | must be re-tallied independently (§7.1) |
+
+An object that must convince a third party cannot also be deniable to that
+third party. Anyone proposing to "add deniability" to commits is proposing to
+remove the property that makes consensus verifiable.
 
 ### 9.2 Sending
 
@@ -573,26 +661,150 @@ constraint does not belong inside the cryptographic layer.
 
 ## 15. Test vectors
 
-Not yet produced. This section records what generating them requires, because
-one prerequisite is missing from the core today.
+**Produced.** `tests/group_vectors/group_vectors_v1.json`, eighteen sections,
+covering §§2–9. `tests/test_group_vectors.py` checks them on every run.
+
+They exist **before** any implementation, which is the point: when the group
+state machine is written it is checked against these bytes, and a
+disagreement is a question about which side misread this document — never a
+reason to regenerate the file.
 
 Everything except signatures is a deterministic function of its inputs, so
-`member_entry`, `member_set_hash`, `group_state`, `state_hash` and `commit`
-vectors can be produced from fixed byte strings with no key material at all.
+`member_entry`, `member_set_hash`, `group_state`, `state_hash` and the signed
+body of a `commit` are produced from fixed byte strings with no key material
+at all.
 
-**Signature vectors cannot.** Ed448 signing is deterministic given the seed,
-but `otrv4_core` exposes only `generate_ed448_keypair()` — there is no way to
-construct a key from a fixed seed, so no signature or `commit_id` vector can
-be reproduced. Producing them needs either a seeded constructor or a
-test-only entry point gated the way `test-only-kdf` is.
+### 15.0 What is in the file
 
-That is a decision to take deliberately: a seeded key constructor is exactly
-the kind of API that must not exist in a release build.
+| Section | Covers |
+|---|---|
+| `01_member_entry` | §3 encoding, including a non-ASCII JID and `joined_epoch` at `uint64` max |
+| `02_member_set` | §2 ordering by identity key, with the JID order shown to prove it differs |
+| `03_genesis` | §4.1 `group_id` derivation and the epoch-0 state |
+| `04_join`, `05_leave` | §6 commits and the states they produce |
+| `06_membership_replacement` | a revoked device replaced by another holding the same JID |
+| `07_state_chain` | §5 linkage across four epochs |
+| `08_concurrent_commits` | §8.1, two signers, expected winner recorded |
+| `09_equivocation` | §8.2, one signer, **no** winner recorded |
+| `10_commit_id_determinism` | the same body signed twice |
+| `11_ed448_signatures` | raw Ed448 over fixed messages |
+| `12`–`15` | rejection cases: bad signatures, wrong parent, unauthorised signer, non-canonical encoding |
+| `16_complete_verification` | one fixture exercising all eight §6.1 conditions |
+| `17_threshold_votes` | §7.1 proposal, votes, evidence, re-tally |
+| `18_message_envelope` | §9, with no signature field |
 
-### 15.1 What was checked instead
+No genesis *commit* vector is emitted. §6.1 verifies a commit against a parent
+state and genesis has no parent, so conditions 2, 3, 4 and 6 have nothing to
+check. A joiner pins the genesis state itself (§5).
 
-The encoding of §§3–6 was implemented as a throwaway reference and exercised
-before this document was committed. It confirmed: the sizes are as stated
+### 15.1 Signature and `commit_id` vectors
+
+Ed448 signing in this project is **deterministic** — the same key over the
+same message always produces the same 114 bytes — so signature and `commit_id`
+vectors are reproducible provided the signing key itself can be fixed.
+
+The committed signatures were **not** produced by this project's Ed448 —
+they come from the RFC 8032 reference algorithm, for the reason in §15.2. The
+core's own signing is what they were checked *against*, and that check needs a
+fixed key, which exists only in a build that must never ship:
+
+```rust
+#[cfg(feature = "test-only-kdf")]
+#[staticmethod]
+pub(crate) fn from_seed_bytes<'py>(seed: &[u8]) -> PyResult<Self>
+```
+
+`Ed448KeyHandle.from_seed_bytes(seed)` takes a 57-byte seed and returns a
+handle whose private key is still Rust-owned with no getter. It exists solely
+so that protocol vectors are reproducible — and, as used here, so that two
+implementations can be made to sign the same thing and compared.
+
+**The rule it satisfies, stated so it cannot be diluted later:**
+
+> A deterministic Ed448 seed-import primitive may exist solely for
+> reproducible protocol test vectors and must not be reachable through the
+> production API/build.
+
+Three separate mechanisms enforce the second half:
+
+1. **Compilation.** The `#[cfg(feature = "test-only-kdf")]` attribute means
+   the function is not compiled at all without the feature — it is absent from
+   the object file, not merely unexported.
+2. **The build guard.** `Rust/build.rs` *panics at build time* when
+   `test-only-kdf` is enabled unless `OTRV4PLUS_ALLOW_TEST_GATES=1` is set in
+   the environment, so the feature cannot be turned on by an inherited Cargo
+   flag or a careless `--all-features`.
+3. **The release test.** `tests/test_release_guard.py` asserts against the
+   installed wheel that `Ed448KeyHandle` has no `from_seed_bytes` attribute
+   (`test_production_artifact_exposes_no_seed_injection`) and separately that
+   the compiled object file contains no gated symbol
+   (`test_production_object_file_contains_no_gated_symbols`). Both run in the
+   ordinary suite.
+
+Generating vectors therefore means building the gated wheel deliberately:
+
+```bash
+cd Rust
+OTRV4PLUS_ALLOW_TEST_GATES=1 maturin build --release \
+    --features pyo3/extension-module,test-only-kdf
+python3.12 -m pip install --break-system-packages --force-reinstall \
+    target/wheels/otrv4_core-*.whl
+```
+
+and then **restoring the production wheel** before anything else is run:
+
+```bash
+python3.12 -m pip install --break-system-packages --force-reinstall ./Rust
+python3.12 -m pytest tests/test_release_guard.py -q
+```
+
+Verified on this repository: under the production wheel
+`hasattr(otrv4_core.Ed448KeyHandle, "from_seed_bytes")` is `False`; under the
+gated wheel it is `True`, and for `seed = bytes(range(57))` both the derived
+public key and the signature over a fixed message reproduce exactly across
+processes.
+
+### 15.2 Vectors must not be generated by the implementation under test
+
+A vector produced by the code it is meant to check proves only that the code
+agrees with itself — the same defect the ML-KEM tests had before
+[GROUP_CRYPTO_AUDIT.md](GROUP_CRYPTO_AUDIT.md) §2.
+
+So the expected values MUST come from an independent encoder written from
+**this document**. What was actually done:
+
+* the encodings of §§2–9 are implemented in
+  `tests/group_vectors/generate_group_vectors.py`, written from this
+  specification, importing nothing from the client and nothing from
+  `otrv4_core`. `test_the_generator_does_not_import_the_client` enforces that
+  by reading its imports from the AST;
+* the signatures come from `tests/group_vectors/ed448_rfc8032.py`, a
+  transcription of the RFC 8032 reference algorithm sharing no code with
+  `ed448-goldilocks-plus`. It reproduces the RFC 8032 §7.4 "Blank" vector
+  exactly — key and signature — and derives the §7.4 "1 octet" public key;
+* those signatures were then checked against the Rust implementation through
+  the gated wheel: eight seeds, agreement on both the public key and the
+  signature. Two independent implementations, one RFC anchor;
+* and every signature in the committed file verifies under the **production**
+  `verify_ed448_sig` on every test run, which needs no gate at all — verifying
+  is a production API.
+
+In consequence, so the file cannot be quietly turned into a mirror of the
+implementation:
+
+> If the group implementation disagrees with a vector, do not regenerate the
+> vector. Establish which of the two read this document correctly, and fix
+> that one. If the specification itself changes, bump the vector-set version
+> and keep the old file.
+
+The reference signer is variable-time arithmetic on secret scalars and must
+never be reachable from client code. `test_nothing_outside_the_vector_directory_imports_it`
+walks the tree to enforce it.
+
+### 15.3 What the first reference encoder confirmed
+
+Before the vectors existed, the encoding of §§3–6 was implemented as a
+throwaway reference and exercised. It confirmed: the sizes are as stated
 (`group_id` 32, `state_hash` 64, signature 114, `commit_id` 64); a genesis
 state and a JOIN commit encode and verify; the §6.1 conditions that can be
 checked without a network hold; a revoked device is absent from the next
@@ -601,10 +813,9 @@ is deterministic; and the context tags of §1.2 separate the structures — a
 member entry, a member set hash and a state hash over the same material are
 all distinct.
 
-The reference encoder was not kept. It exists in the commit message for this
-document and should be rewritten from the specification, not recovered from
-history — an encoder derived from the spec is a check on the spec; one copied
-forward is not.
+That encoder was not kept. The generator in `tests/group_vectors/` was
+written from this document afresh rather than recovered from it — an encoder
+derived from the spec is a check on the spec; one copied forward is not.
 
 ---
 
