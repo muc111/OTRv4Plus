@@ -1278,7 +1278,25 @@ envelope.
 Only the envelope is self-authenticating. Every other field is a claim by the
 sender and MUST be verified against what actually arrives.
 
-### 9A.6 Receiver obligations
+### 9A.6 Transport
+
+The file-transfer engine is transport-independent by construction. Two
+channels are distinguished:
+
+* **Control** — offer, accept, decline, done, cancel. Small, ordered, and
+  MUST be authenticated. These MUST travel inside the OTR channel.
+* **Bulk** — sealed chunks. Already encrypted and authenticated by §9A.4
+  before a transport sees them, so a transport MAY carry them by any means.
+
+An implementation MUST NOT make the chunk format, the transfer-key
+derivation, the hashes or the receiver obligations depend on which transport
+is in use. The chunk size is a transport parameter, bounded above by 65536;
+changing it changes the number of chunks and nothing else about the file.
+
+A transport MUST NOT carry control messages over the bulk path, or bulk data
+over a path that is not authenticated as the OTR channel is.
+
+### 9A.7 Receiver obligations
 
 A receiver MUST NOT place a file until all of the following hold:
 
