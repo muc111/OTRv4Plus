@@ -100,6 +100,35 @@ class TestFilenamesCannotEscape:
             ft.sanitise_filename(b"bytes.txt")
 
 
+class TestTheTermuxStorageHint:
+    """Termux has no view of Android storage until termux-setup-storage has
+    been run, so "no such file" is the first thing a new user hits and the
+    fix is a command they have not heard of."""
+
+    def test_it_is_silent_off_android(self, monkeypatch):
+        monkeypatch.delenv("ANDROID_ROOT", raising=False)
+        monkeypatch.delenv("TERMUX_VERSION", raising=False)
+        assert ft._storage_hint() == ""
+
+    def test_it_names_the_command_on_termux_without_storage(self, monkeypatch):
+        # tmp_path is unusable here: conftest stubs `pwd`, and pytest's
+        # tmp_path factory calls getuser().
+        with tempfile.TemporaryDirectory() as home:
+            monkeypatch.setenv("TERMUX_VERSION", "0.118")
+            monkeypatch.setenv("HOME", home)
+            hint = ft._storage_hint()
+        assert "termux-setup-storage" in hint
+        assert "~/storage" in hint
+
+    def test_it_is_silent_once_storage_exists(self, monkeypatch):
+        """It must not nag someone who simply mistyped a filename."""
+        with tempfile.TemporaryDirectory() as home:
+            monkeypatch.setenv("TERMUX_VERSION", "0.118")
+            monkeypatch.setenv("HOME", home)
+            os.mkdir(os.path.join(home, "storage"))
+            assert ft._storage_hint() == ""
+
+
 class TestDuplicateNames:
 
     def test_a_second_file_does_not_overwrite_the_first(self, filedir):

@@ -115,6 +115,28 @@ def state_dir() -> str:
     return base
 
 
+def _storage_hint() -> str:
+    """Explain the Termux storage wall, but only when it is the likely cause.
+
+    Termux's home is inside the app's private data directory and has no view
+    of Android storage until `termux-setup-storage` has been run once.  A user
+    typing `/sendfile photo.jpg` on a fresh install gets "no such file" and no
+    clue why, because the photo genuinely is not reachable -- and the fix is a
+    command they have never heard of rather than a different path.
+
+    Silent when ~/storage exists, so it never nags someone who simply typo'd.
+    """
+    on_android = ("ANDROID_ROOT" in os.environ
+                  or "TERMUX_VERSION" in os.environ)
+    if not on_android:
+        return ""
+    if os.path.exists(os.path.join(os.path.expanduser("~"), "storage")):
+        return ""
+    return ("  (Termux cannot see Android storage yet — run "
+            "`termux-setup-storage` once, then use a path under ~/storage, "
+            "e.g. ~/storage/dcim/Camera/photo.jpg)")
+
+
 def incoming_dir() -> str:
     """Where partial work lives.  Separate from the finished directory so a
     partial file can never be mistaken for a complete one -- the only thing
@@ -466,7 +488,8 @@ class FileTransferManager:
                 "SMP verification is required before sending a file to %s" % peer)
         real = os.path.abspath(os.path.expanduser(path))
         if not os.path.isfile(real):
-            raise TransferError("no such file: %s" % os.path.basename(path))
+            raise TransferError("no such file: %s%s"
+                                % (os.path.basename(path), _storage_hint()))
         size = os.path.getsize(real)
         if size > MAX_TRANSFER_BYTES:
             raise TransferError("file is larger than the %d MB limit"

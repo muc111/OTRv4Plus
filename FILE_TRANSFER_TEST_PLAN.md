@@ -26,6 +26,72 @@ reading the same `_smp_verified` predicate.
 Received files land in `~/.otrv4plus/files/`. Work in progress lives in
 `~/.otrv4plus/files/.incoming/` and must never appear in the first directory.
 
+## Getting a file into Termux in the first place
+
+Termux starts with **no access to Android storage at all**. Its home is
+`/data/data/com.termux/files/home`, and your photos are not in it. `/sendfile
+photo.jpg` will simply report no such file until you do this once, per phone:
+
+```bash
+termux-setup-storage          # Android shows a permission dialog — accept it
+ls ~/storage
+```
+
+That creates `~/storage/` with symlinks into shared storage:
+
+| Path | What is there |
+|---|---|
+| `~/storage/dcim` | camera photos and video (`~/storage/dcim/Camera/`) |
+| `~/storage/downloads` | the Downloads folder |
+| `~/storage/pictures` | screenshots, saved images |
+| `~/storage/movies` | video |
+| `~/storage/shared` | the root of internal shared storage |
+
+Then send by path — `/sendfile` expands `~`, so this works as typed:
+
+```
+/sendfile ~/storage/dcim/Camera/20260901_143022.jpg
+/sendfile ~/storage/downloads/report.pdf
+```
+
+Tab completion does not exist in the client, so `ls ~/storage/dcim/Camera/ |
+tail` in a second Termux session is the quick way to get an exact name.
+
+**Or pick it from a graphical file chooser.** You have `termux-api` installed,
+so:
+
+```bash
+termux-storage-get ~/to-send.jpg      # opens the Android picker, copies it here
+```
+
+then `/sendfile ~/to-send.jpg`. Useful for step 3, where you want a filename
+with spaces or an emoji in it without typing the path by hand.
+
+## Getting a received file back out
+
+Received files land in `~/.otrv4plus/files/`, which is inside Termux's private
+data directory at mode 0700. **The Android gallery and every other app cannot
+see it.** That is deliberate — it is the whole reason the directory is not
+`~/storage/downloads` — but it means you cannot tap a received photo to view
+it.
+
+To view one you have to copy it out:
+
+```bash
+cp ~/.otrv4plus/files/photo.jpg ~/storage/downloads/
+termux-media-scan ~/storage/downloads/photo.jpg    # make the gallery notice it
+```
+
+**Understand what that costs.** The copy leaves a 0700 directory that only
+Termux can read and lands in shared storage, readable by every app that holds
+the storage permission, and backed up or synced by anything watching that
+folder. The encryption protected the file in transit; once you copy it there,
+it is an ordinary file on the phone. Copy out what you want to look at, not
+everything.
+
+For steps 1–2 of the plan you do not need to copy anything: `sha256sum` reads
+the file where it is, and that is the actual test.
+
 ## The commands
 
 ```
@@ -41,8 +107,8 @@ Received files land in `~/.otrv4plus/files/`. Work in progress lives in
 | # | Step | What to run | Pass condition |
 |---|---|---|---|
 | 1 | **Tiny text file** | `echo hello > test.txt` then `/sendfile test.txt` | Arrives; `sha256sum` matches both sides |
-| 2 | **Binary file** | a small PNG or JPG | Byte-identical; opens correctly in a viewer |
-| 3 | **Awkward filename** | `photo of café (1).jpg`, and one with an emoji | Lands under a sanitised name, no error, nothing outside `~/.otrv4plus/files/` |
+| 2 | **Binary file** | `/sendfile ~/storage/dcim/Camera/<a photo>` | Byte-identical; opens correctly in a viewer |
+| 3 | **Awkward filename** | `termux-storage-get ~/photo of café (1).jpg` then send it; repeat with an emoji in the name | Lands under a sanitised name, no error, nothing outside `~/.otrv4plus/files/` |
 | 4 | **Larger file** | ~5 MB | Completes; watch how long it takes and write the number down |
 | 5 | **Cancellation** | `/sendfile` a ~20 MB file, `/transfer cancel <id>` mid-flight from **each** side in turn | `.incoming/` empty; nothing in `files/`; both sides report cancelled |
 | 6 | **Interrupted connection** | start a ~20 MB transfer, put the sender in flight mode for 30 s, restore | Either it resumes or it fails cleanly. **Either is a pass; a half-file in `files/` is not** |
