@@ -458,7 +458,7 @@ class FileTransferManager:
         self.incoming[key] = transfer
         self._notify(
             "\n[file] %s wants to send %s (%s)\n"
-            "       Accept with /accept %s, or /decline %s"
+            "       /transfer accept %s   or   /transfer decline %s"
             % (peer, sanitise_filename(offer.filename), offer.human_size(),
                key[:8], key[:8]))
         return transfer
@@ -502,7 +502,21 @@ class FileTransferManager:
         is_final = (index + 1 == transfer.offer.chunk_count)
         # Authenticates before anything is written.  A forged chunk raises
         # here and leaves the temporary file untouched.
-        plain = transfer.receiver.open_chunk(sealed, is_final)
+        #
+        # Rust raises ValueError; it is converted so callers see one error
+        # type and, more usefully, so the reason survives.  Letting it
+        # propagate landed it in the generic handler, which reports only the
+        # exception class -- "chunk failed authentication" became
+        # "DATA failed: ValueError".
+        try:
+            plain = transfer.receiver.open_chunk(sealed, is_final)
+        except Exception as exc:
+            # A chunk that fails its tag is not a transient error: the peer
+            # is broken or hostile, and continuing would leave a partial file
+            # on disk waiting for chunks that will never verify.
+            self._destroy_incoming(transfer)
+            raise TransferError("chunk %d failed authentication — transfer "
+                                "abandoned" % index) from exc
         transfer.handle.write(plain)
         transfer.chunks_received = index + 1
 

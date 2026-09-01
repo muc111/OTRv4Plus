@@ -993,6 +993,14 @@ _voice.bind_host(
     is_termux=IS_TERMUX,
 )
 
+# v10.14.0: /sendfile.  XMPP only -- the IRC client has no file transfer and
+# does not import this module.
+import otrv4plus_filetransfer as _filetransfer
+
+FILE_PREFIX = _filetransfer.FILE_PREFIX
+FileTransferManager = _filetransfer.FileTransferManager
+TransferError = _filetransfer.TransferError
+
 VoiceKeyExchange = _voice.VoiceKeyExchange
 VoiceFrameCrypto = _voice.VoiceFrameCrypto
 VoiceKeySchedule = _voice.VoiceKeySchedule
@@ -1135,6 +1143,7 @@ class OTRv4PlusXMPP(ClientXMPP):
 
         # Voice call manager (initialized lazily after event loop is available)
         self._voice_manager = None
+        self._file_manager = None
         self._voice_sam_host = "127.0.0.1"
         self._voice_sam_port = 7656
         self._voice_debug = False
@@ -1280,6 +1289,15 @@ class OTRv4PlusXMPP(ClientXMPP):
             self._voice_manager.debug = self._voice_debug
             if self._voice_debug:
                 print("[voice] diagnostics enabled (--voice-debug)")
+        if self._file_manager is None:
+            # The pump is the OTR channel.  It is passed in rather than
+            # reached for, so the same engine can later be handed a SAM
+            # stream without the engine changing.
+            self._file_manager = FileTransferManager(
+                send=self._send_file_signal,
+                notify=print,
+                verified=self._file_peer_verified,
+            )
         try:
             await self.get_roster()
         except (IqError, IqTimeout):
@@ -2109,6 +2127,14 @@ class OTRv4PlusXMPP(ClientXMPP):
             print("[voice] ignoring UNENCRYPTED call signal from %s — call "
                   "control is only accepted inside an OTR session"
                   % _sanitise(peer, 128))
+        elif body.startswith(FILE_PREFIX):
+            # Same rule as call control: a file offer is only meaningful
+            # inside the OTR channel.  In the clear it is either an outdated
+            # client or someone injecting an offer at the server, and acting
+            # on it would let an off-session party start a transfer.
+            print("[file] ignoring UNENCRYPTED file signal from %s — file "
+                  "transfer is only accepted inside an OTR session"
+                  % _sanitise(peer, 128))
         else:
             print(f"[plain] <{_sanitise(peer, 128)}> {_sanitise(body)}")
 
@@ -2217,6 +2243,17 @@ class OTRv4PlusXMPP(ClientXMPP):
                     else:
                         print("[voice] call signal received before the voice "
                               "subsystem was ready — ignoring")
+                    return
+
+                # File transfer travels inside the OTR channel too, and is
+                # routed before anything renders it as chat -- otherwise an
+                # offer appears as a wall of base64 in the peer's window.
+                if text.startswith(FILE_PREFIX):
+                    if self._file_manager is not None:
+                        self._file_manager.handle_control(peer, text)
+                    else:
+                        print("[file] file signal received before the "
+                              "transfer subsystem was ready — ignoring")
                     return
 
                 smp_ok = (peer, "SUCCEEDED") in self._smp_reported
@@ -2793,6 +2830,164 @@ class OTRv4PlusXMPP(ClientXMPP):
     # -------------------------------------------------------------------------
     # Outbound fragmentation
     # -------------------------------------------------------------------------
+
+    # -- file transfer ----------------------------------------------------
+
+    def _send_file_signal(self, peer: str, verb: str, payload: str) -> bool:
+        """The Phase A byte pump: one control message inside the OTR channel.
+
+        Identical in shape to the voice manager's `_signal`, and for the same
+        reason -- an offer or a chunk sent in the clear would tell the server
+        who is sending what to whom, and would let an off-session party inject
+        a transfer.  If OTR is unavailable the frame is dropped rather than
+        downgraded.
+
+        This is the ONLY thing tying the transfer engine to XMPP.  Replacing
+        it with a SAM-stream writer is the whole of a future transport swap.
+        """
+        body = FILE_PREFIX + verb + ((":" + payload) if payload else "")
+        try:
+            frame, should_send = self.otr.handle_outgoing_message(peer, body)
+        except Exception as exc:
+            print("[file] could not encrypt: %s" % _sanitise(str(exc), 120))
+            return False
+        if not (should_send and frame):
+            print("[file] dropped — OTR channel unavailable (file transfer is "
+                  "never sent in the clear)")
+            return False
+        try:
+            self.send_otr_fragmented(
+                peer, frame if isinstance(frame, str) else frame.decode())
+        except Exception as exc:
+            print("[file] could not send: %s" % _sanitise(str(exc), 120))
+            return False
+        return True
+
+    def _file_peer_verified(self, peer: str) -> bool:
+        """File transfer requires the same cryptographic gate voice does.
+
+        Reads the voice manager's `_smp_verified`, which consults only the
+        engine's published predicates -- not display state, not a trust pin,
+        not the blue OTRv4+ marker.  One gate, one definition of verified.
+        """
+        try:
+            if self._voice_manager is None:
+                return False
+            return bool(self._voice_manager._smp_verified(peer))
+        except Exception:
+            return False
+
+    def _file_transfer_ratchet(self, peer: str):
+        """The peer's live RustDoubleRatchet, or None.
+
+        The transfer key is derived from it inside Rust; Python only passes
+        the handle along and never sees anything derived from it.
+        """
+        try:
+            session = self.otr.get_session(peer)
+            ratchet = getattr(session, "ratchet", None)
+            rust = getattr(ratchet, "_rust", None)
+            if rust is None or not rust.supports_file_transfer:
+                return None
+            return rust
+        except Exception:
+            return None
+
+    def _cmd_sendfile(self, peer, path: str) -> None:
+        if self._file_manager is None:
+            print("[file] the transfer subsystem is not ready yet")
+            return
+        if not path:
+            print("usage: /sendfile <path>")
+            return
+        if not peer:
+            print("[file] open a chat with a peer first")
+            return
+        ratchet = self._file_transfer_ratchet(peer)
+        if ratchet is None:
+            print("[file] no OTR session with %s that can key a transfer — "
+                  "run /otr first" % _sanitise(peer, 128))
+            return
+
+        def _seal():
+            # Sealing reads the whole file and runs the AEAD, so it goes to a
+            # thread.  Blocking here would stall the XMPP event loop, and with
+            # it the keepalive and any call in progress.
+            return self._file_manager.offer_file(peer, path, ratchet)
+
+        async def _run():
+            loop = asyncio.get_event_loop()
+            try:
+                transfer = await loop.run_in_executor(None, _seal)
+            except TransferError as exc:
+                print("[file] %s" % exc)
+                return
+            except Exception as exc:
+                print("[file] could not send: %s" % _sanitise(str(exc), 160))
+                return
+            print("[file] offered %s (%s) to %s — waiting for them to accept"
+                  % (transfer.offer.filename, transfer.offer.human_size(),
+                     _sanitise(peer, 128)))
+
+        asyncio.ensure_future(_run())
+
+    def _cmd_transfer(self, rest: str) -> None:
+        if self._file_manager is None:
+            print("[file] the transfer subsystem is not ready yet")
+            return
+        mgr = self._file_manager
+        parts = rest.split(None, 1)
+        action = parts[0].lower() if parts else ""
+        argument = parts[1].strip() if len(parts) > 1 else ""
+
+        if not action:
+            if not mgr.incoming and not mgr.outgoing:
+                print("[file] no transfers")
+                return
+            for key, t in mgr.incoming.items():
+                state = "receiving" if t.accepted else "offered to you"
+                print("  in   %s  %s  %s  %s"
+                      % (key[:8], t.offer.filename, t.offer.human_size(),
+                         state))
+            for key, t in mgr.outgoing.items():
+                state = "sending" if t.accepted else "awaiting accept"
+                print("  out  %s  %s  %s  %s"
+                      % (key[:8], t.offer.filename, t.offer.human_size(),
+                         state))
+            return
+
+        if action not in ("accept", "decline", "cancel"):
+            print("usage: /transfer [accept|decline|cancel <id>]")
+            return
+        if not argument:
+            print("usage: /transfer %s <id>" % action)
+            return
+
+        try:
+            if action == "accept":
+                transfer = mgr.find_incoming(argument)
+                ratchet = self._file_transfer_ratchet(transfer.peer)
+                if ratchet is None:
+                    print("[file] the OTR session with %s is gone; the "
+                          "transfer cannot be keyed"
+                          % _sanitise(transfer.peer, 128))
+                    return
+                mgr.accept(transfer.offer.transfer_id, ratchet)
+                print("[file] accepting %s" % transfer.offer.filename)
+            elif action == "decline":
+                mgr.decline(mgr.find_incoming(argument).offer.transfer_id)
+            else:
+                target = None
+                for key in list(mgr.outgoing) + list(mgr.incoming):
+                    if key.startswith(argument.lower()):
+                        target = key
+                        break
+                if target is None:
+                    print("[file] no such transfer")
+                    return
+                mgr.cancel(bytes.fromhex(target))
+        except TransferError as exc:
+            print("[file] %s" % exc)
 
     def send_otr_fragmented(self, peer, payload):
         """Send an OTR message, fragmenting if over the I2P cliff (~8KB).
@@ -3438,6 +3633,12 @@ class OTRv4PlusXMPP(ClientXMPP):
             self.roster_add(lstrip[5:].strip())
         elif lstrip.startswith("/remove "):
             self.roster_remove(lstrip[8:].strip())
+
+        # --- File transfer (XMPP only) ---
+        elif lstrip.startswith("/sendfile"):
+            self._cmd_sendfile(peer, lstrip[9:].strip())
+        elif lstrip == "/transfer" or lstrip.startswith("/transfer "):
+            self._cmd_transfer(lstrip[9:].strip())
 
         # --- Subscriptions ---
         elif lstrip == "/pending":
