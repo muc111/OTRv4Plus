@@ -966,6 +966,7 @@ GPL-3.0. See the [LICENSE](LICENSE) file.
 - [WHY.md](WHY.md) - design rationale
 - [MIGRATION.md](MIGRATION.md) - moving from earlier versions
 - [VERSIONING.md](VERSIONING.md) - the version scheme, and which version numbers are wire formats that must never be bumped for a release
+- [SPEC_GROUP.md](SPEC_GROUP.md) - the group protocol: an authenticated group-state layer over independent pairwise channels. Epochs, a signed state chain, membership transitions and consensus policy — and deliberately **no group key, no group ratchet and no group cipher**
 - [GROUP_CRYPTO_AUDIT.md](GROUP_CRYPTO_AUDIT.md) - what the Rust core already provides for a future group layer, and ML-KEM-1024 cross-checked against Go's FIPS 140-validated `crypto/mlkem` in both directions
 - [FILE_TRANSFER_TEST_PLAN.md](FILE_TRANSFER_TEST_PLAN.md) - the ten-step two-phone validation for `/sendfile`, smallest file first, with the misbehaving-sender recipes for the replay, corruption and wrong-metadata cases
 - [SPEC.md §9A](SPEC.md) - the encrypted file-transfer format: transfer-key derivation, chunk AAD, and the six checks a receiver must pass before placing a file
