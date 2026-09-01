@@ -1,6 +1,6 @@
 # DEVELOPMENT.md
 
-Build environment, architecture, and test plan for OTRv4+ as of v10.13.3.
+Build environment, architecture, and test plan for OTRv4+ as of v10.14.0.
 
 There are no C extensions to compile and no prebuilt binaries in the repository.
 Everything is built from source with `cargo`. (Earlier versions used three C
@@ -135,7 +135,7 @@ reference path is selected instead.
 ```bash
 cd Rust
 cargo test --release --no-default-features --features pq-rust
-# expected: 87 passed; 0 failed  (as of v10.13.3)
+# expected: 101 passed; 0 failed  (as of v10.14.0)
 ```
 
 Expected: **65 tests pass, 0 failures.** The suite includes:
@@ -161,7 +161,7 @@ voice and audio suites are silently skipped:
 
 ```bash
 python3.12 -m pytest -q
-# expected: 2109 passed, 43 skipped, 1 xfailed   (as of v10.13.3)
+# expected: 2249 passed, 43 skipped, 1 xfailed   (as of v10.14.0)
 ```
 
 The skips are environment-gated (no audio device, no Termux:API, no live SAM

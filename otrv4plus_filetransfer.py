@@ -145,6 +145,10 @@ def sanitise_filename(raw: str) -> str:
     # Take the last component under BOTH separators: a Windows-style name is
     # untrusted input on a POSIX box too, and os.path.basename would keep the
     # backslashes.
+    # Redundant with the character filter below, which maps both separators
+    # to "_" anyway -- mutation testing confirmed removing this line changes
+    # no outcome.  Kept because it makes the intent explicit at the point a
+    # reader looks for it, and because the filter could later be relaxed.
     name = name.replace("\\", "/").rsplit("/", 1)[-1]
     # A drive prefix survives basename ("C:evil"), so strip it explicitly.
     if len(name) > 1 and name[1] == ":":
@@ -541,7 +545,15 @@ class FileTransferManager:
         transfer.handle.close()
         transfer.handle = None
 
-        # 1. every chunk arrived, and the last one authenticated as last
+        # 1. every chunk arrived, and the last one authenticated as last.
+        #
+        # The count comparison is REDUNDANT and kept deliberately.  Mutation
+        # testing showed no input reaches it: the final flag is inside the
+        # chunk AAD, so a peer that under- or over-states the count makes the
+        # receiver compute `is_final` differently from the sender and the tag
+        # fails first.  It stays because it is free, and because the check
+        # below it (`rx.finished`) is the one doing the work -- if that ever
+        # moves, this is the backstop.
         if transfer.chunks_received != offer.chunk_count:
             raise TransferError("transfer is incomplete: %d of %d chunks"
                                 % (transfer.chunks_received, offer.chunk_count))

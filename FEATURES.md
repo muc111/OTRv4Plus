@@ -1,6 +1,6 @@
 # Features
 
-What's implemented as of v10.13.3.
+What's implemented as of v10.14.0.
 
 ## Cryptography
 
@@ -67,6 +67,8 @@ established fails closed rather than falling back to a less private one. See
 | `/trust <nick>` and `y` / `n` fingerprint trust | Yes |
 | `/fingerprint` shows yours and theirs | Yes |
 | `/names` channel user list | Yes — total count, privilege groups, OTRv4+ clients in blue and selectable with 1-9 to start `/otr`. Detection reads the realname the peer's client sent at IRC registration and relayed in `RPL_WHOREPLY`; it is **self-asserted client identification, never authentication** (INV-20) |
+| `/sendfile <path>` encrypted file transfer | **XMPP only.** Fresh AES-256-GCM FileKey per transfer, Rust-owned with no getter, wrapped under a key derived from the session's DAKE extra symmetric key. 64 KiB chunks; index and final flag in the AAD. Six verification steps before an atomic rename. The IRC client has no file transfer |
+| `/transfer [accept\|decline\|cancel <id>]` | XMPP only. Lists transfers, or acts on one |
 | `/list` channel list, `/whois`, `/who` | Yes — `/whois` shows `Client:`, `User:` (b32 destination) and `Name:` |
 | OTRv4 message fragmentation | Yes (380 B per fragment on I2P, 450 B on TLS/Tor; SMP2 is ~49 fragments on I2P) |
 | Out-of-order message handling | Yes (up to 1000 skipped keys cached) |

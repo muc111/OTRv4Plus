@@ -306,6 +306,93 @@ class TestVerificationFailuresLeaveNothing:
         with pytest.raises(ft.TransferError, match="no such transfer"):
             wire.bob.on_data("alice", "%s|0|%s" % ("aa" * 16, ft._b64(b"x")))
 
+    def _offer_with(self, wired, override):
+        """Alice seals honestly, then lies in the offer.
+
+        The offer's hashes and counts are NOT covered by the key envelope --
+        the envelope binds the transfer id only -- so a malicious sender can
+        state whatever it likes.  These are the checks that catch that.
+        """
+        wire, a_ratchet, b_ratchet = wired
+        path, blob = _source_file(20_000)
+        wire.drop.add("OFFER")
+        transfer = wire.alice.offer_file("bob", path, a_ratchet)
+        wire.drop.discard("OFFER")
+        fields = transfer.offer.encode().split("|")
+        for index, value in override.items():
+            fields[index] = value
+        wire.bob.on_offer("alice", "|".join(fields))
+        incoming = wire.bob.incoming[transfer.offer.transfer_id.hex()]
+        wire.drop.add("ACCEPT")
+        wire.bob.accept(incoming.offer.transfer_id, b_ratchet)
+        wire.drop.discard("ACCEPT")
+        return wire, transfer, incoming
+
+    def test_a_lying_plaintext_hash_is_caught(self, wired):
+        """A sender that encrypts one file and claims the hash of another."""
+        wire, transfer, _incoming = self._offer_with(wired, {8: "ab" * 32})
+        sealed = getattr(transfer, "_sealed")
+        for i, chunk in enumerate(sealed):
+            wire.alice._send("bob", "DATA", "%s|%d|%s" % (
+                transfer.offer.transfer_id.hex(), i, ft._b64(chunk)))
+        with pytest.raises(ft.TransferError, match="hash mismatch"):
+            wire.bob.on_done("alice", transfer.offer.transfer_id.hex())
+        assert [f for f in os.listdir(ft.state_dir())
+                if not f.startswith(".")] == []
+        assert os.listdir(ft.incoming_dir()) == []
+
+    def test_a_lying_ciphertext_hash_is_caught(self, wired):
+        wire, transfer, _incoming = self._offer_with(wired, {7: "cd" * 32})
+        for i, chunk in enumerate(getattr(transfer, "_sealed")):
+            wire.alice._send("bob", "DATA", "%s|%d|%s" % (
+                transfer.offer.transfer_id.hex(), i, ft._b64(chunk)))
+        with pytest.raises(ft.TransferError, match="hash mismatch"):
+            wire.bob.on_done("alice", transfer.offer.transfer_id.hex())
+        assert os.listdir(ft.incoming_dir()) == []
+
+    def test_a_lying_chunk_count_is_caught(self, wired):
+        """An offer claiming more chunks than the sender will deliver.
+
+        The receiver must not accept a file it was told is incomplete, even
+        if every chunk it did receive authenticated.
+        """
+        wire, transfer, _incoming = self._offer_with(wired, {6: "99"})
+        for i, chunk in enumerate(getattr(transfer, "_sealed")):
+            try:
+                wire.alice._send("bob", "DATA", "%s|%d|%s" % (
+                    transfer.offer.transfer_id.hex(), i, ft._b64(chunk)))
+            except Exception:
+                pass
+        with pytest.raises(ft.TransferError):
+            wire.bob.on_done("alice", transfer.offer.transfer_id.hex())
+        assert [f for f in os.listdir(ft.state_dir())
+                if not f.startswith(".")] == []
+
+    def test_a_size_larger_than_the_ciphertext_is_refused_at_parse(self, wired):
+        """Ciphertext is always larger than plaintext, so this one never even
+        reaches the transfer machinery."""
+        wire, a_ratchet, _b = wired
+        path, _ = _source_file(20_000)
+        wire.drop.add("OFFER")
+        transfer = wire.alice.offer_file("bob", path, a_ratchet)
+        wire.drop.discard("OFFER")
+        fields = transfer.offer.encode().split("|")
+        fields[4] = "999999"
+        with pytest.raises(ft.TransferError):
+            ft.Offer.decode("|".join(fields))
+
+    def test_a_size_smaller_than_reality_is_caught_at_the_end(self, wired):
+        """Understating the size passes parsing -- it is consistent -- and is
+        caught when what actually landed is measured."""
+        wire, transfer, _incoming = self._offer_with(wired, {4: "100"})
+        for i, chunk in enumerate(getattr(transfer, "_sealed")):
+            wire.alice._send("bob", "DATA", "%s|%d|%s" % (
+                transfer.offer.transfer_id.hex(), i, ft._b64(chunk)))
+        with pytest.raises(ft.TransferError, match="size mismatch"):
+            wire.bob.on_done("alice", transfer.offer.transfer_id.hex())
+        assert [f for f in os.listdir(ft.state_dir())
+                if not f.startswith(".")] == []
+
     def test_a_duplicate_offer_is_refused(self, wired):
         wire, a_ratchet, _b = wired
         path, _ = _source_file(1000)

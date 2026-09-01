@@ -10,12 +10,12 @@ the project was on. This document exists so that cannot happen quietly again.
 
 | Track | Where | Current | Why it is separate |
 |---|---|---|---|
-| **Client** | `otrv4+.py` `VERSION`, `otrv4plus_xmpp.py` `XMPP_VERSION` | `10.13.3` | The thing a user runs and a peer must match. |
-| **Crypto core** | `Rust/Cargo.toml`, `Rust/pyproject.toml` | `0.10.25` | A crate with its own release history; it is `0.x` because its API is not stable for outside consumers. |
-| **Android app** | `android/app/build.gradle.kts` | `0.3.0-phase2+core.10.13.3` | An APK at an earlier maturity than the Termux client. Its own track, with the client version it embeds recorded as semver build metadata. |
+| **Client** | `otrv4+.py` `VERSION`, `otrv4plus_xmpp.py` `XMPP_VERSION` | `10.14.0` | The thing a user runs and a peer must match. |
+| **Crypto core** | `Rust/Cargo.toml`, `Rust/pyproject.toml` | `0.10.26` | A crate with its own release history; it is `0.x` because its API is not stable for outside consumers. |
+| **Android app** | `android/app/build.gradle.kts` | `0.3.0-phase2+core.10.14.0` | An APK at an earlier maturity than the Termux client. Its own track, with the client version it embeds recorded as semver build metadata. |
 
 The crate and the client are bumped together at a release, so a changelog entry
-reads `VERSION → 10.13.2, otrv4_core 0.10.25`. The Android `versionCode` is a
+reads `VERSION → 10.14.0, otrv4_core 0.10.26`. The Android `versionCode` is a
 monotonically increasing integer because Android requires that; it carries no
 other meaning.
 
@@ -74,11 +74,30 @@ grep -rn 'VERSION = "OTRv4+\|^XMPP_VERSION\|^version' \
      otrv4+.py otrv4plus_xmpp.py Rust/Cargo.toml Rust/pyproject.toml
 ```
 
+## Why v10.14.0
+
+v10.13.3 → v10.14.0 is a MINOR bump: a new capability. `/sendfile` sends an
+encrypted file over an authenticated XMPP session. `otrv4_core` moves to
+`0.10.26` alongside it, because the file cryptography is a new Rust module.
+
+**XMPP only.** The IRC client has no file transfer, imports nothing from the
+transfer module, and its OTR and TLV behaviour is unchanged — the feature
+rides a prefixed OTR message body exactly as voice signalling does, which is
+why it needed no change to the shared engine at all.
+
+**Both peers need this build** to exchange files, for the usual reason: a
+peer without `RustFileSender` cannot key a transfer. Chat and voice between a
+v10.13.3 peer and a v10.14.0 peer are unaffected.
+
+The encrypted-file format carries its own version byte (`FILE_FORMAT_VERSION`,
+currently `1`), independent of the client version. That byte is in the AAD of
+every chunk, so it cannot be changed without both sides noticing.
+
 ## Why v10.13.3
 
 v10.13.2 → v10.13.3 is a PATCH bump: a fix and its hardening within an existing
-capability. `otrv4_core` is **unchanged at 0.10.25** — nothing in this release
-touches Rust, so bumping the crate would claim a release it did not have.
+capability. `otrv4_core` was **unchanged at 0.10.25** — nothing in that release
+touched Rust, so bumping the crate would have claimed a release it did not have.
 
 The client number moves for two reasons, one of them visible on the wire:
 

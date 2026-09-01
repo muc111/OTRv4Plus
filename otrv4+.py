@@ -1462,7 +1462,7 @@ class OTRv4DataMessage:
             raise ValueError(f"Failed to decode message: {e }")
 
 
-VERSION = "OTRv4+ 10.13.3"
+VERSION = "OTRv4+ 10.14.0"
 
 # --- OTRv4+ client identification over IRC -------------------------------
 #
@@ -5412,7 +5412,7 @@ class Pager:
 
                 for line in lines[start:end]:
                     # This printed the literal string "[IRC line suppressed]"
-                    # from v10.11.0 until v10.13.3, discarding the line it had
+                    # from v10.11.0 until v10.14.0, discarding the line it had
                     # just measured and truncated.  Every pager consumer was
                     # affected -- /names, /list and /help alike -- which is why
                     # the channel user list looked like a suppression policy
@@ -9739,7 +9739,7 @@ class TwentySevenClubNick:
         is the client's only identification channel over IRC -- CTCP VERSION
         is refused -- and /names reads it back out of RPL_WHOREPLY.
 
-        Before v10.13.3 the 27 Club branch returned "... - 27 Club" with no
+        Before v10.14.0 the 27 Club branch returned "... - 27 Club" with no
         version, and a NickServ nick advertised the bare nick, so two whole
         classes of OTRv4+ user were undetectable by their own peers.  A
         detection mechanism the client does not consistently feed is not a

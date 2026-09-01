@@ -168,6 +168,20 @@ Encryption, anonymity and routing are three properties, not three points on one 
 
 The blue /names marker comes from the realname (gecos) the peer's own client sent at registration and the server relayed in RPL_WHOREPLY.  Nobody checks it and nobody can: any user may put that string in their own gecos.  It answers 'is this peer likely to understand /otr' and nothing else.  The DAKE authenticates, TOFU pins identity, SMP authorises voice; the renderer is a pure function with no client to promote anything on.
 
+### INV-21 — A /sendfile FileKey is generated, used and destroyed inside Rust.  Python never receives it.
+
+**Status:** `ENFORCED`  
+**Enforced by:** `tests/test_file_transfer_crypto.py`, `tests/test_file_transfer_boundary.py`
+
+RustFileSender owns a fresh SecretBytes<32> per transfer with no getter; the wrapping key is derived inside Rust from the session's DAKE extra symmetric key and never materialises outside it.  Python holds a handle, an opaque 60-byte envelope and ciphertext.  The offer's wire form is checked for a serialised key, and the orchestration module is checked for any key-shaped name.
+
+### INV-22 — A remote peer never chooses where a received file is written, and an unverified file is never placed.
+
+**Status:** `ENFORCED`  
+**Enforced by:** `tests/test_file_transfer_storage.py`, `tests/test_file_transfer_boundary.py`
+
+The output directory is fixed locally and only a sanitised basename comes from the offer, so there is no peer-supplied path to traverse out of.  Placement happens by atomic rename only after the chunk tags, both hashes and the on-disk size all verify; any failure deletes the temporary file and drops the transfer.
+
 ## Where secrets live
 
 Updated at v10.13.2, when the voice path finished moving.
@@ -244,6 +258,12 @@ exist.
 relays it and nobody checks it. It says "this peer probably understands /otr".
 The DAKE authenticates, TOFU pins identity, SMP authorises voice. Wiring a
 marker into any of those would make a self-asserted string a security decision.
+
+**A file transfer keys from the session, not from a new handshake** (INV-21).
+The double ratchet's brace key already folds ML-KEM-1024, so a transfer key
+derived from session state is already post-quantum and already
+DAKE-authenticated. Running a second KEM to reach a level the session has
+would be the second cryptographic system this project keeps refusing to build.
 
 **Fail closed.** A failure to determine SMP state does not authorise a call
 (INV-12). An unrecognised log line is not written (INV-03). A rekey that

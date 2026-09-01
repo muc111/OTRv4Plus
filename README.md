@@ -6,7 +6,7 @@
 <p align="center"><strong>Post-quantum hybrid encryption for Off The Record (OTR) chat <em>and voice calls</em> over IRC and XMPP. Experimental, unaudited research prototype.</strong></p>
 
 <p align="center">
-<code>v10.13.3 · Rust crypto core · hybrid PQC SMP (ML-KEM-1024 + ML-DSA-87) · voice (X448 + ML-KEM-1024, AES-256-GCM) · I2P SAM · AAudio · TUI</code>
+<code>v10.14.0 · Rust crypto core · hybrid PQC SMP (ML-KEM-1024 + ML-DSA-87) · voice (X448 + ML-KEM-1024, AES-256-GCM) · I2P SAM · AAudio · TUI</code>
 </p>
 
 ---
@@ -966,6 +966,7 @@ GPL-3.0. See the [LICENSE](LICENSE) file.
 - [WHY.md](WHY.md) - design rationale
 - [MIGRATION.md](MIGRATION.md) - moving from earlier versions
 - [VERSIONING.md](VERSIONING.md) - the version scheme, and which version numbers are wire formats that must never be bumped for a release
+- [SPEC.md §9A](SPEC.md) - the encrypted file-transfer format: transfer-key derivation, chunk AAD, and the six checks a receiver must pass before placing a file
 - [TRANSPORT_POLICY.md](TRANSPORT_POLICY.md) - which networks may carry traffic, how one is chosen, and what may change mid-call; the five transport modes, the transition matrix, and why voice over Tor is not implemented
 - [VOICE_MEDIA_PATH.md](VOICE_MEDIA_PATH.md) - the voice media path end to end: latency budget, liveness detection, authenticated endpoint recovery, and its bounds
 - [Rust/VOICE_TUNING.md](Rust/VOICE_TUNING.md) - every voice tuning knob, its range, and what it trades against what

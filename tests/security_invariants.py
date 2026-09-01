@@ -257,6 +257,35 @@ INVARIANTS: Tuple[Invariant, ...] = (
                   "identity, SMP authorises voice; the renderer is a pure "
                   "function with no client to promote anything on.",
     ),
+    Invariant(
+        id="INV-21",
+        statement="A /sendfile FileKey is generated, used and destroyed "
+                  "inside Rust.  Python never receives it.",
+        status="ENFORCED",
+        tests=("test_file_transfer_crypto.py",
+               "test_file_transfer_boundary.py"),
+        rationale="RustFileSender owns a fresh SecretBytes<32> per transfer "
+                  "with no getter; the wrapping key is derived inside Rust "
+                  "from the session's DAKE extra symmetric key and never "
+                  "materialises outside it.  Python holds a handle, an "
+                  "opaque 60-byte envelope and ciphertext.  The offer's "
+                  "wire form is checked for a serialised key, and the "
+                  "orchestration module is checked for any key-shaped name.",
+    ),
+    Invariant(
+        id="INV-22",
+        statement="A remote peer never chooses where a received file is "
+                  "written, and an unverified file is never placed.",
+        status="ENFORCED",
+        tests=("test_file_transfer_storage.py",
+               "test_file_transfer_boundary.py"),
+        rationale="The output directory is fixed locally and only a "
+                  "sanitised basename comes from the offer, so there is no "
+                  "peer-supplied path to traverse out of.  Placement happens "
+                  "by atomic rename only after the chunk tags, both hashes "
+                  "and the on-disk size all verify; any failure deletes the "
+                  "temporary file and drops the transfer.",
+    ),
 )
 
 

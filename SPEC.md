@@ -1,6 +1,6 @@
 # OTRv4+ Protocol Specification
 
-**Version:** 10.13.3
+**Version:** 10.14.0
 **Status:** Draft / Research Prototype
 **Repository:** github.com/muc111/OTRv4Plus
 
@@ -1192,6 +1192,109 @@ Not claimed:
   and tunnel behaviour remain observable, and the signalling server still sees
   that two identities exchanged encrypted stanzas.
 * Anything about latency. See §9.5 for the shape of the traffic, not its speed.
+
+---
+
+## 9A. Encrypted File Transfer (XMPP only)
+
+Optional. An implementation may omit it entirely; a peer that does not
+implement it simply never sends an offer.
+
+### 9A.1 Scope
+
+File transfer is defined for the XMPP transport only. It is not defined for
+IRC, and an implementation MUST NOT carry it there.
+
+### 9A.2 Transfer key establishment
+
+The transfer key is derived from the session, not from a new key agreement.
+The double ratchet's brace key already folds ML-KEM-1024 shared secrets, so
+session state is already post-quantum protected and already authenticated by
+the DAKE. An implementation MUST NOT perform a second KEM exchange for a file
+transfer.
+
+Let `esk` be the 32-byte extra symmetric key from §4.4 (KDF usage `0x1F`), and
+`tid` a 16-byte transfer identifier chosen at random by the sender.
+
+```
+FT_DOMAIN   = "OTRv4Plus_FileTransfer_v2" || 0x00
+FT_VERSION  = 0x01
+
+wrap_key = KDF_1(0x22, FT_DOMAIN || FT_VERSION || LEN(esk) || esk
+                                 || LEN(tid) || tid, 32)
+```
+
+`LEN(x)` is a 4-byte big-endian length prefix.
+
+`esk` is fixed for the lifetime of the session. A transfer therefore survives
+the ratchet advancing, which it MUST: a file in flight cannot depend on a key
+state that moves underneath it.
+
+### 9A.3 FileKey and envelope
+
+```
+FileKey  = 32 random bytes, fresh per transfer, never reused
+envelope = nonce || AES-256-GCM(wrap_key, nonce, FileKey, aad_env)
+aad_env  = FT_DOMAIN || FT_VERSION || "envelope" || LEN(tid) || tid
+```
+
+`nonce` is 12 random bytes. The envelope is 60 bytes: 12 || 32 || 16.
+
+The plaintext FileKey MUST NOT appear in the offer, in any log, or across any
+scripting boundary.
+
+### 9A.4 Chunk format
+
+The file is split into chunks of at most 65536 plaintext bytes. Chunk `i`
+(zero-based) is sealed as:
+
+```
+nonce_i = 0x00000000 || UINT64BE(i)
+aad_i   = FT_DOMAIN || FT_VERSION || LEN(tid) || tid
+                    || UINT64BE(i) || final_i
+sealed_i = AES-256-GCM(FileKey, nonce_i, plaintext_i, aad_i)
+```
+
+`final_i` is `0x01` for the last chunk and `0x00` otherwise.
+
+A zero-length file is one chunk carrying the final flag, whose sealed form is
+the 16-byte tag alone.
+
+Because the FileKey is fresh per transfer and the nonce is a function of the
+index, a (key, nonce) pair cannot repeat. An implementation MUST NOT seal two
+chunks at the same index.
+
+The index and the final flag are authenticated, so a chunk cannot be
+reordered, duplicated at another index, replayed into another transfer, or
+presented as the last chunk to truncate the file.
+
+### 9A.5 Offer
+
+The offer travels inside the OTR channel and carries: protocol version,
+format version, `tid`, filename, plaintext size, encrypted size, chunk count,
+SHA-256 of the concatenated ciphertext, SHA-256 of the plaintext, and the
+envelope.
+
+Only the envelope is self-authenticating. Every other field is a claim by the
+sender and MUST be verified against what actually arrives.
+
+### 9A.6 Receiver obligations
+
+A receiver MUST NOT place a file until all of the following hold:
+
+1. every chunk authenticated under §9A.4;
+2. the final chunk authenticated as final;
+3. the number of chunks received equals the offered count;
+4. SHA-256 of the received ciphertext equals the offered value;
+5. SHA-256 of the decrypted plaintext equals the offered value;
+6. the size on disk equals the offered plaintext size.
+
+On any failure the receiver MUST delete its temporary output and MUST NOT
+present a partial file as a completed transfer.
+
+The filename is untrusted. A receiver MUST construct the output path from a
+locally fixed directory and a sanitised basename, so that no value in the
+offer can select a directory.
 
 ---
 
