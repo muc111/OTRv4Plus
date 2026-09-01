@@ -129,6 +129,118 @@ class TestTheTermuxStorageHint:
             assert ft._storage_hint() == ""
 
 
+class TestSniffingTheType:
+    """The picker does not report the original filename, so the type is read
+    from the bytes rather than trusted from an extension that no longer
+    exists."""
+
+    @pytest.mark.parametrize("head,expected", [
+        (b"\xff\xd8\xff\xe0" + b"\x00" * 16, "jpg"),
+        (b"\x89PNG\r\n\x1a\n" + b"\x00" * 16, "png"),
+        (b"GIF89a" + b"\x00" * 16, "gif"),
+        (b"%PDF-1.7" + b"\x00" * 16, "pdf"),
+        (b"PK\x03\x04" + b"\x00" * 16, "zip"),
+        (b"OggS" + b"\x00" * 16, "ogg"),
+        (b"\x00\x00\x00 ftypisom" + b"\x00" * 8, "mp4"),
+        (b"\x00\x00\x00 ftypqt  " + b"\x00" * 8, "mov"),
+        (b"RIFF____WEBP" + b"\x00" * 8, "webp"),
+        (b"RIFF____WAVE" + b"\x00" * 8, "wav"),
+        (b"just some text", "txt"),
+        (b"\xde\xad\xbe\xef\xff\xfe", "bin"),
+    ])
+    def test_types_are_recognised(self, head, expected):
+        assert ft.sniff_extension(head) == expected
+
+    def test_an_empty_file_does_not_crash_it(self):
+        assert ft.sniff_extension(b"") == "bin"
+
+    def test_every_sniffed_type_has_a_human_word(self):
+        """The rebuilt name reads as image-... or video-..., so a type with
+        no word would produce a name saying nothing."""
+        for _magic, ext in ft._MAGIC:
+            assert ext in ft._KIND_FOR, "%s has no human word" % ext
+        for ext in ("mp4", "mov", "m4a", "webp", "wav", "txt", "bin"):
+            assert ext in ft._KIND_FOR
+
+
+class TestThePicker:
+    """Driven through the injected runner, so it runs anywhere."""
+
+    def _runner_writing(self, payload, rc=0):
+        def runner(argv, timeout):
+            assert argv[0] == "termux-storage-get"
+            with open(argv[1], "wb") as fh:
+                fh.write(payload)
+            return rc, b"", b""
+        return runner
+
+    @pytest.fixture(autouse=True)
+    def _isolated(self, monkeypatch):
+        with tempfile.TemporaryDirectory() as d:
+            monkeypatch.setenv("OTRV4PLUS_FILE_DIR", os.path.join(d, "files"))
+            yield
+
+    def test_it_returns_a_file_named_from_its_content(self):
+        path = ft.pick_file(runner=self._runner_writing(b"\xff\xd8\xff\xe0hi"),
+                            which=lambda b: "/usr/bin/" + b)
+        assert os.path.isfile(path)
+        assert os.path.basename(path).startswith("image-")
+        assert path.endswith(".jpg")
+        assert open(path, "rb").read() == b"\xff\xd8\xff\xe0hi"
+
+    def test_the_staged_copy_is_owner_only(self):
+        """It is a plaintext copy of whatever the user picked."""
+        path = ft.pick_file(runner=self._runner_writing(b"%PDF-1.7 x"),
+                            which=lambda b: "/usr/bin/" + b)
+        assert os.stat(path).st_mode & 0o077 == 0
+
+    def test_it_is_staged_outside_the_received_files_directory(self):
+        """A file waiting to be sent must not be mistaken for one that
+        arrived."""
+        path = ft.pick_file(runner=self._runner_writing(b"hello"),
+                            which=lambda b: "/usr/bin/" + b)
+        assert os.path.dirname(path) != ft.state_dir()
+        assert [f for f in os.listdir(ft.state_dir())
+                if not f.startswith(".")] == []
+
+    def test_backing_out_of_the_chooser_is_not_an_error_shape(self):
+        def runner(argv, timeout):
+            return 1, b"", b""          # nothing written
+        with pytest.raises(ft.TransferError, match="no file chosen"):
+            ft.pick_file(runner=runner, which=lambda b: "/usr/bin/" + b)
+
+    def test_an_empty_result_leaves_nothing_staged(self):
+        def runner(argv, timeout):
+            open(argv[1], "wb").close()  # zero bytes
+            return 0, b"", b""
+        with pytest.raises(ft.TransferError):
+            ft.pick_file(runner=runner, which=lambda b: "/usr/bin/" + b)
+        assert os.listdir(ft.staging_dir()) == []
+
+    def test_a_timeout_says_so(self):
+        with pytest.raises(ft.TransferError, match="timed out"):
+            ft.pick_file(runner=lambda argv, timeout: (124, b"", b"timed out"),
+                         which=lambda b: "/usr/bin/" + b)
+
+    def test_a_missing_termux_api_names_both_halves(self):
+        """The apt package is only shell shims; the Termux:API app is what
+        shows the picker.  Saying only "install termux-api" sends someone to
+        do the half they have already done."""
+        with pytest.raises(ft.TransferError) as excinfo:
+            ft.pick_file(runner=lambda *a: (0, b"", b""),
+                         which=lambda b: None)
+        message = str(excinfo.value)
+        assert "pkg install termux-api" in message
+        assert "Termux:API app" in message
+
+    def test_two_picks_do_not_collide(self):
+        runner = self._runner_writing(b"\x89PNG\r\n\x1a\nabc")
+        first = ft.pick_file(runner=runner, which=lambda b: "/usr/bin/" + b)
+        second = ft.pick_file(runner=runner, which=lambda b: "/usr/bin/" + b)
+        assert first != second
+        assert os.path.isfile(first) and os.path.isfile(second)
+
+
 class TestDuplicateNames:
 
     def test_a_second_file_does_not_overwrite_the_first(self, filedir):

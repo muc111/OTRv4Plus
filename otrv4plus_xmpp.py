@@ -2897,11 +2897,9 @@ class OTRv4PlusXMPP(ClientXMPP):
             return None
 
     def _cmd_sendfile(self, peer, path: str) -> None:
+        """/sendfile [path] — a path, or nothing to open the Android picker."""
         if self._file_manager is None:
             print("[file] the transfer subsystem is not ready yet")
-            return
-        if not path:
-            print("usage: /sendfile <path>")
             return
         if not peer:
             print("[file] open a chat with a peer first")
@@ -2911,26 +2909,53 @@ class OTRv4PlusXMPP(ClientXMPP):
             print("[file] no OTR session with %s that can key a transfer — "
                   "run /otr first" % _sanitise(peer, 128))
             return
+        if not path and not IS_TERMUX:
+            print("usage: /sendfile <path>")
+            return
 
-        def _seal():
-            # Sealing reads the whole file and runs the AEAD, so it goes to a
-            # thread.  Blocking here would stall the XMPP event loop, and with
-            # it the keepalive and any call in progress.
-            return self._file_manager.offer_file(peer, path, ratchet)
+        def _pick_and_seal():
+            # Both halves are blocking and both belong off the event loop.
+            # The picker waits for a human scrolling a gallery, which is far
+            # longer than anything else in this client is allowed to block
+            # for, and sealing reads the whole file through the AEAD.
+            staged = None
+            chosen = path
+            if not chosen:
+                staged = _filetransfer.pick_file(which=_which)
+                chosen = staged
+            try:
+                return self._file_manager.offer_file(peer, chosen, ratchet)
+            finally:
+                # The staged copy is PLAINTEXT.  It has served its purpose the
+                # moment offer_file returns, whether that was by sealing the
+                # file or by raising, so it goes either way.
+                if staged:
+                    try:
+                        os.unlink(staged)
+                    except OSError:
+                        pass
 
         async def _run():
             loop = asyncio.get_event_loop()
+            if not path:
+                print("[file] opening the Android file picker — choose a file "
+                      "on the phone")
             try:
-                transfer = await loop.run_in_executor(None, _seal)
+                transfer = await loop.run_in_executor(None, _pick_and_seal)
             except TransferError as exc:
                 print("[file] %s" % exc)
                 return
             except Exception as exc:
                 print("[file] could not send: %s" % _sanitise(str(exc), 160))
                 return
-            print("[file] offered %s (%s) to %s — waiting for them to accept"
+            note = ""
+            if not path:
+                # The picker cannot report the original name, so say what the
+                # peer will actually see rather than letting them find out.
+                note = "  (the picker does not report the original name)"
+            print("[file] offered %s (%s) to %s — waiting for them to accept%s"
                   % (transfer.offer.filename, transfer.offer.human_size(),
-                     _sanitise(peer, 128)))
+                     _sanitise(peer, 128), note))
 
         asyncio.ensure_future(_run())
 

@@ -187,6 +187,162 @@ def sanitise_filename(raw: str) -> str:
     return name[:MAX_FILENAME_LEN]
 
 
+# --------------------------------------------------------------------------
+# picking a file to send (Android / Termux)
+# --------------------------------------------------------------------------
+
+#: How long to leave the Android picker open before giving up.  Long, because
+#: a human is scrolling through a gallery, not a machine answering.
+PICKER_TIMEOUT_S = 180.0
+
+#: Enough magic numbers to name the things people actually send.  The picker
+#: does not tell us what the file was called, so the type is sniffed from its
+#: first bytes rather than trusted from an extension that no longer exists.
+_MAGIC = (
+    (b"\xff\xd8\xff", "jpg"),
+    (b"\x89PNG\r\n\x1a\n", "png"),
+    (b"GIF87a", "gif"),
+    (b"GIF89a", "gif"),
+    (b"%PDF-", "pdf"),
+    (b"PK\x03\x04", "zip"),
+    (b"\x1f\x8b", "gz"),
+    (b"ID3", "mp3"),
+    (b"OggS", "ogg"),
+    (b"fLaC", "flac"),
+    (b"\x00\x00\x01\xba", "mpg"),
+)
+
+
+def sniff_extension(head: bytes) -> str:
+    """Best-effort file type from the first bytes.  Never raises."""
+    if not head:
+        return "bin"
+    for magic, ext in _MAGIC:
+        if head.startswith(magic):
+            return ext
+    # ISO base media (mp4, m4a, mov, 3gp) puts a size before the brand.
+    if len(head) >= 12 and head[4:8] == b"ftyp":
+        brand = head[8:12]
+        if brand.startswith(b"qt"):
+            return "mov"
+        if brand.startswith(b"M4A"):
+            return "m4a"
+        return "mp4"
+    if head.startswith(b"RIFF") and len(head) >= 12:
+        if head[8:12] == b"WEBP":
+            return "webp"
+        if head[8:12] == b"WAVE":
+            return "wav"
+    try:
+        head.decode("utf-8")
+        return "txt"
+    except UnicodeDecodeError:
+        return "bin"
+
+
+def staging_dir() -> str:
+    """Where a picked file is staged before it is sealed.
+
+    Inside the private file directory at 0700, not the Termux home, because
+    for the moments between picking and sealing this holds a PLAINTEXT copy
+    of whatever the user chose.  The caller deletes it as soon as the file
+    has been sealed.
+    """
+    d = os.path.join(state_dir(), ".picked")
+    os.makedirs(d, mode=0o700, exist_ok=True)
+    return d
+
+
+def pick_file(runner=None, which=None, timeout: float = PICKER_TIMEOUT_S) -> str:
+    """Open the Android file picker; return the path to the staged copy.
+
+    `termux-storage-get` copies the chosen file to a path we name, so the
+    user taps a photo in the normal Android chooser and it lands somewhere we
+    control.  Two consequences worth knowing:
+
+      * **The original filename does not survive.**  The picker reports only
+        the bytes, so the name is rebuilt from the file's magic number and a
+        timestamp.  A peer receives `image-20260901-143022.jpg`, not
+        `IMG_2891.jpg`.  That is a cosmetic loss and a small privacy gain --
+        camera filenames carry sequence numbers, and a name someone typed can
+        say more than they meant it to.  `/sendfile <path>` still preserves
+        the name exactly when that matters.
+
+      * **The staged copy is plaintext.**  It lives at 0700 under the private
+        file directory and the caller removes it once the file is sealed.
+
+    `runner` and `which` are injected so this is testable without an Android
+    device; both default to the real thing.
+    """
+    import subprocess
+
+    if runner is None:
+        def runner(argv, timeout):
+            try:
+                proc = subprocess.run(argv, capture_output=True,
+                                      timeout=timeout)
+                return proc.returncode, proc.stdout, proc.stderr
+            except subprocess.TimeoutExpired:
+                return 124, b"", b"timed out"
+            except OSError as exc:
+                return 127, b"", str(exc).encode()
+
+    if which is None:
+        import shutil
+        which = shutil.which
+
+    # The apt package installs shell shims; the Termux:API *app* is what
+    # actually shows the picker.  Missing app means the shim exists and the
+    # call hangs, so say which half is absent rather than timing out.
+    if which("termux-storage-get") is None:
+        raise TransferError(
+            "the file picker needs termux-api: run `pkg install termux-api`, "
+            "and install the Termux:API app from F-Droid as well -- the "
+            "package alone is only shell shims")
+
+    staged = os.path.join(staging_dir(), "pick-%d" % int(time.time() * 1000))
+    rc, _out, err = runner(["termux-storage-get", staged], timeout)
+    if rc == 124:
+        raise TransferError("the file picker timed out")
+    if not os.path.exists(staged) or os.path.getsize(staged) == 0:
+        # Backing out of the chooser is normal, not an error worth a stack.
+        try:
+            os.unlink(staged)
+        except OSError:
+            pass
+        if rc not in (0, 1):
+            raise TransferError(
+                "the file picker failed: %s"
+                % (err.decode("utf-8", "replace")[:120] or "no file returned"))
+        raise TransferError("no file chosen")
+
+    with open(staged, "rb") as fh:
+        head = fh.read(32)
+    ext = sniff_extension(head)
+    # unique_path, not a bare timestamp: two picks inside the same second
+    # produced the same name, and os.replace would silently clobber a staged
+    # file the first transfer was still reading.  Found by a test, not by
+    # reading -- the window is narrow because the caller unlinks after
+    # sealing, which is exactly what makes it the kind of race that survives.
+    final = unique_path(staging_dir(),
+                        "%s-%s.%s" % (_KIND_FOR.get(ext, "file"),
+                                      time.strftime("%Y%m%d-%H%M%S"), ext))
+    os.replace(staged, final)
+    os.chmod(final, 0o600)
+    return final
+
+
+#: A human-facing word for each sniffed type, so the rebuilt name reads as
+#: something rather than as a hex blob.
+_KIND_FOR = {
+    "jpg": "image", "png": "image", "gif": "image", "webp": "image",
+    "mp4": "video", "mov": "video", "mpg": "video",
+    "mp3": "audio", "ogg": "audio", "flac": "audio", "wav": "audio",
+    "m4a": "audio", "pdf": "document", "txt": "text",
+    "zip": "archive", "gz": "archive", "bin": "file",
+}
+
+
 def unique_path(directory: str, filename: str) -> str:
     """A path that does not exist yet.  A second file of the same name gets a
     suffix rather than overwriting the first -- a peer should not be able to
