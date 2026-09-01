@@ -28,6 +28,32 @@ Received files land in `~/.otrv4plus/files/`. Work in progress lives in
 
 ## Getting a file into Termux in the first place
 
+### The easy way: `/sendfile` with no path
+
+Inside the OTR session, just type:
+
+```
+/sendfile
+```
+
+The Android file picker opens. Tap a photo, a video, anything. It is staged
+privately, sealed, and offered to the peer — no paths, no `termux-setup-storage`,
+no typing filenames. This is the way to run steps 2, 3, 4 and 10.
+
+Two things to know:
+
+* **The original filename does not survive.** The picker hands over bytes and
+  not a name, so the file is renamed from its magic number and a timestamp —
+  your peer sees `image-20260901-143022.jpg`, not `IMG_2891.jpg`. Cosmetically
+  worse, marginally better for privacy: camera filenames carry sequence
+  numbers and a name someone typed can say more than they meant. Use
+  `/sendfile <path>` when the exact name matters.
+* **It needs the Termux:API app, not just the package.** `pkg install
+  termux-api` installs shell shims; the picker is drawn by the Termux:API app
+  from F-Droid. If only half is present the client says which half.
+
+### The explicit way: by path
+
 Termux starts with **no access to Android storage at all**. Its home is
 `/data/data/com.termux/files/home`, and your photos are not in it. `/sendfile
 photo.jpg` will simply report no such file until you do this once, per phone:
@@ -95,7 +121,8 @@ the file where it is, and that is the actual test.
 ## The commands
 
 ```
-/sendfile <path>                 offer a file to the peer in the active chat
+/sendfile                        open the Android picker and send what you choose
+/sendfile <path>                 send a specific file, keeping its name
 /transfer                        list transfers, both directions
 /transfer accept <id>            accept an offer (first 8 hex chars is enough)
 /transfer decline <id>
@@ -107,8 +134,8 @@ the file where it is, and that is the actual test.
 | # | Step | What to run | Pass condition |
 |---|---|---|---|
 | 1 | **Tiny text file** | `echo hello > test.txt` then `/sendfile test.txt` | Arrives; `sha256sum` matches both sides |
-| 2 | **Binary file** | `/sendfile ~/storage/dcim/Camera/<a photo>` | Byte-identical; opens correctly in a viewer |
-| 3 | **Awkward filename** | `termux-storage-get ~/photo of café (1).jpg` then send it; repeat with an emoji in the name | Lands under a sanitised name, no error, nothing outside `~/.otrv4plus/files/` |
+| 2 | **Binary file** | `/sendfile` and pick a photo | Byte-identical; opens correctly in a viewer |
+| 3 | **Awkward filename** | by path: `touch ~/"photo of café (1).jpg"` and send it; repeat with an emoji | Lands under a sanitised name, no error, nothing outside `~/.otrv4plus/files/` |
 | 4 | **Larger file** | ~5 MB | Completes; watch how long it takes and write the number down |
 | 5 | **Cancellation** | `/sendfile` a ~20 MB file, `/transfer cancel <id>` mid-flight from **each** side in turn | `.incoming/` empty; nothing in `files/`; both sides report cancelled |
 | 6 | **Interrupted connection** | start a ~20 MB transfer, put the sender in flight mode for 30 s, restore | Either it resumes or it fails cleanly. **Either is a pass; a half-file in `files/` is not** |
