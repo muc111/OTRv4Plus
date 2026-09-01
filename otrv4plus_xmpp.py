@@ -1293,8 +1293,11 @@ class OTRv4PlusXMPP(ClientXMPP):
             # The pump is the OTR channel.  It is passed in rather than
             # reached for, so the same engine can later be handed a SAM
             # stream without the engine changing.
+            # Phase A: control AND bulk both ride the OTR channel.  A future
+            # transport keeps send_control here and replaces send_chunk only.
             self._file_manager = FileTransferManager(
-                send=self._send_file_signal,
+                transport=_filetransfer.OtrChunkTransport(
+                    self._send_file_signal),
                 notify=print,
                 verified=self._file_peer_verified,
             )

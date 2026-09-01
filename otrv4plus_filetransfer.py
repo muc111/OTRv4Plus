@@ -302,6 +302,77 @@ class Offer:
 
 
 # --------------------------------------------------------------------------
+# the transport boundary
+# --------------------------------------------------------------------------
+
+class ChunkTransport:
+    """Everything below the file-transfer engine.
+
+    THIS IS THE SEAM.  Above it: the FileKey, the AEAD, the chunk format, the
+    hashes, the offer/accept semantics, filename handling, the temporary-file
+    lifecycle and the atomic commit.  None of that knows how a byte travels.
+    Below it: how a control message and a ciphertext chunk actually reach the
+    peer.
+
+    A transport has exactly two jobs, deliberately separated:
+
+      * `send_control` carries offer / accept / decline / done / cancel.
+        These are small, ordered and must be authenticated, so they belong on
+        the OTR channel whatever else changes.
+
+      * `send_chunk` carries one already-sealed ciphertext chunk.  It is bulk
+        data that is *already* encrypted and authenticated before it gets
+        here, so a transport may move it however it likes.
+
+    Splitting them is the whole point.  A future torrent or SAM-stream
+    transport keeps `send_control` on XMPP/OTR and replaces only
+    `send_chunk`; the engine, the format and every security test are
+    untouched.  The two are separate methods rather than one `send` so that
+    a transport CANNOT accidentally end up carrying signalling over the bulk
+    path, or bulk data over the signalling path.
+
+    Inbound chunks re-enter the engine through
+    `FileTransferManager.deliver_chunk`, whatever brought them.
+    """
+
+    #: Plaintext bytes per chunk this transport wants.  A signalling-channel
+    #: transport keeps it small; a bulk transport can raise it to the format
+    #: maximum.  It is a transport parameter, never a cryptographic one.
+    chunk_bytes = WIRE_CHUNK_PLAIN
+
+    def send_control(self, peer: str, verb: str, payload: str) -> bool:
+        raise NotImplementedError
+
+    def send_chunk(self, peer: str, transfer_id: bytes, index: int,
+                   sealed: bytes) -> bool:
+        raise NotImplementedError
+
+
+class OtrChunkTransport(ChunkTransport):
+    """Phase A: both control and bulk ride the OTR channel.
+
+    Chunks are base64'd into control messages, which is why `chunk_bytes` is
+    modest -- this is a signalling channel being asked to carry a file, and
+    it is honest about that.  It is correct, it is authenticated, and it is
+    slow for anything large.  Replacing THIS CLASS is the whole of a
+    transport upgrade.
+    """
+
+    chunk_bytes = WIRE_CHUNK_PLAIN
+
+    def __init__(self, send: Callable[[str, str, str], bool]):
+        self._send = send
+
+    def send_control(self, peer: str, verb: str, payload: str) -> bool:
+        return bool(self._send(peer, verb, payload))
+
+    def send_chunk(self, peer: str, transfer_id: bytes, index: int,
+                   sealed: bytes) -> bool:
+        return bool(self._send(peer, "DATA", "%s|%d|%s" % (
+            transfer_id.hex(), index, _b64(sealed))))
+
+
+# --------------------------------------------------------------------------
 # transfers
 # --------------------------------------------------------------------------
 
@@ -359,14 +430,14 @@ class FileTransferManager:
     cares what that is.
     """
 
-    def __init__(self, send: Callable[[str, str, str], bool],
+    def __init__(self, transport: ChunkTransport,
                  notify: Callable[[str], None],
                  verified: Callable[[str], bool]):
         if _core is None:                        # pragma: no cover
             raise TransferError(
                 "otrv4_core is unavailable, so file transfer cannot run; "
                 "there is deliberately no Python fallback")
-        self._send = send
+        self.transport = transport
         self._notify = notify
         self._verified = verified
         self.outgoing: Dict[str, OutgoingTransfer] = {}
@@ -404,11 +475,17 @@ class FileTransferManager:
         transfer_id = _core.file_transfer_new_id()
         sender = ratchet.file_sender(transfer_id)
 
+        # The transport chooses the chunk size, capped at what the format
+        # allows.  A bulk transport can use the full 64 KiB; the OTR one is
+        # smaller because each chunk is base64'd into a stanza.
+        chunk_bytes = max(1, min(int(getattr(self.transport, "chunk_bytes",
+                                             WIRE_CHUNK_PLAIN)),
+                                 _core.file_transfer_chunk_len()))
         sealed_parts = []
         remaining = size
         with open(real, "rb") as fh:
             while True:
-                block = fh.read(WIRE_CHUNK_PLAIN)
+                block = fh.read(chunk_bytes)
                 remaining -= len(block)
                 is_final = remaining <= 0
                 sealed_parts.append(sender.seal_chunk(block, is_final))
@@ -429,7 +506,7 @@ class FileTransferManager:
                                     sender=sender)
         transfer._sealed = sealed_parts          # type: ignore[attr-defined]
         self.outgoing[self._key(offer.transfer_id)] = transfer
-        if not self._send(peer, "OFFER", offer.encode()):
+        if not self.transport.send_control(peer, "OFFER", offer.encode()):
             self.cancel(offer.transfer_id, "the offer could not be sent")
             raise TransferError("the offer could not be sent")
         return transfer
@@ -440,13 +517,13 @@ class FileTransferManager:
         for index, chunk in enumerate(sealed):
             if transfer.cancelled:
                 return
-            payload = "%s|%d|%s" % (transfer.offer.transfer_id.hex(), index,
-                                    _b64(chunk))
-            if not self._send(transfer.peer, "DATA", payload):
+            if not self.transport.send_chunk(
+                    transfer.peer, transfer.offer.transfer_id, index, chunk):
                 self.cancel(transfer.offer.transfer_id, "the transport failed")
                 return
             transfer.chunks_sent = index + 1
-        self._send(transfer.peer, "DONE", transfer.offer.transfer_id.hex())
+        self.transport.send_control(transfer.peer, "DONE",
+                                    transfer.offer.transfer_id.hex())
 
     # -- receiving -------------------------------------------------------
 
@@ -481,28 +558,51 @@ class FileTransferManager:
         transfer.handle = os.fdopen(fd, "wb")
         transfer.tmp_path = tmp
         transfer.accepted = True
-        self._send(transfer.peer, "ACCEPT", transfer.offer.transfer_id.hex())
+        self.transport.send_control(transfer.peer, "ACCEPT",
+                                    transfer.offer.transfer_id.hex())
         return transfer
 
     def decline(self, transfer_id: bytes) -> None:
         transfer = self._require_incoming(transfer_id)
-        self._send(transfer.peer, "DECLINE", transfer.offer.transfer_id.hex())
+        self.transport.send_control(transfer.peer, "DECLINE",
+                                    transfer.offer.transfer_id.hex())
         self._destroy_incoming(transfer)
         self._notify("[file] declined")
 
     def on_data(self, peer: str, payload: str) -> None:
+        """Unwrap one DATA control message.  OTR transport only.
+
+        This is the ONLY method that knows chunks can arrive base64'd inside
+        a control message, which is a property of OtrChunkTransport rather
+        than of the format.  A bulk transport calls `deliver_chunk` directly
+        with the raw sealed bytes and never comes through here.
+        """
         parts = payload.split("|", 2)
         if len(parts) != 3:
             raise TransferError("malformed data frame")
-        transfer = self._require_incoming(bytes.fromhex(parts[0]))
+        try:
+            transfer_id = bytes.fromhex(parts[0])
+        except ValueError:
+            raise TransferError("malformed transfer id")
+        index = _int_field(parts[1], "chunk index", 1 << 24)
+        self.deliver_chunk(peer, transfer_id, index, _unb64(parts[2], "chunk"))
+
+    def deliver_chunk(self, peer: str, transfer_id: bytes, index: int,
+                      sealed: bytes) -> None:
+        """One sealed chunk, however it arrived.  THE INBOUND SEAM.
+
+        Every transport funnels here, so the ordering rule, the
+        authentication and the write are defined once and cannot diverge
+        between transports.  A torrent or SAM-stream receiver calls this with
+        raw bytes off the wire.
+        """
+        transfer = self._require_incoming(transfer_id)
         if transfer.peer != peer:
             raise TransferError("data frame from the wrong peer")
         if not transfer.accepted or transfer.receiver is None:
             raise TransferError("data arrived for a transfer that was not accepted")
-        index = _int_field(parts[1], "chunk index", 1 << 24)
         if index != transfer.chunks_received:
             raise TransferError("chunk %d arrived out of order" % index)
-        sealed = _unb64(parts[2], "chunk")
         is_final = (index + 1 == transfer.offer.chunk_count)
         # Authenticates before anything is written.  A forged chunk raises
         # here and leaves the temporary file untouched.
@@ -600,10 +700,10 @@ class FileTransferManager:
             except Exception:
                 pass
             out._sealed = []                     # type: ignore[attr-defined]
-            self._send(out.peer, "CANCEL", key)
+            self.transport.send_control(out.peer, "CANCEL", key)
         inc = self.incoming.get(key)
         if inc is not None:
-            self._send(inc.peer, "CANCEL", key)
+            self.transport.send_control(inc.peer, "CANCEL", key)
             self._destroy_incoming(inc)
         self._notify("[file] transfer %s: %s" % (key[:8], why))
 

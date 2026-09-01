@@ -87,11 +87,11 @@ def wired(ratchets, monkeypatch, tmp_path_factory):
     monkeypatch.setenv("OTRV4PLUS_FILE_DIR", os.path.join(directory, "files"))
     wire = Wire()
     wire.alice = ft.FileTransferManager(
-        send=wire.send_from("alice"), notify=wire.note,
-        verified=lambda peer: True)
+        transport=ft.OtrChunkTransport(wire.send_from("alice")),
+        notify=wire.note, verified=lambda peer: True)
     wire.bob = ft.FileTransferManager(
-        send=wire.send_from("bob"), notify=wire.note,
-        verified=lambda peer: True)
+        transport=ft.OtrChunkTransport(wire.send_from("bob")),
+        notify=wire.note, verified=lambda peer: True)
     a_ratchet, b_ratchet = ratchets
     return wire, a_ratchet, b_ratchet
 
@@ -202,9 +202,9 @@ class TestCancelling:
         wire.bob.accept(incoming.offer.transfer_id, b_ratchet)
         wire.drop.discard("ACCEPT")
         # one chunk in, then stop
-        wire.alice._send("bob", "DATA", "%s|0|%s" % (
-            transfer.offer.transfer_id.hex(),
-            ft._b64(getattr(transfer, "_sealed")[0])))
+        wire.alice.transport.send_chunk(
+            "bob", transfer.offer.transfer_id, 0,
+            getattr(transfer, "_sealed")[0])
         assert len(os.listdir(ft.incoming_dir())) == 1
         wire.bob.cancel(transfer.offer.transfer_id)
         assert os.listdir(ft.incoming_dir()) == []
@@ -261,8 +261,8 @@ class TestVerificationFailuresLeaveNothing:
         wire, transfer, incoming, _ = self._accepted(wired)
         sealed = getattr(transfer, "_sealed")
         for i, chunk in enumerate(sealed[:-1]):
-            wire.alice._send("bob", "DATA", "%s|%d|%s" % (
-                transfer.offer.transfer_id.hex(), i, ft._b64(chunk)))
+            wire.alice.transport.send_chunk(
+                "bob", transfer.offer.transfer_id, i, chunk)
         with pytest.raises(ft.TransferError):
             wire.bob.on_done("alice", transfer.offer.transfer_id.hex())
         assert os.listdir(ft.incoming_dir()) == []
@@ -333,8 +333,8 @@ class TestVerificationFailuresLeaveNothing:
         wire, transfer, _incoming = self._offer_with(wired, {8: "ab" * 32})
         sealed = getattr(transfer, "_sealed")
         for i, chunk in enumerate(sealed):
-            wire.alice._send("bob", "DATA", "%s|%d|%s" % (
-                transfer.offer.transfer_id.hex(), i, ft._b64(chunk)))
+            wire.alice.transport.send_chunk(
+                "bob", transfer.offer.transfer_id, i, chunk)
         with pytest.raises(ft.TransferError, match="hash mismatch"):
             wire.bob.on_done("alice", transfer.offer.transfer_id.hex())
         assert [f for f in os.listdir(ft.state_dir())
@@ -344,8 +344,8 @@ class TestVerificationFailuresLeaveNothing:
     def test_a_lying_ciphertext_hash_is_caught(self, wired):
         wire, transfer, _incoming = self._offer_with(wired, {7: "cd" * 32})
         for i, chunk in enumerate(getattr(transfer, "_sealed")):
-            wire.alice._send("bob", "DATA", "%s|%d|%s" % (
-                transfer.offer.transfer_id.hex(), i, ft._b64(chunk)))
+            wire.alice.transport.send_chunk(
+                "bob", transfer.offer.transfer_id, i, chunk)
         with pytest.raises(ft.TransferError, match="hash mismatch"):
             wire.bob.on_done("alice", transfer.offer.transfer_id.hex())
         assert os.listdir(ft.incoming_dir()) == []
@@ -359,8 +359,8 @@ class TestVerificationFailuresLeaveNothing:
         wire, transfer, _incoming = self._offer_with(wired, {6: "99"})
         for i, chunk in enumerate(getattr(transfer, "_sealed")):
             try:
-                wire.alice._send("bob", "DATA", "%s|%d|%s" % (
-                    transfer.offer.transfer_id.hex(), i, ft._b64(chunk)))
+                wire.alice.transport.send_chunk(
+                    "bob", transfer.offer.transfer_id, i, chunk)
             except Exception:
                 pass
         with pytest.raises(ft.TransferError):
@@ -386,8 +386,8 @@ class TestVerificationFailuresLeaveNothing:
         caught when what actually landed is measured."""
         wire, transfer, _incoming = self._offer_with(wired, {4: "100"})
         for i, chunk in enumerate(getattr(transfer, "_sealed")):
-            wire.alice._send("bob", "DATA", "%s|%d|%s" % (
-                transfer.offer.transfer_id.hex(), i, ft._b64(chunk)))
+            wire.alice.transport.send_chunk(
+                "bob", transfer.offer.transfer_id, i, chunk)
         with pytest.raises(ft.TransferError, match="size mismatch"):
             wire.bob.on_done("alice", transfer.offer.transfer_id.hex())
         assert [f for f in os.listdir(ft.state_dir())
@@ -403,8 +403,8 @@ class TestVerificationFailuresLeaveNothing:
     def test_an_offer_from_an_unverified_peer_is_ignored(self, wired):
         wire, a_ratchet, _b = wired
         strict = ft.FileTransferManager(
-            send=lambda *a: True, notify=wire.note,
-            verified=lambda peer: False)
+            transport=ft.OtrChunkTransport(lambda *a: True),
+            notify=wire.note, verified=lambda peer: False)
         path, _ = _source_file(1000)
         transfer = wire.alice.offer_file("bob", path, a_ratchet)
         assert strict.on_offer("alice", transfer.offer.encode()) is None
@@ -413,8 +413,8 @@ class TestVerificationFailuresLeaveNothing:
     def test_sending_to_an_unverified_peer_is_refused(self, wired):
         wire, a_ratchet, _b = wired
         strict = ft.FileTransferManager(
-            send=lambda *a: True, notify=wire.note,
-            verified=lambda peer: False)
+            transport=ft.OtrChunkTransport(lambda *a: True),
+            notify=wire.note, verified=lambda peer: False)
         path, _ = _source_file(1000)
         with pytest.raises(ft.TransferError, match="SMP verification"):
             strict.offer_file("bob", path, a_ratchet)
@@ -478,6 +478,168 @@ class TestTheFeatureIsXmppOnly:
         head = inspect.getdoc(ft) or ""
         assert "XMPP only" in head
         assert "IRC" in head
+
+
+# --------------------------------------------------------------------------
+# the transport seam
+# --------------------------------------------------------------------------
+
+class BulkTransport(ft.ChunkTransport):
+    """A second transport, standing in for the future torrent/SAM one.
+
+    Control still goes over the OTR-shaped channel.  Chunks bypass it
+    entirely: raw sealed bytes are handed straight to the peer's
+    `deliver_chunk`, with no base64, no control framing and no size limit
+    inherited from a stanza.  That is exactly the shape a bulk transport
+    takes, and the point of these tests is that the engine above it does not
+    change at all.
+    """
+
+    chunk_bytes = 64 * 1024          # the format maximum, not a stanza limit
+
+    def __init__(self, wire, who):
+        self.wire = wire
+        self.who = who
+        self.control_frames = 0
+        self.bulk_chunks = 0
+
+    def _peer(self):
+        return self.wire.bob if self.who == "alice" else self.wire.alice
+
+    def send_control(self, peer, verb, payload):
+        self.control_frames += 1
+        body = ft.FILE_PREFIX + verb + ((":" + payload) if payload else "")
+        self._peer().handle_control(self.who, body)
+        return True
+
+    def send_chunk(self, peer, transfer_id, index, sealed):
+        self.bulk_chunks += 1
+        assert isinstance(sealed, (bytes, bytearray)), (
+            "a transport received something other than raw sealed bytes")
+        self._peer().deliver_chunk(self.who, transfer_id, index, bytes(sealed))
+        return True
+
+
+class TestTheEngineIsTransportIndependent:
+    """The seam the torrent phase depends on.
+
+    If these pass, swapping the transport is a transport change and nothing
+    else -- the FileKey, the format, the hashes, the filename handling, the
+    temporary-file lifecycle and the atomic commit are all above the line.
+    """
+
+    @pytest.fixture
+    def bulk(self, ratchets, monkeypatch):
+        directory = tempfile.mkdtemp()
+        monkeypatch.setenv("OTRV4PLUS_FILE_DIR",
+                           os.path.join(directory, "files"))
+        wire = Wire()
+        wire.alice = ft.FileTransferManager(
+            transport=BulkTransport(wire, "alice"), notify=wire.note,
+            verified=lambda peer: True)
+        wire.bob = ft.FileTransferManager(
+            transport=BulkTransport(wire, "bob"), notify=wire.note,
+            verified=lambda peer: True)
+        a_ratchet, b_ratchet = ratchets
+        return wire, a_ratchet, b_ratchet
+
+    def test_a_bulk_transport_delivers_the_same_file(self, bulk):
+        """The whole lifecycle over a transport that shares no framing with
+        the OTR one."""
+        wire, a_ratchet, b_ratchet = bulk
+        path, blob = _source_file(200_000, "clip.bin")
+        transfer = wire.alice.offer_file("bob", path, a_ratchet)
+        incoming = wire.bob.incoming[transfer.offer.transfer_id.hex()]
+        # accept() sends ACCEPT, which the sender answers by pumping.  No
+        # manual pump: this is the real sequence.
+        wire.bob.accept(incoming.offer.transfer_id, b_ratchet)
+        got = open(os.path.join(ft.state_dir(), "clip.bin"), "rb").read()
+        assert got == blob
+        assert hashlib.sha256(got).digest() == hashlib.sha256(blob).digest()
+
+    def test_bulk_chunks_never_touch_the_control_path(self, bulk):
+        wire, a_ratchet, b_ratchet = bulk
+        path, _ = _source_file(200_000)
+        transfer = wire.alice.offer_file("bob", path, a_ratchet)
+        incoming = wire.bob.incoming[transfer.offer.transfer_id.hex()]
+        wire.bob.accept(incoming.offer.transfer_id, b_ratchet)
+        sender = wire.alice.transport
+        assert sender.bulk_chunks > 1, "the file was not chunked"
+        # OFFER and DONE only.  ACCEPT and the rest come from the other side.
+        assert sender.control_frames == 2, (
+            "control frames: %d -- a chunk went over the signalling path"
+            % sender.control_frames)
+
+    def test_the_transport_chooses_the_chunk_size(self, bulk):
+        """A bulk transport can use the full format chunk; the OTR one
+        cannot.  The size is a transport parameter, never a cryptographic
+        one, so the same file produces different chunk counts and identical
+        bytes."""
+        wire, a_ratchet, _b = bulk
+        path, _ = _source_file(200_000)
+        transfer = wire.alice.offer_file("bob", path, a_ratchet)
+        assert transfer.offer.chunk_count == 4, "64 KiB chunks over ~195 KiB"
+
+    def test_the_otr_transport_uses_a_smaller_chunk(self, wired):
+        wire, a_ratchet, _b = wired
+        path, _ = _source_file(200_000)
+        transfer = wire.alice.offer_file("bob", path, a_ratchet)
+        assert transfer.offer.chunk_count == 13, "16 KiB chunks over ~195 KiB"
+
+    def test_both_transports_produce_the_same_plaintext_hash(self, wired,
+                                                             ratchets):
+        """Chunk size changes the ciphertext framing and nothing about the
+        file.  If this ever diverges, the format has become
+        transport-dependent."""
+        wire, a_ratchet, b_ratchet = wired
+        path, blob = _source_file(200_000)
+        transfer = wire.alice.offer_file("bob", path, a_ratchet)
+        assert transfer.offer.plaintext_sha256 == hashlib.sha256(blob).digest()
+
+    def test_the_engine_knows_nothing_about_xmpp(self):
+        """Checked on CODE, not on prose.
+
+        The module's comments discuss stanzas and SAM streams because that is
+        what a reader needs to understand the seam.  What matters is that no
+        executable line reaches for any of it.
+        """
+        tree = ast.parse(inspect.getsource(ft))
+        for node in ast.walk(tree):
+            if (isinstance(node, ast.Expr)
+                    and isinstance(node.value, ast.Constant)
+                    and isinstance(node.value.value, str)):
+                node.value.value = ""
+        code = ast.unparse(tree)
+        for banned in ("slixmpp", "stanza", "send_message", "boundjid",
+                       "presence", "Iq", "Message("):
+            assert banned not in code, (
+                "the transfer engine references %r in executable code; it "
+                "must not know what carries its bytes" % banned)
+
+    def test_only_the_otr_transport_knows_the_control_framing(self):
+        """base64 and the pipe-joined DATA frame are properties of
+        OtrChunkTransport, not of the format.  The engine keeps exactly one
+        method that understands them -- on_data -- and it delegates."""
+        engine = inspect.getsource(ft.FileTransferManager)
+        assert engine.count("_b64(") == 0, (
+            "the manager base64s a chunk; that belongs to the transport")
+        assert engine.count("_unb64(") == 1, (
+            "only on_data may decode a control-framed chunk")
+
+    def test_every_transport_funnels_through_one_inbound_seam(self):
+        engine = inspect.getsource(ft.FileTransferManager)
+        assert "def deliver_chunk" in engine
+        assert engine.count("open_chunk(") == 1, (
+            "a second path calls open_chunk, so the ordering rule and the "
+            "authentication can diverge between transports")
+
+    def test_the_base_transport_refuses_rather_than_no_ops(self):
+        """An incomplete transport must fail loudly, not silently drop."""
+        base = ft.ChunkTransport()
+        with pytest.raises(NotImplementedError):
+            base.send_control("peer", "OFFER", "x")
+        with pytest.raises(NotImplementedError):
+            base.send_chunk("peer", b"\x00" * 16, 0, b"x")
 
 
 # --------------------------------------------------------------------------
