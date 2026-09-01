@@ -34,6 +34,11 @@ pub mod usage {
     pub const EXTRA_SYM_KEY:    u8 = 0x1F;
     pub const PQ_BRACE_KEY:     u8 = 0x20;
     pub const NONCE_DERIVE:     u8 = 0x21;
+    /// v10.14.0: wrapping key for a /sendfile transfer.  Derived from the
+    /// DAKE extra symmetric key (usage 0x1F), which is what OTRv4 defines
+    /// that key for, plus the transfer id.  A separate usage ID so a file
+    /// wrap key can never collide with the extra symmetric key itself.
+    pub const FILE_TRANSFER_WRAP: u8 = 0x22;
 }
 
 // ── Core KDF ─────────────────────────────────────────────────────────────────

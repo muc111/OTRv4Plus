@@ -24,6 +24,7 @@ pub mod aead;             // v10.6.19: AES-256-GCM PyO3 bindings (Phase 5.3h, pa
 pub mod mlkem;            // v10.7.3: ML-KEM-1024 PyO3 bindings (Phase 5.3i-C)
 pub mod identity;         // Android B1 (option B): Rust-owned identity sealing (additive)
 pub mod voice;            // v10.13.2: Rust-owned media keys and voice X448
+pub mod filetransfer;     // v10.14.0: Rust-owned /sendfile keys and chunk AEAD
 
 use pyo3::prelude::*;
 use pyo3::wrap_pyfunction;
@@ -42,6 +43,15 @@ fn otrv4_core(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<voice::PyVoiceCipher>()?;
     m.add_class::<voice::PyVoiceKex>()?;
     m.add_class::<voice::PyVoiceRoot>()?;
+
+    // v10.14.0: /sendfile.  The FileKey is generated, wrapped, used and
+    // zeroized entirely inside Rust; Python holds handles and opaque bytes.
+    m.add_class::<filetransfer::PyFileSender>()?;
+    m.add_class::<filetransfer::PyFileReceiver>()?;
+    m.add_function(wrap_pyfunction!(filetransfer::file_transfer_new_id, m)?)?;
+    m.add_function(wrap_pyfunction!(filetransfer::file_transfer_sizes, m)?)?;
+    m.add_function(wrap_pyfunction!(filetransfer::file_transfer_chunk_len, m)?)?;
+    m.add_function(wrap_pyfunction!(filetransfer::file_transfer_format_version, m)?)?;
     // Ring signature (Phase 5.3c)
     m.add_function(wrap_pyfunction!(ring_sig::py_ring_sign,   m)?)?;
     m.add_function(wrap_pyfunction!(ring_sig::py_ring_verify, m)?)?;

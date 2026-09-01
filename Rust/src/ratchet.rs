@@ -631,6 +631,24 @@ use pyo3::types::{PyBytes, PyDict};
 #[pyclass(name = "RustDoubleRatchet")]
 pub struct RustDoubleRatchet {
     inner: DoubleRatchet,
+    /// v10.14.0: the DAKE extra symmetric key (usage 0x1F), retained so a
+    /// file transfer can derive a wrapping key from it.
+    ///
+    /// It used to be zeroized inside `from_dake_keys` along with the rest of
+    /// DakeSessionKeys, which is why nothing could reach it.  It is kept here
+    /// rather than on the inner DoubleRatchet deliberately: the inner struct
+    /// is the ratchet proper and nothing about its derivations changes.
+    ///
+    /// WHY THIS KEY AND NOT A CHAIN KEY.  Chain and root keys advance, so a
+    /// transfer keyed from one would break the moment the session ratcheted --
+    /// which the transfer must survive (see the file-transfer lifetime rule).
+    /// The extra symmetric key is fixed for the session, is what OTRv4
+    /// reserves for exactly this kind of out-of-band use, and both peers
+    /// derive the identical value from the DAKE.
+    ///
+    /// `None` for a ratchet built by `new()` -- the test and legacy path,
+    /// which has no DAKE behind it and therefore no such key.
+    extra_sym_key: Option<crate::secure_mem::SecretBytes<32>>,
 }
 
 #[pymethods]
@@ -653,7 +671,10 @@ impl RustDoubleRatchet {
             .map_err(|_| pyo3::exceptions::PyValueError::new_err("dh_pub_local must be 56 bytes"))?;
         let inner = DoubleRatchet::new(rk, cks, ckr, bk, pub_local, is_initiator)
             .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
-        Ok(Self { inner })
+        // No DAKE behind this constructor, so no extra symmetric key: a file
+        // transfer over such a session fails closed rather than keying from
+        // something weaker.
+        Ok(Self { inner, extra_sym_key: None })
     }
 
     /// SECURITY (audit C2 partial - Patch-1, hardened in Patch-2): consume a
@@ -779,8 +800,54 @@ impl RustDoubleRatchet {
         // capability the attacker can also read the ratchet itself.
         let _ = (root_key, chain_key_a, chain_key_b, brace_key);
 
-        Ok(Self { inner })
+        // Legacy Dakeresult path: the extra symmetric key was never carried
+        // on that object, so it is not available here.  File transfer refuses
+        // rather than substituting a different secret.
+        Ok(Self { inner, extra_sym_key: None })
     }
+
+    /// Begin sending a file over this session.  v10.14.0.
+    ///
+    /// Returns a sender that owns a fresh FileKey.  The wrapping key is
+    /// derived here, inside Rust, from the session's DAKE extra symmetric key
+    /// and the transfer id, and is never materialised anywhere Python can see.
+    /// Python receives a handle and an opaque envelope.
+    ///
+    /// Fails closed on a session with no extra symmetric key -- a ratchet
+    /// built by the legacy or test constructors -- rather than falling back
+    /// to some other secret.
+    fn file_sender(&self, transfer_id: &[u8])
+        -> PyResult<crate::filetransfer::PyFileSender>
+    {
+        let key = self.extra_sym_key.as_ref().ok_or_else(|| {
+            pyo3::exceptions::PyRuntimeError::new_err(
+                "this session has no extra symmetric key, so a file transfer \
+                 cannot be keyed from it")
+        })?;
+        let id = crate::filetransfer::transfer_id_from(transfer_id)?;
+        crate::filetransfer::PyFileSender::create(key, id)
+    }
+
+    /// Accept a file offered on this session.  v10.14.0.
+    ///
+    /// The envelope only opens if it was sealed by the peer this session was
+    /// established with, for this transfer id.  Both are authenticated, so a
+    /// replayed or redirected offer fails here rather than later.
+    fn file_receiver(&self, transfer_id: &[u8], envelope: &[u8])
+        -> PyResult<crate::filetransfer::PyFileReceiver>
+    {
+        let key = self.extra_sym_key.as_ref().ok_or_else(|| {
+            pyo3::exceptions::PyRuntimeError::new_err(
+                "this session has no extra symmetric key, so a file transfer \
+                 cannot be keyed from it")
+        })?;
+        let id = crate::filetransfer::transfer_id_from(transfer_id)?;
+        crate::filetransfer::PyFileReceiver::create(key, id, envelope)
+    }
+
+    /// Whether this session can key a file transfer at all.
+    #[getter]
+    fn supports_file_transfer(&self) -> bool { self.extra_sym_key.is_some() }
 
     fn set_ad(&mut self, ad: &[u8]) { self.inner.set_ad(ad); }
     fn needs_rekey(&self) -> bool { self.inner.needs_rekey() }
@@ -931,6 +998,10 @@ impl RustDoubleRatchet {
         let chain_key_send = *keys.chain_key_send.expose();
         let chain_key_recv = *keys.chain_key_recv.expose();
         let brace_key      = *keys.brace_key.expose();
+        // Copied before `drop(keys)` below wipes the original.  This is the
+        // only place the extra symmetric key survives DAKE consumption.
+        let extra_sym_key  = crate::secure_mem::SecretBytes::<32>::new(
+            *keys.extra_sym_key.expose());
 
         let mut inner = DoubleRatchet::new(
             &root_key, &chain_key_send, &chain_key_recv, &brace_key,
@@ -948,7 +1019,7 @@ impl RustDoubleRatchet {
         drop(keys);
         let _ = (root_key, chain_key_send, chain_key_recv, brace_key);
 
-        Ok(Self { inner })
+        Ok(Self { inner, extra_sym_key: Some(extra_sym_key) })
     }
 }
 // ── Tests ───────────────────────────────────────────────────────────
