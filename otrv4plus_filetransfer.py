@@ -195,6 +195,33 @@ def sanitise_filename(raw: str) -> str:
 #: a human is scrolling through a gallery, not a machine answering.
 PICKER_TIMEOUT_S = 180.0
 
+#: `termux-storage-get` does NOT wait for the human.  It hands the intent to
+#: the Termux:API app and exits, so the shell command returns in milliseconds
+#: and the chosen file lands at the destination path some seconds later, when
+#: the chooser closes.  Checking for the file the instant the command returns
+#: therefore always finds nothing, and reports "no file chosen" while the
+#: gallery is still on screen -- which is exactly what a device test showed.
+#: The picker is polled for the file instead.
+_PICK_POLL_S = 0.3
+
+#: The copy is a stream, so an existing file may still be filling.  A size
+#: that has not moved across this many consecutive polls is taken as done;
+#: three at 0.3s is ~0.9s of quiet, far longer than a pause inside a copy from
+#: local storage, and shorter than anyone will notice.
+_PICK_STABLE_SAMPLES = 3
+
+#: Staged copies are named `pick-<ms>` until they are sealed, at which point
+#: they are renamed to `image-...`/`document-...`.  So anything still called
+#: `pick-*` is either in flight or was abandoned, and only those are swept --
+#: never a file a transfer might be reading.
+_STAGE_PREFIX = "pick-"
+
+#: Destinations we stopped waiting for.  The Termux:API app may still write to
+#: one after we have given up, leaving a PLAINTEXT copy of whatever the user
+#: chose sitting on disk.  We cannot wait for it, so we remember it and delete
+#: it at the next pick.
+_ABANDONED_PICKS = set()
+
 #: Enough magic numbers to name the things people actually send.  The picker
 #: does not tell us what the file was called, so the type is sniffed from its
 #: first bytes rather than trusted from an extension that no longer exists.
@@ -253,12 +280,104 @@ def staging_dir() -> str:
     return d
 
 
-def pick_file(runner=None, which=None, timeout: float = PICKER_TIMEOUT_S) -> str:
+def _sweep_abandoned_picks(staging: str, older_than: float,
+                           now: float = None) -> int:
+    """Delete staged copies nobody is going to seal.  Returns how many went.
+
+    Two kinds are swept, and only files still called `pick-*`, because a file
+    a transfer is actually reading has already been renamed:
+
+      * one we stopped waiting for, which the picker may have written after we
+        gave up -- deleted on sight, however new, since we know it is orphaned;
+      * anything older than `older_than` seconds, which covers a copy left
+        behind by a crash or a kill.
+
+    These are PLAINTEXT copies of whatever the user chose, so leaving them is
+    not a tidiness problem.
+    """
+    if now is None:
+        now = time.time()
+    removed = 0
+    for path in sorted(_ABANDONED_PICKS):
+        if os.path.dirname(path) != staging:
+            # A staging directory from a previous run of the process (the
+            # tests move it, and OTRV4PLUS_FILE_DIR can change).  If it is
+            # gone there is nothing left to delete, so stop tracking it.
+            if not os.path.isdir(os.path.dirname(path)):
+                _ABANDONED_PICKS.discard(path)
+            continue
+        try:
+            os.unlink(path)
+            removed += 1
+        except FileNotFoundError:
+            pass
+        except OSError:
+            continue
+        _ABANDONED_PICKS.discard(path)
+    try:
+        names = os.listdir(staging)
+    except OSError:
+        return removed
+    for name in names:
+        if not name.startswith(_STAGE_PREFIX):
+            continue
+        path = os.path.join(staging, name)
+        try:
+            if now - os.path.getmtime(path) < older_than:
+                continue
+            os.unlink(path)
+            removed += 1
+        except OSError:
+            continue
+    return removed
+
+
+def _await_picked_file(path: str, deadline: float, sleeper=time.sleep,
+                       clock=time.monotonic) -> bool:
+    """Wait for the chooser to deliver `path`, complete.  True if it arrived.
+
+    Returns as soon as the size has held steady, so a normal pick costs about
+    a second of waiting past the tap and not the whole deadline.  A cancelled
+    chooser is indistinguishable from a slow one -- nothing is written either
+    way -- so backing out costs the caller the full deadline.  That is why the
+    caller says out loud that it is waiting.
+    """
+    stable = 0
+    last = -1
+    while True:
+        try:
+            size = os.path.getsize(path)
+        except OSError:
+            size = 0
+        if size > 0 and size == last:
+            stable += 1
+            if stable >= _PICK_STABLE_SAMPLES:
+                return True
+        else:
+            stable = 0
+        last = size
+        if clock() >= deadline:
+            # One last look: the file may have completed inside the final
+            # sleep, and giving up on a file that is sitting right there
+            # would be the same bug in a smaller window.
+            return size > 0 and os.path.getsize(path) == size
+        sleeper(_PICK_POLL_S)
+
+
+def pick_file(runner=None, which=None, timeout: float = PICKER_TIMEOUT_S,
+              sleeper=time.sleep, clock=time.monotonic,
+              on_wait=None) -> str:
     """Open the Android file picker; return the path to the staged copy.
 
     `termux-storage-get` copies the chosen file to a path we name, so the
     user taps a photo in the normal Android chooser and it lands somewhere we
-    control.  Two consequences worth knowing:
+    control.  Three consequences worth knowing:
+
+      * **The command returns before the human does.**  It hands the intent to
+        the Termux:API app and exits immediately; the file appears at our path
+        only when the chooser closes.  So the destination is polled until it
+        turns up and stops growing, and the shell exit status says nothing
+        about whether anything was picked.
 
       * **The original filename does not survive.**  The picker reports only
         the bytes, so the name is rebuilt from the file's magic number and a
@@ -271,8 +390,9 @@ def pick_file(runner=None, which=None, timeout: float = PICKER_TIMEOUT_S) -> str
       * **The staged copy is plaintext.**  It lives at 0700 under the private
         file directory and the caller removes it once the file is sealed.
 
-    `runner` and `which` are injected so this is testable without an Android
-    device; both default to the real thing.
+    `on_wait` is called once, if we end up waiting, so the caller can tell the
+    user the client has not hung.  `runner`, `which`, `sleeper` and `clock`
+    are injected so this is testable without an Android device.
     """
     import subprocess
 
@@ -300,20 +420,49 @@ def pick_file(runner=None, which=None, timeout: float = PICKER_TIMEOUT_S) -> str
             "and install the Termux:API app from F-Droid as well -- the "
             "package alone is only shell shims")
 
-    staged = os.path.join(staging_dir(), "pick-%d" % int(time.time() * 1000))
-    rc, _out, err = runner(["termux-storage-get", staged], timeout)
+    staging = staging_dir()
+    _sweep_abandoned_picks(staging, older_than=timeout + 60.0)
+
+    staged = os.path.join(staging, "%s%d" % (_STAGE_PREFIX,
+                                             int(time.time() * 1000)))
+    started = clock()
+    rc, _out, err = runner(['termux-storage-get', staged], timeout)
     if rc == 124:
         raise TransferError("the file picker timed out")
-    if not os.path.exists(staged) or os.path.getsize(staged) == 0:
-        # Backing out of the chooser is normal, not an error worth a stack.
-        try:
-            os.unlink(staged)
-        except OSError:
-            pass
+
+    arrived = os.path.exists(staged) and os.path.getsize(staged) > 0
+    if not arrived:
+        # The shim exits straight after dispatching the intent, so a bad exit
+        # status here means the intent never went out -- not that the user
+        # declined.  Only a status we do not recognise is worth a message;
+        # 0 and 1 are both seen on a normal dispatch.
         if rc not in (0, 1):
             raise TransferError(
                 "the file picker failed: %s"
                 % (err.decode("utf-8", "replace")[:120] or "no file returned"))
+        if on_wait is not None:
+            try:
+                on_wait()
+            except Exception:
+                pass
+        deadline = started + timeout
+        arrived = _await_picked_file(staged, deadline, sleeper=sleeper,
+                                     clock=clock)
+    else:
+        # It was already there, but it may still be filling.
+        arrived = _await_picked_file(staged, clock() + timeout,
+                                     sleeper=sleeper, clock=clock)
+
+    if not arrived or not os.path.exists(staged) \
+            or os.path.getsize(staged) == 0:
+        try:
+            os.unlink(staged)
+        except OSError:
+            # It is not there now, but the chooser may still deliver it after
+            # we walk away.  Remember it so the next pick sweeps it up.
+            _ABANDONED_PICKS.add(staged)
+        else:
+            _ABANDONED_PICKS.discard(staged)
         raise TransferError("no file chosen")
 
     with open(staged, "rb") as fh:
@@ -324,11 +473,12 @@ def pick_file(runner=None, which=None, timeout: float = PICKER_TIMEOUT_S) -> str
     # file the first transfer was still reading.  Found by a test, not by
     # reading -- the window is narrow because the caller unlinks after
     # sealing, which is exactly what makes it the kind of race that survives.
-    final = unique_path(staging_dir(),
+    final = unique_path(staging,
                         "%s-%s.%s" % (_KIND_FOR.get(ext, "file"),
                                       time.strftime("%Y%m%d-%H%M%S"), ext))
     os.replace(staged, final)
     os.chmod(final, 0o600)
+    _ABANDONED_PICKS.discard(staged)
     return final
 
 

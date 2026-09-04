@@ -40,8 +40,15 @@ The Android file picker opens. Tap a photo, a video, anything. It is staged
 privately, sealed, and offered to the peer — no paths, no `termux-setup-storage`,
 no typing filenames. This is the way to run steps 2, 3, 4 and 10.
 
-Two things to know:
+Three things to know:
 
+* **It waits, and it says so.** `termux-storage-get` does not block until you
+  choose; it hands the intent to the Termux:API app and exits at once, and the
+  file lands seconds later when the chooser closes. The client polls for it
+  and prints `[file] waiting for your choice` while it does. Backing out of
+  the chooser writes nothing, which is indistinguishable from a slow choice,
+  so a cancelled pick costs the full three-minute wait before it reports
+  `no file chosen`. Choosing something is immediate.
 * **The original filename does not survive.** The picker hands over bytes and
   not a name, so the file is renamed from its magic number and a timestamp —
   your peer sees `image-20260901-143022.jpg`, not `IMG_2891.jpg`. Cosmetically

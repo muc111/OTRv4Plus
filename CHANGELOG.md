@@ -4,6 +4,72 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## v10.16.1 — the file picker waits for you; every SMP line wears a padlock
+
+*2026-09-04.  `XMPP_VERSION → 10.16.1`.  Python only.  Two device-found fixes.*
+
+### `/sendfile` reported "no file chosen" while the gallery was still open
+
+Choosing a file did nothing. The picker opened, a photo was tapped, and the
+client had already given up:
+
+```
+[file] opening the Android file picker — choose a file on the phone
+[file] no file chosen
+```
+
+`termux-storage-get` does not wait for the human. It hands the intent to the
+Termux:API app and exits, so the shell command returns in milliseconds and the
+chosen file lands at the destination path seconds later, when the chooser
+closes. The client checked once, the instant the command returned, and found
+nothing — which is to say it could never have worked, on any phone, for any
+file. The two-phone plan had exercised `/sendfile <path>`; the no-argument
+form had not been run on a device until now.
+
+The destination is now polled until the file appears **and stops growing**.
+The size has to hold steady across three consecutive polls before the file is
+sealed, because the copy is a stream and a file that merely exists may still be
+filling — sending a truncated photo would have been the next bug.
+
+Three smaller things came out of the same reading:
+
+* **The shell exit status says nothing about whether you picked anything.** It
+  describes dispatching the intent. The old code treated a non-zero status as
+  "user backed out"; it is now ignored unless it is a status that means the
+  intent never went out at all.
+* **The client says it is waiting.** A silent pause for as long as the gallery
+  is open reads as a hang.
+* **A file delivered after we stopped waiting is deleted.** It is a plaintext
+  copy of whatever was chosen, sitting in the staging directory with nothing
+  left to seal it. Staged copies are named `pick-*` until they are claimed, so
+  the sweep can never touch a file a transfer is reading.
+
+Backing out of the chooser still costs the full three-minute wait — nothing is
+written either way, so a cancelled picker and a slow one are indistinguishable
+from outside. The waiting line says so.
+
+### Every `[smp]` line now carries a padlock
+
+Verification is the one thing this client asks a user to *do* rather than
+watch, and its lines looked like every other bracketed tag scrolling past.
+They now read `🔐 [smp] …`, with the tag itself in blue.
+
+🔐 is the glyph the SMP progress bar already used, so the whole exchange reads
+as one thing. Blue on the text rather than the emoji, and not 🔵: that already
+means *verified*, the end state, and putting it on every SMP line would say
+"verified" while verification was still running.
+
+The session transcript's allowlist had to learn about markers first. It writes
+a line only if its shape is recognised, and `🔐 [smp] …` is not `[smp] …`, so
+every SMP line would have been redacted to `<unlogged line: N chars>`. Status
+glyphs are now stripped before any rule is matched — before, specifically, and
+not inside the `[tag]` rule alone: had the marker been tolerated only there,
+`🔐 [otr] <peer> body` would have walked straight past the message-body
+redaction and written the message to disk. The list of markers is exact;
+"any leading emoji" would have been the hole.
+
+---
+
 ## Repository — one branch, one history
 
 *2026-09-04.  No code change.  Branch housekeeping only.*
