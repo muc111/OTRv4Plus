@@ -2,7 +2,7 @@
 """
 OTRv4+ XMPP - full OTR + SMP over XMPP, transported over I2P SAM
 ================================================================
-Version: 10.15.5
+Version: 10.16.0
 
 
 Post-quantum OTRv4+ end-to-end encryption over XMPP, reusing the IRC client's
@@ -64,7 +64,7 @@ USAGE:
       --jid alice@<vhost>.b32.i2p \
       --server <c2s-tunnel>.b32.i2p \
       --peer bob@<vhost>.b32.i2p \
-      --insecure-tls --debug
+      --debug
 
 COMMANDS:
     /otr [jid]            start an OTR session (DAKE)
@@ -106,7 +106,10 @@ COMMANDS:
 #    * Inbound message fragments are bounded (index range, fragment count, and a
 #      per-peer reassembly cap) before stitching, preventing memory-exhaustion
 #      DoS and out-of-range indexing.
-#    * TLS verification is on by default; only disabled behind --insecure-tls
+#    * TLS verification follows the transport.  Over I2P and over Tor to
+#      an .onion the address IS the server's key, so certificate checks
+#      are skipped and say so; over clearnet verification is on and only
+#      --insecure-tls disables it, with a warning
 #      which is acceptable over I2P (.b32 destination is cryptographically
 #      authenticated) but warned against on clearnet.
 #    * Fingerprints are pinned on first use (TOFU); the trust prompt gates the
@@ -234,7 +237,7 @@ def voice_available() -> "tuple[bool, str]":
             "no audio backend: libaaudio.so unavailable and parec/pacat "
             "missing  (run /audioprobe for details)")
 
-XMPP_VERSION = "10.15.5"
+XMPP_VERSION = "10.16.0"
 
 # ---------------------------------------------------------------------------
 # XMPP-private state directory
@@ -5658,7 +5661,10 @@ def main():
     ap.add_argument(
         "--insecure-tls",
         action="store_true",
-        help="accept expired/self-signed server certs",
+        help="accept expired/self-signed server certs on a CLEARNET server. "
+             "Not needed for .i2p or .onion: there the address is the "
+             "server's key and the transport authenticates the endpoint, so "
+             "certificate checks are skipped automatically.",
     )
     ap.add_argument(
         "--no-reconnect",
@@ -5806,14 +5812,6 @@ def main():
     if hasattr(client, "enable_starttls"):
         client.enable_starttls = True
 
-    if args.insecure_tls:
-        import ssl as _ssl
-        ctx = _ssl.create_default_context()
-        ctx.check_hostname = False
-        ctx.verify_mode = _ssl.CERT_NONE
-        client.ssl_context = ctx
-        print("[tls] certificate verification DISABLED (--insecure-tls).")
-
     domain = args.jid.split("@", 1)[-1]
     server_b32 = args.server or domain
     use_i2p = (not args.no_i2p) and server_b32.endswith(".i2p")
@@ -5838,23 +5836,62 @@ def main():
               "clearnet host, so the server still learns it is being reached "
               "over Tor rather than by you directly." % server_b32)
 
-    if args.insecure_tls and use_tor and server_b32.endswith(".onion"):
-        print(
-            "[tls] --insecure-tls with an onion address: the v3 onion name is "
-            "itself the server's public key, so the endpoint is "
-            "cryptographically authenticated by Tor regardless of the "
-            "certificate. That is the same reasoning that makes the flag "
-            "acceptable over I2P."
-        )
-    elif args.insecure_tls and not use_i2p:
+    # ── TLS: decided by the transport, not by a flag ─────────────────────
+    #
+    # Over I2P and over Tor-to-.onion the ADDRESS is a public key: a .b32.i2p
+    # label is the hash of the destination's key, and a v3 onion name is the
+    # key itself.  Reaching that address means reaching that key-holder, with
+    # the transport's own end-to-end encryption in between.  There is no
+    # certificate authority in the path and no MITM position for one to
+    # defend against, so requiring a CA-valid certificate there is asking for
+    # a weaker second name for a server already named by its key.
+    #
+    # Users had to pass --insecure-tls to get past that, on every single
+    # connection.  A flag with "insecure" in it, typed daily, for a link that
+    # is not insecure -- and the same habit carried to a clearnet server is
+    # genuinely dangerous.  So the transport decides, the flag is not needed,
+    # and clearnet still demands a real certificate.
+    endpoint_authenticated_by = None
+    if use_i2p:
+        endpoint_authenticated_by = "I2P"
+    elif use_tor and server_b32.endswith(".onion"):
+        endpoint_authenticated_by = "Tor"
+
+    relax_tls = bool(endpoint_authenticated_by) or args.insecure_tls
+    if relax_tls:
+        import ssl as _ssl
+        ctx = _ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = _ssl.CERT_NONE
+        client.ssl_context = ctx
+
+    if endpoint_authenticated_by == "I2P":
+        print("[tls] The endpoint is authenticated by I2P: the .b32.i2p "
+              "address is the hash of")
+        print("[tls] the server's key, so the connection reaches that key or "
+              "it fails. Certificate")
+        print("[tls] checks are not used here and are not needed; no "
+              "--insecure-tls required.")
+    elif endpoint_authenticated_by == "Tor":
+        print("[tls] The endpoint is authenticated by Tor: a v3 onion name is "
+              "the server's public")
+        print("[tls] key. Certificate checks are not used here and are not "
+              "needed.")
+    elif args.insecure_tls:
         print(
             "[tls] WARNING: --insecure-tls on a CLEARNET connection disables "
             "certificate verification, so an active network attacker can MITM "
-            "the link and capture your XMPP password. Over I2P the .b32 "
-            "destination is cryptographically authenticated, so the flag is "
-            "acceptable there; over clearnet it is NOT. Use a CA-valid server "
-            "certificate instead of this flag."
+            "the link and capture your XMPP password. Over I2P and over Tor "
+            "to an onion address the endpoint is authenticated by the address "
+            "itself and the flag is unnecessary; over clearnet nothing "
+            "replaces a CA-valid certificate."
         )
+    else:
+        print("[tls] certificate verification ON (clearnet).")
+
+    if args.insecure_tls and endpoint_authenticated_by:
+        print("[tls] --insecure-tls was passed and is not needed here; "
+              "%s already authenticates the endpoint." % endpoint_authenticated_by)
 
     # Store reconnect parameters on the client before first connect.
     client._is_i2p = use_i2p

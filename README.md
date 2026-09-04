@@ -186,8 +186,38 @@ python otrv4plus_xmpp.py \
   --jid alice@<vhost>.b32.i2p \
   --server <c2s-tunnel>.b32.i2p \
   --peer bob@<vhost>.b32.i2p \
-  --insecure-tls --debug
+  --debug
 ```
+
+#### No `--insecure-tls`, and why
+
+Nothing above passes it, because over I2P nothing needs it.
+
+A `.b32.i2p` address is the SHA-256 of the server's destination key: reaching
+that address means reaching that key-holder, over I2P's own end-to-end
+encryption, or not connecting at all. There is no certificate authority in the
+path and no MITM position for one to defend against. The same is true of a v3
+`.onion` name over Tor, which *is* the server's public key.
+
+So the client decides by transport rather than by flag:
+
+| Server | Certificate check |
+|---|---|
+| `.b32.i2p` over I2P | skipped — the address authenticates the endpoint, and the client says so |
+| `.onion` over Tor | skipped — same reason |
+| clearnet | **required**, and only `--insecure-tls` disables it, with a warning |
+
+The flag still exists for a clearnet server with a self-signed certificate.
+It is no longer part of any normal command, which matters: a flag with
+"insecure" in it, typed daily for a link that is not insecure, teaches a habit
+that is genuinely dangerous the first time someone carries it to a clearnet
+host.
+
+**A certificate would not add much here.** It proves possession of a key, not
+that a server is uncompromised — an attacker who took the server holds the key
+too and serves the same certificate. Certificates detect *substitution*, and
+substitution is what the b32 already prevents. No public CA issues for `.i2p`
+in any case, since it is outside the public DNS namespace.
 
 #### Not typing the b32 every time
 
@@ -204,7 +234,7 @@ sees a b32:
 
 ```bash
 python otrv4plus_xmpp.py --jid alice@xmpp-elite.i2p \
-                         --peer bob@xmpp-elite.i2p --insecure-tls
+                         --peer bob@xmpp-elite.i2p
 ```
 
 That file is also how a **server move** reaches people. Ship a new line, users
@@ -245,8 +275,7 @@ needed**:
 ```bash
 python otrv4plus_xmpp.py \
   --jid alice@xmpp-elite.i2p \
-  --peer bob@xmpp-elite.i2p \
-  --insecure-tls
+  --peer bob@xmpp-elite.i2p
 ```
 
 The client prints the substitution when it uses one, so you always see which

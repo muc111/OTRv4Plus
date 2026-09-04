@@ -4,6 +4,59 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## v10.16.0 — TLS follows the transport; `--insecure-tls` is no longer needed
+
+*2026-09-04.  `VERSION → 10.16.0`.  Python only.  A user-visible default changes, hence the minor bump.*
+
+The normal command loses its most alarming word:
+
+```bash
+python3 otrv4plus_xmpp.py --jid alice@xmpp-elite.i2p \
+                          --peer bob@xmpp-elite.i2p
+```
+
+**Over I2P the address is a public key.** A `.b32.i2p` label is the SHA-256 of
+the server's destination key, so reaching that address means reaching that
+key-holder, over I2P's own end-to-end encryption, or not connecting at all.
+There is no certificate authority in the path and no MITM position for one to
+defend against. A v3 `.onion` name over Tor is the same property — the name
+*is* the key.
+
+Requiring a CA-valid certificate there was asking for a weaker second name for
+a server already named by its key, and the only way past it was a flag with
+"insecure" in it, typed on every single connection. That is worse than
+useless: it teaches a habit that is genuinely dangerous the first time someone
+carries it to a clearnet host, where nothing replaces a real certificate.
+
+| Server | Certificate check |
+|---|---|
+| `.b32.i2p` over I2P | skipped, and the client says what authenticates the endpoint instead |
+| `.onion` over Tor | skipped, same reason |
+| Tor to a **non**-onion host | **required** — the exit sees an ordinary TLS session, so there is no endpoint key |
+| clearnet | **required**; only `--insecure-tls` disables it, with the existing warning |
+
+The flag still exists for a clearnet server with a self-signed certificate, and
+passing it where it is not needed now says so rather than silently accepting it.
+
+**The message says why, not just that.** "The endpoint is authenticated by I2P:
+the .b32.i2p address is the hash of the server's key, so the connection reaches
+that key or it fails." It deliberately does not say "verified" — TLS is not
+verifying anything here, and claiming otherwise would be a different lie from
+the one being removed.
+
+**On certificates generally**, since this came up: a certificate proves
+possession of a key, not that a server is uncompromised. An attacker who took
+the server holds the key too and serves the same certificate. Certificates
+detect *substitution* — which is exactly what the b32 already prevents. No
+public CA issues for `.i2p` in any case, as it is outside the public DNS
+namespace.
+
+14 new tests in `tests/test_tls_follows_transport.py`, four mutations killed. Python 2466 passed, 43 skipped, 1 xfailed. Four mutations killed
+including "clearnet verification disabled unconditionally" and "any Tor
+connection counts as self-authenticating".
+
+---
+
 ## v10.15.5 — a SAM failure that stopped blaming the address
 
 *2026-09-04.  `VERSION → 10.15.5`.  Python only.*

@@ -89,6 +89,16 @@ verification is on by default; `--insecure-tls` replaces the context with
 `check_hostname = False` / `CERT_NONE` and prints a warning that names the
 concrete risk (password capture by an active MITM).
 
+Since v10.16.0 that is the **clearnet** rule only, and the flag is not what
+decides it. Over I2P, and over Tor to an `.onion`, the address is the server's
+key — a `.b32.i2p` label is its SHA-256, a v3 onion name is the key itself —
+so the transport authenticates the endpoint and the same permissive context is
+installed automatically, with a line saying what replaced the certificate
+check. Tor to a *non*-onion host is not covered: the exit sees an ordinary TLS
+session to a clearnet name, there is no endpoint key, and verification stays
+on. `tests/test_tls_follows_transport.py` pins each branch, including that
+`CERT_NONE` appears on exactly one code path.
+
 **No reconnect.** `_sam_params` stays `None` for clearnet, and
 `_on_disconnected` only schedules `_reconnect` when `_sam_params is not
 None`. A dropped clearnet session stays down.
