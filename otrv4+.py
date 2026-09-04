@@ -1062,6 +1062,42 @@ class I2PSAMConnection:
             raise ConnectionError(f"SAM handshake failed: {reply }")
 
     @staticmethod
+    def _explain_stream_failure(target_host, parsed, reply) -> str:
+        """Say which step failed, because they need different fixes.
+
+        The old message ended with "Is the server b32 correct?" for every
+        result, which is actively misleading for the common one: by the time
+        STREAM CONNECT runs the address has already been resolved, so a
+        CANT_REACH_PEER means the address was fine and the destination is not
+        reachable.  Sending someone to re-check an address that is correct is
+        worse than saying nothing.
+        """
+        result = parsed.get("RESULT", "")
+        detail = f"SAM stream connect failed: {reply }"
+
+        if result == "CANT_REACH_PEER":
+            return (
+                f"{detail }\n"
+                f"The address resolved; the destination is not reachable "
+                f"right now.\n"
+                f"'LeaseSet not found' means the server has not published "
+                f"tunnels the router can find -- usually the server is down "
+                f"or its I2P tunnel is not running. It can also be a cold "
+                f"local router that has not integrated into the netDB yet, "
+                f"in which case waiting a few minutes and retrying is enough."
+                f"\nThe address is not the problem: {target_host }")
+        if result in ("I2P_ERROR", "TIMEOUT"):
+            return (f"{detail }\n"
+                    f"The router accepted the address but the connection did "
+                    f"not complete. Cold tunnels can take 30-120 s; retrying "
+                    f"is reasonable.")
+        if result == "INVALID_KEY":
+            return (f"{detail }\n"
+                    f"The router would not accept that destination. Check the "
+                    f"address, and any alias pointing at it.")
+        return detail
+
+    @staticmethod
     def _retired_destinations(path: str = None) -> dict:
         """{old b32: name it moved to}, from the shipped defaults.
 
@@ -1192,7 +1228,8 @@ class I2PSAMConnection:
         if parsed.get("RESULT") != "OK":
             stream_sock.close()
             self._control_sock.close()
-            raise ConnectionError(f"SAM stream connect failed: {reply }")
+            raise ConnectionError(
+                self._explain_stream_failure(target_host, parsed, reply))
 
         stream_sock.settimeout(1.0)
         return stream_sock
@@ -1760,7 +1797,7 @@ class OTRv4DataMessage:
             raise ValueError(f"Failed to decode message: {e }")
 
 
-VERSION = "OTRv4+ 10.15.4"
+VERSION = "OTRv4+ 10.15.5"
 
 # --- OTRv4+ client identification over IRC -------------------------------
 #

@@ -4,6 +4,48 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## v10.15.5 — a SAM failure that stopped blaming the address
+
+*2026-09-04.  `VERSION → 10.15.5`.  Python only.*
+
+First real use of the alias layer produced this, and the last two lines are
+the problem:
+
+```
+[i2p] opening SAM stream to xmpp-elite.i2p (a cold tunnel can take 30-90s)...
+[i2p] xmpp-elite.i2p -> hq4t…q.b32.i2p (from ~/.otrv4plus/i2p_hosts)
+[i2p] SAM bridge failed: SAM stream connect failed:
+      STREAM STATUS RESULT=CANT_REACH_PEER MESSAGE="LeaseSet not found"
+[i2p] Is i2pd running with SAM enabled on 127.0.0.1:7656? Is the server b32 correct?
+```
+
+The alias worked. The address resolved. By the time `STREAM CONNECT` runs the
+address is the one thing known to be *right* — and the client asked the user
+to go and check it. `CANT_REACH_PEER` with `LeaseSet not found` means the
+destination has not published tunnels the router can find: the server is down,
+or its I2P tunnel is not running, or the local router is too cold to have
+found the LeaseSet yet.
+
+Each `STREAM STATUS` result now gets the advice that fits it — and only
+`INVALID_KEY`, where the router rejected the destination, says to check the
+address and any alias pointing at it. An unrecognised result is passed through
+without invented advice. The follow-up "is i2pd running?" line is suppressed
+when the router already answered, since it contradicts the explanation above
+it.
+
+The announcement line also names the destination actually used:
+
+```
+[i2p] opening SAM stream to xmpp-elite.i2p -> hq4t…q.b32.i2p (a cold tunnel…)
+```
+
+Previously it printed the short name and only then the substitution, which
+read as though the alias had been ignored.
+
+7 new tests, 48 in `tests/test_i2p_short_names.py`. Python 2452 passed.
+
+---
+
 ## v10.15.4 — a shipped address book, so a server move reaches people
 
 *2026-09-04.  `VERSION → 10.15.4`, `otrv4_core 0.10.27` unchanged.  Python only.*

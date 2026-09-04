@@ -33,6 +33,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
 otr = pytest.importorskip("otrv4_")
+xmpp = pytest.importorskip("otrv4plus_xmpp")
 
 B32 = "hq4t24b7vkllfbk55e5xfocqhfi7hxprwc47zyuilbg6wgzikidq.b32.i2p"
 OTHER_B32 = "aaaa24b7vkllfbk55e5xfocqhfi7hxprwc47zyuilbg6wgzikidq.b32.i2p"
@@ -383,3 +384,60 @@ class TestRetiredAddresses:
 
     def test_a_missing_defaults_file_is_fine(self):
         assert otr.I2PSAMConnection._retired_destinations("/no/such") == {}
+
+
+class TestStreamFailuresAreClassified:
+    """`STREAM STATUS RESULT=...` needs different advice per result.
+
+    The old message ended every failure with "Is the server b32 correct?".
+    For CANT_REACH_PEER that is actively wrong: the address has already been
+    resolved by the time STREAM CONNECT runs, so the address is the one thing
+    that is definitely fine.  Sending someone to re-check a correct address
+    is worse than saying nothing.
+    """
+
+    def _msg(self, result, message="LeaseSet not found"):
+        reply = 'STREAM STATUS RESULT=%s MESSAGE="%s"' % (result, message)
+        return otr.I2PSAMConnection._explain_stream_failure(
+            "xmpp-elite.i2p", {"RESULT": result}, reply)
+
+    def test_cant_reach_peer_does_not_blame_the_address(self):
+        msg = self._msg("CANT_REACH_PEER")
+        assert "address resolved" in msg
+        assert "not the problem" in msg
+        assert "correct?" not in msg
+
+    def test_cant_reach_peer_explains_a_leaseset(self):
+        msg = self._msg("CANT_REACH_PEER")
+        assert "LeaseSet" in msg
+        assert "server is down" in msg or "tunnel is not running" in msg
+        assert "cold local router" in msg, (
+            "the transient case is not mentioned, so a user retries nothing")
+
+    def test_a_timeout_suggests_retrying(self):
+        assert "retrying" in self._msg("TIMEOUT")
+
+    def test_invalid_key_does_blame_the_address(self):
+        """The one result where checking the address IS the right advice."""
+        msg = self._msg("INVALID_KEY")
+        assert "Check the address" in msg
+        assert "alias" in msg
+
+    def test_an_unknown_result_is_passed_through_unembellished(self):
+        msg = self._msg("SOMETHING_NEW")
+        assert msg.count("\n") == 0, "invented advice for an unknown result"
+        assert "SOMETHING_NEW" in msg
+
+    def test_the_raw_reply_is_always_kept(self):
+        for result in ("CANT_REACH_PEER", "TIMEOUT", "INVALID_KEY", "X"):
+            assert "SAM stream connect failed" in self._msg(result)
+
+    def test_the_client_does_not_re_ask_about_the_router(self):
+        """A failure that came back FROM the router has been explained
+        already; repeating "is i2pd running?" after it contradicts it."""
+        import inspect
+        src = inspect.getsource(xmpp.main)
+        i = src.index("SAM bridge failed")
+        window = src[i:i + 700]
+        assert "SAM stream connect failed" in window, (
+            "the follow-up hint is printed unconditionally again")

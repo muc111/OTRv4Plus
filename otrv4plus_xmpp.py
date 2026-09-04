@@ -2,7 +2,7 @@
 """
 OTRv4+ XMPP - full OTR + SMP over XMPP, transported over I2P SAM
 ================================================================
-Version: 10.15.4
+Version: 10.15.5
 
 
 Post-quantum OTRv4+ end-to-end encryption over XMPP, reusing the IRC client's
@@ -234,7 +234,7 @@ def voice_available() -> "tuple[bool, str]":
             "no audio backend: libaaudio.so unavailable and parec/pacat "
             "missing  (run /audioprobe for details)")
 
-XMPP_VERSION = "10.15.4"
+XMPP_VERSION = "10.15.5"
 
 # ---------------------------------------------------------------------------
 # XMPP-private state directory
@@ -718,7 +718,16 @@ async def start_i2p_sam_forwarder(
         s.setblocking(False)
         return s
 
-    print(f"[i2p] opening SAM stream to {dest_b32} (a cold tunnel can take 30-90s)...")
+    # Resolve first, then announce, so the line names the destination the
+    # stream is actually opened to.  Printing the short name and only then
+    # the substitution read as though the alias had been ignored.
+    resolved, _alias_src = I2PSAMConnection._apply_i2p_alias(dest_b32)
+    if resolved != dest_b32:
+        print(f"[i2p] opening SAM stream to {dest_b32} -> {resolved} "
+              "(a cold tunnel can take 30-90s)...")
+    else:
+        print(f"[i2p] opening SAM stream to {dest_b32} "
+              "(a cold tunnel can take 30-90s)...")
     sam_sock = await loop.run_in_executor(None, _do_sam)
     print("[i2p] SAM stream established.")
 
@@ -5892,11 +5901,16 @@ def main():
             )
         except Exception as e:
             print(f"[i2p] SAM bridge failed: {e}", file=sys.stderr)
-            print(
-                "[i2p] Is i2pd running with SAM enabled on "
-                f"{args.sam_host}:{args.sam_port}? Is the server b32 correct?",
-                file=sys.stderr,
-            )
+            # Only suggest checking the router when the router is what did
+            # not answer.  A failure that came back FROM the router has
+            # already been explained by _explain_stream_failure, and
+            # repeating "is the b32 correct?" after it contradicts it.
+            if "SAM stream connect failed" not in str(e):
+                print(
+                    "[i2p] Is i2pd running with SAM enabled on "
+                    f"{args.sam_host}:{args.sam_port}?",
+                    file=sys.stderr,
+                )
             sys.exit(1)
         client.connect(host, port)
     elif use_tor:
