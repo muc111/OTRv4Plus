@@ -2,7 +2,7 @@
 """
 OTRv4+ XMPP - full OTR + SMP over XMPP, transported over I2P SAM
 ================================================================
-Version: 10.16.1
+Version: 10.16.2
 
 
 Post-quantum OTRv4+ end-to-end encryption over XMPP, reusing the IRC client's
@@ -237,7 +237,7 @@ def voice_available() -> "tuple[bool, str]":
             "no audio backend: libaaudio.so unavailable and parec/pacat "
             "missing  (run /audioprobe for details)")
 
-XMPP_VERSION = "10.16.1"
+XMPP_VERSION = "10.16.2"
 
 # ---------------------------------------------------------------------------
 # XMPP-private state directory
@@ -546,6 +546,29 @@ SMP_MAX_LEN = 512
 # Rate limiting: max inbound messages per peer per window.
 _RATE_MAX = 20
 _RATE_WINDOW = 5.0  # seconds
+
+#: The budget while an ACCEPTED transfer with that peer is in flight.
+#:
+#: The chat limit is 4 messages a second.  One 16 KB file chunk becomes five
+#: 6 KB fragments, so a 340 KB file is about a hundred stanzas -- at the chat
+#: rate the receiver drops four fifths of them, and because the chunk AEAD is
+#: a sequence, the first gap ends the transfer.  That is precisely what a
+#: device test produced: a screen of `[rate-limit] dropping message` followed
+#: by `chunk 10 arrived out of order`.
+#:
+#: A rate limiter exists to stop an UNSOLICITED flood.  A transfer the user
+#: accepted, from a peer the engine says is SMP-verified, is the opposite, so
+#: it gets a budget that fits it.  Bounded, not lifted: an accepted transfer
+#: is not a licence to send anything at any rate, and the moment it ends the
+#: peer is back to the chat limit.
+_RATE_MAX_BULK = 120
+
+#: Outbound pacing for file chunks, in fragments per second.
+#:
+#: Kept well under `_RATE_MAX_BULK / _RATE_WINDOW` (24/s) so ordinary chat,
+#: SMP and keepalives still fit inside the receiver's budget alongside a
+#: running transfer -- a sender that exactly fills the budget starves them.
+_FILE_FRAGMENTS_PER_SEC = 8.0
 
 # Reconnect backoff constants.
 _RECONNECT_BASE = 5    # seconds (initial delay)
@@ -1160,6 +1183,9 @@ class OTRv4PlusXMPP(ClientXMPP):
 
         # Security: per-peer rate limiting.
         self._rate_limit = {}  # peer -> deque of timestamps
+        # Stanzas sent by the last send_otr_fragmented call; the file
+        # pump zeroes it before each chunk and paces on the result.
+        self._file_fragments_sent = 0
 
         # Reconnect state (populated by main() before connect()).
         self._sam_params = None   # dict of SAM args for reconnect
@@ -1380,6 +1406,7 @@ class OTRv4PlusXMPP(ClientXMPP):
                     self._send_file_signal),
                 notify=print,
                 verified=self._file_peer_verified,
+                spawn=self._start_file_pump,
             )
         try:
             await self.get_roster()
@@ -2164,6 +2191,23 @@ class OTRv4PlusXMPP(ClientXMPP):
     # Rate limiting
     # -------------------------------------------------------------------------
 
+    def _rate_budget(self, peer: str) -> int:
+        """How many messages this peer may send in the window, right now.
+
+        The chat budget, unless an accepted transfer with them is running --
+        see `_RATE_MAX_BULK`.  Asked per message and deliberately cheap: it
+        walks the transfer tables, which hold at most a handful of entries.
+        """
+        mgr = self._file_manager
+        if mgr is None:
+            return _RATE_MAX
+        try:
+            if mgr.transfer_in_flight(peer):
+                return _RATE_MAX_BULK
+        except Exception:
+            pass
+        return _RATE_MAX
+
     def _check_rate_limit(self, peer: str) -> bool:
         """Return True if the message should be processed; False if throttled."""
         now = time.monotonic()
@@ -2172,7 +2216,7 @@ class OTRv4PlusXMPP(ClientXMPP):
         dq = self._rate_limit[peer]
         while dq and dq[0] < now - _RATE_WINDOW:
             dq.popleft()
-        if len(dq) >= _RATE_MAX:
+        if len(dq) >= self._rate_budget(peer):
             return False
         dq.append(now)
         return True
@@ -3243,6 +3287,45 @@ class OTRv4PlusXMPP(ClientXMPP):
             return False
         return True
 
+    def _start_file_pump(self, transfer) -> None:
+        """Send an accepted transfer without standing on the event loop.
+
+        `on_accept` is reached from inside the inbound message handler, which
+        runs on the loop.  The engine's own pump sends every chunk in one
+        unbroken run, so calling it here meant a 340 KB file encrypted and
+        pushed a hundred stanzas with nothing else getting a turn: keepalives
+        could not run, the stream was declared dead, and the transfer took the
+        connection down with it.  A device test showed the disconnect; it read
+        like a network problem and was not one.
+
+        So: one chunk per turn, with a real pause between.  The pause is not
+        politeness -- it keeps the send rate inside the receiver's budget (see
+        `_RATE_MAX_BULK`), which is the other half of why the first real
+        transfer failed.  Sends stay on the loop thread rather than moving to
+        an executor, because slixmpp's writer is not ours to call from another
+        thread.
+        """
+        async def _run():
+            mgr = self._file_manager
+            if mgr is None:
+                return
+            while True:
+                self._file_fragments_sent = 0
+                try:
+                    more = mgr.pump_step(transfer)
+                except Exception as exc:
+                    print("[file] send failed: %s" % _sanitise(str(exc), 160))
+                    return
+                if not more:
+                    return
+                # Pace on what actually went out.  A chunk that fragmented
+                # into five stanzas costs five stanzas of budget; one that
+                # fitted in a single frame costs one.
+                sent = max(1, self._file_fragments_sent)
+                await asyncio.sleep(sent / _FILE_FRAGMENTS_PER_SEC)
+
+        asyncio.ensure_future(_run())
+
     def _file_peer_verified(self, peer: str) -> bool:
         """File transfer requires the same cryptographic gate voice does.
 
@@ -3413,13 +3496,23 @@ class OTRv4PlusXMPP(ClientXMPP):
         Small messages are sent whole as a normal ?OTRv4 frame. The monotonic
         msg_id avoids collision when two large in-flight DATA frames have
         near-identical headers (version + instance tags + ratchet header).
+
+        Returns the number of stanzas sent, and adds it to
+        `_file_fragments_sent`. The file pump paces on that: what costs the
+        receiver's rate-limit budget is stanzas, not chunks.
         """
         MAX_FRAGMENT = 6000  # bytes per fragment (safely under I2P cliff)
 
         if len(payload) <= MAX_FRAGMENT:
             self.send_message(mto=peer, mbody=payload, mtype="chat")
             self._dbg(f"[otr-send] 1 frame ({len(payload)} bytes) -> {peer}")
-            return
+            # getattr rather than a plain +=, and inline rather than a
+            # helper: the fragmentation tests drive this method against a
+            # bare stub to check the wire format without building a whole
+            # client, so it must not depend on our __init__ or our methods.
+            self._file_fragments_sent = \
+                getattr(self, "_file_fragments_sent", 0) + 1
+            return 1
 
         chunks = [
             payload[i : i + MAX_FRAGMENT]
@@ -3438,6 +3531,12 @@ class OTRv4PlusXMPP(ClientXMPP):
             self.send_message(mto=peer, mbody=frag, mtype="chat")
             self._dbg(f"[otr-send]   sent fragment {i}/{total} (id {msg_id})")
         self._dbg(f"[otr-send] all {total} fragments sent (id {msg_id}) -> {peer}")
+        # What the file pump paces on. Counting stanzas rather than assuming
+        # a fixed fragments-per-chunk keeps the pacing right for the first
+        # and last chunks, which are usually shorter than the rest.
+        self._file_fragments_sent = \
+            getattr(self, "_file_fragments_sent", 0) + total
+        return total
 
     def send_otr(self, peer, payload):
         """Legacy alias for send_otr_fragmented."""

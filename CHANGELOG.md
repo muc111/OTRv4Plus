@@ -4,6 +4,68 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## v10.16.2 — `/sendfile` actually transfers
+
+*2026-09-04.  `XMPP_VERSION → 10.16.2`.  Python only.  Three defects, all on
+the first real transfer between two phones.*
+
+v10.16.1 fixed the picker, so a file was finally chosen, sealed, offered and
+accepted. Then the receiver's screen filled with this:
+
+```
+[rate-limit] dropping message from alice@xmpp-elite.i2p
+[rate-limit] dropping message from alice@xmpp-elite.i2p
+   ... about eighty more ...
+[file] DATA rejected: chunk 10 arrived out of order
+```
+
+Three things were wrong at once, and each would have killed the transfer
+alone.
+
+**The receiver throttled the file as if it were a flood.** The inbound limiter
+is 20 messages per 5 seconds — four a second. One 16 KB chunk becomes five
+6 KB fragments, so a 340 KB file is about a hundred stanzas, and four fifths
+of them were dropped. Because the chunk AEAD is a sequence, the first gap
+ended the transfer: that is what `chunk 10 arrived out of order` was reporting,
+a symptom rather than the fault.
+
+A rate limiter exists to stop an **unsolicited** flood. The chunks of a
+transfer the user accepted, from a peer the engine says is SMP-verified, are
+the opposite of unsolicited. An accepted transfer now raises that peer's
+budget to 120 per 5 seconds for as long as it runs. Raised, not lifted — an
+accepted transfer is not a licence to send anything at any rate, an *offer*
+alone (which any verified peer can send unprompted) buys nothing, and the
+moment the transfer ends the peer is back to the chat limit.
+
+**Nothing paced the sender.** It pushed chunks as fast as the loop could
+encrypt them. Sending is now one chunk per turn with a pause between, computed
+from the stanzas that actually went out rather than a fixed guess — the first
+and last chunks of a file are usually shorter than the rest. The rate, 8
+fragments a second, sits deliberately below the receiver's 24: a sender that
+exactly fills the budget starves the chat and keepalives sharing it.
+
+**And the whole file was being sent on the event loop.** `on_accept` is
+reached from inside the inbound message handler, and the engine's pump sent
+every chunk in one unbroken run. So a 340 KB transfer encrypted and pushed a
+hundred stanzas with nothing else getting a turn — keepalives could not run,
+the stream was declared dead, and the transfer took the connection down with
+it. That disconnect looked like a network problem in the earlier session too,
+and was not one. `pump_step` sends one chunk and returns; the client drives it
+from a task, with sends staying on the loop thread because slixmpp's writer is
+not ours to call from another.
+
+**A lost chunk now says so once.** There is no retransmit — the chunk AEAD is
+a sequence, so a gap can never be filled in and the transfer is already dead.
+It used to report the fault once per remaining chunk, burying the cause under
+twenty identical lines; it now abandons the transfer with one message that
+says what happened and to ask for the file again.
+
+20 tests, 3 mutations applied and killed: `on_accept` sending inline again,
+the limiter reading the budget and throttling anyway, and the pacing pause
+removed.
+
+---
+
 ## v10.16.1 — the file picker waits for you; every SMP line wears a padlock
 
 *2026-09-04.  `XMPP_VERSION → 10.16.1`.  Python only.  Two device-found fixes.*

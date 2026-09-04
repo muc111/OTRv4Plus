@@ -760,7 +760,8 @@ class FileTransferManager:
 
     def __init__(self, transport: ChunkTransport,
                  notify: Callable[[str], None],
-                 verified: Callable[[str], bool]):
+                 verified: Callable[[str], bool],
+                 spawn: Optional[Callable[["OutgoingTransfer"], None]] = None):
         if _core is None:                        # pragma: no cover
             raise TransferError(
                 "otrv4_core is unavailable, so file transfer cannot run; "
@@ -768,8 +769,34 @@ class FileTransferManager:
         self.transport = transport
         self._notify = notify
         self._verified = verified
+        # How the whole file gets sent once the peer accepts.  The default
+        # sends every chunk right here, in the caller's thread, which is what
+        # a test or a synchronous transport wants.  An event-loop client MUST
+        # pass its own: `on_accept` is reached from inside the inbound message
+        # handler, so sending a 300 KB file inline there blocks the loop --
+        # keepalives stop, the stream is declared dead, and the transfer takes
+        # the connection down with it.  Found on a device, not by reading.
+        self._spawn = spawn or self._pump
         self.outgoing: Dict[str, OutgoingTransfer] = {}
         self.incoming: Dict[str, IncomingTransfer] = {}
+
+    def transfer_in_flight(self, peer: str) -> bool:
+        """Is `peer` in the middle of an accepted transfer with us?
+
+        The inbound rate limiter asks this.  A limiter exists to stop an
+        UNSOLICITED flood, and the chunks of a transfer the user accepted from
+        an SMP-verified peer are the opposite of unsolicited -- throttling
+        them to the chat rate drops most of the file, which is exactly what a
+        device test showed.  Only `accepted` counts: an offer alone, which any
+        verified peer can send unprompted, buys nothing.
+        """
+        for t in self.incoming.values():
+            if t.peer == peer and t.accepted:
+                return True
+        for t in self.outgoing.values():
+            if t.peer == peer and t.accepted and not t.cancelled:
+                return True
+        return False
 
     # -- helpers ---------------------------------------------------------
 
@@ -840,19 +867,39 @@ class FileTransferManager:
             raise TransferError("the offer could not be sent")
         return transfer
 
-    def _pump(self, transfer: OutgoingTransfer) -> None:
-        """Send every sealed chunk.  Caller runs this off the event loop."""
+    def pump_step(self, transfer: OutgoingTransfer) -> bool:
+        """Send the next sealed chunk.  True while more remain.
+
+        One chunk per call so the caller decides the pace.  An event-loop
+        client needs that twice over: to give the loop a turn between chunks,
+        and to keep the send rate under whatever the RECEIVER will accept --
+        blasting a file as fast as the loop can encrypt it is how the first
+        real transfer lost most of its chunks to the far side's rate limiter.
+        """
         sealed = getattr(transfer, "_sealed", [])
-        for index, chunk in enumerate(sealed):
-            if transfer.cancelled:
-                return
-            if not self.transport.send_chunk(
-                    transfer.peer, transfer.offer.transfer_id, index, chunk):
-                self.cancel(transfer.offer.transfer_id, "the transport failed")
-                return
-            transfer.chunks_sent = index + 1
-        self.transport.send_control(transfer.peer, "DONE",
-                                    transfer.offer.transfer_id.hex())
+        index = transfer.chunks_sent
+        if transfer.cancelled:
+            return False
+        if index >= len(sealed):
+            self.transport.send_control(transfer.peer, "DONE",
+                                        transfer.offer.transfer_id.hex())
+            return False
+        if not self.transport.send_chunk(
+                transfer.peer, transfer.offer.transfer_id, index,
+                sealed[index]):
+            self.cancel(transfer.offer.transfer_id, "the transport failed")
+            return False
+        transfer.chunks_sent = index + 1
+        return True
+
+    def _pump(self, transfer: OutgoingTransfer) -> None:
+        """Send every sealed chunk without pausing.  The default `spawn`.
+
+        Fine for a test or a synchronous transport; see `__init__` for why an
+        event-loop client must not use it.
+        """
+        while self.pump_step(transfer):
+            pass
 
     # -- receiving -------------------------------------------------------
 
@@ -931,7 +978,18 @@ class FileTransferManager:
         if not transfer.accepted or transfer.receiver is None:
             raise TransferError("data arrived for a transfer that was not accepted")
         if index != transfer.chunks_received:
-            raise TransferError("chunk %d arrived out of order" % index)
+            # There is no retransmit in this protocol: the chunk AEAD is a
+            # sequence, so chunk N cannot be opened before N-1 and a gap can
+            # never be filled in later.  The transfer is already dead at this
+            # point; the only question is whether the user is told once or
+            # once per remaining chunk.  Before this it was once per chunk,
+            # which buried the cause under twenty identical lines.
+            expected = transfer.chunks_received
+            self._destroy_incoming(transfer)
+            raise TransferError(
+                "chunk %d arrived but %d was expected — a chunk was lost in "
+                "transit, and the sequence cannot be resumed. Transfer "
+                "abandoned; ask them to send it again" % (index, expected))
         is_final = (index + 1 == transfer.offer.chunk_count)
         # Authenticates before anything is written.  A forged chunk raises
         # here and leaves the temporary file untouched.
@@ -1125,4 +1183,4 @@ class FileTransferManager:
         transfer.accepted = True
         self._notify("[file] %s accepted %s — sending"
                      % (peer, transfer.offer.filename))
-        self._pump(transfer)
+        self._spawn(transfer)

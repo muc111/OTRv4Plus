@@ -59,6 +59,24 @@ Three things to know:
   termux-api` installs shell shims; the picker is drawn by the Termux:API app
   from F-Droid. If only half is present the client says which half.
 
+### How fast it goes, and why it is not faster
+
+A transfer is paced at 8 stanzas a second, so a 340 KB file takes roughly half
+a minute of steady sending. That is deliberate on both ends:
+
+* The receiver rate-limits inbound messages to 20 per 5 s, and raises that to
+  120 per 5 s only while an accepted transfer with that peer is running. The
+  sender stays below the raised figure so ordinary chat, SMP and the
+  keepalives still fit alongside the transfer.
+* Sending happens one chunk per turn of the event loop. Before v10.16.2 the
+  whole file went out in one unbroken run inside the inbound message handler,
+  which starved the keepalive loop and disconnected the stream mid-transfer.
+
+**There is no retransmit.** The chunk AEAD is a sequence, so chunk N cannot be
+opened before N-1 and a gap can never be filled in. A lost chunk abandons the
+transfer with one message asking you to send the file again — it does not
+stall, and it does not report the same fault once per remaining chunk.
+
 ### The explicit way: by path
 
 Termux starts with **no access to Android storage at all**. Its home is

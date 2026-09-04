@@ -1797,7 +1797,7 @@ class OTRv4DataMessage:
             raise ValueError(f"Failed to decode message: {e }")
 
 
-VERSION = "OTRv4+ 10.16.1"
+VERSION = "OTRv4+ 10.16.2"
 
 # --- OTRv4+ client identification over IRC -------------------------------
 #
