@@ -25,6 +25,37 @@
 
 OTRv4+ is an IRC and XMPP client that implements OTRv4 with a post-quantum hybrid layer added at each stage of the protocol, including the SMP identity-verification step and, as of v10.11.0, encrypted voice calls carried over I2P — which as of v10.12.0 detect, diagnose and recover from a media path that stops. It runs on Termux (Android) over I2P, Tor, or TLS clearnet, with a Rust crypto core wrapped by a thin Python orchestration layer.
 
+What actually encrypts a message, top to bottom:
+
+```
+        X448  +  ML-KEM-1024              key agreement (DAKE)
+  Ed448 ring signature  +  ML-DSA-87      authentication: deniable, then hybrid PQ
+                  |
+                  v
+      OTRv4+ double ratchet               a fresh ML-KEM-1024 exchange at
+      SHAKE-256 key schedule              EVERY DH ratchet step, not just once
+                  |
+                  v
+             AES-256-GCM
+                  |
+                  v
+       encrypted OTR message
+```
+
+Two things that chain is easy to draw wrong. **Ed448 ring signatures are not
+optional decoration** — they are what makes the authentication deniable, which
+is the property OTR exists for; ML-DSA-87 is added alongside them, not instead
+of them. And **the KEM is not a one-time handshake step**: OTRv4+ re-runs a
+fresh ML-KEM-1024 exchange at every DH ratchet step, rotating the brace key
+that feeds the SHAKE-256 schedule. That placement is the difference from
+PQXDH, which applies the KEM to the initial agreement; it is not a claim to be
+"more post-quantum" than Signal.
+
+SMP sits beside this chain rather than inside it. It has no AES of its own —
+see [Hybrid PQC SMP](#hybrid-pqc-smp-v1091) — but every SMP message travels as
+a TLV through the ratchet above, so it is AES-256-GCM in transit like anything
+else.
+
 **Single-author research prototype. Not a finished product, and not audited.** The author is not a cryptographer. The protocol composition (the DAKE wiring, the hybrid SMP construction) has had no external review, and the Rust crypto crates it depends on (`ed448-goldilocks-plus`, `x448`, `pqcrypto-mlkem`, `pqcrypto-mldsa`) have had no formal review either. Use it to study or extend, not because you need a hardened tool today. If your safety depends on the security of your messaging, use something audited.
 
 ## Authorship

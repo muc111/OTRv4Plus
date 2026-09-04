@@ -103,6 +103,24 @@ The SMP wire-version paragraph was stale too — it described `0x02` as the
 hybrid format without mentioning that `0x03`, with Argon2id, has been the
 default since v10.13.0.
 
+### The crypto chain, drawn once at the top
+
+The README described the stack in five separate places and nowhere in one
+glance. It now opens with the chain from key agreement to ciphertext, checked
+line by line against the code rather than from memory. Two corrections were
+needed before it could be committed:
+
+* **Ed448 ring signatures belong beside ML-DSA-87, not under it.** They are
+  what makes the authentication deniable, which is the property OTR exists
+  for. `dake.rs` verifies one in DAKE3 through `ring_sig::ring_verify_bytes`.
+  A diagram naming only ML-DSA-87 credits the whole of authentication to the
+  post-quantum half and quietly drops deniability.
+* **The KEM is not a one-time handshake step.** A fresh ML-KEM-1024 exchange
+  runs at *every* DH ratchet step, rotating the brace key that feeds the
+  SHAKE-256 schedule (`kdf_brace_rotate` in `ratchet.rs`). Drawn as a single
+  arrow into the ratchet it would describe PQXDH, which is precisely the
+  comparison the rest of the README is careful about.
+
 `tests/test_readme_matches_the_code.py` pins the parts that can be checked
 mechanically: the badge version against `XMPP_VERSION`, the absence of AES in
 `smp.rs` against the claim that there is none, the default wire version, and

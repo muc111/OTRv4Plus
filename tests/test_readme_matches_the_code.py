@@ -139,3 +139,52 @@ class TestTheVoiceCaveatIsNotStale:
         assert "ML-KEM decapsulation key" in security
         assert "Python `bytearray`" in security, (
             "the table now claims nothing is Python-side, which is not true")
+
+
+class TestTheCryptoChainDiagram:
+    """The top-of-README chain, checked against the code it draws.
+
+    A diagram is the part of a README people actually retain, so a wrong one
+    is worse than none. Two mistakes are easy to make here and both were
+    corrected before it was committed: dropping the Ed448 ring signature (the
+    thing that makes the authentication deniable, which is what OTR is for),
+    and drawing the KEM as a one-time handshake step when it re-runs at every
+    DH ratchet step.
+    """
+
+    def test_the_diagram_is_there(self, readme):
+        assert "What actually encrypts a message" in readme
+
+    def test_it_keeps_the_ring_signature_beside_ml_dsa(self, readme):
+        """ML-DSA-87 is added alongside the ring signature, not instead."""
+        chain = readme.split("What actually encrypts a message", 1)[1][:900]
+        assert "Ed448 ring signature" in chain, (
+            "the chain now credits authentication to ML-DSA-87 alone, which "
+            "drops deniability")
+        assert "ML-DSA-87" in chain
+
+    def test_the_dake_really_uses_a_ring_signature(self):
+        dake = _read(os.path.join("Rust", "src", "dake.rs"))
+        assert "ring_sig::ring_verify_bytes" in dake, (
+            "DAKE3 no longer verifies a ring signature; the diagram lies")
+
+    def test_the_key_schedule_really_is_shake_256(self, readme):
+        kdf = _read(os.path.join("Rust", "src", "kdf.rs"))
+        assert "Shake256" in kdf
+        assert "SHAKE-256 key schedule" in readme
+
+    def test_the_kem_really_re_runs_per_ratchet_step(self, readme):
+        """The brace key is rotated by a KEM shared secret at each DH step.
+        Lose that and the diagram's central claim is wrong."""
+        ratchet = _read(os.path.join("Rust", "src", "ratchet.rs"))
+        assert "kdf_brace_rotate" in ratchet, (
+            "nothing rotates the brace key any more")
+        assert "EVERY DH ratchet step" in readme
+
+    def test_it_does_not_put_aes_in_the_agreement_layer(self, readme):
+        """AES-256-GCM is the last step, not part of the key agreement."""
+        chain = readme.split("What actually encrypts a message", 1)[1][:600]
+        agreement, _, rest = chain.partition("double ratchet")
+        assert "AES" not in agreement, (
+            "AES appears above the ratchet, where no AES runs")
+        assert "AES-256-GCM" in rest
