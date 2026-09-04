@@ -182,3 +182,142 @@ class TestNoCopyleftDependencyCreepsIn:
         assert offenders == [], (
             "copyleft dependencies now in the tree, which makes the "
             "commercial licence unsellable: %s" % offenders)
+
+
+class TestTheNoticeCoversWhatShips:
+    """Attribution is a distribution obligation, and a stale NOTICE is a
+    breached one. It is generated, so the test is that it still matches."""
+
+    def _generator(self):
+        import importlib.util
+        path = os.path.join(ROOT, "tools", "generate_notice.py")
+        spec = importlib.util.spec_from_file_location("gen_notice", path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+    @pytest.fixture(scope="class")
+    def notice(self):
+        return _read("NOTICE")
+
+    def test_it_exists_and_says_it_is_generated(self, notice):
+        assert "third-party notices" in notice
+        assert "tools/generate_notice.py" in notice, (
+            "nothing tells the next reader how to rebuild it")
+
+    def test_every_shipped_crate_is_attributed(self, notice):
+        """The check that matters: a `cargo add` without a regenerate."""
+        gen = self._generator()
+        try:
+            meta = gen.cargo_metadata()
+        except Exception:
+            pytest.skip("cargo metadata unavailable")
+        ids = gen.shipped_packages(meta)
+        missing = []
+        for pkg in meta["packages"]:
+            if pkg["id"] not in ids:
+                continue
+            if "\n%s %s" % (pkg["name"], pkg["version"]) not in notice:
+                missing.append("%s %s" % (pkg["name"], pkg["version"]))
+        assert missing == [], (
+            "NOTICE is stale -- these ship but are not attributed: %s\n"
+            "Regenerate: python3 tools/generate_notice.py > NOTICE" % missing)
+
+    def test_the_licence_texts_of_what_we_take_are_reproduced(self, notice):
+        """MIT, BSD and Apache each require the TEXT, not just the name."""
+        for spdx in ("MIT", "BSD-3-Clause", "Apache-2.0"):
+            assert "\n%s\n" % spdx in notice, "no %s text" % spdx
+        assert "Permission is hereby granted, free of charge" in notice
+        assert "Redistributions of source code must retain" in notice
+
+    def test_nothing_is_flagged_as_unavailable(self, notice):
+        """The generator says so rather than silently omitting a text."""
+        assert "must be added before distribution" not in notice
+
+    def test_a_declined_copyleft_option_is_not_reproduced(self, notice):
+        """`r-efi` offers MIT OR Apache-2.0 OR LGPL-2.1-or-later. Printing
+        the LGPL text would imply an obligation not accepted, and would
+        suggest a copyleft dependency that is not in the tree."""
+        assert "\nLGPL-2.1-or-later\n" not in notice
+        assert "GNU LESSER GENERAL PUBLIC LICENSE" not in notice
+
+    def test_a_choice_is_recorded_as_taken(self, notice):
+        """A disjunction is a choice, and a choice recorded nowhere has not
+        really been made."""
+        assert "Taken:" in notice
+        assert "Offered:" in notice
+
+
+class TestTheNoticeGeneratorItself:
+    """Both of these were real defects in its first run."""
+
+    def _generator(self):
+        import importlib.util
+        path = os.path.join(ROOT, "tools", "generate_notice.py")
+        spec = importlib.util.spec_from_file_location("gen_notice2", path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+    @pytest.mark.parametrize("expr,expected", [
+        ("MIT OR Apache-2.0", ["MIT"]),
+        ("Apache-2.0 OR MIT", ["MIT"]),
+        ("MIT/Apache-2.0", ["MIT"]),
+        ("MIT OR Apache-2.0 OR LGPL-2.1-or-later", ["MIT"]),
+        ("(MIT OR Apache-2.0) AND Unicode-3.0", ["MIT", "Unicode-3.0"]),
+        ("Apache-2.0 WITH LLVM-exception", ["Apache-2.0", "LLVM-exception"]),
+        ("Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT", ["MIT"]),
+        ("BSD-3-Clause", ["BSD-3-Clause"]),
+    ])
+    def test_the_expression_parser(self, expr, expected):
+        """AND binds the whole expression. Splitting on OR first read
+        "(MIT OR Apache-2.0) AND Unicode-3.0" as a choice and produced the
+        identifier "(MIT", which then had no licence text to find."""
+        assert self._generator().chosen_licence(expr) == expected
+
+    def test_a_conjunction_keeps_both_halves(self):
+        """`unicode-ident` is not offering a choice between them."""
+        taken = self._generator().chosen_licence(
+            "(MIT OR Apache-2.0) AND Unicode-3.0")
+        assert "Unicode-3.0" in taken
+
+    def test_licence_body_prose_is_not_read_as_a_copyright(self):
+        """The first run matched "(c) You must retain, in the Source form of
+        any Derivative Works" out of Apache-2.0 and attributed that sentence
+        to every crate shipping it. Attribution naming the wrong holder is
+        worse than none."""
+        gen = self._generator()
+        for prose in (
+                "  (c) You must retain, in the Source form of any Derivative",
+                "     (a) You must give any other recipients a copy",
+                "of the Copyright License granted, and any other"):
+            assert not gen.COPYRIGHT_RE.match(prose), (
+                "licence prose matched as a copyright line: %r" % prose)
+
+    def test_template_placeholders_are_not_read_as_holders(self):
+        gen = self._generator()
+        for template in ("Copyright [yyyy] [name of copyright owner]",
+                         "Copyright (C) <year>  <name of author>"):
+            assert (not gen.COPYRIGHT_RE.match(template)
+                    or gen.PLACEHOLDER_RE.search(template)), (
+                "a boilerplate template would be attributed: %r" % template)
+
+    def test_a_real_copyright_line_is_still_matched(self):
+        gen = self._generator()
+        for real in ("Copyright (c) 2019 The RustCrypto Project Developers",
+                     "Copyright 2013-2026 The PurpleI2P Project",
+                     "copyright (c) 2018 Artyom Pavlov"):
+            assert gen.COPYRIGHT_RE.match(real), real
+            assert not gen.PLACEHOLDER_RE.search(real), real
+
+    def test_only_shipped_packages_are_walked(self):
+        """Build- and dev-only packages are in the lockfile and not in the
+        artifact. Attributing them pads the file a reviewer must read."""
+        gen = self._generator()
+        try:
+            meta = gen.cargo_metadata()
+        except Exception:
+            pytest.skip("cargo metadata unavailable")
+        shipped = gen.shipped_packages(meta)
+        assert 0 < len(shipped) < len(meta["packages"]) - 1, (
+            "the walk returned everything, so it is not filtering at all")

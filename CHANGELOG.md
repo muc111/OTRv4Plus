@@ -4,6 +4,63 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## v10.17.2 — NOTICE, generated from the graph rather than written by hand
+
+*2026-09-04.  `VERSION → 10.17.2`.  No code change.  The attribution file
+v10.17.0 said was missing.*
+
+Every permissive licence in the tree requires its notice reproduced in a
+binary that includes the code. There was none, so an APK on a store would have
+been non-compliant under either half of the dual licence.
+
+**Generated, not written.** [`tools/generate_notice.py`](tools/generate_notice.py)
+walks the resolved dependency graph and emits [NOTICE](NOTICE). A hand-written
+list rots the first time someone runs `cargo add`; a test now fails when the
+file and the graph disagree.
+
+**Only what actually ships.** The walk follows *normal* dependency edges from
+the root: **109 of the 137 resolved packages** are compiled into `otrv4_core`;
+the other 28 are build- and dev-only. Attributing a test framework pads the
+file that a reviewer has to read, and the audit's earlier "134 packages" was
+answering a different question — what is in the lockfile — which is right for
+an audit and wrong for attribution.
+
+**A choice is recorded as taken.** `MIT OR Apache-2.0 OR LGPL-2.1-or-later` is
+a choice, and a choice recorded nowhere has not really been made. Each crate
+now shows what it *offered* and what was *taken*: 104 MIT, 4 BSD-3-Clause, 1
+Apache-2.0 with the LLVM exception, 1 Unicode-3.0. Only the taken licences'
+texts are reproduced — printing the LGPL text for `r-efi`, which is taken under
+MIT, would imply an obligation not accepted and would suggest a copyleft
+dependency that is not in the tree. `unicode-ident`'s `(MIT OR Apache-2.0) AND
+Unicode-3.0` is *not* a choice: both halves apply and both are reproduced.
+
+### Two defects in the generator, caught before it was committed
+
+Both are the characteristic failure modes of any attribution tool, so they are
+recorded rather than quietly fixed:
+
+* **It attributed a sentence from the Apache-2.0 licence body to every crate
+  shipping that licence** — `(c) You must retain, in the Source form of any
+  Derivative Works...` matched as a copyright line. Attribution that names the
+  wrong holder is worse than none.
+* **It split `(MIT OR Apache-2.0) AND Unicode-3.0` on `OR` first**, producing
+  the identifier `(MIT`, for which no licence text could be found. `AND` binds
+  the whole expression.
+
+Copyright holders are read from each crate's own licence files. Where a crate
+ships none — `x448` and `ed448-goldilocks-plus` among them — the manifest's
+`authors` is used and the line says so, rather than inventing a holder.
+
+`LICENSING_AUDIT.md` records the re-measurement and closes the NOTICE item it
+had left open. What remains is a delivery requirement rather than an audit
+one: the APK must render this on a licences screen, and whoever bundles i2pd
+must attribute its own dependencies (Boost, OpenSSL 3.x).
+
+19 tests (36 in the file), 2 mutations applied and killed: a crate dropped
+from the NOTICE, and the declined LGPL text reappearing.
+
+---
+
 ## v10.17.1 — a transfer the receiver accepted is not throttled at all
 
 *2026-09-04.  `VERSION → 10.17.1`.  Python only.  The v10.16.2 fix was a half

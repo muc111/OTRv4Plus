@@ -6,7 +6,7 @@
 <p align="center"><strong>Post-quantum hybrid encryption for Off The Record (OTR) chat <em>and voice calls</em> over IRC and XMPP. Experimental, unaudited research prototype.</strong></p>
 
 <p align="center">
-<code>v10.17.1 · Rust crypto core · chat (X448 + ML-KEM-1024, AES-256-GCM) · hybrid PQC SMP (ML-KEM-1024 + ML-DSA-87 + ZKP) · voice (X448 + ML-KEM-1024, AES-256-GCM) · I2P SAM · AAudio · TUI</code>
+<code>v10.17.2 · Rust crypto core · chat (X448 + ML-KEM-1024, AES-256-GCM) · hybrid PQC SMP (ML-KEM-1024 + ML-DSA-87 + ZKP) · voice (X448 + ML-KEM-1024, AES-256-GCM) · I2P SAM · AAudio · TUI</code>
 </p>
 
 ---
@@ -1143,8 +1143,12 @@ under it — relicensing applies going forward and cannot withdraw rights alread
 granted.
 
 Contributions are welcome under the [CLA](CLA.md), which keeps both licences
-grantable. Paid work has [its own terms](CONTRACTOR-IP.md). Every third-party
-dependency is permissive; see [LICENSING_AUDIT.md](LICENSING_AUDIT.md).
+grantable. Paid work has [its own terms](CONTRACTOR-IP.md).
+
+Every third-party dependency is permissive — 109 crates compiled into the
+core, plus the Python and Android layers. [NOTICE](NOTICE) carries their
+attribution and must travel with any binary you distribute;
+[LICENSING_AUDIT.md](LICENSING_AUDIT.md) shows the working.
 
 ## See also
 
