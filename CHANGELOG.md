@@ -68,6 +68,47 @@ not inside the `[tag]` rule alone: had the marker been tolerated only there,
 redaction and written the message to disk. The list of markers is exact;
 "any leading emoji" would have been the hole.
 
+### The README was three versions stale, and wrong in the safe direction
+
+The badge said `v10.14.0`. It also listed the AEAD for voice and not for chat,
+which reads as though chat has none — the question that started this.
+
+**SMP does not use AES-256-GCM, and the badge should not say it does.**
+`Rust/src/smp.rs` contains no AES at all. The construction is the classical
+Schnorr ZKP over the 3072-bit group, ML-KEM-1024 encapsulation, ML-DSA-87
+signatures, and Argon2id stretching the passphrase. AES-256-GCM sits on either
+side of it and not inside it: every SMP message is a TLV in an ordinary
+double-ratchet data message, so it is AES-256-GCM in transit like any other
+message, and a stored passphrase is sealed at rest with AES-256-GCM. Neither is
+part of the proof. The badge now names the chat AEAD in its own segment, where
+it belongs, and the SMP section spells the distinction out.
+
+Two things found while checking that, both stale since v10.13.2:
+
+* **Honest caveat 4 still said voice crypto came from the Python
+  `cryptography` library** — "two AES-256-GCM implementations in the tree" —
+  while two other sections of the same README said it had moved. The only
+  remaining `AESGCM(` call sites in the repository are in `.attic/`. A README
+  that overstates a weakness is as wrong as one that hides it, and one that
+  contradicts itself gives a reader no way to tell which half to believe.
+* **`SECURITY.md`'s voice key-material table listed every item as a Python
+  `bytearray` or an OpenSSL object.** The epoch root, the media keys and the
+  X448 private scalar are Rust-owned with no accessor; the two shared secrets
+  are zeroed in place by Rust as it takes them. What is genuinely still
+  Python-side is named rather than dropped: the initiator's ML-KEM
+  decapsulation key, which lives from keygen until the peer's ciphertext
+  arrives.
+
+The SMP wire-version paragraph was stale too — it described `0x02` as the
+hybrid format without mentioning that `0x03`, with Argon2id, has been the
+default since v10.13.0.
+
+`tests/test_readme_matches_the_code.py` pins the parts that can be checked
+mechanically: the badge version against `XMPP_VERSION`, the absence of AES in
+`smp.rs` against the claim that there is none, the default wire version, and
+the two documents agreeing with each other. Six of its nine tests fail against
+the README as it was.
+
 ---
 
 ## Repository — one branch, one history

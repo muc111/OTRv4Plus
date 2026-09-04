@@ -10,7 +10,7 @@ Threat model, known issues, and reporting.
 | Active MITM at first contact | Hybrid PQC SMP zero-knowledge proof out-of-band (user types same secret on both sides); classical Schnorr ZKP wrapped in ML-KEM-1024 + ML-DSA-87 binding |
 | Long-term key compromise after the fact | Per-message forward secrecy via double ratchet; PCS via DH ratchet at 100-message / 24-hour boundaries |
 | Future quantum adversary recording today | ML-KEM-1024 hybrid in DAKE; ML-DSA-87 hybrid signatures; hybrid PQC SMP (ML-KEM-1024 + ML-DSA-87 binding the identity proof) |
-| Python heap inspection (post-exploitation) | Long-term private bytes live inside Rust `SecretBytes<N>` (ZeroizeOnDrop); session keys move Rust-to-Rust via the `DakeOutput` opaque handle. **Chat only** — voice key material is held Python-side (see caveat 11). |
+| Python heap inspection (post-exploitation) | Long-term private bytes live inside Rust `SecretBytes<N>` (ZeroizeOnDrop); session keys move Rust-to-Rust via the `DakeOutput` opaque handle. Voice too since v10.13.2: the epoch root, media keys and X448 scalar are Rust-owned with no accessor; the ML-KEM decapsulation key is the one secret still Python-side (see caveat 11). |
 | AES-GCM nonce reuse | Counter-based nonce per ratchet step, KDF-derived; nonce never reused across messages. For voice the nonce is `epoch ‖ counter`, derived from authenticated header fields and never transmitted |
 | Recording a voice call for later quantum decryption | Voice media root requires **both** X448 and ML-KEM-1024; neither alone suffices |
 | Peer identity silently swapped between XMPP sessions | Fingerprint pinned on first contact; a change is reported, never auto-accepted, and refuses voice until cleared deliberately (XMPP only — IRC identities change by design) |
@@ -56,24 +56,30 @@ Threat model, known issues, and reporting.
 
 The table above covers **chat**. No long-term private key material appears on the Python heap as `bytes` or `bytearray` during normal chat operation, and no chat key material transits an OpenSSL-backed Python object.
 
-### Voice key material (v10.11.0 onward)
+### Voice key material (v10.13.2 onward)
 
-Voice does not meet that standard, and this section previously did not say so.
+Voice did not meet that standard between v10.11.0 and v10.13.2, and this table
+listed every item below as a Python `bytearray` or an OpenSSL object. It moved
+at v10.13.2; the table was corrected at v10.16.1, later than it should have
+been. What is left in Python is named honestly rather than omitted.
 
 | Key material | Storage | Wiping |
 |---|---|---|
-| Voice epoch root (64 B) | Python `bytearray` | explicit `_wipe()` on epoch teardown |
-| Directional media keys (2 × 32 B per epoch) | Python `bytearray` | explicit `zeroize()` on epoch teardown |
-| Voice X448 shared secret | Python `bytearray` | explicit `_wipe()` immediately after use |
-| Voice ML-KEM shared secret | Python `bytearray` | explicit `_wipe()` immediately after use |
-| Voice ML-KEM decapsulation key (3168 B) | Python `bytearray` | explicit `_wipe()` once decapsulation is done |
-| Voice X448 **private** key | OpenSSL-backed `cryptography` object | **not wipeable from Python**; reference released in a `finally` as soon as the shared secret exists |
-| Live AES-GCM cipher objects | `cryptography` `AESGCM` instances | dropped on teardown; the key copy inside OpenSSL is not ours to wipe |
+| Voice epoch root (64 B) | Rust `SecretBytes<64>` in `RustVoiceRoot`; no accessor, Python holds a handle | `ZeroizeOnDrop` |
+| Directional media keys (2 × 32 B per epoch) | Rust `SecretBytes<32>` in `RustVoiceCipher`; no getter, Python calls `seal`/`open` | `ZeroizeOnDrop` |
+| Voice X448 **private** scalar (56 B) | Rust `SecretBytes<56>` in `RustVoiceKex`, single-use | `ZeroizeOnDrop` |
+| Live AEAD state | Rust, inside `RustVoiceCipher` | dropped with the epoch |
+| Voice X448 shared secret | Python `bytearray` for the moment between agreement and being consumed | zeroed **in place** by Rust as it is taken (`take_shared`), not by a `finally` the caller must remember |
+| Voice ML-KEM shared secret | as above | as above |
+| Voice ML-KEM decapsulation key (3168 B) | **Python `bytearray`** | explicit `_wipe()` in a `finally` and the reference dropped, the moment decapsulation completes |
 
-Explicit wiping is best-effort in CPython: the allocator may have copied a
-`bytearray` before it is overwritten. Everything here is per-call, per-epoch and
-short-lived — an epoch rekeys every 120 s — but none of it is Rust-owned. See
-caveat 11 and the ROADMAP item *Voice: consolidate onto the Rust core*.
+So one long-ish-lived secret is still Python-side: the initiator's ML-KEM
+decapsulation key, which exists from keygen until the peer's ciphertext
+arrives. Explicit wiping is best-effort in CPython — the allocator may have
+copied a `bytearray` before it is overwritten — and that caveat applies to it
+and to the two shared secrets in the instant before Rust takes them. It no
+longer applies to the epoch root or the media keys, which are the material a
+copy of would decrypt the call. See caveat 11.
 
 ## Build-time invariants
 
@@ -121,7 +127,7 @@ Two helper functions were removed at v10.6.17: `_verify_ed448_rust_compat()` and
    - **v10.7.4 (5.3i-D)** — `aead.rs` migrated off the deprecated `aes-gcm` `GenericArray::from_slice` helper to `Aes256Gcm::new_from_slice` and `Nonce::from(*&[u8;12])`.  Zero-warning Rust build restored.
    - **v10.7.4 (5.3k)** — the `otr4_ed448_ct` import was deleted (it had no callers; it was loaded as a defensive ground-truth but every Ed448 operation already ran in Rust).  The `.c`/`.h`/`.so` files and `setup_otr4.py` were removed from the repository.  Seven test files in `tests/` were rewritten onto Rust `otrv4_core` (the C-extension-only `test_otr.py` was deleted; the pre-broken `test_v10_4_security_fixes.py` is unrelated and tracked separately).
 
-   The architectural consequence: there is a **single cryptographic implementation surface** for chat.  No second backend to drift against, no compile-time conditionals selecting between paths, no "Rust verified against C" comparison checks.  Whatever the Rust core computes is what gets transmitted on a chat message; there is nothing else for a reviewer to look at.  *(This was true of the whole project when written.  The voice subsystem added at v10.11.0 broke it — see caveat 11.)*
+   The architectural consequence: there is a **single cryptographic implementation surface** for chat.  No second backend to drift against, no compile-time conditionals selecting between paths, no "Rust verified against C" comparison checks.  Whatever the Rust core computes is what gets transmitted on a chat message; there is nothing else for a reviewer to look at.  *(This was true of the whole project when written.  The voice subsystem added at v10.11.0 broke it by carrying a second AES-256-GCM and its own key schedule in Python; v10.13.2 moved them into the same core, and the only remaining `AESGCM(` call sites in the repository are in `.attic/`.  See caveat 11.)*
 
 5. **Ephemeral identity is a deliberate design choice for IRC, not a missing feature.** IRC regenerates identity keys at every launch; fingerprints do not persist across sessions. **XMPP does not do this** (caveat 5b). Rationale for IRC:
    - **Threat model fits ephemeral.** OTRv4+ runs over I2P for an IRC channel; the assumption is short-lived sessions, not long-term identity binding.
