@@ -4,6 +4,38 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Repository — one branch, one history
+
+*2026-09-04.  No code change.  Branch housekeeping only.*
+
+`main` had fallen 110 commits behind the working branch, so the default branch
+on GitHub showed a version of this project that predates the PQ SMP hardening,
+`/sendfile`, guided verification and the group protocol spec. It has been
+brought up to date, and development now happens on a single line of history.
+
+- `main` — current, at v10.16.0.
+- `claude/otrv4plus-android-spec-a3oq4d` — the working branch, merged into
+  `main` and still the place new work lands.
+- `voice-v10.11.0` — **deleted.** It carried exactly one commit that `main`
+  did not have, `177d0f5ff3309116802596e06bc1345204d433c2` ("v10.11.0: hybrid
+  PQ voice calls over I2P, AAudio backend"), whose only unique file was
+  `test_voice_verify.py` — a file deliberately removed later in `36efffe`.
+  Nothing in the voice implementation itself was lost; the shipping voice code
+  is on `main`.
+
+If that commit is ever wanted back:
+
+```bash
+git fetch origin 177d0f5ff3309116802596e06bc1345204d433c2
+git push origin 177d0f5ff3309116802596e06bc1345204d433c2:refs/heads/voice-v10.11.0
+```
+
+GitHub keeps the objects of a deleted branch reachable for some time and can
+also restore the branch from the repository's branch page; this SHA is recorded
+here so the commit stays findable after that window closes.
+
+---
+
 ## v10.16.0 — TLS follows the transport; `--insecure-tls` is no longer needed
 
 *2026-09-04.  `VERSION → 10.16.0`.  Python only.  A user-visible default changes, hence the minor bump.*
