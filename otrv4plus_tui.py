@@ -985,7 +985,13 @@ def install_tui(client, loop, own_jid="", initial_peer=None, debug=False,
             if not p:
                 return
             a = a.strip()
-            client.smp_start(p, a if a and a != "start" else None)
+            # Bare /smp (and /smp start) go through the guided flow, which
+            # prompts for the passphrase when none is stored.  An inline
+            # secret keeps the old direct path, echo and all.
+            if not a or a == "start":
+                client.smp_verify(p)
+            else:
+                client.smp_start(p, a)
 
         def c_smp_secret(a):
             p = need_peer()

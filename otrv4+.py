@@ -1124,6 +1124,11 @@ class OTRv4TLV:
     # any other field a peer sends.
     SMP_ABORT_NO_SECRET = b"NOSECRET"
 
+    # The user was asked and said no.  Distinct from NOSECRET, which means
+    # nobody was asked because nothing was configured.  Same rules apply: a
+    # diagnostic that chooses local wording, never a security predicate.
+    SMP_ABORT_DECLINED = b"DECLINED"
+
     def __init__(self, tlv_type: int, value: bytes = b""):
         if not (0 <= tlv_type <= 0xFFFF):
             raise ValueError(f"TLV type out of range: {tlv_type :#06x}")
@@ -1462,7 +1467,7 @@ class OTRv4DataMessage:
             raise ValueError(f"Failed to decode message: {e }")
 
 
-VERSION = "OTRv4+ 10.14.0"
+VERSION = "OTRv4+ 10.15.0"
 
 # --- OTRv4+ client identification over IRC -------------------------------
 #
@@ -6028,6 +6033,15 @@ class EnhancedOTRSession:
         self.smp_start_time: float = 0.0
 
         self._smp_notify_cb = None
+        # Whether the front end can run the guided verification flow -- ask
+        # for consent, then for a passphrase, then answer a parked SMP1.
+        # False means the old behaviour: an SMP1 with no secret is aborted
+        # with a reason, because a front end that cannot ask must not leave
+        # the peer waiting for an answer that will never come.
+        self.smp_guided_prompt = False
+        # Set when a peer's SMP1 is parked awaiting a local passphrase.  A
+        # display/routing hint only: smp_secret_required() reads the engine.
+        self._smp_secret_required = False
 
         self._ping_refresh_cb = None
 
@@ -6732,26 +6746,60 @@ class EnhancedOTRSession:
                         raise RuntimeError("SMP race-recovery: vault rebind failed")
 
                 if not self.rust_smp.check_secret_set():
+                    # HOLD the SMP1 rather than abort.
+                    #
+                    # Aborting made a setup problem look like a protocol
+                    # failure: the peer was told "SMP aborted" when the truth
+                    # was that this side had never been given the passphrase.
+                    # The engine parks the message in SECRET_REQUIRED instead,
+                    # so once the user supplies the passphrase the SMP1 that
+                    # already arrived can be answered -- no restart, no second
+                    # round trip over I2P.
+                    #
+                    # What this does NOT do, and must never do, is arm input
+                    # capture.  Holding a message is a state in the SMP engine;
+                    # it does not decide what the user's next keystroke means.
+                    # The front end asks for consent first and only a local
+                    # answer opens the passphrase prompt -- see
+                    # otrv4plus_smpflow.py and SECURITY_INVARIANTS.md INV-06.
+                    held = False
+                    try:
+                        if self.smp_guided_prompt:
+                            self.rust_smp.hold_smp1(bytes(tlv.value))
+                            held = True
+                    except Exception as _he:
+                        # An older core without hold_smp1, or a message it
+                        # would not park.  Fall back to the previous
+                        # behaviour rather than losing the run silently.
+                        self.logger.debug("hold_smp1 unavailable or refused")
+
                     self.tracer.trace(
                         self.peer,
                         "SMP",
                         "SMP1_RECEIVED",
-                        "NO_SECRET",
-                        "SMP1 received but no secret set - aborting",
+                        "SECRET_REQUIRED" if held else "NO_SECRET",
+                        "SMP1 held pending local passphrase" if held
+                        else "SMP1 received but no secret set - aborting",
                     )
-                    # Tell the local user what happened and what to type.
-                    #
-                    # This deliberately does NOT arm the pending-secret prompt.
-                    # That prompt consumes the next line typed, ahead of every
-                    # command except /quit, so letting a remote SMP1 arm it
-                    # would let a peer decide that the user's next sentence --
-                    # possibly meant for someone else -- becomes a secret. The
-                    # secret is supplied by an explicit local command instead.
+
+                    if held:
+                        # No response goes out yet.  The peer waits while the
+                        # user is asked; if they decline or the request times
+                        # out, decline_held_smp1() sends the abort.
+                        self._smp_secret_required = True
+                        self._smp_progress_notify(
+                            0, 4,
+                            "Your peer asked to verify this session. A shared "
+                            "passphrase is needed to answer.",
+                            role=None, color="yellow",
+                        )
+                        return
+
                     self._smp_progress_notify(
                         0, 4,
                         "SMP requested by peer, but no passphrase is stored "
-                        "for them. Run  /smp-secret <secret>  with the secret "
-                        "you both agreed, then  /smp start .",
+                        "for them. Run  /smp  to enter the passphrase you "
+                        "both agreed.",
                         role=None, color="yellow",
                     )
                     self._queued_smp_response = self.encrypt_with_tlvs(
@@ -6874,17 +6922,26 @@ class EnhancedOTRSession:
                 # a local line. It is peer-controlled text and is never trusted
                 # as a security predicate: either way the SMP session is over
                 # and nothing is verified.
-                no_secret = (
-                    bytes(getattr(tlv, "value", b"") or b"")
-                    == OTRv4TLV.SMP_ABORT_NO_SECRET
-                )
+                reason_bytes = bytes(getattr(tlv, "value", b"") or b"")
+                no_secret = reason_bytes == OTRv4TLV.SMP_ABORT_NO_SECRET
+                declined = reason_bytes == OTRv4TLV.SMP_ABORT_DECLINED
                 self.tracer.trace(
                     self.peer, "SMP", "ABORTED",
-                    "PEER_NO_SECRET" if no_secret else "PEER_ABORT",
-                    "Remote peer has no SMP secret configured" if no_secret
+                    "PEER_DECLINED" if declined
+                    else "PEER_NO_SECRET" if no_secret else "PEER_ABORT",
+                    "Remote peer declined the verification request" if declined
+                    else "Remote peer has no SMP secret configured" if no_secret
                     else "Remote peer aborted SMP",
                 )
-                if no_secret:
+                if declined:
+                    self._smp_progress_notify(
+                        0, 4,
+                        "SMP stopped: your peer declined the verification "
+                        "request. Nothing is verified, and this is not a "
+                        "wrong-passphrase failure.",
+                        role=None, color="yellow",
+                    )
+                elif no_secret:
                     self._smp_progress_notify(
                         0, 4,
                         "SMP stopped: your peer has not stored the passphrase "
@@ -7174,6 +7231,70 @@ class EnhancedOTRSession:
         finally:
             self._release_lock()
 
+    # ─── held SMP1: the responder-with-no-passphrase path ────────────────────
+    #
+    # Three methods, and the split between them is the security boundary.
+    # `smp_secret_required` is set by a REMOTE message arriving.  The other two
+    # are called only after the local user has answered a prompt.  Nothing here
+    # reads input; the front end owns that and hands down a result.
+
+    def smp_secret_required(self) -> bool:
+        """True while an SMP1 from the peer is parked awaiting a passphrase."""
+        if self.rust_smp is None:
+            return False
+        try:
+            return self.rust_smp.get_phase() == "SECRET_REQUIRED"
+        except Exception:
+            return False
+
+    def resume_held_smp1(self) -> Optional[str]:
+        """Answer the parked SMP1 now that a passphrase has been stored.
+
+        Returns the encrypted SMP2 to send, or raises.  The caller must have
+        called set_smp_secret() first -- the engine refuses otherwise, which is
+        the fail-closed half of "only local input can supply the secret".
+        """
+        if not self._acquire_lock():
+            raise RuntimeError("resume_held_smp1: could not acquire session lock")
+        try:
+            if self.rust_smp is None:
+                raise RuntimeError("no SMP engine")
+            self._smp_secret_required = False
+            smp2 = self.rust_smp.resume_held_smp1_generate_smp2()
+            self.smp_step = 2
+            self._smp_progress_notify(
+                2, 4, "Passphrase accepted - answering the challenge…",
+                role="responder",
+            )
+            return self.encrypt_with_tlvs(
+                "", [OTRv4TLV(OTRv4TLV.SMP_MSG_2, bytes(smp2))])
+        finally:
+            self._release_lock()
+
+    def decline_held_smp1(self, reason: bytes = b"") -> Optional[str]:
+        """Drop the parked SMP1 and tell the peer.
+
+        Used for an explicit decline, for a consent request that timed out, and
+        for teardown while one was open.  Storing nothing is the point: a
+        declined request must leave no passphrase and no state behind.
+        """
+        if not self._acquire_lock():
+            return None
+        try:
+            if self.rust_smp is None:
+                return None
+            self._smp_secret_required = False
+            try:
+                self.rust_smp.discard_held_smp1()
+            except Exception:
+                self.logger.debug("discard_held_smp1 failed")
+            self.smp_step = 0
+            return self.encrypt_with_tlvs(
+                "", [OTRv4TLV(OTRv4TLV.SMP_ABORT,
+                              reason or OTRv4TLV.SMP_ABORT_DECLINED)])
+        finally:
+            self._release_lock()
+
     def process_smp_message(self, data: bytes) -> Optional[str]:
         """Process a raw SMP TLV (type+len+value) using the Rust engine.
 
@@ -7363,7 +7484,12 @@ class EnhancedOTRSession:
 
             if self.rust_smp is not None:
                 phase = self.rust_smp.get_phase()
-                if phase not in ("IDLE", "FAILED", "VERIFIED", "ABORTED"):
+                # SECRET_REQUIRED is included deliberately: it means a peer's
+                # SMP1 is parked waiting for exactly this call.  The others are
+                # states with no run in flight.  AWAITING_MSG2/3/4 are not, and
+                # rebinding under those would change the secret mid-proof.
+                if phase not in ("IDLE", "FAILED", "VERIFIED", "ABORTED",
+                                 "SECRET_REQUIRED"):
                     raise RuntimeError(
                         f"Cannot rebind SMP secret while SMP is active "
                         f"(current phase: {phase }). Abort the current run first."
@@ -7690,6 +7816,8 @@ class SessionManager:
                         session.root_key = session_keys.get("root_key")
                         session.remote_long_term_pub = session_keys.get("peer_long_term_pub")
 
+                    session.smp_guided_prompt = getattr(
+                        self, "smp_guided_prompt", False)
                     self.sessions[peer] = session
                     del self.pending_dakes[peer]
 
@@ -7732,6 +7860,8 @@ class SessionManager:
                         session.root_key = session_keys.get("root_key")
                         session.remote_long_term_pub = session_keys.get("peer_long_term_pub")
 
+                    session.smp_guided_prompt = getattr(
+                        self, "smp_guided_prompt", False)
                     self.sessions[peer] = session
                     del self.pending_dakes[peer]
                     return True
@@ -8188,6 +8318,8 @@ class EnhancedSessionManager:
             if getattr(self, "ping_refresh_cb", None):
                 session._ping_refresh_cb = self.ping_refresh_cb
 
+            session.smp_guided_prompt = getattr(
+                self, "smp_guided_prompt", False)
             self.sessions[peer] = session
 
             self.tracer.trace(
@@ -8897,6 +9029,29 @@ class EnhancedSessionManager:
             "process_smp_message is disabled.  SMP messages are processed "
             "automatically inside decrypt_message via _enh_handle_smp_tlv."
         )
+
+    # ─── held SMP1, manager level ────────────────────────────────────────────
+
+    def smp_secret_required(self, peer: str) -> bool:
+        with self.lock:
+            sess = self.sessions.get(peer)
+        return bool(sess is not None and sess.smp_secret_required())
+
+    def resume_held_smp1(self, peer: str) -> Optional[str]:
+        """Answer a parked SMP1 for *peer*.  Returns the SMP2 to send."""
+        with self.lock:
+            sess = self.sessions.get(peer)
+        if sess is None:
+            raise RuntimeError(f"resume_held_smp1: no session for {peer}")
+        return sess.resume_held_smp1()
+
+    def decline_held_smp1(self, peer: str, reason: bytes = b"") -> Optional[str]:
+        """Drop a parked SMP1 for *peer*.  Returns the abort to send, if any."""
+        with self.lock:
+            sess = self.sessions.get(peer)
+        if sess is None:
+            return None
+        return sess.decline_held_smp1(reason)
 
     def set_smp_secret(self, peer: str, secret: str) -> bool:
         """Store SMP secret for peer in persistent storage AND bind it into
@@ -12385,6 +12540,31 @@ class OTRv4IRCClient:
         elif cmd == "trust" and len(parts) > 2:
             self.session_manager.trust_db.add_trust(parts[1], parts[2])
             self.add_message("system", f"✅ Trusted {parts [1 ]}: {parts [2 ][:16 ]}…")
+        elif cmd == "smp" and len(parts) == 1:
+            # Bare /smp.  IRC has no hidden prompt of its own -- see
+            # SMP_UX_AUDIT.md; the guided flow is the XMPP client's -- so this
+            # says what to type rather than arming anything.
+            active = self.panel_manager.get_active_panel()
+            peer = active.name if active and active.type not in ("system", "debug") else None
+            if not peer:
+                self.add_message("system", colorize("⚠ Switch to a peer panel first", "yellow"))
+            else:
+                stored = ""
+                if hasattr(self.session_manager, "smp_storage"):
+                    stored = self.session_manager.smp_storage.get_secret(peer) or ""
+                if stored:
+                    self.add_message(
+                        "system",
+                        colorize(f"🔐 Stored passphrase found for {peer } — verifying…", "cyan"),
+                    )
+                    self._start_smp(peer, stored)
+                else:
+                    self.add_message(
+                        "system",
+                        colorize("🔐 Verification needs the passphrase you agreed with "
+                                 "them. Type  /smp <passphrase>  (it will be visible "
+                                 "on this terminal).", "yellow"),
+                    )
         elif cmd == "smp" and len(parts) > 1:
             active = self.panel_manager.get_active_panel()
             peer = active.name if active and active.type not in ("system", "debug") else None
@@ -12771,10 +12951,12 @@ class EnhancedOTRv4IRCClient(OTRv4IRCClient):
         if atype == "trust":
             self._handle_trust_response(peer, text.strip().lower(), action)
             return True
-        elif atype == "smp_secret":
-            self._handle_smp_secret_response(peer, text.strip(), action)
-            return True
 
+        # There is deliberately no "smp_secret" branch.  It existed, it was
+        # armed from a remote-reachable path, and it turned the user's next
+        # line into a shared secret.  Removing the branch as well as the
+        # arming means reintroducing the defect takes two edits rather than
+        # one, and tests/test_no_remote_input_capture.py fails on either.
         return False
 
     def process_dake1(self, sender: str, payload: str):
@@ -12977,20 +13159,32 @@ class EnhancedOTRv4IRCClient(OTRv4IRCClient):
         self.add_message(
             peer,
             colorize(
-                "🔐 SMP VERIFICATION SETUP (🦀 Hybrid PQC: ML-KEM-1024 + ML-DSA-87 + ZKP)", "blue"
+                "🔐 SMP VERIFICATION (🦀 Hybrid PQC: ML-KEM-1024 + ML-DSA-87 + ZKP)", "blue"
             ),
             sec,
         )
-        self.add_message(peer, "Type your shared secret (both sides must use the same).", sec)
+        # This used to end with _set_pending("smp_secret", peer, ...), which
+        # made the NEXT LINE TYPED become the shared secret -- unmasked, into
+        # scrollback -- and it was armed from here, which a remote peer
+        # reaches by completing a DAKE.  A peer therefore decided what the
+        # user's next sentence meant.  Same defect INV-06 was written for
+        # after it was removed from the XMPP client; this side kept it.
+        #
+        # Nothing is armed now.  The user types /smp when they are ready, and
+        # that command asks for the passphrase itself.
         self.add_message(
             peer,
-            colorize("After setting secret, type  /smp start  to begin verification.", "cyan"),
+            colorize("Type  /smp  when you are ready to verify. It will ask "
+                     "for the passphrase you agreed with them.", "cyan"),
             sec,
         )
         self.add_message(
-            peer, colorize("Press Enter / type  skip  to skip SMP for now.", "dim"), sec
+            peer,
+            colorize("Until you do, what you type here is an ordinary "
+                     "message.", "dim"),
+            sec,
         )
-        self._set_pending("smp_secret", peer, security_level=sec, is_initiator=is_initiator)
+        self._finish_session_setup(peer, sec)
 
     def _ensure_rust_smp(self, peer: str) -> None:
         """Ensure the Rust SMP engine is initialized for *peer*'s session."""
@@ -13001,51 +13195,6 @@ class EnhancedOTRv4IRCClient(OTRv4IRCClient):
         )
         if session is not None and hasattr(session, "initialize_smp"):
             session.initialize_smp()
-
-    def _handle_smp_secret_response(self, peer: str, secret: str, action: dict):
-        """Process SMP secret input from user."""
-        sec = action.get("security_level", UIConstants.SecurityLevel.ENCRYPTED)
-        is_initiator = action.get("is_initiator", False)
-
-        if secret and secret.lower() != "skip":
-            try:
-                self._ensure_rust_smp(peer)
-                if hasattr(self.session_manager, "set_smp_secret"):
-                    self.session_manager.set_smp_secret(peer, secret)
-
-                self.add_message(
-                    self._otr_panel(peer),
-                    colorize("✅ SMP secret stored (🦀 Rust vault)", "green"),
-                    sec,
-                )
-
-                if is_initiator:
-                    self.add_message(
-                        self._otr_panel(peer),
-                        colorize("🔐 Type  /smp start  to begin verification.", "cyan"),
-                        sec,
-                    )
-                else:
-                    self.add_message(
-                        self._otr_panel(peer),
-                        colorize(
-                            "🔐 Type  /smp start  to initiate, or wait for the other side.", "cyan"
-                        ),
-                        sec,
-                    )
-            except Exception as exc:
-                self.debug("smp secret store error")
-                self.add_message(
-                    self._otr_panel(peer), colorize("⚠ Could not store SMP secret", "yellow"), sec
-                )
-        else:
-            self.add_message(
-                self._otr_panel(peer),
-                colorize("⚠ SMP skipped - use /smp <secret> later", "dim"),
-                sec,
-            )
-
-        self._finish_session_setup(peer, sec)
 
     def _finish_session_setup(self, peer: str, sec):
         """Show final help after session is fully set up."""

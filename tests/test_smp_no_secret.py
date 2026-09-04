@@ -89,7 +89,11 @@ class TestTheAbortSaysWhy:
                 text = " ".join(
                     n.value for n in ast.walk(node)
                     if isinstance(n, ast.Constant) and isinstance(n.value, str))
-                assert "/smp-secret" in text, (
+                # `/smp` is now the command that fixes it: it asks for the
+                # passphrase and then verifies, so the user needs one verb
+                # rather than two.  `/smp-secret` remains as the explicit
+                # store-only form and is documented that way.
+                assert "/smp" in text, (
                     "the message does not name the command that fixes it")
                 return
         pytest.fail("the no-secret branch is gone")

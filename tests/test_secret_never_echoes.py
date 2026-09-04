@@ -86,7 +86,7 @@ class TestTheEngineCanHideIt:
 class TestTheClientTurnsItOn:
 
     def test_the_prompt_masks(self):
-        src = inspect.getsource(xmpp.OTRv4PlusXMPP._request_smp_secret)
+        src = inspect.getsource(xmpp.OTRv4PlusXMPP._arm_secret_prompt)
         assert "_mask_next_input(True)" in src
 
     def test_the_answer_unmasks(self):
@@ -208,7 +208,7 @@ class TestItNeverPromisesWhatItCannotDo:
             otr.set_input_mask(False)
 
     def test_the_prompt_branches_on_the_return_value(self):
-        src = inspect.getsource(xmpp.OTRv4PlusXMPP._request_smp_secret)
+        src = inspect.getsource(xmpp.OTRv4PlusXMPP._arm_secret_prompt)
         assert "hidden = self._mask_next_input(True)" in src
         assert "if hidden:" in src
         low = src.lower()
@@ -219,7 +219,7 @@ class TestItNeverPromisesWhatItCannotDo:
     def test_the_claim_and_the_warning_are_mutually_exclusive(self):
         import ast, textwrap
         fn = ast.parse(textwrap.dedent(
-            inspect.getsource(xmpp.OTRv4PlusXMPP._request_smp_secret))).body[0]
+            inspect.getsource(xmpp.OTRv4PlusXMPP._arm_secret_prompt))).body[0]
         branch = [n for n in ast.walk(fn) if isinstance(n, ast.If)
                   and isinstance(n.test, ast.Name) and n.test.id == "hidden"]
         assert branch, "the promise is not guarded by whether it is true"

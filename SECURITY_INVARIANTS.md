@@ -59,12 +59,12 @@ The session log is an allowlist of line shapes, not a denylist of patterns: a li
 
 termios ECHO is cleared with TCSANOW; the masking helper returns whether it took effect and the prompt wording follows that return value.
 
-### INV-06 — No remote protocol message can arm local secret-input capture.
+### INV-06 — Remote SMP messages may request local user interaction but can never capture arbitrary local input.
 
 **Status:** `ENFORCED`  
-**Enforced by:** `tests/test_no_remote_input_capture.py`
+**Enforced by:** `tests/test_no_remote_input_capture.py`, `tests/test_smp_guided_flow.py`
 
-Secrets come only from an explicit local /smp-secret invocation.  There is no pending-input state machine.
+A peer's SMP1 moves otrv4plus_smpflow.SmpFlow to AWAITING_LOCAL_CONSENT and no further.  The only edges into AWAITING_SECRET -- the state in which a typed line is read as a passphrase -- are local_secret_needed (the user typed /smp) and local_consent (the user typed y).  A chat message typed at a consent prompt is not y, so it is sent as a message.
 
 ### INV-07 — Rust-owned secret material zeroizes on drop.
 

@@ -4,6 +4,41 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## v10.15.0 — guided SMP verification, and the core-API regression behind it
+
+*2026-09-04.  `VERSION → 10.15.0`, `otrv4_core 0.10.27`.  No wire format change: SMP messages, the 0x03 Argon2id derivation and the abort TLV are byte-identical.  `SMP_ABORT` gains one optional diagnostic payload, which older peers ignore exactly as they ignored the last one.*
+
+**The reported failure was not an SMP bug.**
+
+```
+[smp] start error: SMP start failed: 'builtins.RustSMPVault'
+      object has no attribute 'store_from_bytearray'
+```
+
+`store_from_bytearray` is the correct method and it has existed since `otrv4_core 0.10.25`.  The handset was running client 10.14.0 against an older compiled core: `git pull` updates the Python, only `pip install ./Rust` updates the core, and nothing checked that the two agreed.  The mismatch surfaced as an `AttributeError` inside an executor thread at the first verification attempt, wrapped in two `RuntimeError`s, worded as though the protocol had failed.
+
+The fix is `otrv4plus_coreapi.py`: the clients declare the core methods they require, with the version each arrived in, and the check runs at startup and names both the missing method and the command to rebuild.  A Python shim restoring the old `store(bytes(raw))` call was rejected — that call made an immutable copy of the passphrase the caller could not wipe, which is the whole reason `store_from_bytearray` replaced it.  `tests/test_smp_guided_flow.py::TestTheCoreApiContract` fails if a client calls a vault method the manifest does not declare, so the next regression of this shape is caught in CI rather than on a phone.
+
+**Verification is now one command.**  `/smp` prompts for the passphrase (hidden) if none is stored, then verifies.  `/smp-secret` remains as the store-without-verifying form and is documented as the advanced one.  Nobody needs to know it exists.
+
+**The responder no longer sees a failure when the truth is "you have not set a passphrase".**  A new engine phase, `SECRET_REQUIRED`, holds the received SMP1 instead of aborting on it, so once the passphrase is supplied the message that already arrived is answered — no restart, no second round trip over I2P.  `hold_smp1`, `resume_held_smp1_generate_smp2` and `discard_held_smp1` are in `Rust/src/smp.rs`, at the shared engine, so both clients see the same state.
+
+**A peer can now open a prompt, which needed the security property re-stated rather than re-asserted.**  INV-06 used to read "no remote protocol message can arm local secret-input capture", and the simplest way to keep it true was for an SMP1 to arm nothing at all.  Making the responder flow automatic means a peer's message does put a prompt on the screen, so the invariant is now:
+
+> Remote SMP messages may request local user interaction but can never capture arbitrary local input.
+
+`otrv4plus_smpflow.py` is that boundary as a state machine.  A peer's SMP1 reaches `AWAITING_LOCAL_CONSENT` and stops.  The only edges into `AWAITING_SECRET` — the state in which a typed line is read as a passphrase — are `local_secret_needed` (the user typed `/smp`) and `local_consent` (the user typed `y`).  A chat message typed at a consent prompt is not `y`, so it falls through and is **sent as a message**.  That case is a test, because it is the one that matters: `test_an_ordinary_message_at_the_consent_prompt_is_just_a_message`.
+
+**The IRC client still had the original defect.**  INV-06's test walked `otrv4plus_xmpp.py` only.  In `otrv4+.py`, completing a DAKE — which a *peer* initiates — armed `_set_pending("smp_secret", peer, …)`, and the next line typed became the shared secret, unmasked, into scrollback.  Removed, along with the dispatch branch that consumed it, so reintroducing it takes two edits and either one fails a test.
+
+**Six states, six messages, and none of them lying about the others.**  Secret required, cancelled, declined, aborted, wrong passphrase, internal error.  An internal failure now says so and says "no secret was transmitted or stored" instead of reading like a mismatch; a wrong passphrase is still a genuine cryptographic failure and is still reported as one.
+
+**Not live-tested.**  Every claim here is from the test suite on a development machine.  Two-handset validation over I2P — including the reversed roles and the ordinary-message case — is in `SMP_UX_AUDIT.md` §8 and has not been run.
+
+Python 2386 passed, 43 skipped, 1 xfailed.  Rust 111 passed.
+
+---
+
 ## v10.14.0 — /sendfile
 
 *2026-09-01.  `VERSION → 10.14.0`, `otrv4_core 0.10.26`.  New capability; the encrypted-file format carries its own version byte, currently `1`.*

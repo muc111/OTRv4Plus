@@ -756,6 +756,43 @@ per ZKP within the protocol) preventing cross-protocol proof reuse.
 All `base^exp mod p` operations on secret exponents MUST be constant-time
 (Montgomery-form modular exponentiation is RECOMMENDED).
 
+### 6.6.1 Local state: SMP1 received with no secret
+
+A responder that receives SMP1 before a shared secret has been configured
+locally has three options, and the choice is observable to the initiator:
+
+1. abort, which is what this implementation did before v10.15.0 and which is
+   indistinguishable from a real failure to anyone reading the initiator's
+   screen;
+2. answer with an empty or default secret, which is never acceptable — it
+   completes the protocol and reports a mismatch that means nothing;
+3. **hold the message and ask the local user.**
+
+Implementations SHOULD take (3), and MUST NOT take (2).
+
+The holding state is **local**. Nothing about it appears on the wire, no
+message is emitted while a message is held, and the peer observes only the
+delay. This implementation names it `SECRET_REQUIRED` and permits exactly two
+exits: answer the held SMP1 once a secret has been set, or discard it and send
+`SMP_ABORT`. A held message MUST be answered at most once.
+
+An implementation that holds MUST bound both what it holds and how long it
+holds it: a held SMP1 is attacker-supplied, and a request that never expires
+is a prompt the user may answer long after they have forgotten what it was
+about.
+
+**Holding MUST NOT change what supplies the secret.** A received message may
+cause an implementation to *ask* for the passphrase; it MUST NOT cause the
+next input the user provides for any other purpose to be consumed as one. See
+SECURITY_INVARIANTS.md INV-06.
+
+**Abort reasons.** `SMP_ABORT` MAY carry an optional payload naming why. This
+implementation defines `NOSECRET` (nothing was configured and nobody was
+asked) and `DECLINED` (the user was asked and said no). The payload is a
+diagnostic that selects local wording; it is attacker-controlled text and MUST
+NOT be used as a security predicate. Implementations that do not recognise a
+payload MUST ignore it and treat the message as a plain abort.
+
 ### 6.7 Post-Quantum Binding Layer
 
 The hybrid PQ layer wraps the classical SMP with ML-KEM-1024 and ML-DSA-87.

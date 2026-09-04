@@ -226,9 +226,12 @@ All commands work identically in TUI and `--no-tui` mode.
 
 ```
 /otr [jid]            start OTR session (DAKE)
-/smp start            begin SMP verification
-/smp <secret>         set secret and start SMP in one step
-/smp-secret <s>       store secret for auto-respond (no initiation)
+/smp                  verify this session — prompts (hidden) if no passphrase
+                      is stored, then verifies. The only SMP command you need.
+/smp start            same as /smp
+/smp <secret>         set the passphrase inline and start (ECHOED — prefer /smp)
+/smp-secret           store a passphrase without verifying (prompts, hidden)
+/smp-secret <s>       store it inline (ECHOED — advanced/compat form)
 /trust                re-show fingerprint trust prompt
 /msg <jid> <text>     send plaintext message (no OTR)
 /status               show session + trust + SMP state

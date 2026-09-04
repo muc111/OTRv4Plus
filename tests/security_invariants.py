@@ -92,12 +92,18 @@ INVARIANTS: Tuple[Invariant, ...] = (
     ),
     Invariant(
         id="INV-06",
-        statement="No remote protocol message can arm local secret-input "
-                  "capture.",
+        statement="Remote SMP messages may request local user interaction "
+                  "but can never capture arbitrary local input.",
         status="ENFORCED",
-        tests=("test_no_remote_input_capture.py",),
-        rationale="Secrets come only from an explicit local /smp-secret "
-                  "invocation.  There is no pending-input state machine.",
+        tests=("test_no_remote_input_capture.py",
+               "test_smp_guided_flow.py"),
+        rationale="A peer's SMP1 moves otrv4plus_smpflow.SmpFlow to "
+                  "AWAITING_LOCAL_CONSENT and no further.  The only edges "
+                  "into AWAITING_SECRET -- the state in which a typed line "
+                  "is read as a passphrase -- are local_secret_needed (the "
+                  "user typed /smp) and local_consent (the user typed y).  "
+                  "A chat message typed at a consent prompt is not y, so it "
+                  "is sent as a message.",
     ),
     Invariant(
         id="INV-07",

@@ -11,6 +11,39 @@ and any manual steps.
 
 ---
 
+## To v10.15.0
+
+**Rebuild required**, and this release exists partly because the previous one
+did not say that loudly enough.
+
+```bash
+cd ~/OTRv4Plus && git pull
+python3 -m pip install --break-system-packages ./Rust    # ← not optional
+```
+
+`git pull` updates the Python; only the second line updates the compiled core.
+Skipping it on v10.14.0 produced
+
+```
+[smp] start error: SMP start failed: 'builtins.RustSMPVault'
+      object has no attribute 'store_from_bytearray'
+```
+
+which looked like an SMP bug and was a stale wheel. The client now checks at
+startup and names both the missing method and the command above, so the same
+mistake is a clear message rather than a failure at the first `/smp`.
+
+**Both peers should update**, but a mixed pair still works. The wire format is
+unchanged: an old peer receiving an abort with the new `DECLINED` reason
+ignores the payload and reports a plain abort, exactly as it did before the
+`NOSECRET` reason was added.
+
+**What changes for you:** `/smp` is now the only verification command you need.
+It prompts for the passphrase if none is stored, then verifies. If a peer asks
+to verify and you have nothing stored, you are asked `y`/`n` and then prompted,
+instead of the session aborting. `/smp-secret` still works and is now the
+advanced form.
+
 ## To v10.12.0 (from v10.11.1)
 
 ### Identity and trust (XMPP only)

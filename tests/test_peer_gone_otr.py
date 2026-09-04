@@ -60,6 +60,12 @@ class _FakeClient:
         self.otr = _FakeOTR()
         self._encrypted = set(encrypted)
         self._secret_request = None
+        self._secret_purpose = None
+        # The guided verification flow.  A real registry: teardown has to
+        # clear it, and a stub could not show that it did.
+        import otrv4plus_smpflow as _smpflow
+        self._smp_flows = _smpflow.SmpFlowRegistry()
+        self._smp_consent_shown = None
         self.mask_calls = []
         self._last_dake1 = {}
         self._smp_reported = {(PEER, "SUCCEEDED"), (OTHER, "SUCCEEDED")}
@@ -147,6 +153,12 @@ class TestForget:
             "a secret prompt outlived the session it belonged to")
         assert PEER not in c._last_dake1
         assert not [k for k in c._smp_reported if k[0] == PEER]
+        # A verification request cannot outlive the session either: the held
+        # SMP1 went with the ratchet, so a consent prompt still on screen
+        # would be asking about something that no longer exists.
+        import otrv4plus_smpflow as _smpflow
+        assert c._smp_flows.get(PEER).state == _smpflow.IDLE
+        assert c._smp_consent_shown is None
 
     def test_it_leaves_other_peers_alone(self):
         c = _FakeClient(encrypted=(PEER, OTHER))

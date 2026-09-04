@@ -213,6 +213,19 @@ fn pad_be_384(raw: &[u8]) -> [u8; 384] {
 #[derive(Debug, PartialEq, Clone, Copy)]
 pub enum SmpPhase {
     Idle,
+    /// SMP1 arrived while no secret was set.
+    ///
+    /// The alternative was to abort, which is what this engine used to do, and
+    /// it made a setup problem look like a protocol failure: the initiator was
+    /// told SMP had been aborted when in truth the responder had simply never
+    /// been given the passphrase.  Holding the message instead lets the
+    /// responder supply it and answer the SMP1 that already arrived, so the
+    /// run continues rather than restarting.
+    ///
+    /// This is a LOCAL state.  Nothing about it goes on the wire, and the only
+    /// way out of it is `resume_held_smp1_generate_smp2` (after the secret is
+    /// set) or `discard_held_smp1`.
+    SecretRequired,
     AwaitingMsg2,
     AwaitingMsg3,
     AwaitingMsg4,
@@ -556,6 +569,11 @@ pub struct SmpState {
 
     // State
     #[zeroize(skip)] pub phase:        SmpPhase,
+    /// SMP1 received before a secret was available, kept so it can be
+    /// answered rather than made to arrive again.  Not secret -- it is a
+    /// message the peer broadcast to us -- so it is not zeroized; it is
+    /// bounded and dropped on `destroy`.
+    #[zeroize(skip)] held_smp1:        Option<Vec<u8>>,
     #[zeroize(skip)] pub is_initiator: bool,
     #[zeroize(skip)] question:         Option<String>,
     #[zeroize(skip)] session_id:       Option<Vec<u8>>,
@@ -582,6 +600,7 @@ impl SmpState {
             g2a: None, g3a: None, g2b: None, g3b: None, g3: None,
             pa: None, qa: None, pb: None, qb: None,
             phase: SmpPhase::Idle,
+            held_smp1: None,
             is_initiator,
             question: None,
             session_id: None,
@@ -614,6 +633,7 @@ impl SmpState {
         self.g3b = None; self.g3 = None;
         self.pa = None; self.qa = None; self.pb = None; self.qb = None;
         self.session_id = None; self.our_fp = None; self.peer_fp = None;
+        self.held_smp1 = None;
         self.pq.wipe();
         self.phase = SmpPhase::Aborted;
     }
@@ -1058,6 +1078,81 @@ impl SmpState {
     //   mlkem_ct               (1568 bytes, KEM ciphertext)
     //   mldsa_pk               (2592 bytes, responder's ML-DSA-87 public key)
     //   mldsa_sig              (4627 bytes, ML-DSA-87 sig over version||classical||mlkem_ct||mldsa_pk)
+
+    // ─── SMP1 held pending a local secret ────────────────────────────────────
+    //
+    // The responder-with-no-passphrase case.  Previously the engine aborted
+    // and the initiator was told "SMP aborted", which is indistinguishable
+    // from a real failure to anyone reading it.  These three methods let the
+    // client pause instead.
+    //
+    // What must remain true, and is what the phase exists to make checkable:
+    // arriving here is caused by a REMOTE message, but leaving here towards
+    // SMP2 requires a secret that only local input can supply.  The engine
+    // will not take a secret from the wire and will not answer the held SMP1
+    // until `check_secret_set()` is true.
+
+    /// Hold an SMP1 that arrived before a secret was available.
+    ///
+    /// Refuses if a secret is already set -- in that case the caller should
+    /// process the message normally rather than pausing on it -- and refuses
+    /// outside `Idle`, so a peer cannot use it to disturb a run in progress.
+    pub fn hold_smp1(&mut self, smp1_data: &[u8]) -> Result<()> {
+        self.guard()?;
+        if self.phase != SmpPhase::Idle {
+            return Err(OtrError::Smp("SMP not Idle: cannot hold SMP1"));
+        }
+        if !self.secret.is_empty() {
+            return Err(OtrError::Smp("secret already set: process SMP1 instead of holding it"));
+        }
+        if smp1_data.is_empty() {
+            return Err(OtrError::TruncatedMessage);
+        }
+        // Bounded so a peer cannot make us hold something large while a human
+        // decides.  SMP1 is ~4 KiB (classical fields + ML-KEM ek + ML-DSA pk);
+        // 16 KiB is generous and still bounded.
+        if smp1_data.len() > 16384 {
+            return Err(OtrError::Smp("SMP1 too large to hold"));
+        }
+        self.held_smp1 = Some(smp1_data.to_vec());
+        self.phase = SmpPhase::SecretRequired;
+        Ok(())
+    }
+
+    pub fn has_held_smp1(&self) -> bool { self.held_smp1.is_some() }
+
+    /// Answer the held SMP1 now that a secret has been set.
+    ///
+    /// Fails closed: without a secret this returns an error and the message
+    /// stays held, rather than proceeding with an empty scalar.
+    pub fn resume_held_smp1_generate_smp2(&mut self) -> Result<Vec<u8>> {
+        self.guard()?;
+        if self.phase != SmpPhase::SecretRequired {
+            return Err(OtrError::Smp("no SMP1 is being held"));
+        }
+        if self.secret.is_empty() {
+            return Err(OtrError::Smp("secret still not set: cannot answer the held SMP1"));
+        }
+        let held = match self.held_smp1.take() {
+            Some(bytes) => bytes,
+            None => return Err(OtrError::Smp("no SMP1 is being held")),
+        };
+        // process_smp1_generate_smp2 requires Idle, which is exactly what this
+        // is: an SMP1 arriving at an engine that has done nothing else yet.
+        self.phase = SmpPhase::Idle;
+        self.process_smp1_generate_smp2(&held)
+    }
+
+    /// Drop a held SMP1 -- the user declined, cancelled, or timed out.
+    ///
+    /// Returns to Idle rather than Aborted: nothing failed, and the user must
+    /// be able to start or accept SMP later without rebuilding the engine.
+    pub fn discard_held_smp1(&mut self) {
+        self.held_smp1 = None;
+        if self.phase == SmpPhase::SecretRequired {
+            self.phase = SmpPhase::Idle;
+        }
+    }
 
     pub fn process_smp1_generate_smp2(&mut self, smp1_data: &[u8]) -> Result<Vec<u8>> {
         self.guard()?;
@@ -1582,7 +1677,8 @@ impl SmpState {
 
     pub fn get_phase(&self) -> &'static str {
         match self.phase {
-            SmpPhase::Idle         => "IDLE",
+            SmpPhase::Idle           => "IDLE",
+            SmpPhase::SecretRequired => "SECRET_REQUIRED",
             SmpPhase::AwaitingMsg2 => "AWAITING_MSG2",
             SmpPhase::AwaitingMsg3 => "AWAITING_MSG3",
             SmpPhase::AwaitingMsg4 => "AWAITING_MSG4",
@@ -1697,6 +1793,25 @@ impl PySmp {
     }
 
     fn abort(&mut self)             { self.inner.destroy(); }
+
+    /// Hold an SMP1 that arrived with no secret set.  See `SmpState::hold_smp1`.
+    fn hold_smp1(&mut self, smp1_data: &[u8]) -> PyResult<()> {
+        self.inner.hold_smp1(smp1_data)
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))
+    }
+
+    fn has_held_smp1(&self) -> bool { self.inner.has_held_smp1() }
+
+    /// Answer the held SMP1.  Requires the secret to have been set locally.
+    fn resume_held_smp1_generate_smp2<'py>(
+        &mut self, py: Python<'py>,
+    ) -> PyResult<Py<PyBytes>> {
+        self.inner.resume_held_smp1_generate_smp2()
+            .map(|v| PyBytes::new(py, &v).unbind())
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))
+    }
+
+    fn discard_held_smp1(&mut self) { self.inner.discard_held_smp1(); }
     fn destroy(&mut self)           { self.inner.destroy(); }
     fn is_verified(&self)  -> bool  { self.inner.is_verified() }
     fn is_failed(&self)    -> bool  { self.inner.is_failed() }
@@ -2166,6 +2281,128 @@ mod tests {
             "the error must tell the user what to actually do: {}",
             msg
         );
+    }
+
+    // ─── SECRET_REQUIRED: SMP1 held pending a local passphrase ──────────────
+
+    fn full_smp1() -> Vec<u8> {
+        let mut a = SmpState::new(true);
+        a.set_secret(b"a-shared-passphrase", b"sid-0", b"fp-a", b"fp-b");
+        a.generate_smp1(None).expect("smp1")
+    }
+
+    #[test]
+    fn holding_smp1_reports_secret_required_rather_than_failing() {
+        let mut b = SmpState::new(false);
+        assert_eq!(b.get_phase(), "IDLE");
+        b.hold_smp1(&full_smp1()).expect("hold");
+        assert_eq!(b.get_phase(), "SECRET_REQUIRED");
+        assert!(b.has_held_smp1());
+        // Distinct from failure: this is a setup state, not a protocol error.
+        assert!(!b.is_failed(), "SECRET_REQUIRED must not read as failed");
+        assert!(!b.is_verified());
+    }
+
+    #[test]
+    fn a_held_smp1_cannot_be_answered_without_a_secret() {
+        let mut b = SmpState::new(false);
+        b.hold_smp1(&full_smp1()).expect("hold");
+        let err = b.resume_held_smp1_generate_smp2()
+            .expect_err("must not answer without a secret");
+        assert!(format!("{}", err).contains("secret"));
+        // Fails closed: still held, still SECRET_REQUIRED, nothing consumed.
+        assert!(b.has_held_smp1());
+        assert_eq!(b.get_phase(), "SECRET_REQUIRED");
+    }
+
+    #[test]
+    fn a_held_smp1_is_answered_once_the_secret_arrives() {
+        let sid = b"sid-0";
+        let m1 = {
+            let mut a = SmpState::new(true);
+            a.set_secret(b"a-shared-passphrase", sid, b"fp-a", b"fp-b");
+            a.generate_smp1(None).expect("smp1")
+        };
+        let mut b = SmpState::new(false);
+        b.hold_smp1(&m1).expect("hold");
+        b.set_secret(b"a-shared-passphrase", sid, b"fp-b", b"fp-a");
+        let m2 = b.resume_held_smp1_generate_smp2().expect("smp2");
+        assert!(!m2.is_empty());
+        assert_eq!(b.get_phase(), "AWAITING_MSG3");
+        assert!(!b.has_held_smp1(), "the held message must be consumed once");
+    }
+
+    #[test]
+    fn a_held_smp1_can_only_be_answered_once() {
+        let mut b = SmpState::new(false);
+        b.hold_smp1(&full_smp1()).expect("hold");
+        b.set_secret(b"a-shared-passphrase", b"sid-0", b"fp-b", b"fp-a");
+        b.resume_held_smp1_generate_smp2().expect("smp2");
+        assert!(b.resume_held_smp1_generate_smp2().is_err(),
+                "a replayed resume must not run the protocol twice");
+    }
+
+    #[test]
+    fn discarding_returns_to_idle_and_keeps_nothing() {
+        let mut b = SmpState::new(false);
+        b.hold_smp1(&full_smp1()).expect("hold");
+        b.discard_held_smp1();
+        assert_eq!(b.get_phase(), "IDLE", "a decline is not a failure");
+        assert!(!b.has_held_smp1());
+        assert!(b.resume_held_smp1_generate_smp2().is_err());
+    }
+
+    #[test]
+    fn holding_is_refused_when_a_secret_is_already_set() {
+        let mut b = SmpState::new(false);
+        b.set_secret(b"a-shared-passphrase", b"sid-0", b"fp-b", b"fp-a");
+        assert!(b.hold_smp1(&full_smp1()).is_err(),
+                "with a secret set the message should be processed, not held");
+    }
+
+    #[test]
+    fn holding_is_refused_once_a_run_is_under_way() {
+        // A peer must not be able to disturb a run in progress by sending an
+        // SMP1 that would otherwise be parked.
+        let mut a = SmpState::new(true);
+        a.set_secret(b"a-shared-passphrase", b"sid-0", b"fp-a", b"fp-b");
+        a.generate_smp1(None).expect("smp1");
+        assert_eq!(a.get_phase(), "AWAITING_MSG2");
+        assert!(a.hold_smp1(&full_smp1()).is_err());
+        assert_eq!(a.get_phase(), "AWAITING_MSG2", "phase must be untouched");
+    }
+
+    #[test]
+    fn an_empty_or_oversized_smp1_is_not_held() {
+        let mut b = SmpState::new(false);
+        assert!(b.hold_smp1(b"").is_err());
+        assert!(b.hold_smp1(&vec![0u8; 16385]).is_err());
+        assert_eq!(b.get_phase(), "IDLE");
+        assert!(!b.has_held_smp1());
+    }
+
+    #[test]
+    fn destroy_drops_a_held_smp1() {
+        let mut b = SmpState::new(false);
+        b.hold_smp1(&full_smp1()).expect("hold");
+        b.destroy();
+        assert!(!b.has_held_smp1());
+        assert_eq!(b.get_phase(), "ABORTED");
+    }
+
+    #[test]
+    fn secret_required_is_not_reachable_from_the_wire() {
+        // The only way in is hold_smp1, which the local client calls after
+        // deciding to pause.  No message parser sets the phase.
+        let src = include_str!("smp.rs");
+        let sets: Vec<&str> = src.lines()
+            .filter(|l| l.contains("SmpPhase::SecretRequired")
+                     && l.contains("self.phase =")
+                     && !l.contains("self.phase =="))   // a comparison, not a write
+            .collect();
+        assert_eq!(sets.len(), 1,
+                   "exactly one assignment into SECRET_REQUIRED expected, found {:?}",
+                   sets);
     }
 
     #[test]

@@ -63,7 +63,7 @@ established fails closed rather than falling back to a less private one. See
 | Multi-session (one tab per peer) | Yes |
 | Protected input box (no leaking to scrollback) | Yes |
 | `/otr <nick>` opportunistic DAKE start | Yes |
-| `/smp <secret>` and `/smp start` SMP flow | Yes |
+| Guided `/smp` verification: prompts for the passphrase when none is stored, and asks the responder for consent before prompting | Yes |
 | `/trust <nick>` and `y` / `n` fingerprint trust | Yes |
 | `/fingerprint` shows yours and theirs | Yes |
 | `/names` channel user list | Yes — total count, privilege groups, OTRv4+ clients in blue and selectable with 1-9 to start `/otr`. Detection reads the realname the peer's client sent at IRC registration and relayed in `RPL_WHOREPLY`; it is **self-asserted client identification, never authentication** (INV-20) |

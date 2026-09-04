@@ -133,30 +133,42 @@ class TestOnlyLocalCommandsCanArm:
             "expected exactly one assignment that arms the secret prompt, "
             "found %d" % len(armers))
 
-    def test_the_armer_is_request_smp_secret(self):
+    def test_the_armer_is_arm_secret_prompt(self):
+        """One function arms the hidden read, and it is the only one.
+
+        `_request_smp_secret` (the /smp-secret command), `smp_verify` (the
+        /smp command) and `_handle_smp_consent` (after a y) all go through it,
+        so the reachability tests below have a single target to check.
+        """
         methods = _methods(_tree())
-        assert "_request_smp_secret" in methods
-        body = ast.get_source_segment(_src(), methods["_request_smp_secret"][0])
+        assert "_arm_secret_prompt" in methods
+        body = ast.get_source_segment(_src(), methods["_arm_secret_prompt"][0])
         assert "self._secret_request = peer" in body
+        src = _src()
+        assignments = [l for l in src.splitlines()
+                       if "self._secret_request = peer" in l]
+        assert len(assignments) == 1, (
+            "the hidden read is armed in %d places; it must be one: %r"
+            % (len(assignments), assignments))
 
     def test_inbound_handler_cannot_reach_the_armer(self):
         """The whole point.  Walks the real call graph, not a hand-list."""
         methods = _methods(_tree())
         assert "_handle_otr_in_async" in methods, "inbound handler renamed"
         reachable = _reachable_from("_handle_otr_in_async", methods)
-        assert "_request_smp_secret" not in reachable, (
+        assert "_arm_secret_prompt" not in reachable, (
             "a remote message can reach the secret-prompt armer again; "
             "reachable set included it")
 
     def test_tofu_cannot_reach_the_armer(self):
         methods = _methods(_tree())
         reachable = _reachable_from("_apply_tofu", methods)
-        assert "_request_smp_secret" not in reachable
+        assert "_arm_secret_prompt" not in reachable
 
     def test_dake_completion_cannot_reach_the_armer(self):
         methods = _methods(_tree())
         reachable = _reachable_from("_check_dake_complete", methods)
-        assert "_request_smp_secret" not in reachable
+        assert "_arm_secret_prompt" not in reachable
 
     def test_signal_handlers_cannot_reach_the_armer(self):
         """Voice control messages are remote input too."""
@@ -235,8 +247,16 @@ class _Client:
     """Only the pieces dispatch_line touches, bound to the real methods."""
 
     def __init__(self, cls):
+        import otrv4plus_smpflow as smpflow
         self.otr = _FakeOtr()
         self._secret_request = None
+        self._secret_purpose = None
+        self._secret_purpose_taken = None
+        # The guided flow.  Real object, not a stub: the property these tests
+        # are about is which transitions exist, so faking it would test
+        # nothing.
+        self._smp_flows = smpflow.SmpFlowRegistry()
+        self._smp_consent_shown = None
         self._mask_input = False
         self._tui_enabled = False
         self._screen = None
@@ -244,7 +264,10 @@ class _Client:
         self.peer = "alice@example.i2p"
         for name in ("take_secret_request", "has_pending",
                      "_request_smp_secret", "_announce_smp_needed",
-                     "_handle_smp_secret_answer"):
+                     "_handle_smp_secret_answer", "_arm_secret_prompt",
+                     "_pending_consent_peer", "_announce_secret_required",
+                     "_handle_smp_consent", "_decline_smp_request",
+                     "smp_verify"):
             setattr(self, name, getattr(cls, name).__get__(self, cls))
         # A staticmethod must NOT be rebound, or it swallows `self` as the
         # secret and every validation call raises TypeError.
