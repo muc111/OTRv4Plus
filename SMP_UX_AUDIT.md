@@ -239,6 +239,35 @@ engine. None of them let a real SMP1 reach a real session, which is the only
 place all three defects lived. The replacements do, and each was checked by
 reverting the fix and confirming the test fails.
 
+### 8.3.1 Second device run, v10.15.1 — glare recovery confirmed
+
+Same two handsets, both rebuilt. Session capture kept.
+
+**Both sides ran `/smp` at once**, which is the case that failed yesterday
+with `SMP race-recovery: vault rebind failed`. This time the log shows this
+device sending SMP1, receiving Alice's SMP1, yielding the initiator role and
+answering hers:
+
+```
+step 1/4 · Challenge sent - awaiting response
+step 1/4 · Challenge received - computing response      ← yielded, took her SMP1
+step 2/4 · Response computed - sending
+step 4/4 · Final step - sending verdict
+*** IDENTITY VERIFIED with alice@… - shared secret matched (SMP complete). ***
+```
+
+So defect 2 of v10.15.1 is **fixed on hardware**, not just in a test. The
+deterministic tie-break did what §8.1 says it should.
+
+Neither the initiator prompt nor the responder banner was exercised as a
+*separate* case here, because both people typed `/smp`. The responder consent
+banner still has not been seen on a device — see §8.4.
+
+A voice call followed on the same verified session: 5½ minutes, two rekeys
+(epoch 0→1→2), `drop=0 authfail=0 replay=0 nokey=0` throughout, mouth-to-ear
+settling at ~725 ms. Recorded here only because it shares the session; the
+voice numbers belong in VOICE_MEDIA_PATH.md.
+
 ### 8.4 Still not tested
 
 The responder prompt **has never been seen working on a device**, because
