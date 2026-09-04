@@ -4,6 +4,68 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## v10.15.4 — a shipped address book, so a server move reaches people
+
+*2026-09-04.  `VERSION → 10.15.4`, `otrv4_core 0.10.27` unchanged.  Python only.*
+
+`i2p_hosts.defaults` now travels with the source. A fresh clone connects with
+the short name and never sees a b32:
+
+```bash
+python3 otrv4plus_xmpp.py --jid alice@xmpp-elite.i2p \
+                          --peer bob@xmpp-elite.i2p --insecure-tls
+```
+
+It is also how a **server move** reaches users: ship a new line, they
+`git pull`, and the command they have always run reaches the new address.
+
+### The precedence rule, and why it is not simply "newest wins"
+
+v10.15.3 deliberately refused to overwrite a recorded destination, on the
+grounds that a server that moved is something the user must see. Taken
+literally that would also mean the first successful connection pins an address
+forever and a migration strands everyone who ever connected — the opposite
+failure. The two are reconciled by asking **whose entry it is**:
+
+| Entry | On a changed shipped default |
+|---|---|
+| hand-written in `~/.otrv4plus/i2p_hosts` | **wins.** Someone typed that line and meant it. |
+| learned by the client (`# learned`) | **yields**, with a notice naming both addresses and how to keep the old one. |
+| absent | the shipped default applies. |
+
+An update never edits the user's file. The defaults change because `git pull`
+changed them, which is visible in the diff like any other code.
+
+Nothing is recorded when the shipped defaults already say it, so users do not
+accumulate a learned copy of the shipped address that would then have to lose
+an argument with it later.
+
+### Retired addresses are explained, never redirected
+
+An old command naming the old b32 in full still gets used as given — the rule
+that no file may re-point an address the user spelled out is unchanged. But a
+`retired <old b32> <name>` line in the defaults lets the client say where it
+went:
+
+```
+[i2p] hq4t…q.b32.i2p is a retired address for xmpp-elite.i2p.
+[i2p] Still trying it as given. The current form is:  --server xmpp-elite.i2p
+```
+
+### What this does not add to the threat model
+
+A shipped address book is trusted exactly as much as the code around it — and
+no more, because the server is not a trust anchor here. Anyone who could
+change `i2p_hosts.defaults` in the repository could change the cryptography
+instead, which is a strictly better attack. And a wrong address cannot read a
+conversation: the DAKE authenticates the peer and TOFU pins their identity key
+end to end, through whatever server is in the middle. Emptying the file leaves
+the client fully functional with an explicit `--server`.
+
+14 new tests, 41 in `tests/test_i2p_short_names.py`.
+
+---
+
 ## v10.15.3 — the b32 gets typed once
 
 *2026-09-04.  `VERSION → 10.15.3`, `otrv4_core 0.10.27` unchanged.  Python only.*

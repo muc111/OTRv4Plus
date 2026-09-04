@@ -198,6 +198,26 @@ created it and nowhere else, while the 52-character `.b32.i2p` form works
 everywhere because it *is* the destination hash. That is why the long form has
 to be pasted, and it is unreasonable on a phone keyboard.
 
+**The project's own server is already in the box.** `i2p_hosts.defaults`
+ships with the source, so a fresh clone connects with the short name and never
+sees a b32:
+
+```bash
+python otrv4plus_xmpp.py --jid alice@xmpp-elite.i2p \
+                         --peer bob@xmpp-elite.i2p --insecure-tls
+```
+
+That file is also how a **server move** reaches people. Ship a new line, users
+`git pull`, and the same command they have always run reaches the new address.
+Delete its contents if you would rather trust nothing shipped — everything
+still works with an explicit `--server`.
+
+**Precedence, and why.** `~/.otrv4plus/i2p_hosts` is yours and an update never
+edits it. A line you wrote by hand always wins: you meant it. A line the
+client *learned* by itself, marked `# learned`, yields to a changed shipped
+default and says so — otherwise your first successful connection would pin an
+address forever and a server move would strand you.
+
 **The client writes this for you.** The first time a connection to a
 `.b32.i2p` server succeeds, the mapping from your JID's domain to that
 destination is recorded automatically, and it says so:

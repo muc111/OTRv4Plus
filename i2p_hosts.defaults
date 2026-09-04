@@ -1,0 +1,40 @@
+# OTRv4+ shipped I2P name aliases.
+#
+# WHAT THIS FILE IS FOR
+# ---------------------
+# `.i2p` names are not DNS.  A router resolves only what is in its own
+# address book, and a server that has just been set up is in nobody's.  So a
+# fresh install would have to paste a 52-character b32 to connect at all.
+#
+# This file travels with the source.  `git pull` updates it like any other
+# code, which is also how a server move reaches people: ship a new line here,
+# and a user running the same command as always connects to the new address.
+#
+# PRECEDENCE
+# ----------
+# ~/.otrv4plus/i2p_hosts is the user's own file and an update NEVER edits it.
+#   * a hand-written line there always wins over this file;
+#   * a line this client learned by itself (marked "# learned") yields to a
+#     changed default here, with a notice -- otherwise the first successful
+#     connection would pin an address forever and moving a server would
+#     strand everyone who had ever connected.
+#
+# WHAT AN ALIAS IS NOT
+# --------------------
+# It is a convenience, not an authority.  Nothing here is authenticated and
+# nothing here proves who answers.  It does not need to be: the server is not
+# a trust anchor in this design.  The DAKE authenticates the peer and TOFU
+# pins their identity key end to end, so a wrong address costs a failed
+# connection, not a readable conversation.  If you do not want to trust this
+# file at all, delete its contents -- everything still works with an explicit
+# --server.
+#
+# Format:  name.i2p = <52 chars>.b32.i2p
+#
+xmpp-elite.i2p = hq4t24b7vkllfbk55e5xfocqhfi7hxprwc47zyuilbg6wgzikidq.b32.i2p
+
+# Retired destinations.  A b32 is NEVER silently redirected -- an address
+# given in full is used as given -- but if it is listed here the client can
+# say that it moved and name the current form.
+#
+# Format:  retired <old 52 chars>.b32.i2p <name it moved to>

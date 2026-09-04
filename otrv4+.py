@@ -819,7 +819,8 @@ class NetworkConstants:
 I2P_HOSTS_FILENAME = "i2p_hosts"
 
 
-def remember_i2p_alias(name: str, destination: str, path: str = None) -> str:
+def remember_i2p_alias(name: str, destination: str, path: str = None,
+                       learned: bool = True) -> str:
     """Record `name = destination` in the local alias file.
 
     So the 52-character b32 is typed once and never again: the client calls
@@ -846,6 +847,8 @@ def remember_i2p_alias(name: str, destination: str, path: str = None) -> str:
         return ""
 
     path = path or i2p_hosts_path()
+    if i2p_aliases(i2p_hosts_defaults_path()).get(name) == destination:
+        return ""            # the shipped defaults already say this
     existing = i2p_aliases(path).get(name)
     if existing == destination:
         return ""
@@ -866,7 +869,8 @@ def remember_i2p_alias(name: str, destination: str, path: str = None) -> str:
                          "# authenticated and proves nothing about who "
                          "answers.  Delete a line\n"
                          "# to forget it.\n")
-            fh.write(f"{name } = {destination }\n")
+            marker = f"  {LEARNED_MARKER }" if learned else ""
+            fh.write(f"{name } = {destination }{marker }\n")
         if new_file:
             try:
                 os.chmod(path, 0o600)
@@ -898,12 +902,30 @@ def _valid_i2p_destination(value: str) -> bool:
             and all(c.isalnum() or c in "-~=" for c in value))
 
 
-def i2p_aliases(path: str = None) -> dict:
-    """Read the alias file.  Returns {} when it does not exist.
+#: Written after an entry the client learned from a successful connection.
+#: The marker is what separates "this device worked it out" from "the user
+#: decided this", and the two are treated differently when a shipped default
+#: disagrees -- see resolve_i2p_aliases().
+LEARNED_MARKER = "# learned"
+
+#: Shipped defaults, updated by `git pull` like any other code.
+I2P_HOSTS_DEFAULTS = "i2p_hosts.defaults"
+
+
+def i2p_hosts_defaults_path() -> str:
+    """The defaults that travel with the source, beside this file."""
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                        I2P_HOSTS_DEFAULTS)
+
+
+def i2p_aliases(path: str = None, with_provenance: bool = False):
+    """Read an alias file.  Returns {} when it does not exist.
 
     Never raises: a malformed line is skipped with a warning rather than
     stopping the client from starting, because the alternative is that one
     typo makes the whole thing unusable.
+
+    With `with_provenance`, values are `(destination, learned)` pairs.
     """
     path = path or i2p_hosts_path()
     out = {}
@@ -914,6 +936,7 @@ def i2p_aliases(path: str = None) -> dict:
         return out
 
     for number, raw in enumerate(lines, 1):
+        learned = LEARNED_MARKER in raw
         line = raw.split("#", 1)[0].strip()
         if not line:
             continue
@@ -934,8 +957,46 @@ def i2p_aliases(path: str = None) -> dict:
             print(f"[i2p] {path }:{number }: {name } does not point at a "
                   ".b32.i2p address or a full destination, skipping")
             continue
-        out[name] = dest
+        out[name] = (dest, learned) if with_provenance else dest
     return out
+
+
+def resolve_i2p_aliases(user_path: str = None,
+                        defaults_path: str = None,
+                        on_message=print) -> dict:
+    """Merge the shipped defaults with the user's own file.
+
+    The precedence rule, and the reason for it:
+
+      * a hand-written user entry ALWAYS wins.  Someone who typed a line into
+        that file meant it, and an update has no business overruling them;
+      * a LEARNED entry -- one this client recorded itself after a successful
+        connection -- yields to a shipped default that disagrees, with a
+        notice.  Otherwise the first successful connection would pin an
+        address forever, and moving the server would strand every user who had
+        ever connected, which is exactly the case this layer exists for;
+      * otherwise the shipped default applies.
+
+    Nothing here writes.  `~/.otrv4plus/i2p_hosts` is the user's file and an
+    update never edits it; the defaults change because `git pull` changed
+    them, which is visible in the diff.
+    """
+    defaults = i2p_aliases(defaults_path or i2p_hosts_defaults_path())
+    merged = dict(defaults)
+    for name, (dest, learned) in i2p_aliases(
+            user_path, with_provenance=True).items():
+        shipped = defaults.get(name)
+        if learned and shipped and shipped != dest:
+            on_message(
+                f"[i2p] the address shipped for {name } has changed; using "
+                f"the new one.\n"
+                f"[i2p]   was (remembered here): {dest }\n"
+                f"[i2p]   now (from this build): {shipped }\n"
+                f"[i2p] to keep the old one, edit {user_path or i2p_hosts_path ()} "
+                f"and remove the '{LEARNED_MARKER }' marker from that line.")
+            continue
+        merged[name] = dest
+    return merged
 
 
 class I2PSAMConnection:
@@ -1001,6 +1062,27 @@ class I2PSAMConnection:
             raise ConnectionError(f"SAM handshake failed: {reply }")
 
     @staticmethod
+    def _retired_destinations(path: str = None) -> dict:
+        """{old b32: name it moved to}, from the shipped defaults.
+
+        Read so a user whose command still names the old address in full is
+        told where it went.  They are NOT redirected: an address given in full
+        is used as given, which is the rule that stops any file from
+        re-pointing something the user spelled out.
+        """
+        out = {}
+        try:
+            with open(path or i2p_hosts_defaults_path(), encoding="utf-8") as fh:
+                for raw in fh:
+                    line = raw.split("#", 1)[0].strip()
+                    parts = line.split()
+                    if len(parts) == 3 and parts[0] == "retired":
+                        out[parts[1].lower()] = parts[2].lower()
+        except OSError:
+            pass
+        return out
+
+    @staticmethod
     def _apply_i2p_alias(target_host):
         """Substitute a short name from the local alias file.
 
@@ -1011,8 +1093,17 @@ class I2PSAMConnection:
             # hash itself, with no address book involved.  Never let an alias
             # shadow one -- that would let a local file redirect an address the
             # user typed in full.
+            #
+            # If we know it moved, say so.  Saying is not redirecting.
+            moved_to = I2PSAMConnection._retired_destinations().get(
+                target_host.lower())
+            if moved_to:
+                print(f"[i2p] {target_host } is a retired address for "
+                      f"{moved_to }.")
+                print(f"[i2p] Still trying it as given. The current form is:  "
+                      f"--server {moved_to }")
             return target_host, None
-        aliases = i2p_aliases()
+        aliases = resolve_i2p_aliases()
         dest = aliases.get(target_host.lower())
         if not dest:
             return target_host, None
@@ -1669,7 +1760,7 @@ class OTRv4DataMessage:
             raise ValueError(f"Failed to decode message: {e }")
 
 
-VERSION = "OTRv4+ 10.15.3"
+VERSION = "OTRv4+ 10.15.4"
 
 # --- OTRv4+ client identification over IRC -------------------------------
 #

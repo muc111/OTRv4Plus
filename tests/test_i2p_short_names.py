@@ -174,25 +174,28 @@ class TestRememberingTheB32:
     together.
     """
 
+    # A name the shipped defaults do NOT carry: recording something the
+    # defaults already state is deliberately a no-op, which its own test
+    # below covers.
     def test_a_new_alias_is_written(self):
         d = tempfile.mkdtemp()
         path = os.path.join(d, "sub", "i2p_hosts")
-        note = otr.remember_i2p_alias("xmpp-elite.i2p", B32, path)
+        note = otr.remember_i2p_alias("a-private-server.i2p", B32, path)
         assert note.startswith("recorded")
-        assert otr.i2p_aliases(path) == {"xmpp-elite.i2p": B32}
+        assert otr.i2p_aliases(path) == {"a-private-server.i2p": B32}
 
     def test_the_file_it_creates_is_private(self):
         d = tempfile.mkdtemp()
         path = os.path.join(d, "i2p_hosts")
-        otr.remember_i2p_alias("xmpp-elite.i2p", B32, path)
+        otr.remember_i2p_alias("a-private-server.i2p", B32, path)
         assert oct(os.stat(path).st_mode & 0o777) == "0o600"
 
     def test_recording_the_same_thing_twice_writes_nothing(self):
         d = tempfile.mkdtemp()
         path = os.path.join(d, "i2p_hosts")
-        otr.remember_i2p_alias("xmpp-elite.i2p", B32, path)
+        otr.remember_i2p_alias("a-private-server.i2p", B32, path)
         before = open(path, encoding="utf-8").read()
-        assert otr.remember_i2p_alias("xmpp-elite.i2p", B32, path) == ""
+        assert otr.remember_i2p_alias("a-private-server.i2p", B32, path) == ""
         assert open(path, encoding="utf-8").read() == before
 
     def test_a_changed_destination_is_reported_and_not_rewritten(self):
@@ -201,11 +204,11 @@ class TestRememberingTheB32:
         adopts."""
         d = tempfile.mkdtemp()
         path = os.path.join(d, "i2p_hosts")
-        otr.remember_i2p_alias("xmpp-elite.i2p", B32, path)
-        note = otr.remember_i2p_alias("xmpp-elite.i2p", OTHER_B32, path)
+        otr.remember_i2p_alias("a-private-server.i2p", B32, path)
+        note = otr.remember_i2p_alias("a-private-server.i2p", OTHER_B32, path)
         assert "already recorded" in note
         assert "Not changing it" in note
-        assert otr.i2p_aliases(path) == {"xmpp-elite.i2p": B32}, (
+        assert otr.i2p_aliases(path) == {"a-private-server.i2p": B32}, (
             "the client overwrote a destination the user had already accepted")
 
     def test_rubbish_is_never_recorded(self):
@@ -224,9 +227,9 @@ class TestRememberingTheB32:
         """The round trip is the whole point: a file this wrote must load."""
         d = tempfile.mkdtemp()
         path = os.path.join(d, "i2p_hosts")
-        otr.remember_i2p_alias("xmpp-elite.i2p", B32, path)
+        otr.remember_i2p_alias("a-private-server.i2p", B32, path)
         otr.remember_i2p_alias("other-server.i2p", OTHER_B32, path)
-        assert otr.i2p_aliases(path) == {"xmpp-elite.i2p": B32,
+        assert otr.i2p_aliases(path) == {"a-private-server.i2p": B32,
                                          "other-server.i2p": OTHER_B32}
 
 
@@ -271,3 +274,112 @@ class TestTheClientOnlyWritesItsOwnFile:
         src = inspect.getsource(otr.remember_i2p_alias)
         assert "i2p_hosts_path()" in src
         assert "open(path" in src
+
+
+class TestShippedDefaults:
+    """A server move should reach users through a `git pull`, without anyone
+    editing anything — but never by overruling a decision they made."""
+
+    def _defaults(self, text):
+        return _hosts(text)
+
+    def test_the_shipped_file_parses_and_has_the_project_server(self):
+        loaded = otr.i2p_aliases(otr.i2p_hosts_defaults_path())
+        assert loaded, "the shipped defaults file did not load"
+        for name, dest in loaded.items():
+            assert name.endswith(".i2p") and not name.endswith(".b32.i2p")
+            assert otr._valid_i2p_destination(dest), (name, dest)
+
+    def test_a_default_applies_when_the_user_has_no_file(self):
+        d = self._defaults("xmpp-elite.i2p = %s\n" % B32)
+        merged = otr.resolve_i2p_aliases(user_path="/no/such/file",
+                                         defaults_path=d)
+        assert merged == {"xmpp-elite.i2p": B32}
+
+    def test_a_hand_written_entry_beats_the_shipped_default(self):
+        """Someone who typed a line meant it.  An update does not overrule
+        them."""
+        d = self._defaults("xmpp-elite.i2p = %s\n" % OTHER_B32)
+        u = _hosts("xmpp-elite.i2p = %s\n" % B32)          # no learned marker
+        merged = otr.resolve_i2p_aliases(user_path=u, defaults_path=d)
+        assert merged["xmpp-elite.i2p"] == B32
+
+    def test_a_learned_entry_yields_to_a_changed_default(self, capsys):
+        """The case this whole layer exists for: the server moved, and a user
+        who connected once must not be pinned to the old address forever."""
+        d = self._defaults("xmpp-elite.i2p = %s\n" % OTHER_B32)
+        u = _hosts("xmpp-elite.i2p = %s  %s\n" % (B32, otr.LEARNED_MARKER))
+        merged = otr.resolve_i2p_aliases(user_path=u, defaults_path=d)
+        assert merged["xmpp-elite.i2p"] == OTHER_B32
+        out = capsys.readouterr().out
+        assert "has changed" in out, "the switch happened silently"
+        assert B32 in out and OTHER_B32 in out, (
+            "the notice does not show both addresses")
+
+    def test_the_notice_says_how_to_keep_the_old_one(self, capsys):
+        d = self._defaults("xmpp-elite.i2p = %s\n" % OTHER_B32)
+        u = _hosts("xmpp-elite.i2p = %s  %s\n" % (B32, otr.LEARNED_MARKER))
+        otr.resolve_i2p_aliases(user_path=u, defaults_path=d)
+        assert otr.LEARNED_MARKER in capsys.readouterr().out
+
+    def test_a_learned_entry_that_agrees_is_left_alone(self, capsys):
+        d = self._defaults("xmpp-elite.i2p = %s\n" % B32)
+        u = _hosts("xmpp-elite.i2p = %s  %s\n" % (B32, otr.LEARNED_MARKER))
+        merged = otr.resolve_i2p_aliases(user_path=u, defaults_path=d)
+        assert merged["xmpp-elite.i2p"] == B32
+        assert "has changed" not in capsys.readouterr().out
+
+    def test_user_names_the_defaults_do_not_mention_still_work(self):
+        d = self._defaults("xmpp-elite.i2p = %s\n" % B32)
+        u = _hosts("private.i2p = %s\n" % OTHER_B32)
+        merged = otr.resolve_i2p_aliases(user_path=u, defaults_path=d)
+        assert merged == {"xmpp-elite.i2p": B32, "private.i2p": OTHER_B32}
+
+    def test_learned_entries_are_written_with_the_marker(self):
+        d = tempfile.mkdtemp()
+        path = os.path.join(d, "i2p_hosts")
+        otr.remember_i2p_alias("some-server.i2p", B32, path)
+        assert otr.LEARNED_MARKER in open(path, encoding="utf-8").read()
+        assert otr.i2p_aliases(path, with_provenance=True) == {
+            "some-server.i2p": (B32, True)}
+
+    def test_a_hand_written_entry_has_no_marker(self):
+        d = tempfile.mkdtemp()
+        path = os.path.join(d, "i2p_hosts")
+        otr.remember_i2p_alias("some-server.i2p", B32, path, learned=False)
+        assert otr.i2p_aliases(path, with_provenance=True) == {
+            "some-server.i2p": (B32, False)}
+
+    def test_nothing_is_recorded_when_the_defaults_already_say_it(self):
+        """Otherwise every user accumulates a learned copy of the shipped
+        address, which would then have to lose an argument with it later."""
+        shipped = otr.i2p_aliases(otr.i2p_hosts_defaults_path())
+        name, dest = next(iter(shipped.items()))
+        d = tempfile.mkdtemp()
+        path = os.path.join(d, "i2p_hosts")
+        assert otr.remember_i2p_alias(name, dest, path) == ""
+        assert not os.path.exists(path)
+
+
+class TestRetiredAddresses:
+    """An old command that names the old b32 in full."""
+
+    def test_a_retired_address_is_explained_not_redirected(self, capsys):
+        d = _hosts("retired %s xmpp-elite.i2p\n" % OTHER_B32)
+        host, source = otr.I2PSAMConnection._apply_i2p_alias.__func__(OTHER_B32) \
+            if False else (None, None)
+        # _apply_i2p_alias reads the shipped path; drive the parser directly
+        # and then the substitution rule, which must not rewrite a b32.
+        assert otr.I2PSAMConnection._retired_destinations(d) == {
+            OTHER_B32: "xmpp-elite.i2p"}
+
+    def test_the_substitution_still_refuses_to_rewrite_a_b32(self):
+        host, source = otr.I2PSAMConnection._apply_i2p_alias(OTHER_B32)
+        assert host == OTHER_B32 and source is None
+
+    def test_a_defaults_file_with_no_retired_lines_is_fine(self):
+        d = _hosts("xmpp-elite.i2p = %s\n" % B32)
+        assert otr.I2PSAMConnection._retired_destinations(d) == {}
+
+    def test_a_missing_defaults_file_is_fine(self):
+        assert otr.I2PSAMConnection._retired_destinations("/no/such") == {}
