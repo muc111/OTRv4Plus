@@ -1467,7 +1467,7 @@ class OTRv4DataMessage:
             raise ValueError(f"Failed to decode message: {e }")
 
 
-VERSION = "OTRv4+ 10.15.0"
+VERSION = "OTRv4+ 10.15.1"
 
 # --- OTRv4+ client identification over IRC -------------------------------
 #
@@ -6734,8 +6734,27 @@ class EnhancedOTRSession:
                         self.rust_smp.abort()
                     except Exception:
                         pass
+
+                    # Keep the vault across the rebuild.
+                    #
+                    # initialize_smp() constructs a NEW RustSMPVault whenever
+                    # rust_smp is None, so clearing rust_smp threw away the
+                    # "smp_secret" entry this path is about to read back --
+                    # and the rebind below therefore failed every single time.
+                    # It surfaced on two real phones as
+                    #
+                    #     SMP race-recovery: vault rebind failed
+                    #
+                    # whenever both sides ran /smp at once, which over I2P is
+                    # not rare: it is what happens when two people are told to
+                    # verify and both do.  The vault is a separate Rust object
+                    # holding a secret this session already owns; there is no
+                    # reason for a new engine to mean a new vault.
+                    preserved_vault = self.smp_vault
                     self.rust_smp = None
                     self.initialize_smp()
+                    if preserved_vault is not None:
+                        self.smp_vault = preserved_vault
                     if self.rust_smp is None or self.smp_vault is None:
                         raise RuntimeError("SMP race-recovery: re-init failed")
                     sid_recover = self.session_id or b""
@@ -6743,7 +6762,16 @@ class EnhancedOTRSession:
                         self.smp_vault, "smp_secret", sid_recover, local_fp, remote_fp
                     )
                     if not ok:
-                        raise RuntimeError("SMP race-recovery: vault rebind failed")
+                        # No secret to rebind: this side has not been given a
+                        # passphrase at all, so yielding the initiator role
+                        # leaves nothing to answer with.  Fall through to the
+                        # no-secret handling below rather than raising, which
+                        # would report a setup problem as an internal error.
+                        self.tracer.trace(
+                            self.peer, "SMP", "SMP1_RECEIVED", "RACE_NO_SECRET",
+                            "yielded initiator role but no stored passphrase "
+                            "to rebind",
+                        )
 
                 if not self.rust_smp.check_secret_set():
                     # HOLD the SMP1 rather than abort.

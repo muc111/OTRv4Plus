@@ -220,10 +220,30 @@ They meet only at `y`, and that edge is a keypress.
 | Nothing stores a passphrase on a cancel, decline or teardown | `TestCleanup`, `test_cancelling_stores_nothing` |
 | The installed wheel has what the clients call | `TestTheCoreApiContract` |
 
-### 8.3 Not tested here
+### 8.3 First device run, 2026-09-04 — and what it found
 
-Everything above ran on a development machine. **No part of this has run on a
-handset or over I2P.** The following is the plan, not a result.
+Two handsets over I2P, both on v10.15.0. **Three defects, all in code the
+v10.15.0 test suite covered on paper.** Fixed in v10.15.1; see CHANGELOG.
+
+| What was run | Result |
+|---|---|
+| Provisioning, SAM tunnel, DAKE, fingerprint pin | **pass** |
+| Initiator `/smp` with no stored passphrase → hidden prompt → SMP1 sent | **pass** — the prompt appeared and the passphrase was stored and used |
+| Responder with no stored passphrase | **FAIL** — aborted with `NOSECRET` instead of prompting. `smp_guided_prompt` was never set to `True`, so the whole responder flow was unreachable |
+| Initiator's report of that abort | **FAIL** — printed "your peer has not stored the passphrase yet… this is not a wrong-passphrase failure" and then "*** SMP FAILED — secrets did NOT match. Possible MITM. ***" |
+| Both sides run `/smp` at once | **FAIL** — `SMP race-recovery: vault rebind failed`. Pre-existing; the recovery path has never worked |
+
+The lesson for the tests, recorded because it is the reusable part: every
+responder test in v10.15.0 called the client's own display method with a fake
+engine. None of them let a real SMP1 reach a real session, which is the only
+place all three defects lived. The replacements do, and each was checked by
+reverting the fix and confirming the test fails.
+
+### 8.4 Still not tested
+
+The responder prompt **has never been seen working on a device**, because
+defect 1 made it unreachable. Both handsets need v10.15.1 before step 3 below
+means anything. The following is the plan, not a result.
 
 | # | Step | Pass condition |
 |---|---|---|

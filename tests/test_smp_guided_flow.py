@@ -739,3 +739,315 @@ class TestTheCoreApiContract:
         assert not undeclared, (
             "otrv4+.py calls vault methods the core-API manifest does not "
             "list: %s" % sorted(undeclared))
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Regressions found on two real phones, 2026-09-04.
+#
+# All three got past the tests above because those tests drove the client's
+# own methods with a fake engine.  Nothing checked that a real SMP1, arriving
+# at a real session, reached the state the feature depends on.  These do.
+# ═══════════════════════════════════════════════════════════════════════════
+
+otr_mod = pytest.importorskip("otrv4_")
+
+
+class _Tracer:
+    def __init__(self):
+        self.events = []
+
+    def trace(self, *a, **k):
+        self.events.append(a)
+
+    _emit_cb = None
+
+
+class _ClientProfile:
+    def __init__(self, fp):
+        self.identity_pub_bytes = fp
+        self.identity_key = None
+
+
+class _DakeEngine:
+    def __init__(self, fp):
+        self.client_profile = _ClientProfile(fp)
+
+
+class _Session:
+    """A real EnhancedOTRSession method set, bound to the minimum state.
+
+    Deliberately uses the real Rust engine and the real _enh_handle_smp_tlv:
+    the bugs these tests pin were all in what the real code does with a real
+    SMP1, which a fake engine cannot show.
+    """
+
+    def __init__(self, guided=True, is_initiator=False,
+                 local_fp=b"fp-local", remote_fp=b"fp-remote"):
+        self.peer = PEER
+        self.is_initiator = is_initiator
+        self.rust_smp = None
+        self.smp_vault = None
+        self.smp_guided_prompt = guided
+        self._smp_secret_required = False
+        self._queued_smp_response = None
+        self._ping_refresh_cb = None
+        self.smp_step = 0
+        self.session_id = b"session-id-for-the-test"
+        # The real method reads the local fingerprint off the DAKE engine's
+        # client profile.  A stub that left this None made every race take
+        # the "no fingerprints to tie-break" abort, which is not the branch
+        # under test.
+        self.dake_engine = _DakeEngine(local_fp)
+        self._remote_long_term_pub_bytes = remote_fp
+        self._local_fp = local_fp
+        self.tracer = _Tracer()
+        self.auto_smp_started = False
+        self.auto_smp_completed = False
+        self.notices = []
+        import logging
+        self.logger = logging.getLogger("test-session")
+        cls = otr_mod.EnhancedOTRSession
+        for name in ("_enh_handle_smp_tlv", "initialize_smp"):
+            setattr(self, name, getattr(cls, name).__get__(self, cls))
+
+    # the bits _enh_handle_smp_tlv needs from the wider session
+    def encrypt_with_tlvs(self, text, tlvs):
+        return ("ENCRYPTED", tuple((t.type, bytes(t.value)) for t in tlvs))
+
+    def _smp_progress_notify(self, step, total, detail, role=None,
+                             color="yellow", final=False):
+        self.notices.append(detail)
+
+    def _acquire_lock(self, *a, **k):
+        return True
+
+    def _release_lock(self, *a, **k):
+        pass
+
+    # the real method reads local_fp off the dake engine; short-circuit it
+    def _set_secret(self, passphrase):
+        self.initialize_smp()
+        self.smp_vault.store_from_bytearray(
+            "smp_secret", bytearray(passphrase.encode()))
+        assert self.rust_smp.set_secret_from_vault(
+            self.smp_vault, "smp_secret", self.session_id,
+            self._local_fp, self._remote_long_term_pub_bytes)
+
+
+def _real_smp1(secret=SECRET, sid=b"session-id-for-the-test",
+               ours=b"fp-remote", theirs=b"fp-local"):
+    """An SMP1 from the other side, with the fingerprints in the order that
+    peer would use."""
+    a = core.RustSMP(True)
+    a.set_secret_from_bytearray(bytearray(secret.encode()), sid, ours, theirs)
+    return bytes(a.generate_smp1(None))
+
+
+def _tlv(value):
+    return otr_mod.OTRv4TLV(otr_mod.OTRv4TLV.SMP_MSG_1, value)
+
+
+class TestTheGuidedFlagActuallyReachesTheEngine:
+    """Regression: the responder flow was built and never switched on.
+
+    `smp_guided_prompt` gates whether an incoming SMP1 is parked or aborted,
+    and nothing in the XMPP client ever set it to True.  On two real phones
+    Alice therefore aborted with NOSECRET exactly as she had before the
+    feature existed, and Bob was told "your peer has not stored the
+    passphrase yet -- ask them to run /smp-secret".
+    """
+
+    def test_the_client_turns_it_on(self):
+        """Structural, because the defect was an assignment that did not
+        exist anywhere."""
+        src = open(os.path.join(ROOT, "otrv4plus_xmpp.py"),
+                   encoding="utf-8").read()
+        tree = ast.parse(src)
+        enabled = False
+        for node in ast.walk(tree):
+            if (isinstance(node, ast.Assign)
+                    and isinstance(node.value, ast.Constant)
+                    and node.value.value is True):
+                for target in node.targets:
+                    if (isinstance(target, ast.Attribute)
+                            and target.attr == "smp_guided_prompt"):
+                        enabled = True
+        assert enabled, (
+            "the XMPP client never sets smp_guided_prompt = True, so an "
+            "incoming SMP1 is aborted instead of parked and the whole "
+            "responder flow is dead code")
+
+    def test_the_manager_passes_it_to_new_sessions(self):
+        src = open(os.path.join(ROOT, "otrv4+.py"), encoding="utf-8").read()
+        assert src.count("session.smp_guided_prompt = getattr(") == 3, (
+            "a session-creation path does not receive the flag; sessions "
+            "made there would silently abort instead of parking")
+
+    def test_a_real_smp1_reaches_secret_required(self):
+        """The behavioural check the AST tests could not make."""
+        s = _Session(guided=True)
+        s.initialize_smp()
+        s._enh_handle_smp_tlv(_tlv(_real_smp1()))
+        assert s.rust_smp.get_phase() == "SECRET_REQUIRED"
+        assert s.rust_smp.has_held_smp1()
+        assert s._queued_smp_response is None, (
+            "an abort went out to the peer even though the message was held")
+        assert s._smp_secret_required is True
+
+    def test_without_the_flag_it_still_aborts_with_a_reason(self):
+        """IRC, and any front end that cannot prompt, must not leave the peer
+        waiting for an answer that will never come."""
+        s = _Session(guided=False)
+        s.initialize_smp()
+        s._enh_handle_smp_tlv(_tlv(_real_smp1()))
+        assert s.rust_smp.get_phase() != "SECRET_REQUIRED"
+        assert s._queued_smp_response is not None
+        _text, tlvs = s._queued_smp_response
+        assert tlvs[0][0] == otr_mod.OTRv4TLV.SMP_ABORT
+        assert tlvs[0][1] == otr_mod.OTRv4TLV.SMP_ABORT_NO_SECRET
+
+    def test_a_responder_with_a_passphrase_answers_immediately(self):
+        s = _Session(guided=True)
+        s._set_secret(SECRET)
+        s._enh_handle_smp_tlv(_tlv(_real_smp1()))
+        assert s.rust_smp.get_phase() == "AWAITING_MSG3"
+        _text, tlvs = s._queued_smp_response
+        assert tlvs[0][0] == otr_mod.OTRv4TLV.SMP_MSG_2
+
+
+class TestSimultaneousInitiation:
+    """Regression: `SMP race-recovery: vault rebind failed`, every time.
+
+    When both sides run /smp at once the higher-fingerprint side yields the
+    initiator role, rebuilds its engine and rebinds the secret from the
+    vault.  initialize_smp() constructs a NEW vault whenever rust_smp is
+    None, so the rebuild threw away the entry the rebind then looked for.
+    The recovery path could never have worked.
+    """
+
+    def test_the_vault_survives_the_engine_rebuild(self):
+        # local_fp > remote_fp, so this side yields and takes the recovery
+        # branch.
+        s = _Session(guided=True, is_initiator=True,
+                     local_fp=b"fp-zzz", remote_fp=b"fp-aaa")
+        s._set_secret(SECRET)
+        s.rust_smp.generate_smp1(None)                 # now AWAITING_MSG2
+        assert s.rust_smp.get_phase() == "AWAITING_MSG2"
+        vault_before = s.smp_vault
+
+        s._enh_handle_smp_tlv(_tlv(_real_smp1(ours=b"fp-aaa",
+                                              theirs=b"fp-zzz")))
+
+        assert s.smp_vault is vault_before, (
+            "the vault was replaced during recovery, so the secret it holds "
+            "was thrown away")
+        assert s.smp_vault.has("smp_secret")
+        assert s.rust_smp.get_phase() == "AWAITING_MSG3", (
+            "the yielded side did not answer the peer's SMP1")
+        _text, tlvs = s._queued_smp_response
+        assert tlvs[0][0] == otr_mod.OTRv4TLV.SMP_MSG_2
+
+    def test_the_lower_fingerprint_side_keeps_its_role(self):
+        s = _Session(guided=True, is_initiator=True,
+                     local_fp=b"fp-aaa", remote_fp=b"fp-zzz")
+        s._set_secret(SECRET)
+        s.rust_smp.generate_smp1(None)
+        s._enh_handle_smp_tlv(_tlv(_real_smp1(ours=b"fp-zzz",
+                                              theirs=b"fp-aaa")))
+        assert s.rust_smp.get_phase() == "AWAITING_MSG2", (
+            "both sides yielded; nobody is the initiator")
+        assert s._queued_smp_response is None
+
+    def test_recovery_without_a_stored_secret_asks_instead_of_erroring(self):
+        """The rebind can legitimately fail -- this side may never have been
+        given a passphrase.  That is a setup state, not an internal error."""
+        s = _Session(guided=True, is_initiator=True,
+                     local_fp=b"fp-zzz", remote_fp=b"fp-aaa")
+        s.initialize_smp()
+        # In AWAITING_MSG2 with no secret: possible after an aborted run.
+        s.rust_smp.set_secret_from_bytearray(
+            bytearray(SECRET.encode()), s.session_id, b"fp-zzz", b"fp-aaa")
+        s.rust_smp.generate_smp1(None)
+        # Vault deliberately empty: nothing was ever stored under the name.
+        s._enh_handle_smp_tlv(_tlv(_real_smp1(ours=b"fp-aaa",
+                                              theirs=b"fp-zzz")))
+        assert s.rust_smp.get_phase() in ("SECRET_REQUIRED", "IDLE"), (
+            "recovery raised instead of falling through to the no-secret "
+            "handling")
+
+
+class TestAnAbortIsNotAMismatch:
+    """Regression: the client printed both of these, from one abort.
+
+        SMP stopped: your peer has not stored the passphrase yet.
+        ...This is not a wrong-passphrase failure.
+        *** SMP FAILED - secrets did NOT match. Possible MITM. ***
+    """
+
+    def _report(self, phase_name, monkeypatch, capture):
+        """Drive the real _report_smp with the engine reporting `phase_name`.
+
+        Behavioural, because the first version of these tests only read the
+        source and a mutation that disabled the branch entirely survived
+        them -- which is precisely the weakness that let the shipped bug
+        through in the first place.
+        """
+        client = xmpp.OTRv4PlusXMPP.__new__(xmpp.OTRv4PlusXMPP)
+        client._smp_reported = set()
+        client._smp_display_hints = set()
+
+        class _Sess:
+            smp_verified = False
+            is_verified = False
+            identity_verified = False
+            smp_complete = False
+            is_complete = False
+
+        class _Otr:
+            def get_session(self, peer):
+                return _Sess()
+
+        client.otr = _Otr()
+        monkeypatch.setattr(xmpp, "_smp_query",
+                            lambda otr, peer: (False, phase_name))
+        client._report_smp(PEER)
+        return " ".join(capture)
+
+    def test_an_abort_does_not_print_the_mitm_line(self, monkeypatch, capture):
+        text = self._report("ABORTED", monkeypatch, capture)
+        assert "stopped before verifying" in text
+        assert "MITM" not in text, (
+            "a peer with no passphrase is still reported as a possible MITM")
+        assert "did NOT" not in text
+
+    def test_a_real_failure_still_warns(self, monkeypatch, capture):
+        """The MITM warning must survive: a genuine mismatch is exactly what
+        it is for."""
+        text = self._report("FAILED", monkeypatch, capture)
+        assert "MITM" in text
+        assert "secrets did NOT" in text
+
+    def test_the_mitm_line_is_gated_on_a_real_failure(self):
+        """Read the reporter: an ABORT must not reach the mismatch branch."""
+        src = inspect.getsource(xmpp.OTRv4PlusXMPP)
+        # rindex, not index: the comment above the branch quotes the old
+        # message verbatim, and matching that instead of the live print is
+        # how this test first passed against unfixed code.
+        i = src.rindex("secrets did NOT")
+        window = src[max(0, i - 3000):i]
+        assert "is_abort" in window, (
+            "nothing distinguishes an abort from a failed comparison, so a "
+            "peer with no passphrase is reported as a possible MITM")
+
+    def test_an_abort_gets_its_own_wording(self):
+        src = inspect.getsource(xmpp.OTRv4PlusXMPP)
+        assert "stopped before verifying" in src
+        i = src.index("stopped before verifying")
+        window = src[i:i + 400]
+        assert "not a wrong-passphrase failure" in window
+        assert "MITM" not in window
+
+    def test_abort_and_failure_are_different_branches(self):
+        src = inspect.getsource(xmpp.OTRv4PlusXMPP)
+        assert src.count("_smp_reported.add(key_fail)") == 2, (
+            "abort and failure share one branch again")

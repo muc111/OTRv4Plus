@@ -4,6 +4,71 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## v10.15.1 — three bugs the phones found that the tests did not
+
+*2026-09-04.  `VERSION → 10.15.1`, `otrv4_core 0.10.27` unchanged.  No wire change.*
+
+First run of v10.15.0 between two handsets over I2P. Three defects, and the
+common thread is that the v10.15.0 tests drove the client's own methods with a
+fake engine and never let a real SMP1 reach a real session.
+
+**1. The responder flow was never switched on.** `smp_guided_prompt` gates
+whether an incoming SMP1 is parked or aborted, and nothing in the XMPP client
+ever set it to `True` — the plumbing was written, the switch was not. So Alice
+aborted with `NOSECRET` exactly as she had before the feature existed, and Bob
+was told to ask her to run `/smp-secret`. Everything in the responder half of
+v10.15.0 was unreachable on a real device. Now set where the manager is
+built, with a behavioural test that feeds a real SMP1 to a real session and
+asserts the phase becomes `SECRET_REQUIRED`.
+
+**2. Simultaneous initiation could never recover.** When both sides run `/smp`
+at once, the higher-fingerprint side yields, rebuilds its engine and rebinds
+the secret from the vault. `initialize_smp()` constructs a **new**
+`RustSMPVault` whenever `rust_smp is None`, so clearing the engine threw away
+the `smp_secret` entry the rebind then looked for. It failed every time:
+
+```
+🔐 SMP · ❌ SMP error: SMP race-recovery: vault rebind failed
+```
+
+This predates v10.15.0 — the recovery path has never worked — and it is not
+rare over I2P, because "both people are told to verify and both do" is the
+normal case. The vault is now preserved across the rebuild, and a rebind that
+still fails falls through to the no-secret handling instead of raising, so a
+setup problem is not reported as an internal error.
+
+**3. An abort was reported as a possible MITM.** One abort produced both of
+these, three lines apart:
+
+```
+SMP stopped: your peer has not stored the passphrase yet.
+   ...This is not a wrong-passphrase failure.
+*** SMP FAILED - secrets did NOT match. Possible MITM. ***
+```
+
+The second contradicts the first and is the thing v10.15.0's error
+classification was supposed to prevent — it was fixed in the session and
+missed in the client's own status reporter. An `ABORT` is now its own branch
+with its own wording; the MITM warning is kept for a genuine comparison
+failure, which is what it is for.
+
+**On the tests that missed all three.** Every v10.15.0 responder test called
+`_check_smp_secret_required` directly with a fake `otr` returning `True`.
+That tests the display and nothing else. The new tests bind the real
+`_enh_handle_smp_tlv` to a minimal session with a real `RustSMP`, feed it a
+real SMP1, and assert on the engine's phase and the queued response; the
+abort/mismatch split is driven through the real `_report_smp`. All three
+fixes were then mutation-tested by reverting them: all three now fail.
+
+Python 2404 passed, 43 skipped, 1 xfailed. Rust 111 passed.
+
+**Live-tested to here:** DAKE, pinning and the initiator prompt all worked on
+two handsets. The responder prompt has still never been seen working, because
+of defect 1 — both phones need this build before step 3 of
+`SMP_UX_AUDIT.md` §8.3 can be run at all.
+
+---
+
 ## v10.15.0 — guided SMP verification, and the core-API regression behind it
 
 *2026-09-04.  `VERSION → 10.15.0`, `otrv4_core 0.10.27`.  No wire format change: SMP messages, the 0x03 Argon2id derivation and the abort TLV are byte-identical.  `SMP_ABORT` gains one optional diagnostic payload, which older peers ignore exactly as they ignored the last one.*

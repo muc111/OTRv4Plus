@@ -2,7 +2,7 @@
 """
 OTRv4+ XMPP - full OTR + SMP over XMPP, transported over I2P SAM
 ================================================================
-Version: 10.15.0
+Version: 10.15.1
 
 
 Post-quantum OTRv4+ end-to-end encryption over XMPP, reusing the IRC client's
@@ -234,7 +234,7 @@ def voice_available() -> "tuple[bool, str]":
             "no audio backend: libaaudio.so unavailable and parec/pacat "
             "missing  (run /audioprobe for details)")
 
-XMPP_VERSION = "10.15.0"
+XMPP_VERSION = "10.15.1"
 
 # ---------------------------------------------------------------------------
 # XMPP-private state directory
@@ -1208,6 +1208,20 @@ class OTRv4PlusXMPP(ClientXMPP):
             # as the identity change TOFU exists to report.
             print("[identity] XMPP could not start: %s" % exc)
             raise
+        # Turn the guided responder flow ON for this front end.
+        #
+        # This switch is why the responder path did nothing on a real pair of
+        # phones: the engine only parks an incoming SMP1 when the front end
+        # has said it can ask the user for a passphrase, and nothing ever set
+        # it.  Alice therefore aborted with NOSECRET exactly as she did before
+        # the feature existed.  The unit tests missed it because they drove
+        # _check_smp_secret_required directly instead of letting a real SMP1
+        # reach a real session; tests/test_smp_guided_flow.py now does the
+        # latter.
+        #
+        # IRC leaves it False deliberately: a front end that cannot prompt
+        # must not leave the peer waiting for an answer that never comes.
+        self.otr.smp_guided_prompt = True
         self.identity_persistent = bool(
             getattr(self.otr, "identity_is_persistent", False))
 
@@ -3042,6 +3056,18 @@ class OTRv4PlusXMPP(ClientXMPP):
             is_fail = (name in _SMP_FAIL) or any(
                 t in name for t in ("FAIL", "ABORT", "ERROR"))
 
+            # An ABORT is not a mismatch, and saying it is contradicts the
+            # line printed immediately above it.  On a real pair of phones
+            # this read:
+            #
+            #   SMP stopped: your peer has not stored the passphrase yet.
+            #   ...This is not a wrong-passphrase failure.
+            #   *** SMP FAILED - secrets did NOT match. Possible MITM. ***
+            #
+            # Both from the same abort.  A mismatch is SMP4 returning false;
+            # an abort is the run stopping before any comparison happened.
+            is_abort = "ABORT" in name and "FAIL" not in name
+
             # Deliberately NOT announced as verification.  is_ok is a
             # name/attribute heuristic; only _smp_query's boolean, handled
             # above, is the engine saying the shared secret matched.
@@ -3052,6 +3078,16 @@ class OTRv4PlusXMPP(ClientXMPP):
                     f"(engine reports: {name}). This is NOT a verification "
                     "result — run /smpstate to see what the engine actually "
                     "says.\n"
+                )
+            elif is_abort and key_fail not in self._smp_reported:
+                self._smp_reported.add(key_fail)
+                # The reason, when the peer sent one, has already been printed
+                # by the session in terms the user can act on.  Do not restate
+                # it as a cryptographic result.
+                print(
+                    f"\n[smp] SMP with {peer} stopped before verifying. "
+                    "Nothing is verified, and no passphrase comparison "
+                    "happened — this is not a wrong-passphrase failure.\n"
                 )
             elif is_fail and key_fail not in self._smp_reported:
                 self._smp_reported.add(key_fail)
