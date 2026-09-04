@@ -103,6 +103,21 @@ The SMP wire-version paragraph was stale too — it described `0x02` as the
 hybrid format without mentioning that `0x03`, with Argon2id, has been the
 default since v10.13.0.
 
+### One sentence above the diagram, with "hybrid" meaning what it means
+
+The chain now has a prose summary. It says X448 **with** ML-KEM-1024 and Ed448
+**with** ML-DSA-87 — two pairs — *keying* AES-256-GCM, rather than listing AES
+alongside them as a third ingredient.
+
+That is not pedantry about wording. "Hybrid" in hybrid post-quantum
+cryptography means a classical asymmetric primitive paired with a
+post-quantum one, so that breaking the scheme requires breaking both. AES-256
+is neither half of such a pair: 256-bit symmetric encryption is already
+considered quantum-resistant and has no post-quantum partner to be paired
+with. Naming it in the same breath as X448 and ML-KEM invites a reader to
+think the AES is somehow part of the hybridisation, or worse, that it is the
+part doing the post-quantum work.
+
 ### The crypto chain, drawn once at the top
 
 The README described the stack in five separate places and nowhere in one

@@ -25,6 +25,11 @@
 
 OTRv4+ is an IRC and XMPP client that implements OTRv4 with a post-quantum hybrid layer added at each stage of the protocol, including the SMP identity-verification step and, as of v10.11.0, encrypted voice calls carried over I2P — which as of v10.12.0 detect, diagnose and recover from a media path that stops. It runs on Termux (Android) over I2P, Tor, or TLS clearnet, with a Rust crypto core wrapped by a thin Python orchestration layer.
 
+Hybrid classical + post-quantum cryptography: X448 with ML-KEM-1024 for key
+agreement, Ed448 with ML-DSA-87 for authentication, keying established
+AES-256-GCM for the message itself. OTR's Ed448 ring-signature deniability is
+retained rather than traded away for the post-quantum half.
+
 What actually encrypts a message, top to bottom:
 
 ```

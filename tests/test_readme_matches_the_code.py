@@ -155,6 +155,26 @@ class TestTheCryptoChainDiagram:
     def test_the_diagram_is_there(self, readme):
         assert "What actually encrypts a message" in readme
 
+    def test_the_summary_does_not_call_aes_part_of_the_hybrid(self, readme):
+        """"Hybrid" means a classical asymmetric primitive paired with a
+        post-quantum one -- X448 with ML-KEM, Ed448 with ML-DSA.  AES-256-GCM
+        is neither half: 256-bit symmetric encryption needs no post-quantum
+        partner, so listing it alongside them as a third ingredient of the
+        hybrid teaches the wrong meaning of the word.  It is what the hybrid
+        keys, and the sentence has to say so.
+        """
+        summary = readme.split("Hybrid classical + post-quantum cryptography:",
+                               1)
+        assert len(summary) == 2, "the one-line summary is gone"
+        text = " ".join(summary[1][:400].split())
+        assert "keying established" in text or "keys established" in text, (
+            "AES is no longer described as what the hybrid keys")
+        pairing = text.split("keying", 1)[0]
+        assert "AES" not in pairing, (
+            "AES is listed among the hybrid pairs; it is neither half of one")
+        for pair in ("X448 with ML-KEM-1024", "Ed448 with ML-DSA-87"):
+            assert pair in pairing, "the summary no longer names the pair: %s" % pair
+
     def test_it_keeps_the_ring_signature_beside_ml_dsa(self, readme):
         """ML-DSA-87 is added alongside the ring signature, not instead."""
         chain = readme.split("What actually encrypts a message", 1)[1][:900]
