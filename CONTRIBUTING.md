@@ -6,6 +6,33 @@ capacity is one person's evenings, so scope matters more than speed.
 > This file used to be a note describing a single-line edit to a document that
 > no longer existed. That edit is applied below.
 
+## Licensing: sign off on every commit
+
+OTRv4+ is dual-licensed as of v10.17.0 — [AGPL-3.0](LICENSE) for everyone, plus
+a [commercial licence](LICENSE-COMMERCIAL.md) for those who cannot comply with
+it. That only works while one party can grant both, so contributions come in
+under the [CLA](CLA.md):
+
+```bash
+git commit -s -m "your message"
+```
+
+The `-s` adds a `Signed-off-by:` line, and that line is your agreement to
+[CLA.md](CLA.md). You keep your copyright — the CLA is a licence you grant, not
+an assignment, and your contribution stays under the AGPL like everything else.
+A patch contributed under the AGPL alone could never be offered commercially,
+and after a few of those the commercial option would be gone without anyone
+having decided to end it.
+
+**Paid work is different.** A contractor's deliverable should be assigned, not
+licensed; see [CONTRACTOR-IP.md](CONTRACTOR-IP.md) before commissioning any.
+
+**Adding a dependency?** Say so in the pull request and name its licence. Every
+dependency in the tree today is permissive (MIT, Apache-2.0, BSD-3-Clause,
+PSF) — see [LICENSING_AUDIT.md](LICENSING_AUDIT.md). One copyleft library added
+for convenience would make the commercial half unsellable, and it would not be
+obvious from the diff.
+
 ## Before you write code
 
 Open an issue first to discuss. The single-file Python design is intentional —

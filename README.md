@@ -6,7 +6,7 @@
 <p align="center"><strong>Post-quantum hybrid encryption for Off The Record (OTR) chat <em>and voice calls</em> over IRC and XMPP. Experimental, unaudited research prototype.</strong></p>
 
 <p align="center">
-<code>v10.16.2 · Rust crypto core · chat (X448 + ML-KEM-1024, AES-256-GCM) · hybrid PQC SMP (ML-KEM-1024 + ML-DSA-87 + ZKP) · voice (X448 + ML-KEM-1024, AES-256-GCM) · I2P SAM · AAudio · TUI</code>
+<code>v10.17.0 · Rust crypto core · chat (X448 + ML-KEM-1024, AES-256-GCM) · hybrid PQC SMP (ML-KEM-1024 + ML-DSA-87 + ZKP) · voice (X448 + ML-KEM-1024, AES-256-GCM) · I2P SAM · AAudio · TUI</code>
 </p>
 
 ---
@@ -1125,7 +1125,26 @@ This project is published to invite exactly the review it has not had. The highe
 
 ## License
 
-GPL-3.0. See the [LICENSE](LICENSE) file.
+**Dual-licensed as of v10.17.0.**
+
+* **[AGPL-3.0](LICENSE)** — the default, and what you get by cloning this
+  repository. Read it, run it, fork it, study it, publish your fork. If you
+  distribute it or run a modified version as a network service, AGPL §13
+  requires you to offer that version's source to its users.
+* **[Commercial licence](LICENSE-COMMERCIAL.md)** — for shipping OTRv4+ inside
+  a closed-source product, or operating it as a service without publishing your
+  source.
+
+Charging money is not the trigger; the AGPL explicitly permits selling copies.
+The trigger is wanting to keep your source closed.
+
+Releases up to and including **v10.16.2 were GPL-3.0**, and stay available
+under it — relicensing applies going forward and cannot withdraw rights already
+granted.
+
+Contributions are welcome under the [CLA](CLA.md), which keeps both licences
+grantable. Paid work has [its own terms](CONTRACTOR-IP.md). Every third-party
+dependency is permissive; see [LICENSING_AUDIT.md](LICENSING_AUDIT.md).
 
 ## See also
 

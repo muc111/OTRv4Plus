@@ -4,6 +4,87 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## v10.17.0 — dual-licensed: AGPL-3.0, or a commercial licence
+
+*2026-09-04.  `VERSION → 10.17.0`.  No code change.  A licence change, which is
+why it is a minor bump and not a patch.*
+
+OTRv4+ was GPL-3.0. From this release it is **dual-licensed**: AGPL-3.0 for
+everyone, plus a [commercial licence](LICENSE-COMMERCIAL.md) for anyone who
+cannot or will not comply with it.
+
+**The audit came first, because a licence you cannot grant is worse than the
+one you have.** `LICENSING_AUDIT.md` had left this open, and re-running it over
+the resolved graph settled it: 137 Rust packages, the Python layer, Chaquopy
+(MIT since 12.0.1) and i2pd (BSD-3-Clause) are **all permissive**. Not one
+imposes copyleft. The only copyleft in play was the project's own — which is
+exactly the condition dual licensing needs. One AGPL dependency anywhere in
+that tree and the commercial half would have been unsellable.
+
+**Why AGPL and not GPL.** The GPL's source obligation attaches to
+*distribution*. An operator can run a modified version as a hosted service and
+distribute nothing, so the obligation never fires — for a messaging client with
+a server side, that is the loophole that matters. AGPL §13 closes it.
+
+**Why not a licence that forbids commercial use outright.** PolyForm
+Noncommercial and BUSL-1.1 were considered. Either would match the plain
+intention more literally, and both would make the project *source-available*
+rather than open source — which means F-Droid will not distribute it. F-Droid
+is where this project's Termux/I2P audience actually installs software. For a
+security tool, being genuinely auditable and genuinely redistributable is worth
+more than closing the "comply with the AGPL instead of paying" route.
+
+Charging money is not the trigger; the AGPL explicitly permits selling copies
+(§4). The trigger is wanting to keep your source closed.
+
+**Nothing is withdrawn.** Releases up to and including v10.16.2 went out under
+GPL-3.0 from a public repository. Everyone who received them keeps those rights
+permanently, including the right to fork from those commits. The `LICENSE` file
+says so rather than implying a retraction its author could not enforce.
+
+### Keeping the commercial half grantable
+
+It stays sellable only while every line can be licensed both ways, so two
+documents arrive with it:
+
+* **[CLA.md](CLA.md)** — contributors grant a dual licence and sign off per
+  commit (`git commit -s`). It is a licence, **not** an assignment: the
+  contributor keeps their copyright and the contribution stays under the AGPL
+  like everything else. Without it, one AGPL-only patch at a time, the
+  commercial option would disappear with nobody deciding to end it.
+* **[CONTRACTOR-IP.md](CONTRACTOR-IP.md)** — for paid work, where a sign-off is
+  not enough. In most jurisdictions the person who writes the code owns the
+  copyright even when you paid them; "work made for hire" is narrow in the US
+  and absent in that form from UK and EU law. A contractor who owns the Android
+  layer is a contractor whose code you cannot include in a commercial licence.
+  It carries assignment, moral-rights, further-assurance, third-party-material
+  and security-warranty clauses, and asks for a written dependency list on
+  delivery.
+
+### Two things stated rather than buried
+
+* **No NOTICE file exists.** Every permissive dependency requires its notice
+  reproduced in a distributed binary, so an APK on a store needs one under
+  either licence. `LICENSING_AUDIT.md` §2-§5 has the raw material.
+* **Whether AI-generated code is copyrightable is unsettled**, and this
+  project's README states plainly that it is AI-generated under the author's
+  direction. It does not affect the AGPL side in any way that matters. It does
+  bear on the commercial side, which presumes there is an exclusive right to
+  sell. `CONTRACTOR-IP.md` sets out the position and says where the human
+  authorship argument is strongest. Advice before taking money, not before
+  posting a job.
+
+`tests/test_licence_declarations_agree.py` (17 tests) pins the licence text
+whole — including §13, without which this would just be the GPL under another
+name — checks every declaration agrees, and re-runs the copyleft check over the
+live dependency graph so a future `cargo add` cannot quietly make the
+commercial licence unsellable.
+
+**Not legal advice.** Written by a non-lawyer. Have a solicitor review the
+commercial terms and the contractor clauses before relying on them.
+
+---
+
 ## v10.16.2 — `/sendfile` actually transfers
 
 *2026-09-04.  `XMPP_VERSION → 10.16.2`.  Python only.  Three defects, all on

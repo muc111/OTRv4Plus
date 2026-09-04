@@ -16,6 +16,68 @@ terms. The repository licence from the `LICENSE` file itself.
 
 ---
 
+## 0. Decision, taken at v10.17.0
+
+This audit ended by saying the licensing question could not be settled from the
+repository and was the author's to decide. It has now been decided.
+
+**OTRv4+ is dual-licensed: AGPL-3.0 for everyone, plus a commercial licence for
+anyone who cannot or will not comply with it.** Option 3 of the three set out
+in §1 below.
+
+| | |
+|---|---|
+| Default licence | AGPL-3.0-only ([LICENSE](LICENSE)) |
+| Commercial terms | [LICENSE-COMMERCIAL.md](LICENSE-COMMERCIAL.md) |
+| Contributions | [CLA.md](CLA.md) — dual grant, sign-off per commit |
+| Paid work | [CONTRACTOR-IP.md](CONTRACTOR-IP.md) — assignment, not licence |
+| SPDX in `Cargo.toml` / `pyproject.toml` | `AGPL-3.0-only OR LicenseRef-OTRv4Plus-Commercial` |
+
+**What the audit's own finding made possible.** §2-§5 establish that no
+dependency imposes copyleft — 137 Rust packages, the Python layer, Chaquopy
+(MIT since 12.0.1) and i2pd (BSD-3-Clause) are all permissive. The only
+copyleft in play was the project's own. That is precisely the condition under
+which dual licensing works: a sole copyright holder with an all-permissive
+dependency graph can grant both halves. Had one AGPL or GPL dependency been in
+the tree, the commercial half would have been unsellable and this decision
+could not have been taken.
+
+**Why AGPL rather than GPL.** The GPL's source obligation attaches to
+distribution. An operator can run a modified version as a hosted service and
+distribute nothing, so the obligation never triggers — for a messaging client
+with a server side, that is the loophole that matters. AGPL §13 closes it.
+
+**Why not a non-commercial licence.** A licence forbidding all commercial use
+(PolyForm Noncommercial, BUSL) would match the plain intent more literally, and
+was considered and rejected: it would make the project source-available rather
+than open source, and F-Droid — where this project's Termux/I2P audience
+actually installs software — does not distribute non-open-source apps. For a
+security tool, being genuinely auditable and genuinely redistributable is worth
+more than closing the "comply with the AGPL instead of paying" route.
+
+**What this does NOT do.** It does not withdraw anything. Releases up to and
+including v10.16.2 went out under GPL-3.0 from a public repository, and every
+person who received them keeps those rights permanently, including the right to
+fork from those commits. Relicensing applies going forward only.
+
+### Still open
+
+* **Attribution/NOTICE file.** Not written. Every permissive dependency
+  requires its notice reproduced in a distributed binary, so an APK on a store
+  needs one under either licence. §2-§5 contain the raw material.
+* **Copyrightability of AI-generated code.** The README states the codebase is
+  AI-generated under the author's direction. Several jurisdictions require
+  human authorship for copyright to subsist. This does not affect the AGPL side
+  in any way that matters, but the commercial side presumes there is an
+  exclusive right to sell. See [CONTRACTOR-IP.md](CONTRACTOR-IP.md) §"The
+  awkward one". **Qualified advice before taking money, not before posting a
+  job.**
+* **App-store terms versus AGPL §6.** Unchanged from §1 below, and the reason
+  the commercial licence exists: a store build that cannot satisfy the AGPL
+  takes the commercial route instead.
+
+---
+
 ## 1. The finding that governs everything else
 
 **The project is GPL-3.0, and that is the binding constraint — not any

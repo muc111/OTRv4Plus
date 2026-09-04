@@ -577,7 +577,7 @@ Full report: `ANDROID_I2P_FEASIBILITY.md`. Headlines:
 - No performance, memory or battery numbers are given: none could be measured
   here, and inventing them for a transport decision would be worse than omitting
   them. §4 of that report lists exactly what to measure.
-- Our own GPL-3.0 licensing should be settled before commercial release —
+- Our own licensing was settled at v10.17.0: dual AGPL-3.0 plus a commercial licence. This bullet described the GPL-3.0 position and is kept for history —
   independent of I2P, but it surfaced here.
 
 ---
@@ -623,7 +623,7 @@ work behind each is finished and waiting.
    foreground-service notification versus the calculator disguise?
 4. **Unblocking** — allowlist `dl.google.com` + `chaquo.com`, or provide a
    machine with the Android SDK/NDK and a device?
-5. **Licensing** — GPL-3.0 core versus commercial distribution.
+5. **Licensing** — RESOLVED at v10.17.0: dual AGPL-3.0 + commercial. Originally raised as "GPL-3.0 core versus commercial distribution".
 6. **G1** — implement the DAKE handshake timeout (behaviour change), or leave
    tracked?
 

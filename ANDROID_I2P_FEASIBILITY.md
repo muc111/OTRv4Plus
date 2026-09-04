@@ -65,7 +65,7 @@ not consuming a published artifact.
 
 **Licensing.** BSD-3 imposes no copyleft obligation, so it composes with a
 commercially distributed app. Note the opposite direction: OTRv4+'s own Rust
-core declares `license = "GPL-3.0"` (`Rust/Cargo.toml`), and the repository
+core declared `license = "GPL-3.0"` (`Rust/Cargo.toml`) when this was written; since v10.17.0 it is dual AGPL-3.0 + commercial, and the repository
 LICENSE is GPL. That constrains *our* distribution terms regardless of i2pd, and
 should be settled before a commercial release — it is a licensing question for
 the product, not an I2P question.
@@ -157,7 +157,7 @@ It should be adopted **conditionally**, with these gates before committing:
    threshold alongside CPython, the whole embedded approach is in question.
 3. **Confirm the SAM feature set** i2pd's embedded wrapper exposes matches §1 —
    in particular `STREAM ACCEPT` with `TRANSIENT` sessions.
-4. **Settle the GPL-3.0 licensing question** for the product as a whole.
+4. ~~**Settle the GPL-3.0 licensing question** for the product as a whole.~~ Done at v10.17.0: dual AGPL-3.0 + commercial licence.
 5. **Decide the security trade**: a C++ router in-process is a large new attack
    surface next to a codebase whose selling point is `#![forbid(unsafe_code)]`.
    Running it in a **separate process** of our own app (`android:process=":i2p"`)

@@ -4,7 +4,11 @@ version     = "0.10.27"
 edition     = "2021"
 authors     = ["OTRv4+ contributors"]
 description = "Post-quantum OTRv4 cryptographic core (Rust/PyO3)"
-license     = "GPL-3.0"
+# Dual-licensed from v10.17.0: AGPL-3.0 for everyone, plus a commercial
+# licence for anyone who cannot comply with it.  SPDX has no identifier
+# for "or a licence you negotiate with me", so the custom half is a
+# LicenseRef; LICENSE-COMMERCIAL.md holds the terms.
+license     = "AGPL-3.0-only OR LicenseRef-OTRv4Plus-Commercial"
 # The 1.80 in the source comments is the *language* floor (std::sync::LazyLock
 # in smp.rs).  The real floor is the dependency tree, and it is 1.85:
 #   * pqcrypto-mlkem / pqcrypto-mldsa build scripts emit
