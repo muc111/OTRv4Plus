@@ -195,6 +195,43 @@ def sanitise_filename(raw: str) -> str:
 #: a human is scrolling through a gallery, not a machine answering.
 PICKER_TIMEOUT_S = 180.0
 
+#: `termux-storage-get` does NOT wait for the human.  It hands the intent to
+#: the Termux:API app and exits, so the shell command returns in milliseconds
+#: and the chosen file lands at the destination path some seconds later, when
+#: the chooser closes.  Checking for the file the instant the command returns
+#: therefore always finds nothing, and reports "no file chosen" while the
+#: gallery is still on screen -- which is exactly what a device test showed.
+#: The picker is polled for the file instead.
+_PICK_POLL_S = 0.3
+
+#: The copy is a stream, so an existing file may still be filling.  A size
+#: that has not moved across this many consecutive polls is taken as done;
+#: three at 0.3s is ~0.9s of quiet, far longer than a pause inside a copy from
+#: local storage, and shorter than anyone will notice.
+_PICK_STABLE_SAMPLES = 3
+
+#: How many inbound stanzas one chunk may cost, for the rate-limit
+#: exemption.  A 16 KB chunk base64s to ~21.8 KB and fragments at 6000 bytes
+#: into five, so eight is generous headroom for framing changes without being
+#: an open door.
+_STANZAS_PER_CHUNK_CEILING = 8
+
+#: Slack on top, covering the control messages (OFFER, ACCEPT, DONE) and any
+#: retransmission the transport does on its own.
+_TRANSFER_RATE_SLACK = 64
+
+#: Staged copies are named `pick-<ms>` until they are sealed, at which point
+#: they are renamed to `image-...`/`document-...`.  So anything still called
+#: `pick-*` is either in flight or was abandoned, and only those are swept --
+#: never a file a transfer might be reading.
+_STAGE_PREFIX = "pick-"
+
+#: Destinations we stopped waiting for.  The Termux:API app may still write to
+#: one after we have given up, leaving a PLAINTEXT copy of whatever the user
+#: chose sitting on disk.  We cannot wait for it, so we remember it and delete
+#: it at the next pick.
+_ABANDONED_PICKS = set()
+
 #: Enough magic numbers to name the things people actually send.  The picker
 #: does not tell us what the file was called, so the type is sniffed from its
 #: first bytes rather than trusted from an extension that no longer exists.
@@ -253,12 +290,104 @@ def staging_dir() -> str:
     return d
 
 
-def pick_file(runner=None, which=None, timeout: float = PICKER_TIMEOUT_S) -> str:
+def _sweep_abandoned_picks(staging: str, older_than: float,
+                           now: float = None) -> int:
+    """Delete staged copies nobody is going to seal.  Returns how many went.
+
+    Two kinds are swept, and only files still called `pick-*`, because a file
+    a transfer is actually reading has already been renamed:
+
+      * one we stopped waiting for, which the picker may have written after we
+        gave up -- deleted on sight, however new, since we know it is orphaned;
+      * anything older than `older_than` seconds, which covers a copy left
+        behind by a crash or a kill.
+
+    These are PLAINTEXT copies of whatever the user chose, so leaving them is
+    not a tidiness problem.
+    """
+    if now is None:
+        now = time.time()
+    removed = 0
+    for path in sorted(_ABANDONED_PICKS):
+        if os.path.dirname(path) != staging:
+            # A staging directory from a previous run of the process (the
+            # tests move it, and OTRV4PLUS_FILE_DIR can change).  If it is
+            # gone there is nothing left to delete, so stop tracking it.
+            if not os.path.isdir(os.path.dirname(path)):
+                _ABANDONED_PICKS.discard(path)
+            continue
+        try:
+            os.unlink(path)
+            removed += 1
+        except FileNotFoundError:
+            pass
+        except OSError:
+            continue
+        _ABANDONED_PICKS.discard(path)
+    try:
+        names = os.listdir(staging)
+    except OSError:
+        return removed
+    for name in names:
+        if not name.startswith(_STAGE_PREFIX):
+            continue
+        path = os.path.join(staging, name)
+        try:
+            if now - os.path.getmtime(path) < older_than:
+                continue
+            os.unlink(path)
+            removed += 1
+        except OSError:
+            continue
+    return removed
+
+
+def _await_picked_file(path: str, deadline: float, sleeper=time.sleep,
+                       clock=time.monotonic) -> bool:
+    """Wait for the chooser to deliver `path`, complete.  True if it arrived.
+
+    Returns as soon as the size has held steady, so a normal pick costs about
+    a second of waiting past the tap and not the whole deadline.  A cancelled
+    chooser is indistinguishable from a slow one -- nothing is written either
+    way -- so backing out costs the caller the full deadline.  That is why the
+    caller says out loud that it is waiting.
+    """
+    stable = 0
+    last = -1
+    while True:
+        try:
+            size = os.path.getsize(path)
+        except OSError:
+            size = 0
+        if size > 0 and size == last:
+            stable += 1
+            if stable >= _PICK_STABLE_SAMPLES:
+                return True
+        else:
+            stable = 0
+        last = size
+        if clock() >= deadline:
+            # One last look: the file may have completed inside the final
+            # sleep, and giving up on a file that is sitting right there
+            # would be the same bug in a smaller window.
+            return size > 0 and os.path.getsize(path) == size
+        sleeper(_PICK_POLL_S)
+
+
+def pick_file(runner=None, which=None, timeout: float = PICKER_TIMEOUT_S,
+              sleeper=time.sleep, clock=time.monotonic,
+              on_wait=None) -> str:
     """Open the Android file picker; return the path to the staged copy.
 
     `termux-storage-get` copies the chosen file to a path we name, so the
     user taps a photo in the normal Android chooser and it lands somewhere we
-    control.  Two consequences worth knowing:
+    control.  Three consequences worth knowing:
+
+      * **The command returns before the human does.**  It hands the intent to
+        the Termux:API app and exits immediately; the file appears at our path
+        only when the chooser closes.  So the destination is polled until it
+        turns up and stops growing, and the shell exit status says nothing
+        about whether anything was picked.
 
       * **The original filename does not survive.**  The picker reports only
         the bytes, so the name is rebuilt from the file's magic number and a
@@ -271,8 +400,9 @@ def pick_file(runner=None, which=None, timeout: float = PICKER_TIMEOUT_S) -> str
       * **The staged copy is plaintext.**  It lives at 0700 under the private
         file directory and the caller removes it once the file is sealed.
 
-    `runner` and `which` are injected so this is testable without an Android
-    device; both default to the real thing.
+    `on_wait` is called once, if we end up waiting, so the caller can tell the
+    user the client has not hung.  `runner`, `which`, `sleeper` and `clock`
+    are injected so this is testable without an Android device.
     """
     import subprocess
 
@@ -300,20 +430,49 @@ def pick_file(runner=None, which=None, timeout: float = PICKER_TIMEOUT_S) -> str
             "and install the Termux:API app from F-Droid as well -- the "
             "package alone is only shell shims")
 
-    staged = os.path.join(staging_dir(), "pick-%d" % int(time.time() * 1000))
-    rc, _out, err = runner(["termux-storage-get", staged], timeout)
+    staging = staging_dir()
+    _sweep_abandoned_picks(staging, older_than=timeout + 60.0)
+
+    staged = os.path.join(staging, "%s%d" % (_STAGE_PREFIX,
+                                             int(time.time() * 1000)))
+    started = clock()
+    rc, _out, err = runner(['termux-storage-get', staged], timeout)
     if rc == 124:
         raise TransferError("the file picker timed out")
-    if not os.path.exists(staged) or os.path.getsize(staged) == 0:
-        # Backing out of the chooser is normal, not an error worth a stack.
-        try:
-            os.unlink(staged)
-        except OSError:
-            pass
+
+    arrived = os.path.exists(staged) and os.path.getsize(staged) > 0
+    if not arrived:
+        # The shim exits straight after dispatching the intent, so a bad exit
+        # status here means the intent never went out -- not that the user
+        # declined.  Only a status we do not recognise is worth a message;
+        # 0 and 1 are both seen on a normal dispatch.
         if rc not in (0, 1):
             raise TransferError(
                 "the file picker failed: %s"
                 % (err.decode("utf-8", "replace")[:120] or "no file returned"))
+        if on_wait is not None:
+            try:
+                on_wait()
+            except Exception:
+                pass
+        deadline = started + timeout
+        arrived = _await_picked_file(staged, deadline, sleeper=sleeper,
+                                     clock=clock)
+    else:
+        # It was already there, but it may still be filling.
+        arrived = _await_picked_file(staged, clock() + timeout,
+                                     sleeper=sleeper, clock=clock)
+
+    if not arrived or not os.path.exists(staged) \
+            or os.path.getsize(staged) == 0:
+        try:
+            os.unlink(staged)
+        except OSError:
+            # It is not there now, but the chooser may still deliver it after
+            # we walk away.  Remember it so the next pick sweeps it up.
+            _ABANDONED_PICKS.add(staged)
+        else:
+            _ABANDONED_PICKS.discard(staged)
         raise TransferError("no file chosen")
 
     with open(staged, "rb") as fh:
@@ -324,11 +483,12 @@ def pick_file(runner=None, which=None, timeout: float = PICKER_TIMEOUT_S) -> str
     # file the first transfer was still reading.  Found by a test, not by
     # reading -- the window is narrow because the caller unlinks after
     # sealing, which is exactly what makes it the kind of race that survives.
-    final = unique_path(staging_dir(),
+    final = unique_path(staging,
                         "%s-%s.%s" % (_KIND_FOR.get(ext, "file"),
                                       time.strftime("%Y%m%d-%H%M%S"), ext))
     os.replace(staged, final)
     os.chmod(final, 0o600)
+    _ABANDONED_PICKS.discard(staged)
     return final
 
 
@@ -582,6 +742,11 @@ class IncomingTransfer:
     accepted: bool = False
     cancelled: bool = False
     offered_at: float = field(default_factory=time.monotonic)
+    #: Inbound messages this transfer may cost before the chat rate limiter
+    #: applies again.  Set on accept from the offer's own chunk count, so the
+    #: exemption is bounded by the file the USER agreed to receive rather than
+    #: being open-ended.  See `absorb_transfer_message`.
+    rate_allowance: int = 0
 
     @property
     def progress(self) -> float:
@@ -610,7 +775,8 @@ class FileTransferManager:
 
     def __init__(self, transport: ChunkTransport,
                  notify: Callable[[str], None],
-                 verified: Callable[[str], bool]):
+                 verified: Callable[[str], bool],
+                 spawn: Optional[Callable[["OutgoingTransfer"], None]] = None):
         if _core is None:                        # pragma: no cover
             raise TransferError(
                 "otrv4_core is unavailable, so file transfer cannot run; "
@@ -618,8 +784,63 @@ class FileTransferManager:
         self.transport = transport
         self._notify = notify
         self._verified = verified
+        # How the whole file gets sent once the peer accepts.  The default
+        # sends every chunk right here, in the caller's thread, which is what
+        # a test or a synchronous transport wants.  An event-loop client MUST
+        # pass its own: `on_accept` is reached from inside the inbound message
+        # handler, so sending a 300 KB file inline there blocks the loop --
+        # keepalives stop, the stream is declared dead, and the transfer takes
+        # the connection down with it.  Found on a device, not by reading.
+        self._spawn = spawn or self._pump
         self.outgoing: Dict[str, OutgoingTransfer] = {}
         self.incoming: Dict[str, IncomingTransfer] = {}
+        # Transfers we gave up on. A CANCEL goes to the sender, but chunks
+        # already in flight keep arriving for a while, and on a device that
+        # was ~430 of them each printing "DATA rejected: no such transfer".
+        # The reason is worth saying once, not once per straggler.
+        self._abandoned: Dict[str, int] = {}
+
+    def absorb_transfer_message(self, peer: str) -> bool:
+        """Spend one message of an accepted transfer's rate allowance.
+
+        True means the inbound rate limiter must NOT drop this message.
+
+        Raising the chat budget was the first attempt at this and it was
+        wrong: it moved the cliff rather than removing it, and a device test
+        walked straight off the new one at chunk 33 of 119. A receiver whose
+        transfers survive only while the sender paces itself is broken by
+        construction -- the sender may be an older build, a faster network, or
+        hostile, and none of those should cost the user their file.
+
+        So an accepted transfer's traffic is exempt outright. What bounds it
+        is not a rate but a QUANTITY: the offer declared how many chunks it
+        would take, the user agreed to receive them, and the allowance is set
+        from that. A peer that keeps sending past it stops being exempt and is
+        back to the chat limit like anyone else.
+        """
+        for t in self.incoming.values():
+            if t.peer == peer and t.accepted and t.rate_allowance > 0:
+                t.rate_allowance -= 1
+                return True
+        return False
+
+    def transfer_in_flight(self, peer: str) -> bool:
+        """Is `peer` in the middle of an accepted transfer with us?
+
+        The inbound rate limiter asks this.  A limiter exists to stop an
+        UNSOLICITED flood, and the chunks of a transfer the user accepted from
+        an SMP-verified peer are the opposite of unsolicited -- throttling
+        them to the chat rate drops most of the file, which is exactly what a
+        device test showed.  Only `accepted` counts: an offer alone, which any
+        verified peer can send unprompted, buys nothing.
+        """
+        for t in self.incoming.values():
+            if t.peer == peer and t.accepted:
+                return True
+        for t in self.outgoing.values():
+            if t.peer == peer and t.accepted and not t.cancelled:
+                return True
+        return False
 
     # -- helpers ---------------------------------------------------------
 
@@ -690,19 +911,39 @@ class FileTransferManager:
             raise TransferError("the offer could not be sent")
         return transfer
 
-    def _pump(self, transfer: OutgoingTransfer) -> None:
-        """Send every sealed chunk.  Caller runs this off the event loop."""
+    def pump_step(self, transfer: OutgoingTransfer) -> bool:
+        """Send the next sealed chunk.  True while more remain.
+
+        One chunk per call so the caller decides the pace.  An event-loop
+        client needs that twice over: to give the loop a turn between chunks,
+        and to keep the send rate under whatever the RECEIVER will accept --
+        blasting a file as fast as the loop can encrypt it is how the first
+        real transfer lost most of its chunks to the far side's rate limiter.
+        """
         sealed = getattr(transfer, "_sealed", [])
-        for index, chunk in enumerate(sealed):
-            if transfer.cancelled:
-                return
-            if not self.transport.send_chunk(
-                    transfer.peer, transfer.offer.transfer_id, index, chunk):
-                self.cancel(transfer.offer.transfer_id, "the transport failed")
-                return
-            transfer.chunks_sent = index + 1
-        self.transport.send_control(transfer.peer, "DONE",
-                                    transfer.offer.transfer_id.hex())
+        index = transfer.chunks_sent
+        if transfer.cancelled:
+            return False
+        if index >= len(sealed):
+            self.transport.send_control(transfer.peer, "DONE",
+                                        transfer.offer.transfer_id.hex())
+            return False
+        if not self.transport.send_chunk(
+                transfer.peer, transfer.offer.transfer_id, index,
+                sealed[index]):
+            self.cancel(transfer.offer.transfer_id, "the transport failed")
+            return False
+        transfer.chunks_sent = index + 1
+        return True
+
+    def _pump(self, transfer: OutgoingTransfer) -> None:
+        """Send every sealed chunk without pausing.  The default `spawn`.
+
+        Fine for a test or a synchronous transport; see `__init__` for why an
+        event-loop client must not use it.
+        """
+        while self.pump_step(transfer):
+            pass
 
     # -- receiving -------------------------------------------------------
 
@@ -737,6 +978,9 @@ class FileTransferManager:
         transfer.handle = os.fdopen(fd, "wb")
         transfer.tmp_path = tmp
         transfer.accepted = True
+        transfer.rate_allowance = (transfer.offer.chunk_count
+                                   * _STANZAS_PER_CHUNK_CEILING
+                                   + _TRANSFER_RATE_SLACK)
         self.transport.send_control(transfer.peer, "ACCEPT",
                                     transfer.offer.transfer_id.hex())
         return transfer
@@ -763,6 +1007,13 @@ class FileTransferManager:
             transfer_id = bytes.fromhex(parts[0])
         except ValueError:
             raise TransferError("malformed transfer id")
+        key = self._key(transfer_id)
+        if key in self._abandoned:
+            # Already given up on, and the sender already told. Count it and
+            # stay quiet: these are stragglers from before the CANCEL landed,
+            # not a new fault.
+            self._abandoned[key] += 1
+            return
         index = _int_field(parts[1], "chunk index", 1 << 24)
         self.deliver_chunk(peer, transfer_id, index, _unb64(parts[2], "chunk"))
 
@@ -781,7 +1032,18 @@ class FileTransferManager:
         if not transfer.accepted or transfer.receiver is None:
             raise TransferError("data arrived for a transfer that was not accepted")
         if index != transfer.chunks_received:
-            raise TransferError("chunk %d arrived out of order" % index)
+            # There is no retransmit in this protocol: the chunk AEAD is a
+            # sequence, so chunk N cannot be opened before N-1 and a gap can
+            # never be filled in later.  The transfer is already dead at this
+            # point; the only question is whether the user is told once or
+            # once per remaining chunk.  Before this it was once per chunk,
+            # which buried the cause under twenty identical lines.
+            expected = transfer.chunks_received
+            self._abandon_incoming(transfer)
+            raise TransferError(
+                "chunk %d arrived but %d was expected — a chunk was lost in "
+                "transit, and the sequence cannot be resumed. Transfer "
+                "abandoned; ask them to send it again" % (index, expected))
         is_final = (index + 1 == transfer.offer.chunk_count)
         # Authenticates before anything is written.  A forged chunk raises
         # here and leaves the temporary file untouched.
@@ -797,7 +1059,7 @@ class FileTransferManager:
             # A chunk that fails its tag is not a transient error: the peer
             # is broken or hostile, and continuing would leave a partial file
             # on disk waiting for chunks that will never verify.
-            self._destroy_incoming(transfer)
+            self._abandon_incoming(transfer)
             raise TransferError("chunk %d failed authentication — transfer "
                                 "abandoned" % index) from exc
         transfer.handle.write(plain)
@@ -901,6 +1163,34 @@ class FileTransferManager:
             out._sealed = []                     # type: ignore[attr-defined]
         self._notify("[file] %s declined the transfer" % peer)
 
+    def _abandon_incoming(self, transfer: IncomingTransfer) -> None:
+        """Give up on an incoming transfer AND tell the sender to stop.
+
+        `_destroy_incoming` alone is not enough, and the difference is not
+        cosmetic. A device test abandoned a transfer at chunk 33 of 119; the
+        sender, never told, pushed the remaining ~430 stanzas at a receiver
+        that had just dropped back to the chat rate limit. Every one was
+        dropped, the terminal filled with identical lines, and the connection
+        died of a starved keepalive. The transfer failing was a bug; the
+        transfer failing and then taking the session down with it was this
+        missing message.
+
+        Deliberately not folded into `_destroy_incoming`: that also runs on
+        the SUCCESS path, and cancelling a transfer that just completed would
+        be worse than saying nothing.
+        """
+        try:
+            self.transport.send_control(
+                transfer.peer, "CANCEL",
+                self._key(transfer.offer.transfer_id))
+        except Exception:
+            pass
+        key = self._key(transfer.offer.transfer_id)
+        if len(self._abandoned) > 32:
+            self._abandoned.clear()
+        self._abandoned[key] = 0
+        self._destroy_incoming(transfer)
+
     def _destroy_incoming(self, transfer: IncomingTransfer) -> None:
         """Remove every trace.  Runs on decline, cancellation and failure."""
         if transfer.handle is not None:
@@ -975,4 +1265,4 @@ class FileTransferManager:
         transfer.accepted = True
         self._notify("[file] %s accepted %s — sending"
                      % (peer, transfer.offer.filename))
-        self._pump(transfer)
+        self._spawn(transfer)

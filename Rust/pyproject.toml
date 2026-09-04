@@ -6,6 +6,10 @@ build-backend = "maturin"
 name = "otrv4_core"
 version = "0.10.27"
 description = "OTRv4+ double ratchet core (Rust)"
+# Wheel metadata carries the licence too, or a built wheel says nothing
+# about its terms.  Dual-licensed from v10.17.0; see ../LICENSE and
+# ../LICENSE-COMMERCIAL.md.
+license = "AGPL-3.0-only OR LicenseRef-OTRv4Plus-Commercial"
 # The Rust extension itself is abi3-py39 and would load on 3.9, but the
 # OTRv4+ application layer it exists to serve does NOT: otrv4+.py uses PEP 701
 # f-string syntax (f"{x !r }") that does not parse before 3.12.  Declaring 3.9

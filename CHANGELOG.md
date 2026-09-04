@@ -4,6 +4,427 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## v10.17.2 — NOTICE, generated from the graph rather than written by hand
+
+*2026-09-04.  `VERSION → 10.17.2`.  No code change.  The attribution file
+v10.17.0 said was missing.*
+
+Every permissive licence in the tree requires its notice reproduced in a
+binary that includes the code. There was none, so an APK on a store would have
+been non-compliant under either half of the dual licence.
+
+**Generated, not written.** [`tools/generate_notice.py`](tools/generate_notice.py)
+walks the resolved dependency graph and emits [NOTICE](NOTICE). A hand-written
+list rots the first time someone runs `cargo add`; a test now fails when the
+file and the graph disagree.
+
+**Only what actually ships.** The walk follows *normal* dependency edges from
+the root: **109 of the 137 resolved packages** are compiled into `otrv4_core`;
+the other 28 are build- and dev-only. Attributing a test framework pads the
+file that a reviewer has to read, and the audit's earlier "134 packages" was
+answering a different question — what is in the lockfile — which is right for
+an audit and wrong for attribution.
+
+**A choice is recorded as taken.** `MIT OR Apache-2.0 OR LGPL-2.1-or-later` is
+a choice, and a choice recorded nowhere has not really been made. Each crate
+now shows what it *offered* and what was *taken*: 104 MIT, 4 BSD-3-Clause, 1
+Apache-2.0 with the LLVM exception, 1 Unicode-3.0. Only the taken licences'
+texts are reproduced — printing the LGPL text for `r-efi`, which is taken under
+MIT, would imply an obligation not accepted and would suggest a copyleft
+dependency that is not in the tree. `unicode-ident`'s `(MIT OR Apache-2.0) AND
+Unicode-3.0` is *not* a choice: both halves apply and both are reproduced.
+
+### Two defects in the generator, caught before it was committed
+
+Both are the characteristic failure modes of any attribution tool, so they are
+recorded rather than quietly fixed:
+
+* **It attributed a sentence from the Apache-2.0 licence body to every crate
+  shipping that licence** — `(c) You must retain, in the Source form of any
+  Derivative Works...` matched as a copyright line. Attribution that names the
+  wrong holder is worse than none.
+* **It split `(MIT OR Apache-2.0) AND Unicode-3.0` on `OR` first**, producing
+  the identifier `(MIT`, for which no licence text could be found. `AND` binds
+  the whole expression.
+
+Copyright holders are read from each crate's own licence files. Where a crate
+ships none — `x448` and `ed448-goldilocks-plus` among them — the manifest's
+`authors` is used and the line says so, rather than inventing a holder.
+
+`LICENSING_AUDIT.md` records the re-measurement and closes the NOTICE item it
+had left open. What remains is a delivery requirement rather than an audit
+one: the APK must render this on a licences screen, and whoever bundles i2pd
+must attribute its own dependencies (Boost, OpenSSL 3.x).
+
+19 tests (36 in the file), 2 mutations applied and killed: a crate dropped
+from the NOTICE, and the declined LGPL text reappearing.
+
+---
+
+## v10.17.1 — a transfer the receiver accepted is not throttled at all
+
+*2026-09-04.  `VERSION → 10.17.1`.  Python only.  The v10.16.2 fix was a half
+measure; a device test walked off the new cliff.*
+
+A 1.9 MB transfer got to **chunk 33 of 119** — up from chunk 10 before — and
+then died the same way, and this time took the connection with it.
+
+**Raising the rate-limit budget only moved the cliff.** v10.16.2 gave an
+accepted transfer 120 messages per 5 s instead of 20. The sender was faster
+than that, three fragments of chunk 32 were dropped, and the sequence ended.
+A receiver whose transfers survive only while the sender paces itself is
+broken by construction: the sender may be an older build, on a faster network,
+or hostile, and none of those should cost the user their file.
+
+So an accepted transfer's traffic is now **taken out of the limiter's hands
+entirely**. What bounds it is not a rate but a **quantity**: the offer declared
+how many chunks it would take, the user agreed to receive them, and the
+allowance is set from that (`chunk_count × 8 + 64` stanzas). A peer that keeps
+sending past what it said it would send stops being exempt and is back on the
+chat limit like anyone else. Bounded by consent, not by speed.
+
+**The receiver never told the sender it had given up, and that is what killed
+the session.** Abandoning destroyed the local state and sent nothing. The
+sender, hearing nothing, pushed the remaining ~430 stanzas at a receiver that
+had just dropped back to the chat rate limit — every one dropped, the terminal
+filled with identical lines, and the keepalive starved until the stream was
+declared dead. Giving up now sends `CANCEL` first. Deliberately *not* folded
+into `_destroy_incoming`, which also runs on the success path: cancelling a
+transfer that just completed would be worse than saying nothing.
+
+**Two log fixes, because the output actively hid the fault.** Chunks already in
+flight when the `CANCEL` goes out still arrive; they are counted rather than
+printed, instead of ~430 lines of `DATA rejected: no such transfer`. And
+throttling is now reported once per window with a count — the number is the
+useful part, the repetition never was.
+
+Sender pacing (8 stanzas/s) stays. It is still right for the I2P stream and the
+peer's CPU. It is simply no longer load-bearing for correctness, which is the
+point.
+
+13 new tests (33 in the file), 3 mutations applied and killed: abandoning
+without telling the sender, the limiter ignoring the allowance, and the
+allowance made unbounded.
+
+**Still not confirmed on a device.**
+
+---
+
+## v10.17.0 — dual-licensed: AGPL-3.0, or a commercial licence
+
+*2026-09-04.  `VERSION → 10.17.0`.  No code change.  A licence change, which is
+why it is a minor bump and not a patch.*
+
+OTRv4+ was GPL-3.0. From this release it is **dual-licensed**: AGPL-3.0 for
+everyone, plus a [commercial licence](LICENSE-COMMERCIAL.md) for anyone who
+cannot or will not comply with it.
+
+**The audit came first, because a licence you cannot grant is worse than the
+one you have.** `LICENSING_AUDIT.md` had left this open, and re-running it over
+the resolved graph settled it: 137 Rust packages, the Python layer, Chaquopy
+(MIT since 12.0.1) and i2pd (BSD-3-Clause) are **all permissive**. Not one
+imposes copyleft. The only copyleft in play was the project's own — which is
+exactly the condition dual licensing needs. One AGPL dependency anywhere in
+that tree and the commercial half would have been unsellable.
+
+**Why AGPL and not GPL.** The GPL's source obligation attaches to
+*distribution*. An operator can run a modified version as a hosted service and
+distribute nothing, so the obligation never fires — for a messaging client with
+a server side, that is the loophole that matters. AGPL §13 closes it.
+
+**Why not a licence that forbids commercial use outright.** PolyForm
+Noncommercial and BUSL-1.1 were considered. Either would match the plain
+intention more literally, and both would make the project *source-available*
+rather than open source — which means F-Droid will not distribute it. F-Droid
+is where this project's Termux/I2P audience actually installs software. For a
+security tool, being genuinely auditable and genuinely redistributable is worth
+more than closing the "comply with the AGPL instead of paying" route.
+
+Charging money is not the trigger; the AGPL explicitly permits selling copies
+(§4). The trigger is wanting to keep your source closed.
+
+**Nothing is withdrawn.** Releases up to and including v10.16.2 went out under
+GPL-3.0 from a public repository. Everyone who received them keeps those rights
+permanently, including the right to fork from those commits. The `LICENSE` file
+says so rather than implying a retraction its author could not enforce.
+
+### Keeping the commercial half grantable
+
+It stays sellable only while every line can be licensed both ways, so two
+documents arrive with it:
+
+* **[CLA.md](CLA.md)** — contributors grant a dual licence and sign off per
+  commit (`git commit -s`). It is a licence, **not** an assignment: the
+  contributor keeps their copyright and the contribution stays under the AGPL
+  like everything else. Without it, one AGPL-only patch at a time, the
+  commercial option would disappear with nobody deciding to end it.
+* **[CONTRACTOR-IP.md](CONTRACTOR-IP.md)** — for paid work, where a sign-off is
+  not enough. In most jurisdictions the person who writes the code owns the
+  copyright even when you paid them; "work made for hire" is narrow in the US
+  and absent in that form from UK and EU law. A contractor who owns the Android
+  layer is a contractor whose code you cannot include in a commercial licence.
+  It carries assignment, moral-rights, further-assurance, third-party-material
+  and security-warranty clauses, and asks for a written dependency list on
+  delivery.
+
+### Two things stated rather than buried
+
+* **No NOTICE file exists.** Every permissive dependency requires its notice
+  reproduced in a distributed binary, so an APK on a store needs one under
+  either licence. `LICENSING_AUDIT.md` §2-§5 has the raw material.
+* **Whether AI-generated code is copyrightable is unsettled**, and this
+  project's README states plainly that it is AI-generated under the author's
+  direction. It does not affect the AGPL side in any way that matters. It does
+  bear on the commercial side, which presumes there is an exclusive right to
+  sell. `CONTRACTOR-IP.md` sets out the position and says where the human
+  authorship argument is strongest. Advice before taking money, not before
+  posting a job.
+
+`tests/test_licence_declarations_agree.py` (17 tests) pins the licence text
+whole — including §13, without which this would just be the GPL under another
+name — checks every declaration agrees, and re-runs the copyleft check over the
+live dependency graph so a future `cargo add` cannot quietly make the
+commercial licence unsellable.
+
+**Not legal advice.** Written by a non-lawyer. Have a solicitor review the
+commercial terms and the contractor clauses before relying on them.
+
+---
+
+## v10.16.2 — `/sendfile` actually transfers
+
+*2026-09-04.  `XMPP_VERSION → 10.16.2`.  Python only.  Three defects, all on
+the first real transfer between two phones.*
+
+v10.16.1 fixed the picker, so a file was finally chosen, sealed, offered and
+accepted. Then the receiver's screen filled with this:
+
+```
+[rate-limit] dropping message from alice@xmpp-elite.i2p
+[rate-limit] dropping message from alice@xmpp-elite.i2p
+   ... about eighty more ...
+[file] DATA rejected: chunk 10 arrived out of order
+```
+
+Three things were wrong at once, and each would have killed the transfer
+alone.
+
+**The receiver throttled the file as if it were a flood.** The inbound limiter
+is 20 messages per 5 seconds — four a second. One 16 KB chunk becomes five
+6 KB fragments, so a 340 KB file is about a hundred stanzas, and four fifths
+of them were dropped. Because the chunk AEAD is a sequence, the first gap
+ended the transfer: that is what `chunk 10 arrived out of order` was reporting,
+a symptom rather than the fault.
+
+A rate limiter exists to stop an **unsolicited** flood. The chunks of a
+transfer the user accepted, from a peer the engine says is SMP-verified, are
+the opposite of unsolicited. An accepted transfer now raises that peer's
+budget to 120 per 5 seconds for as long as it runs. Raised, not lifted — an
+accepted transfer is not a licence to send anything at any rate, an *offer*
+alone (which any verified peer can send unprompted) buys nothing, and the
+moment the transfer ends the peer is back to the chat limit.
+
+**Nothing paced the sender.** It pushed chunks as fast as the loop could
+encrypt them. Sending is now one chunk per turn with a pause between, computed
+from the stanzas that actually went out rather than a fixed guess — the first
+and last chunks of a file are usually shorter than the rest. The rate, 8
+fragments a second, sits deliberately below the receiver's 24: a sender that
+exactly fills the budget starves the chat and keepalives sharing it.
+
+**And the whole file was being sent on the event loop.** `on_accept` is
+reached from inside the inbound message handler, and the engine's pump sent
+every chunk in one unbroken run. So a 340 KB transfer encrypted and pushed a
+hundred stanzas with nothing else getting a turn — keepalives could not run,
+the stream was declared dead, and the transfer took the connection down with
+it. That disconnect looked like a network problem in the earlier session too,
+and was not one. `pump_step` sends one chunk and returns; the client drives it
+from a task, with sends staying on the loop thread because slixmpp's writer is
+not ours to call from another.
+
+**A lost chunk now says so once.** There is no retransmit — the chunk AEAD is
+a sequence, so a gap can never be filled in and the transfer is already dead.
+It used to report the fault once per remaining chunk, burying the cause under
+twenty identical lines; it now abandons the transfer with one message that
+says what happened and to ask for the file again.
+
+20 tests, 3 mutations applied and killed: `on_accept` sending inline again,
+the limiter reading the budget and throttling anyway, and the pacing pause
+removed.
+
+---
+
+## v10.16.1 — the file picker waits for you; every SMP line wears a padlock
+
+*2026-09-04.  `XMPP_VERSION → 10.16.1`.  Python only.  Two device-found fixes.*
+
+### `/sendfile` reported "no file chosen" while the gallery was still open
+
+Choosing a file did nothing. The picker opened, a photo was tapped, and the
+client had already given up:
+
+```
+[file] opening the Android file picker — choose a file on the phone
+[file] no file chosen
+```
+
+`termux-storage-get` does not wait for the human. It hands the intent to the
+Termux:API app and exits, so the shell command returns in milliseconds and the
+chosen file lands at the destination path seconds later, when the chooser
+closes. The client checked once, the instant the command returned, and found
+nothing — which is to say it could never have worked, on any phone, for any
+file. The two-phone plan had exercised `/sendfile <path>`; the no-argument
+form had not been run on a device until now.
+
+The destination is now polled until the file appears **and stops growing**.
+The size has to hold steady across three consecutive polls before the file is
+sealed, because the copy is a stream and a file that merely exists may still be
+filling — sending a truncated photo would have been the next bug.
+
+Three smaller things came out of the same reading:
+
+* **The shell exit status says nothing about whether you picked anything.** It
+  describes dispatching the intent. The old code treated a non-zero status as
+  "user backed out"; it is now ignored unless it is a status that means the
+  intent never went out at all.
+* **The client says it is waiting.** A silent pause for as long as the gallery
+  is open reads as a hang.
+* **A file delivered after we stopped waiting is deleted.** It is a plaintext
+  copy of whatever was chosen, sitting in the staging directory with nothing
+  left to seal it. Staged copies are named `pick-*` until they are claimed, so
+  the sweep can never touch a file a transfer is reading.
+
+Backing out of the chooser still costs the full three-minute wait — nothing is
+written either way, so a cancelled picker and a slow one are indistinguishable
+from outside. The waiting line says so.
+
+### Every `[smp]` line now carries a padlock
+
+Verification is the one thing this client asks a user to *do* rather than
+watch, and its lines looked like every other bracketed tag scrolling past.
+They now read `🔐 [smp] …`, with the tag itself in blue.
+
+🔐 is the glyph the SMP progress bar already used, so the whole exchange reads
+as one thing. Blue on the text rather than the emoji, and not 🔵: that already
+means *verified*, the end state, and putting it on every SMP line would say
+"verified" while verification was still running.
+
+The session transcript's allowlist had to learn about markers first. It writes
+a line only if its shape is recognised, and `🔐 [smp] …` is not `[smp] …`, so
+every SMP line would have been redacted to `<unlogged line: N chars>`. Status
+glyphs are now stripped before any rule is matched — before, specifically, and
+not inside the `[tag]` rule alone: had the marker been tolerated only there,
+`🔐 [otr] <peer> body` would have walked straight past the message-body
+redaction and written the message to disk. The list of markers is exact;
+"any leading emoji" would have been the hole.
+
+### The README was three versions stale, and wrong in the safe direction
+
+The badge said `v10.14.0`. It also listed the AEAD for voice and not for chat,
+which reads as though chat has none — the question that started this.
+
+**SMP does not use AES-256-GCM, and the badge should not say it does.**
+`Rust/src/smp.rs` contains no AES at all. The construction is the classical
+Schnorr ZKP over the 3072-bit group, ML-KEM-1024 encapsulation, ML-DSA-87
+signatures, and Argon2id stretching the passphrase. AES-256-GCM sits on either
+side of it and not inside it: every SMP message is a TLV in an ordinary
+double-ratchet data message, so it is AES-256-GCM in transit like any other
+message, and a stored passphrase is sealed at rest with AES-256-GCM. Neither is
+part of the proof. The badge now names the chat AEAD in its own segment, where
+it belongs, and the SMP section spells the distinction out.
+
+Two things found while checking that, both stale since v10.13.2:
+
+* **Honest caveat 4 still said voice crypto came from the Python
+  `cryptography` library** — "two AES-256-GCM implementations in the tree" —
+  while two other sections of the same README said it had moved. The only
+  remaining `AESGCM(` call sites in the repository are in `.attic/`. A README
+  that overstates a weakness is as wrong as one that hides it, and one that
+  contradicts itself gives a reader no way to tell which half to believe.
+* **`SECURITY.md`'s voice key-material table listed every item as a Python
+  `bytearray` or an OpenSSL object.** The epoch root, the media keys and the
+  X448 private scalar are Rust-owned with no accessor; the two shared secrets
+  are zeroed in place by Rust as it takes them. What is genuinely still
+  Python-side is named rather than dropped: the initiator's ML-KEM
+  decapsulation key, which lives from keygen until the peer's ciphertext
+  arrives.
+
+The SMP wire-version paragraph was stale too — it described `0x02` as the
+hybrid format without mentioning that `0x03`, with Argon2id, has been the
+default since v10.13.0.
+
+### One sentence above the diagram, with "hybrid" meaning what it means
+
+The chain now has a prose summary. It says X448 **with** ML-KEM-1024 and Ed448
+**with** ML-DSA-87 — two pairs — *keying* AES-256-GCM, rather than listing AES
+alongside them as a third ingredient.
+
+That is not pedantry about wording. "Hybrid" in hybrid post-quantum
+cryptography means a classical asymmetric primitive paired with a
+post-quantum one, so that breaking the scheme requires breaking both. AES-256
+is neither half of such a pair: 256-bit symmetric encryption is already
+considered quantum-resistant and has no post-quantum partner to be paired
+with. Naming it in the same breath as X448 and ML-KEM invites a reader to
+think the AES is somehow part of the hybridisation, or worse, that it is the
+part doing the post-quantum work.
+
+### The crypto chain, drawn once at the top
+
+The README described the stack in five separate places and nowhere in one
+glance. It now opens with the chain from key agreement to ciphertext, checked
+line by line against the code rather than from memory. Two corrections were
+needed before it could be committed:
+
+* **Ed448 ring signatures belong beside ML-DSA-87, not under it.** They are
+  what makes the authentication deniable, which is the property OTR exists
+  for. `dake.rs` verifies one in DAKE3 through `ring_sig::ring_verify_bytes`.
+  A diagram naming only ML-DSA-87 credits the whole of authentication to the
+  post-quantum half and quietly drops deniability.
+* **The KEM is not a one-time handshake step.** A fresh ML-KEM-1024 exchange
+  runs at *every* DH ratchet step, rotating the brace key that feeds the
+  SHAKE-256 schedule (`kdf_brace_rotate` in `ratchet.rs`). Drawn as a single
+  arrow into the ratchet it would describe PQXDH, which is precisely the
+  comparison the rest of the README is careful about.
+
+`tests/test_readme_matches_the_code.py` pins the parts that can be checked
+mechanically: the badge version against `XMPP_VERSION`, the absence of AES in
+`smp.rs` against the claim that there is none, the default wire version, and
+the two documents agreeing with each other. Six of its nine tests fail against
+the README as it was.
+
+---
+
+## Repository — one branch, one history
+
+*2026-09-04.  No code change.  Branch housekeeping only.*
+
+`main` had fallen 110 commits behind the working branch, so the default branch
+on GitHub showed a version of this project that predates the PQ SMP hardening,
+`/sendfile`, guided verification and the group protocol spec. It has been
+brought up to date, and development now happens on a single line of history.
+
+- `main` — current, at v10.16.0.
+- `claude/otrv4plus-android-spec-a3oq4d` — the working branch, merged into
+  `main` and still the place new work lands.
+- `voice-v10.11.0` — **deleted.** It carried exactly one commit that `main`
+  did not have, `177d0f5ff3309116802596e06bc1345204d433c2` ("v10.11.0: hybrid
+  PQ voice calls over I2P, AAudio backend"), whose only unique file was
+  `test_voice_verify.py` — a file deliberately removed later in `36efffe`.
+  Nothing in the voice implementation itself was lost; the shipping voice code
+  is on `main`.
+
+If that commit is ever wanted back:
+
+```bash
+git fetch origin 177d0f5ff3309116802596e06bc1345204d433c2
+git push origin 177d0f5ff3309116802596e06bc1345204d433c2:refs/heads/voice-v10.11.0
+```
+
+GitHub keeps the objects of a deleted branch reachable for some time and can
+also restore the branch from the repository's branch page; this SHA is recorded
+here so the commit stays findable after that window closes.
+
+---
+
 ## v10.16.0 — TLS follows the transport; `--insecure-tls` is no longer needed
 
 *2026-09-04.  `VERSION → 10.16.0`.  Python only.  A user-visible default changes, hence the minor bump.*

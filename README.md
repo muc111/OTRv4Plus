@@ -6,7 +6,7 @@
 <p align="center"><strong>Post-quantum hybrid encryption for Off The Record (OTR) chat <em>and voice calls</em> over IRC and XMPP. Experimental, unaudited research prototype.</strong></p>
 
 <p align="center">
-<code>v10.14.0 · Rust crypto core · hybrid PQC SMP (ML-KEM-1024 + ML-DSA-87) · voice (X448 + ML-KEM-1024, AES-256-GCM) · I2P SAM · AAudio · TUI</code>
+<code>v10.17.2 · Rust crypto core · chat (X448 + ML-KEM-1024, AES-256-GCM) · hybrid PQC SMP (ML-KEM-1024 + ML-DSA-87 + ZKP) · voice (X448 + ML-KEM-1024, AES-256-GCM) · I2P SAM · AAudio · TUI</code>
 </p>
 
 ---
@@ -24,6 +24,42 @@
 ## What this is
 
 OTRv4+ is an IRC and XMPP client that implements OTRv4 with a post-quantum hybrid layer added at each stage of the protocol, including the SMP identity-verification step and, as of v10.11.0, encrypted voice calls carried over I2P — which as of v10.12.0 detect, diagnose and recover from a media path that stops. It runs on Termux (Android) over I2P, Tor, or TLS clearnet, with a Rust crypto core wrapped by a thin Python orchestration layer.
+
+Hybrid classical + post-quantum cryptography: X448 with ML-KEM-1024 for key
+agreement, Ed448 with ML-DSA-87 for authentication, keying established
+AES-256-GCM for the message itself. OTR's Ed448 ring-signature deniability is
+retained rather than traded away for the post-quantum half.
+
+What actually encrypts a message, top to bottom:
+
+```
+        X448  +  ML-KEM-1024              key agreement (DAKE)
+  Ed448 ring signature  +  ML-DSA-87      authentication: deniable, then hybrid PQ
+                  |
+                  v
+      OTRv4+ double ratchet               a fresh ML-KEM-1024 exchange at
+      SHAKE-256 key schedule              EVERY DH ratchet step, not just once
+                  |
+                  v
+             AES-256-GCM
+                  |
+                  v
+       encrypted OTR message
+```
+
+Two things that chain is easy to draw wrong. **Ed448 ring signatures are not
+optional decoration** — they are what makes the authentication deniable, which
+is the property OTR exists for; ML-DSA-87 is added alongside them, not instead
+of them. And **the KEM is not a one-time handshake step**: OTRv4+ re-runs a
+fresh ML-KEM-1024 exchange at every DH ratchet step, rotating the brace key
+that feeds the SHAKE-256 schedule. That placement is the difference from
+PQXDH, which applies the KEM to the initial agreement; it is not a claim to be
+"more post-quantum" than Signal.
+
+SMP sits beside this chain rather than inside it. It has no AES of its own —
+see [Hybrid PQC SMP](#hybrid-pqc-smp-v1091) — but every SMP message travels as
+a TLV through the ratchet above, so it is AES-256-GCM in transit like anything
+else.
 
 **Single-author research prototype. Not a finished product, and not audited.** The author is not a cryptographer. The protocol composition (the DAKE wiring, the hybrid SMP construction) has had no external review, and the Rust crypto crates it depends on (`ed448-goldilocks-plus`, `x448`, `pqcrypto-mlkem`, `pqcrypto-mldsa`) have had no formal review either. Use it to study or extend, not because you need a hardened tool today. If your safety depends on the security of your messaging, use something audited.
 
@@ -952,7 +988,28 @@ SMP itself is not new: the Socialist Millionaires' Protocol has shipped in libot
 - **SMP2**: responder encapsulates to derive `kem_ss`, computes `pq_binding_key = KDF(kem_ss || transcript_tag)`, signs the entire SMP2 wire body with ML-DSA-87 under that binding key
 - **SMP3/4**: each side verifies the previous ML-DSA-87 signature before processing classical fields, then signs its own output
 
-**Design intent (not a verified result):** the hybrid layer is meant so that the equality proof is no weaker than the strongest of its three components (the 3072-bit discrete log, ML-KEM-1024, and ML-DSA-87), so that defeating it would require breaking all three rather than any one. This is the goal of the construction, not a proven property: it was AI-generated, unreviewed, and has not been analysed by anyone qualified to confirm it. The wire format is versioned (`0x02` = hybrid PQ) so a downgrade to the classical-only format is not silent, which is a checkable implementation fact rather than a security proof.
+**What AES-256-GCM does and does not do here.** The SMP construction itself
+contains no symmetric encryption: `Rust/src/smp.rs` has no AES anywhere in it.
+The equality proof is the classical Schnorr ZKP over the 3072-bit group,
+ML-KEM-1024 encapsulation and ML-DSA-87 signatures, with the passphrase
+stretched by Argon2id. AES-256-GCM appears on either side of it — every SMP
+message travels as a TLV inside an ordinary double-ratchet data message, so it
+is AES-256-GCM in transit like any other message, and a stored passphrase is
+sealed at rest with AES-256-GCM under a key derived from the master passphrase.
+Neither is part of the proof. Listing AES-256-GCM among SMP's primitives would
+say the construction uses it, which it does not.
+
+**Wire version.** `0x01` is classical-only, `0x02` is the hybrid PQ format with
+the passphrase stretched through 50,000 rounds of SHAKE-256, and `0x03` — the
+default since v10.13.0 — is the same wire layout with Argon2id instead, salted
+with the session id and both fingerprints. `0x02` and `0x03` are byte-identical
+on the wire and differ only in how `set_secret` turns the passphrase into a
+scalar, so a `0x02` peer and a `0x03` peer derive different scalars and the
+proof fails as though the passphrases disagreed. A downgrade to the
+classical-only format is not silent, which is a checkable implementation fact
+rather than a security proof.
+
+**Design intent (not a verified result):** the hybrid layer is meant so that the equality proof is no weaker than the strongest of its three components (the 3072-bit discrete log, ML-KEM-1024, and ML-DSA-87), so that defeating it would require breaking all three rather than any one. This is the goal of the construction, not a proven property: it was AI-generated, unreviewed, and has not been analysed by anyone qualified to confirm it. 
 
 **Wire overhead:** SMP1 grows from ~1.4 KB to ~8.1 KB (18 fragments), SMP2 from ~3.1 KB to ~16.4 KB (49 fragments) due to ML-KEM-1024 and ML-DSA-87 key material.
 
@@ -1052,7 +1109,7 @@ assert the valid one still works.
 
 3. **The Rust crypto crates are not audited.** `ed448-goldilocks-plus` 0.16 is the only viable pure-Rust Ed448 implementation but has no formal review. `x448` 0.6 is a pure-Rust X448 with no formal review. `pqcrypto-mlkem 0.1.1` (FIPS 203 ML-KEM-1024) and `pqcrypto-mldsa 0.1.2` (ML-DSA-87) are PQClean-derived reference implementations.
 
-4. **Chat is Rust-core-only since v10.7.5; voice is not.** Every C extension (`otr4_crypto_ext`, `otr4_ed448_ct`, `otr4_mldsa_ext`) has been retired and the Python `cryptography` library was removed from the messaging path at v10.7, which lives entirely inside the Rust `otrv4_core` PyO3 module. **Voice does not meet that standard**: its media AES-256-GCM, HKDF-SHA512 key schedule and X448 come from the Python `cryptography` library, so there are two AES-256-GCM implementations in the tree and voice key material sits in Python `bytearray`s wiped best-effort rather than in Rust `ZeroizeOnDrop` buffers. See [SECURITY.md](SECURITY.md) caveat 11. As of v10.7.6 (Phase 5.4) the SMP modular exponentiation is constant-time via `crypto-bigint` `DynResidue`, intended to close a timing side-channel on the secret SMP exponents (not independently verified to be constant-time on every target). As of v10.9.1 the SMP protocol is hybrid post-quantum. As of v10.10.4 the XMPP transport has production-grade security hardening (subscription approval gate, rate limiting, SMP secret validation, block list, stream management, delivery receipts, and I2P-aware reconnect). See the CHANGELOG for the full migration history.
+4. **Chat and voice are both Rust-core-only — chat since v10.7.5, voice since v10.13.2.** Every C extension (`otr4_crypto_ext`, `otr4_ed448_ct`, `otr4_mldsa_ext`) has been retired and the Python `cryptography` library was removed from the messaging path at v10.7, which lives entirely inside the Rust `otrv4_core` PyO3 module. **Voice did not meet that standard until v10.13.2**, and this caveat said so until v10.16.1: its media AES-256-GCM, HKDF-SHA512 key schedule and X448 came from the Python `cryptography` library, so there were two AES-256-GCM implementations in the tree and voice key material sat in Python `bytearray`s. That is no longer true — the epoch root, the media keys and the X448 private scalar are Rust-owned with no accessor, `_require_rust_voice()` is a hard requirement with no fallback, and the only remaining `AESGCM(` call sites in the repository are in `.attic/`. What voice still does not have is what no amount of moving code can supply: review, and more than one pair of devices. See [SECURITY.md](SECURITY.md) caveat 11 and the voice caveat below. As of v10.7.6 (Phase 5.4) the SMP modular exponentiation is constant-time via `crypto-bigint` `DynResidue`, intended to close a timing side-channel on the secret SMP exponents (not independently verified to be constant-time on every target). As of v10.9.1 the SMP protocol is hybrid post-quantum. As of v10.10.4 the XMPP transport has production-grade security hardening (subscription approval gate, rate limiting, SMP secret validation, block list, stream management, delivery receipts, and I2P-aware reconnect). See the CHANGELOG for the full migration history.
 
 5. **Ephemeral identity on IRC, persistent identity on XMPP.** IRC regenerates identity keys at every launch and fingerprints change on every restart — a deliberate threat-model choice for an I2P privacy client, not a missing feature. Tor Browser, Cwtch (default) and Briar all keep identities short-lived for similar reasons. **XMPP is the opposite as of v10.12.0**: a JID is a durable name, so the identity behind it persists and peer fingerprints are pinned. Its at-rest protection is filesystem permissions, not a passphrase — see [SECURITY.md](SECURITY.md) caveat 5b. See ROADMAP Phase 5.3g for both halves.
 
@@ -1068,7 +1125,30 @@ This project is published to invite exactly the review it has not had. The highe
 
 ## License
 
-GPL-3.0. See the [LICENSE](LICENSE) file.
+**Dual-licensed as of v10.17.0.**
+
+* **[AGPL-3.0](LICENSE)** — the default, and what you get by cloning this
+  repository. Read it, run it, fork it, study it, publish your fork. If you
+  distribute it or run a modified version as a network service, AGPL §13
+  requires you to offer that version's source to its users.
+* **[Commercial licence](LICENSE-COMMERCIAL.md)** — for shipping OTRv4+ inside
+  a closed-source product, or operating it as a service without publishing your
+  source.
+
+Charging money is not the trigger; the AGPL explicitly permits selling copies.
+The trigger is wanting to keep your source closed.
+
+Releases up to and including **v10.16.2 were GPL-3.0**, and stay available
+under it — relicensing applies going forward and cannot withdraw rights already
+granted.
+
+Contributions are welcome under the [CLA](CLA.md), which keeps both licences
+grantable. Paid work has [its own terms](CONTRACTOR-IP.md).
+
+Every third-party dependency is permissive — 109 crates compiled into the
+core, plus the Python and Android layers. [NOTICE](NOTICE) carries their
+attribution and must travel with any binary you distribute;
+[LICENSING_AUDIT.md](LICENSING_AUDIT.md) shows the working.
 
 ## See also
 

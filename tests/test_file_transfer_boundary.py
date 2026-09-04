@@ -288,9 +288,38 @@ class TestVerificationFailuresLeaveNothing:
         wire, transfer, _incoming, _ = self._accepted(wired)
         sealed = getattr(transfer, "_sealed")
         assert len(sealed) > 1
-        with pytest.raises(ft.TransferError, match="out of order"):
+        with pytest.raises(ft.TransferError, match="was expected"):
             wire.bob.on_data("alice", "%s|1|%s" % (
                 transfer.offer.transfer_id.hex(), ft._b64(sealed[1])))
+
+    def test_a_gap_abandons_the_transfer_instead_of_reporting_every_chunk(
+            self, wired):
+        """The chunk AEAD is a sequence: a gap can never be filled in, so the
+        transfer is already dead.  Reporting it once per remaining chunk
+        buried the cause under twenty identical lines on a real device."""
+        wire, transfer, _incoming, _ = self._accepted(wired)
+        sealed = getattr(transfer, "_sealed")
+        assert len(sealed) > 1
+        tid = transfer.offer.transfer_id.hex()
+        with pytest.raises(ft.TransferError, match="was expected"):
+            wire.bob.on_data("alice", "%s|1|%s" % (tid, ft._b64(sealed[1])))
+        assert wire.bob.incoming == {}, (
+            "the transfer survived the gap, so every later chunk reports too")
+        # And nothing partial is left behind.
+        assert os.listdir(ft.incoming_dir()) == []
+
+    def test_the_message_says_what_to_do_about_it(self, wired):
+        """There is no retransmit.  A message that only names the fault
+        leaves the user waiting for a transfer that cannot finish."""
+        wire, transfer, _incoming, _ = self._accepted(wired)
+        sealed = getattr(transfer, "_sealed")
+        try:
+            wire.bob.on_data("alice", "%s|1|%s" % (
+                transfer.offer.transfer_id.hex(), ft._b64(sealed[1])))
+        except ft.TransferError as exc:
+            assert "send it again" in str(exc)
+        else:
+            raise AssertionError("the gap was accepted")
 
     def test_data_for_an_unaccepted_transfer_is_refused(self, wired):
         wire, a_ratchet, _b = wired

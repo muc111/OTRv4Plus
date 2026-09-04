@@ -40,8 +40,15 @@ The Android file picker opens. Tap a photo, a video, anything. It is staged
 privately, sealed, and offered to the peer — no paths, no `termux-setup-storage`,
 no typing filenames. This is the way to run steps 2, 3, 4 and 10.
 
-Two things to know:
+Three things to know:
 
+* **It waits, and it says so.** `termux-storage-get` does not block until you
+  choose; it hands the intent to the Termux:API app and exits at once, and the
+  file lands seconds later when the chooser closes. The client polls for it
+  and prints `[file] waiting for your choice` while it does. Backing out of
+  the chooser writes nothing, which is indistinguishable from a slow choice,
+  so a cancelled pick costs the full three-minute wait before it reports
+  `no file chosen`. Choosing something is immediate.
 * **The original filename does not survive.** The picker hands over bytes and
   not a name, so the file is renamed from its magic number and a timestamp —
   your peer sees `image-20260901-143022.jpg`, not `IMG_2891.jpg`. Cosmetically
@@ -51,6 +58,24 @@ Two things to know:
 * **It needs the Termux:API app, not just the package.** `pkg install
   termux-api` installs shell shims; the picker is drawn by the Termux:API app
   from F-Droid. If only half is present the client says which half.
+
+### How fast it goes, and why it is not faster
+
+A transfer is paced at 8 stanzas a second, so a 340 KB file takes roughly half
+a minute of steady sending. That is deliberate on both ends:
+
+* The receiver rate-limits inbound messages to 20 per 5 s, and raises that to
+  120 per 5 s only while an accepted transfer with that peer is running. The
+  sender stays below the raised figure so ordinary chat, SMP and the
+  keepalives still fit alongside the transfer.
+* Sending happens one chunk per turn of the event loop. Before v10.16.2 the
+  whole file went out in one unbroken run inside the inbound message handler,
+  which starved the keepalive loop and disconnected the stream mid-transfer.
+
+**There is no retransmit.** The chunk AEAD is a sequence, so chunk N cannot be
+opened before N-1 and a gap can never be filled in. A lost chunk abandons the
+transfer with one message asking you to send the file again — it does not
+stall, and it does not report the same fault once per remaining chunk.
 
 ### The explicit way: by path
 

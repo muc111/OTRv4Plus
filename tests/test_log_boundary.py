@@ -165,3 +165,84 @@ class TestTheWriterUsesTheBoundary:
             "the file writer bypasses the boundary")
         assert "_ANSI_RE" not in src, (
             "the writer is stripping and formatting on its own again")
+
+
+class TestStatusGlyphsDoNotChangeWhatIsWritten:
+    """Every SMP line is printed with a leading padlock.
+
+    The allowlist matches on shape, and "MARKER [smp] ..." is not "[smp] ...",
+    so the markers have to be understood somewhere.  Where turns out to matter
+    a great deal.
+    """
+
+    PADLOCK = "\U0001f510"
+
+    def test_a_marked_diagnostic_is_still_written(self):
+        """Otherwise every SMP line in the transcript reads <unlogged line>."""
+        assert LINE(self.PADLOCK + " [smp] passphrase stored for auto-respond.") \
+            == "[smp] passphrase stored for auto-respond."
+
+    def test_the_marker_survives_being_coloured(self):
+        """The tag is printed blue, so the real line carries ANSI too."""
+        assert LINE(self.PADLOCK + " \033[94m[smp]\033[0m started with bob") \
+            == "[smp] started with bob"
+
+    def test_a_marker_cannot_carry_a_message_body_past_the_redaction(self):
+        """The reason markers are stripped BEFORE any rule is matched.
+
+        Strip them only inside the `[tag]` rule and this line stops being a
+        message line and becomes a diagnostic one -- and `otr` is an allowed
+        tag, so the words a user typed would be written to a file people paste
+        into bug reports.
+        """
+        rendered = LINE(self.PADLOCK + " [otr] <alice@example.i2p> the words")
+        assert "the words" not in rendered
+        assert "redacted" in rendered
+        assert "alice@example.i2p" in rendered
+
+    def test_an_unknown_glyph_is_not_a_marker(self):
+        """The list is exact.  "Any leading emoji" would be a way in."""
+        rendered = LINE("\U0001f600 [smp] not one of ours")
+        assert rendered.startswith("<unlogged line:")
+
+    def test_a_run_of_markers_is_bounded(self):
+        """A long prefix must not become an unbounded strip loop."""
+        rendered = LINE(self.PADLOCK * 40 + " [smp] hello")
+        assert rendered.startswith("<unlogged line:")
+
+    def test_an_unmarked_line_is_untouched(self):
+        assert LINE("[i2p] SAM control socket open") \
+            == "[i2p] SAM control socket open"
+
+
+class TestTheSmpTagIsMarkedEverywhere:
+    """The padlock is not decoration applied at one print site.
+
+    A bare "[smp]" left in a string literal is a line that prints without the
+    marker, which is how a convention rots.
+    """
+
+    def test_no_bare_smp_tag_is_left_in_the_client(self):
+        source = open(xmpp.__file__, encoding="utf-8").read()
+        bare = [n for n, line in enumerate(source.split("\n"), 1)
+                if ('"[smp]' in line or "'[smp]" in line)
+                and not line.startswith("_SMP =")]
+        assert bare == [], \
+            "these lines print an unmarked SMP tag: %s" % bare
+
+    def test_the_marker_is_defined_once(self):
+        assert xmpp._SMP.endswith("[smp]") or "[smp]" in xmpp._SMP
+        assert xmpp._SMP.startswith("\U0001f510")
+
+    def test_the_marker_is_one_the_transcript_knows(self):
+        """Print a glyph the log does not know and every SMP line is redacted.
+
+        This is the coupling that broke first, so it is asserted rather than
+        remembered.
+        """
+        assert any(xmpp._SMP.startswith(m) for m in xmpp._LOG_MARKERS)
+
+    def test_blue_is_not_the_verified_marker(self):
+        """The blue circle means SMP *finished* and matched.  Putting it on
+        every SMP line would announce the end state at the start."""
+        assert "\U0001f535" not in xmpp._SMP

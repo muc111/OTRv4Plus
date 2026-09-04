@@ -207,15 +207,18 @@ class TestThePicker:
         def runner(argv, timeout):
             return 1, b"", b""          # nothing written
         with pytest.raises(ft.TransferError, match="no file chosen"):
-            ft.pick_file(runner=runner, which=lambda b: "/usr/bin/" + b)
+            ft.pick_file(runner=runner, which=lambda b: "/usr/bin/" + b,
+                         timeout=0.05, sleeper=lambda _s: None)
 
     def test_an_empty_result_leaves_nothing_staged(self):
         def runner(argv, timeout):
             open(argv[1], "wb").close()  # zero bytes
             return 0, b"", b""
         with pytest.raises(ft.TransferError):
-            ft.pick_file(runner=runner, which=lambda b: "/usr/bin/" + b)
+            ft.pick_file(runner=runner, which=lambda b: "/usr/bin/" + b,
+                         timeout=0.05, sleeper=lambda _s: None)
         assert os.listdir(ft.staging_dir()) == []
+
 
     def test_a_timeout_says_so(self):
         with pytest.raises(ft.TransferError, match="timed out"):
@@ -240,6 +243,134 @@ class TestThePicker:
         assert first != second
         assert os.path.isfile(first) and os.path.isfile(second)
 
+
+class TestThePickerWaitsForTheHuman:
+    """`termux-storage-get` hands the intent to the Termux:API app and exits.
+
+    The file therefore lands seconds AFTER the command returns, and a device
+    test found the client reporting "no file chosen" with the gallery still
+    open.  These drive a runner that behaves the way the real shim does.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _isolated(self, monkeypatch):
+        with tempfile.TemporaryDirectory() as d:
+            monkeypatch.setenv("OTRV4PLUS_FILE_DIR", os.path.join(d, "files"))
+            ft._ABANDONED_PICKS.clear()
+            yield
+            ft._ABANDONED_PICKS.clear()
+
+    def _late_runner(self, payload, appear_after=4, rc=0):
+        """Returns at once; writes the file only after N polls, in pieces."""
+        state = {"dest": None, "polls": 0}
+
+        def runner(argv, timeout):
+            state["dest"] = argv[1]
+            return rc, b"", b""
+
+        def sleeper(_seconds):
+            state["polls"] += 1
+            n = state["polls"]
+            if n < appear_after:
+                return
+            # Arrive in two chunks, so a reader that grabs the file the
+            # instant it exists gets a truncated copy.
+            written = payload[:len(payload) // 2] \
+                if n == appear_after else payload
+            with open(state["dest"], "wb") as fh:
+                fh.write(written)
+
+        return runner, sleeper
+
+    def test_a_file_that_arrives_after_the_command_returns_is_picked_up(self):
+        """The regression.  Old code checked once and said 'no file chosen'."""
+        runner, sleeper = self._late_runner(b"\xff\xd8\xff\xe0hello-jpeg")
+        path = ft.pick_file(runner=runner, which=lambda b: "/usr/bin/" + b,
+                            timeout=60.0, sleeper=sleeper,
+                            clock=self._fake_clock())
+        assert os.path.basename(path).startswith("image-")
+        assert open(path, "rb").read() == b"\xff\xd8\xff\xe0hello-jpeg"
+
+    def test_a_still_growing_copy_is_not_sent_truncated(self):
+        """It must wait for the size to settle, not for the file to exist."""
+        payload = b"%PDF-1.7 " + b"x" * 4096
+        runner, sleeper = self._late_runner(payload)
+        path = ft.pick_file(runner=runner, which=lambda b: "/usr/bin/" + b,
+                            timeout=60.0, sleeper=sleeper,
+                            clock=self._fake_clock())
+        assert open(path, "rb").read() == payload
+
+    def test_a_nonzero_exit_status_is_not_read_as_a_refusal(self):
+        """The shim's status describes dispatching the intent, not the human.
+
+        Failing here on rc=1 is how the picker would look broken for anyone
+        whose Termux:API returns one.
+        """
+        runner, sleeper = self._late_runner(b"\x89PNG\r\n\x1a\nabc", rc=1)
+        path = ft.pick_file(runner=runner, which=lambda b: "/usr/bin/" + b,
+                            timeout=60.0, sleeper=sleeper,
+                            clock=self._fake_clock())
+        assert path.endswith(".png")
+
+    def test_the_caller_is_told_that_it_is_waiting(self):
+        """A silent pause with the gallery open reads as a hang."""
+        said = []
+        runner, sleeper = self._late_runner(b"hello there")
+        ft.pick_file(runner=runner, which=lambda b: "/usr/bin/" + b,
+                     timeout=60.0, sleeper=sleeper, clock=self._fake_clock(),
+                     on_wait=lambda: said.append(1))
+        assert said == [1], "on_wait must fire exactly once"
+
+    def test_a_file_delivered_after_we_gave_up_is_deleted_at_the_next_pick(self):
+        """It is a PLAINTEXT copy of whatever the user chose.  Leaving it on
+        disk because we stopped watching is a disclosure, not untidiness."""
+        late = {}
+
+        def runner(argv, timeout):
+            late["dest"] = argv[1]
+            return 0, b"", b""
+
+        with pytest.raises(ft.TransferError, match="no file chosen"):
+            ft.pick_file(runner=runner, which=lambda b: "/usr/bin/" + b,
+                         timeout=0.05, sleeper=lambda _s: None)
+        # The chooser closes a moment later and the app writes the file.
+        with open(late["dest"], "wb") as fh:
+            fh.write(b"private photo bytes")
+        assert os.path.exists(late["dest"])
+
+        runner2, sleeper2 = self._late_runner(b"hello")
+        ft.pick_file(runner=runner2, which=lambda b: "/usr/bin/" + b,
+                     timeout=60.0, sleeper=sleeper2, clock=self._fake_clock())
+        assert not os.path.exists(late["dest"]), \
+            "the abandoned plaintext copy is still on disk"
+
+    def test_the_sweep_never_touches_a_file_a_transfer_is_reading(self):
+        """Only `pick-*` names are swept; a staged file is renamed the moment
+        it is claimed, so anything else in there is in use."""
+        staging = ft.staging_dir()
+        in_use = os.path.join(staging, "image-20260101-000000.jpg")
+        with open(in_use, "wb") as fh:
+            fh.write(b"sealing me")
+        os.utime(in_use, (0, 0))            # ancient
+        stale = os.path.join(staging, "pick-1")
+        with open(stale, "wb") as fh:
+            fh.write(b"abandoned")
+        os.utime(stale, (0, 0))
+
+        removed = ft._sweep_abandoned_picks(staging, older_than=60.0)
+        assert removed == 1
+        assert os.path.exists(in_use)
+        assert not os.path.exists(stale)
+
+    def _fake_clock(self):
+        """Monotonic time that only advances when the picker sleeps, so the
+        deadline is driven by the test rather than by the wall clock."""
+        ticks = {"n": 0}
+
+        def clock():
+            ticks["n"] += 1
+            return ticks["n"] * ft._PICK_POLL_S
+        return clock
 
 class TestDuplicateNames:
 
