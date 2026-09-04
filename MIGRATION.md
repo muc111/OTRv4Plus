@@ -16,12 +16,24 @@ and any manual steps.
 **Rebuild required**, and this release exists partly because the previous one
 did not say that loudly enough.
 
+On Termux, which is the documented path in the README:
+
 ```bash
 cd ~/OTRv4Plus && git pull
-python3 -m pip install --break-system-packages ./Rust    # ← not optional
+cd Rust
+cargo build --release --features extension-module,pq-rust
+cp target/release/libotrv4_core.so ../otrv4_core.so       # ← not optional
+cd ..
 ```
 
-`git pull` updates the Python; only the second line updates the compiled core.
+Or, on a machine with maturin:
+
+```bash
+cd ~/OTRv4Plus && git pull
+python3 -m pip install --break-system-packages ./Rust     # ← not optional
+```
+
+`git pull` updates the Python; only the rebuild updates the compiled core.
 Skipping it on v10.14.0 produced
 
 ```
@@ -29,9 +41,16 @@ Skipping it on v10.14.0 produced
       object has no attribute 'store_from_bytearray'
 ```
 
-which looked like an SMP bug and was a stale wheel. The client now checks at
-startup and names both the missing method and the command above, so the same
-mistake is a clear message rather than a failure at the first `/smp`.
+which looked like an SMP bug and was a stale core. The client now checks at
+startup and names both the missing method and both rebuild commands, so the
+same mistake is a clear message rather than a failure at the first `/smp`.
+
+**Check it worked**, from `~/OTRv4Plus` so the freshly copied `.so` is the one
+that gets imported:
+
+```bash
+python3 -c "import otrv4plus_coreapi as a; print(a.missing_core_api() or 'core OK')"
+```
 
 **Both peers should update**, but a mixed pair still works. The wire format is
 unchanged: an old peer receiving an abort with the new `DECLINED` reason

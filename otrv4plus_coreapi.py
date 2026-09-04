@@ -4,8 +4,9 @@
 WHY THIS EXISTS
 ===============
 `otrv4_core` is a separately versioned compiled artefact.  `git pull` updates
-the Python; only `pip install ./Rust` updates the core.  Nothing used to check
-that the two agreed, and the first thing to notice was SMP:
+the Python; only rebuilding the core updates the core -- `cargo build` plus the
+`.so` copy on Termux, or `pip install ./Rust` where maturin exists.  Nothing
+used to check that the two agreed, and the first thing to notice was SMP:
 
     [smp] start error: SMP start failed: 'builtins.RustSMPVault'
           object has no attribute 'store_from_bytearray'
@@ -59,9 +60,22 @@ REQUIRED_CORE_API: Tuple[Tuple[str, str, str], ...] = (
     ("RustSMP", "discard_held_smp1",                 "0.10.27"),
 )
 
+# Two supported ways to build the core, and the message must name the one the
+# reader is actually using.  Termux is the .so copy (README "Build the Rust
+# core"); a development machine with maturin can use the wheel.  An earlier
+# version of this hint named only the wheel, which on a phone sends the user
+# to a toolchain they do not have.
 REBUILD_HINT = (
-    "The compiled core is older than this client.\n"
+    "The compiled core is older than this client. Rebuild it:\n"
+    "\n"
+    "  cd ~/OTRv4Plus/Rust\n"
+    "  cargo build --release --features extension-module,pq-rust\n"
+    "  cp target/release/libotrv4_core.so ../otrv4_core.so\n"
+    "\n"
+    "or, where maturin is available:\n"
+    "\n"
     "  cd ~/OTRv4Plus && python3 -m pip install --break-system-packages ./Rust\n"
+    "\n"
     "Then start the client again."
 )
 

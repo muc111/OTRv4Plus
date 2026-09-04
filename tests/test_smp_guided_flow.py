@@ -672,10 +672,26 @@ class TestTheCoreApiContract:
         assert any("0.10.25" in m for m in missing), (
             "the report does not say which version introduced it")
 
-    def test_the_hint_says_what_to_run(self):
+    def test_the_hint_names_both_supported_builds(self):
+        """Termux builds the .so and copies it; a machine with maturin builds
+        a wheel.  A hint that names only the wheel sends a phone user to a
+        toolchain they do not have, which is how the first version of this
+        message was wrong."""
         import otrv4plus_coreapi as coreapi
-        assert "pip install" in coreapi.REBUILD_HINT
-        assert "./Rust" in coreapi.REBUILD_HINT
+        hint = coreapi.REBUILD_HINT
+        assert "cargo build --release --features extension-module,pq-rust" in hint
+        assert "libotrv4_core.so" in hint
+        assert "pip install" in hint and "./Rust" in hint
+
+    def test_the_hint_matches_the_readme(self):
+        """The two must not drift: the README is where someone looks when the
+        client is not running at all."""
+        import otrv4plus_coreapi as coreapi
+        readme = open(os.path.join(ROOT, "README.md"), encoding="utf-8").read()
+        for line in ("cargo build --release --features extension-module,pq-rust",
+                     "cp target/release/libotrv4_core.so ../otrv4_core.so"):
+            assert line in readme, "README no longer documents: %s" % line
+            assert line in coreapi.REBUILD_HINT
 
     def test_the_client_checks_before_it_needs_it(self):
         src = inspect.getsource(xmpp.main)
