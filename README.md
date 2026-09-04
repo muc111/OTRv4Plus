@@ -198,7 +198,21 @@ created it and nowhere else, while the 52-character `.b32.i2p` form works
 everywhere because it *is* the destination hash. That is why the long form has
 to be pasted, and it is unreasonable on a phone keyboard.
 
-Write the name down once, in `~/.otrv4plus/i2p_hosts`:
+**The client writes this for you.** The first time a connection to a
+`.b32.i2p` server succeeds, the mapping from your JID's domain to that
+destination is recorded automatically, and it says so:
+
+```
+[i2p] recorded xmpp-elite.i2p = hq4t24b7…q.b32.i2p in ~/.otrv4plus/i2p_hosts
+[i2p] next time:  --jid bob@xmpp-elite.i2p --peer <peer> (no --server needed)
+```
+
+It records only after the connection worked, because that is the only moment
+the pair is known to be good. If the name is already recorded against a
+*different* destination it is left alone and reported — a server that moved is
+something you should see, not something the client quietly adopts.
+
+Or write it by hand, in `~/.otrv4plus/i2p_hosts`:
 
 ```
 # name = destination
@@ -227,9 +241,15 @@ server that cannot read anything — not a silent impersonation. An address
 given in full as `.b32.i2p` is never looked up in the file, so a local file
 cannot redirect an address you spelled out.
 
+**The client never touches i2pd's own address book.** That format varies
+between versions, the daemon owns and rewrites those files, and a bad write
+would break name resolution for every I2P application on the device rather
+than just this one — so the alias file is ours, in our directory, and the
+router's is left alone.
+
 The alternative, if you would rather every I2P application on the device knew
 the name, is the router's own address book (`i2pd`: an entry under
-`~/.i2pd/addressbook/`). Publishing a name properly, so that *other* people's
+`~/.i2pd/addressbook/`), edited by you. Publishing a name properly, so that *other* people's
 routers resolve it, means registering it with an I2P naming service — a
 server-operator task, with propagation delay, and out of scope for the client.
 

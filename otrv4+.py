@@ -819,6 +819,64 @@ class NetworkConstants:
 I2P_HOSTS_FILENAME = "i2p_hosts"
 
 
+def remember_i2p_alias(name: str, destination: str, path: str = None) -> str:
+    """Record `name = destination` in the local alias file.
+
+    So the 52-character b32 is typed once and never again: the client calls
+    this after a connection has actually succeeded, which is the only moment
+    it knows the pair is good.
+
+    Three refusals, and the third is the one that matters:
+
+      * a name that is not a short `.i2p` name, or a destination that is not a
+        b32 or a full destination -- the file must stay loadable;
+      * a name already recorded with THE SAME destination -- nothing to do;
+      * a name already recorded with a DIFFERENT destination -- left alone and
+        reported.  A server whose destination changed is something the user
+        needs to see, not something a client should quietly rewrite under
+        them.  Editing the file by hand is the way to accept such a change.
+
+    Returns a short status string for display: "" when nothing was written.
+    """
+    name = (name or "").strip().lower()
+    destination = (destination or "").strip()
+    if not name.endswith(".i2p") or name.endswith(".b32.i2p"):
+        return ""
+    if not _valid_i2p_destination(destination):
+        return ""
+
+    path = path or i2p_hosts_path()
+    existing = i2p_aliases(path).get(name)
+    if existing == destination:
+        return ""
+    if existing:
+        return (f"{name } is already recorded as {existing }, which is not "
+                f"the destination just used. Not changing it -- edit "
+                f"{path } yourself if the server really moved.")
+
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        new_file = not os.path.exists(path)
+        with open(path, "a", encoding="utf-8") as fh:
+            if new_file:
+                fh.write("# OTRv4+ I2P name aliases.  One per line:\n")
+                fh.write("#     name.i2p = <52 chars>.b32.i2p\n")
+                fh.write("# A local note about what a name means on this "
+                         "device; it is not\n"
+                         "# authenticated and proves nothing about who "
+                         "answers.  Delete a line\n"
+                         "# to forget it.\n")
+            fh.write(f"{name } = {destination }\n")
+        if new_file:
+            try:
+                os.chmod(path, 0o600)
+            except OSError:
+                pass
+    except OSError as exc:
+        return f"could not write {path }: {exc }"
+    return f"recorded {name } = {destination } in {path }"
+
+
 def i2p_hosts_path() -> str:
     """Where the local alias file lives."""
     return os.path.join(os.path.expanduser("~/.otrv4plus"), I2P_HOSTS_FILENAME)
@@ -1611,7 +1669,7 @@ class OTRv4DataMessage:
             raise ValueError(f"Failed to decode message: {e }")
 
 
-VERSION = "OTRv4+ 10.15.2"
+VERSION = "OTRv4+ 10.15.3"
 
 # --- OTRv4+ client identification over IRC -------------------------------
 #

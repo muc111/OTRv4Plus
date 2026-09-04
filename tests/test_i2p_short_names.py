@@ -164,3 +164,110 @@ class TestTheTransportChoiceIsUnchanged:
         for bad in ("example.onion", "1.2.3.4", "https://example.com",
                     "example.com:5222"):
             assert otr.i2p_aliases(_hosts("x.i2p = %s\n" % bad)) == {}, bad
+
+
+class TestRememberingTheB32:
+    """Type the 52 characters once, never again.
+
+    Recorded only after a connection has actually succeeded -- that is the
+    only moment the client knows the name and the destination belong
+    together.
+    """
+
+    def test_a_new_alias_is_written(self):
+        d = tempfile.mkdtemp()
+        path = os.path.join(d, "sub", "i2p_hosts")
+        note = otr.remember_i2p_alias("xmpp-elite.i2p", B32, path)
+        assert note.startswith("recorded")
+        assert otr.i2p_aliases(path) == {"xmpp-elite.i2p": B32}
+
+    def test_the_file_it_creates_is_private(self):
+        d = tempfile.mkdtemp()
+        path = os.path.join(d, "i2p_hosts")
+        otr.remember_i2p_alias("xmpp-elite.i2p", B32, path)
+        assert oct(os.stat(path).st_mode & 0o777) == "0o600"
+
+    def test_recording_the_same_thing_twice_writes_nothing(self):
+        d = tempfile.mkdtemp()
+        path = os.path.join(d, "i2p_hosts")
+        otr.remember_i2p_alias("xmpp-elite.i2p", B32, path)
+        before = open(path, encoding="utf-8").read()
+        assert otr.remember_i2p_alias("xmpp-elite.i2p", B32, path) == ""
+        assert open(path, encoding="utf-8").read() == before
+
+    def test_a_changed_destination_is_reported_and_not_rewritten(self):
+        """The security-relevant one.  A server whose destination changed is
+        something the user must see, not something the client silently
+        adopts."""
+        d = tempfile.mkdtemp()
+        path = os.path.join(d, "i2p_hosts")
+        otr.remember_i2p_alias("xmpp-elite.i2p", B32, path)
+        note = otr.remember_i2p_alias("xmpp-elite.i2p", OTHER_B32, path)
+        assert "already recorded" in note
+        assert "Not changing it" in note
+        assert otr.i2p_aliases(path) == {"xmpp-elite.i2p": B32}, (
+            "the client overwrote a destination the user had already accepted")
+
+    def test_rubbish_is_never_recorded(self):
+        d = tempfile.mkdtemp()
+        path = os.path.join(d, "i2p_hosts")
+        for name, dest in (("example.com", B32),
+                           (B32, OTHER_B32),
+                           ("x.i2p", "not-a-destination"),
+                           ("x.i2p", "other.i2p"),
+                           ("", B32),
+                           ("x.i2p", "")):
+            assert otr.remember_i2p_alias(name, dest, path) == "", (name, dest)
+        assert not os.path.exists(path), "a refused write created the file"
+
+    def test_what_is_written_can_be_read_back(self):
+        """The round trip is the whole point: a file this wrote must load."""
+        d = tempfile.mkdtemp()
+        path = os.path.join(d, "i2p_hosts")
+        otr.remember_i2p_alias("xmpp-elite.i2p", B32, path)
+        otr.remember_i2p_alias("other-server.i2p", OTHER_B32, path)
+        assert otr.i2p_aliases(path) == {"xmpp-elite.i2p": B32,
+                                         "other-server.i2p": OTHER_B32}
+
+
+class TestTheClientOnlyWritesItsOwnFile:
+    """i2pd owns its address book.  We do not write to it."""
+
+    def test_nothing_opens_a_router_file(self):
+        """Checks what is opened, not what is mentioned.
+
+        Naming i2pd.conf in a help string is fine and useful -- "SAM must be
+        enabled in i2pd.conf" is exactly what a stuck user needs to read. What
+        must never happen is the client reading or writing the daemon's files:
+        the format varies between versions, i2pd rewrites them on its own
+        schedule, and a bad write breaks name resolution for every I2P
+        application on the device rather than just this one.
+        """
+        import ast as _ast
+        offenders = []
+        for name in ("otrv4+.py", "otrv4plus_xmpp.py"):
+            tree = _ast.parse(open(os.path.join(ROOT, name),
+                                   encoding="utf-8").read())
+            for node in _ast.walk(tree):
+                if not isinstance(node, _ast.Call):
+                    continue
+                func = node.func
+                opener = ((isinstance(func, _ast.Name) and func.id == "open")
+                          or (isinstance(func, _ast.Attribute)
+                              and func.attr in ("open", "makedirs", "remove",
+                                                "chmod", "rename", "replace")))
+                if not opener:
+                    continue
+                for text in [a.value for a in _ast.walk(node)
+                             if isinstance(a, _ast.Constant)
+                             and isinstance(a.value, str)]:
+                    if "i2pd" in text.lower() or "addressbook" in text.lower():
+                        offenders.append("%s:%d %r" % (name, node.lineno, text))
+        assert not offenders, (
+            "the client touches a router-owned file: %s" % offenders)
+
+    def test_the_only_file_written_is_the_client_alias_file(self):
+        import inspect
+        src = inspect.getsource(otr.remember_i2p_alias)
+        assert "i2p_hosts_path()" in src
+        assert "open(path" in src

@@ -4,6 +4,60 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## v10.15.3 — the b32 gets typed once
+
+*2026-09-04.  `VERSION → 10.15.3`, `otrv4_core 0.10.27` unchanged.  Python only.*
+
+v10.15.2 made short `.i2p` names work if you wrote the alias yourself. This
+writes it for you: the first time a connection to a `.b32.i2p` server
+succeeds, the mapping from the JID's domain to that destination is recorded,
+and announced.
+
+```
+[i2p] recorded xmpp-elite.i2p = hq4t24b7…q.b32.i2p in ~/.otrv4plus/i2p_hosts
+[i2p] next time:  --jid bob@xmpp-elite.i2p --peer <peer> (no --server needed)
+```
+
+**After the connection, never before.** That is the only moment the client
+knows the name and the destination actually belong together.
+
+**Three refusals**, and the third is the one that matters. Nothing is written
+for a name or destination that would not load back. Nothing is written when
+the same pair is already recorded. And when the name is already recorded
+against a **different** destination, the file is left alone and the
+difference is reported — a server whose destination changed is something the
+user needs to see, not something a client should quietly rewrite under them.
+Accepting such a change means editing the file by hand.
+
+**It writes only to the client's own file.** The suggestion that started this
+was to add the entry to i2pd's address book, since we know where that lives.
+That is the wrong file: the format varies between versions, the daemon owns
+and rewrites those files on its own schedule, and a bad write would break name
+resolution for every I2P application on the device rather than just this one.
+`test_nothing_opens_a_router_file` walks both clients' ASTs and fails if any
+`open`/`makedirs`/`chmod`/`rename` call names an i2pd path. It checks what is
+*opened*, not what is mentioned — naming `i2pd.conf` in a help string is
+exactly what a stuck user needs to read.
+
+The alias file is created 0600 with a header explaining what an alias is and
+is not.
+
+8 new tests, 27 in `tests/test_i2p_short_names.py`.
+
+### Still open
+
+The router-side question is unresolved. On the test handset, i2pd answers
+`NAMING LOOKUP NAME=xmpp-elite.i2p` with `RESULT=INVALID_KEY`, its address
+book is 6 KB dated seven months ago, and the name registered with reg.i2p
+weeks ago is not in it. Two possibilities remain — the book is simply stale,
+or i2pd's SAM never consults the book at all and only resolves b32 — and they
+have not been told apart. If it turns out to be the second, the client should
+read `addresses.csv` itself, **read-only**, as a resolution fallback. That is
+not built yet, because building it before knowing would be building on a
+guess.
+
+---
+
 ## v10.15.2 — short `.i2p` names, so nobody has to type a b32
 
 *2026-09-04.  `VERSION → 10.15.2`, `otrv4_core 0.10.27` unchanged.  No wire change, no Rust change.*

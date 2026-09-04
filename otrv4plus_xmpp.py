@@ -2,7 +2,7 @@
 """
 OTRv4+ XMPP - full OTR + SMP over XMPP, transported over I2P SAM
 ================================================================
-Version: 10.15.2
+Version: 10.15.3
 
 
 Post-quantum OTRv4+ end-to-end encryption over XMPP, reusing the IRC client's
@@ -234,7 +234,7 @@ def voice_available() -> "tuple[bool, str]":
             "no audio backend: libaaudio.so unavailable and parec/pacat "
             "missing  (run /audioprobe for details)")
 
-XMPP_VERSION = "10.15.2"
+XMPP_VERSION = "10.15.3"
 
 # ---------------------------------------------------------------------------
 # XMPP-private state directory
@@ -1084,6 +1084,9 @@ class OTRv4PlusXMPP(ClientXMPP):
         # SMP1 the peer already sent).  Set beside _secret_request, cleared
         # with it.
         self._secret_purpose = None
+        #: The .b32.i2p the SAM bridge was pointed at, when it was given in
+        #: full. Recorded as an alias once a connection succeeds.
+        self._i2p_server_dest = None
         # The guided verification flow, one per peer.  This is what makes a
         # remote SMP1 unable to arm secret capture: it can move a peer to
         # AWAITING_LOCAL_CONSENT and no further.  See otrv4plus_smpflow.py.
@@ -1336,6 +1339,7 @@ class OTRv4PlusXMPP(ClientXMPP):
             pass
         print(f"\n[connected] {self.boundjid.full}")
         print(f"[version]   OTRv4+ XMPP {XMPP_VERSION}")
+        self._remember_server_alias()
         if self.peer:
             self.send_presence_subscription(pto=self.peer)
             print(f"[subscribe] requested presence from {self.peer}")
@@ -3525,6 +3529,38 @@ class OTRv4PlusXMPP(ClientXMPP):
             )
         elif not should_send:
             print(f"[queued] will send once OTR with {peer} is ready")
+
+    def _remember_server_alias(self):
+        """Write down the b32 the first time it actually works.
+
+        Called once a connection has succeeded, which is the only point at
+        which the client knows the name/destination pair is good.  The next
+        run needs neither --server nor the 52 characters:
+
+            --jid bob@xmpp-elite.i2p --peer alice@xmpp-elite.i2p
+
+        This writes only to the client's own file.  It deliberately does NOT
+        touch i2pd's address book: that format varies between versions, the
+        daemon owns and rewrites those files, and a bad write would break name
+        resolution for every I2P application on the device rather than just
+        this one.
+        """
+        try:
+            if not getattr(self, "_i2p_server_dest", None):
+                return                       # not an I2P connection
+            domain = self.boundjid.domain
+            if not domain or not domain.endswith(".i2p"):
+                return
+            if domain.endswith(".b32.i2p"):
+                return                       # already the exact form
+            note = _otr.remember_i2p_alias(domain, self._i2p_server_dest)
+            if note:
+                print(f"[i2p] {note}")
+                if note.startswith("recorded"):
+                    print("[i2p] next time:  --jid %s --peer <peer> "
+                          "(no --server needed)" % self.boundjid.bare)
+        except Exception as exc:
+            self._dbg(f"[i2p] could not record the server alias: {exc}")
 
     def _warn_inline_secret(self):
         """Say that an inline passphrase was just echoed.
@@ -5839,6 +5875,12 @@ def main():
     loop = client.loop
 
     if use_i2p:
+        # Remembered after a successful connection, so the 52-character b32 is
+        # typed once.  Only a b32 is worth recording: a short name is what we
+        # would be mapping FROM, and a name that resolved through the router
+        # needs no local note.
+        if server_b32.endswith(".b32.i2p"):
+            client._i2p_server_dest = server_b32
         try:
             host, port = loop.run_until_complete(
                 start_i2p_sam_forwarder(
