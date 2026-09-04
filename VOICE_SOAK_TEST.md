@@ -85,6 +85,93 @@ session could not be re-executed here. The arithmetic above is verification of
 
 ---
 
+## A.3 Second run — v10.15.1, 2026-09-04, instrumented
+
+A shorter run on the current build, kept because it is the first with
+`--voice-debug` throughout, so every number below is from the client's own
+counters rather than a summary. 16½ minutes, hung up deliberately.
+
+| Metric | Observed |
+|---|---|
+| Duration | 990 s (16½ min), ended by `/hangup` |
+| Transport | I2P datagrams, Opus 16 kHz mono, 60 ms frames, 24 kbit/s CBR |
+| Packets | ~86 per 5 s throughout — the constant rate the shaping specifies |
+| Packet loss (`drop`) | **0**, every window |
+| Authentication failures (`authfail`) | **0**, every window |
+| Replay rejections (`replay`) | **0**, every window |
+| Unkeyed / stale / foreign packets | **0**, every window |
+| Cryptographic rekeys | **7, all committed** |
+| Rekey interval | ~124 s |
+| Round-trip | p50 1046 ms, p95 1967 ms, p99 3815 ms, max 4977 ms (n=180) |
+| One-way | ~420 ms early, ~550-580 ms by the end |
+| Mouth-to-ear | ~700 ms early, ~855 ms by the end |
+| Inter-arrival spacing (60 ms frames) | p50 69 ms, p95 128 ms, p99 211 ms, max 281 ms |
+| Jitter buffer | 4-5 frames against a target of 3; `underrun=27 shed=313 overflow=0` |
+| Loop lag | p50 1 ms, p99 10-13 ms, max 17 ms |
+
+**The counters that matter for the crypto are all zero.** Seven key epochs,
+sixteen minutes, and not one packet that failed its AEAD tag, replayed, or
+arrived under a key the receiver did not have. Combined with the four-hour run
+in §A, that is two independent sessions with no authentication failure.
+
+### A.3.1 Rekey timing, and one outlier
+
+| Rekey | Sent | Committed | Elapsed |
+|---|---|---|---|
+| 1 | 146.2 s | 150.9 s | 4.7 s |
+| 2 | 270.9 s | 275.6 s | 4.7 s |
+| 3 | 395.7 s | 399.4 s | 3.7 s |
+| **4** | 519.4 s | 537.4 s | **18.0 s** |
+| 5 | 657.4 s | 663.5 s | 6.1 s |
+| 6 | 783.5 s | 786.7 s | 3.2 s |
+| 7 | 906.7 s | 912.7 s | 6.0 s |
+
+Median 4.7 s; rekey 4 took nearly four times that. It committed correctly and
+nothing was lost, so this is a latency observation, not a failure.
+
+**Late packets cluster around rekeys.** `late` is 0 in almost every window,
+and non-zero in exactly these: `late=12` at 262 s (just before rekey 2),
+`late=2` at 402 s (just after rekey 3), `late=9` at 533 s (inside rekey 4's
+slow window), and `late=2/2/1` at 698-724 s (after rekey 5). The handshake and
+the media share one I2P path, so the rekey's own packets push audio past its
+playout deadline. Nothing was dropped — the buffer absorbed or shed them.
+
+This is a plausible mechanism, not a proven one: one session cannot separate it
+from ordinary I2P tunnel churn, and rekey 4's window also coincided with the
+call's worst RTT excursion. It is recorded so a future run can check it.
+
+### A.3.2 Where the latency actually goes
+
+```
+mouth-to-ear ~855 ms  =  network 576 ms  +  jitter buffer 229 ms  +  playout 51 ms
+```
+
+Local processing is **0 %** of the budget by the client's own accounting.
+Per-stage medians: encode 5.6 ms, seal 0.2 ms, queue 0.3 ms, decrypt 0.3 ms,
+decode 0.9 ms. **The cryptography costs half a millisecond of an 855 ms
+budget** — sealing and opening together. Whatever makes an I2P call feel slow,
+it is not the post-quantum crypto.
+
+The jitter buffer is a quarter of the budget, and it is running above its own
+target (4-5 frames against 3) because inter-arrival spacing has a long tail.
+That is the buffer doing its job on a bursty transport; it is also the only
+part of the 855 ms this project controls.
+
+### A.3.3 The 45-second silent start
+
+`call active` was printed at 26.2 s. The first packet left at ~71 s. In
+between: mic captured normally, ~84 packets (about 5 s of audio) held in the
+backpressure queue, eight `no audio received in 5 s` warnings, and then a
+clean drain with `drop=0`.
+
+The media path was waiting on I2P tunnel build, which the client warns takes
+30-120 s — but it had already said the call was active. **The defect is the
+message, not the mechanism**: nothing was lost and nothing misbehaved, but the
+user was told the call was up 45 s before it could carry audio. Holding that
+line until the first packet is sent would report what is actually true.
+
+---
+
 ## B. Security properties claimed by design
 
 These are properties the **design** aims at. The soak test is consistent with
