@@ -210,6 +210,16 @@ _PICK_POLL_S = 0.3
 #: local storage, and shorter than anyone will notice.
 _PICK_STABLE_SAMPLES = 3
 
+#: How many inbound stanzas one chunk may cost, for the rate-limit
+#: exemption.  A 16 KB chunk base64s to ~21.8 KB and fragments at 6000 bytes
+#: into five, so eight is generous headroom for framing changes without being
+#: an open door.
+_STANZAS_PER_CHUNK_CEILING = 8
+
+#: Slack on top, covering the control messages (OFFER, ACCEPT, DONE) and any
+#: retransmission the transport does on its own.
+_TRANSFER_RATE_SLACK = 64
+
 #: Staged copies are named `pick-<ms>` until they are sealed, at which point
 #: they are renamed to `image-...`/`document-...`.  So anything still called
 #: `pick-*` is either in flight or was abandoned, and only those are swept --
@@ -732,6 +742,11 @@ class IncomingTransfer:
     accepted: bool = False
     cancelled: bool = False
     offered_at: float = field(default_factory=time.monotonic)
+    #: Inbound messages this transfer may cost before the chat rate limiter
+    #: applies again.  Set on accept from the offer's own chunk count, so the
+    #: exemption is bounded by the file the USER agreed to receive rather than
+    #: being open-ended.  See `absorb_transfer_message`.
+    rate_allowance: int = 0
 
     @property
     def progress(self) -> float:
@@ -779,6 +794,35 @@ class FileTransferManager:
         self._spawn = spawn or self._pump
         self.outgoing: Dict[str, OutgoingTransfer] = {}
         self.incoming: Dict[str, IncomingTransfer] = {}
+        # Transfers we gave up on. A CANCEL goes to the sender, but chunks
+        # already in flight keep arriving for a while, and on a device that
+        # was ~430 of them each printing "DATA rejected: no such transfer".
+        # The reason is worth saying once, not once per straggler.
+        self._abandoned: Dict[str, int] = {}
+
+    def absorb_transfer_message(self, peer: str) -> bool:
+        """Spend one message of an accepted transfer's rate allowance.
+
+        True means the inbound rate limiter must NOT drop this message.
+
+        Raising the chat budget was the first attempt at this and it was
+        wrong: it moved the cliff rather than removing it, and a device test
+        walked straight off the new one at chunk 33 of 119. A receiver whose
+        transfers survive only while the sender paces itself is broken by
+        construction -- the sender may be an older build, a faster network, or
+        hostile, and none of those should cost the user their file.
+
+        So an accepted transfer's traffic is exempt outright. What bounds it
+        is not a rate but a QUANTITY: the offer declared how many chunks it
+        would take, the user agreed to receive them, and the allowance is set
+        from that. A peer that keeps sending past it stops being exempt and is
+        back to the chat limit like anyone else.
+        """
+        for t in self.incoming.values():
+            if t.peer == peer and t.accepted and t.rate_allowance > 0:
+                t.rate_allowance -= 1
+                return True
+        return False
 
     def transfer_in_flight(self, peer: str) -> bool:
         """Is `peer` in the middle of an accepted transfer with us?
@@ -934,6 +978,9 @@ class FileTransferManager:
         transfer.handle = os.fdopen(fd, "wb")
         transfer.tmp_path = tmp
         transfer.accepted = True
+        transfer.rate_allowance = (transfer.offer.chunk_count
+                                   * _STANZAS_PER_CHUNK_CEILING
+                                   + _TRANSFER_RATE_SLACK)
         self.transport.send_control(transfer.peer, "ACCEPT",
                                     transfer.offer.transfer_id.hex())
         return transfer
@@ -960,6 +1007,13 @@ class FileTransferManager:
             transfer_id = bytes.fromhex(parts[0])
         except ValueError:
             raise TransferError("malformed transfer id")
+        key = self._key(transfer_id)
+        if key in self._abandoned:
+            # Already given up on, and the sender already told. Count it and
+            # stay quiet: these are stragglers from before the CANCEL landed,
+            # not a new fault.
+            self._abandoned[key] += 1
+            return
         index = _int_field(parts[1], "chunk index", 1 << 24)
         self.deliver_chunk(peer, transfer_id, index, _unb64(parts[2], "chunk"))
 
@@ -985,7 +1039,7 @@ class FileTransferManager:
             # once per remaining chunk.  Before this it was once per chunk,
             # which buried the cause under twenty identical lines.
             expected = transfer.chunks_received
-            self._destroy_incoming(transfer)
+            self._abandon_incoming(transfer)
             raise TransferError(
                 "chunk %d arrived but %d was expected — a chunk was lost in "
                 "transit, and the sequence cannot be resumed. Transfer "
@@ -1005,7 +1059,7 @@ class FileTransferManager:
             # A chunk that fails its tag is not a transient error: the peer
             # is broken or hostile, and continuing would leave a partial file
             # on disk waiting for chunks that will never verify.
-            self._destroy_incoming(transfer)
+            self._abandon_incoming(transfer)
             raise TransferError("chunk %d failed authentication — transfer "
                                 "abandoned" % index) from exc
         transfer.handle.write(plain)
@@ -1108,6 +1162,34 @@ class FileTransferManager:
                 pass
             out._sealed = []                     # type: ignore[attr-defined]
         self._notify("[file] %s declined the transfer" % peer)
+
+    def _abandon_incoming(self, transfer: IncomingTransfer) -> None:
+        """Give up on an incoming transfer AND tell the sender to stop.
+
+        `_destroy_incoming` alone is not enough, and the difference is not
+        cosmetic. A device test abandoned a transfer at chunk 33 of 119; the
+        sender, never told, pushed the remaining ~430 stanzas at a receiver
+        that had just dropped back to the chat rate limit. Every one was
+        dropped, the terminal filled with identical lines, and the connection
+        died of a starved keepalive. The transfer failing was a bug; the
+        transfer failing and then taking the session down with it was this
+        missing message.
+
+        Deliberately not folded into `_destroy_incoming`: that also runs on
+        the SUCCESS path, and cancelling a transfer that just completed would
+        be worse than saying nothing.
+        """
+        try:
+            self.transport.send_control(
+                transfer.peer, "CANCEL",
+                self._key(transfer.offer.transfer_id))
+        except Exception:
+            pass
+        key = self._key(transfer.offer.transfer_id)
+        if len(self._abandoned) > 32:
+            self._abandoned.clear()
+        self._abandoned[key] = 0
+        self._destroy_incoming(transfer)
 
     def _destroy_incoming(self, transfer: IncomingTransfer) -> None:
         """Remove every trace.  Runs on decline, cancellation and failure."""

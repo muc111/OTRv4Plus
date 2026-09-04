@@ -20,6 +20,7 @@ These pin the fixes at the seams rather than through a live client.
 import asyncio
 import os
 import sys
+import time
 
 import pytest
 
@@ -345,3 +346,175 @@ class TestThePacingIsReal:
         asyncio.run(_drive())
         assert slept == [1 / xmpp._FILE_FRAGMENTS_PER_SEC,
                          7 / xmpp._FILE_FRAGMENTS_PER_SEC]
+
+
+class TestAnAcceptedTransferIsNotRateLimitedAtAll:
+    """Raising the budget only moved the cliff.
+
+    The second device test walked off the new one at chunk 33 of 119: the
+    sender was faster than 24 stanzas a second, the receiver dropped three
+    fragments of chunk 32, and the sequence ended there. A receiver whose
+    transfers survive only while the sender paces itself is broken by
+    construction -- the sender may be an older build, on a faster network, or
+    hostile, and none of those should cost the user their file.
+    """
+
+    def _accepted(self, peer="bob@example.i2p", chunks=100):
+        mgr = _manager(_Transport())
+        transfer = ft.IncomingTransfer(peer=peer, offer=None)
+        transfer.accepted = True
+        transfer.rate_allowance = chunks * ft._STANZAS_PER_CHUNK_CEILING
+        mgr.incoming["k"] = transfer
+        return mgr, transfer
+
+    def test_transfer_traffic_is_absorbed_rather_than_counted(self):
+        mgr, _t = self._accepted()
+        assert mgr.absorb_transfer_message("bob@example.i2p") is True
+
+    def test_a_whole_transfer_fits(self):
+        """The number the device test failed on: 119 chunks of five stanzas."""
+        mgr, _t = self._accepted(chunks=119)
+        absorbed = 0
+        while mgr.absorb_transfer_message("bob@example.i2p"):
+            absorbed += 1
+            assert absorbed < 100_000
+        assert absorbed >= 119 * 5, (
+            "a 1.9 MB transfer does not fit in its own allowance: %d" % absorbed)
+
+    def test_the_allowance_is_bounded(self):
+        """Exempt, not unlimited. A peer that keeps sending past what it said
+        it would send goes back to the chat limit like anyone else."""
+        mgr, _t = self._accepted(chunks=2)
+        absorbed = 0
+        while mgr.absorb_transfer_message("bob@example.i2p"):
+            absorbed += 1
+            assert absorbed < 10_000
+        assert absorbed == 2 * ft._STANZAS_PER_CHUNK_CEILING
+
+    def test_an_unaccepted_offer_absorbs_nothing(self):
+        mgr = _manager(_Transport())
+        t = ft.IncomingTransfer(peer="bob@example.i2p", offer=None)
+        t.rate_allowance = 1000
+        mgr.incoming["k"] = t
+        assert mgr.absorb_transfer_message("bob@example.i2p") is False
+
+    def test_another_peer_absorbs_nothing(self):
+        mgr, _t = self._accepted()
+        assert mgr.absorb_transfer_message("eve@example.i2p") is False
+
+    def test_the_limiter_asks_before_it_throttles(self):
+        """The wiring. Reading the allowance and throttling anyway is the
+        bug with extra steps."""
+        client = xmpp.OTRv4PlusXMPP.__new__(xmpp.OTRv4PlusXMPP)
+        client._rate_limit = {}
+        client._rate_drop_report = {}
+        mgr, _t = self._accepted(chunks=119)
+        client._file_manager = mgr
+        allowed = 0
+        while client._check_rate_limit("bob@example.i2p"):
+            allowed += 1
+            assert allowed < 100_000
+        assert allowed > 119 * 5, (
+            "the limiter still throttles an accepted transfer at %d" % allowed)
+
+
+class TestAbandoningTellsTheSender:
+    """The missing message that turned a failed transfer into a dead session.
+
+    The sender was never told, so it pushed the remaining ~430 stanzas at a
+    receiver that had just dropped back to the chat rate limit. All were
+    dropped, the terminal filled, and the keepalive starved.
+    """
+
+    def _accepted_incoming(self):
+        t = _Transport()
+        mgr = _manager(t)
+        transfer = ft.IncomingTransfer(peer="bob@example.i2p", offer=None)
+
+        class _Offer:
+            transfer_id = b"\x02" * 16
+            chunk_count = 10
+        transfer.offer = _Offer()
+        transfer.accepted = True
+        mgr.incoming[mgr._key(_Offer.transfer_id)] = transfer
+        return mgr, transfer, t
+
+    def test_abandoning_sends_cancel(self):
+        mgr, transfer, t = self._accepted_incoming()
+        mgr._abandon_incoming(transfer)
+        assert "CANCEL" in t.controls, (
+            "the sender is never told, so it keeps sending")
+
+    def test_finishing_does_not_send_cancel(self):
+        """`_destroy_incoming` also runs on the success path. Cancelling a
+        transfer that just completed would be worse than saying nothing."""
+        mgr, transfer, t = self._accepted_incoming()
+        mgr._destroy_incoming(transfer)
+        assert "CANCEL" not in t.controls
+
+    def test_a_gap_abandons_through_the_cancelling_path(self):
+        """Reading the source: the gap branch must not call the quiet one."""
+        import inspect
+        src = inspect.getsource(ft.FileTransferManager.deliver_chunk)
+        assert "_abandon_incoming" in src
+        assert "_destroy_incoming" not in src, (
+            "a failure path still destroys without telling the sender")
+
+    def test_stragglers_after_an_abandon_are_counted_not_printed(self):
+        said = []
+        t = _Transport()
+        mgr = ft.FileTransferManager(transport=t, notify=said.append,
+                                     verified=lambda _p: True)
+        transfer = ft.IncomingTransfer(peer="bob@example.i2p", offer=None)
+
+        class _Offer:
+            transfer_id = b"\x03" * 16
+            chunk_count = 10
+        transfer.offer = _Offer()
+        transfer.accepted = True
+        key = mgr._key(_Offer.transfer_id)
+        mgr.incoming[key] = transfer
+        mgr._abandon_incoming(transfer)
+
+        said.clear()
+        for index in range(40):
+            mgr.handle_control("bob@example.i2p", ft.FILE_PREFIX + "DATA:%s|%d|%s"
+                               % (key, index, ft._b64(b"junk")))
+        assert said == [], (
+            "stragglers still print one line each: %r" % said[:3])
+        assert mgr._abandoned[key] == 40, "they are not counted either"
+
+    def test_the_straggler_table_cannot_grow_without_bound(self):
+        t = _Transport()
+        mgr = _manager(t)
+        for n in range(60):
+            transfer = ft.IncomingTransfer(peer="bob@example.i2p", offer=None)
+
+            class _Offer:
+                transfer_id = bytes([n]) * 16
+                chunk_count = 1
+            transfer.offer = _Offer()
+            mgr.incoming[mgr._key(_Offer.transfer_id)] = transfer
+            mgr._abandon_incoming(transfer)
+        assert len(mgr._abandoned) <= 33
+
+
+class TestTheDropLogDoesNotDrownTheSession:
+
+    def test_repeats_inside_one_window_are_summarised(self, capsys):
+        client = xmpp.OTRv4PlusXMPP.__new__(xmpp.OTRv4PlusXMPP)
+        client._rate_drop_report = {}
+        for _ in range(200):
+            client._note_rate_drop("bob@example.i2p")
+        printed = capsys.readouterr().out.strip().split("\n")
+        printed = [ln for ln in printed if ln]
+        assert len(printed) <= 2, (
+            "200 drops produced %d lines" % len(printed))
+
+    def test_the_count_is_reported_not_swallowed(self, capsys):
+        client = xmpp.OTRv4PlusXMPP.__new__(xmpp.OTRv4PlusXMPP)
+        client._rate_drop_report = {"bob@example.i2p":
+                                    (time.monotonic() - 99, 41)}
+        client._note_rate_drop("bob@example.i2p")
+        out = capsys.readouterr().out
+        assert "42" in out, "the number of dropped messages is the useful part"

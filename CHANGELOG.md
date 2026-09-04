@@ -4,6 +4,55 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## v10.17.1 — a transfer the receiver accepted is not throttled at all
+
+*2026-09-04.  `VERSION → 10.17.1`.  Python only.  The v10.16.2 fix was a half
+measure; a device test walked off the new cliff.*
+
+A 1.9 MB transfer got to **chunk 33 of 119** — up from chunk 10 before — and
+then died the same way, and this time took the connection with it.
+
+**Raising the rate-limit budget only moved the cliff.** v10.16.2 gave an
+accepted transfer 120 messages per 5 s instead of 20. The sender was faster
+than that, three fragments of chunk 32 were dropped, and the sequence ended.
+A receiver whose transfers survive only while the sender paces itself is
+broken by construction: the sender may be an older build, on a faster network,
+or hostile, and none of those should cost the user their file.
+
+So an accepted transfer's traffic is now **taken out of the limiter's hands
+entirely**. What bounds it is not a rate but a **quantity**: the offer declared
+how many chunks it would take, the user agreed to receive them, and the
+allowance is set from that (`chunk_count × 8 + 64` stanzas). A peer that keeps
+sending past what it said it would send stops being exempt and is back on the
+chat limit like anyone else. Bounded by consent, not by speed.
+
+**The receiver never told the sender it had given up, and that is what killed
+the session.** Abandoning destroyed the local state and sent nothing. The
+sender, hearing nothing, pushed the remaining ~430 stanzas at a receiver that
+had just dropped back to the chat rate limit — every one dropped, the terminal
+filled with identical lines, and the keepalive starved until the stream was
+declared dead. Giving up now sends `CANCEL` first. Deliberately *not* folded
+into `_destroy_incoming`, which also runs on the success path: cancelling a
+transfer that just completed would be worse than saying nothing.
+
+**Two log fixes, because the output actively hid the fault.** Chunks already in
+flight when the `CANCEL` goes out still arrive; they are counted rather than
+printed, instead of ~430 lines of `DATA rejected: no such transfer`. And
+throttling is now reported once per window with a count — the number is the
+useful part, the repetition never was.
+
+Sender pacing (8 stanzas/s) stays. It is still right for the I2P stream and the
+peer's CPU. It is simply no longer load-bearing for correctness, which is the
+point.
+
+13 new tests (33 in the file), 3 mutations applied and killed: abandoning
+without telling the sender, the limiter ignoring the allowance, and the
+allowance made unbounded.
+
+**Still not confirmed on a device.**
+
+---
+
 ## v10.17.0 — dual-licensed: AGPL-3.0, or a commercial licence
 
 *2026-09-04.  `VERSION → 10.17.0`.  No code change.  A licence change, which is

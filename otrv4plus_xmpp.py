@@ -2,7 +2,7 @@
 """
 OTRv4+ XMPP - full OTR + SMP over XMPP, transported over I2P SAM
 ================================================================
-Version: 10.17.0
+Version: 10.17.1
 
 
 Post-quantum OTRv4+ end-to-end encryption over XMPP, reusing the IRC client's
@@ -237,7 +237,7 @@ def voice_available() -> "tuple[bool, str]":
             "no audio backend: libaaudio.so unavailable and parec/pacat "
             "missing  (run /audioprobe for details)")
 
-XMPP_VERSION = "10.17.0"
+XMPP_VERSION = "10.17.1"
 
 # ---------------------------------------------------------------------------
 # XMPP-private state directory
@@ -1183,6 +1183,8 @@ class OTRv4PlusXMPP(ClientXMPP):
 
         # Security: per-peer rate limiting.
         self._rate_limit = {}  # peer -> deque of timestamps
+        # peer -> (window start, dropped since we last said so)
+        self._rate_drop_report = {}
         # Stanzas sent by the last send_otr_fragmented call; the file
         # pump zeroes it before each chunk and paces on the result.
         self._file_fragments_sent = 0
@@ -2195,8 +2197,9 @@ class OTRv4PlusXMPP(ClientXMPP):
         """How many messages this peer may send in the window, right now.
 
         The chat budget, unless an accepted transfer with them is running --
-        see `_RATE_MAX_BULK`.  Asked per message and deliberately cheap: it
-        walks the transfer tables, which hold at most a handful of entries.
+        see `_RATE_MAX_BULK`.  Kept for chat that runs ALONGSIDE a transfer;
+        the transfer's own chunks do not come through here at all, they are
+        absorbed by the allowance in `_check_rate_limit`.
         """
         mgr = self._file_manager
         if mgr is None:
@@ -2209,7 +2212,23 @@ class OTRv4PlusXMPP(ClientXMPP):
         return _RATE_MAX
 
     def _check_rate_limit(self, peer: str) -> bool:
-        """Return True if the message should be processed; False if throttled."""
+        """Return True if the message should be processed; False if throttled.
+
+        An accepted transfer's traffic is taken out of the limiter's hands
+        entirely rather than given a bigger allocation. Raising the budget was
+        the first attempt and it only moved the cliff: a device test walked
+        off the new one at chunk 33 of 119, lost the file, and then lost the
+        connection when the sender kept pushing into a throttled peer. What
+        bounds an accepted transfer is a quantity the user agreed to, not a
+        rate -- see `absorb_transfer_message`.
+        """
+        mgr = self._file_manager
+        if mgr is not None:
+            try:
+                if mgr.absorb_transfer_message(peer):
+                    return True
+            except Exception:
+                pass
         now = time.monotonic()
         if peer not in self._rate_limit:
             self._rate_limit[peer] = collections.deque()
@@ -2220,6 +2239,27 @@ class OTRv4PlusXMPP(ClientXMPP):
             return False
         dq.append(now)
         return True
+
+    def _note_rate_drop(self, peer: str) -> None:
+        """Report throttling at most once per window, with a count.
+
+        Printing per dropped message turned a throttled peer into hundreds of
+        identical lines that buried the one line saying what had actually gone
+        wrong. The count is the useful part; the repetition never was.
+        """
+        now = time.monotonic()
+        first, dropped = self._rate_drop_report.get(peer, (0.0, 0))
+        dropped += 1
+        if now - first >= _RATE_WINDOW:
+            if dropped > 1:
+                print("[rate-limit] dropped %d messages from %s in the last "
+                      "%.0fs" % (dropped, _sanitise(peer, 128), _RATE_WINDOW))
+            else:
+                print("[rate-limit] dropping message from %s"
+                      % _sanitise(peer, 128))
+            self._rate_drop_report[peer] = (now, 0)
+        else:
+            self._rate_drop_report[peer] = (first or now, dropped)
 
     # -------------------------------------------------------------------------
     # Inbound message routing
@@ -2243,7 +2283,7 @@ class OTRv4PlusXMPP(ClientXMPP):
 
         # Rate limiting check.
         if not self._check_rate_limit(peer):
-            print(f"[rate-limit] dropping message from {_sanitise(peer, 128)}")
+            self._note_rate_drop(peer)
             return
 
         # Inbound fragment reassembly.
