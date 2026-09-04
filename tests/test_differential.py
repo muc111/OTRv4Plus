@@ -151,14 +151,14 @@ class TestRatchetDifferential:
     def test_alice_to_bob(self):
         alice, bob = _make_ratchet_pair()
         msg = b"hello bob"
-        ct, hdr, nonce, tag, _, _ = alice.encrypt_message(msg)
-        assert bob.decrypt_message(hdr, ct, nonce, tag) == msg
+        ct, hdr, nonce, tag, _, _, _mkmac = alice.encrypt_message(msg)
+        assert bob.decrypt_message(hdr, ct, nonce, tag)[0] == msg
 
     def test_bob_to_alice(self):
         alice, bob = _make_ratchet_pair()
         msg = b"hello alice"
-        ct, hdr, nonce, tag, _, _ = bob.encrypt_message(msg)
-        assert alice.decrypt_message(hdr, ct, nonce, tag) == msg
+        ct, hdr, nonce, tag, _, _, _mkmac = bob.encrypt_message(msg)
+        assert alice.decrypt_message(hdr, ct, nonce, tag)[0] == msg
 
     def test_interleaved(self):
         """Interleaved Alice↔Bob messages all decrypt correctly."""
@@ -171,8 +171,8 @@ class TestRatchetDifferential:
             (bob, alice, b"B-to-A reply 2"),
         ]
         for sender, receiver, msg in exchanges:
-            ct, hdr, nonce, tag, _, _ = sender.encrypt_message(msg)
-            assert receiver.decrypt_message(hdr, ct, nonce, tag) == msg
+            ct, hdr, nonce, tag, _, _, _mkmac = sender.encrypt_message(msg)
+            assert receiver.decrypt_message(hdr, ct, nonce, tag)[0] == msg
 
     def test_chain_key_advances(self):
         """Sending N messages produces N different ciphertexts for the same plaintext."""
@@ -180,7 +180,7 @@ class TestRatchetDifferential:
         msg = b"same message every time"
         ciphertexts = set()
         for _ in range(5):
-            ct, hdr, nonce, tag, _, _ = alice.encrypt_message(msg)
+            ct, hdr, nonce, tag, _, _, _mkmac = alice.encrypt_message(msg)
             key = ct + nonce  # (ct, nonce) pair must be unique
             assert key not in ciphertexts, "Ratchet reused (ct, nonce) pair — chain key not advancing"
             ciphertexts.add(key)
@@ -194,6 +194,7 @@ class TestRatchetDifferential:
 class TestMLKEMDifferential:
     def test_two_encaps_same_key(self):
         ek, dk = _ossl.mlkem1024_keygen()
+        dk = bytes(dk)   # dk is a bytearray; decaps requires bytes
         ct1, ss1 = _ossl.mlkem1024_encaps(ek)
         ct2, ss2 = _ossl.mlkem1024_encaps(ek)
         # Different randomness → different ciphertext and different shared secret
@@ -205,6 +206,7 @@ class TestMLKEMDifferential:
     def test_decaps_cross(self):
         """Decaps with the wrong ciphertext gives a different (random-looking) secret."""
         ek, dk   = _ossl.mlkem1024_keygen()
+        dk = bytes(dk)   # dk is a bytearray; decaps requires bytes
         ct1, ss1 = _ossl.mlkem1024_encaps(ek)
         ct2, _   = _ossl.mlkem1024_encaps(ek)
         ss_wrong = _ossl.mlkem1024_decaps(ct2, dk)
@@ -219,10 +221,8 @@ class TestMLKEMDifferential:
 class TestRingSignatureDifferential:
     def test_both_keys_verify(self):
         """Both A1 and A2 can sign — verifier can't tell which one did."""
-        k1 = ed448.Ed448PrivateKey.generate()
-        k2 = ed448.Ed448PrivateKey.generate()
-        A1 = k1.public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)
-        A2 = k2.public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)
+        k1, A1 = otr.ed448_keypair()
+        k2, A2 = otr.ed448_keypair()
         msg = b"deniable auth test"
 
         sig1 = otr.RingSignature.sign(k1, A1, A2, msg)
@@ -235,10 +235,8 @@ class TestRingSignatureDifferential:
 
     def test_signatures_are_different(self):
         """Two signatures over the same message by the same key must differ (random nonce)."""
-        k1 = ed448.Ed448PrivateKey.generate()
-        k2 = ed448.Ed448PrivateKey.generate()
-        A1 = k1.public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)
-        A2 = k2.public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)
+        k1, A1 = otr.ed448_keypair()
+        k2, A2 = otr.ed448_keypair()
         msg = b"test"
         sig1 = otr.RingSignature.sign(k1, A1, A2, msg)
         sig2 = otr.RingSignature.sign(k1, A1, A2, msg)

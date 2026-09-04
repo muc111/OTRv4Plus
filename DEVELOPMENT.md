@@ -1,12 +1,17 @@
 # DEVELOPMENT.md
 
-Build environment, architecture, and test plan for OTRv4+ as of v10.9.2.
+Build environment, architecture, and test plan for OTRv4+ as of v10.14.0.
 
-OTRv4+ is **Rust-core-only**. There are no C extensions to compile and no
-prebuilt binaries in the repository. Everything is built from source with
-`cargo`. (Earlier versions used three C extensions and the Python `cryptography`
-library; the C extensions were retired at v10.7.4–v10.7.5 and the `cryptography`
-library at v10.7. They are mentioned below only for historical context.)
+There are no C extensions to compile and no prebuilt binaries in the repository.
+Everything is built from source with `cargo`. (Earlier versions used three C
+extensions; they were retired at v10.7.4–v10.7.5 and are mentioned below only
+for historical context.)
+
+The **chat** path is Rust-core-only: the Python `cryptography` library was
+removed from it at v10.7. The **voice** path is not — `otrv4plus_voice.py` uses
+that library for the media AES-256-GCM, the HKDF-SHA512 key schedule and the
+voice X448, so `pip install cryptography` is required to build or test voice.
+See [SECURITY.md](SECURITY.md) caveat 11.
 
 ---
 
@@ -72,6 +77,25 @@ The project moved through several architectural phases. The short version:
 
 ## Build
 
+### Python version requirement
+
+**Python 3.12 or newer is required.** This is not a preference:
+
+```
+otrv4+.py:4268  raise ValueError(f"Key component empty or too long: {s !r }")
+                SyntaxError on 3.11 -- f-string: expecting '}'
+```
+
+The codebase uses a `{expr !r }` spacing style that is only legal under PEP 701
+(Python 3.12+). On 3.11 or earlier `otrv4+.py` does not parse at all, so the
+failure appears as a SyntaxError during import rather than as a clear version
+error. `Rust/pyproject.toml` declares `requires-python = ">=3.12"` for this
+reason, and `android_bridge/bootstrap.py` checks it before attempting the
+import so the Android host fails with an explanatory message instead.
+
+The Rust extension is built `abi3-py39` and would technically load on 3.9; the
+constraint comes from the Python application layer, not the wheel.
+
 ### Prerequisites
 
 On Termux (Android):
@@ -111,9 +135,10 @@ reference path is selected instead.
 ```bash
 cd Rust
 cargo test --release --no-default-features --features pq-rust
+# expected: 101 passed; 0 failed  (as of v10.14.0)
 ```
 
-Expected: **30+ tests pass, 0 warnings.** The suite includes:
+Expected: **65 tests pass, 0 failures.** The suite includes:
 
 - RFC 8032 Ed448 known-answer vectors (`test_vectors.rs`)
 - RFC 7748 X448 known-answer vector (`key_handles.rs`) — ratchet desync guard
@@ -124,6 +149,26 @@ Expected: **30+ tests pass, 0 warnings.** The suite includes:
   both modes, version-mismatch rejection, ML-DSA-87 context sign/verify, wrong-
   context rejection, ML-KEM-1024 encaps/decaps roundtrip, `pq_binding_key`
   determinism
+- Argon2id SMP derivation (wire `0x03`, v10.13.0): that the salt binds the
+  session ID and both fingerprints, that it is role-independent, that salt
+  field boundaries cannot collide, that Argon2id and the legacy SHAKE stretch
+  derive different scalars, that a mixed `0x02`/`0x03` pair aborts with an
+  actionable error, and a frozen vector for the `0x02` stretch cross-checked
+  against an independent Python implementation
+
+Python suite — run from the repository root, not from `tests/`, or the root-level
+voice and audio suites are silently skipped:
+
+```bash
+python3.12 -m pytest -q
+# expected: 2293 passed, 43 skipped, 1 xfailed   (as of v10.14.0)
+```
+
+The skips are environment-gated (no audio device, no Termux:API, no live SAM
+bridge), not failures. The root-level suites — `test_voice_security.py`,
+`test_audio_backend.py`, `test_voice_audio_integration.py`,
+`test_mac_key_revelation.py` — contribute 239 of those tests and are *not*
+under `tests/`.
 
 Python syntax gate:
 
@@ -138,6 +183,18 @@ Unit tests do not catch protocol-level desynchronisation between two peers.
 Termux instances, or one Termux + one desktop) over both TLS clearnet and I2P
 SAM before commit. Several real bugs — including the v10.9.0 KEM-key-mixing
 false-negative — were only discoverable this way.
+
+For voice this is not optional. Every voice defect fixed in v10.12.0 was found
+in a live call and none of them could have been: a rekey that wedged on one lost
+message, a keepalive declaring a working stream dead, a media path that died
+while every counter stayed healthy, and a PyO3 thread-affinity crash that needed
+two concurrent DAKEs to reproduce. A green suite says the pieces are correct; it
+does not say the call works.
+
+New production invariants are mutation-tested rather than trusted to a passing
+count: write the test, remove or invert the production behaviour, confirm the
+test fails, restore, confirm it passes. The v10.12.0 session-hold work records
+seven such mutations in its changelog entry.
 
 Run with debug logging:
 

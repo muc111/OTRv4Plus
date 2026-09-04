@@ -104,7 +104,14 @@ class IntegrationBase(unittest.TestCase):
         packets = []
         done = threading.Event()
 
-        def collect(packet):
+        # _write_packet(packet, queued_at) since 7803a04: the capture thread
+        # stamps each frame so the event loop can discard one that waited
+        # past its send deadline, and so stages["queue"] can report the
+        # scheduling delay that counts inside the reported one-way figure.
+        # A collector taking one argument raised TypeError inside _emit,
+        # which _capture_worker catches and counts as a drop -- so every
+        # frame was silently discarded and the test saw zero packets.
+        def collect(packet, queued_at=None):
             packets.append(packet)
             if len(packets) >= frames:
                 done.set()
@@ -170,17 +177,21 @@ class TestCaptureIntegration(IntegrationBase):
                                     "frames must carry a send timestamp")
         self.assertGreaterEqual(audio, 5, "most frames must be audio")
 
-    def test_encoder_receives_exactly_1280_bytes(self):
+    def test_encoder_receives_exactly_one_frame(self):
         install(FakeAAudioLib(frames_per_burst=480, steady=999))
         session = build_session(self.loop)
         session._capture = A.AAudioCapture()
         self.addCleanup(session._capture.stop)
         self.run_capture(session, frames=3)
-        self.assertEqual(session._opus_enc.last_input_len, 1280)
+        # Was a literal 1280 beside the derived assertion. 1280 bytes is a
+        # 40 ms frame; production moved to 60 ms in 29b9c28, so the literal
+        # described a contract that no longer existed. The derived form is
+        # the real invariant -- the encoder is handed exactly one frame,
+        # whatever OTRV4PLUS_OPUS_FRAME_MS says that is.
         self.assertEqual(session._opus_enc.last_input_len,
                          V.VOICE_FRAME_BYTES)
 
-    def test_48k_device_still_yields_1280_byte_frames(self):
+    def test_48k_device_still_yields_whole_frames(self):
         # Resampling stays inside the backend; the pipeline never sees 48 kHz.
         install(FakeAAudioLib(device_rate=48000, frames_per_burst=960,
                               steady=700))
@@ -190,7 +201,10 @@ class TestCaptureIntegration(IntegrationBase):
         self.assertTrue(session._capture.diagnostics()["resampling"])
         packets = self.run_capture(session, frames=3)
         self.assertGreaterEqual(len(packets), 3)
-        self.assertEqual(session._opus_enc.last_input_len, 1280)
+        # The point of this test is that resampling stays inside the backend,
+        # so the pipeline sees one whole frame regardless of device rate.
+        self.assertEqual(session._opus_enc.last_input_len,
+                         V.VOICE_FRAME_BYTES)
         for packet in packets[:3]:
             self.assertEqual(len(packet), V.VOICE_PACKET_LEN)
 
@@ -224,7 +238,7 @@ class TestCaptureIntegration(IntegrationBase):
         self.addCleanup(session._capture.stop)
         lost = []
         session.on_stream_lost = lambda *a: lost.append(a)
-        session._write_packet = lambda p: None
+        session._write_packet = lambda p, queued_at=None: None
         session.loop = _InlineLoop()
         session._running = True
         t = threading.Thread(target=session._capture_worker, daemon=True)
@@ -252,7 +266,7 @@ class TestDisconnectPropagation(IntegrationBase):
         reported = []
         session.on_stream_lost = lambda peer, cid, why: reported.append(why)
         session.loop = _InlineLoop()
-        session._write_packet = lambda p: None
+        session._write_packet = lambda p, queued_at=None: None
         session._running = True
         session._capture_worker()
 
@@ -332,7 +346,7 @@ class TestTeardownIntegration(IntegrationBase):
         session._capture = A.AAudioCapture()
         session._playback = A.AAudioPlayback()
         session.transition(V.CallState.INVITING)
-        session._write_packet = lambda p: None
+        session._write_packet = lambda p, queued_at=None: None
         session.loop = _InlineLoop()
         session._running = True
         t = threading.Thread(target=session._capture_worker, daemon=True)
@@ -508,13 +522,36 @@ class TestRekeyReceiveWindow(IntegrationBase):
         self.assertEqual(session.stats["recv"], 25)
         self.assertEqual(session.stats["resync"], 0)
 
-    def test_aborted_rekey_withdraws_the_receive_cipher(self):
+    def test_a_timeout_abort_keeps_the_receive_cipher(self):
+        """Superseded at v10.13.1.
+
+        This used to assert that ANY abort withdrew the receive cipher.  That
+        is right when the peer's confirmation tag failed -- evidence the
+        material is wrong -- and wrong when the rekey merely timed out, which
+        is silence.  The initiator commits as soon as our tag verifies and
+        only then sends REKEYCOMMIT, so it is already SENDING on the new
+        epoch while we still have it pending.  Withdrawing the cipher on a
+        timeout made every one of those frames undecryptable.
+        """
         si, sr = self._pair()
         self._derive(si, sr, 1)
         self.assertIsNotNone(sr.cipher_for_epoch(1))
         sr.abort_rekey()
+        self.assertIsNotNone(sr.cipher_for_epoch(1),
+                             "a timeout destroyed a key the peer may already "
+                             "be sending under")
+        self.assertEqual(sr.epoch, 0, "an abort moved the committed epoch")
+        self.assertIsNone(sr.schedule.pending_epoch
+                          if hasattr(sr, "schedule") else sr.pending_epoch,
+                          "the abort did not stop us sending on it")
+
+    def test_a_confirmation_failure_does_withdraw_the_receive_cipher(self):
+        si, sr = self._pair()
+        self._derive(si, sr, 1)
+        self.assertIsNotNone(sr.cipher_for_epoch(1))
+        sr.abort_rekey(discard_receive=True)
         self.assertIsNone(sr.cipher_for_epoch(1),
-                          "a failed rekey must not leave a live key behind")
+                          "material whose tag failed can still decrypt")
         self.assertEqual(sr.epoch, 0)
 
 
@@ -607,7 +644,7 @@ class TestMicrophoneAccess(IntegrationBase):
         session = build_session(self.loop)
         session._capture = A.AAudioCapture()
         session._silence_frame = b"\x00" * 40
-        session._write_packet = lambda p: None
+        session._write_packet = lambda p, queued_at=None: None
         session.loop = _InlineLoop()
         session._running = True
         session._muted = True
@@ -631,7 +668,7 @@ class TestMicrophoneAccess(IntegrationBase):
         session._capture = A.AAudioCapture()
         session._silence_frame = b"\x00" * 40
         sent = []
-        session._write_packet = sent.append
+        session._write_packet = lambda p, queued_at=None: sent.append(p)
         session.loop = _InlineLoop()
         session._running = True
         session._muted = True
@@ -778,7 +815,7 @@ class TestLatency(IntegrationBase):
     def _pump(src, dst):
         """Move everything src emitted into dst's parser."""
         buf = bytearray()
-        src._write_packet = buf.extend
+        src._write_packet = lambda p, queued_at=None: buf.extend(p)
         return buf
 
     def test_ping_pong_produces_an_rtt_sample(self):

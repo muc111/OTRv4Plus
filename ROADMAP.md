@@ -4,6 +4,18 @@ What's next for OTRv4+. Ordered roughly by priority, not by ease.
 
 ## Recently shipped
 
+- **v10.14.0** **`/sendfile` — encrypted file transfer over XMPP.** A fresh AES-256-GCM FileKey per transfer, generated, used and destroyed inside Rust with no getter; wrapped under a key derived from the session's DAKE extra symmetric key, which is the value OTRv4 reserves for out-of-band use and the one session secret that does not advance as the ratchet moves. No second ML-KEM exchange: the brace key already folds ML-KEM-1024, so the session is already post-quantum and already authenticated. 64 KiB chunks with the index and a final flag in the AAD, so reordering, duplication and truncation all fail the tag. Six verification steps before an atomic rename into `~/.otrv4plus/files/`. XMPP only, enforced by test. Python 2283 passed, Rust 101 passed. Not tested on a device.
+- **v10.13.3** **The channel user list works again, and says what it means.** `/names`, `/list` and `/help` had printed the literal string `[IRC line suppressed]` in place of every line since v10.11.0 — the pager measured and truncated each line and then discarded it. The NAMES rendering that already existed was never reached; it now shows a summary count, privilege groups, and detected OTRv4+ users in blue and selectable with a keypress that runs the normal `/otr` entry point. Detection reads the realname the peer's client sent at registration, which is the identification channel this project already had — CTCP VERSION is refused — and which two of three realname paths were failing to fill in, leaving 27 Club and NickServ-registered users undetectable. INV-20 records that the marker is identification and never authentication: the DAKE authenticates, TOFU pins identity, SMP authorises voice. Python 2109 passed, Rust 87 unchanged. Not tested against a live IRC server.
+- **v10.13.2** **The voice key path moves into Rust.** The last long-lived key material outside the Rust core. Media keys were Python bytearrays handed to OpenSSL as immutable `bytes` copies — about 276 unwipeable copies over a 69-minute call — and are now `SecretBytes<32>` inside `RustVoiceCipher` with no getter. The voice X448 private scalar was an OpenSSL object Python could neither wipe nor reach, and is now `SecretBytes<56>` in `RustVoiceKex`, single-use, with the reflection and degenerate-shared-secret checks moved down with it. The SMP passphrase stopped being copied into an immutable `bytes` on its way to the vault. Byte-for-byte compatible: same HKDF-SHA512, same labels, same four-byte length prefixes. The epoch root moved too — `RustVoiceRoot` owns it as `SecretBytes<64>` and Python holds a handle that produces ciphers, confirmations and endpoint tags but never the root. The rekey state machine stays in Python deliberately: it is protocol logic and owns the convergence properties fixed at v10.13.1. Python 1992 passed, Rust 87 passed. No live XMPP/I2P testing, and this changes what encrypts every audio frame.
+- **v10.16.0** **TLS follows the transport.** `--insecure-tls` is no longer part of any normal command. Over I2P a `.b32.i2p` address is the hash of the server's key and over Tor a v3 `.onion` name is the key, so the transport authenticates the endpoint and certificate checks are skipped with an explanation of what replaces them. Clearnet still requires a valid certificate, Tor to a non-onion host still requires one, and the flag survives for a self-signed clearnet server — passing it where it is not needed now says so. The point is the habit: a flag with "insecure" in it, typed daily for a link that is not insecure, is dangerous the first time it is carried to a clearnet host. 14 tests, 4 mutations killed.
+- **v10.15.3 / v10.15.4** **The b32 gets typed once, and a server move reaches people.** The first successful connection to a `.b32.i2p` server records the mapping from the JID's domain in `~/.otrv4plus/i2p_hosts`, after the connection rather than before. `i2p_hosts.defaults` ships with the source, so a fresh clone connects by short name and a migration is a `git pull`. Precedence turns on whose entry it is: a hand-written line always wins, a line the client learned itself yields to a changed shipped default with a notice, and an update never edits the user's file. A retired address given in full is explained, never redirected. The client does not write to i2pd's address book — that format varies by version, the daemon rewrites it, and a bad write would break name resolution for every I2P app on the device. Python 2445 passed, Rust 111 passed.
+- **v10.15.2** **Short `.i2p` names.** Connecting meant pasting a 52-character b32 every time, because `.i2p` names are not DNS and a private server is in nobody's address book. A local alias file, `~/.otrv4plus/i2p_hosts`, maps a short name to a destination, after which the JID's own domain is enough and `--server` is unnecessary. An address given in full as `.b32.i2p` is never looked up in the file, so a local file cannot redirect an address typed out in full; aliases cannot chain to another short name; the substitution is printed when used. The resolution failure now names the file and prints the line to add instead of returning the raw SAM reply. `TRANSPORT_POLICY.md` §8.1 records that no system resolver ever sees an `.i2p` or `.onion` name. 19 new tests; Python 2423 passed, Rust 111 passed.
+- **v10.15.1** **Three defects the first two-handset run found.** The responder flow was never switched on — `smp_guided_prompt` was plumbed through the manager and sessions and never set to `True`, so an incoming SMP1 aborted exactly as before and the entire responder half of v10.15.0 was unreachable on a device. Simultaneous `/smp` on both sides always failed with `SMP race-recovery: vault rebind failed`, because rebuilding the engine constructed a fresh vault and discarded the secret the rebind then looked for; that path had never worked. And one abort printed both "this is not a wrong-passphrase failure" and "secrets did NOT match — possible MITM", three lines apart. All three were covered on paper by tests that drove the client's own methods with a fake engine; the replacements feed a real SMP1 to a real session, and each fix was checked by reverting it. Python 2404 passed, Rust 111 passed. First live I2P device run; responder prompt still unverified on hardware.
+- **v10.15.0** **Guided SMP verification, and a compiled-core version check.** `/smp` is now the only verification command a user needs: it prompts (hidden) for the passphrase when none is stored and then verifies. A responder who has never set one is asked for consent first — a peer's SMP1 can put a prompt on the screen but cannot make a typed line become a passphrase, which is INV-06 restated for a flow where remote messages legitimately prompt. A new Rust phase `SECRET_REQUIRED` holds the received SMP1 so it can be answered rather than restarted. The reported `store_from_bytearray` failure turned out to be a stale compiled core, not an SMP bug: `otrv4plus_coreapi.py` now declares what the clients require and checks it at startup. The IRC client's remote-armed `_set_pending("smp_secret", …)` — the original INV-06 defect, never covered by its test — was removed. Python 2386 passed, Rust 111 passed. No live XMPP/I2P testing.
+- **v10.13.1** **Security hardening: input capture, log boundary, rekey divergence.** A repository-wide inventory found three real defects. A remote peer could arm a pending-input state that made the user's next typed line become an SMP passphrase — masked and never transmitted, but a remote party choosing the meaning of local input; the secret now comes only from a locally typed `/smp-secret`. A hand-rolled SHAKE-256 stream cipher in `otrv4plus_log.py`, with a dormant persistent mode one constructor argument from writing every message to disk, was deleted rather than re-based onto the Rust AEAD. The session transcript became an allowlist instead of a one-pattern denylist that failed open. Two rekey defects that could strand a call permanently: an abort destroyed a receive key the peer was already sending under, and an incoming REKEY had to name exactly `ours + 1`, so one lost REKEYCOMMIT rejected every subsequent repair. Media rejections are now classified by cause, so "authfail" means a failed AEAD tag and nothing else. Sixteen invariants enforced by `tests/security_invariants.py`, with `SECURITY_INVARIANTS.md` generated from it. Python 1932 passed, Rust 77 passed. No live XMPP/I2P testing.
+- **v10.13.0** **Argon2id SMP secret derivation (wire version `0x03`).** The SMP passphrase was stretched by 50,000 rounds of SHAKE-256 over the passphrase alone, with the session ID and fingerprints bound in afterwards by one HMAC. That is CPU-only work — and, worse, nothing user-specific entered the expensive part, so a dictionary ground out once was reusable against every user and every session forever. `0x03` derives the scalar with Argon2id (m=64 MiB, t=3, p=4) salted with the session ID and both fingerprints, length-prefixed so field boundaries cannot collide. The `0x02` derivation is retained byte-for-byte behind a frozen test vector, cross-checked against an independent implementation; message layouts are unchanged, so a mixed pair aborts at the version check with an error naming the real cause instead of reporting a passphrase mismatch. Also: a documentation claim of Argon2id inside the Rust core, which predated any such code by several releases, retracted and pinned by tests that read the sources rather than the prose; the at-rest Argon2→scrypt fallback made loud and reportable via `kdf_backend()`; the SMP wire byte actually pinned by `tests/test_protocol_version.py`, which `VERSIONING.md` had already claimed. Python 1633 passed, Rust 77 passed. Not yet live-tested between two handsets.
+- **v10.12.0** **Voice media liveness, diagnosis and authenticated recovery.** A call whose inbound media died used to stay "up" forever — the transmit side keeps succeeding over a dead SAM session, so nothing failed. A watchdog now measures silence since the last *authenticated* frame, and when nothing is arriving the endpoint is rebuilt and the new destination announced in an authenticated `MEDIAPATH` control message tagged from the committed epoch root. No media key derives from the destination, so recovery costs no key state. The rebuild is held back while the SAM control socket is open, because on a network transition I2P rebuilds tunnels under a session that is still ours (measured: rebuilding anyway cost 21.2 s plus ~20 s of our own `tx` at zero). Cold paths get a 120 s startup grace after a live call lost ~70 s to a rebuild of an endpoint that was merely still coming up. Worst case bounded at 465 s proven / 795 s cold, pinned by a test that fails if the docs and code disagree. Also: the PyO3 `DakeOutput` thread-affinity crash fixed by serialising the OTR executor to one worker; the XMPP keepalive stopped disconnecting streams that were working; rekey no longer wedges on one lost message; Termux incoming-call notification with ACCEPT/DECLINE; latency colour banding. `VERSIONING.md` added and version strings reconciled — five files had disagreed. Python 1483 passed, Rust 65 passed; the session-hold, identity, TOFU and SMP invariants mutation-tested.
+- **v10.10.0 – v10.11.1** XMPP transport, its security hardening, the fail-closed Tor control-plane route, and the first working encrypted voice path over I2P. These shipped without changelog entries; see the note in [CHANGELOG.md](CHANGELOG.md).
 - **v10.9.2** Formal protocol specification (`SPEC.md`) added — byte-level wire layouts for DAKE1/2/3 and ClientProfile, the KDF usage-ID table, the normative session-key derivation order, the full hybrid PQC SMP construction, fragmentation, state machines, and the RFC 3526 prime. Documentation pass across README (added "Why vs alternatives" comparison + 30-second pitch), SECURITY, and WHY for the hybrid SMP. `termux_install.sh` rewritten Rust-only. No wire change.
 - **v10.9.1** SMP session timeout raised to 45 min (from 10) for the hybrid-PQ wire overhead over I2P. I2P transport tuned against irc.postman.i2p: fragment size 450→380 B (postman truncated the DAKE1 tail), send pacing changed to a 2-fragment / 6-second batch after per-fragment delays all triggered Excess Flood. Per-panel scroll fix (`_scroll_history` was global, mixing channels). IRCv3 P2P typing notifications. Measured: DAKE+SMP ~15–16 min over I2P, <6 min over TLS.
 - **v10.9.0** **Hybrid post-quantum SMP.** The classical four-step Schnorr ZKP over the 3072-bit group is wrapped in an ML-KEM-1024 + ML-DSA-87 binding layer: SMP1 carries the KEM encapsulation key and an ML-DSA-87 public key, SMP2 derives `pq_binding_key` from the KEM shared secret and signs the wire body with ML-DSA-87, SMP3/4 verify-then-sign. Forging "verified" now requires breaking the discrete log, ML-KEM-1024, and ML-DSA-87 simultaneously. Wire-versioned 0x01/0x02, no silent downgrade. A KEM-key-mixing bug (initiator derived the secret scalar without the KEM key, responder with it → false-negative SMP) was found in live two-session testing and fixed by removing the KEM key from secret derivation entirely. 15 new SMP tests, 30+ total.
@@ -81,11 +93,41 @@ Staged so each piece could be live-tested in isolation before the next began:
 
 ### Architectural consequence
 
-After 5.3i + 5.3k, OTRv4+ has **a single cryptographic implementation surface** — the Rust `otrv4_core` PyO3 module.  No second crypto backend, no compile-time conditionals selecting between paths, no "Rust verified against C" comparison checks at boot.  The earlier multi-backend complexity that the audit had to reason about is gone.
+After 5.3i + 5.3k, the **chat** path has a single cryptographic implementation surface — the Rust `otrv4_core` PyO3 module.  No second crypto backend, no compile-time conditionals selecting between paths, no "Rust verified against C" comparison checks at boot.  The earlier multi-backend complexity that the audit had to reason about is gone from messaging.
 
-## Phase 5.3g — ephemeral identity by design (DECIDED at v10.6.18)
+> **Status note (v10.12.0).** The entries above are accurate as history and were
+> accurate for the whole project when written. They are no longer accurate for
+> the whole project: the voice subsystem added at v10.11.0 reintroduced the
+> Python `cryptography` library for the media AES-256-GCM, the HKDF-SHA512 voice
+> key schedule and the voice X448. So "no OpenSSL-backed Python crypto in any
+> code path" holds for chat and not for voice. Closing that is tracked below
+> under *Voice: consolidate onto the Rust core*.
 
-OTRv4+ keeps **ephemeral identities** by design. Fingerprints regenerate at every launch; there is no on-disk identity vault.
+## Phase 5.3g — ephemeral identity by design (DECIDED at v10.6.18, SPLIT PER PROTOCOL at v10.12.0)
+
+> **Amended, not reversed (v10.12.0).** The decision below was made when OTRv4+
+> was an IRC client. It still stands for IRC and is unchanged there. It does
+> **not** hold for XMPP, and holding it there was actively harmful:
+>
+> A JID is a durable name. An identity that changed under it every launch made
+> a changed fingerprint meaningless, so TOFU could not work — and because the
+> two protocols shared `~/.otrv4plus/trust.json`, `add_trust` raised
+> `FingerprintMismatchError` on the second session with any peer, printing
+> "This may indicate a MITM attack" as normal behaviour. A warning shown on
+> every reconnect is a warning that will be ignored when it is real.
+>
+> So the two protocols now differ, deliberately:
+>
+> | | identity | trust |
+> |---|---|---|
+> | **IRC** | fresh Ed448 every run | in-memory for the session, nothing on disk |
+> | **XMPP** | persistent, sealed Ed448 | pinned fingerprints under `~/.otrv4plus/xmpp/` |
+>
+> The rationale below is why IRC keeps ephemeral identity. Read points 1 and 4
+> as the IRC case: an IRC nick is not a durable name, and pinning a fingerprint
+> to one pins it to nothing.
+
+OTRv4+ keeps **ephemeral identities** for IRC by design. Fingerprints regenerate at every launch; there is no on-disk identity vault for that protocol.
 
 Rationale:
 
@@ -96,7 +138,15 @@ Rationale:
 
 SMP trust binding is meaningful within a session. Across sessions, peers must re-verify on each connection. This is correct behaviour for the project's design intent, not a limitation.
 
-If a user explicitly wants persistence in the future, the `Ed448KeyHandle.from_seed_bytes()` and `X448KeyHandle.from_priv_bytes()` constructors already support reconstructing a handle from raw bytes — so an external user-managed vault is possible without further code changes in OTRv4+ itself.
+**How XMPP persistence was implemented (v10.12.0).** Not through
+`from_seed_bytes()`, which would have put the seed on the Python heap and cost
+the property that makes the Rust core worth having. It reuses the Android B1
+mechanism instead: `Rust/src/identity.rs` seals and unseals inside Rust, so only
+ciphertext crosses into Python and no `get_seed()` accessor exists or may be
+added. `otrv4plus_identity.py` supplies the Termux-side wiring and the
+data-encryption key. **The at-rest protection is filesystem permissions**, not a
+passphrase — see SECURITY.md caveat 5b for exactly what that does and does not
+defend against.
 
 ## Other planned work
 
@@ -110,15 +160,56 @@ Out of OTRv4 scope. OMEMO or MLS would be a separate project.
 
 ### Native Android APK
 
-Building a signed `.apk` containing the Python interpreter and the Rust `.so` has been investigated (see DEVELOPMENT.md). Possible but non-trivial. Termux is the supported dev environment; a native APK is future work.
+**Partly done, not finished.** A Gradle project, a Chaquopy configuration, a typed
+Kotlin↔Python bridge and a Kotlin application security layer exist under
+`android/` and `android_bridge/`, and the storage and architecture questions have
+been audited (`ANDROID_ARCHITECTURE_AUDIT.md`, `ANDROID_STORAGE_AUDIT.md`,
+`ANDROID_PHASE2_REPORT.md`). What does not exist is a shipped signed APK, an
+in-APK I2P router, or any voice testing inside the APK — voice is verified under
+Termux, which is a different process model. Termux remains the supported
+environment. Do not read "voice works" as "voice works in the APK".
 
 ### Tor onion service transport
 
-I2P SAM bridge works today. Adding an alternative Tor `.onion` transport would broaden the deployment options. The current architecture (transport plugged into `Connection` class) supports this without crypto changes.
+**Control plane done, live-unverified; voice deliberately excluded.** The XMPP
+control plane routes over Tor SOCKS5, fail-closed and with no DNS leak, and IRC
+has had Tor support for longer. Neither has been verified on a live `.onion`
+service, so the status is "implemented, unverified" rather than "works".
+
+Voice over Tor is **not** planned. There is no Tor UDP transport, and carrying
+constant-rate media over TCP would trade the property the datagram transport
+exists to provide. I2P remains the only transport that carries voice.
+
+### Voice: consolidate onto the Rust core
+
+`otrv4plus_voice.py` uses the Python `cryptography` library for the media
+AES-256-GCM, the HKDF-SHA512 key schedule, and the voice X448. That is a second
+implementation of AES-256-GCM in a project whose stated architecture is one
+cryptographic surface, and it puts voice key material in Python `bytearray`s
+wiped best-effort rather than in Rust `ZeroizeOnDrop` buffers. The Rust core
+already exposes `aes256gcm_encrypt`/`_decrypt` and `X448KeyHandle`; the KDF would
+need an HKDF-SHA512 binding. This is the largest open architectural item on the
+voice path.
+
+### Voice: classify authentication failures
+
+`authfail` currently cannot distinguish "no live key for epoch N" — an ordinary
+consequence of a rekey in flight — from a genuine AEAD tag failure, which is an
+attack signal. They are counted together, so the interesting one is invisible
+inside the boring one. Splitting them is a telemetry and diagnosis fix, not a
+cryptographic change.
+
+### Voice: latency
+
+Median mouth-to-ear on the I2P path is about 917 ms, against ITU-T G.114's
+400 ms "acceptable" bound. Opus is not the bottleneck (`OPUS_AUDIT.md`). The
+playout path shows a p50 of about 93 ms during degraded periods, which is worth
+understanding before anything else is tuned. **Reducing the I2P hop count is not
+an option** — the 3-hop configuration is the reason the project exists.
 
 ### Formal review
 
-The crypto path is now small enough to be reviewable: ~3500 lines of Rust across `dake.rs`, `ratchet.rs`, `smp.rs`, `smp_vault.rs`, `ring_sig.rs`, `key_handles.rs`, `mldsa.rs`, `mlkem.rs`, `aead.rs`, `secure_mem.rs`, `kdf.rs`. As of v10.7.5 the entire cryptographic surface is Rust — the Python `cryptography` library was removed at v10.7 and all C extensions at v10.7.5 (Phase 5.3k). As of v10.7.6 (Phase 5.4) the SMP modular exponentiation is constant-time via `crypto-bigint`, and as of v10.9.0 the SMP is hybrid post-quantum. A formal third-party review would significantly increase confidence. No funding for this; expression of interest welcome.
+The chat crypto path is now small enough to be reviewable: ~3500 lines of Rust across `dake.rs`, `ratchet.rs`, `smp.rs`, `smp_vault.rs`, `ring_sig.rs`, `key_handles.rs`, `mldsa.rs`, `mlkem.rs`, `aead.rs`, `secure_mem.rs`, `kdf.rs`. The Python `cryptography` library was removed from that path at v10.7 and all C extensions at v10.7.5 (Phase 5.3k). A review scoped to chat should note that the **voice** key schedule and media AEAD live in Python (`otrv4plus_voice.py`) and are not covered by reading the Rust alone. As of v10.7.6 (Phase 5.4) the SMP modular exponentiation is constant-time via `crypto-bigint`, and as of v10.9.0 the SMP is hybrid post-quantum. A formal third-party review would significantly increase confidence. No funding for this; expression of interest welcome.
 
 ### Full post-quantum SMP / PQ-PAKE
 

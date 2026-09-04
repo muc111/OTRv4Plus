@@ -141,12 +141,8 @@ def fuzz_dake1(data: bytes):
 def fuzz_ringsig_verify(data: bytes):
     """Fuzz ring_verify with random bytes as signature — must never crash."""
     try:
-        k1 = ed448.Ed448PrivateKey.generate()
-        k2 = ed448.Ed448PrivateKey.generate()
-        A1 = k1.public_key().public_bytes(
-            serialization.Encoding.Raw, serialization.PublicFormat.Raw)
-        A2 = k2.public_key().public_bytes(
-            serialization.Encoding.Raw, serialization.PublicFormat.Raw)
+        k1, A1 = otr.ed448_keypair()
+        k2, A2 = otr.ed448_keypair()
         # Use first 228 bytes as sig, rest as message (or pad to 228)
         sig = (data + bytes(228))[:228]
         msg = data[228:] if len(data) > 228 else b''
@@ -173,6 +169,7 @@ def fuzz_mlkem_decaps(data: bytes):
     """Fuzz ML-KEM-1024 decaps with random ciphertext — must not crash."""
     try:
         _, dk = _ossl.mlkem1024_keygen()
+        dk = bytes(dk)   # dk is a bytearray; decaps requires bytes
         ct = (data + bytes(1568))[:1568]
         _ossl.mlkem1024_decaps(ct, dk)
     except Exception:
@@ -274,10 +271,8 @@ def gen_corpus():
     open("corpus/ratchet_hdr/seed_0", 'wb').write(hdr.encode())
 
     # Ring sig: valid 228-byte signature as seed
-    k1 = ed448.Ed448PrivateKey.generate()
-    k2 = ed448.Ed448PrivateKey.generate()
-    A1 = k1.public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)
-    A2 = k2.public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)
+    k1, A1 = otr.ed448_keypair()
+    k2, A2 = otr.ed448_keypair()
     sig = otr.RingSignature.sign(k1, A1, A2, b'test')
     open("corpus/ringsig/seed_0", 'wb').write(sig + b'test')
 

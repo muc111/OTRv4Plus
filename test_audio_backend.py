@@ -233,9 +233,13 @@ class TestCapture(BackendBase):
         cap = A.AAudioCapture()
         frame = cap.read_frame()
         self.assertEqual(len(frame), A.FRAME_BYTES)
-        self.assertEqual(len(frame), 1280)
+        # Was a literal 1280/640, which encoded a 40 ms frame. Production
+        # moved to 60 ms deliberately in 29b9c28, so the literal described a
+        # contract that no longer existed while the derived assertion beside
+        # it stayed correct. Derived only, so it holds at any configured
+        # OTRV4PLUS_OPUS_FRAME_MS.
         samples = struct.unpack("<%dh" % A.FRAME_SAMPLES, frame)
-        self.assertEqual(len(samples), 640)
+        self.assertEqual(len(samples), A.FRAME_SAMPLES)
         self.assertTrue(all(s == 1234 for s in samples))
         cap.stop()
 
@@ -376,6 +380,8 @@ class TestResampling(unittest.TestCase):
         pcm = struct.pack("<1920h", *([500] * 1920))
         out = r.process(pcm)
         produced = len(out) // 2
+        # 1920 / 3. This is the resampler's ratio, not the frame geometry, so
+        # it stays a literal and must NOT follow FRAME_SAMPLES.
         self.assertAlmostEqual(produced, 640, delta=8)
 
     def test_44100_to_16000_non_integer_ratio(self):
@@ -483,9 +489,9 @@ class TestSelection(BackendBase):
 class TestBurstAlignment(BackendBase):
     """Reads must line up with the device's hardware burst.
 
-    The target device reports framesPerBurst=480 against a 640-sample frame.
-    A 640-frame read straddles 1 1/3 bursts, so every read waits on a
-    partially filled second burst.
+    The target device reports framesPerBurst=480. A read that is not a whole
+    number of bursts straddles them, so every read waits on a partially
+    filled second burst.
     """
 
     def test_read_size_matches_frames_per_burst(self):
@@ -498,12 +504,11 @@ class TestBurstAlignment(BackendBase):
                         "reads must be burst-aligned, got %s" % lib.read_sizes)
         cap.stop()
 
-    def test_frame_still_exactly_1280_bytes_on_that_device(self):
+    def test_frame_is_still_exactly_one_frame_on_that_device(self):
         install(FakeAAudioLib(frames_per_burst=480, steady=250))
         cap = A.AAudioCapture()
         for _ in range(5):
             frame = cap.read_frame()
-            self.assertEqual(len(frame), 1280)
             self.assertEqual(len(frame), A.FRAME_BYTES)
         cap.stop()
 
@@ -535,7 +540,7 @@ class TestBurstAlignment(BackendBase):
         self.assertFalse(diag["resampling"])
         self.assertFalse(diag["disconnected"])
         frame = cap.read_frame()
-        self.assertEqual(len(frame), 1280)
+        self.assertEqual(len(frame), A.FRAME_BYTES)
         peak = max(abs(v) for v in
                    struct.unpack("<%dh" % A.FRAME_SAMPLES, frame))
         self.assertEqual(peak, 30628)
@@ -634,14 +639,49 @@ class TestRinger(BackendBase):
 
     def test_no_playback_device_does_not_raise(self):
         # A silent ring is survivable; a crash in the receive path is not.
+        #
+        # BOTH backends must be suppressed for this to be the no-device case.
+        # Clearing _LIB/_LIB_ERROR only removes AAudio; open_playback then
+        # falls back to PulseAudio and, on a device that actually has pacat --
+        # i.e. every phone this software is meant to run on -- opens
+        # successfully and sets started=True. The test was asserting a
+        # property of the host, not of the ringer, and failed on Termux for
+        # that reason. `which` is the documented seam for suppressing the
+        # PulseAudio probe, so use it and make the case deterministic
+        # everywhere.
+        saved_lib, saved_err = A._LIB, A._LIB_ERROR
         A._LIB = None
         A._LIB_ERROR = "no libaaudio"
+        try:
+            r = A.Ringer(notify=False, vibrate=False)
+            r.start(peer="p@e.org", which=lambda _binary: None)
+            time.sleep(0.3)
+            r.stop()                       # must not raise: that is the test
+            self.assertFalse(r.started)
+            self.assertIsNotNone(r.error)
+        finally:
+            # These are module globals. Leaving them clobbered made this test
+            # a source of order-dependent failures in whatever ran next.
+            A._LIB, A._LIB_ERROR = saved_lib, saved_err
+
+    def test_a_working_backend_still_rings(self):
+        """The counterpart, on a host that does have playback.
+
+        Guards against "does not raise" being satisfied by a ringer that
+        never rings anywhere.
+        """
+        lib = install(FakeAAudioLib())
         r = A.Ringer(notify=False, vibrate=False)
         r.start(peer="p@e.org")
-        time.sleep(0.3)
-        r.stop()
-        self.assertFalse(r.started)
-        self.assertIsNotNone(r.error)
+        deadline = time.time() + 5.0
+        while time.time() < deadline and lib.written_frames == 0:
+            time.sleep(0.02)
+        try:
+            self.assertTrue(r.started, "ringer never opened playback: %s"
+                            % r.error)
+            self.assertIsNone(r.error)
+        finally:
+            r.stop()
 
     def test_privacy_mode_keeps_the_jid_off_the_lock_screen(self):
         import inspect
@@ -670,7 +710,11 @@ class TestAdaptiveJitter(unittest.TestCase):
         jb = V.JitterBuffer()
         t = 0.0
         for i in range(n):
-            t += 0.040 + random.choice(spikes)
+            # Pace at the module's frame interval. Hardcoding 0.040 fed a
+            # 40 ms cadence into a pipeline that now expects 60 ms, so the
+            # estimator correctly reported the 20 ms difference as jitter --
+            # a property of the test, not of the path being simulated.
+            t += V.FRAME_INTERVAL_S + random.choice(spikes)
             jb._observe_arrival(jb.sequence(0, i), t)
         return jb
 

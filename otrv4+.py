@@ -147,7 +147,7 @@ import shutil
 import logging
 import logging.handlers
 from typing import Optional, Dict, Any, Tuple, List, Set, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from collections import defaultdict, deque
 from enum import IntEnum
 import concurrent.futures
@@ -788,6 +788,217 @@ class NetworkConstants:
     I2P_SAM_PORT = 7656
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# I2P short names
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# `.i2p` names are NOT DNS.  There is no global resolver: a router only knows
+# the names in its own address book, which it builds from subscriptions.  A
+# private server is in nobody's subscription, so `xmpp-elite.i2p` resolves on
+# the machine that created it and nowhere else, while the 52-character
+# `.b32.i2p` form works everywhere because it IS the destination hash.
+#
+# That is why the b32 has to be pasted, and it is a genuine usability problem:
+# nobody is going to type 52 base32 characters correctly on a phone keyboard.
+#
+# This file is the local answer.  One line per name:
+#
+#     xmpp-elite.i2p = hq4t24b7…q.b32.i2p
+#
+# WHAT AN ALIAS IS AND IS NOT.  It is a note to yourself about what a name
+# means on this device.  It is not authenticated, it is not published, and it
+# proves nothing about who answers.  The security of a conversation does not
+# rest on it: the DAKE authenticates the peer and TOFU pins their identity
+# key, so pointing an alias at the wrong server yields a failed connection or
+# a server that cannot read anything, not a silent impersonation.
+#
+# A name given in full as .b32.i2p is never looked up here -- see
+# _apply_i2p_alias -- so a local file cannot redirect an address typed in
+# full.
+
+I2P_HOSTS_FILENAME = "i2p_hosts"
+
+
+def remember_i2p_alias(name: str, destination: str, path: str = None,
+                       learned: bool = True) -> str:
+    """Record `name = destination` in the local alias file.
+
+    So the 52-character b32 is typed once and never again: the client calls
+    this after a connection has actually succeeded, which is the only moment
+    it knows the pair is good.
+
+    Three refusals, and the third is the one that matters:
+
+      * a name that is not a short `.i2p` name, or a destination that is not a
+        b32 or a full destination -- the file must stay loadable;
+      * a name already recorded with THE SAME destination -- nothing to do;
+      * a name already recorded with a DIFFERENT destination -- left alone and
+        reported.  A server whose destination changed is something the user
+        needs to see, not something a client should quietly rewrite under
+        them.  Editing the file by hand is the way to accept such a change.
+
+    Returns a short status string for display: "" when nothing was written.
+    """
+    name = (name or "").strip().lower()
+    destination = (destination or "").strip()
+    if not name.endswith(".i2p") or name.endswith(".b32.i2p"):
+        return ""
+    if not _valid_i2p_destination(destination):
+        return ""
+
+    path = path or i2p_hosts_path()
+    if i2p_aliases(i2p_hosts_defaults_path()).get(name) == destination:
+        return ""            # the shipped defaults already say this
+    existing = i2p_aliases(path).get(name)
+    if existing == destination:
+        return ""
+    if existing:
+        return (f"{name } is already recorded as {existing }, which is not "
+                f"the destination just used. Not changing it -- edit "
+                f"{path } yourself if the server really moved.")
+
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        new_file = not os.path.exists(path)
+        with open(path, "a", encoding="utf-8") as fh:
+            if new_file:
+                fh.write("# OTRv4+ I2P name aliases.  One per line:\n")
+                fh.write("#     name.i2p = <52 chars>.b32.i2p\n")
+                fh.write("# A local note about what a name means on this "
+                         "device; it is not\n"
+                         "# authenticated and proves nothing about who "
+                         "answers.  Delete a line\n"
+                         "# to forget it.\n")
+            marker = f"  {LEARNED_MARKER }" if learned else ""
+            fh.write(f"{name } = {destination }{marker }\n")
+        if new_file:
+            try:
+                os.chmod(path, 0o600)
+            except OSError:
+                pass
+    except OSError as exc:
+        return f"could not write {path }: {exc }"
+    return f"recorded {name } = {destination } in {path }"
+
+
+def i2p_hosts_path() -> str:
+    """Where the local alias file lives."""
+    return os.path.join(os.path.expanduser("~/.otrv4plus"), I2P_HOSTS_FILENAME)
+
+
+def _valid_i2p_destination(value: str) -> bool:
+    """A b32 address or a full base64 destination, and nothing else.
+
+    Deliberately strict: an alias that expands to something the router cannot
+    use produces a confusing failure much later, and an alias that expands to
+    another short name would let one line chain into another.
+    """
+    if value.endswith(".b32.i2p"):
+        label = value[:-len(".b32.i2p")]
+        return (len(label) == 52
+                and all(c in "abcdefghijklmnopqrstuvwxyz234567" for c in label))
+    # A full destination is base64 (I2P's alphabet) and long.
+    return (len(value) >= 516
+            and all(c.isalnum() or c in "-~=" for c in value))
+
+
+#: Written after an entry the client learned from a successful connection.
+#: The marker is what separates "this device worked it out" from "the user
+#: decided this", and the two are treated differently when a shipped default
+#: disagrees -- see resolve_i2p_aliases().
+LEARNED_MARKER = "# learned"
+
+#: Shipped defaults, updated by `git pull` like any other code.
+I2P_HOSTS_DEFAULTS = "i2p_hosts.defaults"
+
+
+def i2p_hosts_defaults_path() -> str:
+    """The defaults that travel with the source, beside this file."""
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                        I2P_HOSTS_DEFAULTS)
+
+
+def i2p_aliases(path: str = None, with_provenance: bool = False):
+    """Read an alias file.  Returns {} when it does not exist.
+
+    Never raises: a malformed line is skipped with a warning rather than
+    stopping the client from starting, because the alternative is that one
+    typo makes the whole thing unusable.
+
+    With `with_provenance`, values are `(destination, learned)` pairs.
+    """
+    path = path or i2p_hosts_path()
+    out = {}
+    try:
+        with open(path, encoding="utf-8") as fh:
+            lines = fh.readlines()
+    except (OSError, UnicodeDecodeError):
+        return out
+
+    for number, raw in enumerate(lines, 1):
+        learned = LEARNED_MARKER in raw
+        line = raw.split("#", 1)[0].strip()
+        if not line:
+            continue
+        if "=" in line:
+            name, _, dest = line.partition("=")
+        else:
+            parts = line.split()
+            if len(parts) != 2:
+                print(f"[i2p] {path }:{number }: cannot read this line, skipping")
+                continue
+            name, dest = parts
+        name, dest = name.strip().lower(), dest.strip()
+        if not name.endswith(".i2p") or name.endswith(".b32.i2p"):
+            print(f"[i2p] {path }:{number }: {name !r} is not a short .i2p "
+                  "name, skipping")
+            continue
+        if not _valid_i2p_destination(dest):
+            print(f"[i2p] {path }:{number }: {name } does not point at a "
+                  ".b32.i2p address or a full destination, skipping")
+            continue
+        out[name] = (dest, learned) if with_provenance else dest
+    return out
+
+
+def resolve_i2p_aliases(user_path: str = None,
+                        defaults_path: str = None,
+                        on_message=print) -> dict:
+    """Merge the shipped defaults with the user's own file.
+
+    The precedence rule, and the reason for it:
+
+      * a hand-written user entry ALWAYS wins.  Someone who typed a line into
+        that file meant it, and an update has no business overruling them;
+      * a LEARNED entry -- one this client recorded itself after a successful
+        connection -- yields to a shipped default that disagrees, with a
+        notice.  Otherwise the first successful connection would pin an
+        address forever, and moving the server would strand every user who had
+        ever connected, which is exactly the case this layer exists for;
+      * otherwise the shipped default applies.
+
+    Nothing here writes.  `~/.otrv4plus/i2p_hosts` is the user's file and an
+    update never edits it; the defaults change because `git pull` changed
+    them, which is visible in the diff.
+    """
+    defaults = i2p_aliases(defaults_path or i2p_hosts_defaults_path())
+    merged = dict(defaults)
+    for name, (dest, learned) in i2p_aliases(
+            user_path, with_provenance=True).items():
+        shipped = defaults.get(name)
+        if learned and shipped and shipped != dest:
+            on_message(
+                f"[i2p] the address shipped for {name } has changed; using "
+                f"the new one.\n"
+                f"[i2p]   was (remembered here): {dest }\n"
+                f"[i2p]   now (from this build): {shipped }\n"
+                f"[i2p] to keep the old one, edit {user_path or i2p_hosts_path ()} "
+                f"and remove the '{LEARNED_MARKER }' marker from that line.")
+            continue
+        merged[name] = dest
+    return merged
+
+
 class I2PSAMConnection:
     """Connect to I2P via the SAM bridge instead of SOCKS5.
 
@@ -850,12 +1061,129 @@ class I2PSAMConnection:
         if parsed.get("RESULT") != "OK":
             raise ConnectionError(f"SAM handshake failed: {reply }")
 
+    @staticmethod
+    def _explain_stream_failure(target_host, parsed, reply) -> str:
+        """Say which step failed, because they need different fixes.
+
+        The old message ended with "Is the server b32 correct?" for every
+        result, which is actively misleading for the common one: by the time
+        STREAM CONNECT runs the address has already been resolved, so a
+        CANT_REACH_PEER means the address was fine and the destination is not
+        reachable.  Sending someone to re-check an address that is correct is
+        worse than saying nothing.
+        """
+        result = parsed.get("RESULT", "")
+        detail = f"SAM stream connect failed: {reply }"
+
+        if result == "CANT_REACH_PEER":
+            return (
+                f"{detail }\n"
+                f"The address resolved; the destination is not reachable "
+                f"right now.\n"
+                f"'LeaseSet not found' means the server has not published "
+                f"tunnels the router can find -- usually the server is down "
+                f"or its I2P tunnel is not running. It can also be a cold "
+                f"local router that has not integrated into the netDB yet, "
+                f"in which case waiting a few minutes and retrying is enough."
+                f"\nThe address is not the problem: {target_host }")
+        if result in ("I2P_ERROR", "TIMEOUT"):
+            return (f"{detail }\n"
+                    f"The router accepted the address but the connection did "
+                    f"not complete. Cold tunnels can take 30-120 s; retrying "
+                    f"is reasonable.")
+        if result == "INVALID_KEY":
+            return (f"{detail }\n"
+                    f"The router would not accept that destination. Check the "
+                    f"address, and any alias pointing at it.")
+        return detail
+
+    @staticmethod
+    def _retired_destinations(path: str = None) -> dict:
+        """{old b32: name it moved to}, from the shipped defaults.
+
+        Read so a user whose command still names the old address in full is
+        told where it went.  They are NOT redirected: an address given in full
+        is used as given, which is the rule that stops any file from
+        re-pointing something the user spelled out.
+        """
+        out = {}
+        try:
+            with open(path or i2p_hosts_defaults_path(), encoding="utf-8") as fh:
+                for raw in fh:
+                    line = raw.split("#", 1)[0].strip()
+                    parts = line.split()
+                    if len(parts) == 3 and parts[0] == "retired":
+                        out[parts[1].lower()] = parts[2].lower()
+        except OSError:
+            pass
+        return out
+
+    @staticmethod
+    def _apply_i2p_alias(target_host):
+        """Substitute a short name from the local alias file.
+
+        Returns (host_to_resolve, alias_source_or_None).
+        """
+        if not target_host or target_host.endswith(".b32.i2p"):
+            # A b32 address is self-describing: the router resolves it from the
+            # hash itself, with no address book involved.  Never let an alias
+            # shadow one -- that would let a local file redirect an address the
+            # user typed in full.
+            #
+            # If we know it moved, say so.  Saying is not redirecting.
+            moved_to = I2PSAMConnection._retired_destinations().get(
+                target_host.lower())
+            if moved_to:
+                print(f"[i2p] {target_host } is a retired address for "
+                      f"{moved_to }.")
+                print(f"[i2p] Still trying it as given. The current form is:  "
+                      f"--server {moved_to }")
+            return target_host, None
+        aliases = resolve_i2p_aliases()
+        dest = aliases.get(target_host.lower())
+        if not dest:
+            return target_host, None
+        print(f"[i2p] {target_host } -> {dest } (from {i2p_hosts_path ()})")
+        return dest, i2p_hosts_path()
+
+    @staticmethod
+    def _explain_resolve_failure(target_host, reply, alias_source):
+        """Say why a name did not resolve, and what to do about it.
+
+        The bare SAM reply ("Cannot resolve x: NAMING REPLY RESULT=KEY_NOT_FOUND")
+        is accurate and useless: it does not say that short .i2p names have to
+        come from somewhere, or that this client keeps a file for exactly that.
+        """
+        if alias_source:
+            return (f"Cannot resolve {target_host }, which came from "
+                    f"{alias_source }: {reply }\n"
+                    "The alias points at a destination the router does not "
+                    "recognise. Check the line in that file.")
+        if target_host.endswith(".b32.i2p"):
+            return (f"Cannot resolve {target_host }: {reply }\n"
+                    "That is a b32 address, so this is a router or tunnel "
+                    "problem rather than a naming one.")
+        return (
+            f"Cannot resolve {target_host }: {reply }\n"
+            f"Short .i2p names are not global the way DNS is -- the router "
+            f"only knows names in its address book, and a private server is "
+            f"not in anyone's.\n"
+            f"Either use the full <52 chars>.b32.i2p address, or add a line to "
+            f"{i2p_hosts_path ()}:\n"
+            f"    {target_host } = <52 chars>.b32.i2p")
+
     def connect(self, target_host: str, target_port: int = 0) -> "socket.socket":
         """Connect to an I2P destination via SAM. Returns a raw socket.
 
         Creates a transient destination (fresh identity, not saved).
         The port arg is ignored - I2P destinations don't use ports.
+
+        `target_host` may be a 52-character .b32.i2p address, a short name the
+        router's address book knows, or a short name in the local alias file
+        (see i2p_aliases()).  The alias file is consulted first.
         """
+
+        target_host, alias_source = self._apply_i2p_alias(target_host)
 
         resolve_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         resolve_sock.settimeout(90)
@@ -865,7 +1193,8 @@ class I2PSAMConnection:
             reply = self._send_cmd(resolve_sock, f"NAMING LOOKUP NAME={target_host }")
             parsed = self._parse_reply(reply, "NAMING REPLY ")
             if parsed.get("RESULT") != "OK":
-                raise ConnectionError(f"Cannot resolve {target_host }: {reply }")
+                raise ConnectionError(
+                    self._explain_resolve_failure(target_host, reply, alias_source))
             dest_b64 = parsed["VALUE"]
         finally:
             resolve_sock.close()
@@ -899,7 +1228,8 @@ class I2PSAMConnection:
         if parsed.get("RESULT") != "OK":
             stream_sock.close()
             self._control_sock.close()
-            raise ConnectionError(f"SAM stream connect failed: {reply }")
+            raise ConnectionError(
+                self._explain_stream_failure(target_host, parsed, reply))
 
         stream_sock.settimeout(1.0)
         return stream_sock
@@ -958,6 +1288,14 @@ class BinaryReader:
             return val
         except IndexError as e:
             raise ValueError(f"Failed to read uint8: {e }")
+        except ValueError:
+            # Truncation is EXPECTED on untrusted input. ensure() raises
+            # ValueError; the bare `except Exception` below would convert it
+            # to RuntimeError, which decode() does not catch and no caller
+            # expects. read_bytes() already re-raises; the integer readers
+            # must behave identically or a short header escapes as an
+            # "unexpected error" instead of a clean parse failure.
+            raise
         except Exception as e:
             raise RuntimeError(f"Unexpected error reading uint8: {e }")
 
@@ -969,6 +1307,8 @@ class BinaryReader:
             return val
         except struct.error as e:
             raise ValueError(f"Failed to unpack uint16: {e }")
+        except ValueError:
+            raise  # truncation: see read_uint8
         except Exception as e:
             raise RuntimeError(f"Unexpected error reading uint16: {e }")
 
@@ -980,6 +1320,8 @@ class BinaryReader:
             return val
         except struct.error as e:
             raise ValueError(f"Failed to unpack uint32: {e }")
+        except ValueError:
+            raise  # truncation: see read_uint8
         except Exception as e:
             raise RuntimeError(f"Unexpected error reading uint32: {e }")
 
@@ -991,6 +1333,8 @@ class BinaryReader:
             return val
         except struct.error as e:
             raise ValueError(f"Failed to unpack uint64: {e }")
+        except ValueError:
+            raise  # truncation: see read_uint8
         except Exception as e:
             raise RuntimeError(f"Unexpected error reading uint64: {e }")
 
@@ -1052,6 +1396,26 @@ def _generate_instance_tag() -> int:
             return tag
 
 
+SMP_VERSION_MISMATCH_HELP = (
+    "⚠ SMP stopped: version mismatch. The two devices are running different "
+    "OTRv4+ builds, so they derive different secrets from the same "
+    "passphrase.\n"
+    "   This is NOT a wrong passphrase. Update both devices to the same "
+    "version (git pull, then rebuild the Rust core) and run  /smp start  "
+    "again."
+)
+
+
+def _is_smp_version_mismatch(exc: BaseException) -> bool:
+    """Recognise the Rust core's SMP version-mismatch abort.
+
+    Matched on the error text because PyO3 raises it as a plain ValueError.
+    Kept deliberately narrow: this only changes which local help line is
+    printed, never whether anything is trusted or verified.
+    """
+    return "version mismatch" in str(exc).lower()
+
+
 class OTRv4TLV:
     """Single TLV (Type-Length-Value) record inside an OTRv4 encrypted message.
 
@@ -1075,6 +1439,25 @@ class OTRv4TLV:
     EXTRA_SYMMETRIC_KEY = 0x0009
 
     SMP_TYPES = frozenset({SMP_MSG_1, SMP_MSG_2, SMP_MSG_3, SMP_MSG_4, SMP_ABORT, SMP_MSG_1Q})
+
+    # Optional SMP_ABORT payload naming WHY the abort happened.
+    #
+    # The TLV payload was always empty and receivers ignored it, so adding a
+    # reason is additive: an older peer drops it exactly as before. It exists
+    # because "aborted" collapsed three different situations into one message
+    # -- the peer has no secret configured, the peer has the wrong secret, or
+    # something genuinely failed -- and only the first is fixed by the user
+    # typing a command.
+    #
+    # It is a DIAGNOSTIC, never a predicate. Nothing branches on it beyond the
+    # wording of a line printed locally: it is attacker-controlled text like
+    # any other field a peer sends.
+    SMP_ABORT_NO_SECRET = b"NOSECRET"
+
+    # The user was asked and said no.  Distinct from NOSECRET, which means
+    # nobody was asked because nothing was configured.  Same rules apply: a
+    # diagnostic that chooses local wording, never a security predicate.
+    SMP_ABORT_DECLINED = b"DECLINED"
 
     def __init__(self, tlv_type: int, value: bytes = b""):
         if not (0 <= tlv_type <= 0xFFFF):
@@ -1196,7 +1579,25 @@ class OTRv4Payload:
 class OTRv4DataMessage:
     """OTRv4 DATA message wire format (spec §4.4.3)."""
 
-    PROTOCOL_VERSION = 0x0004
+    # OTRv4+ data-message wire revision.
+    #
+    # 0x0004 -> 0x0005 (C1): the MKmac fix changed this message's wire
+    # behaviour in two incompatible ways.
+    #
+    #   1. The MAC value differs. MKmac is now KDF(0x14, MKenc, 64) per OTRv4
+    #      4.4.2, replacing sha3_512(session_id || ratchet_id || msg_num). Same
+    #      field, same offset, different value.
+    #   2. REVEALED_MAC_KEY_LEN widened 32 -> 64, changing the byte layout of
+    #      any message carrying revealed keys.
+    #
+    # Both ends must run the same revision. The version field is read and
+    # checked in decode() before any key material is touched, so a mismatch
+    # surfaces as ProtocolVersionError rather than as a MAC failure.
+    #
+    # Only THIS layer is incremented. The ClientProfile/DAKE format did not
+    # change, so OTRConstants.PROTOCOL_VERSION stays at 4 -- bumping it would
+    # falsely signal a handshake change and invalidate profiles needlessly.
+    PROTOCOL_VERSION = 0x0005
     TYPE = 0x03
     ECDH_LEN = 56
     NONCE_LEN = 12
@@ -1300,6 +1701,29 @@ class OTRv4DataMessage:
             raise ValueError(f"Failed to encode message: {e }")
 
     @classmethod
+    def looks_like_data_frame(cls, decoded: bytes) -> bool:
+        """True if `decoded` begins with this build's data-message header.
+
+        Five call sites used to sniff the first three bytes as the literals
+        0x00, 0x04, TYPE. When C1 moved PROTOCOL_VERSION from 0x0004 to
+        0x0005 the encoder started emitting 00 05 03 and every one of those
+        checks silently stopped matching -- so an encrypted data message fell
+        through to the message-type branch, matched nothing, and was dropped
+        with "unknown message type: 0" and no error to the user. SMP was the
+        first thing to hit it because SMP is the first data message a session
+        sends. Grepping for PROTOCOL_VERSION did not find them, because none
+        of them referenced it.
+
+        Deriving the bytes from the constant is what stops that recurring: a
+        future revision changes one number and every classifier follows.
+        """
+        if len(decoded) < 3:
+            return False
+        return (decoded[0] == (cls.PROTOCOL_VERSION >> 8)
+                and decoded[1] == (cls.PROTOCOL_VERSION & 0xFF)
+                and decoded[2] == cls.TYPE)
+
+    @classmethod
     def decode(cls, data: bytes) -> "OTRv4DataMessage":
         """Decode raw bytes into an OTRv4DataMessage.  Raises ValueError on errors."""
         try:
@@ -1308,7 +1732,16 @@ class OTRv4DataMessage:
 
             ver = r.read_uint16()
             if ver != cls.PROTOCOL_VERSION:
-                raise ValueError(f"Wrong OTRv4 version: 0x{ver :04x}")
+                # Checked before anything reads key material, so a mismatched
+                # peer never reaches MAC verification and is never reported as
+                # a forgery. Strict equality: no downgrade is accepted and the
+                # pre-0x0005 MAC construction is never evaluated.
+                raise ProtocolVersionError(
+                    f"OTRv4+ wire revision mismatch: peer sent 0x{ver :04x}, "
+                    f"this build speaks 0x{cls .PROTOCOL_VERSION :04x}. "
+                    f"This is a version mismatch, NOT a forgery or replay. "
+                    f"Both endpoints must run the same build."
+                )
             mtype = r.read_uint8()
             if mtype != cls.TYPE:
                 raise ValueError(
@@ -1354,11 +1787,191 @@ class OTRv4DataMessage:
                     r.read_bytes(cls.REVEALED_MAC_KEY_LEN))
 
             return msg
+        except ProtocolVersionError:
+            # C1: must NOT be re-wrapped. The whole point of the typed error is
+            # that a caller can tell a wire-revision mismatch from a
+            # cryptographic failure; flattening it back to a generic ValueError
+            # here would restore exactly the ambiguity it exists to remove.
+            raise
         except (ValueError, struct.error, TypeError) as e:
             raise ValueError(f"Failed to decode message: {e }")
 
 
-VERSION = "OTRv4+ 10.10.5"
+VERSION = "OTRv4+ 10.16.0"
+
+# --- OTRv4+ client identification over IRC -------------------------------
+#
+# CTCP VERSION is deliberately refused (see _CTCP_BLOCKED), so the realname
+# ("gecos") field sent in the USER registration line is this client's only
+# identification channel.  The server relays it verbatim in RPL_WHOREPLY
+# (352) and RPL_WHOISUSER (311), which is where /names picks it up.
+#
+# THIS IS SELF-ASSERTED AND IS NOT AUTHENTICATION.  Any IRC user can put the
+# tag plus a version in their own gecos; the server does not check it and
+# neither can we.  It answers "is this peer likely to understand /otr" and
+# nothing else.  It MUST NOT gate encryption, mark a peer trusted, satisfy
+# TOFU, stand in for SMP verification, or enable voice -- see INV-20 and
+# SECURITY.md.  The blue marker in /names is a hint about which peers are
+# worth starting a DAKE with, and the DAKE is what authenticates them.
+OTRV4_CLIENT_TAG = "OTRv4+"
+
+# Matches the tag followed by a dotted version, as real_name() emits it.  A
+# bare substring test would also fire on "I don't use OTRv4+" typed into a
+# gecos, which is a lower bar than the format this project actually
+# advertises.  Still trivially forgeable -- see above.
+_OTRV4_CLIENT_RE = re.compile(r"OTRv4\+[ \t]+(\d+(?:\.\d+)+)")
+
+
+def otrv4_client_version(realname: Optional[str]) -> Optional[str]:
+    """Return the OTRv4+ version a realname advertises, or None.
+
+    The value is remote-controlled text.  It is safe to display (callers
+    sanitise it) and unsafe to believe.
+    """
+    if not realname:
+        return None
+    m = _OTRV4_CLIENT_RE.search(realname)
+    return m.group(1) if m else None
+
+
+def advertises_otrv4(realname: Optional[str]) -> bool:
+    """Whether a realname claims to be an OTRv4+ client.  Not authentication."""
+    return otrv4_client_version(realname) is not None
+
+
+# IRC prefixes carried in RPL_NAMREPLY.  "multi-prefix" is negotiated (see
+# IRCV3_CAPS), so a nick can arrive as "@+nick" with several of them.
+NAMES_PREFIXES = "~&@%+"
+_NAMES_OP_PREFIXES = "~&@"
+_NAMES_VOICE_PREFIXES = "%+"
+
+
+def split_names_entry(entry: str) -> Tuple[str, str]:
+    """Split one RPL_NAMREPLY entry into (prefixes, nick).
+
+    Returns ("", "") for anything that is not a usable entry, so a malformed
+    or hostile NAMES line drops the entry rather than the whole render.
+    """
+    if not entry:
+        return "", ""
+    i = 0
+    while i < len(entry) and entry[i] in NAMES_PREFIXES:
+        i += 1
+    prefixes, nick = entry[:i], entry[i:]
+    if not nick or any(c in nick for c in " \r\n\x00"):
+        return "", ""
+    return prefixes, nick
+
+
+def format_names_list(entries, otrv4_map=None, total=None, width=56,
+                      selectable=False):
+    """Render a channel user list.  Pure: builds lines, prints nothing.
+
+    `entries` are raw RPL_NAMREPLY tokens ("@alice", "+bob", "carol").
+    `otrv4_map` maps nick -> truthy when that nick's realname advertised
+    OTRv4+ in RPL_WHOREPLY.  `total` is the server's count, which may exceed
+    the number of entries when the local list was capped.
+
+    OTRv4+ users are marked with a blue bullet and listed first within their
+    privilege group.  The marker is CLIENT IDENTIFICATION ONLY -- see
+    otrv4_client_version() for why it is not, and cannot be, authentication.
+
+    With `selectable`, the first nine OTRv4+ nicks are numbered and returned
+    alongside the lines as (lines, picks) so the pager can offer /otr on a
+    keypress.  Without it, a bare list of lines is returned.
+    """
+    otrv4_map = otrv4_map or {}
+    ops, voiced, regular = [], [], []
+    seen = set()
+    for entry in entries or []:
+        prefixes, nick = split_names_entry(entry)
+        if not nick or nick in seen:
+            continue
+        seen.add(nick)
+        shown = prefixes[:1]
+        if any(c in _NAMES_OP_PREFIXES for c in prefixes):
+            ops.append((shown, nick))
+        elif any(c in _NAMES_VOICE_PREFIXES for c in prefixes):
+            voiced.append((shown, nick))
+        else:
+            regular.append((shown, nick))
+
+    # OTRv4+ first, then alphabetical, so the actionable names are together
+    # at the top of each group rather than scattered through it.
+    def _order(group):
+        group.sort(key=lambda pn: (not bool(otrv4_map.get(pn[1])), pn[1].lower()))
+
+    for group in (ops, voiced, regular):
+        _order(group)
+
+    listed = ops + voiced + regular
+    otr_count = sum(1 for _, nick in listed if otrv4_map.get(nick))
+    shown_count = len(listed)
+    if total is None:
+        total = shown_count
+    other = max(0, total - otr_count)
+
+    picks = [nick for _, nick in listed if otrv4_map.get(nick)][:9] if selectable else []
+    pick_index = {nick: i + 1 for i, nick in enumerate(picks)}
+
+    lines = []
+    summary = (
+        colorize(f"\U0001F535 {otr_count } OTRv4+", "blue")
+        + colorize("   \u2022   ", "dim")
+        + colorize(f"{other } other client(s)", "white")
+    )
+    lines.append(summary)
+    if otr_count:
+        lines.append(
+            colorize("  blue = advertises OTRv4+ in its realname; "
+                     "identification only, not verified", "dim")
+        )
+        if picks:
+            lines.append(
+                colorize("  press 1-%d to /otr that user, or /otr <nick>"
+                         % len(picks), "dim")
+            )
+        else:
+            lines.append(colorize("  /otr <nick> starts an encrypted session", "dim"))
+    if total > shown_count:
+        lines.append(
+            colorize(
+                f"  \u26a0 {total } users in channel \u2014 showing the first {shown_count }",
+                "yellow",
+            )
+        )
+    lines.append("")
+
+    col_width = 20
+    cols = max(1, width // col_width)
+
+    def _group(label, members, color):
+        if not members:
+            return
+        lines.append(colorize(f"  {label } ({len (members )}):", color))
+        row = []
+        for prefix, nick in members:
+            disp = _sanitise(f"{prefix }{nick }", col_width - 3)
+            if otrv4_map.get(nick):
+                n = pick_index.get(nick)
+                tag = f"\U0001F535{n }" if n else "\U0001F535 "
+                cell = colorize(f"{tag }{disp :<{col_width -3 }}", "blue")
+            else:
+                cell = colorize(f"   {disp :<{col_width -3 }}", color)
+            row.append(cell)
+            if len(row) >= cols:
+                lines.append("".join(row))
+                row = []
+        if row:
+            lines.append("".join(row))
+
+    _group("Operators", ops, "bold_green")
+    _group("Voiced", voiced, "yellow")
+    _group("Users", regular, "white")
+
+    if not listed:
+        lines.append(colorize("  (no users reported)", "dim"))
+    return (lines, picks) if selectable else lines
 
 if not hasattr(hashlib, "sha3_512"):
     raise RuntimeError(
@@ -1459,6 +2072,30 @@ _print_lock = threading.Lock()
 _current_prompt: str = ""
 
 _input_buffer: List[str] = []
+
+#: Render the input line as dots instead of characters.
+#:
+#: The SMP passphrase is a shared secret and was being echoed like any
+#: command: onto the terminal, into scrollback, and into any `script` capture
+#: of the session. It reached a bug report that way. Set while a passphrase is
+#: being typed; every redraw path below asks _display_buffer() rather than
+#: joining the buffer itself, so a new redraw site cannot quietly leak it.
+_mask_input: bool = False
+
+
+def set_input_mask(on: bool) -> None:
+    """Hide or show what is typed on the input line."""
+    global _mask_input
+    _mask_input = bool(on)
+
+
+def _display_buffer() -> str:
+    """What the input line should SHOW. Never what it should submit."""
+    if _mask_input:
+        return "\u2022" * len(_input_buffer)
+    return "".join(_input_buffer)
+
+
 _input_pos: int = 0
 
 _raw_mode_active = False
@@ -1644,7 +2281,7 @@ def _handle_input_char(ch: str):
             while _input_buffer and _input_buffer[-1] != " ":
                 _input_buffer.pop()
             _input_pos = len(_input_buffer)
-            sys.stdout.write("\r\033[2K" + _current_prompt + "".join(_input_buffer))
+            sys.stdout.write("\r\033[2K" + _current_prompt + _display_buffer())
             sys.stdout.flush()
         return None
 
@@ -1688,11 +2325,13 @@ def _handle_input_char(ch: str):
         with _print_lock:
             _input_buffer.insert(_input_pos, ch)
             _input_pos += 1
+            _shown = "\u2022" if _mask_input else ch
             if _input_pos == len(_input_buffer):
-                sys.stdout.write(ch)
+                sys.stdout.write(_shown)
             else:
-                after = "".join(_input_buffer[_input_pos:])
-                sys.stdout.write(f"{ch }{after }\x1b[{len (after )}D")
+                _after_raw = "".join(_input_buffer[_input_pos:])
+                after = ("\u2022" * len(_after_raw)) if _mask_input else _after_raw
+                sys.stdout.write(f"{_shown }{after }\x1b[{len (after )}D")
             sys.stdout.flush()
         try:
             _c = getattr(__import__("builtins"), "_active_client", None)
@@ -1712,7 +2351,7 @@ def _set_prompt(prompt: str) -> None:
     """Write a prompt string, preserving the user's typed text."""
     global _current_prompt
     with _print_lock:
-        buf = "".join(_input_buffer)
+        buf = _display_buffer()
         if _current_prompt or buf:
             sys.stdout.write("\x1b[1G\x1b[2K")
         _current_prompt = prompt
@@ -1726,6 +2365,31 @@ _ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 def _visible_len(text: str) -> int:
     """Return the visible character count, ignoring ANSI colour codes."""
     return len(_ANSI_RE.sub("", text))
+
+
+def _truncate_visible(text: str, width: int) -> str:
+    """Truncate to *width* visible columns, keeping ANSI codes intact.
+
+    Truncating by len() would count the escape bytes as visible characters,
+    so a coloured line gets cut far too early -- and, worse, loses its reset
+    sequence, bleeding the colour into everything printed afterwards.  The
+    reset is re-appended here for that reason.
+    """
+    if width <= 0 or _visible_len(text) <= width:
+        return text
+    out = []
+    seen = 0
+    i = 0
+    while i < len(text) and seen < width:
+        m = _ANSI_RE.match(text, i)
+        if m:
+            out.append(m.group(0))
+            i = m.end()
+            continue
+        out.append(text[i])
+        seen += 1
+        i += 1
+    return "".join(out) + UIConstants.COLORS["reset"]
 
 
 def _word_wrap(text: str, width: int) -> str:
@@ -1825,7 +2489,7 @@ def _emit_line(text: str) -> None:
         _scroll_buffer.append(wrapped)
 
         with _print_lock:
-            buf = "".join(_input_buffer)
+            buf = _display_buffer()
             sys.stdout.write("\r\033[2K")
             sys.stdout.write(
                 f"\033[33m[PAUSED - {len (_scroll_buffer )} buffered]\033[0m "
@@ -1837,7 +2501,7 @@ def _emit_line(text: str) -> None:
 
     try:
         with _print_lock:
-            buf = "".join(_input_buffer)
+            buf = _display_buffer()
             sys.stdout.write("\r\x1b[2K")
             sys.stdout.write(wrapped + "\n")
             _scroll_history.append(wrapped)
@@ -1867,7 +2531,7 @@ def _show_scrollback(pos: int, page: int) -> None:
                 colorize(f"── SCROLL [{_pct }%] PgUp=back PgDn=fwd Ctrl+P/S=live ──", "yellow")
                 + "\n"
             )
-            sys.stdout.write(_current_prompt + "".join(_input_buffer))
+            sys.stdout.write(_current_prompt + _display_buffer())
             sys.stdout.flush()
         except Exception:
             pass
@@ -1881,7 +2545,7 @@ def _scroll_unlock() -> None:
         sys.stdout.write("\r\033[2K")
         while _scroll_buffer:
             sys.stdout.write(_scroll_buffer.popleft() + "\n")
-        buf = "".join(_input_buffer)
+        buf = _display_buffer()
         if _current_prompt or buf:
             sys.stdout.write(_current_prompt + buf)
         sys.stdout.flush()
@@ -1895,7 +2559,7 @@ def _flush_display_queue() -> None:
     if not _display_queue:
         return
     with _print_lock:
-        buf = "".join(_input_buffer)
+        buf = _display_buffer()
         sys.stdout.write("\r\033[2K")
         while _display_queue:
             sys.stdout.write(_display_queue.popleft() + "\n")
@@ -1909,7 +2573,7 @@ def safe_print(*args, **kwargs):
     kwargs["flush"] = True
     try:
         with _print_lock:
-            buf = "".join(_input_buffer)
+            buf = _display_buffer()
             if (_current_prompt or buf) and _raw_mode_active:
                 sys.stdout.write("\x1b[1G\x1b[2K")
             print(*args, **kwargs)
@@ -1936,7 +2600,9 @@ class OTRConfig:
     port: int = 0
     use_tls: bool = False
     sasl_user: Optional[str] = None
-    sasl_pass: Optional[str] = None
+    # repr=False: a dataclass repr prints every field, and this one
+    # ends up in debug output and exception text.
+    sasl_pass: Optional[str] = field(default=None, repr=False)
     channel: str = "#otr"
     log_level: str = "INFO"
     dake_timeout: float = 120.0
@@ -1946,7 +2612,33 @@ class OTRConfig:
     nickserv_login: bool = False
     nickserv_register: bool = False
     nickserv_nick: Optional[str] = None
-    nickserv_pass: Optional[str] = None
+    nickserv_pass: Optional[str] = field(default=None, repr=False)
+
+    # -- Identity and trust persistence -----------------------------------
+    #
+    # Both default OFF, and that default is the IRC behaviour: a fresh Ed448
+    # identity every process and no trust record that outlives it.  That is
+    # deliberate (ROADMAP Phase 5.3g) and not a limitation to be fixed -- an
+    # IRC nick is ephemeral, so pinning a fingerprint to one means pinning it
+    # to nothing.
+    #
+    # XMPP turns both on.  A JID is a durable name, so an identity that changes
+    # under it is a fact worth noticing, and TOFU is only meaningful once the
+    # local identity stops changing too.
+    #
+    # These are separate switches because they fail independently: identity
+    # persistence can be unavailable (no writable state directory) while trust
+    # pinning is still wanted for the session, and a caller that wants neither
+    # should not have to opt out of both by accident.
+    persist_identity: bool = False
+    persist_trust: bool = False
+
+    #: Sealed long-term identity record.  Only read when persist_identity.
+    identity_path: Optional[str] = None
+    #: Device-local key protecting `identity_path`.  Only read when
+    #: persist_identity.  See TermuxFileDekProvider for what this does and,
+    #: more importantly, what it does not do.
+    identity_dek_path: Optional[str] = None
 
 
 @dataclass
@@ -1985,6 +2677,22 @@ class EncryptionError(Exception):
     def __init__(self, message: str, session: Optional["EnhancedOTRSession"] = None):
         super().__init__(message)
         self.session = session
+
+
+class ProtocolVersionError(ValueError):
+    """The peer speaks a different OTRv4+ wire revision.
+
+    C1. Subclasses ValueError deliberately: every existing `except ValueError`
+    handler around decode() keeps working, while callers that need to tell a
+    version mismatch from a cryptographic failure can catch this specifically.
+
+    This exists because the two failure modes were previously indistinguishable.
+    A peer on an older build would pass the version check (the constant had not
+    been incremented for a breaking change), then fail MAC verification, and the
+    user would be shown "message may be forged or replayed" for what was really
+    a version mismatch -- an alarming and wrong diagnosis on a security-relevant
+    path.
+    """
 
 
 class TypeValidationError(Exception):
@@ -3270,6 +3978,20 @@ class RustBackedDoubleRatchet:
             except Exception as e:
                 raise EncryptionError(f"Decryption failed: {e }")
 
+    def knows_revealed_mac_key(self, key: bytes) -> bool:
+        """C2: did this endpoint independently derive the MAC key `key`?
+
+        Delegates to the engine, which fingerprints every MKmac it derives --
+        send side, receive side, and the skipped-message path. True means the
+        peer revealed a key that really did authenticate a message on a chain
+        both sides share. False means only that this endpoint cannot account
+        for it; see _record_revealed_mac_keys for why that is not proof of
+        misbehaviour.
+
+        Only public values cross the boundary: a revealed key in, one bit out.
+        """
+        return bool(self._rust.knows_revealed_mac_key(bytes(key)))
+
     def _decrypt_new_dh(self, header_bytes, ciphertext, nonce, tag):
         """Handle decrypt with DH ratchet step.
 
@@ -4126,15 +4848,64 @@ class RustDAKEAdapter:
         return keys.copy()
 
 
+_KDF_LAST_BACKEND = "unused"
+_KDF_DOWNGRADE_WARNED = False
+
+
+def kdf_backend() -> str:
+    """Which at-rest KDF the most recent :func:`_derive_key` call really used.
+
+    ``"argon2id"`` or ``"scrypt"``.  This exists so the downgrade is
+    inspectable rather than something you have to infer from an import-time
+    warning that scrolled past twenty minutes ago.
+    """
+    return _KDF_LAST_BACKEND
+
+
+def _warn_kdf_downgrade(reason: str) -> None:
+    """Say out loud, once, that at-rest storage is no longer memory-hard."""
+    global _KDF_DOWNGRADE_WARNED
+    if _KDF_DOWNGRADE_WARNED:
+        return
+    _KDF_DOWNGRADE_WARNED = True
+    print(
+        "WARNING: at-rest key derivation fell back to scrypt (%s).\n"
+        "         scrypt n=16384 r=8 p=1 costs an attacker ~16 MiB per guess;\n"
+        "         Argon2id t=3 m=64MiB p=4 costs ~64 MiB and resists GPUs "
+        "better.\n"
+        "         Install it with:  pip install argon2-cffi" % reason,
+        file=sys.stderr,
+    )
+
+
 def _derive_key(password: bytes, salt: bytes, dklen: int = 32) -> bytes:
     """Derive an encryption key from password material.
 
     Uses Argon2id when available (memory-hard, GPU/ASIC resistant).
-    Falls back to scrypt if argon2-cffi is not installed.
+    Falls back to scrypt if argon2-cffi is not installed, or if Argon2 itself
+    fails -- on a memory-pressured handset a 64 MiB allocation genuinely can
+    fail.  That fallback is deliberate (losing access to your own SMP secrets
+    is worse than a weaker KDF here), but it is no longer silent: it warns,
+    with the reason, and :func:`kdf_backend` reports what was actually used.
+
+    This is the AT-REST KDF only, and must not be confused with the protocol
+    KDF that stretches the SMP passphrase on the wire in ``Rust/src/smp.rs``.
+    Under wire versions 0x01 and 0x02 that stretch is 50,000 iterated rounds
+    of SHAKE-256, which is CPU-hard but NOT memory-hard, and this docstring
+    used to add that "Argon2 is not involved there and putting it there would
+    be a wire break".  Half of that is now out of date: the wire break was
+    taken deliberately at v10.13.0, and wire version 0x03 -- the default for
+    new sessions -- stretches with Argon2id over a salt binding the session id
+    and both fingerprints.  0x02 still exists for older peers, so both
+    derivations are live.  See SPEC 6.4.
+
+    The two Argon2id cost profiles are deliberately identical (m=64 MiB, t=3,
+    p=4); ``tests/test_kdf_claims_are_true.py`` fails if they diverge.
 
     Argon2id parameters: time_cost=3, memory_cost=65536 (64MB), parallelism=4
     scrypt parameters: n=16384, r=8, p=1 (Termux memory safe)
     """
+    global _KDF_LAST_BACKEND
     if ARGON2_AVAILABLE:
         try:
             from argon2.low_level import hash_secret_raw, Type as _ArgonType
@@ -4148,10 +4919,14 @@ def _derive_key(password: bytes, salt: bytes, dklen: int = 32) -> bytes:
                 hash_len=dklen,
                 type=_ArgonType.ID,
             )
+            _KDF_LAST_BACKEND = "argon2id"
             return key
-        except Exception:
-            pass
+        except Exception as exc:
+            _warn_kdf_downgrade("argon2 raised %s" % type(exc).__name__)
+    else:
+        _warn_kdf_downgrade("argon2-cffi is not installed")
 
+    _KDF_LAST_BACKEND = "scrypt"
     return hashlib.scrypt(password, salt=salt, n=16384, r=8, p=1, dklen=dklen)
 
 
@@ -4559,15 +5334,35 @@ class TrustDatabase:
                 "This may indicate a MITM attack. Session aborted."
             )
 
-    def __init__(self, db_path: Optional[str] = None):
+    def __init__(self, db_path: Optional[str] = None, persistent: bool = True):
+        """`persistent` false keeps the whole database in memory for this process.
+
+        That is the IRC mode, and it is not a degraded version of the XMPP one.
+        An IRC identity is regenerated every run by design, so a fingerprint
+        written to disk can never match anything on a later run -- it can only
+        accumulate, and worse, `add_trust` raises FingerprintMismatchError when
+        it does not match, which turned every reconnect with a previously
+        trusted nick into a "This may indicate a MITM attack" line.  Training a
+        user to dismiss that message costs more than the record was ever worth.
+
+        In-memory still means a `y` answer sticks for the rest of the session,
+        so a reconnect inside one run does not re-prompt.  Nothing survives
+        exit, which is the honest representation of what an ephemeral identity
+        can promise.
+        """
         self._lock = threading.RLock()
+        self.persistent = bool(persistent)
         self.db_path = db_path or os.path.expanduser("~/.otrv4plus/trust.json")
         self._db: Dict[str, dict] = {}
-        self._load()
+        if self.persistent:
+            self._load()
 
     def _load(self):
         """Load database from disk with error handling"""
         with self._lock:
+            if not self.persistent:
+                self._db = {}
+                return
             if not os.path.exists(self.db_path):
                 self._db = {}
                 return
@@ -4594,6 +5389,11 @@ class TrustDatabase:
 
     def _save(self):
         """Save database to disk atomically with error handling"""
+        if not self.persistent:
+            # In-memory mode: the trust map lives and dies with the
+            # process. Writing here would recreate exactly the file
+            # this mode exists to not create.
+            return
         with self._lock:
             try:
                 _db_dir = os.path.dirname(self.db_path) or "."
@@ -4916,11 +5716,19 @@ class Pager:
         self.lines_per_page = lines_per_page if not IS_TERMUX else 15
         self.active = False
 
-    def display(self, lines: List[str], header: str = "", footer: str = ""):
-        """Display lines with inline pager controls."""
+    def display(self, lines: List[str], header: str = "", footer: str = "",
+                choices: Optional[List[str]] = None):
+        """Display lines with inline pager controls.
+
+        `choices` makes the page selectable: pressing 1-9 picks the matching
+        entry, closes the pager and returns it.  Returns None otherwise, so
+        callers that ignore the result behave exactly as before.
+        """
         if not lines:
             safe_print(colorize("  (empty)", "dim"))
-            return
+            return None
+        choices = choices or []
+        chosen = None
 
         self.active = True
         total_pages = (len(lines) + self.lines_per_page - 1) // self.lines_per_page
@@ -4938,19 +5746,26 @@ class Pager:
                 )
 
                 for line in lines[start:end]:
-                    if len(line) > TERMINAL_WIDTH:
-                        line = line[: TERMINAL_WIDTH - 3] + "..."
-                    safe_print("[IRC line suppressed]")
+                    # This printed the literal string "[IRC line suppressed]"
+                    # from v10.11.0 until v10.14.0, discarding the line it had
+                    # just measured and truncated.  Every pager consumer was
+                    # affected -- /names, /list and /help alike -- which is why
+                    # the channel user list looked like a suppression policy
+                    # rather than a bug.
+                    safe_print(_truncate_visible(line, TERMINAL_WIDTH))
 
                 if footer:
                     safe_print(colorize(footer, "dim"))
                 safe_print(colorize("─" * 42, "cyan"))
 
-                if total_pages <= 1:
+                if total_pages <= 1 and not choices:
                     self.active = False
                     break
 
-                safe_print(colorize("  [n]ext  [p]rev  [q]uit", "dim"), end="  ", flush=True)
+                _keys = "  [n]ext  [p]rev  [q]uit" if total_pages > 1 else "  [q]uit"
+                if choices:
+                    _keys += "   [1-%d] /otr" % len(choices)
+                safe_print(colorize(_keys, "dim"), end="  ", flush=True)
                 try:
                     if _raw_mode_active:
 
@@ -4963,7 +5778,10 @@ class Pager:
                 except (EOFError, KeyboardInterrupt):
                     ch = "q"
 
-                if ch in ("n", "\r", "\n", " "):
+                if choices and ch.isdigit() and ch != "0" and int(ch) <= len(choices):
+                    chosen = choices[int(ch) - 1]
+                    self.active = False
+                elif ch in ("n", "\r", "\n", " "):
                     page = min(page + 1, total_pages - 1)
                     if page >= total_pages - 1 and ch == "n":
                         self.active = False
@@ -4994,6 +5812,7 @@ class Pager:
                     _cr._prompt_refresh_cb()
             except Exception:
                 pass
+        return chosen
 
 
 class Screen:
@@ -5049,7 +5868,7 @@ class Screen:
         return out
 
     def _input_line(self) -> str:
-        buf = "".join(_input_buffer)
+        buf = _display_buffer()
         return (_current_prompt or "") + buf
 
     def _chrome(self, tabs):
@@ -5100,7 +5919,7 @@ class Screen:
                 out.append(f"\033[{1 +i };1H\033[K")
                 out.append(ln)
             _input_r = self.rows
-            _buf = "".join(_input_buffer)
+            _buf = _display_buffer()
             out.append(f"\033[{_input_r };1H\033[2K")
             out.append((_current_prompt or "") + _buf)
             out.append("\0338")
@@ -5544,6 +6363,15 @@ class EnhancedOTRSession:
         self.smp_start_time: float = 0.0
 
         self._smp_notify_cb = None
+        # Whether the front end can run the guided verification flow -- ask
+        # for consent, then for a passphrase, then answer a parked SMP1.
+        # False means the old behaviour: an SMP1 with no secret is aborted
+        # with a reason, because a front end that cannot ask must not leave
+        # the peer waiting for an answer that will never come.
+        self.smp_guided_prompt = False
+        # Set when a peer's SMP1 is parked awaiting a local passphrase.  A
+        # display/routing hint only: smp_secret_required() reads the engine.
+        self._smp_secret_required = False
 
         self._ping_refresh_cb = None
 
@@ -5953,10 +6781,7 @@ class EnhancedOTRSession:
             decoded = _safe_b64decode(raw)
 
             if (
-                len(decoded) >= 3
-                and decoded[0] == 0x00
-                and decoded[1] == 0x04
-                and decoded[2] == OTRv4DataMessage.TYPE
+                OTRv4DataMessage.looks_like_data_frame(decoded)
             ):
                 text_bytes = self._enh_dec_v6(decoded)
             else:
@@ -5977,17 +6802,54 @@ class EnhancedOTRSession:
 
     MAX_PEER_REVEALED_MAC_KEYS = 200
 
-    def _record_revealed_mac_keys(self, keys):
-        """Record MAC keys the peer published for already-authenticated messages.
+    def _record_revealed_mac_keys(self, keys, this_message_mac_key=None):
+        """Cross-check and record the MAC keys the peer published (audit C2).
 
-        OTRv4 reveals old MKmac values so that anyone can forge a message that
-        looks like it came from the sender — that is the deniability property.
-        Once revealed, a key authenticates nothing, so this store is not
-        secret; it is kept only so the property is observable and so a
-        malformed reveal list is rejected rather than ignored.
+        OTRv4 §4.4.2 has each side publish the MKmac of messages it has
+        finished with, so that anyone -- not just the two participants -- can
+        forge a message bearing that MAC. That is the deniability mechanism.
+
+        The keys are public by construction, so this store holds nothing
+        secret. What it does is make the mechanism checkable:
+
+        VERIFIED
+            The engine independently derived the same MKmac, so the key really
+            did authenticate a message on a chain both sides share. This is
+            the property revelation is supposed to have, and it is now
+            observed per key rather than assumed.
+
+        UNACCOUNTED
+            This endpoint cannot derive the key. That is NOT evidence of
+            misbehaviour and is deliberately not fatal. A key legitimately
+            lands here when the peer sent a message that never arrived and
+            then rotated its DH key before we could derive the tail of the old
+            chain, or when the fingerprint window (4096 entries) has rolled
+            over. Tearing the session down on an unaccounted key would hand
+            any attacker who can drop one packet a reliable way to kill every
+            session -- a worse outcome than the one it would be defending
+            against, because a peer that wants to defeat the check can simply
+            reveal nothing at all. The count is kept so the condition is
+            visible instead of silent.
+
+        Fatal (fail closed):
+            wrong length, all-zero, or the key that authenticated the very
+            message carrying it. The last is the one revelation must never do:
+            publishing the current message's MKmac would make that message
+            forgeable at the instant it is accepted. The engine does not do it
+            -- encrypt() takes the pending queue before installing the current
+            key -- so this is a standing guard on that ordering.
         """
+        # Each attribute guarded separately: a session object that predates one
+        # of them must not leave the others uninitialised.
         if not hasattr(self, "peer_revealed_mac_keys"):
             self.peer_revealed_mac_keys = []
+        if not hasattr(self, "revealed_mac_keys_verified"):
+            self.revealed_mac_keys_verified = 0
+        if not hasattr(self, "revealed_mac_keys_unaccounted"):
+            self.revealed_mac_keys_unaccounted = 0
+        if not hasattr(self, "revealed_mac_check_available"):
+            self.revealed_mac_check_available = True
+
         for k in keys:
             if len(k) != OTRv4DataMessage.REVEALED_MAC_KEY_LEN:
                 raise ValueError(
@@ -5998,7 +6860,29 @@ class EnhancedOTRSession:
                     "Peer revealed an all-zero MAC key - revelation is "
                     "supposed to publish the key that authenticated a real "
                     "message")
+            if this_message_mac_key is not None and hmac.compare_digest(
+                    bytes(k), bytes(this_message_mac_key)):
+                raise ValueError(
+                    "Peer revealed the MAC key of the message carrying the "
+                    "revelation - a key is only ever revealed once the "
+                    "message it authenticated is finished with")
+
+            if self.revealed_mac_check_available:
+                try:
+                    known = self.ratchet.knows_revealed_mac_key(bytes(k))
+                except AttributeError:
+                    # Engine predates the cross-check (stale extension build).
+                    # Recorded once, not per message, and never silently: the
+                    # keys are still stored, they just carry no verification.
+                    self.revealed_mac_check_available = False
+                    known = False
+                if known:
+                    self.revealed_mac_keys_verified += 1
+                else:
+                    self.revealed_mac_keys_unaccounted += 1
+
             self.peer_revealed_mac_keys.append(bytes(k))
+
         excess = len(self.peer_revealed_mac_keys) - self.MAX_PEER_REVEALED_MAC_KEYS
         if excess > 0:
             del self.peer_revealed_mac_keys[:excess]
@@ -6037,7 +6921,8 @@ class EnhancedOTRSession:
         # are public by design; record them so the deniability property is
         # observable rather than nominal, and bound the store.
         if dmsg.revealed_mac_keys:
-            self._record_revealed_mac_keys(dmsg.revealed_mac_keys)
+            self._record_revealed_mac_keys(dmsg.revealed_mac_keys,
+                                           this_message_mac_key=mac_key)
 
         if dmsg.kem_ct is not None:
             self.ratchet.process_incoming_kem_ct(dmsg.kem_ct)
@@ -6179,8 +7064,27 @@ class EnhancedOTRSession:
                         self.rust_smp.abort()
                     except Exception:
                         pass
+
+                    # Keep the vault across the rebuild.
+                    #
+                    # initialize_smp() constructs a NEW RustSMPVault whenever
+                    # rust_smp is None, so clearing rust_smp threw away the
+                    # "smp_secret" entry this path is about to read back --
+                    # and the rebind below therefore failed every single time.
+                    # It surfaced on two real phones as
+                    #
+                    #     SMP race-recovery: vault rebind failed
+                    #
+                    # whenever both sides ran /smp at once, which over I2P is
+                    # not rare: it is what happens when two people are told to
+                    # verify and both do.  The vault is a separate Rust object
+                    # holding a secret this session already owns; there is no
+                    # reason for a new engine to mean a new vault.
+                    preserved_vault = self.smp_vault
                     self.rust_smp = None
                     self.initialize_smp()
+                    if preserved_vault is not None:
+                        self.smp_vault = preserved_vault
                     if self.rust_smp is None or self.smp_vault is None:
                         raise RuntimeError("SMP race-recovery: re-init failed")
                     sid_recover = self.session_id or b""
@@ -6188,18 +7092,77 @@ class EnhancedOTRSession:
                         self.smp_vault, "smp_secret", sid_recover, local_fp, remote_fp
                     )
                     if not ok:
-                        raise RuntimeError("SMP race-recovery: vault rebind failed")
+                        # No secret to rebind: this side has not been given a
+                        # passphrase at all, so yielding the initiator role
+                        # leaves nothing to answer with.  Fall through to the
+                        # no-secret handling below rather than raising, which
+                        # would report a setup problem as an internal error.
+                        self.tracer.trace(
+                            self.peer, "SMP", "SMP1_RECEIVED", "RACE_NO_SECRET",
+                            "yielded initiator role but no stored passphrase "
+                            "to rebind",
+                        )
 
                 if not self.rust_smp.check_secret_set():
+                    # HOLD the SMP1 rather than abort.
+                    #
+                    # Aborting made a setup problem look like a protocol
+                    # failure: the peer was told "SMP aborted" when the truth
+                    # was that this side had never been given the passphrase.
+                    # The engine parks the message in SECRET_REQUIRED instead,
+                    # so once the user supplies the passphrase the SMP1 that
+                    # already arrived can be answered -- no restart, no second
+                    # round trip over I2P.
+                    #
+                    # What this does NOT do, and must never do, is arm input
+                    # capture.  Holding a message is a state in the SMP engine;
+                    # it does not decide what the user's next keystroke means.
+                    # The front end asks for consent first and only a local
+                    # answer opens the passphrase prompt -- see
+                    # otrv4plus_smpflow.py and SECURITY_INVARIANTS.md INV-06.
+                    held = False
+                    try:
+                        if self.smp_guided_prompt:
+                            self.rust_smp.hold_smp1(bytes(tlv.value))
+                            held = True
+                    except Exception as _he:
+                        # An older core without hold_smp1, or a message it
+                        # would not park.  Fall back to the previous
+                        # behaviour rather than losing the run silently.
+                        self.logger.debug("hold_smp1 unavailable or refused")
+
                     self.tracer.trace(
                         self.peer,
                         "SMP",
                         "SMP1_RECEIVED",
-                        "NO_SECRET",
-                        "SMP1 received but no secret set - aborting",
+                        "SECRET_REQUIRED" if held else "NO_SECRET",
+                        "SMP1 held pending local passphrase" if held
+                        else "SMP1 received but no secret set - aborting",
+                    )
+
+                    if held:
+                        # No response goes out yet.  The peer waits while the
+                        # user is asked; if they decline or the request times
+                        # out, decline_held_smp1() sends the abort.
+                        self._smp_secret_required = True
+                        self._smp_progress_notify(
+                            0, 4,
+                            "Your peer asked to verify this session. A shared "
+                            "passphrase is needed to answer.",
+                            role=None, color="yellow",
+                        )
+                        return
+
+                    self._smp_progress_notify(
+                        0, 4,
+                        "SMP requested by peer, but no passphrase is stored "
+                        "for them. Run  /smp  to enter the passphrase you "
+                        "both agreed.",
+                        role=None, color="yellow",
                     )
                     self._queued_smp_response = self.encrypt_with_tlvs(
-                        "", [OTRv4TLV(OTRv4TLV.SMP_ABORT, b"")]
+                        "", [OTRv4TLV(OTRv4TLV.SMP_ABORT,
+                                      OTRv4TLV.SMP_ABORT_NO_SECRET)]
                     )
                     return
                 self._smp_progress_notify(
@@ -6313,12 +7276,41 @@ class EnhancedOTRSession:
                 self.auto_smp_started = False
                 self.auto_smp_completed = False
                 self.smp_step = 0
+                # The reason, if the peer sent one, only chooses the wording of
+                # a local line. It is peer-controlled text and is never trusted
+                # as a security predicate: either way the SMP session is over
+                # and nothing is verified.
+                reason_bytes = bytes(getattr(tlv, "value", b"") or b"")
+                no_secret = reason_bytes == OTRv4TLV.SMP_ABORT_NO_SECRET
+                declined = reason_bytes == OTRv4TLV.SMP_ABORT_DECLINED
                 self.tracer.trace(
-                    self.peer, "SMP", "ABORTED", "PEER_ABORT", "Remote peer aborted SMP"
+                    self.peer, "SMP", "ABORTED",
+                    "PEER_DECLINED" if declined
+                    else "PEER_NO_SECRET" if no_secret else "PEER_ABORT",
+                    "Remote peer declined the verification request" if declined
+                    else "Remote peer has no SMP secret configured" if no_secret
+                    else "Remote peer aborted SMP",
                 )
-                self._smp_progress_notify(
-                    0, 4, "⚠ SMP aborted by remote peer", role=None, color="red"
-                )
+                if declined:
+                    self._smp_progress_notify(
+                        0, 4,
+                        "SMP stopped: your peer declined the verification "
+                        "request. Nothing is verified, and this is not a "
+                        "wrong-passphrase failure.",
+                        role=None, color="yellow",
+                    )
+                elif no_secret:
+                    self._smp_progress_notify(
+                        0, 4,
+                        "SMP stopped: your peer has not stored the passphrase "
+                        "yet. Ask them to run  /smp-secret <secret>  and try "
+                        "again. This is not a wrong-passphrase failure.",
+                        role=None, color="yellow",
+                    )
+                else:
+                    self._smp_progress_notify(
+                        0, 4, "⚠ SMP aborted by remote peer", role=None, color="red"
+                    )
                 return
 
         except Exception as e:
@@ -6328,9 +7320,19 @@ class EnhancedOTRSession:
             self.auto_smp_started = False
             self.auto_smp_completed = False
             self.smp_step = 0
-            self._smp_progress_notify(
-                0, 4, f"❌ SMP error: {str (e )[:60 ]}", role=None, color="red"
-            )
+            # A version mismatch is the one SMP failure that is NOT about the
+            # passphrase, and it is the whole reason SMP carries a version
+            # byte.  The generic handler truncates to 60 characters, which
+            # would cut the message off before it says what to do about it.
+            if _is_smp_version_mismatch(e):
+                self._smp_progress_notify(
+                    0, 4, SMP_VERSION_MISMATCH_HELP,
+                    role=None, color="yellow", final=True,
+                )
+            else:
+                self._smp_progress_notify(
+                    0, 4, f"❌ SMP error: {str (e )[:60 ]}", role=None, color="red"
+                )
             return
 
         if resp_bytes is not None and out_type is not None:
@@ -6587,6 +7589,70 @@ class EnhancedOTRSession:
         finally:
             self._release_lock()
 
+    # ─── held SMP1: the responder-with-no-passphrase path ────────────────────
+    #
+    # Three methods, and the split between them is the security boundary.
+    # `smp_secret_required` is set by a REMOTE message arriving.  The other two
+    # are called only after the local user has answered a prompt.  Nothing here
+    # reads input; the front end owns that and hands down a result.
+
+    def smp_secret_required(self) -> bool:
+        """True while an SMP1 from the peer is parked awaiting a passphrase."""
+        if self.rust_smp is None:
+            return False
+        try:
+            return self.rust_smp.get_phase() == "SECRET_REQUIRED"
+        except Exception:
+            return False
+
+    def resume_held_smp1(self) -> Optional[str]:
+        """Answer the parked SMP1 now that a passphrase has been stored.
+
+        Returns the encrypted SMP2 to send, or raises.  The caller must have
+        called set_smp_secret() first -- the engine refuses otherwise, which is
+        the fail-closed half of "only local input can supply the secret".
+        """
+        if not self._acquire_lock():
+            raise RuntimeError("resume_held_smp1: could not acquire session lock")
+        try:
+            if self.rust_smp is None:
+                raise RuntimeError("no SMP engine")
+            self._smp_secret_required = False
+            smp2 = self.rust_smp.resume_held_smp1_generate_smp2()
+            self.smp_step = 2
+            self._smp_progress_notify(
+                2, 4, "Passphrase accepted - answering the challenge…",
+                role="responder",
+            )
+            return self.encrypt_with_tlvs(
+                "", [OTRv4TLV(OTRv4TLV.SMP_MSG_2, bytes(smp2))])
+        finally:
+            self._release_lock()
+
+    def decline_held_smp1(self, reason: bytes = b"") -> Optional[str]:
+        """Drop the parked SMP1 and tell the peer.
+
+        Used for an explicit decline, for a consent request that timed out, and
+        for teardown while one was open.  Storing nothing is the point: a
+        declined request must leave no passphrase and no state behind.
+        """
+        if not self._acquire_lock():
+            return None
+        try:
+            if self.rust_smp is None:
+                return None
+            self._smp_secret_required = False
+            try:
+                self.rust_smp.discard_held_smp1()
+            except Exception:
+                self.logger.debug("discard_held_smp1 failed")
+            self.smp_step = 0
+            return self.encrypt_with_tlvs(
+                "", [OTRv4TLV(OTRv4TLV.SMP_ABORT,
+                              reason or OTRv4TLV.SMP_ABORT_DECLINED)])
+        finally:
+            self._release_lock()
+
     def process_smp_message(self, data: bytes) -> Optional[str]:
         """Process a raw SMP TLV (type+len+value) using the Rust engine.
 
@@ -6776,7 +7842,12 @@ class EnhancedOTRSession:
 
             if self.rust_smp is not None:
                 phase = self.rust_smp.get_phase()
-                if phase not in ("IDLE", "FAILED", "VERIFIED", "ABORTED"):
+                # SECRET_REQUIRED is included deliberately: it means a peer's
+                # SMP1 is parked waiting for exactly this call.  The others are
+                # states with no run in flight.  AWAITING_MSG2/3/4 are not, and
+                # rebinding under those would change the secret mid-proof.
+                if phase not in ("IDLE", "FAILED", "VERIFIED", "ABORTED",
+                                 "SECRET_REQUIRED"):
                     raise RuntimeError(
                         f"Cannot rebind SMP secret while SMP is active "
                         f"(current phase: {phase }). Abort the current run first."
@@ -6801,8 +7872,15 @@ class EnhancedOTRSession:
 
             raw = bytearray(secret.encode("utf-8"))
             try:
-
-                self.smp_vault.store("smp_secret", bytes(raw))
+                # store_from_bytearray, not store(bytes(raw)).
+                #
+                # The bytearray exists so it can be wiped, and the `finally`
+                # below does wipe it -- but `bytes(raw)` had already made an
+                # immutable copy that nothing can overwrite, so the wipe was
+                # cleaning the one object that no longer mattered.  Handing
+                # the bytearray straight down means Rust copies it into a
+                # ZeroizeOnDrop entry and zeroes our buffer before returning.
+                self.smp_vault.store_from_bytearray("smp_secret", raw)
 
                 ok = self.rust_smp.set_secret_from_vault(
                     self.smp_vault, "smp_secret", sid, local_fp, remote_fp
@@ -6810,7 +7888,8 @@ class EnhancedOTRSession:
                 if not ok:
                     raise RuntimeError("Vault key not found after store - internal error")
             finally:
-
+                # Belt and braces: store_from_bytearray already zeroed it, and
+                # this still runs if the call raised before reaching Rust.
                 for i in range(len(raw)):
                     raw[i] = 0
                 del raw
@@ -6897,11 +7976,16 @@ class SessionManager:
         self.config = config or OTRConfig(test_mode=True)
         self.logger = logger or NullLogger()
 
-        self.trust_db = TrustDatabase(self.config.trust_db_path)
+        self.trust_db = TrustDatabase(self.config.trust_db_path,
+                                      persistent=self.config.persist_trust)
         self.smp_storage = SMPAutoRespondStorage(self.config.smp_secrets_path)
         self.key_storage = SecureKeyStorage(self.config.key_storage_path)
 
-        self.client_profile = ClientProfile()
+        # Identity.  Ephemeral unless the caller explicitly asked otherwise,
+        # because ephemeral is the IRC contract and IRC must not acquire a
+        # persistent identity by inheriting a default.
+        self.identity_is_persistent = False
+        self.client_profile = self._build_client_profile()
 
         self.lock = threading.RLock()
 
@@ -6926,6 +8010,53 @@ class SessionManager:
         except Exception:
             pass
 
+    def _build_client_profile(self):
+        """Return the ClientProfile this manager will use.
+
+        Two behaviours, chosen by config and never by guesswork:
+
+        * ``persist_identity`` false -- a fresh Ed448 identity, as OTRv4+ has
+          always done (ROADMAP Phase 5.3g).  This is the IRC contract: a nick
+          is ephemeral, so an identity pinned to one is pinned to nothing.
+        * ``persist_identity`` true -- the same identity every run, loaded from
+          a sealed record.  This is the XMPP contract: a JID is durable, so an
+          identity that changed under it every launch made TOFU meaningless and
+          made every reconnect look like a MITM.
+
+        Failure is closed.  If persistence was asked for and cannot be
+        delivered this raises, rather than quietly handing back an ephemeral
+        identity -- a silent fallback would change the local fingerprint with no
+        indication, and every peer holding a pin would see the change TOFU
+        exists to report.
+        """
+        if not self.config.persist_identity:
+            return ClientProfile()
+
+        # Imported here, not at module scope: the IRC client must never load
+        # the persistence machinery at all, and an import that only happens on
+        # the opted-in path makes that checkable rather than a promise.
+        from otrv4plus_identity import load_or_create_identity, IdentityUnavailable
+
+        try:
+            identity, prekey, _pub = load_or_create_identity(
+                self.config.identity_path, self.config.identity_dek_path)
+        except IdentityUnavailable:
+            self._trace_identity("FAILED",
+                                 "persistent identity unavailable - failing closed")
+            raise
+
+        self.identity_is_persistent = True
+        self._trace_identity("READY", "persistent identity loaded")
+        return ClientProfile(identity_key=identity, prekey=prekey)
+
+    def _trace_identity(self, state: str, detail: str) -> None:
+        """Trace without assuming this manager has a tracer (SessionManager does not)."""
+        tracer = getattr(self, "tracer", None)
+        if tracer is not None:
+            try:
+                tracer.trace("SYSTEM", "IDENTITY", None, state, detail)
+            except Exception:
+                pass
     def _store_identity(self):
         """Store client profile in secure storage.
 
@@ -7043,6 +8174,8 @@ class SessionManager:
                         session.root_key = session_keys.get("root_key")
                         session.remote_long_term_pub = session_keys.get("peer_long_term_pub")
 
+                    session.smp_guided_prompt = getattr(
+                        self, "smp_guided_prompt", False)
                     self.sessions[peer] = session
                     del self.pending_dakes[peer]
 
@@ -7085,6 +8218,8 @@ class SessionManager:
                         session.root_key = session_keys.get("root_key")
                         session.remote_long_term_pub = session_keys.get("peer_long_term_pub")
 
+                    session.smp_guided_prompt = getattr(
+                        self, "smp_guided_prompt", False)
                     self.sessions[peer] = session
                     del self.pending_dakes[peer]
                     return True
@@ -7414,11 +8549,16 @@ class EnhancedSessionManager:
         self.tracer = tracer or OTRTracer(enabled=True)
         self.logger = logger or NullLogger()
 
-        self.trust_db = TrustDatabase(self.config.trust_db_path)
+        self.trust_db = TrustDatabase(self.config.trust_db_path,
+                                      persistent=self.config.persist_trust)
         self.smp_storage = SMPAutoRespondStorage(self.config.smp_secrets_path)
         self.key_storage = SecureKeyStorage(self.config.key_storage_path)
 
-        self.client_profile = ClientProfile()
+        # Identity.  Ephemeral unless the caller explicitly asked otherwise,
+        # because ephemeral is the IRC contract and IRC must not acquire a
+        # persistent identity by inheriting a default.
+        self.identity_is_persistent = False
+        self.client_profile = self._build_client_profile()
 
         self.sessions: Dict[str, EnhancedOTRSession] = {}
         self.dake_engines: Dict[str, RustDAKEAdapter] = {}
@@ -7432,6 +8572,53 @@ class EnhancedSessionManager:
 
         self.tracer.trace("SYSTEM", "MANAGER", None, "READY", "session manager initialized")
 
+    def _build_client_profile(self):
+        """Return the ClientProfile this manager will use.
+
+        Two behaviours, chosen by config and never by guesswork:
+
+        * ``persist_identity`` false -- a fresh Ed448 identity, as OTRv4+ has
+          always done (ROADMAP Phase 5.3g).  This is the IRC contract: a nick
+          is ephemeral, so an identity pinned to one is pinned to nothing.
+        * ``persist_identity`` true -- the same identity every run, loaded from
+          a sealed record.  This is the XMPP contract: a JID is durable, so an
+          identity that changed under it every launch made TOFU meaningless and
+          made every reconnect look like a MITM.
+
+        Failure is closed.  If persistence was asked for and cannot be
+        delivered this raises, rather than quietly handing back an ephemeral
+        identity -- a silent fallback would change the local fingerprint with no
+        indication, and every peer holding a pin would see the change TOFU
+        exists to report.
+        """
+        if not self.config.persist_identity:
+            return ClientProfile()
+
+        # Imported here, not at module scope: the IRC client must never load
+        # the persistence machinery at all, and an import that only happens on
+        # the opted-in path makes that checkable rather than a promise.
+        from otrv4plus_identity import load_or_create_identity, IdentityUnavailable
+
+        try:
+            identity, prekey, _pub = load_or_create_identity(
+                self.config.identity_path, self.config.identity_dek_path)
+        except IdentityUnavailable:
+            self._trace_identity("FAILED",
+                                 "persistent identity unavailable - failing closed")
+            raise
+
+        self.identity_is_persistent = True
+        self._trace_identity("READY", "persistent identity loaded")
+        return ClientProfile(identity_key=identity, prekey=prekey)
+
+    def _trace_identity(self, state: str, detail: str) -> None:
+        """Trace without assuming this manager has a tracer (SessionManager does not)."""
+        tracer = getattr(self, "tracer", None)
+        if tracer is not None:
+            try:
+                tracer.trace("SYSTEM", "IDENTITY", None, state, detail)
+            except Exception:
+                pass
     def _store_identity(self):
         """Store client identity in secure storage.
 
@@ -7489,6 +8676,8 @@ class EnhancedSessionManager:
             if getattr(self, "ping_refresh_cb", None):
                 session._ping_refresh_cb = self.ping_refresh_cb
 
+            session.smp_guided_prompt = getattr(
+                self, "smp_guided_prompt", False)
             self.sessions[peer] = session
 
             self.tracer.trace(
@@ -7637,10 +8826,7 @@ class EnhancedSessionManager:
                     return None
 
                 if (
-                    len(decoded) >= 3
-                    and decoded[0] == 0x00
-                    and decoded[1] == 0x04
-                    and decoded[2] == OTRv4DataMessage.TYPE
+                    OTRv4DataMessage.looks_like_data_frame(decoded)
                 ):
                     return self._handle_data_message(peer, message)
 
@@ -8201,6 +9387,29 @@ class EnhancedSessionManager:
             "process_smp_message is disabled.  SMP messages are processed "
             "automatically inside decrypt_message via _enh_handle_smp_tlv."
         )
+
+    # ─── held SMP1, manager level ────────────────────────────────────────────
+
+    def smp_secret_required(self, peer: str) -> bool:
+        with self.lock:
+            sess = self.sessions.get(peer)
+        return bool(sess is not None and sess.smp_secret_required())
+
+    def resume_held_smp1(self, peer: str) -> Optional[str]:
+        """Answer a parked SMP1 for *peer*.  Returns the SMP2 to send."""
+        with self.lock:
+            sess = self.sessions.get(peer)
+        if sess is None:
+            raise RuntimeError(f"resume_held_smp1: no session for {peer}")
+        return sess.resume_held_smp1()
+
+    def decline_held_smp1(self, peer: str, reason: bytes = b"") -> Optional[str]:
+        """Drop a parked SMP1 for *peer*.  Returns the abort to send, if any."""
+        with self.lock:
+            sess = self.sessions.get(peer)
+        if sess is None:
+            return None
+        return sess.decline_held_smp1(reason)
 
     def set_smp_secret(self, peer: str, secret: str) -> bool:
         """Store SMP secret for peer in persistent storage AND bind it into
@@ -9036,15 +10245,23 @@ class TwentySevenClubNick:
 
     @classmethod
     def real_name(cls, nick: str) -> str:
-        """Return display name for /whois.
+        """Return the realname (gecos) advertised at USER registration.
 
-        Legacy 27 Club nicks get their real identity.
-        Generated nicks get a plausible format.
+        Legacy 27 Club nicks keep their real identity; generated nicks get a
+        plausible format.  Every form ends with VERSION, because this string
+        is the client's only identification channel over IRC -- CTCP VERSION
+        is refused -- and /names reads it back out of RPL_WHOREPLY.
+
+        Before v10.14.0 the 27 Club branch returned "... - 27 Club" with no
+        version, and a NickServ nick advertised the bare nick, so two whole
+        classes of OTRv4+ user were undetectable by their own peers.  A
+        detection mechanism the client does not consistently feed is not a
+        detection mechanism.
         """
         base = nick.rstrip("_0123456789")
         if base in cls._LOOKUP:
             real, band = cls._LOOKUP[base]
-            return f"{real } ({band }) - 27 Club"
+            return f"{real } ({band }) - 27 Club - {VERSION }"
         return f"{nick } - {VERSION }"
 
     @classmethod
@@ -9079,12 +10296,15 @@ class OTRv4IRCClient:
         self.message_router = MessageRouter(self.panel_manager)
         self.event_handler = EventHandler(self.panel_manager)
         # Ephemeral per-channel log: new key per session, files wiped on exit
-        self.channel_log = _ChannelLogManager(persistent=False) if _LOG_AVAILABLE else None
+        self.channel_log = _ChannelLogManager() if _LOG_AVAILABLE else None
 
         self.server = self.config.server
         if self.config.nickserv_nick:
             self.nick = self.config.nickserv_nick
-            self.realname = self.nick
+            # Not the bare nick: the realname is what identifies this client
+            # to peers running /names, and a registered nick is no reason to
+            # go dark.  See TwentySevenClubNick.real_name.
+            self.realname = f"{self .nick } - {VERSION }"
         else:
             self.nick = TwentySevenClubNick.generate()
             self.realname = TwentySevenClubNick.real_name(self.nick)
@@ -10188,6 +11408,9 @@ class OTRv4IRCClient:
                 for ch, info in self.channels.items():
                     if sender in info["users"]:
                         info["users"].discard(sender)
+                # Someone else may take the nick; a stale entry would mark
+                # them as an OTRv4+ client on no evidence at all.
+                getattr(self, "_otrv4_users", {}).pop(sender, None)
 
                 if self.session_manager.has_session(sender):
                     self._on_peer_disconnected(sender, reason)
@@ -10201,6 +11424,12 @@ class OTRv4IRCClient:
                     if sender in ch_info["users"]:
                         ch_info["users"].discard(sender)
                         ch_info["users"].add(new_nick)
+                # The OTRv4+ map is keyed by nick, so a rename would
+                # otherwise leave the marker on a nick nobody is using and
+                # strip it from the person who still has the same client.
+                _o = getattr(self, "_otrv4_users", None)
+                if _o is not None and sender in _o:
+                    _o[new_nick] = _o.pop(sender)
                 if sender == self.nick:
                     self.nick = new_nick
                     self.add_message(
@@ -10464,15 +11693,16 @@ class OTRv4IRCClient:
                     _who_real = _who_real[2:]
                 if not hasattr(self, "_otrv4_users"):
                     self._otrv4_users: Dict[str, bool] = {}
+                # Client identification only.  See otrv4_client_version().
                 if _who_nick:
-                    self._otrv4_users[_who_nick] = "OTRv4+" in _who_real
+                    self._otrv4_users[_who_nick] = advertises_otrv4(_who_real)
                 if getattr(self, "_who_pending", False):
                     _wc = getattr(self, "_who_count", 0)
                     if _wc == 0:
                         self._who_count = 0
                     if _wc < _WHO_DISPLAY_MAX:
                         _wp2 = self.panel_manager.active_panel or "system"
-                        _m = colorize(" 🔒", "blue") if "OTRv4+" in _who_real else ""
+                        _m = colorize(" 🔵", "blue") if advertises_otrv4(_who_real) else ""
                         self.add_message(
                             _wp2,
                             f"  {colorize (_who_nick or '?','cyan'):<20}{_sanitise (_who_user +'@'+_who_host ,50 ):<40}{_sanitise (_who_real ,40 )}{_m }",
@@ -10530,12 +11760,19 @@ class OTRv4IRCClient:
                 return
 
             if code == 353:
+                # ":server 353 me = #chan :@alice +bob carol"
                 channel = params[2] if len(params) > 2 else ""
-                users = trailing.split() if trailing else []
+                if not channel:
+                    return
+                users = [u for u in (trailing.split() if trailing else [])
+                         if split_names_entry(u)[1]]
                 if channel not in self.names_data:
                     self.names_data[channel] = []
                 if not hasattr(self, "_names_total"):
                     self._names_total = {}
+                # The server's count, kept whole even when the local list is
+                # capped, so the header reports the channel rather than the
+                # slice of it we chose to render.
                 self._names_total[channel] = self._names_total.get(channel, 0) + len(users)
                 _nlim = getattr(self, "_names_limit", 500)
                 _cur = len(self.names_data[channel])
@@ -10543,81 +11780,39 @@ class OTRv4IRCClient:
                     self.names_data[channel].extend(users[: _nlim - _cur])
                 if channel in self.channels:
                     for u in users:
-                        self.channels[channel]["users"].add(u.lstrip("@+&~"))
+                        self.channels[channel]["users"].add(split_names_entry(u)[1])
                 return
 
             if code == 366:
                 channel = params[1] if len(params) > 1 else ""
-                if getattr(self, "_pending_names_pager", None) == channel:
-                    self._pending_names_pager = None
-                    raw_users = self.names_data.get(channel, [])
-
-                    ops = []
-                    voiced = []
-                    regular = []
-                    for u in raw_users:
-                        prefix = u[0] if u and u[0] in "@+~&%" else ""
-                        nick = u.lstrip("@+~&%")
-                        if prefix in ("@", "~", "&"):
-                            ops.append((prefix, nick))
-                        elif prefix in ("+", "%"):
-                            voiced.append((prefix, nick))
-                        else:
-                            regular.append(("", nick))
-
-                    ops.sort(key=lambda x: x[1].lower())
-                    voiced.sort(key=lambda x: x[1].lower())
-                    regular.sort(key=lambda x: x[1].lower())
-
-                    _real_total = getattr(self, "_names_total", {}).pop(channel, len(raw_users))
-                    total = _real_total
-                    _otrv4_map = getattr(self, "_otrv4_users", {})
-                    _otr_count = sum(1 for _, n in ops + voiced + regular if _otrv4_map.get(n))
-                    _plines = []
-                    if _otr_count:
-                        _plines.append(
-                            colorize(
-                                f"  🔒 = OTRv4+ ({_otr_count} user(s)) - /otr <nick> to encrypt",
-                                "blue",
-                            )
-                        )
-
-                    def _grp(label, users, color):
-                        if not users:
-                            return
-                        _plines.append(colorize(f"  {label } ({len (users )}):", color))
-                        col_width = 20
-                        cols = max(1, 56 // col_width)
-                        row = []
-                        for pfx, nk in users:
-                            disp = f"{pfx }{nk }"
-                            entry = (
-                                colorize(f"  🔒{disp :<{col_width -1 }}", "blue")
-                                if _otrv4_map.get(nk)
-                                else colorize(f"  {disp :<{col_width }}", color)
-                            )
-                            row.append(entry)
-                            if len(row) >= cols:
-                                _plines.append("".join(row))
-                                row = []
-                        if row:
-                            _plines.append("".join(row))
-
-                    _grp("Operators", ops, "bold_green")
-                    _grp("Voiced", voiced, "yellow")
-                    _grp("Users", regular, "white")
-                    _nlim = getattr(self, "_names_limit", 500)
-                    _shown = len(raw_users)
-                    if total > _shown:
-                        _plines.insert(
-                            0,
-                            colorize(
-                                f"  ⚠ {total } users in channel - showing first {_shown } (q to quit, /names for full list)",
-                                "yellow",
-                            ),
-                        )
-                    self.names_data[channel] = []
-                    self.pager.display(_plines, f"Users in {_sanitise (channel ,64 )} ({total })")
+                raw_users = self.names_data.get(channel, [])
+                total = getattr(self, "_names_total", {}).pop(channel, None)
+                if total is None:
+                    total = len(raw_users)
+                self.names_data[channel] = []
+                if getattr(self, "_pending_names_pager", None) != channel:
+                    # NAMES also arrives unsolicited on JOIN.  Accumulated
+                    # state is still cleared above, or it grows for the life
+                    # of the process and the next /names reports a stale
+                    # total.
+                    return
+                self._pending_names_pager = None
+                lines, picks = format_names_list(
+                    raw_users,
+                    getattr(self, "_otrv4_users", {}),
+                    total=total,
+                    selectable=True,
+                )
+                chosen = self.pager.display(
+                    lines,
+                    f"Users in {_sanitise (channel ,64 )} ({total })",
+                    choices=picks,
+                )
+                if chosen:
+                    # Starting a DAKE, which is what actually authenticates
+                    # the peer.  Selecting a blue entry is a shortcut for
+                    # typing /otr <nick>; it confers no trust of its own.
+                    self.start_guided_otr_session(chosen)
                 return
 
             if code == 311:
@@ -10625,18 +11820,33 @@ class OTRv4IRCClient:
                 user = params[2] if len(params) > 2 else ""
                 host = params[3] if len(params) > 3 else ""
                 real = trailing or ""
-                display_real = TwentySevenClubNick.real_name(target)
-                if display_real == target:
-                    display_real = real
+                # Both fields used to be computed from the local nick:
+                # `Client` printed our own VERSION whatever the peer ran, and
+                # `Name` printed TwentySevenClubNick.real_name(target), which
+                # returns "<nick> - OTRv4+ <version>" for any nick at all.  So
+                # /whois on a mIRC user reported them as an OTRv4+ client --
+                # a claim derived from the nick, which is exactly the
+                # inference this must not make.  Both now come off the wire.
+                _peer_version = otrv4_client_version(real)
+                if _peer_version:
+                    _client = colorize("OTRv4+ %s" % _peer_version, "blue")
+                else:
+                    _client = colorize("not advertised", "dim")
+                # Same reliable metadata as RPL_WHOREPLY, so /whois keeps the
+                # /names marker current for that nick.
+                if target:
+                    if not hasattr(self, "_otrv4_users"):
+                        self._otrv4_users: Dict[str, bool] = {}
+                    self._otrv4_users[target] = _peer_version is not None
                 _wp = self.panel_manager.active_panel or "system"
                 self._whois_panel = _wp
                 self.add_message(_wp, colorize("── WHOIS ─────────────────────────────────", "dim"))
                 self.add_message(_wp, f"  Nick     : {colorize_username (target )}")
-                self.add_message(_wp, f"  Client   : {colorize (VERSION ,'cyan')}")
+                self.add_message(_wp, f"  Client   : {_client }")
                 self.add_message(
                     _wp, f"  User     : {_sanitise (user ,64 )}@{_sanitise (host ,128 )}"
                 )
-                self.add_message(_wp, f"  Name     : {_sanitise (display_real ,128 )}")
+                self.add_message(_wp, f"  Name     : {_sanitise (real ,128 )}")
                 return
 
             if code == 312:
@@ -10817,7 +12027,9 @@ class OTRv4IRCClient:
                         # base64, then pad.
                         _peek_src = chunk[:16]
                         peek = _b64.urlsafe_b64decode(_peek_src + "=" * (-len(_peek_src) % 4))
-                        if len(peek) >= 3 and peek[0] == 0x00 and peek[1] == 0x04:
+                        if (len(peek) >= 3
+                                and peek[0] == (OTRv4DataMessage.PROTOCOL_VERSION >> 8)
+                                and peek[1] == (OTRv4DataMessage.PROTOCOL_VERSION & 0xFF)):
                             msg_type = "data"
                         elif len(peek) >= 1:
                             msg_type = {
@@ -10897,10 +12109,7 @@ class OTRv4IRCClient:
             if not decoded:
                 return
             if (
-                len(decoded) >= 3
-                and decoded[0] == 0x00
-                and decoded[1] == 0x04
-                and decoded[2] == OTRv4DataMessage.TYPE
+                OTRv4DataMessage.looks_like_data_frame(decoded)
             ):
                 self._handle_data_message(sender, payload)
                 return
@@ -11283,7 +12492,7 @@ class OTRv4IRCClient:
         _sep_str = colorize("─" * min(_cols, 80), "dim")
         with _print_lock:
             try:
-                buf = "".join(_input_buffer)
+                buf = _display_buffer()
                 if _current_prompt or buf:
                     sys.stdout.write("\x1b[1G\x1b[2K")
                 for ln in lines_out:
@@ -11689,6 +12898,31 @@ class OTRv4IRCClient:
         elif cmd == "trust" and len(parts) > 2:
             self.session_manager.trust_db.add_trust(parts[1], parts[2])
             self.add_message("system", f"✅ Trusted {parts [1 ]}: {parts [2 ][:16 ]}…")
+        elif cmd == "smp" and len(parts) == 1:
+            # Bare /smp.  IRC has no hidden prompt of its own -- see
+            # SMP_UX_AUDIT.md; the guided flow is the XMPP client's -- so this
+            # says what to type rather than arming anything.
+            active = self.panel_manager.get_active_panel()
+            peer = active.name if active and active.type not in ("system", "debug") else None
+            if not peer:
+                self.add_message("system", colorize("⚠ Switch to a peer panel first", "yellow"))
+            else:
+                stored = ""
+                if hasattr(self.session_manager, "smp_storage"):
+                    stored = self.session_manager.smp_storage.get_secret(peer) or ""
+                if stored:
+                    self.add_message(
+                        "system",
+                        colorize(f"🔐 Stored passphrase found for {peer } — verifying…", "cyan"),
+                    )
+                    self._start_smp(peer, stored)
+                else:
+                    self.add_message(
+                        "system",
+                        colorize("🔐 Verification needs the passphrase you agreed with "
+                                 "them. Type  /smp <passphrase>  (it will be visible "
+                                 "on this terminal).", "yellow"),
+                    )
         elif cmd == "smp" and len(parts) > 1:
             active = self.panel_manager.get_active_panel()
             peer = active.name if active and active.type not in ("system", "debug") else None
@@ -11901,7 +13135,7 @@ class OTRv4IRCClient:
                 "  /part [#ch]          Leave channel",
                 "  /nick <name>         Change nickname",
                 "  /msg <nick> <text>   Private message",
-                "  /names [#ch]         List users - pager, q to quit",
+                "  /names [#ch]         List users - \U0001F535 = OTRv4+ client, 1-9 to /otr",
                 "  /list                List channels - pager, q to quit",
                 "  /who [#ch]           WHO query with OTRv4+ detection",
                 "  /whois <nick>        User info",
@@ -11959,7 +13193,7 @@ class OTRv4IRCClient:
                 "    /join #channel     Join a channel",
                 "    /otr <nick>        Start encrypted chat",
                 "    /smp <secret>      Verify identity",
-                "    /names             List users in channel - pager",
+                "    /names             List users - \U0001F535 = OTRv4+ (identification only)",
                 "    /list              List all channels - pager",
                 "    /quit              Exit",
                 "",
@@ -12075,10 +13309,12 @@ class EnhancedOTRv4IRCClient(OTRv4IRCClient):
         if atype == "trust":
             self._handle_trust_response(peer, text.strip().lower(), action)
             return True
-        elif atype == "smp_secret":
-            self._handle_smp_secret_response(peer, text.strip(), action)
-            return True
 
+        # There is deliberately no "smp_secret" branch.  It existed, it was
+        # armed from a remote-reachable path, and it turned the user's next
+        # line into a shared secret.  Removing the branch as well as the
+        # arming means reintroducing the defect takes two edits rather than
+        # one, and tests/test_no_remote_input_capture.py fails on either.
         return False
 
     def process_dake1(self, sender: str, payload: str):
@@ -12281,20 +13517,32 @@ class EnhancedOTRv4IRCClient(OTRv4IRCClient):
         self.add_message(
             peer,
             colorize(
-                "🔐 SMP VERIFICATION SETUP (🦀 Hybrid PQC: ML-KEM-1024 + ML-DSA-87 + ZKP)", "blue"
+                "🔐 SMP VERIFICATION (🦀 Hybrid PQC: ML-KEM-1024 + ML-DSA-87 + ZKP)", "blue"
             ),
             sec,
         )
-        self.add_message(peer, "Type your shared secret (both sides must use the same).", sec)
+        # This used to end with _set_pending("smp_secret", peer, ...), which
+        # made the NEXT LINE TYPED become the shared secret -- unmasked, into
+        # scrollback -- and it was armed from here, which a remote peer
+        # reaches by completing a DAKE.  A peer therefore decided what the
+        # user's next sentence meant.  Same defect INV-06 was written for
+        # after it was removed from the XMPP client; this side kept it.
+        #
+        # Nothing is armed now.  The user types /smp when they are ready, and
+        # that command asks for the passphrase itself.
         self.add_message(
             peer,
-            colorize("After setting secret, type  /smp start  to begin verification.", "cyan"),
+            colorize("Type  /smp  when you are ready to verify. It will ask "
+                     "for the passphrase you agreed with them.", "cyan"),
             sec,
         )
         self.add_message(
-            peer, colorize("Press Enter / type  skip  to skip SMP for now.", "dim"), sec
+            peer,
+            colorize("Until you do, what you type here is an ordinary "
+                     "message.", "dim"),
+            sec,
         )
-        self._set_pending("smp_secret", peer, security_level=sec, is_initiator=is_initiator)
+        self._finish_session_setup(peer, sec)
 
     def _ensure_rust_smp(self, peer: str) -> None:
         """Ensure the Rust SMP engine is initialized for *peer*'s session."""
@@ -12305,51 +13553,6 @@ class EnhancedOTRv4IRCClient(OTRv4IRCClient):
         )
         if session is not None and hasattr(session, "initialize_smp"):
             session.initialize_smp()
-
-    def _handle_smp_secret_response(self, peer: str, secret: str, action: dict):
-        """Process SMP secret input from user."""
-        sec = action.get("security_level", UIConstants.SecurityLevel.ENCRYPTED)
-        is_initiator = action.get("is_initiator", False)
-
-        if secret and secret.lower() != "skip":
-            try:
-                self._ensure_rust_smp(peer)
-                if hasattr(self.session_manager, "set_smp_secret"):
-                    self.session_manager.set_smp_secret(peer, secret)
-
-                self.add_message(
-                    self._otr_panel(peer),
-                    colorize("✅ SMP secret stored (🦀 Rust vault)", "green"),
-                    sec,
-                )
-
-                if is_initiator:
-                    self.add_message(
-                        self._otr_panel(peer),
-                        colorize("🔐 Type  /smp start  to begin verification.", "cyan"),
-                        sec,
-                    )
-                else:
-                    self.add_message(
-                        self._otr_panel(peer),
-                        colorize(
-                            "🔐 Type  /smp start  to initiate, or wait for the other side.", "cyan"
-                        ),
-                        sec,
-                    )
-            except Exception as exc:
-                self.debug("smp secret store error")
-                self.add_message(
-                    self._otr_panel(peer), colorize("⚠ Could not store SMP secret", "yellow"), sec
-                )
-        else:
-            self.add_message(
-                self._otr_panel(peer),
-                colorize("⚠ SMP skipped - use /smp <secret> later", "dim"),
-                sec,
-            )
-
-        self._finish_session_setup(peer, sec)
 
     def _finish_session_setup(self, peer: str, sec):
         """Show final help after session is fully set up."""
@@ -12688,10 +13891,7 @@ class EnhancedOTRv4IRCClient(OTRv4IRCClient):
                 return
 
             if (
-                len(decoded) >= 3
-                and decoded[0] == 0x00
-                and decoded[1] == 0x04
-                and decoded[2] == OTRv4DataMessage.TYPE
+                OTRv4DataMessage.looks_like_data_frame(decoded)
             ):
                 self.debug("otr type", {"type": "DATA_V6"})
                 self._handle_data_message(sender, message)

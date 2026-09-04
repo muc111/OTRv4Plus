@@ -160,7 +160,7 @@ class TestReplayCacheSecurity:
                             bytes(setup['nonce']), bytes(setup['tag']))
         res = alice.encrypt(b"legitimate")
         h, c, n, t = bytes(res['header']), bytes(res['ciphertext']), bytes(res['nonce']), bytes(res['tag'])
-        assert bob.decrypt_same_dh(h, c, n, t) == b"legitimate"
+        assert bob.decrypt_same_dh(h, c, n, t)['plaintext'] == b"legitimate"
         with pytest.raises(ValueError, match="replay"):
             bob.decrypt_same_dh(h, c, n, t)
 
@@ -180,7 +180,7 @@ class TestReplayCacheSecurity:
         assert success > 10000
         final = alice.encrypt(b"final")
         assert bob.decrypt_same_dh(bytes(final['header']), bytes(final['ciphertext']),
-                                   bytes(final['nonce']), bytes(final['tag'])) == b"final"
+                                   bytes(final['nonce']), bytes(final['tag']))['plaintext'] == b"final"
 
 
 class TestCryptographicSanity:

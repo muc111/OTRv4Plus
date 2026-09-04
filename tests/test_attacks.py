@@ -92,10 +92,9 @@ def _ratchet_pair(rekey_interval=None):
     return alice, bob
 
 def _ed448_keypair():
-    k = ed448.Ed448PrivateKey.generate()
-    pub = k.public_key().public_bytes(
-        serialization.Encoding.Raw, serialization.PublicFormat.Raw)
-    return k, pub
+    # v10.7: RingSignature.sign requires a Rust Ed448KeyHandle (it calls
+    # handle.ring_sign); `cryptography` key objects no longer satisfy it.
+    return otr.ed448_keypair()
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -119,7 +118,7 @@ class TestRatchetSkipExhaustion:
         """Receiving a message claiming message_id=100000 must fail."""
         alice, bob = _ratchet_pair()
         msg = b"legit message"
-        ct, hdr, nonce, tag, _, _ = alice.encrypt_message(msg)
+        ct, hdr, nonce, tag, _, _, _mkmac = alice.encrypt_message(msg)
 
         # Craft a header with inflated message number
         try:
@@ -138,8 +137,8 @@ class TestRatchetSkipExhaustion:
         alice, bob = _ratchet_pair()
         for i in range(50):
             msg = f"message {i}".encode()
-            ct, hdr, nonce, tag, _, _ = alice.encrypt_message(msg)
-            assert bob.decrypt_message(hdr, ct, nonce, tag) == msg
+            ct, hdr, nonce, tag, _, _, _mkmac = alice.encrypt_message(msg)
+            assert bob.decrypt_message(hdr, ct, nonce, tag)[0] == msg
 
     def test_modest_skip_allowed(self):
         """Out-of-order delivery within a small window must work.
@@ -151,13 +150,13 @@ class TestRatchetSkipExhaustion:
         """
         alice, bob = _ratchet_pair()
         enc = [alice.encrypt_message(f"msg{i}".encode()) for i in range(3)]
-        ct0, h0, n0, t0, _, _ = enc[0]
-        ct1, h1, n1, t1, _, _ = enc[1]
-        ct2, h2, n2, t2, _, _ = enc[2]
+        ct0, h0, n0, t0, _, _, _mkmac = enc[0]
+        ct1, h1, n1, t1, _, _, _mkmac = enc[1]
+        ct2, h2, n2, t2, _, _, _mkmac = enc[2]
         # Deliver 0 in order, then skip to 2, then fill gap with 1
-        r0 = bob.decrypt_message(h0, ct0, n0, t0)
-        r2 = bob.decrypt_message(h2, ct2, n2, t2)
-        r1 = bob.decrypt_message(h1, ct1, n1, t1)
+        r0 = bob.decrypt_message(h0, ct0, n0, t0)[0]
+        r2 = bob.decrypt_message(h2, ct2, n2, t2)[0]
+        r1 = bob.decrypt_message(h1, ct1, n1, t1)[0]
         assert r0 == b"msg0"
         assert r1 == b"msg1"
         assert r2 == b"msg2"
@@ -172,7 +171,7 @@ class TestCiphertextMutation:
 
     def _valid_ct(self):
         alice, bob = _ratchet_pair()
-        ct, hdr, nonce, tag, _, _ = alice.encrypt_message(b"hello mutation")
+        ct, hdr, nonce, tag, _, _, _mkmac = alice.encrypt_message(b"hello mutation")
         return bob, hdr, ct, nonce, tag
 
     def test_bit_flip_in_ciphertext(self):
@@ -214,7 +213,7 @@ class TestCiphertextMutation:
     def test_random_ct_prefix_rejected(self, mutation):
         """Prepending random bytes always causes rejection."""
         alice, bob = _ratchet_pair()
-        ct, hdr, nonce, tag, _, _ = alice.encrypt_message(b"test")
+        ct, hdr, nonce, tag, _, _, _mkmac = alice.encrypt_message(b"test")
         with pytest.raises(Exception):
             bob.decrypt_message(hdr, mutation + ct, nonce, tag)
 
@@ -271,14 +270,15 @@ class TestTranscriptBinding:
         alice1, bob1 = _ratchet_pair()
         alice2, bob2 = _ratchet_pair()
         # Encrypt one message in each session
-        ct1, h1, n1, t1, _, _ = alice1.encrypt_message(b"session1")
-        ct2, h2, n2, t2, _, _ = alice2.encrypt_message(b"session2")
+        ct1, h1, n1, t1, _, _, _mkmac = alice1.encrypt_message(b"session1")
+        ct2, h2, n2, t2, _, _, _mkmac = alice2.encrypt_message(b"session2")
         # Ciphertexts must differ (different session keys)
         assert ct1 != ct2
 
     def test_handshake_nonces_are_unique(self):
         """ML-KEM encapsulation uses fresh randomness each time."""
         ek, dk = _ossl.mlkem1024_keygen()
+        dk = bytes(dk)   # dk is a bytearray; decaps requires bytes
         ct1, ss1 = _ossl.mlkem1024_encaps(ek)
         ct2, ss2 = _ossl.mlkem1024_encaps(ek)
         assert ct1 != ct2, "Encapsulation ciphertexts must be unique"
@@ -305,7 +305,7 @@ class TestRatchetRollback:
 
     def test_replay_after_decrypt_rejected(self):
         alice, bob = _ratchet_pair()
-        ct, hdr, nonce, tag, _, _ = alice.encrypt_message(b"replay me")
+        ct, hdr, nonce, tag, _, _, _mkmac = alice.encrypt_message(b"replay me")
         bob.decrypt_message(hdr, ct, nonce, tag)
         with pytest.raises(Exception):
             bob.decrypt_message(hdr, ct, nonce, tag)
@@ -314,13 +314,13 @@ class TestRatchetRollback:
         """After a DH ratchet step, old-epoch messages are rejected."""
         alice, bob = _ratchet_pair()
         # Alice sends msg1, Bob decrypts
-        ct1, h1, n1, t1, _, _ = alice.encrypt_message(b"old epoch")
+        ct1, h1, n1, t1, _, _, _mkmac = alice.encrypt_message(b"old epoch")
         bob.decrypt_message(h1, ct1, n1, t1)
         # Bob replies — triggers DH ratchet advance
-        ct2, h2, n2, t2, _, _ = bob.encrypt_message(b"advance ratchet")
+        ct2, h2, n2, t2, _, _, _mkmac = bob.encrypt_message(b"advance ratchet")
         alice.decrypt_message(h2, ct2, n2, t2)
         # Alice sends new message in new epoch
-        ct3, h3, n3, t3, _, _ = alice.encrypt_message(b"new epoch")
+        ct3, h3, n3, t3, _, _, _mkmac = alice.encrypt_message(b"new epoch")
         bob.decrypt_message(h3, ct3, n3, t3)
         # Now replay ct1 — must fail
         with pytest.raises(Exception):
@@ -329,8 +329,8 @@ class TestRatchetRollback:
     def test_duplicate_nonce_rejected(self):
         """Two messages sharing the same nonce must not both decrypt."""
         alice, bob = _ratchet_pair()
-        ct1, h1, n1, t1, _, _ = alice.encrypt_message(b"msg A")
-        ct2, h2, n2, t2, _, _ = alice.encrypt_message(b"msg B")
+        ct1, h1, n1, t1, _, _, _mkmac = alice.encrypt_message(b"msg A")
+        ct2, h2, n2, t2, _, _, _mkmac = alice.encrypt_message(b"msg B")
         # Swap nonces (simulate nonce reuse attack)
         with pytest.raises(Exception):
             bob.decrypt_message(h1, ct1, n2, t1)  # wrong nonce for ct1
@@ -346,6 +346,7 @@ class TestPQDowngrade:
     def test_mlkem_ciphertext_required(self):
         """Decaps with empty/zeroed ciphertext must not produce the real shared secret."""
         ek, dk = _ossl.mlkem1024_keygen()
+        dk = bytes(dk)   # dk is a bytearray; decaps requires bytes
         ct, real_ss = _ossl.mlkem1024_encaps(ek)
         # Try decaps with zeroed ciphertext (downgrade attempt)
         try:
@@ -357,6 +358,7 @@ class TestPQDowngrade:
     def test_mlkem_truncated_ciphertext_rejected(self):
         """Truncated ciphertext must fail."""
         ek, dk = _ossl.mlkem1024_keygen()
+        dk = bytes(dk)   # dk is a bytearray; decaps requires bytes
         ct, _ = _ossl.mlkem1024_encaps(ek)
         with pytest.raises(Exception):
             _ossl.mlkem1024_decaps(ct[:-1], dk)
@@ -364,7 +366,9 @@ class TestPQDowngrade:
     def test_mlkem_wrong_key_rejected(self):
         """Ciphertext encapsulated for ek1 must not decaps with dk2."""
         ek1, dk1 = _ossl.mlkem1024_keygen()
+        dk1 = bytes(dk1)   # dk is a bytearray; decaps requires bytes
         ek2, dk2 = _ossl.mlkem1024_keygen()
+        dk2 = bytes(dk2)   # dk is a bytearray; decaps requires bytes
         ct, ss1 = _ossl.mlkem1024_encaps(ek1)
         # ML-KEM uses implicit rejection — decaps with wrong key gives random-looking ss
         ss_wrong = _ossl.mlkem1024_decaps(ct, dk2)
@@ -373,11 +377,13 @@ class TestPQDowngrade:
     def test_kem_shared_secret_not_all_zeros(self):
         """A valid shared secret must not be all zeros."""
         ek, dk = _ossl.mlkem1024_keygen()
+        dk = bytes(dk)   # dk is a bytearray; decaps requires bytes
         ct, ss = _ossl.mlkem1024_encaps(ek)
         assert ss != b'\x00' * 32, "Shared secret is all zeros — broken KEM"
 
     def test_kem_shared_secret_not_all_ones(self):
         ek, dk = _ossl.mlkem1024_keygen()
+        dk = bytes(dk)   # dk is a bytearray; decaps requires bytes
         ct, ss = _ossl.mlkem1024_encaps(ek)
         assert ss != b'\xff' * 32, "Shared secret is all ones — broken KEM"
 
@@ -437,8 +443,8 @@ class TestLongRun:
         """100 messages in sequence all decrypt correctly."""
         alice, bob = _ratchet_pair()
         for msg in msgs:
-            ct, hdr, nonce, tag, _, _ = alice.encrypt_message(msg)
-            assert bob.decrypt_message(hdr, ct, nonce, tag) == msg
+            ct, hdr, nonce, tag, _, _, _mkmac = alice.encrypt_message(msg)
+            assert bob.decrypt_message(hdr, ct, nonce, tag)[0] == msg
 
     @given(msgs=st.lists(
         st.binary(min_size=0, max_size=128), min_size=1, max_size=30))
@@ -447,24 +453,24 @@ class TestLongRun:
         alice, bob = _ratchet_pair()
         for i, msg in enumerate(msgs):
             if i % 2 == 0:
-                ct, h, n, t, _, _ = alice.encrypt_message(msg)
-                assert bob.decrypt_message(h, ct, n, t) == msg
+                ct, h, n, t, _, _, _mkmac = alice.encrypt_message(msg)
+                assert bob.decrypt_message(h, ct, n, t)[0] == msg
             else:
-                ct, h, n, t, _, _ = bob.encrypt_message(msg)
-                assert alice.decrypt_message(h, ct, n, t) == msg
+                ct, h, n, t, _, _, _mkmac = bob.encrypt_message(msg)
+                assert alice.decrypt_message(h, ct, n, t)[0] == msg
 
     def test_empty_message_roundtrip(self):
         """Empty message (heartbeat) must encrypt/decrypt correctly."""
         alice, bob = _ratchet_pair()
-        ct, hdr, nonce, tag, _, _ = alice.encrypt_message(b'')
-        assert bob.decrypt_message(hdr, ct, nonce, tag) == b''
+        ct, hdr, nonce, tag, _, _, _mkmac = alice.encrypt_message(b'')
+        assert bob.decrypt_message(hdr, ct, nonce, tag)[0] == b''
 
     def test_max_size_message(self):
         """4KB message roundtrip."""
         alice, bob = _ratchet_pair()
         msg = secrets.token_bytes(4096)
-        ct, hdr, nonce, tag, _, _ = alice.encrypt_message(msg)
-        assert bob.decrypt_message(hdr, ct, nonce, tag) == msg
+        ct, hdr, nonce, tag, _, _, _mkmac = alice.encrypt_message(msg)
+        assert bob.decrypt_message(hdr, ct, nonce, tag)[0] == msg
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -603,7 +609,7 @@ class TestNonceUniqueness:
         alice, bob = _ratchet_pair()
         nonces = set()
         for i in range(100):
-            ct, hdr, nonce, tag, _, _ = alice.encrypt_message(f"msg{i}".encode())
+            ct, hdr, nonce, tag, _, _, _mkmac = alice.encrypt_message(f"msg{i}".encode())
             assert nonce not in nonces, f"Nonce reuse at message {i}"
             nonces.add(nonce)
             bob.decrypt_message(hdr, ct, nonce, tag)
@@ -737,30 +743,30 @@ class TestOutOfOrderDelivery:
         """Skip msg 1, deliver msg 2 via normal advance, then fill msg 1 from cache."""
         alice, bob = _ratchet_pair()
         enc = [alice.encrypt_message(f"ooo{i}".encode()) for i in range(3)]
-        ct0,h0,n0,t0,_,_ = enc[0]; ct1,h1,n1,t1,_,_ = enc[1]; ct2,h2,n2,t2,_,_ = enc[2]
-        assert bob.decrypt_message(h0, ct0, n0, t0) == b"ooo0"
-        assert bob.decrypt_message(h2, ct2, n2, t2) == b"ooo2"
-        assert bob.decrypt_message(h1, ct1, n1, t1) == b"ooo1"
+        ct0,h0,n0,t0,_,_, _mkmac = enc[0]; ct1,h1,n1,t1,_,_, _mkmac = enc[1]; ct2,h2,n2,t2,_,_, _mkmac = enc[2]
+        assert bob.decrypt_message(h0, ct0, n0, t0)[0] == b"ooo0"
+        assert bob.decrypt_message(h2, ct2, n2, t2)[0] == b"ooo2"
+        assert bob.decrypt_message(h1, ct1, n1, t1)[0] == b"ooo1"
 
     def test_all_in_order(self):
         """10 messages in strict order all decrypt correctly."""
         alice, bob = _ratchet_pair()
         for i in range(10):
-            ct,h,n,t,_,_ = alice.encrypt_message(f"inorder{i}".encode())
-            assert bob.decrypt_message(h, ct, n, t) == f"inorder{i}".encode()
+            ct,h,n,t,_,_, _mkmac = alice.encrypt_message(f"inorder{i}".encode())
+            assert bob.decrypt_message(h, ct, n, t)[0] == f"inorder{i}".encode()
 
     def test_skip_multiple_then_fill_all(self):
         """Skip msgs 1,2,3, deliver 4, then fill 1,2,3 in any order."""
         alice, bob = _ratchet_pair()
         enc = [alice.encrypt_message(f"m{i}".encode()) for i in range(5)]
-        ct0,h0,n0,t0,_,_ = enc[0]
-        ct4,h4,n4,t4,_,_ = enc[4]
-        assert bob.decrypt_message(h0, ct0, n0, t0) == b"m0"
-        assert bob.decrypt_message(h4, ct4, n4, t4) == b"m4"
+        ct0,h0,n0,t0,_,_, _mkmac = enc[0]
+        ct4,h4,n4,t4,_,_, _mkmac = enc[4]
+        assert bob.decrypt_message(h0, ct0, n0, t0)[0] == b"m0"
+        assert bob.decrypt_message(h4, ct4, n4, t4)[0] == b"m4"
         # Fill gaps in reverse order
         for i in [3, 1, 2]:
-            ct,h,n,t,_,_ = enc[i]
-            assert bob.decrypt_message(h, ct, n, t) == f"m{i}".encode()
+            ct,h,n,t,_,_, _mkmac = enc[i]
+            assert bob.decrypt_message(h, ct, n, t)[0] == f"m{i}".encode()
 
     def test_skip_exhaustion_limit(self):
         """Skipping more than max_skip messages must raise."""
@@ -768,14 +774,14 @@ class TestOutOfOrderDelivery:
         # Encrypt a huge number of messages but only send the last one
         MAX = getattr(bob, 'max_skip', 2000)
         enc = [alice.encrypt_message(f"x{i}".encode()) for i in range(MAX + 5)]
-        ct,h,n,t,_,_ = enc[MAX + 4]
+        ct,h,n,t,_,_, _mkmac = enc[MAX + 4]
         with pytest.raises(Exception):
             bob.decrypt_message(h, ct, n, t)
 
     def test_first_message_sets_dh_key(self):
         """The first message correctly records the remote DH ratchet key."""
         alice, bob = _ratchet_pair()
-        ct,h,n,t,_,_ = alice.encrypt_message(b"first")
+        ct,h,n,t,_,_, _mkmac = alice.encrypt_message(b"first")
         assert bob.dh_ratchet_remote_pub is None
         bob.decrypt_message(h, ct, n, t)
         assert bob.dh_ratchet_remote_pub is not None
@@ -784,21 +790,21 @@ class TestOutOfOrderDelivery:
         """Alice sends 5, Bob replies 5 — all correct, no state corruption."""
         alice, bob = _ratchet_pair()
         for i in range(5):
-            ct,h,n,t,_,_ = alice.encrypt_message(f"a{i}".encode())
+            ct,h,n,t,_,_, _mkmac = alice.encrypt_message(f"a{i}".encode())
             bob.decrypt_message(h, ct, n, t)
         for i in range(5):
-            ct,h,n,t,_,_ = bob.encrypt_message(f"b{i}".encode())
-            assert alice.decrypt_message(h, ct, n, t) == f"b{i}".encode()
+            ct,h,n,t,_,_, _mkmac = bob.encrypt_message(f"b{i}".encode())
+            assert alice.decrypt_message(h, ct, n, t)[0] == f"b{i}".encode()
 
     def test_large_plaintext_ooo(self):
         """2 large messages delivered out of order both decrypt correctly."""
         alice, bob = _ratchet_pair()
         msg0 = secrets.token_bytes(2048)
         msg1 = secrets.token_bytes(2048)
-        ct0,h0,n0,t0,_,_ = alice.encrypt_message(msg0)
-        ct1,h1,n1,t1,_,_ = alice.encrypt_message(msg1)
-        assert bob.decrypt_message(h1, ct1, n1, t1) == msg1
-        assert bob.decrypt_message(h0, ct0, n0, t0) == msg0
+        ct0,h0,n0,t0,_,_, _mkmac = alice.encrypt_message(msg0)
+        ct1,h1,n1,t1,_,_, _mkmac = alice.encrypt_message(msg1)
+        assert bob.decrypt_message(h1, ct1, n1, t1)[0] == msg1
+        assert bob.decrypt_message(h0, ct0, n0, t0)[0] == msg0
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -813,7 +819,7 @@ class TestKeyReuseAfterLongConversation:
         alice, bob = _ratchet_pair()
         seen_nonces = set()
         for i in range(90):
-            ct, hdr, nonce, tag, _, _ = alice.encrypt_message(f"msg {i}".encode())
+            ct, hdr, nonce, tag, _, _, _mkmac = alice.encrypt_message(f"msg {i}".encode())
             assert nonce not in seen_nonces, f"Alice nonce reuse at message {i}"
             seen_nonces.add(nonce)
             bob.decrypt_message(hdr, ct, nonce, tag)
@@ -823,11 +829,11 @@ class TestKeyReuseAfterLongConversation:
         alice, bob = _ratchet_pair()
         all_nonces = set()
         for i in range(90):
-            ct, h, n, t, _, _ = alice.encrypt_message(f"a{i}".encode())
+            ct, h, n, t, _, _, _mkmac = alice.encrypt_message(f"a{i}".encode())
             assert n not in all_nonces, f"Alice nonce reuse at {i}"
             all_nonces.add(n)
             bob.decrypt_message(h, ct, n, t)
-            ct, h, n, t, _, _ = bob.encrypt_message(f"b{i}".encode())
+            ct, h, n, t, _, _, _mkmac = bob.encrypt_message(f"b{i}".encode())
             assert n not in all_nonces, f"Bob nonce reuse at {i}"
             all_nonces.add(n)
             alice.decrypt_message(h, ct, n, t)
@@ -853,7 +859,7 @@ class TestSkipCacheLimit:
         N = min(50, MAX)
         enc = [alice.encrypt_message(f"skip{i}".encode()) for i in range(N)]
         for i in range(0, N, 2):
-            ct, h, n, t, _, _ = enc[i]
+            ct, h, n, t, _, _, _mkmac = enc[i]
             bob.decrypt_message(h, ct, n, t)
         assert len(bob.skipped_keys) <= MAX, \
             f"Skip cache grew to {len(bob.skipped_keys)}, max is {MAX}"
@@ -864,11 +870,11 @@ class TestSkipCacheLimit:
         enc = [alice.encrypt_message(f"c{i}".encode()) for i in range(5)]
         # Deliver 0, 2, 4 — skipping 1 and 3
         for i in [0, 2, 4]:
-            ct, h, n, t, _, _ = enc[i]
+            ct, h, n, t, _, _, _mkmac = enc[i]
             bob.decrypt_message(h, ct, n, t)
         keys_before = len(bob.skipped_keys)
         # Now fill gap 1
-        ct, h, n, t, _, _ = enc[1]
+        ct, h, n, t, _, _, _mkmac = enc[1]
         bob.decrypt_message(h, ct, n, t)
         # Key for msg 1 should be gone
         assert len(bob.skipped_keys) < keys_before or keys_before == 0
@@ -881,16 +887,16 @@ class TestSimultaneousSend:
         """A and B send simultaneously; both eventually receive correctly."""
         alice, bob = _ratchet_pair()
         # Both send before either receives
-        ct_a, h_a, n_a, t_a, _, _ = alice.encrypt_message(b"A1")
-        ct_b, h_b, n_b, t_b, _, _ = bob.encrypt_message(b"B1")
+        ct_a, h_a, n_a, t_a, _, _, _mkmac = alice.encrypt_message(b"A1")
+        ct_b, h_b, n_b, t_b, _, _, _mkmac = bob.encrypt_message(b"B1")
         # Now cross-deliver
-        assert bob.decrypt_message(h_a, ct_a, n_a, t_a) == b"A1"
-        assert alice.decrypt_message(h_b, ct_b, n_b, t_b) == b"B1"
+        assert bob.decrypt_message(h_a, ct_a, n_a, t_a)[0] == b"A1"
+        assert alice.decrypt_message(h_b, ct_b, n_b, t_b)[0] == b"B1"
         # Continue conversation after the cross
-        ct_a2, h_a2, n_a2, t_a2, _, _ = alice.encrypt_message(b"A2")
-        ct_b2, h_b2, n_b2, t_b2, _, _ = bob.encrypt_message(b"B2")
-        assert bob.decrypt_message(h_a2, ct_a2, n_a2, t_a2) == b"A2"
-        assert alice.decrypt_message(h_b2, ct_b2, n_b2, t_b2) == b"B2"
+        ct_a2, h_a2, n_a2, t_a2, _, _, _mkmac = alice.encrypt_message(b"A2")
+        ct_b2, h_b2, n_b2, t_b2, _, _, _mkmac = bob.encrypt_message(b"B2")
+        assert bob.decrypt_message(h_a2, ct_a2, n_a2, t_a2)[0] == b"A2"
+        assert alice.decrypt_message(h_b2, ct_b2, n_b2, t_b2)[0] == b"B2"
 
     def test_simultaneous_multiple_rounds(self):
         """3 rounds of simultaneous sends all succeed."""
@@ -898,24 +904,29 @@ class TestSimultaneousSend:
         for round_n in range(3):
             msgs_a = [alice.encrypt_message(f"A{round_n}-{i}".encode()) for i in range(3)]
             msgs_b = [bob.encrypt_message(f"B{round_n}-{i}".encode()) for i in range(3)]
-            for i, (ct,h,n,t,_,_) in enumerate(msgs_a):
-                assert bob.decrypt_message(h, ct, n, t) == f"A{round_n}-{i}".encode()
-            for i, (ct,h,n,t,_,_) in enumerate(msgs_b):
-                assert alice.decrypt_message(h, ct, n, t) == f"B{round_n}-{i}".encode()
+            for i, (ct,h,n,t,_,_, _mkmac) in enumerate(msgs_a):
+                assert bob.decrypt_message(h, ct, n, t)[0] == f"A{round_n}-{i}".encode()
+            for i, (ct,h,n,t,_,_, _mkmac) in enumerate(msgs_b):
+                assert alice.decrypt_message(h, ct, n, t)[0] == f"B{round_n}-{i}".encode()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Additional imports for protocol-level tests
 # ─────────────────────────────────────────────────────────────────────────────
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM as _AESGCM
-import otrv4_ as _otrv4   # OTRv4DAKE, ClientProfile, NullLogger live here
+import otrv4_ as _otrv4   # RustDAKEAdapter, ClientProfile, NullLogger live here
 
 
 def _do_dake_handshake(init_profile, resp_profile):
-    """Return (alice_keys, bob_keys) from a complete DAKE handshake."""
-    a = _otrv4.OTRv4DAKE(client_profile=init_profile,
+    """Return (alice_keys, bob_keys) from a complete DAKE handshake.
+
+    v10.7 removed the pure-Python OTRv4DAKE; RustDAKEAdapter is now the only
+    DAKE orchestrator and takes the same constructor arguments, so these
+    UKS/transcript-binding assertions carry over unchanged.
+    """
+    a = _otrv4.RustDAKEAdapter(client_profile=init_profile,
                           explicit_initiator=True,  logger=_otrv4.NullLogger())
-    b = _otrv4.OTRv4DAKE(client_profile=resp_profile,
+    b = _otrv4.RustDAKEAdapter(client_profile=resp_profile,
                           explicit_initiator=False, logger=_otrv4.NullLogger())
     b.process_dake1(a.generate_dake1(), peer_key="a")
     a.process_dake2(b.generate_dake2())
@@ -967,7 +978,7 @@ class TestPostCompromiseSecurity:
         """
         alice, bob = _ratchet_pair()
         # Exchange first messages so remote pubs are set
-        ct, h, n, t, _, _ = alice.encrypt_message(b"a")
+        ct, h, n, t, _, _, _mkmac = alice.encrypt_message(b"a")
         bob.decrypt_message(h, ct, n, t)
 
         ratchet_id_before = bob.ratchet_id
@@ -982,7 +993,7 @@ class TestPostCompromiseSecurity:
         PCS: new key material from DH is injected into root.
         """
         alice, bob = _ratchet_pair()
-        ct, h, n, t, _, _ = alice.encrypt_message(b"a")
+        ct, h, n, t, _, _, _mkmac = alice.encrypt_message(b"a")
         bob.decrypt_message(h, ct, n, t)
         # bob.dh_ratchet_remote_pub = Alice's pub (set during decrypt CASE 2)
         root_before = bob.root_key.read()
@@ -998,7 +1009,7 @@ class TestPostCompromiseSecurity:
         chain cannot predict the new recv chain.
         """
         alice, bob = _ratchet_pair()
-        ct, h, n, t, _, _ = alice.encrypt_message(b"msg")
+        ct, h, n, t, _, _, _mkmac = alice.encrypt_message(b"msg")
         bob.decrypt_message(h, ct, n, t)
 
         # Steal Alice's send chain key
@@ -1065,7 +1076,7 @@ class TestForwardSecrecyErasure:
     def test_fs_used_key_not_in_skip_cache(self):
         """After normal decryption, used key is removed from skipped_keys cache."""
         alice, bob = _ratchet_pair()
-        ct, h, n, t, _, _ = alice.encrypt_message(b"secret")
+        ct, h, n, t, _, _, _mkmac = alice.encrypt_message(b"secret")
         bob.decrypt_message(h, ct, n, t)
         ratchet_pub = _otrv4.RatchetHeader.decode(h).dh_pub
         msg_num     = _otrv4.RatchetHeader.decode(h).msg_num
@@ -1080,7 +1091,7 @@ class TestForwardSecrecyErasure:
         alice, bob = _ratchet_pair()
         old_cts = []
         for i in range(5):
-            ct, h, n, t, _, _ = alice.encrypt_message(f"msg{i}".encode())
+            ct, h, n, t, _, _, _mkmac = alice.encrypt_message(f"msg{i}".encode())
             bob.decrypt_message(h, ct, n, t)
             old_cts.append((ct, h, n, t))
 
@@ -1138,7 +1149,7 @@ class TestStateCorruptionDetection:
             chain_key_send=seed[32:], chain_key_recv=seed[:32],
         )
 
-        ct, rh_bytes, nonce, tag, _, _ = alice.encrypt_message(b"hello")
+        ct, rh_bytes, nonce, tag, _, _, _mkmac = alice.encrypt_message(b"hello")
 
         # Bit-flip the first byte of the ciphertext to simulate corruption
         corrupted_ct = bytes([ct[0] ^ 0xFF]) + ct[1:]
@@ -1157,7 +1168,7 @@ class TestStateCorruptionDetection:
         relying on a Python-only attribute that Rust ignores.
         """
         alice, bob = _ratchet_pair()
-        ct, rh_bytes, nonce, tag, _, _ = alice.encrypt_message(b"hello")
+        ct, rh_bytes, nonce, tag, _, _, _mkmac = alice.encrypt_message(b"hello")
         # Corrupt every byte of the tag
         bad_tag = bytes(b ^ 0xFF for b in tag)
         with pytest.raises(Exception):
@@ -1166,7 +1177,7 @@ class TestStateCorruptionDetection:
     def test_corruption_wrong_nonce_fails_authentication(self):
         """Replaying with a different nonce causes authentication failure."""
         alice, bob = _ratchet_pair()
-        ct, h, n, t, _, _ = alice.encrypt_message(b"message")
+        ct, h, n, t, _, _, _mkmac = alice.encrypt_message(b"message")
         wrong_nonce = secrets.token_bytes(12)
         with pytest.raises(Exception):
             bob.decrypt_message(h, ct, wrong_nonce, t)
@@ -1174,7 +1185,7 @@ class TestStateCorruptionDetection:
     def test_corruption_wrong_tag_fails_authentication(self):
         """Corrupt authentication tag is always rejected."""
         alice, bob = _ratchet_pair()
-        ct, h, n, t, _, _ = alice.encrypt_message(b"message")
+        ct, h, n, t, _, _, _mkmac = alice.encrypt_message(b"message")
         bad_tag = bytes(b ^ 0xFF for b in t)
         with pytest.raises(Exception):
             bob.decrypt_message(h, ct, n, bad_tag)
@@ -1199,19 +1210,19 @@ class TestSkippedKeyReplay:
         Replaying M1 must fail.
         """
         alice, bob = _ratchet_pair()
-        ct1, h1, n1, t1, _, _ = alice.encrypt_message(b"M1")
-        ct2, h2, n2, t2, _, _ = alice.encrypt_message(b"M2")
-        ct3, h3, n3, t3, _, _ = alice.encrypt_message(b"M3")
+        ct1, h1, n1, t1, _, _, _mkmac = alice.encrypt_message(b"M1")
+        ct2, h2, n2, t2, _, _, _mkmac = alice.encrypt_message(b"M2")
+        ct3, h3, n3, t3, _, _, _mkmac = alice.encrypt_message(b"M3")
 
         # Deliver M3 first — M1 and M2 keys go to skip cache
-        assert bob.decrypt_message(h3, ct3, n3, t3) == b"M3"
+        assert bob.decrypt_message(h3, ct3, n3, t3)[0] == b"M3"
 
         # M1 key must be in skip cache at this point
         dh_pub = otr.RatchetHeader.decode(h1).dh_pub
         assert (dh_pub, 0) in bob.skipped_keys, "M1 key should be in skip cache"
 
         # First delivery of M1 succeeds and erases the skip key
-        assert bob.decrypt_message(h1, ct1, n1, t1) == b"M1"
+        assert bob.decrypt_message(h1, ct1, n1, t1)[0] == b"M1"
         assert (dh_pub, 0) not in bob.skipped_keys, "M1 key must be deleted after use"
 
         # Replay of M1 must fail
@@ -1227,13 +1238,13 @@ class TestSkippedKeyReplay:
         msgs = [alice.encrypt_message(f"M{i}".encode()) for i in range(5)]
 
         # Deliver last message first — keys 0-3 go to skip cache
-        ct, h, n, t, _, _ = msgs[4]
-        assert bob.decrypt_message(h, ct, n, t) == b"M4"
+        ct, h, n, t, _, _, _mkmac = msgs[4]
+        assert bob.decrypt_message(h, ct, n, t)[0] == b"M4"
 
         for i in range(4):
-            ct, h, n, t, _, _ = msgs[i]
+            ct, h, n, t, _, _, _mkmac = msgs[i]
             # First decrypt succeeds
-            assert bob.decrypt_message(h, ct, n, t) == f"M{i}".encode()
+            assert bob.decrypt_message(h, ct, n, t)[0] == f"M{i}".encode()
             # Immediate replay must fail — key was erased
             with pytest.raises(Exception):
                 bob.decrypt_message(h, ct, n, t)
@@ -1244,13 +1255,13 @@ class TestSkippedKeyReplay:
         Replay is rejected via _seen_messages regardless of further message flow.
         """
         alice, bob = _ratchet_pair()
-        ct1, h1, n1, t1, _, _ = alice.encrypt_message(b"skip me")
-        ct2, h2, n2, t2, _, _ = alice.encrypt_message(b"arrives first")
+        ct1, h1, n1, t1, _, _, _mkmac = alice.encrypt_message(b"skip me")
+        ct2, h2, n2, t2, _, _, _mkmac = alice.encrypt_message(b"arrives first")
 
         # Deliver msg 2 first (msg 1 goes to skip cache)
-        assert bob.decrypt_message(h2, ct2, n2, t2) == b"arrives first"
+        assert bob.decrypt_message(h2, ct2, n2, t2)[0] == b"arrives first"
         # Deliver msg 1 from skip cache — key deleted, replay recorded
-        assert bob.decrypt_message(h1, ct1, n1, t1) == b"skip me"
+        assert bob.decrypt_message(h1, ct1, n1, t1)[0] == b"skip me"
 
         dh_pub = otr.RatchetHeader.decode(h1).dh_pub
         # Skip key must be gone
@@ -1275,7 +1286,7 @@ class TestSkippedKeyReplay:
         msgs = [alice.encrypt_message(b"x") for _ in range(max_skip + 5)]
 
         # Deliver the last message — forces skip of max_skip+4 messages (too many)
-        ct, h, n, t, _, _ = msgs[-1]
+        ct, h, n, t, _, _, _mkmac = msgs[-1]
         with pytest.raises(Exception):
             bob.decrypt_message(h, ct, n, t)
 
@@ -1298,7 +1309,7 @@ class TestRatchetMonotonicity:
         """message_num_recv increases by 1 for each in-order message received."""
         alice, bob = _ratchet_pair()
         for i in range(20):
-            ct, h, n, t, _, _ = alice.encrypt_message(b"x")
+            ct, h, n, t, _, _, _mkmac = alice.encrypt_message(b"x")
             bob.decrypt_message(h, ct, n, t)
             # After decrypting message i, recv counter is i+1
             assert bob.message_num_recv == i + 1, \
@@ -1307,7 +1318,7 @@ class TestRatchetMonotonicity:
     def test_recv_counter_never_decreases_on_replay(self):
         """Replaying a message never decrements the receive counter."""
         alice, bob = _ratchet_pair()
-        ct, h, n, t, _, _ = alice.encrypt_message(b"x")
+        ct, h, n, t, _, _, _mkmac = alice.encrypt_message(b"x")
         bob.decrypt_message(h, ct, n, t)
         counter_after = bob.message_num_recv
 
@@ -1334,7 +1345,7 @@ class TestRatchetMonotonicity:
         assert bob.message_num_recv == 0  # Bob hasn't received yet
 
         # Bob receives all 5
-        for ct, h, n, t, _, _ in cts:
+        for ct, h, n, t, _, _, _mkmac in cts:
             bob.decrypt_message(h, ct, n, t)
         assert bob.message_num_recv == 5
         assert alice.message_num_send == 5  # Alice send counter unchanged

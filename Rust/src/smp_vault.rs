@@ -14,6 +14,8 @@ use zeroize::{Zeroize, ZeroizeOnDrop};
 use pyo3::prelude::*;
 #[cfg(feature = "test-only-kdf")]
 use pyo3::types::PyBytes;
+// Not gated: store_from_bytearray is the production secret-input path.
+use pyo3::types::PyByteArray;
 use rand::rngs::OsRng;
 use rand::RngCore;
 
@@ -172,9 +174,47 @@ impl PySMPVault {
     pub fn new() -> Self { Self { inner: Vault::new() } }
 
     /// Store raw bytes under `name`. Returns opaque u64 handle.
+    ///
+    /// Prefer `store_from_bytearray` for anything a user typed: a `bytes`
+    /// argument is an immutable Python object the caller cannot wipe, so
+    /// passing one here leaves a copy of the secret on the Python heap for
+    /// the garbage collector to deal with whenever it feels like it.
     fn store(&mut self, name: &str, value: &[u8]) -> PyResult<u64> {
         self.inner.store(name, value)
             .map_err(|e| pyo3::exceptions::PyValueError::new_err(e))
+    }
+
+    /// Store a secret from a Python `bytearray`, zeroing the caller's buffer.
+    ///
+    /// The wipe is the point.  `set_smp_secret` used to build a wipeable
+    /// bytearray, hand `bytes(raw)` to `store()`, and then carefully zero the
+    /// bytearray in a `finally` -- wiping the one object that no longer
+    /// mattered, while the immutable copy it had just made survived.
+    ///
+    /// This takes the bytearray itself, copies it into the vault's
+    /// ZeroizeOnDrop entry, and zeroes the Python buffer in place before
+    /// returning.  Mirrors `RustSMP::set_secret_from_bytearray`, which has
+    /// worked this way since the SMP engine moved into Rust; the vault path
+    /// simply never adopted it.
+    fn store_from_bytearray(
+        &mut self,
+        name:  &str,
+        value: &Bound<'_, PyByteArray>,
+    ) -> PyResult<u64> {
+        let mut snapshot: Vec<u8> = value.to_vec();
+        let result = self.inner.store(name, &snapshot)
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e));
+
+        // Wipe our own copy whatever happened, including on the error path:
+        // a rejected secret is still a secret.
+        snapshot.zeroize();
+        drop(snapshot);
+
+        let n = value.len();
+        for i in 0..n {
+            value.set_item(i, 0u8)?;
+        }
+        result
     }
 
     fn has(&self, name: &str)        -> bool { self.inner.has(name) }

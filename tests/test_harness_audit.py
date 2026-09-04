@@ -190,10 +190,18 @@ class TestSecureKeyStorage(unittest.TestCase):
 
 # ═══════════ Rust SMP Vault ══════════════════════════════════════
 
+# RustSMPVault.load / load_by_handle are compiled out unless the core is built
+# with `test-only-kdf`.  On a production wheel their absence is the security
+# boundary working as designed, so these read-back tests skip rather than fail.
+# The complementary assertion -- that a production build MUST NOT expose them --
+# lives in tests/test_release_guard.py.
+_VAULT_READBACK = hasattr(RustSMPVault, "load")
+
 @unittest.skipUnless(VAULT_AVAILABLE, "otrv4_core not installed")
 class TestRustSMPVault(unittest.TestCase):
     """Rust vault for SMP secret storage with zeroize-on-drop."""
 
+    @unittest.skipUnless(_VAULT_READBACK, "core built without test-only-kdf")
     def test_01_store_and_load(self):
         vault = RustSMPVault()
         data = b'\xaa' * 384
@@ -215,6 +223,7 @@ class TestRustSMPVault(unittest.TestCase):
         vault.remove("secret")
         self.assertFalse(vault.has("secret"))
 
+    @unittest.skipUnless(_VAULT_READBACK, "core built without test-only-kdf")
     def test_04_overwrite_existing(self):
         vault = RustSMPVault()
         vault.store("r5", b'\x01' * 32)
@@ -267,22 +276,22 @@ class TestRustBackedDoubleRatchet(unittest.TestCase):
 
     def test_01_encrypt_decrypt(self):
         alice, bob = self._make_pair()
-        ct, hdr, nonce, tag, rid, reveal = alice.encrypt_message(b"hello rust")
-        pt = bob.decrypt_message(hdr, ct, nonce, tag)
+        ct, hdr, nonce, tag, rid, reveal, _mkmac = alice.encrypt_message(b"hello rust")
+        pt = bob.decrypt_message(hdr, ct, nonce, tag)[0]
         self.assertEqual(pt, b"hello rust")
 
     def test_02_bidirectional(self):
         alice, bob = self._make_pair()
         for i in range(20):
-            ct, hdr, n, t, _, _ = alice.encrypt_message(f"a2b-{i}".encode())
-            self.assertEqual(bob.decrypt_message(hdr, ct, n, t), f"a2b-{i}".encode())
+            ct, hdr, n, t, _, _, _mkmac = alice.encrypt_message(f"a2b-{i}".encode())
+            self.assertEqual(bob.decrypt_message(hdr, ct, n, t)[0], f"a2b-{i}".encode())
 
-            ct, hdr, n, t, _, _ = bob.encrypt_message(f"b2a-{i}".encode())
-            self.assertEqual(alice.decrypt_message(hdr, ct, n, t), f"b2a-{i}".encode())
+            ct, hdr, n, t, _, _, _mkmac = bob.encrypt_message(f"b2a-{i}".encode())
+            self.assertEqual(alice.decrypt_message(hdr, ct, n, t)[0], f"b2a-{i}".encode())
 
     def test_03_tampered_ciphertext_rejected(self):
         alice, bob = self._make_pair()
-        ct, hdr, n, t, _, _ = alice.encrypt_message(b"test")
+        ct, hdr, n, t, _, _, _mkmac = alice.encrypt_message(b"test")
         tampered = bytearray(ct)
         tampered[0] ^= 0xff
         with self.assertRaises(otr.EncryptionError):
@@ -295,12 +304,12 @@ class TestRustBackedDoubleRatchet(unittest.TestCase):
 
     def test_05_returns_bytes(self):
         alice, bob = self._make_pair()
-        ct, hdr, n, t, rid, reveal = alice.encrypt_message(b"type check")
+        ct, hdr, n, t, rid, reveal, _mkmac = alice.encrypt_message(b"type check")
         self.assertIsInstance(ct, bytes)
         self.assertIsInstance(hdr, bytes)
         self.assertIsInstance(n, bytes)
         self.assertIsInstance(t, bytes)
-        pt = bob.decrypt_message(hdr, ct, n, t)
+        pt = bob.decrypt_message(hdr, ct, n, t)[0]
         self.assertIsInstance(pt, bytes)
 
 

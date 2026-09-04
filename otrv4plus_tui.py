@@ -539,6 +539,12 @@ class Tui:
         self.stdscr = None
         self._old_stdout = None
         self.input = ""
+        #: When set, the input line renders as dots and the submitted text is
+        #: kept out of command history. The SMP passphrase is a shared secret;
+        #: echoing it puts it in the terminal, in scrollback, in the history
+        #: any up-arrow can recall, and in any `script` capture of the session
+        #: -- which is exactly how it reached a bug report.
+        self.mask_input = False
         self.cursor = 0
         self._hist_idx = None
         self._stash = ""
@@ -705,7 +711,8 @@ class Tui:
             # input line
             prompt = "[%s] " % _localpart(self.model.active) if \
                 self.model.active != STATUS_TAB else "> "
-            visible = prompt + self.input
+            shown = ("\u2022" * len(self.input)) if self.mask_input else self.input
+            visible = prompt + shown
             self._put(h - 1, 0, visible[:w], 0)
             cx = min(w - 1, len(prompt) + self.cursor)
             try:
@@ -857,12 +864,17 @@ class Tui:
 
     def _on_enter(self):
         text = self.input
+        masked = self.mask_input
         self.input = ""
         self.cursor = 0
         self._hist_idx = None
         if text == "":
             return
-        self.model.history.append(text)
+        if not masked:
+            # A masked line is a secret. Recording it would make it
+            # recallable with the up arrow and keep it in memory for the rest
+            # of the session, which defeats hiding it on screen.
+            self.model.history.append(text)
         if text.startswith("/"):
             name, _, args = text[1:].partition(" ")
             name = name.lower()
@@ -973,7 +985,13 @@ def install_tui(client, loop, own_jid="", initial_peer=None, debug=False,
             if not p:
                 return
             a = a.strip()
-            client.smp_start(p, a if a and a != "start" else None)
+            # Bare /smp (and /smp start) go through the guided flow, which
+            # prompts for the passphrase when none is stored.  An inline
+            # secret keeps the old direct path, echo and all.
+            if not a or a == "start":
+                client.smp_verify(p)
+            else:
+                client.smp_start(p, a)
 
         def c_smp_secret(a):
             p = need_peer()

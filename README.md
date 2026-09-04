@@ -6,7 +6,7 @@
 <p align="center"><strong>Post-quantum hybrid encryption for Off The Record (OTR) chat <em>and voice calls</em> over IRC and XMPP. Experimental, unaudited research prototype.</strong></p>
 
 <p align="center">
-<code>v10.11.1 · Rust crypto core · hybrid PQC SMP + voice (ML-KEM-1024 + ML-DSA-87) · I2P SAM · AAudio · TUI</code>
+<code>v10.14.0 · Rust crypto core · hybrid PQC SMP (ML-KEM-1024 + ML-DSA-87) · voice (X448 + ML-KEM-1024, AES-256-GCM) · I2P SAM · AAudio · TUI</code>
 </p>
 
 ---
@@ -23,7 +23,7 @@
 
 ## What this is
 
-OTRv4+ is an IRC and XMPP client that implements OTRv4 with a post-quantum hybrid layer added at each stage of the protocol, including the SMP identity-verification step and, as of v10.11.0, encrypted voice calls carried over I2P. It runs on Termux (Android) over I2P, Tor, or TLS clearnet, with a Rust crypto core wrapped by a thin Python orchestration layer.
+OTRv4+ is an IRC and XMPP client that implements OTRv4 with a post-quantum hybrid layer added at each stage of the protocol, including the SMP identity-verification step and, as of v10.11.0, encrypted voice calls carried over I2P — which as of v10.12.0 detect, diagnose and recover from a media path that stops. It runs on Termux (Android) over I2P, Tor, or TLS clearnet, with a Rust crypto core wrapped by a thin Python orchestration layer.
 
 **Single-author research prototype. Not a finished product, and not audited.** The author is not a cryptographer. The protocol composition (the DAKE wiring, the hybrid SMP construction) has had no external review, and the Rust crypto crates it depends on (`ed448-goldilocks-plus`, `x448`, `pqcrypto-mlkem`, `pqcrypto-mldsa`) have had no formal review either. Use it to study or extend, not because you need a hardened tool today. If your safety depends on the security of your messaging, use something audited.
 
@@ -61,7 +61,38 @@ For someone who wants to try it in about ten minutes on Termux (Android, aarch64
 
 ```bash
 pkg install python rust openssl clang git
+pip install argon2-cffi
 ```
+
+`argon2-cffi` is not optional in practice. Without it the at-rest key
+derivation for stored SMP secrets and the sealed identity falls back to scrypt
+— which still works and warns loudly on every derivation, but is not
+memory-hard. The warning names the remedy; there is currently no command that
+reports the backend after the fact, so if you scrolled past it, the safe
+assumption is that you are on scrypt until you have installed this and
+restarted.
+
+Python **3.12 or newer** is required — `otrv4+.py` uses PEP 701 f-string syntax
+that does not parse on 3.11, so an older interpreter fails with a `SyntaxError`
+inside an import rather than a clear message.
+
+For **voice calls**, two more:
+
+```bash
+pkg install libopus termux-api       # the Opus codec, and Termux:API for the ringer
+pip install opuslib                  # the Python binding to libopus
+```
+
+The Termux package is `libopus`, not `opus` — `pkg install opus` fails with
+*Unable to locate package*.
+
+Chat needs neither. Voice needs no Python cryptography library: since v10.13.2
+the whole voice key path — media AES-256-GCM, the HKDF-SHA512 schedule and the
+X448 exchange — runs inside `otrv4_core`. Earlier revisions of this section
+told you to `pip install cryptography` for voice; that is no longer true, and
+`cryptography` is now only needed to run the **test suite**, where
+`tests/test_voice_rust_parity.py` uses it to build an independent reference
+derivation to check the Rust one against.
 
 For **clearnet/TLS** (fastest, no extra setup):
 ```bash
@@ -91,18 +122,22 @@ fatal for anything else. It meant `cargo test` failed at link time, so all 35
 unit tests in the crate had never been executed. Moving it out of `default`
 costs one flag on the build line and makes the test suite reachable.
 
-As of v10.7.5 the project is **Rust-core-only**: there are no C extensions to compile and no Python `cryptography` dependency. The Rust core is the single cryptographic surface.
+As of v10.7.5 there are no C extensions to compile. The **chat** path is Rust-core-only: every cryptographic operation behind messaging runs inside `otrv4_core`.
+
+The **voice** path was the exception until v10.13.2, and this paragraph used to say so. `otrv4plus_voice.py` used the Python `cryptography` library for the media AES-256-GCM, the HKDF-SHA512 voice key schedule and the X448 half of the voice key exchange — so there were two AES-256-GCM implementations in the tree and "one cryptographic surface" would have been false. All three moved into `otrv4_core` at v10.13.2: the epoch root is `SecretBytes<64>` behind a handle with no accessor, media keys are `SecretBytes<32>` with no getter, and the X448 private scalar is `SecretBytes<56>`, single-use. `_require_rust_voice()` is a hard requirement with no Python fallback, because falling back would restore exactly what was removed.
+
+So voice no longer needs `cryptography` at run time, and the library is a **test** dependency rather than a runtime one. What remains Python-side in the voice path touches no key material: the frame header, the AAD construction, the replay window, the jitter buffer and the rekey state machine.
 
 ### 3. Verify the build (recommended)
 
 ```bash
 cd Rust
-cargo test --lib            # 45 tests, ~90 s (the SMP tests are 3072-bit DH)
-cargo test --lib ratchet    # 10 ratchet tests, under a second
+cargo test --lib            # 65 tests (the SMP tests are 3072-bit DH)
+cargo test --lib ratchet    # 26 ratchet tests, about a second
 cd ..
 ```
 
-Expected: `test result: ok. 45 passed; 0 failed`. Four groups matter most:
+Expected: `test result: ok. 65 passed; 0 failed`. Four groups matter most:
 
 | Test | Checks |
 |---|---|
@@ -151,8 +186,121 @@ python otrv4plus_xmpp.py \
   --jid alice@<vhost>.b32.i2p \
   --server <c2s-tunnel>.b32.i2p \
   --peer bob@<vhost>.b32.i2p \
-  --insecure-tls --debug
+  --debug
 ```
+
+#### No `--insecure-tls`, and why
+
+Nothing above passes it, because over I2P nothing needs it.
+
+A `.b32.i2p` address is the SHA-256 of the server's destination key: reaching
+that address means reaching that key-holder, over I2P's own end-to-end
+encryption, or not connecting at all. There is no certificate authority in the
+path and no MITM position for one to defend against. The same is true of a v3
+`.onion` name over Tor, which *is* the server's public key.
+
+So the client decides by transport rather than by flag:
+
+| Server | Certificate check |
+|---|---|
+| `.b32.i2p` over I2P | skipped — the address authenticates the endpoint, and the client says so |
+| `.onion` over Tor | skipped — same reason |
+| clearnet | **required**, and only `--insecure-tls` disables it, with a warning |
+
+The flag still exists for a clearnet server with a self-signed certificate.
+It is no longer part of any normal command, which matters: a flag with
+"insecure" in it, typed daily for a link that is not insecure, teaches a habit
+that is genuinely dangerous the first time someone carries it to a clearnet
+host.
+
+**A certificate would not add much here.** It proves possession of a key, not
+that a server is uncompromised — an attacker who took the server holds the key
+too and serves the same certificate. Certificates detect *substitution*, and
+substitution is what the b32 already prevents. No public CA issues for `.i2p`
+in any case, since it is outside the public DNS namespace.
+
+#### Not typing the b32 every time
+
+`.i2p` names are **not DNS**. A router resolves only the names in its own
+address book, which it builds from subscriptions, and a private server is in
+nobody's subscription — so `xmpp-elite.i2p` resolves on the machine that
+created it and nowhere else, while the 52-character `.b32.i2p` form works
+everywhere because it *is* the destination hash. That is why the long form has
+to be pasted, and it is unreasonable on a phone keyboard.
+
+**The project's own server is already in the box.** `i2p_hosts.defaults`
+ships with the source, so a fresh clone connects with the short name and never
+sees a b32:
+
+```bash
+python otrv4plus_xmpp.py --jid alice@xmpp-elite.i2p \
+                         --peer bob@xmpp-elite.i2p
+```
+
+That file is also how a **server move** reaches people. Ship a new line, users
+`git pull`, and the same command they have always run reaches the new address.
+Delete its contents if you would rather trust nothing shipped — everything
+still works with an explicit `--server`.
+
+**Precedence, and why.** `~/.otrv4plus/i2p_hosts` is yours and an update never
+edits it. A line you wrote by hand always wins: you meant it. A line the
+client *learned* by itself, marked `# learned`, yields to a changed shipped
+default and says so — otherwise your first successful connection would pin an
+address forever and a server move would strand you.
+
+**The client writes this for you.** The first time a connection to a
+`.b32.i2p` server succeeds, the mapping from your JID's domain to that
+destination is recorded automatically, and it says so:
+
+```
+[i2p] recorded xmpp-elite.i2p = hq4t24b7…q.b32.i2p in ~/.otrv4plus/i2p_hosts
+[i2p] next time:  --jid bob@xmpp-elite.i2p --peer <peer> (no --server needed)
+```
+
+It records only after the connection worked, because that is the only moment
+the pair is known to be good. If the name is already recorded against a
+*different* destination it is left alone and reported — a server that moved is
+something you should see, not something the client quietly adopts.
+
+Or write it by hand, in `~/.otrv4plus/i2p_hosts`:
+
+```
+# name = destination
+xmpp-elite.i2p = hq4t24b7vkllfbk55e5xfocqhfi7hxprwc47zyuilbg6wgzikidq.b32.i2p
+```
+
+Then the address is the JID's own domain and **`--server` is no longer
+needed**:
+
+```bash
+python otrv4plus_xmpp.py \
+  --jid alice@xmpp-elite.i2p \
+  --peer bob@xmpp-elite.i2p
+```
+
+The client prints the substitution when it uses one, so you always see which
+destination you actually reached.
+
+**What an alias is, and is not.** It is a note to yourself about what a name
+means on this device. It is not authenticated, it is not published, and it
+proves nothing about who answers. Nothing about the security of a conversation
+rests on it: the DAKE authenticates the peer and TOFU pins their identity key,
+so pointing an alias at the wrong server gives you a failed connection or a
+server that cannot read anything — not a silent impersonation. An address
+given in full as `.b32.i2p` is never looked up in the file, so a local file
+cannot redirect an address you spelled out.
+
+**The client never touches i2pd's own address book.** That format varies
+between versions, the daemon owns and rewrites those files, and a bad write
+would break name resolution for every I2P application on the device rather
+than just this one — so the alias file is ours, in our directory, and the
+router's is left alone.
+
+The alternative, if you would rather every I2P application on the device knew
+the name, is the router's own address book (`i2pd`: an entry under
+`~/.i2pd/addressbook/`), edited by you. Publishing a name properly, so that *other* people's
+routers resolve it, means registering it with an I2P naming service — a
+server-operator task, with propagation delay, and out of scope for the client.
 
 `--sam-host` / `--sam-port` point it at an I2P-hosted XMPP server through the same SAM bridge setup as the IRC client. `--no-i2p` connects to a clearnet/TLS XMPP server directly. `--no-tui` switches to plain linear scrollback. `--no-reconnect` disables the reconnect loop. Run `--help` for the full flag list.
 
@@ -191,9 +339,12 @@ All commands work identically in TUI and `--no-tui` mode.
 
 ```
 /otr [jid]            start OTR session (DAKE)
-/smp start            begin SMP verification
-/smp <secret>         set secret and start SMP in one step
-/smp-secret <s>       store secret for auto-respond (no initiation)
+/smp                  verify this session — prompts (hidden) if no passphrase
+                      is stored, then verifies. The only SMP command you need.
+/smp start            same as /smp
+/smp <secret>         set the passphrase inline and start (ECHOED — prefer /smp)
+/smp-secret           store a passphrase without verifying (prompts, hidden)
+/smp-secret <s>       store it inline (ECHOED — advanced/compat form)
 /trust                re-show fingerprint trust prompt
 /msg <jid> <text>     send plaintext message (no OTR)
 /status               show session + trust + SMP state
@@ -351,13 +502,16 @@ receiver supplies the peer's direction locally, so a frame reflected back at
 its own sender fails authentication. The nonce is derived from authenticated
 fields rather than sent, costing no bytes and removing a tamper surface.
 
-Constant 199-byte packet, one every 40 ms, for the whole call. Muting encodes
-digital silence rather than stopping transmission, so it is invisible to
-anyone counting packets.
+Constant 279-byte packet, one every 60 ms — 16.7 packets/s, 37.2 kbit/s on the
+wire — for the whole call. Muting encodes digital silence rather than stopping
+transmission, so it is invisible to anyone counting packets. Both the frame
+length and the bitrate are wire-format settings: peers that disagree establish
+a call, report it healthy, and carry no audio. See
+[Rust/VOICE_TUNING.md](Rust/VOICE_TUNING.md).
 
 ### Key schedule
 
-- **Symmetric ratchet** every 500 frames (20 s) — forward secrecy for audio
+- **Symmetric ratchet** every 500 frames (30 s at the 60 ms default) — forward secrecy for audio
   already sent. It does *not* give post-compromise recovery; an attacker
   holding the current chain key can step it forward indefinitely.
 - **Hybrid rekey** every 120 s: fresh X448 + fresh ML-KEM-1024, chained onto
@@ -373,8 +527,17 @@ anyone counting packets.
   twice is not.
 
 Every control message (INVITE, ACCEPT, CONFIRM, REJECT, REKEY, REKEYACK,
-REKEYCOMMIT, END) carries and is matched against the `call_id`, so a message
-from a previous call cannot act on the current one.
+REKEYCOMMIT, MEDIAPATH, END) carries and is matched against the `call_id`, so
+a message from a previous call cannot act on the current one.
+
+**MEDIAPATH** announces a replacement media endpoint after a network
+transition. Arriving over the OTR-encrypted signalling channel is not enough
+to be acted on: it carries a tag derived from the committed media epoch root,
+so producing one requires the media secret rather than write access to
+signalling. The tag covers the call, the epoch, a strictly increasing
+sequence, the destination and the direction — so a forged, reflected,
+replayed or rolled-back announcement cannot move where audio is sent. See
+`VOICE_MEDIA_PATH.md`.
 
 ### Audio backend
 
@@ -408,26 +571,204 @@ zeroes are exactly what a revoked `RECORD_AUDIO` or a null source produces.
 
 **Codec and jitter:**
 
-- Opus 16 kHz mono, 40 ms frames, **24 kbit/s CBR**, DTX off. A 40 ms frame is
-  120 bytes in the fixed 160-byte slot; at the previous 16 kbit/s half of every
-  packet was zero padding transmitted anyway.
+- Opus 16 kHz mono, 60 ms frames, **24 kbit/s CBR**, DTX off. A 60 ms frame is
+  180 bytes in the fixed 232-byte slot. 60 ms was measured against 40 ms and
+  20 ms and chosen because I2P charges by the packet, not by the byte: it is
+  16.7 packets/s against 25, for 6% less wire bitrate. It costs 20 ms more
+  accumulation delay, and one lost packet is 60 ms of audio rather than 40.
+  `OTRV4PLUS_OPUS_FRAME_MS` changes it, on both phones together.
 - **In-band FEC**, decoded at playout. Recovering a lost frame needs the *next*
   packet, which does not exist at receive time, so the jitter buffer holds Opus
   payloads rather than PCM. A one-frame gap is reconstructed from the
   successor's redundant copy — recovered audio, not synthesised concealment.
   Longer gaps fall back to PLC. This also cuts buffer memory 8×.
 - **Adaptive jitter buffer.** RFC 3550 interarrival smoothing with the frame
-  counter as sender timestamp (spacing is exactly 40 ms by construction, so any
-  deviation is transit jitter). Target is 3× the estimate plus one frame,
+  counter as sender timestamp (spacing is exactly one frame by construction, so
+  any deviation is transit jitter). Target is 3× the estimate plus one frame,
   clamped: 240 ms on a clean path, 600 ms ceiling, and it shrinks back when the
   path recovers.
+
+### Reading the telemetry
+
+`--voice-debug` prints a five-second telemetry block per call. The one-way
+figure in the summary line and the mouth-to-ear total in the `budget:` line
+are colour-banded so a reading is a verdict rather than a number to interpret:
+
+| Colour | Mouth-to-ear | Meaning |
+|---|---|---|
+| green | ≤ 400 ms | ITU-T G.114's "acceptable for most user applications" |
+| yellow | ≤ 800 ms | noticeable delay, still conversational |
+| red | > 800 ms | talk-over territory |
+
+Over three I2P hops in each direction a healthy call reads **red**: the
+measured median mouth-to-ear on this path is about **917 ms**. That is above
+G.114's 400 ms and above the 800 ms band, and the readout says so rather than
+being recalibrated until it looks acceptable. It is the price of the anonymity
+configuration, not a fault in the codec — Opus is not the bottleneck (see
+[OPUS_AUDIT.md](OPUS_AUDIT.md)), and the playout path contributes a p50 of
+about 93 ms during degraded periods. Do not read this figure as ordinary
+low-latency VoIP performance; it is a measurement of a three-hop-each-way
+anonymising network. Reducing it is open work, and reducing the hop count is
+not on the table. Retune without touching
+code via `OTRV4PLUS_M2E_GOOD_MS` and `OTRV4PLUS_M2E_WARN_MS`; `NO_COLOR`
+disables the banding, and it is suppressed automatically when stdout is not a
+terminal, so a redirected transcript stays plain.
+
+### When the media path stops
+
+A call can go silent without anything reporting an error. A datagram handed to
+the local SAM UDP bridge is accepted whether or not the session behind it still
+exists, so the transmit counters keep climbing over a dead path and the call
+looks healthy while carrying nothing. That is what a Wi-Fi-to-mobile switch used
+to do to a call.
+
+A watchdog now measures silence since the last frame that **authenticated** —
+not since the last datagram that arrived, which a broken path can still produce.
+When nothing is arriving at all, the endpoint is replaced: the old SAM session
+is closed, a new one is built, and the new destination is announced to the peer
+in an authenticated `MEDIAPATH` control message, tagged from the committed epoch
+root over the call_id, epoch, sequence, destination and role. A stale, forged or
+rolled-back address is rejected. No media key derives from the destination, so
+moving the address invalidates no key: epoch, replay windows, ratchet and call
+identity all survive untouched, and a packet already accepted stays rejected.
+Success is confirmed by inbound media resuming, never by the clock.
+
+Not every silence deserves a new endpoint. A SAM session lives exactly as long
+as its control socket, and on a network transition I2P often rebuilds tunnels
+*underneath* a session that is still ours — replacing it then throws away a
+working session, stops our own transmission for the rebuild, and makes the peer
+adopt an address it never needed. So while the control socket is open the
+rebuild is held back; while it is closed, nothing changes:
+
+| | warn | rebuild | dead |
+|---|---|---|---|
+| proven path, session gone | 15 s | 15 s | 45 s |
+| proven path, session alive | 15 s | 45 s | 75 s |
+| cold path, session gone | 120 s | 120 s | 165 s |
+| cold path, session alive | 120 s | 150 s | 195 s |
+
+The warning is never delayed by the hold — you are told at 15 s, and told that a
+hold is in effect and why. The dead horizon moves with the hold, so waiting can
+never shorten the window a rebuild gets. A cold path, which has never carried
+audio, gets the wider grace because an I2P path still coming up is not a broken
+one. Worst case from media death to teardown is bounded at 465 s proven / 795 s
+cold, computed from the constants by a test that fails if the documentation and
+the code disagree. `OTRV4PLUS_RX_SESSION_HOLD_MS=0` disables the hold;
+`OTRV4PLUS_RECOVER_ATTEMPTS=0` disables recovery entirely and restores the plain
+fail-safe. Full detail in [VOICE_MEDIA_PATH.md](VOICE_MEDIA_PATH.md).
+
+Verified in the field: Wi-Fi off mid-call, authenticated media resumed 51 s later.
+
+### Fingerprints and trust
+
+The two protocols answer the fingerprint question differently, because a JID
+and an IRC nick are not the same kind of name.
+
+**XMPP — trust on first use.** Your identity persists across restarts, so the
+peer's does too, and a fingerprint that changes is worth knowing about. On first
+contact with a JID the fingerprint is shown and pinned automatically. After that
+a matching fingerprint says so. **You are never asked to approve a fingerprint**
+— faced with one you have never seen there is nothing to check it against, so
+the only available answer is yes, and a question always answered yes trains the
+reflex that makes the one that matters useless.
+
+If the fingerprint **changes**, the session stops there:
+
+```
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+[trust] THE FINGERPRINT FOR THIS JID HAS CHANGED.
+[trust]   pinned : ....
+[trust]   now    : ....
+[trust] The pinned fingerprint has NOT been replaced.
+```
+
+The stored pin is not overwritten, SMP setup does not continue, and voice is
+refused for that peer. There is no keystroke that waves this through. Accepting a new identity is a
+separate, typed, peer-named action: `/trust-reset <jid>`. That asymmetry is the
+point — a prompt answerable with the keystroke you already press reflexively is
+not a decision.
+
+It also looks exactly like your peer reinstalling, so it is a question and not a
+verdict. Confirm the new fingerprint with them over a channel that is not this
+one before clearing the pin.
+
+**IRC — nothing is pinned.** The identity is regenerated every run by design, so
+a fingerprint pinned to a nick is pinned to nothing. Your `y` holds for the rest
+of the session and is not written to disk. Before v10.12.0 IRC *did* write
+those records, which meant the second session with any peer raised a fingerprint
+mismatch and printed a MITM warning as normal behaviour.
+
+**Neither is authentication.** A matching pin tells you the identity did not
+change; it does not tell you who it belongs to. SMP does that, and SMP remains
+the only thing that authorises a voice call.
+
+### Abandoned OTR sessions
+
+A ratchet is shared state, so when the peer's client exits their half is gone
+and ours is not — and the next `/otr` found a live session on this side only.
+
+A peer that goes offline and stays offline for `PEER_GONE_SECONDS` (180 s) now
+has its session cleared automatically, so `/otr` starts cleanly when they come
+back. The trigger is deliberately *not* "the peer went offline": over I2P this
+client reconnects often, and our own stream dropping produces the same presence
+for every peer. The timer is cancelled by anything proving the peer is still
+there — a presence, any inbound message — and by our own disconnect. A peer on
+a live call is never torn down, because media does not use XMPP and ending OTR
+would take the rekey and END signalling with it.
+
+Only session state goes: the ratchet, the SMP result, the DAKE. The **pinned
+fingerprint is kept** — that is long-term identity, and forgetting it would
+turn every reconnect into a fresh trust-on-first-use decision, which is exactly
+where a MITM would want the user.
+
+### Incoming calls on Android
+
+The phone is usually screen-off and face-down when a call arrives, and a tone
+from a backgrounded terminal is easy to miss. So an incoming call rings three
+ways at once: a synthesised double-ring through the same audio backend the
+call will use (no audio file is ever read or written), a Termux:API
+notification at max priority, and an 800 ms vibration.
+
+The notification carries **Answer** and **Decline** buttons. A Termux
+notification action is a shell command run by the Termux app in its own
+process, so the button cannot call into the client directly. It writes one
+line into a FIFO at `~/.otrv4plus/call-ctl` (directory `0700`, pipe `0600`)
+which the client is reading, and that line resolves to exactly the
+`answer_call()` / `reject_call()` the terminal calls. There is no second state
+machine and no second code path.
+
+Three properties make that safe:
+
+- **No peer-derived text ever reaches a shell command.** The action string
+  contains only a path we chose and a token we generated. The peer's JID goes
+  in the notification *body*, where it is stripped of ANSI and control
+  characters and de-fanged so `termux-notification` cannot parse it as one of
+  its own options.
+- **The token is single-use and bound to one `(peer, call_id)`.** A replayed
+  press finds it spent; a press left over from an earlier call cannot answer
+  the call that replaced it.
+- **Every press is re-checked against live session state** on the event loop.
+  A press that lands after the caller hung up, the timeout fired, or the
+  terminal already answered does nothing.
+
+The buttons appear only on Termux with Termux:API installed. Everywhere else
+the notification is posted exactly as before and no FIFO is created — there is
+no partial mode, because a button that cannot be delivered is worse than no
+button. `OTRV4PLUS_RING_PRIVACY=1` replaces the JID with "Open Termux to
+answer" so nothing identifying reaches the lock screen.
+
+A button is not a way past verification. Ringing happens downstream of the SMP
+gate: `_on_invite` refuses to allocate a session at all for a peer SMP has not
+verified, so a notification can only ever act on a call the client had already
+decided to ring.
 
 ### Microphone access
 
 No remote message can open the microphone. Only `start_audio()` opens the
 device, and only `_await_media` (after a local `/call`) and `answer_call`
-(after a local `/answer`) reach it. Ringing opens playback only. This is
-enforced by a test that enumerates every caller, not by inspection.
+(after a local `/answer`, or a local press on the notification's **Answer**
+button) reach it. Ringing opens playback only. This is enforced by a test that
+enumerates every caller, not by inspection.
 
 `/mute` **closes the capture stream** rather than reading and discarding. The
 OS recording indicator goes out. A soft mute leaves the microphone open — the
@@ -514,9 +855,9 @@ After that, the peer tab is green (encrypted + verified) and your typed messages
 
 ```
 ┌─────────────────────────────────────────────┐
-│  IRC transport (I2P / Tor / TLS 1.3)        │
+│  IRC / XMPP transport (I2P / Tor / TLS 1.3) │
 ├─────────────────────────────────────────────┤
-│  Python orchestration layer                 │
+│  Python orchestration layer — CHAT          │
 │  (thin wrapper, no secrets on Python heap,  │
 │   no Python cryptography library)           │
 ├─────────────────────────────────────────────┤
@@ -538,7 +879,34 @@ After that, the peer tab is green (encrypted + verified) and your typed messages
 └─────────────────────────────────────────────┘
 ```
 
-**One cryptographic surface.** The Python `cryptography` library was removed at v10.7 and the last C extensions (`otr4_crypto_ext`, `otr4_ed448_ct`, `otr4_mldsa_ext`) retired at v10.7.5. Every operation — ML-KEM-1024 (FIPS 203), ML-DSA-87 (FIPS 204), Ed448 and X448 (`ed448-goldilocks-plus`, `x448`), AES-256-GCM (`aes-gcm`), SHAKE-256 (`sha3`), and the Argon2id-class KDF protecting the SMP vault — runs inside `otrv4_core`. There is no second implementation to drift against. Wiping uses Rust `zeroize::Zeroize` on Rust-owned buffers and `ctypes.memset` for the bytearrays still held Python-side.
+Voice sits alongside this stack rather than inside it, but since v10.13.2 its
+cryptography is in the same Rust core:
+
+```
+┌─────────────────────────────────────────────┐
+│  I2P SAM DATAGRAM transport (media only)    │
+├─────────────────────────────────────────────┤
+│  otrv4plus_voice.py — VOICE (protocol only) │
+│  call state machine, rekey state machine    │
+│  frame header + AAD, replay window          │
+│  jitter buffer, liveness watchdog           │
+│  MEDIAPATH endpoint authentication          │
+│  holds handles, never key bytes             │
+├─────────────────────────────────────────────┤
+│  Rust core (otrv4_core) — voice.rs          │
+│  RustVoiceRoot   SecretBytes<64>, no getter │
+│  RustVoiceCipher SecretBytes<32> per key    │
+│  RustVoiceKex    SecretBytes<56>, one use   │
+│  HKDF-SHA512, AES-256-GCM, X448, ML-KEM     │
+│  ZeroizeOnDrop everywhere                   │
+└─────────────────────────────────────────────┘
+```
+
+Signalling for a call (INVITE/ACCEPT/CONFIRM/REKEY/MEDIAPATH/END) rides the OTR
+channel in the box above and is never sent in the clear; only media uses the
+datagram transport.
+
+**One cryptographic surface for chat.** The Python `cryptography` library was removed from the messaging path at v10.7 and the last C extensions (`otr4_crypto_ext`, `otr4_ed448_ct`, `otr4_mldsa_ext`) retired at v10.7.5. Every chat operation — ML-KEM-1024 (FIPS 203), ML-DSA-87 (FIPS 204), Ed448 and X448 (`ed448-goldilocks-plus`, `x448`), AES-256-GCM (`aes-gcm`), SHAKE-256 (`sha3`) and, as of v10.13.0, Argon2id (`argon2`) for the SMP passphrase stretch — runs inside `otrv4_core`. (An earlier version of this paragraph claimed an Argon2id KDF protecting the SMP *vault*. That was wrong when written: `smp_vault.rs` is an in-memory zeroizing store with no KDF, and it still is. The Argon2 in the core is in `smp.rs`, and it arrived at v10.13.0.) **Voice was the exception until v10.13.2**, when the whole voice key path moved into `otrv4_core` — the epoch root (`SecretBytes<64>`), the media keys (`SecretBytes<32>`) and the X448 private scalar (`SecretBytes<56>`), none with an accessor. Python holds handles that produce ciphers, confirmations and endpoint tags. What stays Python-side is protocol logic that touches no key material: the frame header, the replay window, the jitter buffer and the rekey state machine. Wiping uses Rust `zeroize::Zeroize` on Rust-owned buffers and `ctypes.memset` for the bytearrays still held Python-side.
 
 ## Key exchange (DAKE)
 
@@ -684,13 +1052,13 @@ assert the valid one still works.
 
 3. **The Rust crypto crates are not audited.** `ed448-goldilocks-plus` 0.16 is the only viable pure-Rust Ed448 implementation but has no formal review. `x448` 0.6 is a pure-Rust X448 with no formal review. `pqcrypto-mlkem 0.1.1` (FIPS 203 ML-KEM-1024) and `pqcrypto-mldsa 0.1.2` (ML-DSA-87) are PQClean-derived reference implementations.
 
-4. **Rust-core-only since v10.7.5.** Every C extension (`otr4_crypto_ext`, `otr4_ed448_ct`, `otr4_mldsa_ext`) has been retired and the Python `cryptography` library was removed at v10.7. The entire cryptographic surface now lives inside the Rust `otrv4_core` PyO3 module: there is no second crypto implementation to drift against. As of v10.7.6 (Phase 5.4) the SMP modular exponentiation is constant-time via `crypto-bigint` `DynResidue`, intended to close a timing side-channel on the secret SMP exponents (not independently verified to be constant-time on every target). As of v10.9.1 the SMP protocol is hybrid post-quantum. As of v10.10.4 the XMPP transport has production-grade security hardening (subscription approval gate, rate limiting, SMP secret validation, block list, stream management, delivery receipts, and I2P-aware reconnect). See the CHANGELOG for the full migration history.
+4. **Chat is Rust-core-only since v10.7.5; voice is not.** Every C extension (`otr4_crypto_ext`, `otr4_ed448_ct`, `otr4_mldsa_ext`) has been retired and the Python `cryptography` library was removed from the messaging path at v10.7, which lives entirely inside the Rust `otrv4_core` PyO3 module. **Voice does not meet that standard**: its media AES-256-GCM, HKDF-SHA512 key schedule and X448 come from the Python `cryptography` library, so there are two AES-256-GCM implementations in the tree and voice key material sits in Python `bytearray`s wiped best-effort rather than in Rust `ZeroizeOnDrop` buffers. See [SECURITY.md](SECURITY.md) caveat 11. As of v10.7.6 (Phase 5.4) the SMP modular exponentiation is constant-time via `crypto-bigint` `DynResidue`, intended to close a timing side-channel on the secret SMP exponents (not independently verified to be constant-time on every target). As of v10.9.1 the SMP protocol is hybrid post-quantum. As of v10.10.4 the XMPP transport has production-grade security hardening (subscription approval gate, rate limiting, SMP secret validation, block list, stream management, delivery receipts, and I2P-aware reconnect). See the CHANGELOG for the full migration history.
 
-5. **Ephemeral identity by design.** Identity keys regenerate at every launch. Fingerprints change on every restart. This is a deliberate threat-model choice for an I2P-based privacy IRC client, not a missing feature. Tor Browser, Cwtch (default), and Briar (before user opt-in) all keep identities short-lived for similar reasons. See ROADMAP Phase 5.3g.
+5. **Ephemeral identity on IRC, persistent identity on XMPP.** IRC regenerates identity keys at every launch and fingerprints change on every restart — a deliberate threat-model choice for an I2P privacy client, not a missing feature. Tor Browser, Cwtch (default) and Briar all keep identities short-lived for similar reasons. **XMPP is the opposite as of v10.12.0**: a JID is a durable name, so the identity behind it persists and peer fingerprints are pinned. Its at-rest protection is filesystem permissions, not a passphrase — see [SECURITY.md](SECURITY.md) caveat 5b. See ROADMAP Phase 5.3g for both halves.
 
 6. **Wire-incompatible with stock OTRv4.** Implementations such as `pidgin-otr4` and CoyIM cannot talk to OTRv4+. The ML-DSA-87 extension, the ML-KEM-1024 brace key, and the SHAKE-256 transcript hashing are OTRv4+ additions and there is no negotiation path. Both peers must run OTRv4+.
 
-7. **Voice is the newest and least-tested surface.** The hybrid voice key exchange, two-phase rekey, and AAudio backend landed in v10.11.0; the security fixes above landed in v10.11.1. Coverage is 210 Python tests (110 adversarial voice-protocol, 49 audio backend, 51 voice/audio integration) plus 45 Rust tests. Two-way audio has been verified live between two Android phones over I2P, with a mid-call hybrid rekey and `authfail=0 replay=0 resync=0`. That is one pair of devices on one network path — unit tests and a working call are not the same as review. Treat voice as more experimental than chat, which is itself marked experimental.
+7. **Voice is the newest and least-tested surface.** The hybrid voice key exchange, two-phase rekey, and AAudio backend landed in v10.11.0; the security fixes above landed in v10.11.1. v10.12.0 added liveness detection and authenticated endpoint recovery around it. Coverage is 239 Python tests in the root voice/audio suites (113 adversarial voice-protocol, 61 audio backend, 48 voice/audio integration, 17 MAC-key-revelation) inside a repo total of 1992 passed / 43 skipped / 1 xfailed, plus 87 Rust tests. Two-way audio has been verified live between two Android phones over I2P, with mid-call hybrid rekeys, a 4-hour soak, and a Wi-Fi-to-mobile transition from which authenticated media recovered in 51 s. That is still one pair of devices on a small number of network paths — unit tests and a working call are not the same as review. Treat voice as more experimental than chat, which is itself marked experimental.
 
 8. **Termux/aarch64 specific build flags.** Both `pqcrypto-mlkem` and `pqcrypto-mldsa` are pinned to `default-features = false, features = ["std"]` because their NEON-optimised C paths trigger `SIGILL` on some aarch64 phones. The portable C reference is correct on any platform; the speed difference is invisible at session scale.
 
@@ -704,7 +1072,7 @@ GPL-3.0. See the [LICENSE](LICENSE) file.
 
 ## See also
 
-- [SPEC.md](SPEC.md) - **formal wire-level protocol specification**: byte layouts, KDF inputs, state machines, test vectors. v10.10.4 fixes two previously underspecified derivations: the GCM associated-data `ad` component (now defined as `ssid`, 8 bytes, from §4.4) and the `pq_binding_key` inputs `domain` and `transcript_tag` in §6.7. Write a compatible implementation in any language from this document alone.
+- [SPEC.md](SPEC.md) - **formal wire-level protocol specification**: byte layouts, KDF inputs, state machines, test vectors, and the voice protocol in §9. v10.10.4 fixed two previously underspecified derivations: the GCM associated-data `ad` component (now defined as `ssid`, 8 bytes, from §4.4) and the `pq_binding_key` inputs `domain` and `transcript_tag` in §6.7. Write a compatible implementation in any language from this document alone.
 - [CHANGELOG.md](CHANGELOG.md) - per-version changes
 - [SECURITY.md](SECURITY.md) - threat model and known issues
 - [FEATURES.md](FEATURES.md) - full feature inventory
@@ -713,3 +1081,12 @@ GPL-3.0. See the [LICENSE](LICENSE) file.
 - [CONTRIBUTING.md](CONTRIBUTING.md) - PR guidelines
 - [WHY.md](WHY.md) - design rationale
 - [MIGRATION.md](MIGRATION.md) - moving from earlier versions
+- [VERSIONING.md](VERSIONING.md) - the version scheme, and which version numbers are wire formats that must never be bumped for a release
+- [SPEC_GROUP.md](SPEC_GROUP.md) - the group protocol: an authenticated group-state layer over independent pairwise channels. Epochs, a signed state chain, membership transitions and consensus policy — and deliberately **no group key, no group ratchet and no group cipher**
+- [GROUP_CRYPTO_AUDIT.md](GROUP_CRYPTO_AUDIT.md) - what the Rust core already provides for a future group layer, and ML-KEM-1024 cross-checked against Go's FIPS 140-validated `crypto/mlkem` in both directions
+- [tests/group_vectors/](tests/group_vectors/) - the group protocol test vectors, generated from SPEC_GROUP.md **before** any implementation exists, signed by a transcription of the RFC 8032 reference algorithm rather than by this project's own Ed448. A disagreement between an implementation and a vector is a question about which one misread the spec — not a reason to regenerate the vector
+- [FILE_TRANSFER_TEST_PLAN.md](FILE_TRANSFER_TEST_PLAN.md) - the ten-step two-phone validation for `/sendfile`, smallest file first, with the misbehaving-sender recipes for the replay, corruption and wrong-metadata cases
+- [SPEC.md §9A](SPEC.md) - the encrypted file-transfer format: transfer-key derivation, chunk AAD, and the six checks a receiver must pass before placing a file
+- [TRANSPORT_POLICY.md](TRANSPORT_POLICY.md) - which networks may carry traffic, how one is chosen, and what may change mid-call; the five transport modes, the transition matrix, and why voice over Tor is not implemented
+- [VOICE_MEDIA_PATH.md](VOICE_MEDIA_PATH.md) - the voice media path end to end: latency budget, liveness detection, authenticated endpoint recovery, and its bounds
+- [Rust/VOICE_TUNING.md](Rust/VOICE_TUNING.md) - every voice tuning knob, its range, and what it trades against what

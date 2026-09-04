@@ -2,7 +2,7 @@
 """
 OTRv4+ XMPP - full OTR + SMP over XMPP, transported over I2P SAM
 ================================================================
-Version: 10.10.9
+Version: 10.16.0
 
 
 Post-quantum OTRv4+ end-to-end encryption over XMPP, reusing the IRC client's
@@ -29,14 +29,29 @@ XEP SUPPORT (slixmpp plugins):
   XEP-0198  Stream management (stanza acks; graceful degradation if unsupported)
   XEP-0199  XMPP Ping (peer reachability check via /ping)
 
-POST-DAKE FLOW (identical to the IRC client):
+POST-DAKE FLOW (NOT identical to the IRC client -- see below):
   1. DAKE completes -> session ENCRYPTED.
-  2. Both fingerprints are shown; you are asked "Trust this fingerprint? y/n".
-     - y -> fingerprint pinned as VERIFIED (TOFU trust DB).
-     - n -> encrypted-only.
+  2. Both fingerprints are shown, then TOFU acts. Nothing is asked:
+     - first contact  -> pinned automatically for this JID, and it says so.
+     - same as pinned -> it says it matches.
+     - CHANGED        -> a warning. The pin is NOT replaced, SMP setup does
+                         not continue, and voice is refused for that peer
+                         until you deliberately run /trust-reset.
+     There is no y/n at any point. Approving a fingerprint you have never seen
+     has nothing to check it against, so the only available answer is yes --
+     and a question always answered yes trains the reflex that makes the
+     CHANGED case useless. /identity shows what is pinned.
   3. You are prompted for the Socialist Millionaire Protocol passphrase, which
      is stored for AUTO-RESPOND. Press Enter / "skip" to skip.
   4. Once BOTH sides have stored the passphrase, EITHER side runs /smp start.
+
+  This differs from the IRC client on purpose. A JID is a durable name, so XMPP
+  keeps a persistent identity and pins peer fingerprints; an IRC nick is not,
+  so IRC keeps a fresh identity every run and pins nothing. Being asked to pin
+  on EVERY connection means one of: you are on a build older than v10.12.0
+  (the old wording was "Trust this fingerprint?"), you answered something other
+  than y, or the peer is on an older build and their identity is still
+  regenerating -- BOTH ends need v10.12.0 for a stable fingerprint.
 
 ROSTER / SUBSCRIPTION FLOW:
   Subscription requests are NEVER auto-approved. They queue in /pending; use
@@ -49,15 +64,18 @@ USAGE:
       --jid alice@<vhost>.b32.i2p \
       --server <c2s-tunnel>.b32.i2p \
       --peer bob@<vhost>.b32.i2p \
-      --insecure-tls --debug
+      --debug
 
 COMMANDS:
     /otr [jid]            start an OTR session (DAKE)
     y / n                 answer the trust-fingerprint prompt
     <passphrase>          answer the SMP passphrase prompt
-    /smp start            begin SMP verification
-    /smp <secret>         store a secret AND immediately start SMP
-    /smp-secret <secret>  store a secret for auto-respond (no start)
+    /smp                  verify this session (prompts for the passphrase,
+                          hidden, if none is stored) — the only one you need
+    /smp start            same as /smp
+    /smp <secret>         set the passphrase inline and start (ECHOED)
+    /smp-secret           store a passphrase without verifying (prompts)
+    /smp-secret <secret>  store it inline (ECHOED — advanced/compat)
     /trust                re-show fingerprints and the trust prompt
     /msg <jid> <text>     send plaintext (no OTR)
     /status               show session + trust + SMP state for --peer
@@ -88,7 +106,10 @@ COMMANDS:
 #    * Inbound message fragments are bounded (index range, fragment count, and a
 #      per-peer reassembly cap) before stitching, preventing memory-exhaustion
 #      DoS and out-of-range indexing.
-#    * TLS verification is on by default; only disabled behind --insecure-tls
+#    * TLS verification follows the transport.  Over I2P and over Tor to
+#      an .onion the address IS the server's key, so certificate checks
+#      are skipped and say so; over clearnet verification is on and only
+#      --insecure-tls disables it, with a warning
 #      which is acceptable over I2P (.b32 destination is cryptographically
 #      authenticated) but warned against on clearnet.
 #    * Fingerprints are pinned on first use (TOFU); the trust prompt gates the
@@ -130,6 +151,9 @@ import sys
 import time
 import threading
 from concurrent.futures import ThreadPoolExecutor
+
+import otrv4plus_coreapi as _coreapi
+import otrv4plus_smpflow as _smpflow
 
 # ---------------------------------------------------------------------------
 # Voice-call optional dependencies.
@@ -213,7 +237,85 @@ def voice_available() -> "tuple[bool, str]":
             "no audio backend: libaaudio.so unavailable and parec/pacat "
             "missing  (run /audioprobe for details)")
 
-XMPP_VERSION = "10.11.0"
+XMPP_VERSION = "10.16.0"
+
+# ---------------------------------------------------------------------------
+# XMPP-private state directory
+# ---------------------------------------------------------------------------
+#
+# XMPP and IRC used to share ~/.otrv4plus/trust.json, and that was not merely
+# untidy. IRC regenerates its Ed448 identity every run by design, so every IRC
+# fingerprint written there is stale the moment the process exits; on the next
+# run `add_trust` raised FingerprintMismatchError and the user was told "This
+# may indicate a MITM attack" for what was actually normal IRC behaviour.
+#
+# The two protocols have opposite identity contracts, so they get separate
+# stores. XMPP owns everything under ~/.otrv4plus/xmpp/ and IRC keeps the
+# legacy paths for its SMP secrets while persisting no trust at all.
+XMPP_STATE_DIR = os.path.expanduser(
+    os.environ.get("OTRV4PLUS_XMPP_STATE_DIR", "~/.otrv4plus/xmpp"))
+
+
+def _xmpp_state_path(name: str) -> str:
+    return os.path.join(XMPP_STATE_DIR, name)
+
+
+def _migrate_legacy_smp_secrets() -> None:
+    """Move a pre-split SMP secret store into the XMPP directory, once.
+
+    The secrets are sealed under a key derived from `.smp_seed` in the *same*
+    directory, so the seed has to travel with them or the copy is unopenable.
+    Copies rather than moves: the IRC client still reads the legacy pair, and
+    silently removing its stored secrets is not this function's business.
+    """
+    legacy_dir = os.path.expanduser("~/.otrv4plus")
+    legacy_secrets = os.path.join(legacy_dir, "smp_secrets.json")
+    legacy_seed = os.path.join(legacy_dir, ".smp_seed")
+    target_secrets = _xmpp_state_path("smp_secrets.json")
+    target_seed = _xmpp_state_path(".smp_seed")
+
+    if os.path.exists(target_secrets) or not os.path.exists(legacy_secrets):
+        return
+    if not os.path.exists(legacy_seed):
+        # Ciphertext with no key: copying it would just move an unopenable
+        # file. Leave it and let the user re-enter secrets.
+        return
+    try:
+        os.makedirs(XMPP_STATE_DIR, mode=0o700, exist_ok=True)
+        for src, dst in ((legacy_seed, target_seed),
+                         (legacy_secrets, target_secrets)):
+            with open(src, "rb") as fh:
+                blob = fh.read()
+            fd = os.open(dst, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            try:
+                os.write(fd, blob)
+            finally:
+                os.close(fd)
+        print("[smp] migrated stored passphrases into %s" % XMPP_STATE_DIR)
+    except FileExistsError:
+        pass
+    except OSError as exc:
+        print("[smp] could not migrate stored passphrases (%s); "
+              "re-enter them with /smp-secret" % exc.__class__.__name__)
+
+
+def _xmpp_otr_config():
+    """OTRConfig for XMPP: persistent identity, persistent trust, own paths.
+
+    This is the only place the two protocols diverge in configuration, and the
+    divergence is deliberate. See XMPP_STATE_DIR above.
+    """
+    _migrate_legacy_smp_secrets()
+    return OTRConfig(
+        test_mode=True,
+        persist_identity=True,
+        persist_trust=True,
+        trust_db_path=_xmpp_state_path("trust.json"),
+        smp_secrets_path=_xmpp_state_path("smp_secrets.json"),
+        identity_path=_xmpp_state_path("identity.sealed"),
+        identity_dek_path=_xmpp_state_path(".identity_dek"),
+    )
+
 
 OTR_MODULE = "otrv4plus"  # symlink -> otrv4+.py
 try:
@@ -284,21 +386,77 @@ def _sanitise(text, max_len: int = 1024) -> str:
     return text[:max_len]
 
 
-# Lines carrying actual message content are redacted from the on-disk
-# transcript so cleartext bodies never touch disk.
+# --------------------------------------------------------------------------
+# Session transcript: what may be written, not what must be stripped
+# --------------------------------------------------------------------------
+#
+# This used to be one regex that redacted `[otr] <peer> body` lines and wrote
+# everything else verbatim.  That fails open: a `print()` added anywhere in
+# the client carrying a passphrase, a key or a token reaches the file with
+# nothing objecting, and these are the files people paste into bug reports.
+# A denylist has to enumerate every way a secret can look; an allowlist has
+# to enumerate the ways a diagnostic can look, and there are far fewer of
+# those and they change far less often.
+#
+# So: a line is written only if its shape is recognised.  Anything else is
+# recorded as its tag and its length, which is enough to see that something
+# happened and where, and not enough to leak what.
+
+#: Message-content lines.  The prefix is kept, the body is not: knowing that
+#: a message arrived from a peer at a time is the diagnostic value; the words
+#: are the thing being protected.
 _LOG_CONTENT_RE = re.compile(r"^(\[(?:otr|plain)\] <[^>]*>)\s(.*)$", re.DOTALL)
+
+#: Tags whose lines are wholly diagnostic and carry no user or key material.
+#: Adding one is a deliberate act: whatever that subsystem prints becomes
+#: readable on disk, so the reviewer's question is "can this tag ever print a
+#: secret", not "does it today".
+_LOG_SAFE_TAGS = frozenset({
+    "audio", "auth", "call", "dake", "identity", "i2p", "jitter", "log",
+    "media", "net", "otr", "ping", "presence", "rekey", "sam", "smp",
+    "trust", "tui", "voice", "xmpp",
+})
+
+#: Bare structural lines: rules, banners and blank separators.
+_LOG_STRUCTURAL_RE = re.compile(r"^[\s\-=!*_.#|+>]*$")
+
+#: `[tag] free text` -- the shape of essentially every diagnostic here.
+_LOG_TAGGED_RE = re.compile(r"^\[([a-z0-9 _-]{1,16})\](.*)$", re.DOTALL)
+
+
+def _log_line_for_file(msg: str) -> str:
+    """The text to write for `msg`, or a redacted stand-in.
+
+    Pure and side-effect free so the tests can drive it directly with
+    candidate leaks rather than through a file handle.
+    """
+    clean = _ANSI_RE.sub("", msg)
+
+    m = _LOG_CONTENT_RE.match(clean)
+    if m:
+        return "%s <message body redacted: %d chars>" % (m.group(1),
+                                                         len(m.group(2)))
+
+    if _LOG_STRUCTURAL_RE.match(clean):
+        return clean
+
+    m = _LOG_TAGGED_RE.match(clean)
+    if m and m.group(1).strip().lower() in _LOG_SAFE_TAGS:
+        return clean
+
+    # Unrecognised shape.  Something printed it, and the transcript should
+    # show that -- but not its content, because nothing here knows what it
+    # is.  A password prompt, a traceback, a third-party library's warning
+    # and a leaked key all arrive through this branch.
+    return "<unlogged line: %d chars>" % len(clean)
 
 
 def _log_to_file(msg):
     if _SESSION_LOG_FH is None:
         return
     try:
-        clean = _ANSI_RE.sub("", msg)
-        m = _LOG_CONTENT_RE.match(clean)
-        if m:
-            clean = f"{m.group(1)} <message body redacted: {len(m.group(2))} chars>"
         ts = time.strftime("%Y-%m-%d %H:%M:%S")
-        _SESSION_LOG_FH.write(f"{ts} {clean}\n")
+        _SESSION_LOG_FH.write("%s %s\n" % (ts, _log_line_for_file(msg)))
         _SESSION_LOG_FH.flush()
     except Exception:
         pass
@@ -373,6 +531,171 @@ def _fmt_fp(fp: str) -> str:
 # I2P SAM forwarder
 # =============================================================================
 
+# ---------------------------------------------------------------------------
+# Tor SOCKS5 forwarder
+# ---------------------------------------------------------------------------
+
+#: Tor's default SOCKS port. 9150 is the Tor Browser bundle; 9050 is a system
+#: tor daemon, which is what Termux installs.
+TOR_SOCKS_PORT = 9050
+
+SOCKS5_VERSION = 0x05
+SOCKS5_NO_AUTH = 0x00
+SOCKS5_CONNECT = 0x01
+SOCKS5_ATYP_DOMAIN = 0x03
+SOCKS5_ATYP_IPV4 = 0x01
+SOCKS5_ATYP_IPV6 = 0x04
+
+#: SOCKS5 reply codes worth naming; the rest are reported numerically.
+_SOCKS5_ERRORS = {
+    0x01: "general SOCKS server failure",
+    0x02: "connection not allowed by ruleset",
+    0x03: "network unreachable",
+    0x04: "host unreachable (is the onion service up?)",
+    0x05: "connection refused",
+    0x06: "TTL expired",
+    0x07: "command not supported",
+    0x08: "address type not supported",
+}
+
+
+async def socks5_connect(dest_host: str, dest_port: int,
+                         socks_host: str = "127.0.0.1",
+                         socks_port: int = TOR_SOCKS_PORT,
+                         timeout: float = 60.0):
+    """Open a SOCKS5 tunnel to dest_host:dest_port and return (reader, writer).
+
+    The destination is sent as a DOMAIN NAME (ATYP 0x03), never as an
+    address. That is the whole point: Tor resolves the name itself, inside
+    the network, so a .onion never reaches the system resolver and there is
+    no DNS to leak. Resolving locally first and sending an IP would defeat
+    Tor for .onion entirely -- there is no IP to resolve to.
+
+    PySocks is deliberately not used. It works by replacing socket.socket
+    globally, which in this process would also capture the SAM bridge
+    connection and every voice media socket. A local tunnel touches nothing
+    else.
+    """
+    reader, writer = await asyncio.wait_for(
+        asyncio.open_connection(socks_host, socks_port), timeout=timeout)
+
+    async def _fail(message):
+        writer.close()
+        try:
+            await writer.wait_closed()
+        except Exception:
+            pass
+        raise ConnectionError(message)
+
+    try:
+        # Greeting: one method offered, no authentication. Tor's SOCKS port
+        # is loopback-only and unauthenticated by design.
+        writer.write(bytes([SOCKS5_VERSION, 1, SOCKS5_NO_AUTH]))
+        await writer.drain()
+        reply = await asyncio.wait_for(reader.readexactly(2), timeout=timeout)
+        if reply[0] != SOCKS5_VERSION:
+            await _fail("not a SOCKS5 proxy at %s:%d (version byte 0x%02x)"
+                        % (socks_host, socks_port, reply[0]))
+        if reply[1] != SOCKS5_NO_AUTH:
+            await _fail("SOCKS5 proxy demands authentication method 0x%02x"
+                        % reply[1])
+
+        host_bytes = dest_host.encode("idna" if not dest_host.endswith(".onion")
+                                      else "ascii")
+        if len(host_bytes) > 255:
+            await _fail("destination hostname is too long for SOCKS5")
+
+        writer.write(bytes([SOCKS5_VERSION, SOCKS5_CONNECT, 0x00,
+                            SOCKS5_ATYP_DOMAIN, len(host_bytes)])
+                     + host_bytes
+                     + int(dest_port).to_bytes(2, "big"))
+        await writer.drain()
+
+        head = await asyncio.wait_for(reader.readexactly(4), timeout=timeout)
+        if head[0] != SOCKS5_VERSION:
+            await _fail("malformed SOCKS5 reply")
+        if head[1] != 0x00:
+            await _fail("SOCKS5 CONNECT refused: %s"
+                        % _SOCKS5_ERRORS.get(head[1],
+                                             "code 0x%02x" % head[1]))
+
+        # Drain the bound address so the stream starts at the payload.
+        atyp = head[3]
+        if atyp == SOCKS5_ATYP_IPV4:
+            await reader.readexactly(4)
+        elif atyp == SOCKS5_ATYP_IPV6:
+            await reader.readexactly(16)
+        elif atyp == SOCKS5_ATYP_DOMAIN:
+            length = (await reader.readexactly(1))[0]
+            await reader.readexactly(length)
+        else:
+            await _fail("SOCKS5 reply used unknown address type 0x%02x" % atyp)
+        await reader.readexactly(2)          # bound port
+        return reader, writer
+    except asyncio.IncompleteReadError:
+        await _fail("SOCKS5 proxy closed the connection during the handshake")
+    except (ConnectionError, asyncio.TimeoutError):
+        raise
+    except Exception as exc:
+        await _fail("SOCKS5 handshake failed: %s" % exc)
+
+
+async def start_tor_socks_forwarder(onion_host: str, dest_port: int,
+                                    socks_host: str = "127.0.0.1",
+                                    socks_port: int = TOR_SOCKS_PORT):
+    """Tunnel to a .onion through Tor and expose it as a local TCP endpoint.
+
+    Returns (local_host, local_port). Deliberately the same shape as
+    start_i2p_sam_forwarder, and for the same reason: slixmpp is handed a
+    loopback address, so its SRV lookup is skipped ("If an address was
+    provided, disable using DNS SRV lookup") and the .onion name never
+    reaches a resolver. The name travels only inside the SOCKS5 CONNECT,
+    where Tor is the thing that resolves it.
+
+    Fails closed. If Tor is not reachable this raises, and the caller must
+    not fall back to a direct connection: doing so would send the user's
+    address to a server they asked to reach anonymously.
+    """
+    print("[tor] opening SOCKS5 tunnel to %s:%d via %s:%d ..."
+          % (_sanitise(onion_host, 80), dest_port, socks_host, socks_port))
+    tor_reader, tor_writer = await socks5_connect(
+        onion_host, dest_port, socks_host=socks_host, socks_port=socks_port)
+    print("[tor] tunnel established.")
+
+    async def _handle_local(local_reader, local_writer):
+        async def pump(src, dst):
+            try:
+                while True:
+                    data = await src.read(65536)
+                    if not data:
+                        break
+                    dst.write(data)
+                    await dst.drain()
+            except Exception:
+                pass
+            finally:
+                try:
+                    dst.close()
+                except Exception:
+                    pass
+
+        await asyncio.gather(pump(local_reader, tor_writer),
+                             pump(tor_reader, local_writer),
+                             return_exceptions=True)
+
+    server = await asyncio.start_server(_handle_local, "127.0.0.1", 0)
+    host, port = server.sockets[0].getsockname()[:2]
+    # Held on the loop so neither the server nor the tunnel is collected.
+    _TOR_FORWARDERS.append((server, tor_reader, tor_writer))
+    print("[tor] local bridge ready at %s:%d -> %s"
+          % (host, port, _sanitise(onion_host, 80)))
+    return host, port
+
+
+#: Keeps forwarder objects alive for the process lifetime.
+_TOR_FORWARDERS = []
+
+
 async def start_i2p_sam_forwarder(
     dest_b32: str, dest_port: int, sam_host: str = "127.0.0.1", sam_port: int = 7656
 ):
@@ -398,7 +721,16 @@ async def start_i2p_sam_forwarder(
         s.setblocking(False)
         return s
 
-    print(f"[i2p] opening SAM stream to {dest_b32} (a cold tunnel can take 30-90s)...")
+    # Resolve first, then announce, so the line names the destination the
+    # stream is actually opened to.  Printing the short name and only then
+    # the substitution read as though the alias had been ignored.
+    resolved, _alias_src = I2PSAMConnection._apply_i2p_alias(dest_b32)
+    if resolved != dest_b32:
+        print(f"[i2p] opening SAM stream to {dest_b32} -> {resolved} "
+              "(a cold tunnel can take 30-90s)...")
+    else:
+        print(f"[i2p] opening SAM stream to {dest_b32} "
+              "(a cold tunnel can take 30-90s)...")
     sam_sock = await loop.run_in_executor(None, _do_sam)
     print("[i2p] SAM stream established.")
 
@@ -679,6 +1011,14 @@ _voice.bind_host(
     is_termux=IS_TERMUX,
 )
 
+# v10.14.0: /sendfile.  XMPP only -- the IRC client has no file transfer and
+# does not import this module.
+import otrv4plus_filetransfer as _filetransfer
+
+FILE_PREFIX = _filetransfer.FILE_PREFIX
+FileTransferManager = _filetransfer.FileTransferManager
+TransferError = _filetransfer.TransferError
+
 VoiceKeyExchange = _voice.VoiceKeyExchange
 VoiceFrameCrypto = _voice.VoiceFrameCrypto
 VoiceKeySchedule = _voice.VoiceKeySchedule
@@ -747,7 +1087,25 @@ class OTRv4PlusXMPP(ClientXMPP):
         self.peer = peer
 
         # Per-peer UI state.
-        self._pending = {}         # peer -> 'trust' | 'smp_secret' | None
+        # Locally-armed one-shot secret prompt: the JID a /smp-secret
+        # command is collecting for, or None.  Only _request_smp_secret
+        # sets it and only take_secret_request clears it.
+        self._secret_request = None
+        # What the secret prompt is FOR: "store" (just save it) or "start"
+        # (save it, then begin SMP) or "resume" (save it, then answer the
+        # SMP1 the peer already sent).  Set beside _secret_request, cleared
+        # with it.
+        self._secret_purpose = None
+        #: The .b32.i2p the SAM bridge was pointed at, when it was given in
+        #: full. Recorded as an alias once a connection succeeds.
+        self._i2p_server_dest = None
+        # The guided verification flow, one per peer.  This is what makes a
+        # remote SMP1 unable to arm secret capture: it can move a peer to
+        # AWAITING_LOCAL_CONSENT and no further.  See otrv4plus_smpflow.py.
+        self._smp_flows = _smpflow.SmpFlowRegistry()
+        # peer -> previously pinned fingerprint, while a mismatch is
+        # unresolved. Presence in this map refuses voice for that peer.
+        self._fingerprint_changed = {}
         self._encrypted = set()    # peers whose DAKE has completed
         self._smp_reported = set() # (peer, state) already announced
         # Display only.  Populated by _tui_route_output matching
@@ -769,6 +1127,8 @@ class OTRv4PlusXMPP(ClientXMPP):
 
         # Reconnect state (populated by main() before connect()).
         self._sam_params = None   # dict of SAM args for reconnect
+        self._is_tor = False
+        self._tor_params = None   # dict of SOCKS args for reconnect
         self._is_i2p = False
         self._shutting_down = False
         self._reconnect_delay = _RECONNECT_BASE
@@ -790,11 +1150,30 @@ class OTRv4PlusXMPP(ClientXMPP):
         self.nick = jid.split("@", 1)[0] if jid else "me"
         self._keepalive_task = None
         self._keepalive_ticks = 0        # liveness, shown by /status
-        self._keepalive_last_ok = None   # monotonic time of last good ping
+        self._keepalive_last_ok = None   # monotonic time of last round trip
         self._keepalive_degraded = False
+        self._keepalive_pings = 0        # round trips attempted
+        self._keepalive_ping_fails = 0   # consecutive round-trip timeouts
+        #: When the stream last delivered ANYTHING. Any inbound stanza proves
+        #: the whole path works, which outranks a slow ping reply.
+        self._last_inbound = time.monotonic()
+        self._keepalive_timeouts = 0     # lifetime, survives reconnects
+        self._reconnects_started = 0
+        self._reconnects_completed = 0
+
+        # Password re-entry. A rejected password used to be terminal, which
+        # over I2P cost another 30-90 s tunnel build just to correct a typo.
+        self._auth_failures = 0
+        self._password_prompt = None     # prompt text while input is awaited
+
+        # Peers seen to go offline, and when. A peer that never comes back
+        # leaves a ratchet that its replacement session cannot use.
+        self._peer_gone_at = {}
+        self._peer_gone_task = None
 
         # Voice call manager (initialized lazily after event loop is available)
         self._voice_manager = None
+        self._file_manager = None
         self._voice_sam_host = "127.0.0.1"
         self._voice_sam_port = 7656
         self._voice_debug = False
@@ -834,14 +1213,60 @@ class OTRv4PlusXMPP(ClientXMPP):
                 except Exception:
                     pass
             tracer.set_emit_callback(_trace_emit)
-        cfg = OTRConfig(test_mode=True)
-        self.otr = EnhancedSessionManager(config=cfg, tracer=tracer)
+        cfg = _xmpp_otr_config()
+        try:
+            self.otr = EnhancedSessionManager(config=cfg, tracer=tracer)
+        except Exception as exc:
+            # Fail closed. Persistent identity is what makes TOFU mean
+            # anything; starting anyway with a fresh identity would change our
+            # fingerprint silently and every peer holding a pin would see it
+            # as the identity change TOFU exists to report.
+            print("[identity] XMPP could not start: %s" % exc)
+            raise
+        # Turn the guided responder flow ON for this front end.
+        #
+        # This switch is why the responder path did nothing on a real pair of
+        # phones: the engine only parks an incoming SMP1 when the front end
+        # has said it can ask the user for a passphrase, and nothing ever set
+        # it.  Alice therefore aborted with NOSECRET exactly as she did before
+        # the feature existed.  The unit tests missed it because they drove
+        # _check_smp_secret_required directly instead of letting a real SMP1
+        # reach a real session; tests/test_smp_guided_flow.py now does the
+        # latter.
+        #
+        # IRC leaves it False deliberately: a front end that cannot prompt
+        # must not leave the peer waiting for an answer that never comes.
+        self.otr.smp_guided_prompt = True
+        self.identity_persistent = bool(
+            getattr(self.otr, "identity_is_persistent", False))
 
-        # Dedicated single-thread executor for OTR/SMP crypto. SMP runs
+        # Dedicated SINGLE-thread executor for OTR/SMP crypto. SMP runs
         # multi-minute 3072-bit DH computations; a separate pool keeps the
         # event loop free so keepalive/network stay alive throughout.
+        #
+        # max_workers is 1 and must stay 1. It was 2, which contradicted the
+        # comment above it and crashed a live handshake:
+        #
+        #   DakeOutput is unsendable, but sent to another thread
+        #   left: ThreadId(3)  right: ThreadId(2)
+        #
+        # otrv4_core::dake::DakeOutput is #[pyclass(unsendable)] -- PyO3
+        # records the creating thread and panics on access from any other.
+        # The handle is created while one inbound message is processed
+        # (generate_dake2 / process_dake2), stored on the session, and
+        # consumed while a LATER one is (building the ratchet). A second
+        # worker only spawns when a task is submitted while the first is
+        # busy, so over I2P, where DAKE messages usually arrive far apart,
+        # one thread handled everything and nothing went wrong. The crash
+        # came when a fragmented DAKE and DAKE3 arrived back to back.
+        #
+        # Serialising is also correct independently of PyO3: OTR is a
+        # stateful ratchet, and processing two messages for one peer
+        # concurrently races the ratchet, skipped-key handling and the SMP
+        # state machine. Nothing submitted here re-submits here, so one
+        # worker cannot deadlock.
         self._otr_executor = ThreadPoolExecutor(
-            max_workers=2, thread_name_prefix="otr-crypto"
+            max_workers=1, thread_name_prefix="otr-crypto"
         )
 
         # Security: never auto-approve subscription requests.
@@ -849,6 +1274,10 @@ class OTRv4PlusXMPP(ClientXMPP):
         self.auto_subscribe = False
 
         # --- Event handlers ---
+        # Every inbound stanza, before any handler. This is the evidence the
+        # keepalive judges on; a filter is the only place that sees all of it.
+        self.add_filter("in", self._note_inbound)
+
         self.add_event_handler("session_start",      self._on_start)
         self.add_event_handler("message",            self._on_message)
         self.add_event_handler("failed_auth",        self._on_failed_auth)
@@ -883,7 +1312,7 @@ class OTRv4PlusXMPP(ClientXMPP):
         # Ephemeral encrypted per-session log: key zeroed and files deleted on exit,
         # matching the IRC client wipe behaviour. Within-session scrollback is backed
         # by the encrypted file so panels load their full history on tab open.
-        self.channel_log = _ChannelLogManager(persistent=False) if _LOG_AVAILABLE else None
+        self.channel_log = _ChannelLogManager() if _LOG_AVAILABLE else None
         self._cleaned_up = False
         # Register globally so print() can route to channel_log even when
         # the TUI is never started (plain mode is now the default).
@@ -904,24 +1333,49 @@ class OTRv4PlusXMPP(ClientXMPP):
             self._voice_manager.debug = self._voice_debug
             if self._voice_debug:
                 print("[voice] diagnostics enabled (--voice-debug)")
+        if self._file_manager is None:
+            # The pump is the OTR channel.  It is passed in rather than
+            # reached for, so the same engine can later be handed a SAM
+            # stream without the engine changing.
+            # Phase A: control AND bulk both ride the OTR channel.  A future
+            # transport keeps send_control here and replaces send_chunk only.
+            self._file_manager = FileTransferManager(
+                transport=_filetransfer.OtrChunkTransport(
+                    self._send_file_signal),
+                notify=print,
+                verified=self._file_peer_verified,
+            )
         try:
             await self.get_roster()
         except (IqError, IqTimeout):
             pass
         print(f"\n[connected] {self.boundjid.full}")
         print(f"[version]   OTRv4+ XMPP {XMPP_VERSION}")
+        self._remember_server_alias()
         if self.peer:
             self.send_presence_subscription(pto=self.peer)
             print(f"[subscribe] requested presence from {self.peer}")
         print(
-            "[ready] /otr to start encryption. After DAKE you'll be asked to "
-            "trust the fingerprint, then to set the SMP passphrase.\n"
-            "[ready] Type /help for the full command list.\n"
+            "[ready] /otr to start encryption. After DAKE the peer's "
+            "fingerprint is pinned automatically\n"
+            "[ready] (first contact) or checked against the pin, then you set "
+            "the SMP passphrase.\n"
+            "[ready] /identity shows what is pinned. Type /help for the full "
+            "command list.\n"
         )
         # Reset reconnect backoff on successful connection.
         self._reconnect_delay = _RECONNECT_BASE
         # Whitespace keepalive to maintain I2P SAM streams during long SMP
         # computations when no application data flows.
+        #
+        # Cancel any predecessor first. _on_start fires on every session
+        # start, and simply reassigning the attribute would orphan a loop
+        # that is still running -- two loops then probe the same stream and
+        # increment the same counter, reaching the disconnect threshold in
+        # half the time for no reason.
+        existing = self._keepalive_task
+        if existing is not None and not existing.done():
+            existing.cancel()
         self._keepalive_task = asyncio.ensure_future(self._keepalive_loop())
 
     # Tracer output that a user needs even when not debugging: long-running
@@ -1000,84 +1454,370 @@ class OTRv4PlusXMPP(ClientXMPP):
         if self._probe:
             print(message)
 
-    async def _keepalive_loop(self):
-        """Send a whitespace ping every 8 s so idle I2P tunnels stay alive.
+    #: Whitespace cadence. Cheap, and its only job is keeping the I2P tunnel
+    #: from being torn down for idleness.
+    KEEPALIVE_WHITESPACE_S = 8
 
-        The ping is essential: an idle I2P tunnel is torn down, which would
-        drop the session during the long silences of an SMP exchange.
+    #: Round-trip cadence, used only once the stream has gone quiet.
+    KEEPALIVE_PING_S = 60
+
+    #: How long the stream must have received NOTHING before a probe is worth
+    #: sending.
+    #:
+    #: The first version of this keepalive probed unconditionally every 60 s
+    #: and scored a slow reply as a failure. Measured on a 33-minute call that
+    #: produced ten self-inflicted disconnects: in one case a rekey completed
+    #: a full REKEY -> REKEYACK -> REKEYCOMMIT round trip through the server
+    #: 3.2 s before the keepalive declared that same stream dead on "3 round
+    #: trips in a row went unanswered" -- a verdict that takes ~3 minutes to
+    #: accumulate. The stream was carrying bidirectional traffic throughout
+    #: the window in which it was being scored as dead.
+    #:
+    #: The cause was already documented in this project before the keepalive
+    #: existed, in VoiceCallManager: "IQ round-trips were deliberately
+    #: avoided: over a 3-hop I2P path an IQ frequently exceeds slixmpp's reply
+    #: timeout, whereas a <message> is fire-and-forget and traverses
+    #: reliably." XEP-0199 is an IQ round trip.
+    #:
+    #: So a probe is now a last resort rather than a metronome. Any inbound
+    #: stanza -- presence, a message, an OTR frame, rekey signalling -- is
+    #: proof the whole path works, and proof outranks a slow ping. 180 s sits
+    #: above VOICE_REKEY_SECONDS (120 s), so a live call refreshes this from
+    #: its own signalling and never probes at all.
+    KEEPALIVE_QUIET_S = 180
+
+    #: How long to wait for a ping reply. Sized for a 3-hop I2P round trip
+    #: under load rather than for a LAN: the old 30 s was shorter than the
+    #: path's own latency and turned slowness into a verdict.
+    KEEPALIVE_PING_TIMEOUT_S = 60
+
+    #: Consecutive probe failures before the stream is declared dead. Each one
+    #: already means KEEPALIVE_QUIET_S of total silence plus an unanswered
+    #: ping, so two is strong evidence and the worst case is ~8 minutes.
+    #:
+    #: The bias is deliberate. Declaring a healthy stream dead costs a
+    #: reconnect storm and an I2P tunnel rebuild; being slow to notice a
+    #: genuinely dead one costs a delayed rekey, and a rekey that cannot be
+    #: delivered already fails safe on the committed epoch. Media does not use
+    #: XMPP at all.
+    KEEPALIVE_PING_FAILS = 2
+
+    def _note_inbound(self, stanza):
+        """Record that the stream delivered something.  Returns it unchanged.
+
+        Registered as a slixmpp inbound filter, so it sees presence, messages,
+        IQs and everything else before any handler runs. It must never drop or
+        alter a stanza -- returning it unchanged is the contract.
+        """
+        self._last_inbound = time.monotonic()
+        return stanza
+
+    def _stream_quiet_for(self) -> float:
+        """Seconds since the stream last delivered anything."""
+        return max(0.0, time.monotonic() - self._last_inbound)
+
+    async def _probe_stream(self) -> bool:
+        """Round-trip liveness check against our own server (XEP-0199).
+
+        Returns True if the server answered AT ALL. An IqError counts as
+        alive: a server replying `service-unavailable` to a ping has proven
+        the stream works, which is the only thing being asked here. Treating
+        it as death would reconnect against a perfectly good session.
+        """
+        try:
+            await self["xep_0199"].async_ping(
+                self.boundjid.host, timeout=self.KEEPALIVE_PING_TIMEOUT_S)
+            return True
+        except IqError:
+            return True
+        except (IqTimeout, asyncio.TimeoutError):
+            return False
+        except Exception:
+            return False
+
+    def _declare_stream_dead(self, why: str) -> None:
+        """Give up on the stream and let the reconnect logic take over.
+
+        Breaking out of the keepalive loop is not enough on its own -- it
+        only stops pinging. Something has to actually take the stream down so
+        `_on_disconnected` fires and `_reconnect` runs.
+
+        Any call in progress is deliberately left alone. Voice media rides
+        its own I2P datagram session and does not touch XMPP once the call is
+        up; only rekey signalling does, and a rekey that cannot be delivered
+        already fails safe by keeping the committed epoch. Tearing down a
+        working call because the control plane blinked would be the worse
+        outcome by far.
+        """
+        print("[keepalive] %s — reconnecting. Any call in progress keeps "
+              "running: media does not use XMPP." % why)
+        try:
+            result = self.disconnect()
+            # slixmpp returns a coroutine here in some versions.
+            if asyncio.iscoroutine(result):
+                asyncio.ensure_future(result)
+        except Exception as exc:
+            print("[keepalive] disconnect failed: %s" % _sanitise(str(exc), 80))
+
+    async def _keepalive_loop(self):
+        """Keep the stream alive, and notice when it is not.
+
+        Two mechanisms, because they answer different questions.
+
+        **Whitespace, every 8 s.** Keeps an idle I2P tunnel from being torn
+        down, which would drop the session during the long silences of an SMP
+        exchange or a call where nothing is being typed.
+
+        **A round trip, every 60 s.** This is the one that matters, and it
+        was missing. `send_raw` only writes into the local socket buffer: it
+        succeeds whether or not anything is still listening at the far end.
+        Over I2P that is not a corner case -- the SAM stream can be gone
+        while the local socket keeps accepting writes indefinitely -- so a
+        whitespace-only keepalive reports a healthy stream forever, the
+        failure counter never moves, `_on_disconnected` never fires, and
+        reconnect never runs. The session dies silently and the first symptom
+        is the peer appearing to go offline.
+
+        A XEP-0199 ping requires the server to answer, so it proves the whole
+        path rather than the first hop of it. On repeated timeout the stream
+        is taken down explicitly, because breaking out of this loop on its
+        own only stops pinging.
+
+        Calls are never torn down here. Media rides its own I2P datagram
+        session; only rekey signalling uses XMPP, and a rekey that cannot be
+        delivered already fails safe by keeping the committed epoch.
 
         The loop is SILENT while it is working, including under --debug. A
         heartbeat that prints every 8 s forever reports nothing new — after
         the second line it is pure noise, and on a phone screen it buries the
         conversation it exists to protect. What is worth saying is a *change*:
-        a ping that failed, and a ping that started working again. Those are
-        printed unconditionally, because by then something is actually wrong.
+        a probe that failed, and one that started working again.
 
         Set OTRV4PLUS_KEEPALIVE_TRACE=1 to watch every tick; /status reports
-        the tick count and the age of the last successful ping on demand.
-
-        A failure is not fatal on its own — the stream may simply be
-        mid-reconnect — so a few consecutive failures are tolerated before
-        the loop gives up and lets the reconnect logic take over.
+        the counters and the age of the last successful round trip.
         """
         trace = bool(os.environ.get("OTRV4PLUS_KEEPALIVE_TRACE"))
-        consecutive_failures = 0
+        whitespace_failures = 0
+        next_probe = time.monotonic() + self.KEEPALIVE_PING_S
+
+        # A new loop means a new stream, so the failure count starts again.
+        #
+        # It did not, and the effect was measured on a live call: the counter
+        # is cleared only by a SUCCESSFUL probe, so after the first genuine
+        # detection it stayed at the threshold. Every reconnect then began
+        # one failure away from the limit, and a single missed ping
+        # disconnected immediately -- the tolerance of three collapsed to
+        # one. The live trace showed the counter climbing 3, 4, 5 with a
+        # reconnect every ~96 s, which is exactly the ping interval plus the
+        # timeout plus the sleep granularity: the period was this loop's own
+        # signature, not the network's.
+        self._keepalive_ping_fails = 0
+        self._keepalive_degraded = False
         try:
-            while self.is_connected():
-                await asyncio.sleep(8)
+            while not self._shutting_down:
+                await asyncio.sleep(self.KEEPALIVE_WHITESPACE_S)
+                if not self.is_connected():
+                    # _on_disconnected owns the reconnect; this task is
+                    # cancelled there and restarted by _on_start.
+                    break
                 self._keepalive_ticks += 1
+
                 try:
                     self.send_raw(" ")
-                    self._keepalive_last_ok = time.monotonic()
-                    if consecutive_failures or self._keepalive_degraded:
-                        print("[keepalive] stream responding again after %d "
-                              "failed ping(s)" % consecutive_failures)
-                        self._keepalive_degraded = False
-                    consecutive_failures = 0
-                    if trace:
-                        print("[keepalive] tick %d (loop alive)"
-                              % self._keepalive_ticks)
+                    whitespace_failures = 0
                 except Exception as exc:
-                    consecutive_failures += 1
+                    whitespace_failures += 1
+                    if whitespace_failures == 1:
+                        print("[keepalive] whitespace write failed (%s)"
+                              % _sanitise(str(exc), 80))
+                    if whitespace_failures >= 3:
+                        self._declare_stream_dead(
+                            "the local socket stopped accepting writes")
+                        break
+
+                # Traffic is the best possible liveness evidence: it proves
+                # the whole path, end to end, without asking the server for
+                # anything. While it is arriving there is nothing to probe.
+                quiet = self._stream_quiet_for()
+                if quiet < self.KEEPALIVE_QUIET_S:
+                    if self._keepalive_ping_fails or self._keepalive_degraded:
+                        print("[keepalive] stream is delivering again "
+                              "(traffic %.0fs ago)" % quiet)
+                        self._keepalive_ping_fails = 0
+                        self._keepalive_degraded = False
+                    self._keepalive_last_ok = time.monotonic()
+                    if trace:
+                        print("[keepalive] tick %d (traffic %.0fs ago)"
+                              % (self._keepalive_ticks, quiet))
+                    continue
+
+                if time.monotonic() < next_probe:
+                    if trace:
+                        print("[keepalive] tick %d (quiet %.0fs, probe due "
+                              "in %.0fs)"
+                              % (self._keepalive_ticks, quiet,
+                                 next_probe - time.monotonic()))
+                    continue
+
+                next_probe = time.monotonic() + self.KEEPALIVE_PING_S
+                self._keepalive_pings += 1
+                alive = await self._probe_stream()
+
+                if alive:
+                    self._keepalive_last_ok = time.monotonic()
+                    if self._keepalive_degraded:
+                        print("[keepalive] server responding again after %d "
+                              "missed round trip(s)"
+                              % self._keepalive_ping_fails)
+                        self._keepalive_degraded = False
+                    self._keepalive_ping_fails = 0
+                    if trace:
+                        print("[keepalive] round trip %d ok"
+                              % self._keepalive_pings)
+                elif self._stream_quiet_for() < self.KEEPALIVE_QUIET_S:
+                    # The reply never came, but something else did while we
+                    # waited. The path works and the ping was merely slow --
+                    # which over three I2P hops is ordinary, not a fault.
+                    self._keepalive_last_ok = time.monotonic()
+                    self._keepalive_ping_fails = 0
+                    self._keepalive_degraded = False
+                    if trace:
+                        print("[keepalive] probe %d unanswered but traffic "
+                              "arrived — not counted" % self._keepalive_pings)
+                else:
+                    self._keepalive_ping_fails += 1
+                    # Lifetime tally, deliberately NOT reset per session: it
+                    # is what distinguishes "one bad patch" from "this path
+                    # degrades every couple of minutes" across a long call.
+                    self._keepalive_timeouts += 1
                     if not self._keepalive_degraded:
-                        # Said once, not once per tick: the I2P tunnel is the
-                        # thing most likely to have gone, and the user needs
-                        # to know before the session silently dies.
+                        # Said once, not once per probe.
                         self._keepalive_degraded = True
-                        print("[keepalive] ping failed (%s) — the I2P tunnel "
-                              "may be dropping" % _sanitise(str(exc), 80))
-                    if consecutive_failures >= 3:
-                        print("[keepalive] stopped after 3 failed pings — "
-                              "reconnect will take over")
+                        print("[keepalive] no reply from the server — the "
+                              "I2P tunnel or the stream may be gone")
+                    if self._keepalive_ping_fails >= self.KEEPALIVE_PING_FAILS:
+                        self._declare_stream_dead(
+                            "%d round trips in a row went unanswered"
+                            % self._keepalive_ping_fails)
                         break
         except asyncio.CancelledError:
             pass
 
+    MAX_AUTH_ATTEMPTS = 3
+
     def _on_failed_auth(self, event):
-        print("\n[auth failed] check JID and password.", file=sys.stderr)
-        # Don't retry on bad credentials; reconnect would loop forever.
-        self._shutting_down = True
+        """Offer a re-entry instead of ending the session on a typo.
+
+        Retrying automatically with the SAME password would loop forever, so
+        the reconnect loop stays blocked until a new one is supplied: while
+        _password_prompt is set, _schedule_reconnect refuses to run. Only a
+        password the user actually typed unblocks it.
+        """
+        self._auth_failures += 1
+        left = self.MAX_AUTH_ATTEMPTS - self._auth_failures
+        if left <= 0 or not self._can_prompt_for_password():
+            print("\n[auth failed] the server rejected that password.",
+                  file=sys.stderr)
+            if left <= 0:
+                print("[auth failed] %d attempts used — giving up. Check the "
+                      "JID and restart." % self._auth_failures,
+                      file=sys.stderr)
+            self._shutting_down = True
+            return
+        print("\n[auth failed] the server rejected that password.")
+        print("[auth] %d attempt%s left."
+              % (left, "" if left == 1 else "s"))
+        print("[auth] press Enter, then type the password again "
+              "(it will not be shown).")
+        self._password_prompt = "Password for %s: " % (self._own_bare or "?")
+
+    def _can_prompt_for_password(self) -> bool:
+        """True when a hidden prompt can actually be delivered.
+
+        The plain reader owns stdin and can swap in getpass. The TUI draws
+        and echoes its own input line, so a password typed there would be on
+        screen and in any terminal capture; rather than leak it, that mode
+        reports the failure and stays down.
+        """
+        if getattr(self, "_tui_enabled", False):
+            return False
+        try:
+            return bool(sys.stdin.isatty())
+        except Exception:
+            return False
+
+    def supply_password(self, text) -> None:
+        """Accept a re-entered password and resume connecting."""
+        if self._password_prompt is None:
+            return
+        self._password_prompt = None
+        secret = (text or "").strip("\r\n")
+        if not secret:
+            print("[auth] nothing entered — session stays down.")
+            self._shutting_down = True
+            try:
+                self.disconnect()
+            except Exception:
+                pass
+            return
+        # slixmpp's password setter writes credentials['password'], which is
+        # what the next SASL attempt reads.
+        self.password = secret
+        self._reconnect_delay = _RECONNECT_BASE
+        print("[auth] retrying with the new password…")
+        self._schedule_reconnect("password re-entered")
+
+    def _has_transport_params(self) -> bool:
+        """True when reconnect knows which transport to re-establish.
+
+        Reconnect is only scheduled when this holds. Without it the loop
+        would run with no transport configured and take the direct-connect
+        branch, which for an I2P or Tor session means silently exposing the
+        user's address -- so "we do not know how to reconnect" has to mean
+        "stay down", not "reconnect somehow".
+        """
+        return (self._sam_params is not None
+                or getattr(self, "_tor_params", None) is not None)
+
+    def _schedule_reconnect(self, why: str) -> None:
+        """Start the reconnect loop unless one is already running.
+
+        Every path that wants a reconnect goes through here. _on_disconnected
+        and _on_connection_failed both fire during a failed reconnect attempt,
+        and they used to schedule independently -- one of them without even
+        recording the task, so it was invisible to the other's guard. The
+        result was two loops with independent backoff delays both calling
+        connect(), and on I2P two SAM forwarders being built for one session.
+        """
+        if self._shutting_down or not self._has_transport_params():
+            return
+        if self._password_prompt is not None:
+            # Reconnecting now would present the password the server has
+            # already rejected, and do it every few seconds forever.
+            return
+        existing = self._reconnect_task
+        if existing is not None and not existing.done():
+            return
+        try:
+            loop = asyncio.get_event_loop()
+            self._reconnect_task = loop.create_task(self._reconnect())
+        except Exception as exc:
+            print("[reconnect] could not schedule after %s: %s"
+                  % (why, _sanitise(str(exc), 80)))
 
     def _on_disconnected(self, event):
         print("\n[disconnected]")
         if self._keepalive_task:
             self._keepalive_task.cancel()
-        if not self._shutting_down and self._sam_params is not None:
-            try:
-                loop = asyncio.get_event_loop()
-                self._reconnect_task = loop.create_task(self._reconnect())
-            except Exception as e:
-                print(f"[reconnect] could not schedule: {e}")
+        # Our stream is what went away. Every peer will look unavailable for
+        # the duration, and none of them has actually gone anywhere.
+        self._clear_peer_gone("our transport dropped")
+        self._schedule_reconnect("disconnect")
 
     def _on_connection_failed(self, event):
         reason = str(event) if event else "unknown"
         print(f"[connection failed] {_sanitise(reason, 256)}")
-        if not self._shutting_down and self._sam_params is not None:
-            try:
-                loop = asyncio.get_event_loop()
-                loop.create_task(self._reconnect())
-            except Exception:
-                pass
+        self._schedule_reconnect("connection failure")
 
     # Stream errors that will NEVER succeed on retry. Reconnecting after one
     # of these rebuilds an I2P tunnel every few seconds forever, burning
@@ -1129,7 +1869,20 @@ class OTRv4PlusXMPP(ClientXMPP):
             await asyncio.sleep(delay)
             if self._shutting_down:
                 return
-            print("[reconnect] attempting reconnection...")
+            # The resource is what changes across a reconnect, and the next
+            # live test needs to show whether it changes cleanly. The bare
+            # JID is already on screen from [connected]; only the resource is
+            # added here, and it is server-assigned rather than secret.
+            before = ""
+            try:
+                before = self.boundjid.resource or ""
+            except Exception:
+                pass
+            self._reconnects_started = getattr(self, "_reconnects_started",
+                                               0) + 1
+            print("[reconnect] attempt %d, resource before=%s"
+                  % (self._reconnects_started,
+                     _sanitise(before, 40) or "(none)"))
             try:
                 if self._is_i2p and self._sam_params:
                     p = self._sam_params
@@ -1147,9 +1900,53 @@ class OTRv4PlusXMPP(ClientXMPP):
                         )
                         continue
                     self.connect(host, port)
+                elif getattr(self, "_is_tor", False) and self._tor_params:
+                    p = self._tor_params
+                    try:
+                        host, port = await start_tor_socks_forwarder(
+                            p["onion_host"],
+                            p["dest_port"],
+                            socks_host=p["socks_host"],
+                            socks_port=p["socks_port"],
+                        )
+                    except Exception as e:
+                        print(f"[reconnect] Tor tunnel failed: {e}")
+                        self._reconnect_delay = min(
+                            self._reconnect_delay * 2, _RECONNECT_MAX
+                        )
+                        continue
+                    self.connect(host, port)
+                elif getattr(self, "_is_tor", False):
+                    # Same reasoning as the I2P guard below: the fall-through
+                    # would open a direct connection from a session the user
+                    # asked to route through Tor.
+                    print("[reconnect] REFUSING to reconnect: this session is "
+                          "Tor but the SOCKS parameters are missing. Falling "
+                          "back to a direct connection would expose your "
+                          "address, so the session stays down.")
+                    return
+                elif self._is_i2p:
+                    # Unreachable today: _sam_params and _is_i2p are set
+                    # together, and _on_disconnected only schedules this loop
+                    # when _sam_params is not None. It is guarded anyway
+                    # because of what the fall-through WOULD do -- open a
+                    # direct clearnet connection to the XMPP server from a
+                    # session the user asked to run over I2P, silently
+                    # exposing their address. A transport downgrade must
+                    # never be reachable by one condition drifting.
+                    print("[reconnect] REFUSING to reconnect: this session is "
+                          "I2P but the SAM parameters are missing. Falling "
+                          "back to a direct connection would expose your "
+                          "address, so the session stays down.")
+                    return
                 else:
                     self.connect()
-                print("[reconnect] reconnected.")
+                self._reconnects_completed = getattr(
+                    self, "_reconnects_completed", 0) + 1
+                print("[reconnect] transport re-established (%d/%d). "
+                      "[connected] will report the new resource."
+                      % (self._reconnects_completed,
+                         self._reconnects_started))
                 return  # _on_start resets _reconnect_delay on success
             except Exception as e:
                 print(f"[reconnect] failed: {e}")
@@ -1200,12 +1997,132 @@ class OTRv4PlusXMPP(ClientXMPP):
         status = presence["status"] or ""
         status_s = f" ({_sanitise(status, 64)})" if status else ""
         print(f"[presence] {_sanitise(peer, 128)} is {show}{status_s}")
+        self._peer_is_alive(peer)
 
     def _on_presence_unavailable(self, presence):
         peer = presence["from"].bare
         if peer == self._own_bare:
             return
         print(f"[presence] {_sanitise(peer, 128)} went offline")
+        self._arm_peer_gone(peer)
+
+    # -------------------------------------------------------------------------
+    # Abandoned OTR sessions
+    # -------------------------------------------------------------------------
+    #
+    # A ratchet is shared state. When the peer's client exits, its half is
+    # gone; ours is not, so the next /otr found a live session on our side
+    # only, and the DAKE it tried to start went nowhere. start_otr already
+    # force-resets a stuck session, but only after a failed attempt the user
+    # has to notice and interpret.
+    #
+    # The trigger is a peer that goes offline and stays offline. It is
+    # deliberately NOT "the peer went offline", because that fires constantly
+    # for reasons that have nothing to do with the peer: our own stream
+    # dropping produces the same presence, and this client reconnects often
+    # enough over I2P that tearing down a verified session on a blip would be
+    # far worse than the problem being fixed. So the timer is cancelled by
+    # anything that proves the peer is still there, and by our own reconnects.
+
+    PEER_GONE_SECONDS = 180
+
+    def _peer_is_alive(self, peer: str) -> None:
+        """Any sign of life cancels a pending teardown."""
+        self._peer_gone_at.pop(peer, None)
+
+    def _arm_peer_gone(self, peer: str) -> None:
+        if peer not in self._encrypted:
+            return                       # nothing to clear
+        self._peer_gone_at[peer] = time.monotonic()
+        self._start_peer_gone_sweeper()
+
+    def _clear_peer_gone(self, why: str = "") -> None:
+        """Forget every pending teardown.
+
+        Called when OUR transport drops. The peers looked absent because we
+        were, and their sessions are fine.
+        """
+        if self._peer_gone_at:
+            self._peer_gone_at.clear()
+
+    def _start_peer_gone_sweeper(self) -> None:
+        task = self._peer_gone_task
+        if task is not None and not task.done():
+            return
+        try:
+            loop = asyncio.get_event_loop()
+            self._peer_gone_task = loop.create_task(self._peer_gone_sweeper())
+        except Exception:
+            self._peer_gone_task = None
+
+    async def _peer_gone_sweeper(self) -> None:
+        try:
+            while not self._shutting_down and self._peer_gone_at:
+                await asyncio.sleep(15)
+                now = time.monotonic()
+                for peer, since in list(self._peer_gone_at.items()):
+                    if now - since < self.PEER_GONE_SECONDS:
+                        continue
+                    if self._peer_in_call(peer):
+                        # Media does not use XMPP, so a call can be healthy
+                        # while presence says otherwise. Ending OTR here would
+                        # take the rekey and END signalling with it.
+                        self._peer_gone_at[peer] = now
+                        continue
+                    self._peer_gone_at.pop(peer, None)
+                    self._forget_otr(peer, "offline for %ds"
+                                     % self.PEER_GONE_SECONDS)
+        except asyncio.CancelledError:
+            pass
+        except Exception as exc:
+            print("[otr] session sweeper stopped: %s" % _sanitise(str(exc), 80))
+
+    def _peer_in_call(self, peer: str) -> bool:
+        manager = self._voice_manager
+        if manager is None:
+            return False
+        try:
+            return bool(manager.has_active_call(peer))
+        except Exception:
+            return False
+
+    def _forget_otr(self, peer: str, why: str) -> None:
+        """Drop every trace of an OTR session so /otr can start a fresh one.
+
+        The same reset start_otr performs on a stuck session, done up front
+        instead of after a failure. Nothing here weakens anything: it destroys
+        ratchet state, and the peer's next session has to complete a full DAKE
+        and be SMP-verified again exactly as the first one did. The pinned
+        fingerprint is NOT touched -- that is long-term identity, and forgetting
+        it would turn a reconnect into a fresh trust-on-first-use decision.
+        """
+        if peer not in self._encrypted:
+            return
+        try:
+            self.otr.end_session(peer)
+        except Exception as exc:
+            print("[otr] could not end session with %s: %s"
+                  % (_sanitise(peer, 128), _sanitise(str(exc), 80)))
+        self._encrypted.discard(peer)
+        self._last_dake1.pop(peer, None)
+        if self._secret_request == peer:
+            self._secret_request = None
+            self._secret_purpose = None
+            self._mask_next_input(False)
+            print("[smp] the passphrase prompt for that peer is closed; "
+                  "nothing was stored.")
+        # A verification request cannot outlive the session it belongs to: the
+        # held SMP1 is gone with the ratchet, so a consent prompt still on the
+        # screen would ask about something that no longer exists.
+        if getattr(self, "_smp_consent_shown", None) == peer:
+            self._smp_consent_shown = None
+            print("[smp] the verification request from that peer is closed; "
+                  "nothing was stored.")
+        self._smp_flows.drop(peer)
+        self._smp_reported = {k for k in self._smp_reported if k[0] != peer}
+        print("[otr] cleared the session with %s (%s) — /otr to start a new "
+              "one when they return" % (_sanitise(peer, 128),
+                                        _sanitise(why, 64)))
 
     # -------------------------------------------------------------------------
     # Rate limiting
@@ -1240,6 +2157,10 @@ class OTRv4PlusXMPP(ClientXMPP):
         if peer in self._blocked:
             return
 
+        # Anything at all from this peer proves they are still there, which
+        # outranks a presence stanza that said otherwise.
+        self._peer_is_alive(peer)
+
         # Rate limiting check.
         if not self._check_rate_limit(peer):
             print(f"[rate-limit] dropping message from {_sanitise(peer, 128)}")
@@ -1265,8 +2186,31 @@ class OTRv4PlusXMPP(ClientXMPP):
             print("[voice] ignoring UNENCRYPTED call signal from %s — call "
                   "control is only accepted inside an OTR session"
                   % _sanitise(peer, 128))
+        elif body.startswith(FILE_PREFIX):
+            # Same rule as call control: a file offer is only meaningful
+            # inside the OTR channel.  In the clear it is either an outdated
+            # client or someone injecting an offer at the server, and acting
+            # on it would let an off-session party start a transfer.
+            print("[file] ignoring UNENCRYPTED file signal from %s — file "
+                  "transfer is only accepted inside an OTR session"
+                  % _sanitise(peer, 128))
         else:
             print(f"[plain] <{_sanitise(peer, 128)}> {_sanitise(body)}")
+
+    def _check_smp_secret_required(self, peer):
+        """Show the consent prompt if the engine is holding a peer's SMP1.
+
+        Idempotent: a peer resending SMP1 while the prompt is open cannot make
+        a second prompt appear, because the flow is already in
+        AWAITING_LOCAL_CONSENT and both this and the flow refuse to re-arm.
+        """
+        try:
+            if not self.otr.smp_secret_required(peer):
+                return
+        except Exception as e:
+            self._dbg(f"[smp] secret-required check failed: {e}")
+            return
+        self._announce_secret_required(peer)
 
     async def _handle_otr_in_async(self, peer, body):
         stage_in = self._otr_stage(body)
@@ -1350,6 +2294,12 @@ class OTRv4PlusXMPP(ClientXMPP):
 
         self._check_dake_complete(peer)
 
+        # Did the engine park an SMP1 because we have no passphrase for this
+        # peer?  Asked here, on the event loop, after the executor has
+        # finished: the OTR worker never waits for a human.
+        self._check_smp_secret_required(peer)
+        self._expire_stale_smp_consent()
+
         if out:
             out_b = out.encode("utf-8") if isinstance(out, str) else out
             if out_b.startswith(OTR_PREFIX_B):
@@ -1373,6 +2323,17 @@ class OTRv4PlusXMPP(ClientXMPP):
                     else:
                         print("[voice] call signal received before the voice "
                               "subsystem was ready — ignoring")
+                    return
+
+                # File transfer travels inside the OTR channel too, and is
+                # routed before anything renders it as chat -- otherwise an
+                # offer appears as a wall of base64 in the peer's window.
+                if text.startswith(FILE_PREFIX):
+                    if self._file_manager is not None:
+                        self._file_manager.handle_control(peer, text)
+                    else:
+                        print("[file] file signal received before the "
+                              "transfer subsystem was ready — ignoring")
                     return
 
                 smp_ok = (peer, "SUCCEEDED") in self._smp_reported
@@ -1422,51 +2383,6 @@ class OTRv4PlusXMPP(ClientXMPP):
         except Exception:
             return None
 
-    def _handle_otr_in(self, peer, body):
-        """Sync fallback (retained for compatibility; async path is preferred)."""
-        try:
-            out = self.otr.handle_incoming_message(peer, body)
-        except Exception as e:
-            print(f"[otr error] from {peer}: {e}")
-            return
-        self._check_dake_complete(peer)
-        if out:
-            out_b = out.encode("utf-8") if isinstance(out, str) else out
-            if out_b.startswith(OTR_PREFIX_B):
-                self.send_otr_fragmented(peer, out_b.decode("utf-8", errors="replace"))
-            else:
-                text = out_b.decode("utf-8", errors="replace")
-
-                # Call control travels INSIDE the OTR channel, so it surfaces
-                # here as decrypted text and must be routed to the voice
-                # manager before anything else touches it. Without this the
-                # INVITE is rendered as a chat message and the callee never
-                # learns a call is ringing — /answer then reports "no
-                # incoming call" while the caller waits.
-                if text.startswith(VoiceCallManager.CALL_PREFIX):
-                    if self._voice_manager is not None:
-                        asyncio.ensure_future(
-                            self._voice_manager.handle_signal(peer, text))
-                    else:
-                        print("[voice] call signal received before the voice "
-                              "subsystem was ready — ignoring")
-                    return
-
-                smp_ok = (peer, "SUCCEEDED") in self._smp_reported
-                peer_s = _sanitise(peer, 128)
-                text_s = _sanitise(text)
-                if smp_ok:
-                    print(
-                        _colorize("[otr] ", "green")
-                        + _colorize(f"<{peer_s}>", "yellow")
-                        + " "
-                        + _colorize(text_s, "dark_blue")
-                    )
-                else:
-                    print(f"[otr] <{peer_s}> {text_s}")
-        self._report_smp(peer)
-        self._check_dake_complete(peer)
-
     # -------------------------------------------------------------------------
     # DAKE completion -> trust prompt
     # -------------------------------------------------------------------------
@@ -1495,75 +2411,602 @@ class OTRv4PlusXMPP(ClientXMPP):
         print(f"  Their fingerprint : {_colorize(_fmt_fp(remote_fp), 'yellow')}")
         print("-" * 60)
 
-        already = False
+        self._apply_tofu(peer, remote_fp)
+
+    # -------------------------------------------------------------------------
+    # TOFU (XMPP only)
+    # -------------------------------------------------------------------------
+
+    def _apply_tofu(self, peer, remote_fp):
+        """Trust-on-first-use against the pinned fingerprint.
+
+        Three outcomes, and they are genuinely different situations rather than
+        three shades of the same prompt:
+
+        first contact   nothing pinned -> show it, ask once, pin on `y`
+        same key        pinned and matching -> say so, ask nothing
+        changed key     pinned and DIFFERENT -> refuse, keep the old pin
+
+        The third case never auto-repins and never offers `y` as a way through.
+        A prompt that can be answered `y` is a prompt that will be answered `y`,
+        and the whole point of pinning is that this particular `y` should cost
+        the user some deliberate effort somewhere else.
+
+        This is identity *continuity*, not authentication. SMP remains what
+        authenticates a peer, and `_smp_verified` remains the only gate on
+        voice -- a matching pin authorises nothing by itself.
+        """
+        if not remote_fp:
+            print("[trust] no peer fingerprint available - encrypted only.")
+            self._announce_smp_needed(peer)
+            return
+
         try:
-            already = self.otr.is_peer_trusted(peer)
+            pinned_and_trusted = self.otr.trust_db.check_or_pin(peer, remote_fp)
+        except Exception as exc:
+            if type(exc).__name__ != "FingerprintMismatchError":
+                print("[trust] trust store unusable (%s) - encrypted only."
+                      % type(exc).__name__)
+                self._announce_smp_needed(peer)
+                return
+            self._fingerprint_changed[peer] = getattr(exc, "stored", "")
+            print("")
+            print("!" * 60)
+            print("[trust] THE FINGERPRINT FOR THIS JID HAS CHANGED.")
+            print("[trust]   pinned : %s" % _fmt_fp(getattr(exc, "stored", "")))
+            print("[trust]   now    : %s" % _fmt_fp(remote_fp))
+            print("[trust] The pinned fingerprint has NOT been replaced.")
+            print("[trust] This is what a machine-in-the-middle looks like. It")
+            print("[trust] also looks exactly like your peer reinstalling, so")
+            print("[trust] it is a question, not a verdict - but confirm the")
+            print("[trust] new fingerprint with them over a channel that is")
+            print("[trust] not this one before you accept it.")
+            print("[trust] To accept deliberately:  /trust-reset %s" % peer)
+            print("[trust] Voice is refused for this peer until you do.")
+            print("!" * 60)
+            print("")
+            return
+
+        self._fingerprint_changed.pop(peer, None)
+        if pinned_and_trusted:
+            print("[trust] Fingerprint matches the pinned identity for this JID.")
+            self._announce_smp_needed(peer)
+            return
+
+        # First contact: pin it and say so. No question.
+        #
+        # The prompt is gone because it never carried the security. Asked to
+        # approve a fingerprint you have never seen, there is nothing to check
+        # it against -- the only available answer is yes, and a question whose
+        # answer is always yes trains the reflex that makes the question that
+        # DOES matter useless. Signal, WhatsApp and every other TOFU deployment
+        # pin silently for the same reason.
+        #
+        # What protects you is the second half, and it is untouched: a pinned
+        # fingerprint that CHANGES still stops the session, still refuses
+        # voice, still cannot be waved through with a keystroke, and still
+        # needs a deliberate /trust-reset. That is the branch above, and it is
+        # where a machine-in-the-middle actually shows up.
+        ok = False
+        try:
+            ok = self.otr.trust_fingerprint(peer, remote_fp)
+        except Exception as exc:
+            print("[trust] could not pin the fingerprint: %s" % type(exc).__name__)
+        if ok:
+            print("[trust] First contact — fingerprint PINNED for this JID.")
+            print("[trust] A change will be reported and will block voice.")
+        else:
+            print("[trust] First contact — the fingerprint could NOT be pinned,")
+            print("[trust] so a change cannot be detected. /identity for why.")
+        self._announce_smp_needed(peer)
+
+    def show_identity(self):
+        """Everything TOFU depends on, in one screen.
+
+        Written because "it still asks me to trust the fingerprint" has three
+        very different causes -- an older build at one end, a pin that did not
+        stick, or a peer whose identity really is changing -- and telling them
+        apart previously meant finding and reading a JSON file on both phones.
+        """
+        print("-" * 60)
+        persistent = bool(getattr(self, "identity_persistent", False))
+        print("[identity] local identity : %s"
+              % ("PERSISTENT — the same every run" if persistent
+                 else "EPHEMERAL — regenerates every run"))
+        if not persistent:
+            print("[identity]   Peers cannot pin a fingerprint that changes every")
+            print("[identity]   launch. XMPP should be persistent; if this says")
+            print("[identity]   ephemeral you are on a build older than v10.12.0.")
+        print("[identity] your fingerprint: %s" % _fmt_fp(self._local_fp()))
+        try:
+            cfg = self.otr.config
+            print("[identity] identity record: %s" % getattr(cfg, "identity_path", "?"))
+            print("[identity] trust store    : %s%s"
+                  % (self.otr.trust_db.db_path,
+                     "" if self.otr.trust_db.persistent else "  (IN MEMORY ONLY)"))
         except Exception:
-            already = False
+            pass
 
-        if already:
-            print("[trust] Fingerprint already trusted - VERIFIED.")
-            self._prompt_smp_secret(peer)
-        else:
-            print("[trust] Trust this fingerprint? Type  y  or  n :")
-            self._pending[peer] = "trust"
+        try:
+            entries = self.otr.trust_db.list_trusted()
+        except Exception as exc:
+            print("[identity] trust store unreadable: %s" % type(exc).__name__)
+            entries = {}
 
-    def _handle_trust_answer(self, peer, answer):
-        ans = answer.strip().lower()
-        if ans in ("y", "yes"):
-            ok = False
-            try:
-                remote_fp = self._remote_fp(peer)
-                ok = self.otr.trust_fingerprint(peer, remote_fp)
-            except Exception as e:
-                print(f"[trust] error saving trust: {e}")
-            if ok:
-                print("[trust] Fingerprint TRUSTED - identity pinned (VERIFIED).")
-            else:
-                print("[trust] Could not store trust, continuing encrypted-only.")
+        print("-" * 60)
+        if not entries:
+            print("[identity] No fingerprints pinned yet.")
+            print("[identity]   First contact pins silently. If nothing is listed")
+            print("[identity]   after a session, the pin did not stick.")
         else:
-            print("[trust] Fingerprint NOT trusted - encrypted only.")
-        self._pending[peer] = None
-        self._prompt_smp_secret(peer)
+            print("[identity] Pinned fingerprints (%d):" % len(entries))
+            for jid, fp in sorted(entries.items()):
+                live = self._remote_fp(jid) if jid in self._encrypted else None
+                if live and live != "unavailable":
+                    state = "matches now" if live == fp else "!! DIFFERS FROM LIVE !!"
+                else:
+                    state = "not in session"
+                print("[identity]   %-32s %s  [%s]" % (jid, _fmt_fp(fp), state))
+        if self._fingerprint_changed:
+            print("[identity] UNRESOLVED identity change for: %s"
+                  % ", ".join(sorted(self._fingerprint_changed)))
+            print("[identity]   Voice is refused for these until /trust-reset <jid>.")
+        print("-" * 60)
+
+    def _voice_blocked_by_tofu(self, peer) -> bool:
+        """Refuse a call to a peer whose pinned fingerprint changed.
+
+        This is an ADDITIONAL refusal, layered on top of the SMP gate rather
+        than replacing any part of it. `_smp_verified` remains the only thing
+        that authorises voice; a matching pin has never authorised anything and
+        still does not. What this adds is that a *mismatched* pin refuses
+        early, so an unresolved identity change cannot be walked past by
+        completing SMP against whoever is on the other end.
+        """
+        if peer not in self._fingerprint_changed:
+            return False
+        print("[voice] refused: the pinned fingerprint for %s has changed and "
+              "the change is unresolved." % peer)
+        print("[voice] Confirm the new fingerprint with them out of band, then "
+              "/trust-reset %s" % peer)
+        return True
+
+    def trust_reset(self, peer):
+        """Deliberately drop a pin so the next contact re-pins (`/trust-reset`).
+
+        Separate from the `y` prompt on purpose. Accepting a changed identity
+        should cost a distinct, typed, peer-named action rather than the same
+        keystroke the user already presses reflexively.
+        """
+        if not peer:
+            print("usage: /trust-reset <jid>")
+            return
+        try:
+            removed = self.otr.trust_db.remove_trust(peer)
+        except Exception as exc:
+            print("[trust] could not clear the pin: %s" % type(exc).__name__)
+            return
+        self._fingerprint_changed.pop(peer, None)
+        if removed:
+            print("[trust] Pin cleared for %s. The next session will treat it as "
+                  "first contact." % peer)
+            print("[trust] Run /otr again to re-establish and pin.")
+        else:
+            print("[trust] No pin was stored for %s." % peer)
 
     # -------------------------------------------------------------------------
     # SMP passphrase prompt
     # -------------------------------------------------------------------------
 
-    def _prompt_smp_secret(self, peer):
+    def _announce_smp_needed(self, peer):
+        """Tell the user SMP is available.  Arm NOTHING.
+
+        This is reached from `_handle_otr_in_async` -> `_check_dake_complete`
+        -> `_apply_tofu`, which is to say: a remote peer decides when it runs.
+        It therefore may not change what the next line the user types means.
+
+        It used to.  It set `_pending[peer] = "smp_secret"`, and `dispatch_line`
+        consumed the pending state before any command parsing, so a peer who
+        completed a DAKE could make the user's next keystroke -- a message, a
+        command, anything but /quit -- be swallowed and stored as a shared
+        secret.  The user's only warning was a prompt they may have scrolled
+        past.
+
+        Supplying the secret now requires the user to type `/smp-secret`
+        themselves.  See `_request_smp_secret`.
+        """
         print("-" * 60)
         print(
-            "[smp] SOCIALIST MILLIONAIRE PROTOCOL setup "
+            "[smp] SOCIALIST MILLIONAIRE PROTOCOL is available for this peer "
             "(hybrid PQC: ML-KEM-1024 + ML-DSA-87 + ZKP)."
         )
         print(
             f"[smp] Passphrase: {SMP_MIN_LEN}-{SMP_MAX_LEN} chars. "
-            "Both sides must use the SAME secret."
+            "Both sides must use the SAME secret, agreed out of band."
         )
-        print("[smp] After both have stored it, run  /smp start  (either side).")
-        print("[smp] Press Enter or type  skip  to skip for now.")
-        self._pending[peer] = "smp_secret"
+        print("[smp] To verify:   /smp     (asks for the passphrase if you "
+              "have not stored one)")
+        print("[smp] Until you run that command, what you type is an ordinary "
+              "message.")
+
+    # ─── the guided verification flow ────────────────────────────────────────
+    #
+    # Two entries, and the difference between them is the whole security
+    # story.  `/smp` is local: the user typed a command, so the next line may
+    # be a passphrase without further ceremony -- the `passwd` shape.  An
+    # incoming SMP1 is remote: it may ASK, and the asking stops at a y/n that
+    # cannot be a passphrase.  Only the answer to that y/n opens the hidden
+    # read.  otrv4plus_smpflow.SmpFlow has no edge that skips it.
+
+    def smp_verify(self, peer):
+        """`/smp` -- verify this session, asking for whatever is missing.
+
+        The normal way to verify.  The user never has to know that a secret
+        is stored separately from the act of verifying, or that `/smp-secret`
+        exists.
+        """
+        if not self.otr.has_encrypted_session(peer):
+            print(f"[smp] no encrypted session with {peer}. Run /otr first.")
+            return
+        flow = self._smp_flows.get(peer)
+        if flow.state in (_smpflow.AWAITING_LOCAL_CONSENT,
+                          _smpflow.AWAITING_SECRET):
+            print("[smp] already asking you for the passphrase — answer that "
+                  "prompt.")
+            return
+
+        stored = None
+        try:
+            stored = self.otr.smp_storage.get_secret(peer)
+        except Exception:
+            stored = None
+
+        if stored:
+            print(f"[smp] stored passphrase found for {peer} — verifying…")
+            flow.running()
+            self.smp_start(peer)
+            return
+
+        # No passphrase: ask for it, then start.  One command, not two.
+        try:
+            flow.local_secret_needed()
+        except _smpflow.SmpFlowError as e:
+            print(f"[smp] {e}")
+            return
+        print("[smp] Verification requires the passphrase you agreed with "
+              "this contact.")
+        print(f"[smp] Both sides must enter the SAME text "
+              f"({SMP_MIN_LEN}-{SMP_MAX_LEN} characters).")
+        self._arm_secret_prompt(peer, purpose="start")
+
+    def _announce_secret_required(self, peer):
+        """A peer asked to verify and we have no passphrase for them.
+
+        Called from the inbound path after the engine parked the SMP1.  It
+        prints and sets consent state; it arms NOTHING that could consume a
+        line as a secret.  If the user types an ordinary message here it is
+        sent as an ordinary message.
+        """
+        flow = self._smp_flows.get(peer)
+        try:
+            state = flow.remote_smp1_arrived()
+        except _smpflow.SmpFlowError:
+            return
+        if state != _smpflow.AWAITING_LOCAL_CONSENT:
+            return
+        if getattr(self, "_smp_consent_shown", None) == peer:
+            # A duplicate SMP1 while the prompt is open must not print again.
+            return
+        self._smp_consent_shown = peer
+        print("=" * 60)
+        print("🔐 SMP VERIFICATION REQUEST")
+        print("")
+        print(f"  {_sanitise(peer, 64)} wants to verify this encrypted")
+        print("  session using a passphrase you agreed in advance.")
+        print("")
+        print("  Press  y  to enter that passphrase, or  n  to decline.")
+        print("")
+        print("  Nothing you type now is sent to them, and typing an")
+        print("  ordinary message here just sends an ordinary message.")
+        print("=" * 60)
+
+    def _handle_smp_consent(self, peer, answer):
+        """y/n from the user.  The only door into the passphrase prompt for a
+        request a peer made."""
+        flow = self._smp_flows.get(peer)
+        agreed = answer in ("y", "yes")
+        try:
+            flow.local_consent(agreed)
+        except _smpflow.SmpFlowError as e:
+            print(f"[smp] {e}")
+            return
+        self._smp_consent_shown = None
+        if not agreed:
+            self._decline_smp_request(peer, "declined")
+            return
+        print("[smp] Enter the passphrase you agreed with this contact.")
+        self._arm_secret_prompt(peer, purpose="resume")
+
+    def _decline_smp_request(self, peer, why):
+        """Tell the peer, drop the held SMP1, keep nothing."""
+        flow = self._smp_flows.get(peer)
+        flow.reset()
+        self._smp_consent_shown = None
+        try:
+            abort = self.otr.decline_held_smp1(peer)
+        except Exception as e:
+            self._dbg(f"[smp] decline error: {e}")
+            abort = None
+        if abort:
+            self.send_otr_fragmented(
+                peer, abort if isinstance(abort, str) else abort.decode())
+        if why == "declined":
+            print("[smp] Verification declined.")
+        elif why == "timeout":
+            print("[smp] Verification request expired.")
+        else:
+            print("[smp] Verification cancelled.")
+        print("[smp] No passphrase was requested, stored or sent.")
+
+    def _expire_stale_smp_consent(self):
+        """Drop a consent request the user never answered.
+
+        Called from the inbound path, which is the only clock this client has
+        that ticks without user input.  A request left open forever would mean
+        a `y` typed much later, meaning something else entirely, opened a
+        passphrase prompt.
+        """
+        shown = getattr(self, "_smp_consent_shown", None)
+        if not shown:
+            return
+        flow = self._smp_flows.get(shown)
+        if flow.state != _smpflow.AWAITING_LOCAL_CONSENT:
+            if flow.state not in (_smpflow.AWAITING_SECRET,):
+                # The flow timed itself out.
+                self._decline_smp_request(shown, "timeout")
+
+    def _arm_secret_prompt(self, peer, purpose):
+        """Arm the dedicated hidden read.
+
+        `purpose` says what happens after the passphrase is stored, so the
+        user never types a second command:
+            "store"  -- just save it (the /smp-secret compatibility path)
+            "start"  -- save it, then send SMP1
+            "resume" -- save it, then answer the SMP1 already held
+        """
+        hidden = self._mask_next_input(True)
+        self._secret_request = peer
+        self._secret_purpose = purpose
+        if hidden:
+            print("[smp] Passphrase (hidden), or Enter to cancel:")
+        else:
+            print("[smp] WARNING: this terminal cannot hide input, so the "
+                  "passphrase WILL be")
+            print("[smp] visible here and in any capture of this session.")
+            print("[smp] Passphrase, or Enter to cancel:")
+
+    def _request_smp_secret(self, peer):
+        """Arm the hidden one-line read.  LOCAL COMMAND ONLY.
+
+        The arming is the second half of a command the user just typed, which
+        is what makes it safe: `/smp-secret` on one line, the secret on the
+        next, the way `passwd` and `sudo` have always worked.  Nothing a peer
+        sends reaches this method -- `test_no_remote_input_capture.py` walks
+        the inbound call graph and fails if that stops being true.
+
+        Single use.  `dispatch_line` clears the request before doing anything
+        with the line, so it cannot survive into a later one, and no code path
+        re-arms it except this method.
+        """
+        if not self.otr.has_encrypted_session(peer):
+            print(f"[smp] no encrypted session with {peer}. Run /otr first.")
+            return
+        try:
+            self._smp_flows.get(peer).local_secret_needed()
+        except _smpflow.SmpFlowError as e:
+            print(f"[smp] {e}")
+            return
+        self._arm_secret_prompt(peer, purpose="store")
+
+    @staticmethod
+    def _set_tty_echo(on: bool) -> bool:
+        """Turn terminal echo off or on. True if it took effect.
+
+        This is the only thing that works once the reader is already blocked.
+        In plain mode the loop sits inside sys.stdin.readline() from BEFORE
+        the prompt was raised, and the echo is done by the terminal driver in
+        the kernel, not by any code here -- so a flag set afterwards changes
+        nothing and the passphrase appears anyway. That is exactly what
+        happened: the client printed "what you type is hidden" and then showed
+        it.
+
+        The account password sidesteps the same race by discarding the line
+        and asking the user to type it again, which is why its prompt says so.
+        Clearing ECHO takes effect immediately instead, with TCSANOW, wherever
+        the reader happens to be.
+        """
+        try:
+            import termios
+            fd = sys.stdin.fileno()
+            if not os.isatty(fd):
+                return False
+            attrs = termios.tcgetattr(fd)
+            if on:
+                attrs[3] |= termios.ECHO
+            else:
+                attrs[3] &= ~termios.ECHO
+            termios.tcsetattr(fd, termios.TCSANOW, attrs)
+            return True
+        except Exception:
+            return False
+
+    def _mask_next_input(self, on: bool) -> bool:
+        """Hide the next typed line. Returns whether hiding actually works.
+
+        The SMP passphrase is a shared secret and was being echoed: into the
+        terminal, into scrollback, into the TUI's recallable command history,
+        and into any `script` capture of the session. It reached a bug report
+        that way, which is how this was noticed.
+
+        Three front ends, three mechanisms, and the return value says whether
+        any of them took. The caller must not promise the user that typing is
+        hidden unless it is -- the first attempt at this printed exactly that
+        promise and then showed the passphrase anyway.
+        """
+        self._mask_input = bool(on)
+        effective = False
+
+        tui = bool(getattr(self, "_tui_enabled", False))
+
+        # Plain mode: the terminal driver does the echoing, so stop it at the
+        # driver. This is the only mechanism that works when the reader is
+        # already blocked inside readline(), which it always is.
+        if not tui:
+            if self._set_tty_echo(not on):
+                effective = True
+            if on and effective and not getattr(self, "_echo_restore_hooked", False):
+                # Leaving a shell with echo off is worse than showing a
+                # passphrase, so make restoring it unconditional.
+                import atexit
+                atexit.register(self._set_tty_echo, True)
+                self._echo_restore_hooked = True
+
+        # The engine owns the raw-mode input line the TUI draws.
+        try:
+            setter = getattr(_otr, "set_input_mask", None)
+            if setter is not None:
+                setter(bool(on))
+                if tui:
+                    effective = True
+        except Exception:
+            pass
+
+        # The standalone TUI, when that is the front end instead.
+        screen = getattr(self, "_screen", None)
+        if screen is not None:
+            try:
+                screen.mask_input = bool(on)
+                effective = True
+            except Exception:
+                pass
+
+        return effective
 
     def _handle_smp_secret_answer(self, peer, secret):
-        self._pending[peer] = None
-        if not secret or secret.strip().lower() == "skip":
-            print("[smp] skipped - you can set it later with  /smp-secret <secret>.")
+        """Consume one hidden line as the SMP passphrase, then do what the
+        prompt was opened for.
+
+        `secret` is a Python str and cannot be zeroized; it is handed to the
+        engine, which copies it into a Rust-owned zeroizing buffer, and no
+        reference is kept here.  See SECURITY.md on the residual limit.
+
+        Every exit path either advances the flow or resets it.  A flow left in
+        AWAITING_SECRET would be a prompt the user cannot see and cannot
+        answer, and the next line would go to it.
+        """
+        self._mask_next_input(False)
+        purpose = getattr(self, "_secret_purpose_taken", None) or "store"
+        flow = self._smp_flows.get(peer)
+
+        if not secret or secret.strip().lower() in ("skip", "cancel"):
+            try:
+                flow.secret_cancelled()
+            except _smpflow.SmpFlowError:
+                pass
+            if purpose == "resume":
+                # A peer is waiting on a held SMP1; tell them and drop it.
+                self._decline_smp_request(peer, "cancelled")
+            else:
+                flow.reset()
+                print("[smp] Verification cancelled.")
+                print("[smp] No passphrase was stored.")
             return
+
         secret = secret.strip()
         err = self._validate_smp_secret(secret)
         if err:
+            # Not a cryptographic failure -- nothing has been tried yet.
             print(f"[smp] {err}")
+            print("[smp] Nothing was stored. Run  /smp  to try again.")
+            if purpose == "resume":
+                self._decline_smp_request(peer, "cancelled")
+            else:
+                flow.reset()
             return
+
         try:
             ok = self.otr.set_smp_secret(peer, secret)
         except Exception as e:
-            print(f"[smp] error storing passphrase: {e}")
+            # An internal failure, and it must not be reported as a bad
+            # passphrase: nothing has been compared yet.
+            print("[smp] SMP could not continue because of an internal error.")
+            print(f"[smp]   {_sanitise(str(e), 160)}")
+            print("[smp] No secret was transmitted. Nothing is verified.")
+            if purpose == "resume":
+                self._decline_smp_request(peer, "cancelled")
+            else:
+                flow.reset()
             return
-        if ok:
-            print("[smp] passphrase stored for auto-respond.")
-            print("[smp] When BOTH sides have stored it, run  /smp start  to verify.")
-        else:
-            print("[smp] could not store passphrase.")
+        finally:
+            del secret
+
+        if not ok:
+            print("[smp] SMP could not continue because the passphrase could "
+                  "not be stored.")
+            flow.reset()
+            return
+
+        if purpose == "start":
+            try:
+                flow.secret_supplied()
+            except _smpflow.SmpFlowError:
+                pass
+            print("[smp] Passphrase stored — starting verification…")
+            self.smp_start(peer)
+            return
+
+        if purpose == "resume":
+            try:
+                flow.secret_supplied()
+            except _smpflow.SmpFlowError:
+                pass
+            print("[smp] Passphrase stored — answering your peer…")
+            self._resume_held_smp1(peer)
+            return
+
+        flow.reset()
+        print("[smp] passphrase stored for auto-respond.")
+        print("[smp] Run  /smp  to verify whenever you are ready.")
+
+    def _resume_held_smp1(self, peer):
+        """Answer the SMP1 the engine parked, on the OTR executor.
+
+        The ZKP work is the same several hundred milliseconds the rest of SMP
+        costs, so it does not run on the event loop.
+        """
+        def _do_resume():
+            return self.otr.resume_held_smp1(peer)
+
+        async def _run():
+            loop = asyncio.get_event_loop()
+            try:
+                smp2 = await loop.run_in_executor(self._otr_executor, _do_resume)
+            except Exception as e:
+                print("[smp] SMP could not continue because of an internal "
+                      "error.")
+                print(f"[smp]   {_sanitise(str(e), 160)}")
+                print("[smp] No secret was transmitted or verified.")
+                self._smp_flows.get(peer).failed()
+                return
+            if smp2:
+                self.send_otr_fragmented(
+                    peer, smp2 if isinstance(smp2, str) else smp2.decode())
+                print("[smp] Answered — verification in progress…")
+            else:
+                print("[smp] Nothing to answer; the request may have expired.")
+                self._smp_flows.get(peer).reset()
+
+        self.loop.call_soon_threadsafe(lambda: asyncio.ensure_future(_run()))
 
     @staticmethod
     def _validate_smp_secret(secret: str):
@@ -1629,6 +3072,18 @@ class OTRv4PlusXMPP(ClientXMPP):
             is_fail = (name in _SMP_FAIL) or any(
                 t in name for t in ("FAIL", "ABORT", "ERROR"))
 
+            # An ABORT is not a mismatch, and saying it is contradicts the
+            # line printed immediately above it.  On a real pair of phones
+            # this read:
+            #
+            #   SMP stopped: your peer has not stored the passphrase yet.
+            #   ...This is not a wrong-passphrase failure.
+            #   *** SMP FAILED - secrets did NOT match. Possible MITM. ***
+            #
+            # Both from the same abort.  A mismatch is SMP4 returning false;
+            # an abort is the run stopping before any comparison happened.
+            is_abort = "ABORT" in name and "FAIL" not in name
+
             # Deliberately NOT announced as verification.  is_ok is a
             # name/attribute heuristic; only _smp_query's boolean, handled
             # above, is the engine saying the shared secret matched.
@@ -1639,6 +3094,16 @@ class OTRv4PlusXMPP(ClientXMPP):
                     f"(engine reports: {name}). This is NOT a verification "
                     "result — run /smpstate to see what the engine actually "
                     "says.\n"
+                )
+            elif is_abort and key_fail not in self._smp_reported:
+                self._smp_reported.add(key_fail)
+                # The reason, when the peer sent one, has already been printed
+                # by the session in terms the user can act on.  Do not restate
+                # it as a cryptographic result.
+                print(
+                    f"\n[smp] SMP with {peer} stopped before verifying. "
+                    "Nothing is verified, and no passphrase comparison "
+                    "happened — this is not a wrong-passphrase failure.\n"
                 )
             elif is_fail and key_fail not in self._smp_reported:
                 self._smp_reported.add(key_fail)
@@ -1709,6 +3174,189 @@ class OTRv4PlusXMPP(ClientXMPP):
     # -------------------------------------------------------------------------
     # Outbound fragmentation
     # -------------------------------------------------------------------------
+
+    # -- file transfer ----------------------------------------------------
+
+    def _send_file_signal(self, peer: str, verb: str, payload: str) -> bool:
+        """The Phase A byte pump: one control message inside the OTR channel.
+
+        Identical in shape to the voice manager's `_signal`, and for the same
+        reason -- an offer or a chunk sent in the clear would tell the server
+        who is sending what to whom, and would let an off-session party inject
+        a transfer.  If OTR is unavailable the frame is dropped rather than
+        downgraded.
+
+        This is the ONLY thing tying the transfer engine to XMPP.  Replacing
+        it with a SAM-stream writer is the whole of a future transport swap.
+        """
+        body = FILE_PREFIX + verb + ((":" + payload) if payload else "")
+        try:
+            frame, should_send = self.otr.handle_outgoing_message(peer, body)
+        except Exception as exc:
+            print("[file] could not encrypt: %s" % _sanitise(str(exc), 120))
+            return False
+        if not (should_send and frame):
+            print("[file] dropped — OTR channel unavailable (file transfer is "
+                  "never sent in the clear)")
+            return False
+        try:
+            self.send_otr_fragmented(
+                peer, frame if isinstance(frame, str) else frame.decode())
+        except Exception as exc:
+            print("[file] could not send: %s" % _sanitise(str(exc), 120))
+            return False
+        return True
+
+    def _file_peer_verified(self, peer: str) -> bool:
+        """File transfer requires the same cryptographic gate voice does.
+
+        Reads the voice manager's `_smp_verified`, which consults only the
+        engine's published predicates -- not display state, not a trust pin,
+        not the blue OTRv4+ marker.  One gate, one definition of verified.
+        """
+        try:
+            if self._voice_manager is None:
+                return False
+            return bool(self._voice_manager._smp_verified(peer))
+        except Exception:
+            return False
+
+    def _file_transfer_ratchet(self, peer: str):
+        """The peer's live RustDoubleRatchet, or None.
+
+        The transfer key is derived from it inside Rust; Python only passes
+        the handle along and never sees anything derived from it.
+        """
+        try:
+            session = self.otr.get_session(peer)
+            ratchet = getattr(session, "ratchet", None)
+            rust = getattr(ratchet, "_rust", None)
+            if rust is None or not rust.supports_file_transfer:
+                return None
+            return rust
+        except Exception:
+            return None
+
+    def _cmd_sendfile(self, peer, path: str) -> None:
+        """/sendfile [path] — a path, or nothing to open the Android picker."""
+        if self._file_manager is None:
+            print("[file] the transfer subsystem is not ready yet")
+            return
+        if not peer:
+            print("[file] open a chat with a peer first")
+            return
+        ratchet = self._file_transfer_ratchet(peer)
+        if ratchet is None:
+            print("[file] no OTR session with %s that can key a transfer — "
+                  "run /otr first" % _sanitise(peer, 128))
+            return
+        if not path and not IS_TERMUX:
+            print("usage: /sendfile <path>")
+            return
+
+        def _pick_and_seal():
+            # Both halves are blocking and both belong off the event loop.
+            # The picker waits for a human scrolling a gallery, which is far
+            # longer than anything else in this client is allowed to block
+            # for, and sealing reads the whole file through the AEAD.
+            staged = None
+            chosen = path
+            if not chosen:
+                staged = _filetransfer.pick_file(which=_which)
+                chosen = staged
+            try:
+                return self._file_manager.offer_file(peer, chosen, ratchet)
+            finally:
+                # The staged copy is PLAINTEXT.  It has served its purpose the
+                # moment offer_file returns, whether that was by sealing the
+                # file or by raising, so it goes either way.
+                if staged:
+                    try:
+                        os.unlink(staged)
+                    except OSError:
+                        pass
+
+        async def _run():
+            loop = asyncio.get_event_loop()
+            if not path:
+                print("[file] opening the Android file picker — choose a file "
+                      "on the phone")
+            try:
+                transfer = await loop.run_in_executor(None, _pick_and_seal)
+            except TransferError as exc:
+                print("[file] %s" % exc)
+                return
+            except Exception as exc:
+                print("[file] could not send: %s" % _sanitise(str(exc), 160))
+                return
+            note = ""
+            if not path:
+                # The picker cannot report the original name, so say what the
+                # peer will actually see rather than letting them find out.
+                note = "  (the picker does not report the original name)"
+            print("[file] offered %s (%s) to %s — waiting for them to accept%s"
+                  % (transfer.offer.filename, transfer.offer.human_size(),
+                     _sanitise(peer, 128), note))
+
+        asyncio.ensure_future(_run())
+
+    def _cmd_transfer(self, rest: str) -> None:
+        if self._file_manager is None:
+            print("[file] the transfer subsystem is not ready yet")
+            return
+        mgr = self._file_manager
+        parts = rest.split(None, 1)
+        action = parts[0].lower() if parts else ""
+        argument = parts[1].strip() if len(parts) > 1 else ""
+
+        if not action:
+            if not mgr.incoming and not mgr.outgoing:
+                print("[file] no transfers")
+                return
+            for key, t in mgr.incoming.items():
+                state = "receiving" if t.accepted else "offered to you"
+                print("  in   %s  %s  %s  %s"
+                      % (key[:8], t.offer.filename, t.offer.human_size(),
+                         state))
+            for key, t in mgr.outgoing.items():
+                state = "sending" if t.accepted else "awaiting accept"
+                print("  out  %s  %s  %s  %s"
+                      % (key[:8], t.offer.filename, t.offer.human_size(),
+                         state))
+            return
+
+        if action not in ("accept", "decline", "cancel"):
+            print("usage: /transfer [accept|decline|cancel <id>]")
+            return
+        if not argument:
+            print("usage: /transfer %s <id>" % action)
+            return
+
+        try:
+            if action == "accept":
+                transfer = mgr.find_incoming(argument)
+                ratchet = self._file_transfer_ratchet(transfer.peer)
+                if ratchet is None:
+                    print("[file] the OTR session with %s is gone; the "
+                          "transfer cannot be keyed"
+                          % _sanitise(transfer.peer, 128))
+                    return
+                mgr.accept(transfer.offer.transfer_id, ratchet)
+                print("[file] accepting %s" % transfer.offer.filename)
+            elif action == "decline":
+                mgr.decline(mgr.find_incoming(argument).offer.transfer_id)
+            else:
+                target = None
+                for key in list(mgr.outgoing) + list(mgr.incoming):
+                    if key.startswith(argument.lower()):
+                        target = key
+                        break
+                if target is None:
+                    print("[file] no such transfer")
+                    return
+                mgr.cancel(bytes.fromhex(target))
+        except TransferError as exc:
+            print("[file] %s" % exc)
 
     def send_otr_fragmented(self, peer, payload):
         """Send an OTR message, fragmenting if over the I2P cliff (~8KB).
@@ -1850,7 +3498,9 @@ class OTRv4PlusXMPP(ClientXMPP):
                 self.otr.end_session(peer)
                 self._encrypted.discard(peer)
                 self._last_dake1.pop(peer, None)
-                self._pending.pop(peer, None)
+                if self._secret_request == peer:
+                    self._secret_request = None
+                    self._mask_next_input(False)
                 self._smp_reported = {k for k in self._smp_reported if k[0] != peer}
             except Exception as e:
                 print(f"[otr] reset error: {e}")
@@ -1891,6 +3541,52 @@ class OTRv4PlusXMPP(ClientXMPP):
             )
         elif not should_send:
             print(f"[queued] will send once OTR with {peer} is ready")
+
+    def _remember_server_alias(self):
+        """Write down the b32 the first time it actually works.
+
+        Called once a connection has succeeded, which is the only point at
+        which the client knows the name/destination pair is good.  The next
+        run needs neither --server nor the 52 characters:
+
+            --jid bob@xmpp-elite.i2p --peer alice@xmpp-elite.i2p
+
+        This writes only to the client's own file.  It deliberately does NOT
+        touch i2pd's address book: that format varies between versions, the
+        daemon owns and rewrites those files, and a bad write would break name
+        resolution for every I2P application on the device rather than just
+        this one.
+        """
+        try:
+            if not getattr(self, "_i2p_server_dest", None):
+                return                       # not an I2P connection
+            domain = self.boundjid.domain
+            if not domain or not domain.endswith(".i2p"):
+                return
+            if domain.endswith(".b32.i2p"):
+                return                       # already the exact form
+            note = _otr.remember_i2p_alias(domain, self._i2p_server_dest)
+            if note:
+                print(f"[i2p] {note}")
+                if note.startswith("recorded"):
+                    print("[i2p] next time:  --jid %s --peer <peer> "
+                          "(no --server needed)" % self.boundjid.bare)
+        except Exception as exc:
+            self._dbg(f"[i2p] could not record the server alias: {exc}")
+
+    def _warn_inline_secret(self):
+        """Say that an inline passphrase was just echoed.
+
+        The engine clears the input line on Enter, so it vanishes from the
+        screen -- but a `script` capture records the keystrokes as they were
+        echoed, before the erase, so the passphrase is in the file regardless.
+        Better to say so than to let it look like it was never shown.
+        """
+        print("[smp] NOTE: that passphrase was typed in the clear, so it is in "
+              "this terminal's")
+        print("[smp] scrollback and in any session capture. Use  /smp-secret  "
+              "with no argument")
+        print("[smp] to be prompted for it hidden instead.")
 
     def store_smp_secret(self, peer, secret):
         """/smp-secret: store passphrase for auto-respond without starting SMP."""
@@ -1936,10 +3632,9 @@ class OTRv4PlusXMPP(ClientXMPP):
             except Exception:
                 use_secret = None
         if not use_secret:
-            print(
-                "[smp] no passphrase stored. Use  /smp-secret <secret>  first, "
-                "or  /smp <secret>  to set and start in one step."
-            )
+            # Reached only via the explicit forms; `/smp` asks instead.
+            print("[smp] Verification requires a shared passphrase.")
+            print("[smp] Run  /smp  and you will be prompted for it.")
             return
         try:
             def _do_start():
@@ -2114,7 +3809,14 @@ class OTRv4PlusXMPP(ClientXMPP):
             "  /otr [jid]           start OTR session (DAKE)\n"
             "  /smp start           begin SMP verification\n"
             "  /smp <secret>        set secret and start SMP\n"
-            "  /smp-secret <s>      store secret for auto-respond\n"
+            "  /smp                 verify this session — prompts (hidden) for\n"
+            "                       the passphrase if none is stored, then\n"
+            "                       verifies. The only SMP command you need.\n"
+            "  /smp-secret          store a passphrase WITHOUT verifying\n"
+            "                       (prompts, hidden; advanced/compat)\n"
+            "  /smp-secret <s>      store it inline (ECHOED — prefer the above)\n"
+            "  /trust-reset <jid>   clear a pinned fingerprint (deliberate)\n"
+            "  /identity            your identity and every pinned fingerprint\n"
             "  /trust               re-show fingerprint trust prompt\n"
             "  /msg <jid> <text>    send plaintext message\n"
             "  /status              show session state\n"
@@ -2160,19 +3862,39 @@ class OTRv4PlusXMPP(ClientXMPP):
     # Pending-input dispatch
     # -------------------------------------------------------------------------
 
-    def feed_pending(self, peer, line):
-        """If `peer` has a pending prompt (trust / smp_secret), consume line."""
-        state = self._pending.get(peer)
-        if state == "trust":
-            self._handle_trust_answer(peer, line)
-            return True
-        if state == "smp_secret":
-            self._handle_smp_secret_answer(peer, line)
-            return True
-        return False
+    def take_secret_request(self):
+        """Consume the locally-armed secret request, if any.
 
-    def has_pending(self, peer):
-        return self._pending.get(peer) in ("trust", "smp_secret")
+        Always clears.  A request survives exactly one dispatched line, so a
+        cancelled or mistyped prompt cannot leave the client quietly waiting
+        to swallow something later.
+        """
+        peer, self._secret_request = self._secret_request, None
+        self._secret_purpose_taken, self._secret_purpose = (
+            self._secret_purpose, None)
+        return peer
+
+    def _pending_consent_peer(self):
+        """The peer whose verification request is waiting for a y/n, if any.
+
+        Reads the flow rather than a loose flag so an expired request stops
+        answering by itself.
+        """
+        flow = self._smp_flows.asking() if self._smp_flows else None
+        if flow is not None and flow.awaiting_consent():
+            return flow.peer
+        return None
+
+    def has_pending(self, peer=None):
+        """True while a LOCALLY armed /smp-secret prompt is outstanding.
+
+        Kept as a predicate for the front ends, which need to know not to
+        echo the line into the transcript panel.  It is deliberately not
+        keyed by peer any more: a per-peer map was what let one peer's
+        protocol traffic arm capture for a conversation the user was not
+        looking at.
+        """
+        return self._secret_request is not None
 
     # -------------------------------------------------------------------------
     # Shared command dispatch
@@ -2184,11 +3906,28 @@ class OTRv4PlusXMPP(ClientXMPP):
         Returns True to keep running, False to quit. Single source of truth
         for command behaviour; both the plain stdin loop and the TUI call this
         so both front-ends behave identically."""
-        # Pending trust/SMP prompts consume the line first.
-        if peer and self.has_pending(peer):
-            if line.strip() == "/quit":
-                return False
-            self.feed_pending(peer, line)
+        # A secret prompt that THIS USER armed with /smp-secret consumes the
+        # next line.  Taken unconditionally so it can never persist past one
+        # line, and checked before command parsing because a passphrase may
+        # legitimately begin with "/".
+        #
+        # Nothing a remote peer sends can set this; see _request_smp_secret.
+        secret_for = self.take_secret_request()
+        if secret_for is not None:
+            self._mask_next_input(False)
+            self._handle_smp_secret_answer(secret_for, line)
+            return True
+
+        # A consent request a PEER caused.  Unlike the secret prompt above it
+        # does not consume the line: only an exact y/n answers it, and
+        # anything else falls through to be treated as what the user typed --
+        # a command, or a message that gets sent.  That asymmetry is the
+        # point.  A remote peer can put a question on the screen; it cannot
+        # make the answer to some other question become a passphrase.
+        consent_for = self._pending_consent_peer()
+        if consent_for is not None and line.strip().lower() in (
+                "y", "yes", "n", "no"):
+            self._handle_smp_consent(consent_for, line.strip().lower())
             return True
 
         if not line:
@@ -2227,26 +3966,53 @@ class OTRv4PlusXMPP(ClientXMPP):
             self.start_otr(lstrip[5:].strip())
 
         # --- SMP ---
-        elif lstrip == "/smp start":
+        # `/smp` is the normal verb: verify this session, asking for whatever
+        # is missing.  `/smp start` still works and is documented as the
+        # explicit form for anyone who already has a passphrase stored.
+        elif lstrip == "/smp":
             if peer:
-                self.smp_start(peer)
+                self.smp_verify(peer)
             else:
                 print("no --peer set")
+        elif lstrip == "/smp start":
+            if peer:
+                self.smp_verify(peer)
+            else:
+                print("no --peer set")
+        elif lstrip.startswith("/trust-reset"):
+            rest = lstrip[len("/trust-reset"):].strip()
+            self.trust_reset(rest or peer)
+
+        elif lstrip in ("/smp-secret", "/smpsecret"):
+            # No argument: prompt for it hidden. The argument form below is
+            # typed in the clear, so this is the one to reach for.
+            if peer:
+                self._request_smp_secret(peer)
+            else:
+                print("usage: /smp-secret            (prompts, hidden)")
+                print("       /smp-secret <jid>      (prompts, hidden)")
+
         elif lstrip.startswith("/smp-secret "):
             rest = lstrip[len("/smp-secret "):].strip()
             first = rest.split(" ", 1)[0]
             if "@" in first and " " in rest:
-                t, s = rest.split(" ", 1)
-                self.store_smp_secret(t, s)
+                t, sec = rest.split(" ", 1)
+                self.store_smp_secret(t, sec)
+                self._warn_inline_secret()
+            elif "@" in first and " " not in rest:
+                # A JID and nothing else: they want to be asked, hidden.
+                self._request_smp_secret(first)
             elif peer:
                 self.store_smp_secret(peer, rest)
+                self._warn_inline_secret()
             else:
-                print("usage: /smp-secret <jid> <secret>")
+                print("usage: /smp-secret            (prompts, hidden)")
+                print("       /smp-secret <jid>      (prompts, hidden)")
         elif lstrip.startswith("/smp "):
             rest = lstrip[5:].strip()
-            if rest == "start":
+            if rest in ("start", "verify"):
                 if peer:
-                    self.smp_start(peer)
+                    self.smp_verify(peer)
             else:
                 first = rest.split(" ", 1)[0]
                 if "@" in first and " " in rest:
@@ -2276,12 +4042,25 @@ class OTRv4PlusXMPP(ClientXMPP):
         elif lstrip == "/status":
             if peer:
                 self.show_status(peer)
+            # Ticks are whitespace writes and prove only that the local
+            # socket accepts bytes. The round trip is what proves the server
+            # is still there, so both are reported and never conflated.
             if self._keepalive_last_ok is not None:
-                print("[keepalive] %d ticks, last ping OK %.0fs ago"
-                      % (self._keepalive_ticks,
-                         time.monotonic() - self._keepalive_last_ok))
+                print("[keepalive] %d ticks, %d round trips, %d timeouts "
+                      "(lifetime), %d consecutive, last reply %.0fs ago%s"
+                      % (self._keepalive_ticks, self._keepalive_pings,
+                         self._keepalive_timeouts,
+                         self._keepalive_ping_fails,
+                         time.monotonic() - self._keepalive_last_ok,
+                         "  DEGRADED" if self._keepalive_degraded else ""))
+                print("[reconnect] %d started, %d completed"
+                      % (self._reconnects_started,
+                         self._reconnects_completed))
+            elif self._keepalive_pings:
+                print("[keepalive] %d ticks, %d round trips, NO reply yet"
+                      % (self._keepalive_ticks, self._keepalive_pings))
             elif self._keepalive_ticks:
-                print("[keepalive] %d ticks, no successful ping yet"
+                print("[keepalive] %d ticks, first round trip not due yet"
                       % self._keepalive_ticks)
 
         # --- Roster ---
@@ -2291,6 +4070,12 @@ class OTRv4PlusXMPP(ClientXMPP):
             self.roster_add(lstrip[5:].strip())
         elif lstrip.startswith("/remove "):
             self.roster_remove(lstrip[8:].strip())
+
+        # --- File transfer (XMPP only) ---
+        elif lstrip.startswith("/sendfile"):
+            self._cmd_sendfile(peer, lstrip[9:].strip())
+        elif lstrip == "/transfer" or lstrip.startswith("/transfer "):
+            self._cmd_transfer(lstrip[9:].strip())
 
         # --- Subscriptions ---
         elif lstrip == "/pending":
@@ -2331,6 +4116,8 @@ class OTRv4PlusXMPP(ClientXMPP):
         # --- Voice calls ---
         elif lstrip == "/call":
             if peer and self._voice_manager:
+                if self._voice_blocked_by_tofu(peer):
+                    return True
                 asyncio.ensure_future(self._voice_manager.start_call(peer))
             elif not self._voice_manager:
                 print("[voice] not initialized — connect first")
@@ -2339,11 +4126,15 @@ class OTRv4PlusXMPP(ClientXMPP):
         elif lstrip.startswith("/call "):
             jid = lstrip[6:].strip()
             if jid and self._voice_manager:
+                if self._voice_blocked_by_tofu(jid):
+                    return True
                 asyncio.ensure_future(self._voice_manager.start_call(jid))
             else:
                 print("usage: /call <jid>")
         elif lstrip == "/answer":
             if peer and self._voice_manager:
+                if self._voice_blocked_by_tofu(peer):
+                    return True
                 asyncio.ensure_future(self._voice_manager.answer_call(peer))
             else:
                 print("[voice] no incoming call")
@@ -2384,6 +4175,9 @@ class OTRv4PlusXMPP(ClientXMPP):
                         self._voice_manager._start_stats(p_)
             else:
                 print("[voice] not initialised")
+        elif lstrip in ("/identity", "/whoami"):
+            self.show_identity()
+
         elif lstrip in ("/smpstate", "/smpstatus"):
             if not peer:
                 print("[smp] no active peer")
@@ -2436,7 +4230,7 @@ class OTRv4PlusXMPP(ClientXMPP):
             if scr:
                 scr.scroll_down(999999)
 
-        # --- Log / History: read from encrypted channel_log (works in any mode) ---
+        # --- Log / History: in-memory scrollback (works in any mode) ---
         elif lstrip in ("/log", "/history"):
             target_peer = None
             if self.panel_manager is not None:
@@ -2848,6 +4642,15 @@ class OTRv4PlusXMPP(ClientXMPP):
             return
         self._cleaned_up = True
 
+        self._peer_gone_at.clear()
+        task = self._peer_gone_task
+        self._peer_gone_task = None
+        if task is not None and not task.done():
+            try:
+                task.cancel()
+            except Exception:
+                pass
+
         # 1. Tear down voice calls FIRST — this releases the microphone.
         #
         #    cleanup() may run from main()'s finally block, where the event
@@ -3084,12 +4887,43 @@ async def _input_loop(client):
     replaces this when stdin/stdout are a terminal; both share dispatch_line."""
     loop = asyncio.get_event_loop()
     while True:
+        # This is the only stdin reader in plain mode, so the hidden password
+        # prompt has to happen here rather than in a second thread racing it
+        # for the same file descriptor.
+        prompt = getattr(client, "_password_prompt", None)
+        # A /smp-secret prompt the USER armed is hidden the same way.  It is
+        # a shared secret, not a command, and echoing it put it in scrollback
+        # and in `script` captures of the session.
+        #
+        # Driven by the explicit request rather than by the mask flag: the
+        # flag is a display concern that several things can set, and a hidden
+        # read is not something a stray display state should be able to start.
+        secret_prompt = (None if prompt
+                         else ("[smp] passphrase: "
+                               if getattr(client, "_secret_request", None)
+                               else None))
         try:
-            line = await loop.run_in_executor(None, sys.stdin.readline)
+            if prompt:
+                line = await loop.run_in_executor(
+                    None, getpass.getpass, prompt)
+            elif secret_prompt:
+                line = await loop.run_in_executor(
+                    None, getpass.getpass, secret_prompt)
+            else:
+                line = await loop.run_in_executor(None, sys.stdin.readline)
         except (EOFError, KeyboardInterrupt):
             break
+        if prompt:
+            client.supply_password(line)
+            continue
         if not line:
             break
+        if getattr(client, "_password_prompt", None):
+            # The prompt was raised while this read was already blocked, so
+            # the line belongs to the prompt that is no longer there. Drop it
+            # -- the next pass through is the hidden one. This is why the
+            # auth message says "press Enter, then type the password again".
+            continue
         if not client.dispatch_line(client.peer, line.rstrip("\n")):
             break
     client._shutting_down = True
@@ -3784,6 +5618,12 @@ def main():
         category=RuntimeWarning,
     )
 
+    # The compiled core is versioned separately from this file, and `git pull`
+    # updates only one of them.  A mismatch used to surface as an AttributeError
+    # inside an executor thread at the first /smp, worded as though SMP had
+    # failed.  Say it here instead, once, in terms of what to rebuild.
+    _coreapi.verify_core_api()
+
     ap = argparse.ArgumentParser(
         description=f"OTRv4+ XMPP {XMPP_VERSION} - full OTR + SMP over I2P SAM"
     )
@@ -3803,9 +5643,28 @@ def main():
         help="connect directly (clearnet), do not use I2P SAM",
     )
     ap.add_argument(
+        "--tor",
+        action="store_true",
+        help="route the XMPP control connection through Tor (SOCKS5). "
+             "Implied by a .onion server. Voice media stays on I2P.",
+    )
+    ap.add_argument(
+        "--no-tor",
+        action="store_true",
+        help="never use Tor, even for a .onion server (the connection will "
+             "then fail rather than leak)",
+    )
+    ap.add_argument("--socks-host", default="127.0.0.1",
+                    help="Tor SOCKS5 host")
+    ap.add_argument("--socks-port", type=int, default=TOR_SOCKS_PORT,
+                    help="Tor SOCKS5 port (9050 daemon, 9150 Tor Browser)")
+    ap.add_argument(
         "--insecure-tls",
         action="store_true",
-        help="accept expired/self-signed server certs",
+        help="accept expired/self-signed server certs on a CLEARNET server. "
+             "Not needed for .i2p or .onion: there the address is the "
+             "server's key and the transport authenticates the endpoint, so "
+             "certificate checks are skipped automatically.",
     )
     ap.add_argument(
         "--no-reconnect",
@@ -3953,30 +5812,98 @@ def main():
     if hasattr(client, "enable_starttls"):
         client.enable_starttls = True
 
-    if args.insecure_tls:
+    domain = args.jid.split("@", 1)[-1]
+    server_b32 = args.server or domain
+    use_i2p = (not args.no_i2p) and server_b32.endswith(".i2p")
+    # Tor is chosen by the address, or asked for explicitly. Never inferred
+    # as a fallback from something else failing.
+    use_tor = (not args.no_tor) and (args.tor
+                                     or server_b32.endswith(".onion"))
+
+    if use_i2p and use_tor:
+        sys.exit("[transport] --tor was requested for an .i2p server. Pick "
+                 "one: I2P uses the SAM bridge, Tor uses SOCKS5. Layering "
+                 "them is not a supported configuration and guessing which "
+                 "you meant could send traffic the wrong way.")
+    if args.no_tor and server_b32.endswith(".onion"):
+        sys.exit("[transport] %s is an onion address but --no-tor was given. "
+                 "Refusing: without Tor there is no route to it, and trying "
+                 "anyway would send the lookup to your resolver."
+                 % server_b32)
+    if use_tor and not server_b32.endswith(".onion"):
+        print("[tor] WARNING: %s is not an onion address. Tor will carry the "
+              "connection, but the exit sees a normal TLS session to a "
+              "clearnet host, so the server still learns it is being reached "
+              "over Tor rather than by you directly." % server_b32)
+
+    # ── TLS: decided by the transport, not by a flag ─────────────────────
+    #
+    # Over I2P and over Tor-to-.onion the ADDRESS is a public key: a .b32.i2p
+    # label is the hash of the destination's key, and a v3 onion name is the
+    # key itself.  Reaching that address means reaching that key-holder, with
+    # the transport's own end-to-end encryption in between.  There is no
+    # certificate authority in the path and no MITM position for one to
+    # defend against, so requiring a CA-valid certificate there is asking for
+    # a weaker second name for a server already named by its key.
+    #
+    # Users had to pass --insecure-tls to get past that, on every single
+    # connection.  A flag with "insecure" in it, typed daily, for a link that
+    # is not insecure -- and the same habit carried to a clearnet server is
+    # genuinely dangerous.  So the transport decides, the flag is not needed,
+    # and clearnet still demands a real certificate.
+    endpoint_authenticated_by = None
+    if use_i2p:
+        endpoint_authenticated_by = "I2P"
+    elif use_tor and server_b32.endswith(".onion"):
+        endpoint_authenticated_by = "Tor"
+
+    relax_tls = bool(endpoint_authenticated_by) or args.insecure_tls
+    if relax_tls:
         import ssl as _ssl
         ctx = _ssl.create_default_context()
         ctx.check_hostname = False
         ctx.verify_mode = _ssl.CERT_NONE
         client.ssl_context = ctx
-        print("[tls] certificate verification DISABLED (--insecure-tls).")
 
-    domain = args.jid.split("@", 1)[-1]
-    server_b32 = args.server or domain
-    use_i2p = (not args.no_i2p) and server_b32.endswith(".i2p")
-
-    if args.insecure_tls and not use_i2p:
+    if endpoint_authenticated_by == "I2P":
+        print("[tls] The endpoint is authenticated by I2P: the .b32.i2p "
+              "address is the hash of")
+        print("[tls] the server's key, so the connection reaches that key or "
+              "it fails. Certificate")
+        print("[tls] checks are not used here and are not needed; no "
+              "--insecure-tls required.")
+    elif endpoint_authenticated_by == "Tor":
+        print("[tls] The endpoint is authenticated by Tor: a v3 onion name is "
+              "the server's public")
+        print("[tls] key. Certificate checks are not used here and are not "
+              "needed.")
+    elif args.insecure_tls:
         print(
             "[tls] WARNING: --insecure-tls on a CLEARNET connection disables "
             "certificate verification, so an active network attacker can MITM "
-            "the link and capture your XMPP password. Over I2P the .b32 "
-            "destination is cryptographically authenticated, so the flag is "
-            "acceptable there; over clearnet it is NOT. Use a CA-valid server "
-            "certificate instead of this flag."
+            "the link and capture your XMPP password. Over I2P and over Tor "
+            "to an onion address the endpoint is authenticated by the address "
+            "itself and the flag is unnecessary; over clearnet nothing "
+            "replaces a CA-valid certificate."
         )
+    else:
+        print("[tls] certificate verification ON (clearnet).")
+
+    if args.insecure_tls and endpoint_authenticated_by:
+        print("[tls] --insecure-tls was passed and is not needed here; "
+              "%s already authenticates the endpoint." % endpoint_authenticated_by)
 
     # Store reconnect parameters on the client before first connect.
     client._is_i2p = use_i2p
+    client._is_tor = use_tor
+    client._tor_params = None
+    if use_tor and not args.no_reconnect:
+        client._tor_params = {
+            "onion_host": server_b32,
+            "dest_port": args.port,
+            "socks_host": args.socks_host,
+            "socks_port": args.socks_port,
+        }
     if args.no_reconnect:
         # _sam_params=None means reconnect logic is disabled.
         client._sam_params = None
@@ -3994,6 +5921,12 @@ def main():
     loop = client.loop
 
     if use_i2p:
+        # Remembered after a successful connection, so the 52-character b32 is
+        # typed once.  Only a b32 is worth recording: a short name is what we
+        # would be mapping FROM, and a name that resolved through the router
+        # needs no local note.
+        if server_b32.endswith(".b32.i2p"):
+            client._i2p_server_dest = server_b32
         try:
             host, port = loop.run_until_complete(
                 start_i2p_sam_forwarder(
@@ -4005,11 +5938,38 @@ def main():
             )
         except Exception as e:
             print(f"[i2p] SAM bridge failed: {e}", file=sys.stderr)
+            # Only suggest checking the router when the router is what did
+            # not answer.  A failure that came back FROM the router has
+            # already been explained by _explain_stream_failure, and
+            # repeating "is the b32 correct?" after it contradicts it.
+            if "SAM stream connect failed" not in str(e):
+                print(
+                    "[i2p] Is i2pd running with SAM enabled on "
+                    f"{args.sam_host}:{args.sam_port}?",
+                    file=sys.stderr,
+                )
+            sys.exit(1)
+        client.connect(host, port)
+    elif use_tor:
+        try:
+            host, port = loop.run_until_complete(
+                start_tor_socks_forwarder(
+                    server_b32,
+                    args.port,
+                    socks_host=args.socks_host,
+                    socks_port=args.socks_port,
+                )
+            )
+        except Exception as e:
+            print(f"[tor] SOCKS5 tunnel failed: {e}", file=sys.stderr)
             print(
-                "[i2p] Is i2pd running with SAM enabled on "
-                f"{args.sam_host}:{args.sam_port}? Is the server b32 correct?",
+                "[tor] Is tor running with a SOCKS port on "
+                f"{args.socks_host}:{args.socks_port}? "
+                "(Termux: pkg install tor, then run tor)",
                 file=sys.stderr,
             )
+            # Fail closed. Connecting directly here would send this user's
+            # address to a server they asked to reach over Tor.
             sys.exit(1)
         client.connect(host, port)
     else:

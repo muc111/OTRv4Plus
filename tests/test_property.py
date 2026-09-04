@@ -282,6 +282,7 @@ class TestMLKEM:
     def test_keygen_encaps_decaps_roundtrip(self):
         """Basic round-trip — deterministic shared secret."""
         ek, dk = _ossl.mlkem1024_keygen()
+        dk = bytes(dk)   # dk is a bytearray; decaps requires bytes
         ct, ss1 = _ossl.mlkem1024_encaps(ek)
         ss2     = _ossl.mlkem1024_decaps(ct, dk)
         assert ss1 == ss2, "ML-KEM-768: decaps recovered different shared secret"
@@ -289,12 +290,15 @@ class TestMLKEM:
     def test_keygen_produces_fresh_keys(self):
         """Each keygen produces a distinct key pair."""
         ek1, dk1 = _ossl.mlkem1024_keygen()
+        dk1 = bytes(dk1)   # dk is a bytearray; decaps requires bytes
         ek2, dk2 = _ossl.mlkem1024_keygen()
+        dk2 = bytes(dk2)   # dk is a bytearray; decaps requires bytes
         assert ek1 != ek2, "ML-KEM keygen returned identical encapsulation keys"
 
     def test_wrong_ciphertext_gives_wrong_secret(self):
         """Decaps on a different ciphertext gives a different (implicit rejection) secret."""
         ek, dk   = _ossl.mlkem1024_keygen()
+        dk = bytes(dk)   # dk is a bytearray; decaps requires bytes
         ct1, ss1 = _ossl.mlkem1024_encaps(ek)
         ct2, ss2 = _ossl.mlkem1024_encaps(ek)
         # Different encapsulations → different cts and different shared secrets
@@ -303,6 +307,7 @@ class TestMLKEM:
 
     def test_shared_secret_length(self):
         ek, dk   = _ossl.mlkem1024_keygen()
+        dk = bytes(dk)   # dk is a bytearray; decaps requires bytes
         ct, ss   = _ossl.mlkem1024_encaps(ek)
         assert len(ss) == 32, f"Expected 32-byte shared secret, got {len(ss)}"
         assert len(ct) == 1568, f"Expected 1568-byte ciphertext, got {len(ct)}"
@@ -322,10 +327,8 @@ class TestRingSignature:
     @given(msg=short_bytes)
     def test_sign_verify_roundtrip(self, msg):
         """sign then verify succeeds with the correct keys."""
-        k1 = ed448.Ed448PrivateKey.generate()
-        k2 = ed448.Ed448PrivateKey.generate()
-        A1 = k1.public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)
-        A2 = k2.public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)
+        k1, A1 = otr.ed448_keypair()
+        k2, A2 = otr.ed448_keypair()
         sig = otr.RingSignature.sign(k1, A1, A2, msg)
         assert len(sig) == 228, f"signature should be 228 bytes, got {len(sig)}"
         assert otr.RingSignature.verify(A1, A2, msg, sig), "ring_verify failed on fresh signature"
@@ -333,10 +336,8 @@ class TestRingSignature:
     @given(msg=short_bytes)
     def test_wrong_message_fails(self, msg):
         """Verify rejects a signature over a different message."""
-        k1 = ed448.Ed448PrivateKey.generate()
-        k2 = ed448.Ed448PrivateKey.generate()
-        A1 = k1.public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)
-        A2 = k2.public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)
+        k1, A1 = otr.ed448_keypair()
+        k2, A2 = otr.ed448_keypair()
         sig   = otr.RingSignature.sign(k1, A1, A2, msg)
         wrong = msg + b'\x00'  # different message
         assert not otr.RingSignature.verify(A1, A2, wrong, sig), \
@@ -344,10 +345,8 @@ class TestRingSignature:
 
     @given(msg=short_bytes)
     def test_truncated_sig_rejected(self, msg):
-        k1 = ed448.Ed448PrivateKey.generate()
-        k2 = ed448.Ed448PrivateKey.generate()
-        A1 = k1.public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)
-        A2 = k2.public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)
+        k1, A1 = otr.ed448_keypair()
+        k2, A2 = otr.ed448_keypair()
         sig = otr.RingSignature.sign(k1, A1, A2, msg)
         assert not otr.RingSignature.verify(A1, A2, msg, sig[:-1]), \
             "ring_verify accepted truncated signature"
@@ -355,10 +354,8 @@ class TestRingSignature:
     @given(msg=short_bytes, garbage=st.binary(min_size=228, max_size=228))
     def test_random_sig_rejected(self, msg, garbage):
         """Random 228 bytes should not verify."""
-        k1 = ed448.Ed448PrivateKey.generate()
-        k2 = ed448.Ed448PrivateKey.generate()
-        A1 = k1.public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)
-        A2 = k2.public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)
+        k1, A1 = otr.ed448_keypair()
+        k2, A2 = otr.ed448_keypair()
         # With overwhelming probability random bytes are not a valid signature
         result = otr.RingSignature.verify(A1, A2, msg, garbage)
         # Note: can't assert False because 2^-446 probability it verifies by chance
@@ -401,8 +398,8 @@ class TestDoubleRatchet:
     def test_single_message_roundtrip(self, msg):
         """Alice sends, Bob decrypts — message is recovered exactly."""
         alice, bob = _make_ratchet_pair()
-        ct, hdr, nonce, tag, rid, _ = alice.encrypt_message(msg)
-        recovered = bob.decrypt_message(hdr, ct, nonce, tag)
+        ct, hdr, nonce, tag, rid, _, _mkmac = alice.encrypt_message(msg)
+        recovered = bob.decrypt_message(hdr, ct, nonce, tag)[0]
         assert recovered == msg, "ratchet: decrypt(encrypt(m)) != m"
 
     @given(msgs=st.lists(plaintext_st, min_size=1, max_size=10))
@@ -410,14 +407,14 @@ class TestDoubleRatchet:
         """Multiple messages in sequence all decrypt correctly."""
         alice, bob = _make_ratchet_pair()
         for msg in msgs:
-            ct, hdr, nonce, tag, _, _ = alice.encrypt_message(msg)
-            assert bob.decrypt_message(hdr, ct, nonce, tag) == msg
+            ct, hdr, nonce, tag, _, _, _mkmac = alice.encrypt_message(msg)
+            assert bob.decrypt_message(hdr, ct, nonce, tag)[0] == msg
 
     @given(msg=plaintext_st)
     def test_replay_rejected(self, msg):
         """Replaying the same ciphertext is rejected."""
         alice, bob = _make_ratchet_pair()
-        ct, hdr, nonce, tag, _, _ = alice.encrypt_message(msg)
+        ct, hdr, nonce, tag, _, _, _mkmac = alice.encrypt_message(msg)
         bob.decrypt_message(hdr, ct, nonce, tag)   # first decrypt succeeds
         with pytest.raises(Exception):
             bob.decrypt_message(hdr, ct, nonce, tag)  # replay must fail
@@ -427,7 +424,7 @@ class TestDoubleRatchet:
         """Flipping a byte in the ciphertext must cause decryption failure."""
         assume(len(msg) > 0)
         alice, bob = _make_ratchet_pair()
-        ct, hdr, nonce, tag, _, _ = alice.encrypt_message(msg)
+        ct, hdr, nonce, tag, _, _, _mkmac = alice.encrypt_message(msg)
         bad_ct = bytes([ct[0] ^ 0xFF]) + ct[1:]
         with pytest.raises(Exception):
             bob.decrypt_message(hdr, bad_ct, nonce, tag)
@@ -436,8 +433,8 @@ class TestDoubleRatchet:
     def test_bidirectional(self, msg):
         """Bob can also send to Alice."""
         alice, bob = _make_ratchet_pair()
-        ct, hdr, nonce, tag, _, _ = bob.encrypt_message(msg)
-        recovered = alice.decrypt_message(hdr, ct, nonce, tag)
+        ct, hdr, nonce, tag, _, _, _mkmac = bob.encrypt_message(msg)
+        recovered = alice.decrypt_message(hdr, ct, nonce, tag)[0]
         assert recovered == msg
 
 

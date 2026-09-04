@@ -1,5 +1,28 @@
 # OTRv4+ audit handoff
 
+> **Additional scope note (v10.12.0).** Two things reviewers should know that
+> post-date the paragraph below:
+>
+> * **XMPP now has a persistent identity.** `Rust/src/identity.rs` seals it
+>   (in scope for a Rust review) but `otrv4plus_identity.py` supplies the DEK
+>   and the file handling (Python, and not in scope for a Rust-only read). The
+>   key protecting the identity on Termux is a 0600 file with no passphrase.
+> * **Trust is now enforced for XMPP.** Peer fingerprints are pinned; a
+>   mismatch refuses voice. It is identity *continuity* only — `_smp_verified`
+>   is still the sole authorisation for a call, and a matching pin authorises
+>   nothing.
+
+
+> **Status note (v10.12.0) — the scope statement below needs one addition.** This
+> handoff describes a review of the Rust core. Since it was written, the voice
+> subsystem has become a significant cryptographic surface that is **not** in
+> Rust: `otrv4plus_voice.py` implements the voice key schedule (HKDF-SHA512), the
+> media AEAD (AES-256-GCM), the hybrid X448 + ML-KEM-1024 exchange, the replay
+> window and the authenticated `MEDIAPATH` endpoint announcement, in Python,
+> using the `cryptography` library. A paid review scoped to "read the Rust" would
+> miss all of it. The voice protocol is specified in [SPEC.md §9](SPEC.md).
+
+
 Prepared to brief a professional security audit. Read this first. It states
 what an AI-assisted source review did and did NOT cover, the architecture and
 trust boundaries, the issues already fixed, the properties checked by hand, and

@@ -1,6 +1,6 @@
 [package]
 name        = "otrv4_core"
-version     = "0.10.21"
+version     = "0.10.27"
 edition     = "2021"
 authors     = ["OTRv4+ contributors"]
 description = "Post-quantum OTRv4 cryptographic core (Rust/PyO3)"
@@ -51,6 +51,7 @@ pq-rust = [
     "x448",
     "getrandom",
     "ed448-goldilocks-plus",
+    "argon2",
 ]
 
 # v10.6.18.1: declared so rustc stops emitting unexpected_cfgs warnings
@@ -64,19 +65,45 @@ pq-rust = [
 #   cargo build --release --features extension-module,test-only-kdf
 # Do not add this to `default` or `pq-rust`.
 #
-# The comment above is the only thing that has ever enforced that.  Add this
-# to lib.rs so it is enforced by the compiler instead:
+# ENFORCEMENT (was: "the comment above is the only thing that has ever enforced
+# that").  A `compile_error!` on the feature combination was considered and
+# rejected: `--features extension-module,test-only-kdf` is also the *documented*
+# way to build the wheel the Python internals tests need, so a compile_error
+# would make those tests unrunnable.  A macro cannot tell a deliberate test
+# build from an accidental release one, because it cannot read the environment.
 #
-#   #[cfg(all(feature = "test-only-kdf", feature = "extension-module"))]
-#   compile_error!(
-#       "test-only-kdf exposes SMP vault secrets to Python and must never be \
-#        combined with extension-module: that combination is a shippable \
-#        wheel with the test gates open."
-#   );
+# build.rs can, and now does.  The rule:
 #
-# It then becomes impossible to build a distributable artifact with the
-# gates open, rather than merely inadvisable.
+#     building with `test-only-kdf` FAILS unless OTRV4PLUS_ALLOW_TEST_GATES=1
+#
+# Fail-closed: any build that enables the feature, including transitively, dies
+# with a loud error by default.  Opting in is explicit, per-invocation and
+# greppable, which a release pipeline will not do by accident:
+#
+#     OTRV4PLUS_ALLOW_TEST_GATES=1 maturin build --release \
+#         --features pyo3/extension-module,test-only-kdf
+#
+# The matching check on the artifact side is tests/test_release_guard.py, which
+# asserts the installed module exposes no gated API.  Run it with the variable
+# UNSET against the release wheel; that is the release pipeline's fail-closed
+# assertion.
 test-only-kdf = []
+
+# M3 (Android decision 2): the legacy DAKE surface that returns session key
+# material to Python as PyBytes -- Dakeresult's root_key/chain_key_a/
+# chain_key_b/brace_key/mac_key getters, plus PyDake::generate_dake2,
+# process_dake2 and get_session_keys.
+#
+# OFF by default, so a production artifact does not merely hide them: they are
+# not compiled in and do not exist.  The live path uses generate_dake2_output /
+# process_dake2_output, which move keys Rust-to-Rust into the ratchet through an
+# opaque DakeOutput and never materialise PyBytes; _check_rust_requirements()
+# hard-requires those at import time, so nothing reachable needs this feature.
+#
+# build.rs refuses to build with it unless OTRV4PLUS_ALLOW_LEGACY_DAKE_KEYS=1 is
+# set explicitly, and tests/test_release_guard.py asserts the installed artifact
+# does not expose the surface.
+legacy-dake-keys = []
 
 [dependencies]
 pyo3         = { version = "0.24", features = ["abi3-py39"] }
@@ -84,6 +111,11 @@ zeroize      = { version = "1.8",  features = ["derive", "alloc"] }
 aes-gcm      = { version = "0.10", features = ["aes"] }
 sha3         = { version = "0.10" }
 hmac         = { version = "0.12" }
+# v10.13.2: the voice key schedule is HKDF-SHA512, so the Rust side needs
+# SHA-2 alongside the SHA-3 the chat protocol uses.  Both stay: they are
+# different hash families used by different protocols, not a duplication.
+hkdf         = { version = "0.12" }
+sha2         = { version = "0.10" }
 subtle       = { version = "2.5"  }
 rand_core    = { version = "0.6"  }
 rand         = { version = "0.8"  }
@@ -118,6 +150,12 @@ ed448-goldilocks-plus = {
     default-features = false,
     features         = ["alloc", "signing", "pkcs8"],
 }
+# v10.13.0: Argon2id for the SMP passphrase stretch (SMP wire version 0x03).
+# default-features = false drops the `password-hash`/`rand` surface -- we only
+# use the low-level Argon2::hash_password_into, and the PHC string format has
+# no place in a wire protocol where both sides must derive identical bytes.
+# `alloc` is what actually supplies the memory blocks; `zeroize` wipes them.
+argon2        = { version = "0.5",   optional = true, default-features = false, features = ["alloc", "zeroize"] }
 
 [profile.release]
 opt-level     = 3

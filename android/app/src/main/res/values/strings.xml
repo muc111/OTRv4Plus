@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Phase 2 is a development shell. The calculator disguise, its label and
+         its icon are Phase 3; nothing here is final user-facing branding.
+         No credential, key, or seed may ever be added to this file. -->
+    <string name="app_name">Calculator</string>
+    <string name="dev_diagnostics_title">Integration diagnostics</string>
+</resources>

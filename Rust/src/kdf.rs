@@ -34,6 +34,11 @@ pub mod usage {
     pub const EXTRA_SYM_KEY:    u8 = 0x1F;
     pub const PQ_BRACE_KEY:     u8 = 0x20;
     pub const NONCE_DERIVE:     u8 = 0x21;
+    /// v10.14.0: wrapping key for a /sendfile transfer.  Derived from the
+    /// DAKE extra symmetric key (usage 0x1F), which is what OTRv4 defines
+    /// that key for, plus the transfer id.  A separate usage ID so a file
+    /// wrap key can never collide with the extra symmetric key itself.
+    pub const FILE_TRANSFER_WRAP: u8 = 0x22;
 }
 
 // ── Core KDF ─────────────────────────────────────────────────────────────────
@@ -111,6 +116,28 @@ pub fn kdf_mkmac(enc_key: &[u8; 32]) -> [u8; 64] {
     out.copy_from_slice(&mkmac);
     mkmac.zeroize();
     out
+}
+
+/// Audit C2: a one-way, domain-separated fingerprint of an `MKmac`.
+///
+/// The ratchet records one of these for every MKmac it derives, so that a MAC
+/// key the peer later reveals can be checked against keys this endpoint
+/// independently derived. Storing the fingerprint rather than the key means
+/// the cross-check adds no new store of live key material: a fingerprint
+/// cannot be used to compute or verify a MAC.
+///
+/// SHA3-256 rather than the OTRv4 KDF because this value never leaves the
+/// process and is not part of the wire protocol; the domain string keeps it
+/// from colliding with any other hash the codebase computes.
+pub fn mkmac_fingerprint(mkmac: &[u8]) -> [u8; 32] {
+    use sha3::{Sha3_256, Digest};
+    let mut h = Sha3_256::new();
+    Digest::update(&mut h, b"OTRv4Plus.mkmac.fingerprint.v1");
+    Digest::update(&mut h, mkmac);
+    let out = h.finalize();
+    let mut arr = [0u8; 32];
+    arr.copy_from_slice(&out);
+    arr
 }
 
 pub fn kdf_root(root_key: &[u8; 32], dh_output: &[u8]) -> ([u8; 32], [u8; 32]) {

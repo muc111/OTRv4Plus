@@ -1,6 +1,6 @@
 // src/smp.rs - Hybrid Post-Quantum Socialist Millionaire Protocol
 //
-// Version: OTRv4+ v10.9.3
+// Version: OTRv4+ v10.13.0
 //
 // Security model
 // ==============
@@ -42,11 +42,20 @@
 // ===========
 // All messages are prefixed with a single VERSION byte:
 //   0x01 = classical SMP only (backward compat, no PQ)
-//   0x02 = hybrid PQ SMP (this implementation)
+//   0x02 = hybrid PQ SMP, iterated SHAKE-256 secret stretch
+//   0x03 = hybrid PQ SMP, Argon2id secret stretch  (default since v10.13.0)
 //
-// Peers MUST agree on version.  If the initiator sends 0x02 and the responder
-// parses 0x01, or vice-versa, the first ZKP or signature verify will fail and
-// the session is aborted.  No silent downgrade is possible.
+// 0x02 and 0x03 have IDENTICAL message layouts.  They differ only in
+// set_secret: 0x02 stretches the passphrase alone through 50,000 SHAKE-256
+// rounds, 0x03 uses Argon2id salted with the session id and both fingerprints.
+// The same passphrase therefore yields different scalars under the two, which
+// is exactly why this needed a version byte and not a quiet upgrade.
+//
+// Peers MUST agree on version.  The check is explicit at every step and fires
+// before any secret is compared, so a mixed pair aborts with "version
+// mismatch" rather than completing the protocol and reporting that the
+// passphrases differ -- which, for a 0x02/0x03 pair, they may well not.
+// No silent downgrade is possible.
 //
 // Memory safety
 // =============
@@ -111,6 +120,42 @@ const MLDSA_SIG_SIZE: usize = 4627;
 #[allow(dead_code)]
 const SMP_VERSION_CLASSICAL: u8 = 0x01;
 const SMP_VERSION_PQ:        u8 = 0x02;
+// v10.13.0.  Identical wire layout to 0x02; the difference is entirely in how
+// set_secret turns the passphrase into the scalar.  0x02 stretched the
+// passphrase alone for 50,000 SHAKE-256 rounds and bound the session id and
+// fingerprints in afterwards, so the expensive part contained nothing
+// user-specific and was precomputable once against every user and session.
+// 0x03 uses Argon2id (memory-hard) with the session id and both fingerprints
+// carried in the SALT, so no precomputation survives across sessions.
+const SMP_VERSION_PQ_ARGON2: u8 = 0x03;
+
+// Both 0x02 and 0x03 carry the ML-KEM / ML-DSA payloads.  Only 0x01 does not.
+#[inline]
+fn is_pq(version: u8) -> bool {
+    version == SMP_VERSION_PQ || version == SMP_VERSION_PQ_ARGON2
+}
+
+// Argon2id parameters for the SMP passphrase stretch (wire version 0x03).
+//
+// These are part of the WIRE FORMAT.  Both peers must use identical values or
+// they derive different scalars and SMP fails with a bare "no match", which
+// looks exactly like a wrong passphrase.  Changing any of them needs a new
+// version byte, the same as changing the algorithm.
+//
+// 64 MiB / t=3 / p=4 matches the at-rest parameters in otrv4+.py::_derive_key,
+// deliberately: two different cost profiles in one codebase is one more thing
+// to get wrong.  This runs once per SMP verification, not per message, and the
+// SMP session timeout is 45 minutes, so a second or two on an old handset is
+// not a problem.
+const ARGON2_M_COST_KIB: u32 = 65_536;  // 64 MiB
+const ARGON2_T_COST:     u32 = 3;
+const ARGON2_P_COST:     u32 = 4;
+
+// Domain label for the deterministic Argon2id salt.  The salt cannot be random:
+// both peers must derive the same scalar and there is no message in which to
+// carry one.  It is bound to the session id and both fingerprints instead,
+// which is what kills the precomputation.
+const ARGON2_SALT_DOMAIN: &[u8] = b"OTRv4+SMP-ARGON2-SALT-v3\x00";
 
 // Domain label mixed into pq_binding_key derivation
 const PQ_BINDING_DOMAIN: &[u8] = b"OTRv4+SMP-PQ-BIND-v1\x00";
@@ -168,6 +213,19 @@ fn pad_be_384(raw: &[u8]) -> [u8; 384] {
 #[derive(Debug, PartialEq, Clone, Copy)]
 pub enum SmpPhase {
     Idle,
+    /// SMP1 arrived while no secret was set.
+    ///
+    /// The alternative was to abort, which is what this engine used to do, and
+    /// it made a setup problem look like a protocol failure: the initiator was
+    /// told SMP had been aborted when in truth the responder had simply never
+    /// been given the passphrase.  Holding the message instead lets the
+    /// responder supply it and answer the SMP1 that already arrived, so the
+    /// run continues rather than restarting.
+    ///
+    /// This is a LOCAL state.  Nothing about it goes on the wire, and the only
+    /// way out of it is `resume_held_smp1_generate_smp2` (after the secret is
+    /// set) or `discard_held_smp1`.
+    SecretRequired,
     AwaitingMsg2,
     AwaitingMsg3,
     AwaitingMsg4,
@@ -511,6 +569,11 @@ pub struct SmpState {
 
     // State
     #[zeroize(skip)] pub phase:        SmpPhase,
+    /// SMP1 received before a secret was available, kept so it can be
+    /// answered rather than made to arrive again.  Not secret -- it is a
+    /// message the peer broadcast to us -- so it is not zeroized; it is
+    /// bounded and dropped on `destroy`.
+    #[zeroize(skip)] held_smp1:        Option<Vec<u8>>,
     #[zeroize(skip)] pub is_initiator: bool,
     #[zeroize(skip)] question:         Option<String>,
     #[zeroize(skip)] session_id:       Option<Vec<u8>>,
@@ -537,6 +600,7 @@ impl SmpState {
             g2a: None, g3a: None, g2b: None, g3b: None, g3: None,
             pa: None, qa: None, pb: None, qb: None,
             phase: SmpPhase::Idle,
+            held_smp1: None,
             is_initiator,
             question: None,
             session_id: None,
@@ -545,7 +609,7 @@ impl SmpState {
             lifecycle: SmpLifecycle::new(),
             transcript: None,
             pq: PqBundle::none(),
-            version: SMP_VERSION_PQ,   // default: hybrid PQ
+            version: SMP_VERSION_PQ_ARGON2,   // default: hybrid PQ + Argon2id
         }
     }
 
@@ -569,6 +633,7 @@ impl SmpState {
         self.g3b = None; self.g3 = None;
         self.pa = None; self.qa = None; self.pb = None; self.qb = None;
         self.session_id = None; self.our_fp = None; self.peer_fp = None;
+        self.held_smp1 = None;
         self.pq.wipe();
         self.phase = SmpPhase::Aborted;
     }
@@ -760,17 +825,23 @@ impl SmpState {
     // In classical-only mode (version == SMP_VERSION_CLASSICAL) the mlkem_ek
     // mix-in is skipped for backward compatibility.
 
-    pub fn set_secret(
-        &mut self,
-        raw_secret: &[u8],
-        session_id: &[u8],
-        our_fp:     &[u8],
-        peer_fp:    &[u8],
-    ) {
+    // Wire version 0x02 and earlier: 50,000 rounds of SHAKE-256 over the
+    // passphrase alone.
+    //
+    // Kept verbatim, and it must stay verbatim: any peer still speaking 0x02
+    // derives its scalar this way, and one changed byte here turns every
+    // cross-version SMP into a silent "no match".
+    //
+    // Its weakness is not the round count, it is that nothing user-specific
+    // goes in.  An attacker computes stretch(candidate) once and reuses it
+    // against every OTRv4Plus user and every session ever; the session and
+    // fingerprint binding that follows is a single HMAC, so testing a
+    // candidate against a captured transcript costs one hash.  That is what
+    // 0x03 fixes.
+    fn stretch_shake_legacy(raw_secret: &[u8]) -> [u8; 64] {
         use sha3::Shake256;
         use sha3::digest::{ExtendableOutput, XofReader};
 
-        // Step 1: 50k-round SHAKE-256 key-stretching
         let mut state = {
             let mut h = Shake256::default();
             Update::update(&mut h, b"OTRv4+SMP-v2\x00");
@@ -785,19 +856,116 @@ impl SmpState {
             Update::update(&mut h, &state);
             h.finalize_xof().read(&mut state);
         }
+        state
+    }
 
-        // Step 2: HMAC-SHA3-512 session + fingerprint binding
-        let hmac_key = {
+    // Wire version 0x03: Argon2id, salted with the session id and both
+    // fingerprints.
+    //
+    // Two separate properties, both missing from 0x02:
+    //
+    //   memory-hardness -- 64 MiB per guess instead of a chain of SHAKE-256
+    //   calls that a GPU runs thousands of at once for nothing.
+    //
+    //   no precomputation -- the salt is unique per (session, peer pair), so
+    //   a dictionary ground out against one transcript is worth nothing
+    //   against the next one, and nothing at all against another user.
+    //
+    // The salt is DETERMINISTIC, not random, and that is forced: both peers
+    // must arrive at the same scalar and SMP has no message in which to carry
+    // a salt.  Determinism costs nothing here -- the salt's job in Argon2 is
+    // domain separation between derivations, not secrecy, and session_id plus
+    // the fingerprint pair already differ for every derivation that matters.
+    // (session_id is per-DAKE, so even the same two peers re-running SMP get a
+    // fresh salt.)
+    //
+    // fps are ordered by the caller; passing them the other way round would
+    // make initiator and responder disagree.
+    fn stretch_argon2id(
+        raw_secret: &[u8],
+        session_id: &[u8],
+        first_fp:   &[u8],
+        second_fp:  &[u8],
+    ) -> [u8; 64] {
+        use argon2::{Algorithm, Argon2, Params, Version};
+
+        let mut salt = {
             let mut h = Sha3_512::new();
-            Digest::update(&mut h, session_id);
-            h.finalize()
+            Digest::update(&mut h, ARGON2_SALT_DOMAIN);
+            // Length-prefixed so that concatenation is unambiguous: without
+            // this, (session_id="ab", fp="c") and (session_id="a", fp="bc")
+            // would hash to the same salt.
+            for field in [session_id, first_fp, second_fp] {
+                Digest::update(&mut h, &(field.len() as u64).to_be_bytes());
+                Digest::update(&mut h, field);
+            }
+            let out = h.finalize();
+            let mut s = [0u8; 32];
+            s.copy_from_slice(&out[..32]);
+            s
         };
+
+        let params = Params::new(
+            ARGON2_M_COST_KIB,
+            ARGON2_T_COST,
+            ARGON2_P_COST,
+            Some(64),
+        ).expect("SMP Argon2 parameters are compile-time constants and valid");
+
+        let mut state = [0u8; 64];
+        let argon = Argon2::new(Algorithm::Argon2id, Version::V0x13, params);
+
+        // This can only fail on invalid lengths, and every length here is
+        // fixed by the constants above: a 32-byte salt (>= MIN_SALT_LEN) and a
+        // 64-byte output.  A panic would be a bug in this function, not a
+        // runtime condition -- and failing open by falling back to the weaker
+        // 0x02 stretch is the one thing that must not happen, because both
+        // peers would have to make the same mistake to still interoperate.
+        argon
+            .hash_password_into(raw_secret, &salt, &mut state)
+            .expect("SMP Argon2id parameters are valid by construction");
+
+        salt.zeroize();
+        state
+    }
+
+    pub fn set_secret(
+        &mut self,
+        raw_secret: &[u8],
+        session_id: &[u8],
+        our_fp:     &[u8],
+        peer_fp:    &[u8],
+    ) {
         // Lexicographic ordering ensures initiator and responder compute
-        // identical secrets regardless of role.
+        // identical secrets regardless of role.  Needed by both the 0x03 salt
+        // and the 0x02 HMAC binding, so it is computed first.
         let (first_fp, second_fp) = if our_fp <= peer_fp {
             (our_fp, peer_fp)
         } else {
             (peer_fp, our_fp)
+        };
+
+        // Step 1: key-stretching.  Which one depends on the negotiated wire
+        // version, and the two are NOT interchangeable -- they produce
+        // different scalars from the same passphrase, which is exactly why
+        // this needed a version byte.
+        let mut state = if self.version == SMP_VERSION_PQ_ARGON2 {
+            Self::stretch_argon2id(raw_secret, session_id, first_fp, second_fp)
+        } else {
+            Self::stretch_shake_legacy(raw_secret)
+        };
+
+        // Step 2: HMAC-SHA3-512 session + fingerprint binding
+        //
+        // Under 0x03 the session id and fingerprints are already in the Argon2
+        // salt, so this step is redundant there.  It is kept for both versions
+        // anyway: it costs one hash, it keeps a single code path from here to
+        // the scalar reduction, and belt-and-braces on domain separation has
+        // never been the thing that broke a protocol.
+        let hmac_key = {
+            let mut h = Sha3_512::new();
+            Digest::update(&mut h, session_id);
+            h.finalize()
         };
         let mut mac = Hmac::<Sha3_512>::new_from_slice(&hmac_key)
             .expect("HMAC accepts any key length");
@@ -854,7 +1022,7 @@ impl SmpState {
         }
 
         // Generate PQ keypairs for the initiator
-        if self.version == SMP_VERSION_PQ {
+        if is_pq(self.version) {
             self.pq = PqBundle::generate()
                 .map_err(|_| OtrError::Smp("PQ keygen failed in SMP1"))?;
         }
@@ -883,7 +1051,7 @@ impl SmpState {
         let mut wire = vec![self.version];
         wire.extend_from_slice(&classical);
 
-        if self.version == SMP_VERSION_PQ {
+        if is_pq(self.version) {
             let ek = self.pq.mlkem_ek.as_ref()
                 .ok_or(OtrError::Smp("SMP1: no mlkem_ek after keygen"))?;
             let pk = self.pq.mldsa_pk.as_ref()
@@ -911,6 +1079,81 @@ impl SmpState {
     //   mldsa_pk               (2592 bytes, responder's ML-DSA-87 public key)
     //   mldsa_sig              (4627 bytes, ML-DSA-87 sig over version||classical||mlkem_ct||mldsa_pk)
 
+    // ─── SMP1 held pending a local secret ────────────────────────────────────
+    //
+    // The responder-with-no-passphrase case.  Previously the engine aborted
+    // and the initiator was told "SMP aborted", which is indistinguishable
+    // from a real failure to anyone reading it.  These three methods let the
+    // client pause instead.
+    //
+    // What must remain true, and is what the phase exists to make checkable:
+    // arriving here is caused by a REMOTE message, but leaving here towards
+    // SMP2 requires a secret that only local input can supply.  The engine
+    // will not take a secret from the wire and will not answer the held SMP1
+    // until `check_secret_set()` is true.
+
+    /// Hold an SMP1 that arrived before a secret was available.
+    ///
+    /// Refuses if a secret is already set -- in that case the caller should
+    /// process the message normally rather than pausing on it -- and refuses
+    /// outside `Idle`, so a peer cannot use it to disturb a run in progress.
+    pub fn hold_smp1(&mut self, smp1_data: &[u8]) -> Result<()> {
+        self.guard()?;
+        if self.phase != SmpPhase::Idle {
+            return Err(OtrError::Smp("SMP not Idle: cannot hold SMP1"));
+        }
+        if !self.secret.is_empty() {
+            return Err(OtrError::Smp("secret already set: process SMP1 instead of holding it"));
+        }
+        if smp1_data.is_empty() {
+            return Err(OtrError::TruncatedMessage);
+        }
+        // Bounded so a peer cannot make us hold something large while a human
+        // decides.  SMP1 is ~4 KiB (classical fields + ML-KEM ek + ML-DSA pk);
+        // 16 KiB is generous and still bounded.
+        if smp1_data.len() > 16384 {
+            return Err(OtrError::Smp("SMP1 too large to hold"));
+        }
+        self.held_smp1 = Some(smp1_data.to_vec());
+        self.phase = SmpPhase::SecretRequired;
+        Ok(())
+    }
+
+    pub fn has_held_smp1(&self) -> bool { self.held_smp1.is_some() }
+
+    /// Answer the held SMP1 now that a secret has been set.
+    ///
+    /// Fails closed: without a secret this returns an error and the message
+    /// stays held, rather than proceeding with an empty scalar.
+    pub fn resume_held_smp1_generate_smp2(&mut self) -> Result<Vec<u8>> {
+        self.guard()?;
+        if self.phase != SmpPhase::SecretRequired {
+            return Err(OtrError::Smp("no SMP1 is being held"));
+        }
+        if self.secret.is_empty() {
+            return Err(OtrError::Smp("secret still not set: cannot answer the held SMP1"));
+        }
+        let held = match self.held_smp1.take() {
+            Some(bytes) => bytes,
+            None => return Err(OtrError::Smp("no SMP1 is being held")),
+        };
+        // process_smp1_generate_smp2 requires Idle, which is exactly what this
+        // is: an SMP1 arriving at an engine that has done nothing else yet.
+        self.phase = SmpPhase::Idle;
+        self.process_smp1_generate_smp2(&held)
+    }
+
+    /// Drop a held SMP1 -- the user declined, cancelled, or timed out.
+    ///
+    /// Returns to Idle rather than Aborted: nothing failed, and the user must
+    /// be able to start or accept SMP later without rebuilding the engine.
+    pub fn discard_held_smp1(&mut self) {
+        self.held_smp1 = None;
+        if self.phase == SmpPhase::SecretRequired {
+            self.phase = SmpPhase::Idle;
+        }
+    }
+
     pub fn process_smp1_generate_smp2(&mut self, smp1_data: &[u8]) -> Result<Vec<u8>> {
         self.guard()?;
         if self.phase != SmpPhase::Idle {
@@ -926,7 +1169,7 @@ impl SmpState {
         let wire_version = smp1_data.try_byte(0)?;
         if wire_version != self.version {
             return Err(self.fail_and_zeroize(OtrError::Smp(
-                "SMP version mismatch: peer and local version differ"
+                "SMP version mismatch: the other device is running a different OTRv4Plus build.  SMP 0x03 (Argon2id) and 0x02 derive different secrets from the same passphrase, so this is not a wrong passphrase -- both devices must be updated together."
             )));
         }
 
@@ -947,7 +1190,7 @@ impl SmpState {
             .map_err(|e| self.fail_and_zeroize(e))?;
 
         // Parse PQ fields from SMP1
-        if wire_version == SMP_VERSION_PQ {
+        if is_pq(wire_version) {
             let pq_off = classical_end;
             let remaining = payload.len() - pq_off;
             if remaining < MLKEM_EK_SIZE + MLDSA_PUB_SIZE {
@@ -1043,7 +1286,7 @@ impl SmpState {
         let mut wire = vec![self.version];
         wire.extend_from_slice(&classical_out);
 
-        if wire_version == SMP_VERSION_PQ {
+        if is_pq(wire_version) {
             // KEM encapsulation - clone out of self.pq before any mutable borrow
             let ek = match self.pq.mlkem_ek.clone() {
                 Some(v) => v,
@@ -1101,7 +1344,7 @@ impl SmpState {
         let wire_version = smp2_data.try_byte(0)?;
         if wire_version != self.version {
             return Err(self.fail_and_zeroize(OtrError::Smp(
-                "SMP version mismatch in SMP2",
+                "SMP version mismatch: the other device is running a different OTRv4Plus build.  SMP 0x03 (Argon2id) and 0x02 derive different secrets from the same passphrase, so this is not a wrong passphrase -- both devices must be updated together.",
             )));
         }
 
@@ -1125,7 +1368,7 @@ impl SmpState {
             .and(Self::verify_zkp(4, c3b, d3b, g3b))
             .map_err(|e| self.fail_and_zeroize(e))?;
 
-        if wire_version == SMP_VERSION_PQ {
+        if is_pq(wire_version) {
             let pq_off = classical_end;
             if payload.len() < pq_off + MLKEM_CT_SIZE + MLDSA_PUB_SIZE + MLDSA_SIG_SIZE {
                 return Err(self.fail_and_zeroize(OtrError::TooShort {
@@ -1236,7 +1479,7 @@ impl SmpState {
         let mut wire = vec![self.version];
         wire.extend_from_slice(&classical_out);
 
-        if wire_version == SMP_VERSION_PQ {
+        if is_pq(wire_version) {
             let sig = self.pq.sign(&wire)
                 .map_err(|e| self.fail_and_zeroize(e))?;
             wire.extend_from_slice(&sig);
@@ -1265,7 +1508,7 @@ impl SmpState {
         let wire_version = smp3_data.try_byte(0)?;
         if wire_version != self.version {
             return Err(self.fail_and_zeroize(OtrError::Smp(
-                "SMP version mismatch in SMP3",
+                "SMP version mismatch: the other device is running a different OTRv4Plus build.  SMP 0x03 (Argon2id) and 0x02 derive different secrets from the same passphrase, so this is not a wrong passphrase -- both devices must be updated together.",
             )));
         }
 
@@ -1283,7 +1526,7 @@ impl SmpState {
             .map_err(|e| self.fail_and_zeroize(e))?;
 
         // Verify PQ signature before processing classical fields
-        if wire_version == SMP_VERSION_PQ {
+        if is_pq(wire_version) {
             let pq_off = classical_end;
             if payload.len() < pq_off + MLDSA_SIG_SIZE {
                 return Err(self.fail_and_zeroize(OtrError::TooShort {
@@ -1337,7 +1580,7 @@ impl SmpState {
         let mut wire = vec![self.version];
         wire.extend_from_slice(&classical_out);
 
-        if wire_version == SMP_VERSION_PQ {
+        if is_pq(wire_version) {
             let sig = self.pq.sign(&wire)
                 .map_err(|e| self.fail_and_zeroize(e))?;
             wire.extend_from_slice(&sig);
@@ -1361,7 +1604,7 @@ impl SmpState {
         let wire_version = smp4_data.try_byte(0)?;
         if wire_version != self.version {
             return Err(self.fail_and_zeroize(OtrError::Smp(
-                "SMP version mismatch in SMP4",
+                "SMP version mismatch: the other device is running a different OTRv4Plus build.  SMP 0x03 (Argon2id) and 0x02 derive different secrets from the same passphrase, so this is not a wrong passphrase -- both devices must be updated together.",
             )));
         }
 
@@ -1376,7 +1619,7 @@ impl SmpState {
         Self::validate_group_elem(rb).map_err(|e| self.fail_and_zeroize(e))?;
 
         // Verify PQ signature before accepting the equality result
-        if wire_version == SMP_VERSION_PQ {
+        if is_pq(wire_version) {
             let pq_off = classical_end;
             if payload.len() < pq_off + MLDSA_SIG_SIZE {
                 return Err(self.fail_and_zeroize(OtrError::TooShort {
@@ -1434,7 +1677,8 @@ impl SmpState {
 
     pub fn get_phase(&self) -> &'static str {
         match self.phase {
-            SmpPhase::Idle         => "IDLE",
+            SmpPhase::Idle           => "IDLE",
+            SmpPhase::SecretRequired => "SECRET_REQUIRED",
             SmpPhase::AwaitingMsg2 => "AWAITING_MSG2",
             SmpPhase::AwaitingMsg3 => "AWAITING_MSG3",
             SmpPhase::AwaitingMsg4 => "AWAITING_MSG4",
@@ -1549,6 +1793,25 @@ impl PySmp {
     }
 
     fn abort(&mut self)             { self.inner.destroy(); }
+
+    /// Hold an SMP1 that arrived with no secret set.  See `SmpState::hold_smp1`.
+    fn hold_smp1(&mut self, smp1_data: &[u8]) -> PyResult<()> {
+        self.inner.hold_smp1(smp1_data)
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))
+    }
+
+    fn has_held_smp1(&self) -> bool { self.inner.has_held_smp1() }
+
+    /// Answer the held SMP1.  Requires the secret to have been set locally.
+    fn resume_held_smp1_generate_smp2<'py>(
+        &mut self, py: Python<'py>,
+    ) -> PyResult<Py<PyBytes>> {
+        self.inner.resume_held_smp1_generate_smp2()
+            .map(|v| PyBytes::new(py, &v).unbind())
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))
+    }
+
+    fn discard_held_smp1(&mut self) { self.inner.discard_held_smp1(); }
     fn destroy(&mut self)           { self.inner.destroy(); }
     fn is_verified(&self)  -> bool  { self.inner.is_verified() }
     fn is_failed(&self)    -> bool  { self.inner.is_failed() }
@@ -1664,7 +1927,7 @@ mod tests {
 
         let mut a = SmpState::new(true);
         let mut b = SmpState::new(false);
-        // Both default to SMP_VERSION_PQ
+        // Both default to SMP_VERSION_PQ_ARGON2 (0x03).
 
         // Initiator sets secret first (mlkem_ek will be set in generate_smp1)
         a.set_secret(secret, sid, fp_a, fp_b);
@@ -1824,5 +2087,329 @@ mod tests {
         assert!(ok, "PQ SMP with question must verify on matching secret");
         assert!(a.is_verified());
         assert!(b.is_verified());
+    }
+
+    // Frozen output of the 0x02 stretch for b"hunter2", first 8 bytes.
+    //
+    // Cross-checked against an independent implementation rather than against
+    // this one, so it pins the format and not merely the current code:
+    //
+    //   python3 -c "import hashlib
+    //   st = hashlib.shake_256(b'OTRv4+SMP-v2\x00' + b'hunter2').digest(64)
+    //   for i in range(50000-1):
+    //       st = hashlib.shake_256(i.to_bytes(4,'big') + st).digest(64)
+    //   print(st[:8].hex())"
+    //
+    // Regenerate only when the 0x02 wire format is deliberately retired.
+    const LEGACY_STRETCH_HUNTER2_PREFIX: &str = "b4f960c30fcc03d3";
+
+    // ── Argon2id SMP (wire version 0x03) ──────────────────────────────────────
+    //
+    // The point of 0x03 is that the expensive part of the derivation is bound
+    // to the session and the peer pair.  A test that only checks "matching
+    // passphrase verifies" would pass just as happily against the old unsalted
+    // stretch, so most of these look at the derived scalar directly.
+
+    fn scalar_for(version: u8, secret: &[u8], sid: &[u8], fp1: &[u8], fp2: &[u8]) -> Vec<u8> {
+        let mut st = SmpState::new(true);
+        st.version = version;
+        st.set_secret(secret, sid, fp1, fp2);
+        st.secret.expose().to_vec()
+    }
+
+    #[test]
+    fn argon2_is_the_default_for_new_sessions() {
+        assert_eq!(SmpState::new(true).version, SMP_VERSION_PQ_ARGON2);
+        assert_eq!(SmpState::new(false).version, SMP_VERSION_PQ_ARGON2);
+    }
+
+    #[test]
+    fn argon2_smp_matching_secret_verifies() {
+        let sid    = b"test-session-id-argon2-0001";
+        let fp_a   = b"fp-argon2-aaaaaaaaaaaaaaaaaaaaa";
+        let fp_b   = b"fp-argon2-bbbbbbbbbbbbbbbbbbbbb";
+        let secret = b"correct horse battery staple";
+
+        let mut a = SmpState::new(true);
+        let mut b = SmpState::new(false);
+        assert_eq!(a.version, SMP_VERSION_PQ_ARGON2);
+
+        a.set_secret(secret, sid, fp_a, fp_b);
+        let m1 = a.generate_smp1(None).expect("argon2 smp1");
+        b.set_secret(secret, sid, fp_b, fp_a);
+        let m2 = b.process_smp1_generate_smp2(&m1).expect("argon2 smp2");
+        let m3 = a.process_smp2_generate_smp3(&m2).expect("argon2 smp3");
+        let m4 = b.process_smp3_generate_smp4(&m3).expect("argon2 smp4");
+        let ok = a.process_smp4(&m4).expect("argon2 smp-final");
+
+        assert!(ok, "matching secret must verify under 0x03");
+        assert!(a.is_verified() && b.is_verified());
+    }
+
+    #[test]
+    fn argon2_smp_mismatched_secret_fails() {
+        let sid  = b"test-session-id-argon2-0002";
+        let fp_a = b"fp-argon2-aaaaaaaaaaaaaaaaaaaaa";
+        let fp_b = b"fp-argon2-bbbbbbbbbbbbbbbbbbbbb";
+
+        let mut a = SmpState::new(true);
+        let mut b = SmpState::new(false);
+        a.set_secret(b"passphrase-one",       sid, fp_a, fp_b);
+        b.set_secret(b"passphrase-DIFFERENT", sid, fp_b, fp_a);
+
+        let m1 = a.generate_smp1(None).expect("smp1");
+        let m2 = b.process_smp1_generate_smp2(&m1).expect("smp2");
+        let m3 = a.process_smp2_generate_smp3(&m2).expect("smp3");
+        let m4 = b.process_smp3_generate_smp4(&m3).expect("smp4");
+        let ok = a.process_smp4(&m4).expect("smp-final");
+
+        assert!(!ok, "mismatched secret must NOT verify under 0x03");
+        assert!(!a.is_verified());
+    }
+
+    #[test]
+    fn argon2_and_legacy_derive_different_scalars() {
+        // If these ever agreed, 0x03 would not need a version byte -- and the
+        // fact that they do not is precisely why a mixed-version pair fails.
+        let sid  = b"sid-cross-version";
+        let fp_a = b"fp-aaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        let fp_b = b"fp-bbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+        let legacy = scalar_for(SMP_VERSION_PQ,        b"same-pass", sid, fp_a, fp_b);
+        let argon  = scalar_for(SMP_VERSION_PQ_ARGON2, b"same-pass", sid, fp_a, fp_b);
+        assert_ne!(legacy, argon);
+    }
+
+    #[test]
+    fn argon2_salt_binds_the_session_id() {
+        // THE test for the precomputation fix.  Same passphrase, same peers,
+        // different DAKE session => different scalar, so a dictionary ground
+        // out against one transcript is worthless against the next.
+        let fp_a = b"fp-aaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        let fp_b = b"fp-bbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+        let one = scalar_for(SMP_VERSION_PQ_ARGON2, b"pass", b"session-one", fp_a, fp_b);
+        let two = scalar_for(SMP_VERSION_PQ_ARGON2, b"pass", b"session-two", fp_a, fp_b);
+        assert_ne!(one, two, "session id must reach the Argon2 salt");
+    }
+
+    #[test]
+    fn argon2_salt_binds_the_fingerprints() {
+        let sid = b"sid-fixed";
+        let fp_a = b"fp-aaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        let fp_b = b"fp-bbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+        let fp_c = b"fp-cccccccccccccccccccccccccccc";
+        let ab = scalar_for(SMP_VERSION_PQ_ARGON2, b"pass", sid, fp_a, fp_b);
+        let ac = scalar_for(SMP_VERSION_PQ_ARGON2, b"pass", sid, fp_a, fp_c);
+        assert_ne!(ab, ac, "fingerprints must reach the Argon2 salt");
+    }
+
+    #[test]
+    fn argon2_scalar_does_not_depend_on_role() {
+        // Initiator passes (our_fp, peer_fp); responder passes them reversed.
+        // If the lexicographic ordering were dropped they would derive
+        // different scalars and every SMP would fail.
+        let sid  = b"sid-role";
+        let fp_a = b"fp-aaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        let fp_b = b"fp-bbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+        assert_eq!(
+            scalar_for(SMP_VERSION_PQ_ARGON2, b"pass", sid, fp_a, fp_b),
+            scalar_for(SMP_VERSION_PQ_ARGON2, b"pass", sid, fp_b, fp_a),
+        );
+    }
+
+    #[test]
+    fn argon2_salt_is_unambiguous_across_field_boundaries() {
+        // Length-prefixing in the salt hash.  Without it these two derivations
+        // would concatenate to the same bytes and collide.
+        let fp_x = b"XY";
+        let fp_y = b"Z";
+        let one = scalar_for(SMP_VERSION_PQ_ARGON2, b"pass", b"AB", fp_x, fp_y);
+        let two = scalar_for(SMP_VERSION_PQ_ARGON2, b"pass", b"ABX", b"Y", fp_y);
+        assert_ne!(one, two, "salt fields must be length-prefixed");
+    }
+
+    #[test]
+    fn argon2_is_deterministic() {
+        // Both peers must land on identical bytes; a random salt here would
+        // break SMP outright rather than weaken it.
+        let sid  = b"sid-determinism";
+        let fp_a = b"fp-aaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        let fp_b = b"fp-bbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+        assert_eq!(
+            scalar_for(SMP_VERSION_PQ_ARGON2, b"pass", sid, fp_a, fp_b),
+            scalar_for(SMP_VERSION_PQ_ARGON2, b"pass", sid, fp_a, fp_b),
+        );
+    }
+
+    #[test]
+    fn legacy_stretch_is_byte_for_byte_unchanged() {
+        // A frozen vector.  Any peer still speaking 0x02 depends on this, and
+        // "I refactored the KDF" is not a thing that may quietly happen to it.
+        let state = SmpState::stretch_shake_legacy(b"hunter2");
+        let head: Vec<String> = state[..8].iter().map(|b| format!("{:02x}", b)).collect();
+        assert_eq!(
+            head.join(""),
+            LEGACY_STRETCH_HUNTER2_PREFIX,
+            "the 0x02 stretch changed; every 0x02 peer now fails with a bare \
+             'no match'"
+        );
+    }
+
+    #[test]
+    fn argon2_vs_legacy_peer_is_rejected_not_silently_wrong() {
+        // The failure mode that matters in the field: one handset pulled, the
+        // other did not.  It must abort loudly at the version check, not sail
+        // on and report "passphrase does not match".
+        let sid    = b"sid-mixed-version";
+        let fp_a   = b"fp-aaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        let fp_b   = b"fp-bbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+        let secret = b"same-passphrase-on-both";
+
+        let mut a = SmpState::new(true);           // updated device: 0x03
+        let mut b = SmpState::new(false);
+        b.version = SMP_VERSION_PQ;                // stale device: 0x02
+
+        a.set_secret(secret, sid, fp_a, fp_b);
+        b.set_secret(secret, sid, fp_b, fp_a);
+
+        let m1 = a.generate_smp1(None).expect("smp1");
+        let err = b.process_smp1_generate_smp2(&m1)
+            .expect_err("mixed versions must abort");
+        let msg = format!("{}", err);
+        assert!(msg.contains("version mismatch"), "unhelpful error: {}", msg);
+        assert!(
+            msg.contains("updated together"),
+            "the error must tell the user what to actually do: {}",
+            msg
+        );
+    }
+
+    // ─── SECRET_REQUIRED: SMP1 held pending a local passphrase ──────────────
+
+    fn full_smp1() -> Vec<u8> {
+        let mut a = SmpState::new(true);
+        a.set_secret(b"a-shared-passphrase", b"sid-0", b"fp-a", b"fp-b");
+        a.generate_smp1(None).expect("smp1")
+    }
+
+    #[test]
+    fn holding_smp1_reports_secret_required_rather_than_failing() {
+        let mut b = SmpState::new(false);
+        assert_eq!(b.get_phase(), "IDLE");
+        b.hold_smp1(&full_smp1()).expect("hold");
+        assert_eq!(b.get_phase(), "SECRET_REQUIRED");
+        assert!(b.has_held_smp1());
+        // Distinct from failure: this is a setup state, not a protocol error.
+        assert!(!b.is_failed(), "SECRET_REQUIRED must not read as failed");
+        assert!(!b.is_verified());
+    }
+
+    #[test]
+    fn a_held_smp1_cannot_be_answered_without_a_secret() {
+        let mut b = SmpState::new(false);
+        b.hold_smp1(&full_smp1()).expect("hold");
+        let err = b.resume_held_smp1_generate_smp2()
+            .expect_err("must not answer without a secret");
+        assert!(format!("{}", err).contains("secret"));
+        // Fails closed: still held, still SECRET_REQUIRED, nothing consumed.
+        assert!(b.has_held_smp1());
+        assert_eq!(b.get_phase(), "SECRET_REQUIRED");
+    }
+
+    #[test]
+    fn a_held_smp1_is_answered_once_the_secret_arrives() {
+        let sid = b"sid-0";
+        let m1 = {
+            let mut a = SmpState::new(true);
+            a.set_secret(b"a-shared-passphrase", sid, b"fp-a", b"fp-b");
+            a.generate_smp1(None).expect("smp1")
+        };
+        let mut b = SmpState::new(false);
+        b.hold_smp1(&m1).expect("hold");
+        b.set_secret(b"a-shared-passphrase", sid, b"fp-b", b"fp-a");
+        let m2 = b.resume_held_smp1_generate_smp2().expect("smp2");
+        assert!(!m2.is_empty());
+        assert_eq!(b.get_phase(), "AWAITING_MSG3");
+        assert!(!b.has_held_smp1(), "the held message must be consumed once");
+    }
+
+    #[test]
+    fn a_held_smp1_can_only_be_answered_once() {
+        let mut b = SmpState::new(false);
+        b.hold_smp1(&full_smp1()).expect("hold");
+        b.set_secret(b"a-shared-passphrase", b"sid-0", b"fp-b", b"fp-a");
+        b.resume_held_smp1_generate_smp2().expect("smp2");
+        assert!(b.resume_held_smp1_generate_smp2().is_err(),
+                "a replayed resume must not run the protocol twice");
+    }
+
+    #[test]
+    fn discarding_returns_to_idle_and_keeps_nothing() {
+        let mut b = SmpState::new(false);
+        b.hold_smp1(&full_smp1()).expect("hold");
+        b.discard_held_smp1();
+        assert_eq!(b.get_phase(), "IDLE", "a decline is not a failure");
+        assert!(!b.has_held_smp1());
+        assert!(b.resume_held_smp1_generate_smp2().is_err());
+    }
+
+    #[test]
+    fn holding_is_refused_when_a_secret_is_already_set() {
+        let mut b = SmpState::new(false);
+        b.set_secret(b"a-shared-passphrase", b"sid-0", b"fp-b", b"fp-a");
+        assert!(b.hold_smp1(&full_smp1()).is_err(),
+                "with a secret set the message should be processed, not held");
+    }
+
+    #[test]
+    fn holding_is_refused_once_a_run_is_under_way() {
+        // A peer must not be able to disturb a run in progress by sending an
+        // SMP1 that would otherwise be parked.
+        let mut a = SmpState::new(true);
+        a.set_secret(b"a-shared-passphrase", b"sid-0", b"fp-a", b"fp-b");
+        a.generate_smp1(None).expect("smp1");
+        assert_eq!(a.get_phase(), "AWAITING_MSG2");
+        assert!(a.hold_smp1(&full_smp1()).is_err());
+        assert_eq!(a.get_phase(), "AWAITING_MSG2", "phase must be untouched");
+    }
+
+    #[test]
+    fn an_empty_or_oversized_smp1_is_not_held() {
+        let mut b = SmpState::new(false);
+        assert!(b.hold_smp1(b"").is_err());
+        assert!(b.hold_smp1(&vec![0u8; 16385]).is_err());
+        assert_eq!(b.get_phase(), "IDLE");
+        assert!(!b.has_held_smp1());
+    }
+
+    #[test]
+    fn destroy_drops_a_held_smp1() {
+        let mut b = SmpState::new(false);
+        b.hold_smp1(&full_smp1()).expect("hold");
+        b.destroy();
+        assert!(!b.has_held_smp1());
+        assert_eq!(b.get_phase(), "ABORTED");
+    }
+
+    #[test]
+    fn secret_required_is_not_reachable_from_the_wire() {
+        // The only way in is hold_smp1, which the local client calls after
+        // deciding to pause.  No message parser sets the phase.
+        let src = include_str!("smp.rs");
+        let sets: Vec<&str> = src.lines()
+            .filter(|l| l.contains("SmpPhase::SecretRequired")
+                     && l.contains("self.phase =")
+                     && !l.contains("self.phase =="))   // a comparison, not a write
+            .collect();
+        assert_eq!(sets.len(), 1,
+                   "exactly one assignment into SECRET_REQUIRED expected, found {:?}",
+                   sets);
+    }
+
+    #[test]
+    fn argon2_cost_parameters_are_the_documented_ones() {
+        // These are wire format.  Both peers must agree or SMP fails.
+        assert_eq!(ARGON2_M_COST_KIB, 65_536);
+        assert_eq!(ARGON2_T_COST, 3);
+        assert_eq!(ARGON2_P_COST, 4);
     }
 }

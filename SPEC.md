@@ -1,6 +1,6 @@
 # OTRv4+ Protocol Specification
 
-**Version:** 10.10.4
+**Version:** 10.14.0
 **Status:** Draft / Research Prototype
 **Repository:** github.com/muc111/OTRv4Plus
 
@@ -31,6 +31,8 @@ extensions defined here are:
 4. ML-DSA-87 (FIPS 204) hybrid signatures in DAKE3.
 5. Hybrid post-quantum Socialist Millionaire Protocol (SMP) using ML-KEM-1024
    and ML-DSA-87 wrapping the classical Schnorr ZKP.
+6. An encrypted voice protocol (§9), keyed by a hybrid X448 + ML-KEM-1024
+   exchange negotiated inside the OTR channel and carried over I2P datagrams.
 
 ### 0.3 Terminology
 
@@ -387,7 +389,7 @@ match it.
 **ML-DSA-87 over the transcript.** When the DAKE3 ML-DSA flag is `0x01`, the
 ML-DSA-87 signature is computed over the same transcript `t` and MUST also verify
 for the handshake to succeed. Unlike the ring signature, the ML-DSA-87 signature
-is attributable and therefore not deniable (§9.1).
+is attributable and therefore not deniable (§10.1).
 
 ---
 
@@ -598,13 +600,82 @@ The SMP secret scalar is derived from the user's shared passphrase, the session
 ID, and both fingerprints. This is purely classical and symmetric (it does NOT
 incorporate ML-KEM material; see §6.7 for the rationale).
 
-**Step 1: SHAKE-256 iterated KDF (50,000 rounds):**
+**Step 1 depends on the negotiated wire version** (§6.1). Wire version `0x03`
+stretches with Argon2id; `0x01` and `0x02` use the iterated SHAKE-256
+construction. The two produce different scalars from the same passphrase, which
+is why this required a version byte rather than a silent upgrade: a peer pair
+that disagrees MUST abort at the version check (§6.1) and MUST NOT proceed to
+report a passphrase mismatch, because the passphrase may well be correct.
+
+#### Step 1a: Argon2id stretch (wire version 0x03)
+
+```
+(first, second) = (our_fp, peer_fp) if our_fp <= peer_fp
+                  else (peer_fp, our_fp)              // lexicographic ordering
+
+salt = SHA3-512( "OTRv4+SMP-ARGON2-SALT-v3" || 0x00
+               || LEN(session_id) || session_id
+               || LEN(first)      || first
+               || LEN(second)     || second )[0..32]  // LEN = 8-byte BE length
+
+state = Argon2id( password = raw_secret,
+                  salt     = salt,
+                  m        = 65536 KiB,   // 64 MiB
+                  t        = 3,
+                  p        = 4,
+                  outlen   = 64 )         // Argon2 version 0x13
+```
+
+Where `"OTRv4+SMP-ARGON2-SALT-v3"` is the 24-byte ASCII literal followed by a
+`0x00` byte.
+
+Every field entering the salt is length-prefixed. Without this, a
+`(session_id, first, second)` triple could be re-split into a different triple
+with the same concatenation and derive the same salt.
+
+The Argon2 cost parameters are part of the wire format. Both peers MUST use
+identical values; differing parameters yield different scalars and SMP fails
+with an ordinary "no match", indistinguishable from a wrong passphrase.
+Changing any of them requires a new wire version byte.
+
+The salt is deterministic rather than random, and MUST be. Both peers have to
+arrive at the same scalar, and SMP has no message in which to carry a salt. The
+salt's role in Argon2 is domain separation between derivations, not secrecy;
+`session_id` is per-DAKE, so even the same two peers re-running SMP derive
+under a fresh salt.
+
+Implementations MUST NOT fall back to Step 1b if Argon2id fails. Every length
+involved is fixed by the constants above, so a failure is an implementation
+bug; degrading to the weaker stretch would require both peers to make the same
+mistake in order to still interoperate, and would silently undo the property
+this version exists to provide.
+
+#### Step 1b: SHAKE-256 iterated KDF, 50,000 rounds (wire versions 0x01, 0x02)
+
 ```
 state = SHAKE-256( "OTRv4+SMP-v2" || 0x00 || raw_secret )   // 64-byte output
 for i in 0 .. 49998:                                          // KDF_ROUNDS - 1
     state = SHAKE-256( INT(i) || state )                      // INT = 4-byte BE
 ```
 Where `"OTRv4+SMP-v2"` is the 12-byte ASCII literal followed by a `0x00` byte.
+
+This construction is retained verbatim for interoperability with peers that
+have not been updated, and implementations MUST NOT alter it while they still
+speak `0x02`.
+
+Its weakness is not the round count. Nothing user-specific enters the expensive
+part: the session ID and fingerprints are mixed in afterwards by Step 2, a
+single HMAC. An attacker therefore computes `state` once per candidate
+passphrase and reuses it against every user and every session, after which
+testing a candidate against a captured SMP transcript costs one HMAC. The
+iteration count buys far less than it appears to. Wire version `0x03` addresses
+this by moving the session ID and fingerprints into the Argon2id salt, and adds
+memory-hardness on top.
+
+Note that SMP transcripts permit an offline dictionary attack on the shared
+passphrase by any party who completes SMP with the user. A memory-hard,
+per-session-salted KDF raises the cost of that attack; it does not remove it.
+Passphrases SHOULD still be chosen accordingly.
 
 **Step 2: HMAC-SHA3-512 session binding:**
 ```
@@ -616,6 +687,10 @@ binding = HMAC-SHA3-512(hmac_key, first || second || state)
 
 The fingerprints are ordered lexicographically so both parties derive the same
 secret regardless of role. Implementations MUST NOT use role-dependent ordering.
+
+Under `0x03` the session ID and fingerprints are already bound into the salt, so
+Step 2 is redundant there. It is retained for all versions so that the path from
+`state` to the scalar is identical regardless of which stretch produced it.
 
 **Step 3: reduce mod order:**
 ```
@@ -681,6 +756,43 @@ per ZKP within the protocol) preventing cross-protocol proof reuse.
 All `base^exp mod p` operations on secret exponents MUST be constant-time
 (Montgomery-form modular exponentiation is RECOMMENDED).
 
+### 6.6.1 Local state: SMP1 received with no secret
+
+A responder that receives SMP1 before a shared secret has been configured
+locally has three options, and the choice is observable to the initiator:
+
+1. abort, which is what this implementation did before v10.15.0 and which is
+   indistinguishable from a real failure to anyone reading the initiator's
+   screen;
+2. answer with an empty or default secret, which is never acceptable — it
+   completes the protocol and reports a mismatch that means nothing;
+3. **hold the message and ask the local user.**
+
+Implementations SHOULD take (3), and MUST NOT take (2).
+
+The holding state is **local**. Nothing about it appears on the wire, no
+message is emitted while a message is held, and the peer observes only the
+delay. This implementation names it `SECRET_REQUIRED` and permits exactly two
+exits: answer the held SMP1 once a secret has been set, or discard it and send
+`SMP_ABORT`. A held message MUST be answered at most once.
+
+An implementation that holds MUST bound both what it holds and how long it
+holds it: a held SMP1 is attacker-supplied, and a request that never expires
+is a prompt the user may answer long after they have forgotten what it was
+about.
+
+**Holding MUST NOT change what supplies the secret.** A received message may
+cause an implementation to *ask* for the passphrase; it MUST NOT cause the
+next input the user provides for any other purpose to be consumed as one. See
+SECURITY_INVARIANTS.md INV-06.
+
+**Abort reasons.** `SMP_ABORT` MAY carry an optional payload naming why. This
+implementation defines `NOSECRET` (nothing was configured and nobody was
+asked) and `DECLINED` (the user was asked and said no). The payload is a
+diagnostic that selects local wording; it is attacker-controlled text and MUST
+NOT be used as a security predicate. Implementations that do not recognise a
+payload MUST ignore it and treat the message as a plain abort.
+
 ### 6.7 Post-Quantum Binding Layer
 
 The hybrid PQ layer wraps the classical SMP with ML-KEM-1024 and ML-DSA-87.
@@ -688,10 +800,26 @@ The hybrid PQ layer wraps the classical SMP with ML-KEM-1024 and ML-DSA-87.
 **Wire version byte:** every hybrid-PQ SMP message is prefixed conceptually with
 a version indicator:
 - `0x01` = classical SMP only
-- `0x02` = hybrid post-quantum
+- `0x02` = hybrid post-quantum, iterated SHAKE-256 secret derivation (§6.4 Step 1b)
+- `0x03` = hybrid post-quantum, Argon2id secret derivation (§6.4 Step 1a)
 
-A version mismatch between peers MUST abort the session. No silent downgrade to
-classical mode is permitted.
+`0x03` is the default for new sessions. Implementations MUST NOT select a lower
+version automatically.
+
+`0x02` and `0x03` have **identical message layouts**; both carry the ML-KEM and
+ML-DSA payloads described below, and message sizes are unchanged between them.
+They differ only in §6.4 Step 1, and therefore derive different secret scalars
+from the same passphrase.
+
+A version mismatch between peers MUST abort the session, at the version check
+and before any comparison of secrets. No silent downgrade to classical mode, and
+no silent downgrade from `0x03` to `0x02`, is permitted.
+
+Because `0x02` and `0x03` derive different scalars, a mismatched pair that was
+allowed to continue would complete the protocol and report that the passphrases
+do not match, when they may be identical. Implementations MUST therefore
+distinguish the two conditions in anything shown to the user: a version mismatch
+means the peers are running different builds, not that the passphrase is wrong.
 
 **SMP1 (hybrid):** the initiator additionally generates an ML-KEM-1024 keypair and
 an ML-DSA-87 keypair. The encapsulation key (1568 bytes) and the ML-DSA-87 public
@@ -867,7 +995,365 @@ and zeroizes all SMP secret state.
 
 ---
 
-## 9. Security Requirements for Implementations
+## 9. Encrypted Voice
+
+Voice is a separate protocol keyed from, and authenticated by, an established
+OTR session. It has its own wire version, its own key schedule, and its own
+transport. Nothing in this section changes anything in §1–§8.
+
+### 9.1 Preconditions
+
+A voice call MUST NOT be offered or accepted unless, in this order:
+
+1. the transport is connected;
+2. an OTR session is established (DAKE complete, §4);
+3. SMP has completed and the engine's own verification predicate reports
+   VERIFIED (§6).
+
+The predicate MUST be the cryptographic state, never a UI string, a log line,
+or any peer-supplied text. There is no shortcut and no downgrade: if the
+predicate is false the call is refused.
+
+### 9.2 Roles
+
+Roles are fixed by who sent the INVITE and never change for the life of the
+call. INITIATOR is the caller; RESPONDER is the callee. The initiator generates
+the ephemeral ML-KEM-1024 keypair and decapsulates; the responder encapsulates.
+That direction is chosen so the 1568-byte encapsulation key rides the INVITE and
+the 1568-byte ciphertext rides the ACCEPT — neither side sends both.
+
+### 9.3 Control Messages
+
+Control messages travel **inside** the established OTR channel and are never
+sent in the clear. If the OTR channel is unavailable the message is dropped, not
+downgraded. Each is a text body:
+
+```
+"?OTRv4-CALL:" || VERB || ":" || field ("|" field)*
+```
+
+| Verb | Fields |
+|---|---|
+| `INVITE` | call_id, dest_b64, x448_pub, mlkem_ek |
+| `ACCEPT` | call_id, x448_pub, mlkem_ct, confirm_responder |
+| `CONFIRM` | call_id, confirm_initiator |
+| `REJECT` | call_id, reason |
+| `REKEY` | call_id, epoch, x448_pub, mlkem_ek |
+| `REKEYACK` | call_id, epoch, x448_pub, mlkem_ct, confirm_responder |
+| `REKEYCOMMIT` | call_id, epoch, confirm_initiator |
+| `MEDIAPATH` | call_id, epoch, seq, destination, tag |
+| `END` | call_id |
+
+Every message carries the call_id and MUST be discarded if it does not match
+the receiver's current call. Key confirmation is two-way and role-labelled: the
+responder proves possession first (ACCEPT), the initiator second (CONFIRM).
+Neither side starts audio before the exchange completes, so a key mismatch can
+never cause a frame to be emitted under a key the peer does not hold.
+
+### 9.4 Key Derivation
+
+`LP(x)` is a 4-byte big-endian length prefix followed by `x`. `u64(n)` is an
+8-byte big-endian integer. Every field is length-prefixed, so no two distinct
+field sets serialise to the same byte string.
+
+```
+transcript = LP("OTRv4+Voice/v3")
+          || LP(call_id)
+          || LP(otr_binding)
+          || LP(fp_low) || LP(fp_high)            # sorted — symmetric
+          || LP(initiator_x448_pub)
+          || LP(responder_x448_pub)
+          || LP(mlkem_ek) || LP(mlkem_ct)
+          || u64(epoch)
+
+ikm  = LP(x448_shared) || LP(mlkem_shared)        # BOTH mandatory
+salt = SHA-512("OTRv4+Voice/Salt/v3" || transcript)
+root = HKDF-SHA512(ikm, salt, info = "OTRv4+Voice/Initial/v1" || transcript)
+```
+
+`root` is 64 bytes. The construction is a concatenation KDF: an adversary MUST
+break X448 **and** ML-KEM-1024 to recover it, and it is not weakened if either
+primitive is later broken. An implementation MUST NOT derive the root from
+either input alone.
+
+The fingerprints are sorted before hashing so both endpoints produce identical
+bytes; the X448 publics are ordered by role rather than by local/remote for the
+same reason.
+
+Directional media keys:
+
+```
+K_dir = HKDF-SHA512(root, salt = call_id,
+                    info = "OTRv4+Voice/Media/v1" || LP(call_id)
+                           || u64(epoch) || dir_byte)
+
+dir_byte = 0x01  initiator -> responder
+           0x02  responder -> initiator
+```
+
+The two directions never share a key, so both counters may start at zero.
+
+Confirmation tags use `"OTRv4+Voice/Confirm/v1" || LP(call_id) || u64(epoch)`,
+producing 2 × 32 bytes, one per role. Rekey derives a new root from the old one
+under `"OTRv4+Voice/Rekey/v1"`.
+
+### 9.5 Media Frame
+
+```
+off  0  sync        u8      0xA7
+off  1  version     u8      0x04
+off  2  frame_type  u8      0x01 AUDIO | 0x02 PING | 0x03 PONG
+off  3  epoch       u64 BE
+off 11  counter     u64 BE
+off 19  length      u16 BE  (sealed length; constant for the call)
+off 21  ciphertext || GCM tag
+```
+
+Header length is 21 bytes. The AEAD is AES-256-GCM.
+
+```
+AAD   = "OTRv4+Voice/AAD/v3" || LP(call_id) || dir_byte || header[0..21]
+nonce = u32BE(epoch mod 2^32) || u64BE(counter)
+```
+
+The nonce is **derived, not transmitted**: it costs no bytes and cannot be
+tampered with independently of the header. `dir_byte` is **not** on the wire —
+the receiver supplies the peer's direction locally, so a frame reflected back at
+its own sender fails authentication.
+
+Every security-relevant header field is inside the AAD. Flipping the epoch,
+counter, length or frame type causes a tag failure.
+
+A receiver MUST reject a frame whose version byte is not `0x04`. Version
+mismatch MUST be reported as a version error, distinguishable from a
+cryptographic failure.
+
+**Wire geometry** is fixed for the call and MUST match on both endpoints. With
+the defaults — Opus 16 kHz mono, 60 ms frames, 24 kbit/s CBR — the Opus slot is
+232 bytes, the plaintext 242 bytes, the sealed body 258 bytes, and the packet
+279 bytes, sent at 16.7 packets/s. The slot is derived from bitrate and frame
+duration, not hand-set; peers configured differently establish a call, report it
+healthy, and carry no audio.
+
+Packet size and rate are **constant for the whole call**. Muting encodes digital
+silence rather than suspending transmission. DTX and variable packet sizing MUST
+NOT be enabled in the privacy profile: both make packet timing and size depend
+on speech.
+
+### 9.6 Replay, Ordering, and the Symmetric Ratchet
+
+Each epoch runs a symmetric ratchet every 500 frames (30 s at the 60 ms
+default), giving forward secrecy within an epoch. The ratchet cannot provide
+post-compromise security; that comes only from a successful hybrid rekey.
+
+A sliding replay window rejects a counter already accepted. A limited number of
+sub-epochs is retained for reordering; the forward-hashing jump from a single
+bad frame is bounded. A frame that fails authentication MUST NOT advance any
+state.
+
+### 9.7 Endpoint Announcement (`MEDIAPATH`)
+
+An endpoint MAY move mid-call — an I2P SAM session can be lost while the OTR
+channel survives. The new destination is announced with:
+
+```
+tag = HKDF-SHA512(root, salt = call_id,
+                  info = "OTRv4+Voice/Endpoint/v1" || LP(call_id)
+                         || u64(epoch) || u64(seq)
+                         || LP(destination_ascii)
+                         || u8(1 if from_initiator else 0))
+```
+
+32 bytes, from the **committed epoch root**. A receiver MUST, in this order:
+
+1. reject unless the call is ACTIVE;
+2. reject `seq` less than or equal to the highest already seen — this covers
+   replay, control-channel reordering, and any attempt to reinstate a
+   destination already moved past;
+3. reject an unparseable destination;
+4. verify the tag, and only then adopt the destination.
+
+No state may move before the tag verifies, so a forged or replayed announcement
+costs nothing and changes nothing. Announcements MUST be rate-limited.
+
+**No media key derives from the destination.** The transcript in §9.4 covers the
+call_id, the OTR binding, both fingerprints, the X448 and ML-KEM material and
+the epoch, and nothing else. Moving the address therefore invalidates no key:
+epoch, replay window, ratchet state and call identity all survive an endpoint
+change, and a packet already accepted stays rejected afterwards. An
+implementation MUST NOT tie an address change to a rekey.
+
+### 9.8 Transport
+
+Media is carried over I2P SAM v3 repliable datagrams under a transient
+destination created for the call. Signalling is carried over the OTR channel on
+whatever transport that session uses.
+
+An implementation MUST NOT fall back from I2P to a less private transport for
+media, silently or otherwise. Failure MUST be closed, not downgraded. Voice over
+Tor is not specified: there is no Tor UDP transport here, and carrying media
+over TCP is out of scope.
+
+The transport class carrying a call MUST NOT change while the call is running.
+An implementation MAY move the media endpoint within a class when the change is
+authenticated by §9.7; it MUST NOT change class, in either direction, including
+to a more private one. A class change requires ending the call.
+
+Binding the transport class into the key derivation of §9.4 — so that two peers
+who disagree about the class cannot derive the same media key — is specified in
+`TRANSPORT_POLICY.md` §5 and is NOT part of this version of the wire format. It
+requires a voice wire-version bump.
+
+### 9.9 What This Protocol Claims
+
+Claimed:
+
+* Confidentiality and integrity of media against a classical adversary,
+  contingent on X448.
+* Confidentiality against a store-now-decrypt-later quantum adversary,
+  contingent on ML-KEM-1024. Both are required; neither alone suffices.
+* Forward secrecy within a call from the symmetric ratchet, and across rekeys
+  from the ephemeral hybrid exchange.
+* Post-compromise recovery at each successful hybrid rekey.
+* Authentication of the media endpoint address against forgery, replay and
+  rollback.
+
+Not claimed:
+
+* **Real-time authentication is only as post-quantum as the DAKE.** The
+  ephemeral voice keys are authenticated by the surrounding OTR channel. A
+  quantum adversary able to forge that authentication *live* could MITM a call
+  in progress; recorded calls remain protected by ML-KEM-1024.
+* **Metadata is reduced, not eliminated.** Constant-rate shaping removes
+  speech-dependent size and timing. Call start, end, duration, loss, congestion
+  and tunnel behaviour remain observable, and the signalling server still sees
+  that two identities exchanged encrypted stanzas.
+* Anything about latency. See §9.5 for the shape of the traffic, not its speed.
+
+---
+
+## 9A. Encrypted File Transfer (XMPP only)
+
+Optional. An implementation may omit it entirely; a peer that does not
+implement it simply never sends an offer.
+
+### 9A.1 Scope
+
+File transfer is defined for the XMPP transport only. It is not defined for
+IRC, and an implementation MUST NOT carry it there.
+
+### 9A.2 Transfer key establishment
+
+The transfer key is derived from the session, not from a new key agreement.
+The double ratchet's brace key already folds ML-KEM-1024 shared secrets, so
+session state is already post-quantum protected and already authenticated by
+the DAKE. An implementation MUST NOT perform a second KEM exchange for a file
+transfer.
+
+Let `esk` be the 32-byte extra symmetric key from §4.4 (KDF usage `0x1F`), and
+`tid` a 16-byte transfer identifier chosen at random by the sender.
+
+```
+FT_DOMAIN   = "OTRv4Plus_FileTransfer_v2" || 0x00
+FT_VERSION  = 0x01
+
+wrap_key = KDF_1(0x22, FT_DOMAIN || FT_VERSION || LEN(esk) || esk
+                                 || LEN(tid) || tid, 32)
+```
+
+`LEN(x)` is a 4-byte big-endian length prefix.
+
+`esk` is fixed for the lifetime of the session. A transfer therefore survives
+the ratchet advancing, which it MUST: a file in flight cannot depend on a key
+state that moves underneath it.
+
+### 9A.3 FileKey and envelope
+
+```
+FileKey  = 32 random bytes, fresh per transfer, never reused
+envelope = nonce || AES-256-GCM(wrap_key, nonce, FileKey, aad_env)
+aad_env  = FT_DOMAIN || FT_VERSION || "envelope" || LEN(tid) || tid
+```
+
+`nonce` is 12 random bytes. The envelope is 60 bytes: 12 || 32 || 16.
+
+The plaintext FileKey MUST NOT appear in the offer, in any log, or across any
+scripting boundary.
+
+### 9A.4 Chunk format
+
+The file is split into chunks of at most 65536 plaintext bytes. Chunk `i`
+(zero-based) is sealed as:
+
+```
+nonce_i = 0x00000000 || UINT64BE(i)
+aad_i   = FT_DOMAIN || FT_VERSION || LEN(tid) || tid
+                    || UINT64BE(i) || final_i
+sealed_i = AES-256-GCM(FileKey, nonce_i, plaintext_i, aad_i)
+```
+
+`final_i` is `0x01` for the last chunk and `0x00` otherwise.
+
+A zero-length file is one chunk carrying the final flag, whose sealed form is
+the 16-byte tag alone.
+
+Because the FileKey is fresh per transfer and the nonce is a function of the
+index, a (key, nonce) pair cannot repeat. An implementation MUST NOT seal two
+chunks at the same index.
+
+The index and the final flag are authenticated, so a chunk cannot be
+reordered, duplicated at another index, replayed into another transfer, or
+presented as the last chunk to truncate the file.
+
+### 9A.5 Offer
+
+The offer travels inside the OTR channel and carries: protocol version,
+format version, `tid`, filename, plaintext size, encrypted size, chunk count,
+SHA-256 of the concatenated ciphertext, SHA-256 of the plaintext, and the
+envelope.
+
+Only the envelope is self-authenticating. Every other field is a claim by the
+sender and MUST be verified against what actually arrives.
+
+### 9A.6 Transport
+
+The file-transfer engine is transport-independent by construction. Two
+channels are distinguished:
+
+* **Control** — offer, accept, decline, done, cancel. Small, ordered, and
+  MUST be authenticated. These MUST travel inside the OTR channel.
+* **Bulk** — sealed chunks. Already encrypted and authenticated by §9A.4
+  before a transport sees them, so a transport MAY carry them by any means.
+
+An implementation MUST NOT make the chunk format, the transfer-key
+derivation, the hashes or the receiver obligations depend on which transport
+is in use. The chunk size is a transport parameter, bounded above by 65536;
+changing it changes the number of chunks and nothing else about the file.
+
+A transport MUST NOT carry control messages over the bulk path, or bulk data
+over a path that is not authenticated as the OTR channel is.
+
+### 9A.7 Receiver obligations
+
+A receiver MUST NOT place a file until all of the following hold:
+
+1. every chunk authenticated under §9A.4;
+2. the final chunk authenticated as final;
+3. the number of chunks received equals the offered count;
+4. SHA-256 of the received ciphertext equals the offered value;
+5. SHA-256 of the decrypted plaintext equals the offered value;
+6. the size on disk equals the offered plaintext size.
+
+On any failure the receiver MUST delete its temporary output and MUST NOT
+present a partial file as a completed transfer.
+
+The filename is untrusted. A receiver MUST construct the output path from a
+locally fixed directory and a sanitised basename, so that no value in the
+offer can select a directory.
+
+---
+
+## 10. Security Requirements for Implementations
 
 An implementation claiming conformance MUST:
 
@@ -900,7 +1386,7 @@ An implementation claiming conformance MUST:
 10. Enforce the skipped-key bounds (`MAX_SKIP`, `MAX_MESSAGE_KEYS`) and reject
     replayed `(dh_pub, msg_num)` pairs (§5.5).
 
-### 9.1 Known Limitations (Non-Normative)
+### 10.1 Known Limitations (Non-Normative)
 
 - The SMP Schnorr ZKP scalar arithmetic (the `d = r - c*x` computation) uses
   variable-time big-integer arithmetic in the reference implementation. The
@@ -912,7 +1398,7 @@ An implementation claiming conformance MUST:
 
 ---
 
-## 10. Test Vectors
+## 11. Test Vectors
 
 Conforming implementations SHOULD validate against:
 
@@ -956,6 +1442,6 @@ Order `q = (p - 1) / 2`. Generator `g = 2`.
 
 ---
 
-*End of specification. This document describes OTRv4+ v10.10.4 as implemented. It is
+*End of specification. This document describes OTRv4+ v10.12.0 as implemented. It is
 a research prototype specification and has not undergone formal cryptographic
 review.*

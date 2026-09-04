@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- Phase 2 needs no permissions beyond network. RECORD_AUDIO arrives with
+         the voice work in Phase 8; requesting it now would put an unexplained
+         microphone permission on a calculator-looking app. -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+
+    <!--
+      Security-relevant application attributes, explained here because comments
+      cannot live between attributes:
+
+      allowBackup=false, fullBackupContent=false, dataExtractionRules
+          An encrypted identity vault must not be copied off the device by
+          Android's automatic backup, where it would sit outside the Keystore
+          protection that makes it safe at rest.
+
+      usesCleartextTraffic=false
+          No cleartext anywhere. The XMPP transport uses TLS, and over I2P the
+          .b32 destination is itself cryptographically authenticated.
+    -->
+    <application
+        android:name=".OtrApplication"
+        android:label="@string/app_name"
+        android:theme="@style/Theme.OTRv4Plus"
+        android:supportsRtl="true"
+        android:allowBackup="false"
+        android:fullBackupContent="false"
+        android:dataExtractionRules="@xml/data_extraction_rules"
+        android:usesCleartextTraffic="false">
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:launchMode="singleTask"
+            android:configChanges="orientation|screenSize|keyboardHidden|uiMode"
+            android:theme="@style/Theme.OTRv4Plus">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+    </application>
+</manifest>

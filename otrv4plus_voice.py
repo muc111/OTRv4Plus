@@ -160,11 +160,135 @@ import hashlib
 import hmac
 import os
 import secrets
+import socket as _socket
 import struct
 import threading
 import time
 
 import otrv4plus_audio as _audio
+
+
+def _env_int(name: str, default: int, lo: int, hi: int) -> int:
+    """Read an integer override, ignoring anything outside its safe range."""
+    raw = os.environ.get(name, "").strip()
+    if raw.isdigit():
+        value = int(raw)
+        if lo <= value <= hi:
+            return value
+    return default
+
+
+def _env_ms(name: str, default_ms: int, lo: int, hi: int) -> int:
+    """Read a millisecond override, ignoring anything implausible.
+
+    Out-of-range and non-numeric values fall back to the default rather than
+    raising: a typo in an environment variable must not stop a call, and a
+    silently clamped value would be worse than an ignored one.
+    """
+    raw = os.environ.get(name, "").strip()
+    if raw.isdigit():
+        value = int(raw)
+        if lo <= value <= hi:
+            return value
+    return default_ms
+
+
+# -- latency colour bands --------------------------------------------------
+#
+# Mouth-to-ear delay is the number that decides whether a call is usable, and
+# it is checked more often than anything else in the telemetry. Colouring it
+# turns a reading into a verdict at a glance.
+#
+# The thresholds come from ITU-T G.114, which puts one-way delay under 400 ms
+# in the range "acceptable for most user applications". That is applied here
+# to the full mouth-to-ear figure, because that is what a person actually
+# experiences -- network transit plus our own buffering and playout.
+#
+# 400 ms is optimistic over three I2P hops in each direction, so a healthy
+# call on this transport usually reads yellow. That is the honest signal:
+# workable, not good. A scale calibrated so everything came out green would
+# say nothing at all. Both bands are overridable for retuning after a soak
+# test without touching code.
+M2E_GOOD_MS = _env_ms("OTRV4PLUS_M2E_GOOD_MS", 400, 50, 10000)
+M2E_WARN_MS = max(M2E_GOOD_MS,
+                  _env_ms("OTRV4PLUS_M2E_WARN_MS", 800, 50, 20000))
+
+_ANSI_GREEN = "\033[92m"
+_ANSI_YELLOW = "\033[93m"
+_ANSI_RED = "\033[91m"
+_ANSI_RESET = "\033[0m"
+
+
+def _colour_state():
+    """(enabled, reason).  The reason is printed once so it is diagnosable.
+
+    Colour is on for a terminal and off for a redirect, so a piped transcript
+    does not fill with escape sequences; the session transcript strips ANSI
+    itself, so it stays plain either way.
+
+    The reason exists because this silently did the wrong thing on a real
+    device: no latency colour reached the terminal for a whole call, while
+    the engine's own colouring -- which does no tty check at all -- came
+    through in the same log. That left nothing to look at but the absence of
+    output. A decision this cheap should say what it decided.
+    """
+    if os.environ.get("NO_COLOR"):
+        return False, "NO_COLOR is set"
+    if os.environ.get("OTRV4PLUS_FORCE_COLOR"):
+        return True, "OTRV4PLUS_FORCE_COLOR is set"
+    try:
+        import sys
+        if sys.stdout.isatty():
+            return True, "stdout is a terminal"
+        return False, ("stdout is not a terminal — set OTRV4PLUS_FORCE_COLOR=1 "
+                       "if this is a pty that does not report as one")
+    except Exception as exc:
+        return False, "stdout could not be inspected (%s)" % type(exc).__name__
+
+
+def _colour_enabled() -> bool:
+    return _colour_state()[0]
+
+
+def latency_band(ms) -> str:
+    """"good", "warn" or "bad" for a millisecond reading."""
+    if ms is None:
+        return "unknown"
+    if ms <= M2E_GOOD_MS:
+        return "good"
+    if ms <= M2E_WARN_MS:
+        return "warn"
+    return "bad"
+
+
+def colour_latency(ms, text=None) -> str:
+    """Render a latency reading in its band's colour.
+
+    ``text`` overrides the rendered label when the caller has already
+    formatted it. An unmeasured value is never coloured -- "-" in red would
+    read as a bad measurement rather than no measurement.
+    """
+    label = text if text is not None else (
+        "-" if ms is None else "%.0fms" % ms)
+    if ms is None or not _colour_enabled():
+        return label
+    band = latency_band(ms)
+    colour = {"good": _ANSI_GREEN, "warn": _ANSI_YELLOW,
+              "bad": _ANSI_RED}.get(band, "")
+    if not colour:
+        return label
+    return "%s%s%s" % (colour, label, _ANSI_RESET)
+
+
+def latency_legend() -> str:
+    enabled, reason = _colour_state()
+    return ("mouth-to-ear colour: %s good (<=%dms) %s workable (<=%dms) "
+            "%s poor (>%dms) [colour %s: %s]"
+            % (colour_latency(0, "green"), M2E_GOOD_MS,
+               colour_latency(M2E_WARN_MS, "yellow"), M2E_WARN_MS,
+               colour_latency(M2E_WARN_MS + 1, "red"), M2E_WARN_MS,
+               "on" if enabled else "OFF", reason))
+
 
 # ---------------------------------------------------------------------------
 # Host bindings
@@ -385,34 +509,160 @@ def set_kem_provider_for_testing(provider) -> None:
 # Media / codec constants
 # ---------------------------------------------------------------------------
 
-VOICE_PROTOCOL_VERSION = 3
+# Voice frame wire revision.
+#
+# 3 -> 4 (C1): the latency work changed the frame PLAINTEXT layout. Eight bytes
+# of the fixed padding slot now carry the sender's monotonic timestamp
+# (VOICE_TS_LEN), so VOICE_PLAIN_LEN and the pad_opus/unpad_opus framing differ
+# from revision 3.
+#
+# The packet is still 199 bytes and the header is unchanged, so a revision-3
+# peer and a revision-4 peer would BOTH pass the header version check if this
+# were left at 3. Worse, the timestamp sits inside the AEAD, so GCM would
+# authenticate successfully and the mismatch would only appear as unpad_opus
+# misreading Opus data -- garbled audio or a FrameError, with nothing pointing
+# at a version mismatch.
+#
+# Incrementing it moves that failure to parse_media_header, which raises
+# FrameError("unsupported protocol version N") before any key material is used.
+VOICE_PROTOCOL_VERSION = 4
 
-VOICE_SAMPLE_RATE = 16000
-VOICE_FRAME_MS = 40
-VOICE_FRAME_SAMPLES = VOICE_SAMPLE_RATE * VOICE_FRAME_MS // 1000     # 640
-VOICE_CHANNELS = 1
-VOICE_FRAME_BYTES = VOICE_FRAME_SAMPLES * VOICE_CHANNELS * 2
+# Frame geometry is DERIVED from otrv4plus_audio, never redeclared.
+#
+# These used to be independent literals in both modules. Nothing linked them,
+# so changing one produced a silent mismatch: read_frame() handed back
+# FRAME_BYTES of PCM while the encoder was told to consume
+# VOICE_FRAME_SAMPLES, and at 40/60 that is Opus reading 1920 bytes out of a
+# 1280-byte buffer on every single frame. Deriving them means the mismatch
+# cannot be expressed.
+VOICE_SAMPLE_RATE = _audio.SAMPLE_RATE
+VOICE_FRAME_MS = _audio.FRAME_MS
+VOICE_FRAME_SAMPLES = _audio.FRAME_SAMPLES
+VOICE_CHANNELS = _audio.CHANNELS
+VOICE_FRAME_BYTES = _audio.FRAME_BYTES
 FRAME_INTERVAL_S = VOICE_FRAME_MS / 1000.0
-# 40 ms at 24 kbit/s is 120 bytes; the slot is 160, so this is free — the
-# packet stays 199 bytes and the rate is unchanged. At 16 kbit/s we were
-# padding half of every frame with zeroes and paying for it anyway.
-VOICE_BITRATE = 24000
-# 8 rather than 5: the extra CPU is affordable at 25 frames/s on aarch64 and
+# 24 kbit/s. 16k was chosen while the stream transport was collapsing and
+# the priority was offering the path less; on datagrams the same path now
+# runs drop=0 with rx tracking tx, so the constraint that forced it is gone.
+#
+# The extra bytes are close to free here, which is the part worth stating
+# plainly: I2P moves data in ~1 KB tunnel messages, and a 199-byte datagram
+# and a 279-byte one each occupy exactly one. The packet RATE is what costs
+# tunnel messages, and that is unchanged at 16.7/s. On the wire this is
+# 37.2 kbit/s against 26.5, but in the currency the path actually charges in
+# it is the same 16.7 messages per second either way.
+#
+# 60 ms at 24 kbit/s is 180 bytes nominal, 225 at the VBR peak, so the slot
+# below had to grow with it. The import-time check enforces the relationship.
+# Raising this is the obvious way to improve audio quality, and the tempting
+# argument is that on I2P the extra bytes are free: the router moves the media
+# packet plus a 455-byte repliable-datagram header inside one ~960-byte tunnel
+# message, so at 24 kbit/s the 734-byte datagram leaves 226 bytes of every
+# tunnel message paid for and empty. 32 kbit/s fills 806 B at the same 16.7
+# packets/s, for the same tunnel-message count.
+#
+# That argument is a THEORY, and there is DATA against it: a live call starved
+# at 39.8 kbit/s -- 8 frames received where ~125 were expected -- which
+# `tests/test_voice_frame_geometry.py` pins as a regression bound. That
+# starvation happened at 25 packets/s rather than 16.7, so it may well have
+# been the packet rate and not the byte rate, but "may well have been" is not
+# evidence and a live call is what settles it.
+#
+# So the default stays where it was measured to work. To try more, set this on
+# BOTH phones and watch `rx` against `tx` in --voice-debug:
+#
+#     OTRV4PLUS_OPUS_BITRATE=32000     806 B datagram, 46.8 kbit/s offered
+#     OTRV4PLUS_OPUS_BITRATE=40000     878 B datagram, 56.4 kbit/s offered
+#
+# 48000 reaches 958 B, close enough to the tunnel-message limit that one
+# unexpected byte of overhead fragments the datagram and doubles the messages.
+# If 32000 holds up on a real path, this default and that test bound should
+# move together, with the log that justifies it.
+#
+# WIRE FORMAT: both peers must use the same value.
+VOICE_BITRATE = _env_int("OTRV4PLUS_OPUS_BITRATE", 24000, 6000, 64000)
+# 8 rather than 5: the extra CPU is affordable at 16.7 frames/s on aarch64 and
 # buys audible quality, which matters more here than on a low-latency path.
-VOICE_COMPLEXITY = 8
-VOICE_LOSS_PCT = 20
+VOICE_COMPLEXITY = _env_int("OTRV4PLUS_OPUS_COMPLEXITY", 8, 0, 10)
+# In-band FEC repairs a ONE-frame gap only; longer gaps fall through to
+# concealment. The observed failure mode is multi-second starvation, which
+# FEC cannot touch, so 20% of the bitrate was being spent on redundancy that
+# never applied. 5% keeps single-frame repair, which does work.
+VOICE_LOSS_PCT = _env_int("OTRV4PLUS_OPUS_FEC_PCT", 5, 0, 50)
 
-# Constant-rate shaping.  Opus at 16 kbit/s and 40 ms is exactly 80 bytes in
+# Constant-rate shaping.  Opus at 16 kbit/s and 60 ms is exactly 120 bytes in
 # CBR; the slot is sized for the VBR peak so a build that refuses vbr=0
 # degrades to 8 kbit/s of padding overhead rather than replacing every single
 # frame with silence and producing a call that carries no audio at all.
 # 8 bytes of the fixed slot carry the sender's monotonic timestamp, used for
 # one-way latency. Taken from padding that was already being transmitted, so
 # the packet stays 199 bytes and the constant-rate property is untouched:
-# 24 kbit/s at 40 ms is 120 bytes, well inside the remaining 152.
+# 16 kbit/s at 60 ms is 120 bytes, exactly filling the remaining 152 slot
+# minus VBR headroom.
 VOICE_TS_LEN = 8
-VOICE_OPUS_SLOT = 152
+# DERIVED from VOICE_BITRATE and VOICE_FRAME_MS, not hand-set.
+#
+# A hand-set literal was safe only while both were literals too. Now that
+# either can be overridden for benchmarking, a fixed slot would silently
+# either waste bandwidth or -- far worse -- be too small, in which case
+# pad_opus returns None, the capture worker substitutes silence, and the call
+# connects, reports healthy and carries no audio.
+#
+# Nominal bytes per frame is bitrate * ms / 8000; the 5/4 covers the VBR peak
+# a build that refuses vbr=0 will produce; rounding to 8 keeps the packet
+# length tidy. The import-time check below still verifies the result.
+#
+# WIRE FORMAT: set by VOICE_BITRATE and VOICE_FRAME_MS, so both peers must
+# agree on those two.
+def _derive_opus_slot(bitrate: int, frame_ms: int) -> int:
+    peak = (bitrate * frame_ms // 8000) * 5 // 4
+    return ((peak + 7) // 8) * 8
+
+
+VOICE_OPUS_SLOT = _derive_opus_slot(VOICE_BITRATE, VOICE_FRAME_MS)
 VOICE_PLAIN_LEN = 2 + VOICE_TS_LEN + VOICE_OPUS_SLOT
+
+# ── Configuration invariants, checked at import ──────────────────────────────
+#
+# Every one of these has already been violated in practice, and each failed
+# silently rather than loudly:
+#
+#   frame geometry   the two modules held independent literals and drifted
+#   slot vs bitrate  an Opus frame larger than the slot makes pad_opus return
+#                    None, so _capture_worker substitutes silence and counts
+#                    "oversize" -- a call that connects, reports healthy, and
+#                    transmits nothing
+#   Opus frame size  libopus accepts only 2.5/5/10/20/40/60 ms; anything else
+#                    fails per frame at runtime
+#
+# Raising here means a bad combination cannot reach a call.
+_OPUS_VALID_FRAME_MS = (10, 20, 40, 60)
+
+if VOICE_FRAME_MS not in _OPUS_VALID_FRAME_MS:
+    raise RuntimeError(
+        "VOICE_FRAME_MS is %d ms; libopus accepts only %s. It is derived from "
+        "otrv4plus_audio.FRAME_MS -- change it there."
+        % (VOICE_FRAME_MS, list(_OPUS_VALID_FRAME_MS)))
+
+if (VOICE_FRAME_SAMPLES != VOICE_SAMPLE_RATE * VOICE_FRAME_MS // 1000
+        or VOICE_FRAME_BYTES != VOICE_FRAME_SAMPLES * VOICE_CHANNELS * 2):
+    raise RuntimeError(
+        "frame geometry is inconsistent: %d ms, %d samples, %d bytes"
+        % (VOICE_FRAME_MS, VOICE_FRAME_SAMPLES, VOICE_FRAME_BYTES))
+
+#: Bytes one Opus frame occupies at the configured bitrate, plus headroom for
+#: the VBR peak that a build refusing vbr=0 will produce.
+VOICE_OPUS_PEAK_BYTES = (VOICE_BITRATE * VOICE_FRAME_MS // 8000) * 5 // 4
+
+if VOICE_OPUS_PEAK_BYTES > VOICE_OPUS_SLOT:
+    raise RuntimeError(
+        "VOICE_BITRATE %d at %d ms needs up to %d bytes but VOICE_OPUS_SLOT "
+        "is %d. Every frame would exceed the slot, be replaced with silence, "
+        "and the call would carry no audio. Lower the bitrate, shorten the "
+        "frame, or raise the slot (raising it changes the wire format and "
+        "both peers must match)."
+        % (VOICE_BITRATE, VOICE_FRAME_MS, VOICE_OPUS_PEAK_BYTES,
+           VOICE_OPUS_SLOT))
 
 VOICE_SYNC = 0xA7
 FRAME_TYPE_AUDIO = 0x01
@@ -427,6 +677,26 @@ VOICE_HDR_FMT = ">BBBQQH"
 VOICE_SEALED_LEN = VOICE_PLAIN_LEN + 16          # ct || GCM tag; nonce derived
 VOICE_PACKET_LEN = VOICE_HDR_LEN + VOICE_SEALED_LEN
 
+#: What the router prepends to a repliable datagram: the sender's
+#: Destination and its signature. Ed25519 (SIGNATURE_TYPE=7) is 391 + 64.
+SAM_REPLIABLE_OVERHEAD = 455
+
+#: Usable payload in one I2P tunnel message. A tunnel message is 1024 bytes;
+#: the delivery instructions and checksum take the rest.
+I2P_TUNNEL_MESSAGE_PAYLOAD = 960
+
+#: What a full media datagram costs the router.
+VOICE_DATAGRAM_LEN = VOICE_PACKET_LEN + SAM_REPLIABLE_OVERHEAD
+
+if VOICE_DATAGRAM_LEN >= I2P_TUNNEL_MESSAGE_PAYLOAD:
+    raise RuntimeError(
+        "a media datagram is %d bytes and would be fragmented across I2P "
+        "tunnel messages (payload %d). Fragmentation multiplies both the "
+        "loss probability and the delivery latency, because every fragment "
+        "must arrive before any of the frame can be used. Lower "
+        "OTRV4PLUS_OPUS_BITRATE or OTRV4PLUS_OPUS_FRAME_MS."
+        % (VOICE_DATAGRAM_LEN, I2P_TUNNEL_MESSAGE_PAYLOAD))
+
 VOICE_MIN_FRAME = VOICE_SEALED_LEN
 VOICE_MAX_FRAME = VOICE_SEALED_LEN
 
@@ -436,18 +706,373 @@ DIR_RESPONDER = 0x02        # callee -> caller
 # Jitter buffer.  Sequence-aware and bounded: an attacker who can inject must
 # not be able to grow it, and a stalled playout device must not accumulate
 # audio nobody will ever hear.
-VOICE_JITTER_PREFILL = 6            # 240 ms before playout starts
-VOICE_JITTER_MAX = 50               # ~2 s hard cap
+# Expressed in MILLISECONDS and converted, because these are depths in frames
+# and a frame is not a fixed duration. Changing VOICE_FRAME_MS from 40 to 60
+# silently stretched a 6-frame floor from 240 ms to 360 ms -- 120 ms of added
+# latency that no constant mentioned and nobody asked for.
+#
+# Every one of these is a LOCAL playout decision. Unlike VOICE_OPUS_SLOT they
+# are not wire format, so two peers may run different values safely and a
+# device on a worse path can buy itself more cushion without breaking calls.
+VOICE_JITTER_PREFILL_MS = _env_ms("OTRV4PLUS_JITTER_MIN_MS", 180, 60, 1000)
+VOICE_JITTER_DRIFT_HIGH_MS = _env_ms("OTRV4PLUS_JITTER_TARGET_MS", 480,
+                                     120, 2000)
+#: Hard cap on queued audio. Not a target -- the adaptive target and the shed
+#: threshold decide steady state -- but the point past which a burst is
+#: discarded outright rather than queued.
+#:
+#: 2000 ms before. A burst that filled it parked two seconds of stale audio
+#: on top of the path's own delay, which for conversation is worse than
+#: having lost it: nothing in a two-second-old frame is worth hearing.
+VOICE_JITTER_MAX_MS = _env_ms("OTRV4PLUS_JITTER_MAX_MS", 1000, 240, 4000)
+
+#: How fast the buffer returns to target after a burst.
+#:
+#: The shed was one frame per pop, which drains at exactly the playout rate:
+#: a 30-frame burst took ~26 pops, 1.5 s, and the whole of that time was
+#: spent at high latency. Observed on a live call as jitter=32/3, buf=1920ms
+#: -- three times the shed threshold, for over a second. Shedding is now
+#: proportional so convergence takes this long regardless of burst size.
+VOICE_JITTER_DRAIN_MS = _env_ms("OTRV4PLUS_JITTER_DRAIN_MS", 400, 100, 2000)
+
+#: Hysteresis above the target before a frame is shed.
+#:
+#: This used to be max(prefill, 4) FRAMES, which at 60 ms was 240 ms of pure
+#: hysteresis stacked on top of a target that already carries its own slack.
+#: Steady-state depth is exactly this threshold -- arrivals and playout run at
+#: the same rate, so nothing else pulls the buffer down -- which made the
+#: observed 840 ms floor (target pinned at 10, plus 4) the design rather than
+#: an accident.
+VOICE_JITTER_SHED_MARGIN_MS = _env_ms("OTRV4PLUS_JITTER_MARGIN_MS", 180,
+                                      60, 1000)
+
+#: Multiplier on the smoothed arrival deviation when sizing the target.
+#:
+#: RFC 3550's J is a smoothed mean absolute deviation. 3x J is roughly 3.75
+#: sigma -- effectively every spike, paid for on every frame for the whole
+#: call. 2x is about 2.5 sigma: a concealed frame now and then, in exchange
+#: for a third less delay on every single frame. For conversation that is the
+#: better side of the trade, and it is a trade rather than a free win.
+VOICE_JITTER_SAFETY_FACTOR = 2.0
+
+
+VOICE_JITTER_PREFILL = max(2, VOICE_JITTER_PREFILL_MS // VOICE_FRAME_MS)
+VOICE_JITTER_MAX = max(4, VOICE_JITTER_MAX_MS // VOICE_FRAME_MS)
+VOICE_JITTER_SHED_MARGIN = max(1, VOICE_JITTER_SHED_MARGIN_MS // VOICE_FRAME_MS)
 # Latency ceiling. Without this the buffer keeps whatever depth a burst pushed
 # it to for the rest of the call: playout is paced by the audio device, so it
 # never catches up on its own. Observed at 46/50 and 27/50 on live calls —
-# nearly two seconds parked on top of I2P's own delay. Shedding one 40 ms
+# nearly two seconds parked on top of I2P's own delay. Shedding one 60 ms
 # frame is a click; holding two seconds makes conversation impossible.
-VOICE_JITTER_DRIFT_HIGH = 15        # 600 ms — above this, claw latency back
+#
+# OTRV4PLUS_JITTER_MAX_MS raises or lowers this ceiling at runtime. It is the
+# one knob worth having: on a path whose measured jitter genuinely warrants a
+# deep buffer, no amount of tuning elsewhere buys latency back, and the choice
+# between a dropout and a delay belongs to whoever is on the call. The 5 s
+# debug line reports the measured jitter and the target so the choice can be
+# made from data.
+VOICE_JITTER_DRIFT_HIGH = max(
+    VOICE_JITTER_PREFILL + 1,
+    _env_ms("OTRV4PLUS_JITTER_MAX_MS", VOICE_JITTER_DRIFT_HIGH_MS,
+            120, VOICE_JITTER_MAX_MS) // VOICE_FRAME_MS)
 VOICE_JITTER_LATE_TOLERANCE = 2     # frames older than this are discarded
+
+#: Bytes of kernel send buffer to allow on the media socket.
+#:
+#: This is the queue that actually caused a live call to run 24 seconds
+#: behind.  The SAM bridge is a loopback TCP connection, and Linux autotunes
+#: a loopback socket's send buffer up to net.ipv4.tcp_wmem[2] -- 4 MiB on a
+#: stock Android kernel.  At 199 bytes per frame that is over twenty thousand
+#: frames, i.e. about twenty minutes of audio the kernel will accept without
+#: ever telling us, while asyncio's own write buffer reads as empty and every
+#: backpressure check we make passes.  i2pd applies real backpressure at the
+#: far end (SAMSocket does not re-arm its read until the stream has taken the
+#: previous chunk), so the buffer fills and simply stays full.
+#:
+#: Calling setsockopt at all disables autotuning and pins the value.  The
+#: kernel enforces a floor (SOCK_MIN_SNDBUF, ~4.6 KiB) and doubles what is
+#: asked for, so the effective floor is a little over a second of audio; that
+#: is the tightest bound available without leaving SOCK_STREAM behind.
+VOICE_SEND_BUFFER_BYTES = VOICE_PACKET_LEN * 8
+
+
+def limit_media_send_buffer(sock) -> int:
+    """Pin the media socket's kernel send buffer small.  Returns the result.
+
+    Best-effort: a platform that refuses SO_SNDBUF leaves the socket usable,
+    just bloated, so this never raises.  The returned size is what the kernel
+    actually granted, which is what the caller should log -- asking for 1592
+    bytes and being given 4608 is normal and worth seeing.
+    """
+    try:
+        sock.setsockopt(_socket.SOL_SOCKET, _socket.SO_SNDBUF,
+                        VOICE_SEND_BUFFER_BYTES)
+        return sock.getsockopt(_socket.SOL_SOCKET, _socket.SO_SNDBUF)
+    except Exception:
+        return -1
+
+# ── Media transport selection ────────────────────────────────────────────────
+#
+# Media used to ride the same SAM STYLE=STREAM connection as everything else.
+# That is a reliable, ordered, retransmitting transport, and for real-time
+# audio those three properties are defects rather than features: congestion
+# cannot show up as loss, so it shows up as unbounded delay instead.
+#
+# Measured on a live call, with drop=0/late=0/authfail=0 throughout:
+#
+#   * one 5 s window received 381 frames against the ~83 sent in it -- a
+#     stream unblocking after a stall, not a network recovering
+#   * one-way delay reached 24 s and RTT 22 s
+#   * recovery was a clean monotonic decay (19320 -> 17344 -> 12697 -> 8018
+#     -> 3666 -> 1472 ms over ~30 s), which is a standing queue draining at a
+#     constant rate
+#   * in between, the same path sustained rtt=1269ms oneway=536ms rx=83/83
+#
+# i2pd fixes INITIAL_RTO at 9000 ms at compile time (libi2pd/Streaming.h) and
+# exposes no I2CP or SAM knob for it, so a single lost segment stalls every
+# frame behind it for nine seconds no matter how the sender is tuned. Bounding
+# our own queues (see _SEND_DEADLINE_S) caps the damage; it cannot remove
+# head-of-line blocking, because the blocking is not in a queue we own.
+#
+# Datagrams remove it at the source: no retransmission, no ordering guarantee,
+# no window. Loss stays loss, which is exactly what Opus concealment and the
+# sequence-aware jitter buffer are already built to absorb.
+#
+# The wire format needs no change. Every media packet is already
+# self-contained -- VOICE_SYNC, an authenticated header carrying epoch,
+# counter, length and type, then the sealed body -- and every property that
+# made it safe over a stream (AEAD authentication, per-epoch replay windows,
+# sequence-aware reordering) is exactly what a datagram transport requires.
+# ── I2P destinations ─────────────────────────────────────────────────────────
+#
+# SAM v3 answers SESSION CREATE with
+#
+#     SESSION STATUS RESULT=OK DESTINATION=$privkey
+#
+# and $privkey is NOT the destination. Per the SAM v3 specification it is the
+# base64 of
+#
+#     Destination || PrivateKey || SigningPrivateKey
+#
+# -- 679 bytes for SIGNATURE_TYPE=7, which is 908 base64 characters against
+# the 524 of the destination alone. Two things followed from treating that
+# string as if it were a destination:
+#
+#   * it was published to the peer in every INVITE, so the session's own
+#     private keys went out over the wire. The destination is TRANSIENT and
+#     per-call and the INVITE travels inside the established OTR channel, so
+#     only the authenticated peer ever saw it -- but a private key belongs on
+#     one device and it was on two.
+#   * the repliable-datagram source filter compared SAM's reported source, a
+#     524-character destination, against a 908-character private key blob.
+#     They never matched, so the callee dropped every media datagram the
+#     caller sent: rx=0 with drop climbing at the frame rate.
+#
+# Everything that needs a destination -- the INVITE, STREAM CONNECT, the
+# datagram filter -- wants the Destination alone, so it is parsed out once
+# here and the blob is never retained.
+_I2P_B64_TO_STD = str.maketrans("-~", "+/")
+_I2P_B64_FROM_STD = str.maketrans("+/", "-~")
+
+#: KeysAndCert before the certificate body: 256 public + 128 signing public
+#: + 1 certificate type + 2 certificate length.
+_KEYS_AND_CERT_PREFIX = 387
+
+
+def i2p_b64decode(text: str) -> bytes:
+    """Decode I2P's base64 alphabet (+ and / replaced by - and ~)."""
+    import base64
+    padded = text + "=" * (-len(text) % 4)
+    return base64.b64decode(padded.translate(_I2P_B64_TO_STD))
+
+
+def i2p_b64encode(raw: bytes) -> str:
+    """Encode to I2P's base64 alphabet."""
+    import base64
+    return base64.b64encode(raw).decode("ascii").translate(_I2P_B64_FROM_STD)
+
+
+def i2p_public_destination(text: str) -> str:
+    """Return the Destination alone from a destination or a SAM private key.
+
+    Idempotent: handed a bare destination it returns an equivalent string, so
+    it is safe to apply to anything arriving from a peer whether that peer
+    sends the destination or, as this code used to, the whole private blob.
+
+    Raises ValueError on anything that does not parse as a KeysAndCert, which
+    is what a caller wants for a field that came off the wire.
+    """
+    raw = i2p_b64decode(text)
+    if len(raw) < _KEYS_AND_CERT_PREFIX:
+        raise ValueError("destination is %d bytes, too short for a KeysAndCert"
+                         % len(raw))
+    cert_len = int.from_bytes(raw[385:387], "big")
+    total = _KEYS_AND_CERT_PREFIX + cert_len
+    if len(raw) < total:
+        raise ValueError("certificate claims %d bytes but only %d remain"
+                         % (cert_len, len(raw) - _KEYS_AND_CERT_PREFIX))
+    return i2p_b64encode(raw[:total])
+
+
+VOICE_TRANSPORT_DATAGRAM = "datagram"
+VOICE_TRANSPORT_STREAM = "stream"
+
+#: UDP port the SAM bridge listens on for outbound datagrams. i2pd's default
+#: is 7655 (sam.udpport); a router that moved it needs this overridden.
+SAM_UDP_PORT = 7655
+
+#: Largest forwarded datagram we will read. A media packet is 199 bytes; the
+#: SAM forwarding header prepends the sender's base64 destination, which is
+#: ~520 bytes for an Ed25519 destination. 4 KiB is generous for both and still
+#: refuses anything that could only be an attempt to make us allocate.
+SAM_DATAGRAM_MAX = 4096
+
+
+def voice_transport_mode() -> str:
+    """Which media transport to use.  Datagram unless explicitly overridden.
+
+    ``OTRV4PLUS_VOICE_TRANSPORT=stream`` restores the old behaviour, which is
+    worth keeping reachable: a router with SAM UDP disabled cannot do
+    datagrams at all, and the stream path is the one with years of use behind
+    it.
+    """
+    choice = os.environ.get("OTRV4PLUS_VOICE_TRANSPORT", "").strip().lower()
+    if choice == VOICE_TRANSPORT_STREAM:
+        return VOICE_TRANSPORT_STREAM
+    return VOICE_TRANSPORT_DATAGRAM
+
+
+def sam_udp_port() -> int:
+    """SAM bridge UDP port, overridable for a router that moved it."""
+    raw = os.environ.get("OTRV4PLUS_SAM_UDP_PORT", "").strip()
+    if raw.isdigit():
+        port = int(raw)
+        if 1 <= port <= 65535:
+            return port
+    return SAM_UDP_PORT
+
+
+def build_datagram_send_header(session_id: str, peer_dest: str) -> bytes:
+    """SAM v3 datagram send header: ``3.0 <session> <destination>\n``.
+
+    The payload follows immediately with no length prefix -- the UDP datagram
+    boundary is the frame boundary, which is the entire point of moving here.
+    """
+    return ("3.0 %s %s\n" % (session_id, peer_dest)).encode("ascii")
+
+
+def split_datagram_receive(data: bytes):
+    """Split a forwarded SAM datagram into (source_destination, payload).
+
+    A repliable datagram arrives as ``<base64 destination>\n<payload>``.
+    Returns (None, data) if there is no header, so a router configured for RAW
+    forwarding still delivers audio -- the payload authenticates either way,
+    and the destination is only ever used as a cheap pre-AEAD filter.
+    """
+    idx = data.find(b"\n")
+    if idx <= 0:
+        return None, data
+    head = data[:idx]
+    try:
+        source = head.decode("ascii")
+    except Exception:
+        return None, data
+    if len(source) < 64 or any(c.isspace() for c in source):
+        return None, data
+    return source, data[idx + 1:]
 
 VOICE_REKEY_SECONDS = 120
 VOICE_REKEY_TIMEOUT = 45
+#: How far ahead of us a peer's REKEY may be and still be accepted as a
+#: catch-up rather than rejected as implausible.  At one rekey per
+#: VOICE_REKEY_SECONDS this is over two hours of missed rounds, which is
+#: longer than any control-plane outage that leaves the media path alive.
+VOICE_REKEY_MAX_CATCHUP = 64
+
+# -- inbound media liveness -------------------------------------------------
+#
+# A datagram transport has no EOF. When media moved from SAM STYLE=STREAM to
+# STYLE=DATAGRAM (892ef7a) the reader task became conditional on the stream
+# writer, and that task was the ONLY caller of _signal_stream_lost for the
+# receive path. Datagram calls have therefore had no inbound liveness
+# detection at all: a receive path that stops delivering cannot be noticed,
+# because nothing is watching and nothing can fail.
+#
+# Observed on a 33-minute call: inbound audio AND inbound probe replies both
+# stopped at t=1418s, ~15 s into a 70 s reconnect (an outlier among ten, the
+# WiFi-to-mobile transition), and never resumed. The call stayed ACTIVE and
+# kept transmitting for the remaining 9.5 minutes. Rekeys 11-14 committed
+# normally throughout, so the peer and the control plane were healthy; only
+# the media receive path was dead.
+#
+# Thresholds are anchored to constants that already exist rather than picked
+# fresh. The check runs at the media probe cadence; the warning needs three
+# consecutive probe intervals of complete silence; the call is declared dead
+# at VOICE_REKEY_TIMEOUT, which is this project's existing "this is not
+# coming back" horizon. At a 60 ms frame interval that is ~750 consecutive
+# frames, so no plausible loss burst reaches it -- the worst measured stall
+# on the old stream transport was 24 s and would not have tripped this.
+VOICE_RX_CHECK_S = _env_ms("OTRV4PLUS_RX_CHECK_MS", 5000, 1000, 30000) / 1000.0
+VOICE_RX_WARN_S = _env_ms("OTRV4PLUS_RX_WARN_MS", 15000, 3000, 120000) / 1000.0
+VOICE_RX_DEAD_S = max(
+    VOICE_RX_WARN_S,
+    _env_ms("OTRV4PLUS_RX_DEAD_MS", VOICE_REKEY_TIMEOUT * 1000, 5000, 600000)
+    / 1000.0)
+
+# -- media endpoint recovery ------------------------------------------------
+#
+# Replacing a SAM datagram session means building new I2P tunnels, which the
+# call banner already describes as "30-120 s and can be longer on a busy
+# phone". The per-attempt bound is the one the call-setup path already uses
+# for exactly this operation (the prewarm shield), so recovery is not given a
+# budget the original connection was never given.
+#
+# Attempts are bounded because an unbounded retry is a tunnel-build storm on
+# a device that is probably already struggling. When they are exhausted the
+# call is torn down through the same path a call with no recovery would take:
+# recovery can extend the deadline, never remove it.
+#: How long the FIRST inbound frame of a call is allowed to take.
+#:
+#: The steady-state thresholds assume a path that has already carried audio,
+#: and a path that has never carried any is a different question. Measured on
+#: a live call: media first flowed at t=96 s, while the watchdog fired at
+#: 26.6 s and spent ~70 s rebuilding an endpoint that was merely still coming
+#: up. The tunnels are built before start_audio, but the peer still has to
+#: learn our destination and the first datagram still has to traverse.
+#:
+#: 120 s is what call setup already allows the media path elsewhere -- the
+#: key-confirmation wait uses it, and the call banner tells the user that
+#: 30-120 s is normal -- so this is the budget the rest of the code already
+#: agreed on rather than a new number.
+VOICE_RX_START_GRACE_S = _env_ms("OTRV4PLUS_RX_START_GRACE_MS",
+                                 120000, 5000, 600000) / 1000.0
+
+#: Extra time to wait before replacing an endpoint while the SAM session
+#: that owns it is still alive.
+#:
+#: Our destination is bound to the SAM session, not to the tunnels beneath
+#: it. Measured on a real WiFi-to-mobile switch: inbound died instantly, the
+#: watchdog fired 10.6 s later, and the diagnosis read "SAM control socket
+#: open" -- the router had never dropped our session, it was rebuilding its
+#: own tunnels underneath a destination that was still ours. We replaced it
+#: anyway: 21.2 s to build a new session and announce it, ~20 s during which
+#: our own tx fell to 0 because the transport was closed, and the peer had to
+#: adopt a new address it did not need.
+#:
+#: So a live session earns the router a chance to finish. A dead one earns
+#: nothing -- if the control socket has closed, the session is gone and only
+#: a rebuild can help, so that case is unchanged and immediate.
+#:
+#: 30 s is the low end of the 30-120 s the call banner already quotes for a
+#: tunnel build, and it is bounded: when it expires the rebuild happens
+#: exactly as before, so the cost of guessing wrong is 30 s once.
+VOICE_RX_SESSION_HOLD_S = _env_ms("OTRV4PLUS_RX_SESSION_HOLD_MS",
+                                  30000, 0, 300000) / 1000.0
+
+VOICE_RECOVER_ATTEMPTS = _env_int("OTRV4PLUS_RECOVER_ATTEMPTS", 2, 0, 5)
+VOICE_RECOVER_TIMEOUT_S = _env_ms("OTRV4PLUS_RECOVER_TIMEOUT_MS",
+                                  150000, 10000, 300000) / 1000.0
+VOICE_MAX_MEDIAPATH_PER_MIN = 4
 
 # Control-plane DoS bounds.
 VOICE_MAX_CONCURRENT_CALLS = 1
@@ -520,15 +1145,90 @@ def sorted_fingerprints(local_fp, remote_fp):
 _LABEL_SALT = b"OTRv4+Voice/Salt/v3"
 _LABEL_INITIAL = b"OTRv4+Voice/Initial/v1"
 _LABEL_REKEY = b"OTRv4+Voice/Rekey/v1"
+# ---------------------------------------------------------------------------
+# Rust-owned media cryptography
+# ---------------------------------------------------------------------------
+#
+# Hard requirement, not a preference.  There is no Python fallback: media keys
+# living in Python is the defect this replaced, so falling back to it on an
+# import error would silently restore the thing being fixed.  A missing core
+# means no voice, which is the correct failure.
+
+try:
+    from otrv4_core import RustVoiceCipher as _RustVoiceCipher
+    from otrv4_core import RustVoiceKex as _RustVoiceKex
+    from otrv4_core import RustVoiceRoot as _RustVoiceRoot
+    RUST_VOICE_AVAILABLE = True
+except ImportError:                                            # pragma: no cover
+    _RustVoiceCipher = None
+    _RustVoiceKex = None
+    _RustVoiceRoot = None
+    RUST_VOICE_AVAILABLE = False
+
+
+def _as_root_handle(root):
+    """Accept a `RustVoiceRoot`, or wrap raw bytes into one.
+
+    Production always passes a handle: the root is derived inside Rust by
+    `RustVoiceRoot.from_initial_agreement` and never becomes a Python object.
+    Raw bytes are accepted so tests can build a schedule from a fixed root
+    without a full hybrid agreement -- that path copies the bytes into Rust
+    immediately, which is the best that can be done with material Python has
+    already seen.
+    """
+    _require_rust_voice()
+    if isinstance(root, _RustVoiceRoot):
+        return root
+    if root is None:
+        raise ValueError("epoch root must be %d bytes" % ROOT_LEN)
+    raw = bytes(root)
+    if len(raw) != ROOT_LEN:
+        raise ValueError("epoch root must be %d bytes" % ROOT_LEN)
+    return _RustVoiceRoot.from_bytes(raw)
+
+
+def _require_rust_voice():
+    if not RUST_VOICE_AVAILABLE:
+        raise RuntimeError(
+            "otrv4_core does not provide RustVoiceCipher/RustVoiceKex. "
+            "Voice media keys are Rust-owned as of v10.13.2 and there is no "
+            "Python fallback. Rebuild the core:\n"
+            "  cd Rust && maturin build --release "
+            "--features pyo3/extension-module\n"
+            "  pip install --force-reinstall Rust/target/wheels/otrv4_core-*.whl")
+
+
 _LABEL_MEDIA = b"OTRv4+Voice/Media/v1"
 _LABEL_CONFIRM = b"OTRv4+Voice/Confirm/v1"
 _LABEL_RATCHET = b"OTRv4+Voice/Ratchet/v1"
+_LABEL_ENDPOINT = b"OTRv4+Voice/Endpoint/v1"
 _LABEL_AAD = b"OTRv4+Voice/AAD/v3"
 _LABEL_VERSION = b"OTRv4+Voice/v3"
 
 ROOT_LEN = 64
 MEDIA_KEY_LEN = 32
 CONFIRM_LEN = 32
+
+
+def _invalid_tag_type():
+    """The exception AESGCM.decrypt raises when a tag does not verify.
+
+    It is NOT a FrameError, so every AEAD failure was landing in the generic
+    handler and being counted as a plain drop: `authfail` only ever counted
+    the structural rejections above the cipher (wrong epoch, bad length,
+    sub-epoch too far). A tampered or mis-keyed frame -- the one event this
+    counter exists to report -- was invisible in it.
+    """
+    try:
+        from cryptography.exceptions import InvalidTag
+        return InvalidTag
+    except Exception:                      # pragma: no cover - no cryptography
+        class _NeverRaised(Exception):
+            pass
+        return _NeverRaised
+
+
+_INVALID_TAG = _invalid_tag_type()
 
 
 def _hkdf(ikm: bytes, salt: bytes, info: bytes, length: int) -> bytes:
@@ -568,20 +1268,21 @@ def _salt_for(transcript: bytes) -> bytes:
     return hashlib.sha512(_LABEL_SALT + transcript).digest()
 
 
-def derive_voice_root(x448_shared, mlkem_shared, transcript: bytes) -> bytearray:
-    """Hybrid root from the initial exchange.  Both secrets are mandatory."""
-    if not x448_shared or len(x448_shared) != 56:
-        raise ValueError("X448 shared secret must be 56 bytes")
-    if not mlkem_shared or len(mlkem_shared) != MLKEM_SS_LEN:
-        raise ValueError("ML-KEM shared secret must be %d bytes" % MLKEM_SS_LEN)
-    ikm = bytearray()
-    ikm += _lp(bytes(x448_shared))
-    ikm += _lp(bytes(mlkem_shared))
-    try:
-        return bytearray(_hkdf(bytes(ikm), _salt_for(transcript),
-                               _LABEL_INITIAL + transcript, ROOT_LEN))
-    finally:
-        _wipe(ikm)
+def derive_voice_root(x448_shared, mlkem_shared, transcript: bytes):
+    """Hybrid root from the initial exchange.  Both secrets are mandatory.
+
+    Returns a `RustVoiceRoot` handle, not bytes.  The root is the input every
+    media key for the epoch derives from, so a copy of it is a copy of every
+    key -- and it used to sit in a Python bytearray for the whole call.  It is
+    now derived inside Rust and never becomes a Python object at all.
+
+    The two shared secrets are consumed: Rust zeroes the caller's buffers
+    before returning, so the `finally: _wipe(...)` at the call sites is belt
+    and braces rather than the only wipe.
+    """
+    _require_rust_voice()
+    return _RustVoiceRoot.from_initial_agreement(x448_shared, mlkem_shared,
+                                                 transcript)
 
 
 def derive_rekey_root(old_root, x448_shared, mlkem_shared,
@@ -593,6 +1294,12 @@ def derive_rekey_root(old_root, x448_shared, mlkem_shared,
     ephemerals gains nothing, and one who holds only the old root is locked
     out by the fresh X448 and ML-KEM secrets.
     """
+    # A root handle chains inside Rust, where neither root is ever a Python
+    # object.  Raw bytes are still accepted for the tests that build a
+    # schedule from a fixed root.
+    if isinstance(old_root, _RustVoiceRoot):
+        return old_root.derive_rekey(bytes(x448_shared), bytes(mlkem_shared),
+                                     transcript)
     if not old_root or len(old_root) != ROOT_LEN:
         raise ValueError("old root must be %d bytes" % ROOT_LEN)
     if not x448_shared or len(x448_shared) != 56:
@@ -614,6 +1321,10 @@ def derive_media_key(root, call_id: bytes, epoch: int, direction: int) -> bytear
     """One directional AES-256-GCM key for one epoch."""
     if direction not in (DIR_INITIATOR, DIR_RESPONDER):
         raise ValueError("direction must be DIR_INITIATOR or DIR_RESPONDER")
+    if isinstance(root, _RustVoiceRoot):
+        raise TypeError(
+            "a media key cannot be extracted from a root handle -- that is "
+            "the point of the handle. Use root.make_cipher(...) instead.")
     info = (_LABEL_MEDIA + _lp(call_id) + _u64(epoch)
             + struct.pack(">B", direction))
     return bytearray(_hkdf(bytes(root), call_id, info, MEDIA_KEY_LEN))
@@ -626,9 +1337,47 @@ def derive_confirmations(root, call_id: bytes, epoch: int):
     one side cannot simply be reflected back to satisfy the other.  Each side
     computes both, transmits its own and checks the peer's.
     """
+    if isinstance(root, _RustVoiceRoot):
+        return root.confirmations(call_id, epoch)
     info = _LABEL_CONFIRM + _lp(call_id) + _u64(epoch)
     raw = _hkdf(bytes(root), call_id, info, CONFIRM_LEN * 2)
     return raw[:CONFIRM_LEN], raw[CONFIRM_LEN:]
+
+
+def derive_endpoint_tag(root, call_id: bytes, epoch: int, seq: int,
+                       destination: str, from_initiator: bool) -> bytes:
+    """Authenticate one media-endpoint announcement.
+
+    A peer whose local I2P session is replaced gets a new transient
+    destination, and the other side has to be told where to send. That
+    announcement travels the XMPP control channel, so arriving over it proves
+    nothing on its own: the same channel carries anything the server or a
+    peer's compromised account can put there.
+
+    The tag is derived from the committed epoch root, which exists only
+    because the hybrid X448 + ML-KEM agreement succeeded, so producing one
+    requires the media secret rather than access to the signalling path. It
+    is the same key hierarchy and the same construction as
+    derive_confirmations -- deliberately, because a second trust model for
+    endpoints would be a second thing to get wrong.
+
+    Everything that decides whether the announcement should be acted on is
+    inside the tag:
+
+      call_id      the exact call instance, so a tag cannot cross calls
+      epoch        the media generation, so it cannot outlive a rekey
+      seq          strictly increasing, so an older announcement cannot
+                   replace a newer endpoint or roll one back
+      destination  the endpoint itself, so it cannot be substituted
+      direction    which side sent it, so it cannot be reflected back
+    """
+    if isinstance(root, _RustVoiceRoot):
+        return root.endpoint_tag(call_id, epoch, seq, destination,
+                                 from_initiator)
+    info = (_LABEL_ENDPOINT + _lp(call_id) + _u64(epoch) + _u64(seq)
+            + _lp(destination.encode("ascii"))
+            + struct.pack(">B", 1 if from_initiator else 0))
+    return _hkdf(bytes(root), call_id, info, CONFIRM_LEN)
 
 
 def ratchet_key(key) -> bytearray:
@@ -662,17 +1411,22 @@ class VoiceKeyExchange:
     PUB_LEN = 56          # X448 public key
 
     def __init__(self, is_initiator: bool, kem=None):
-        from cryptography.hazmat.primitives.asymmetric import x448
-        from cryptography.hazmat.primitives import serialization
-
-        self._x448 = x448
-        self._ser = serialization
         self.is_initiator = bool(is_initiator)
         self._kem = kem if kem is not None else kem_provider()
 
-        self._private = x448.X448PrivateKey.generate()
-        self.public = self._private.public_key().public_bytes(
-            serialization.Encoding.Raw, serialization.PublicFormat.Raw)
+        # The X448 private scalar is Rust-owned as of v10.13.2.
+        #
+        # It was a `cryptography` X448PrivateKey: an OpenSSL object Python
+        # could neither wipe nor reach, so the one private value in the voice
+        # path with no cleanup at all.  `RustVoiceKex` holds it as
+        # `SecretBytes<56>`, zeroizes on drop, and is single-use -- an
+        # ephemeral scalar that has been offered to a peer is spent, and
+        # retrying with a different peer key is the shape of a small-subgroup
+        # probe.
+        _require_rust_voice()
+        self._kex = _RustVoiceKex()
+        self.public = bytes(self._kex.public)
+        self._private = self._kex        # legacy attribute name, same object
 
         # Initiator only: the ML-KEM keypair it will decapsulate with.
         self.mlkem_ek = b""
@@ -698,13 +1452,16 @@ class VoiceKeyExchange:
             raise ValueError("peer echoed our own X448 public key")
         if peer_public == b"\x00" * self.PUB_LEN:
             raise ValueError("peer sent an all-zero X448 public key")
+        # Every check that used to live here is now inside `raw_agree`: the
+        # reflection test, the all-zero peer key, the on-curve check, and the
+        # RFC 7748 requirement that a degenerate (all-zero) shared secret
+        # abort the exchange rather than be used.  They are repeated above
+        # anyway, because a check that runs twice costs nothing and a check
+        # that runs nowhere costs everything.
         try:
-            peer_key = self._x448.X448PublicKey.from_public_bytes(peer_public)
-            shared = bytearray(self._private.exchange(peer_key))
+            shared = bytearray(self._kex.agree(peer_public))
         finally:
             self._private = None
-        # X448 outputs all-zero for low-order input; RFC 7748 requires the
-        # exchange be aborted rather than the result used.
         if len(shared) != 56 or shared == bytearray(56):
             _wipe(shared)
             raise ValueError("degenerate X448 shared secret — aborting")
@@ -839,7 +1596,58 @@ class ReplayWindow:
 # ---------------------------------------------------------------------------
 
 class FrameError(ValueError):
-    """A media frame failed parsing, authentication or replay checks."""
+    """A media frame failed parsing, authentication or replay checks.
+
+    `reason` says WHICH, and that distinction is operational, not cosmetic.
+    Every rejection used to be counted as `auth_fail` unless its message text
+    happened to contain the word "replay", so a live call reporting
+    `authfail=87` could mean any of:
+
+      * the peer rekeyed and we have no key for the epoch it is sending on
+        (a state-machine problem, and the one that actually happened);
+      * a frame arrived from an epoch we have already retired (ordinary, and
+        expected around every rekey);
+      * a forged or corrupted frame failed its AES-256-GCM tag (an attack, or
+        a broken path);
+      * the header did not parse at all (a desynchronised byte stream).
+
+    Only the third is an authentication failure.  Reading them as one number
+    is what made the rekey divergence take a 69-minute call to notice.
+
+    Classifying a rejection does NOT soften it: every reason below still
+    discards the frame.  Nothing here accepts unauthenticated media.
+    """
+
+    #: Header did not parse: bad sync, version, type or length.
+    MALFORMED = "malformed"
+    #: We hold no cipher for the epoch the frame claims.  Usually means the
+    #: peer has moved ahead of us, or is behind and we have retired it.
+    NO_KEY = "no_key"
+    #: The epoch is one we hold, but the frame belongs to a retired sub-epoch.
+    RETIRED = "retired"
+    #: The counter has been seen, or is below the replay window.
+    REPLAY = "replay"
+    #: The AES-256-GCM tag did not verify.  This one is an attack signal.
+    AUTH = "auth"
+    #: Structurally valid, but not for this call.
+    FOREIGN = "foreign"
+
+    #: reason -> the counter in MEDIA_STAT_KEYS that owns it.
+    STAT_FOR_REASON = {
+        MALFORMED: "rej_malformed",
+        NO_KEY:    "rej_no_key",
+        RETIRED:   "rej_retired",
+        REPLAY:    "replay",
+        AUTH:      "auth_fail",
+        FOREIGN:   "foreign",
+    }
+
+    def __init__(self, message, reason=None):
+        super().__init__(message)
+        #: Defaults to MALFORMED so a raise site that forgets to classify is
+        #: counted as "we could not even parse it" rather than silently
+        #: inflating the authentication-failure count.
+        self.reason = reason or self.MALFORMED
 
 
 def pack_media_header(epoch: int, counter: int, length: int,
@@ -855,21 +1663,21 @@ def parse_media_header(raw: bytes):
     over the whole header verifies.
     """
     if len(raw) < VOICE_HDR_LEN:
-        raise FrameError("short header")
+        raise FrameError("short header", FrameError.MALFORMED)
     sync, version, ftype, epoch, counter, length = struct.unpack(
         VOICE_HDR_FMT, raw[:VOICE_HDR_LEN])
     if sync != VOICE_SYNC:
-        raise FrameError("bad sync byte")
+        raise FrameError("bad sync byte", FrameError.MALFORMED)
     if version != VOICE_PROTOCOL_VERSION:
-        raise FrameError("unsupported protocol version %d" % version)
+        raise FrameError("unsupported protocol version %d" % version, FrameError.MALFORMED)
     if ftype not in _FRAME_TYPES:
-        raise FrameError("unsupported frame type 0x%02x" % ftype)
+        raise FrameError("unsupported frame type 0x%02x" % ftype, FrameError.MALFORMED)
     # Mute, silence and speech are all AUDIO, so the field still says nothing
     # about what the microphone is doing. PING/PONG are the only exceptions
     # and they are the same 199 bytes on the same cadence, so an observer
     # learns that a probe happened, not anything about the conversation.
     if not (VOICE_MIN_FRAME <= length <= VOICE_MAX_FRAME):
-        raise FrameError("implausible sealed length %d" % length)
+        raise FrameError("implausible sealed length %d" % length, FrameError.MALFORMED)
     return epoch, counter, length, ftype
 
 
@@ -915,15 +1723,10 @@ class VoiceFrameCrypto:
     MAX_COUNTER = (1 << 62)
 
     def __init__(self, root, call_id: bytes, epoch: int, is_initiator: bool):
-        if not root or len(root) != ROOT_LEN:
-            raise ValueError("epoch root must be %d bytes" % ROOT_LEN)
         if not call_id or len(call_id) < 16:
             raise ValueError("call_id must be at least 16 bytes")
         if epoch < 0 or epoch >= (1 << 64):
             raise ValueError("epoch out of range")
-
-        from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-        self._AESGCM = AESGCM
 
         self.call_id = bytes(call_id)
         self.epoch = int(epoch)
@@ -931,69 +1734,79 @@ class VoiceFrameCrypto:
         self.send_dir = DIR_INITIATOR if is_initiator else DIR_RESPONDER
         self.recv_dir = DIR_RESPONDER if is_initiator else DIR_INITIATOR
 
-        self._send_key = derive_media_key(root, self.call_id, self.epoch,
-                                          self.send_dir)
-        self._send_gcm = AESGCM(bytes(self._send_key))
+        # The media keys live in Rust from here on.
+        #
+        # They used to be Python bytearrays, wiped on each ratchet step -- and
+        # then handed to OpenSSL as `AESGCM(bytes(key))`, an immutable copy
+        # that could not be wiped and that the AESGCM object kept anyway.  One
+        # such copy per direction per sub-epoch: about 276 of them over a
+        # 69-minute call, all waiting on the garbage collector.
+        #
+        # `RustVoiceCipher` holds the keys as `SecretBytes<32>`, rebuilds its
+        # AES-256-GCM instance from the one copy that exists, and zeroizes on
+        # drop.  There is no getter for a key and adding one would defeat it.
+        #
+        # The derivation is byte-identical -- same HKDF-SHA512, same labels,
+        # same length prefixes -- and `tests/test_voice_rust_parity.py` runs
+        # both implementations against each other to keep it that way.
+        _require_rust_voice()
+        self._rust = _as_root_handle(root).make_cipher(
+            self.call_id, self.epoch, self.is_initiator)
+
         self._send_counter = 0
-        self._send_sub = 0
-
-        self._recv_key = derive_media_key(root, self.call_id, self.epoch,
-                                          self.recv_dir)
-        self._recv_gcm = AESGCM(bytes(self._recv_key))
-        self._recv_sub = 0
-        self._recv_prev_key = None
-        self._recv_prev_gcm = None
-
         self._replay = ReplayWindow()
-        self.ratchet_steps = 0
         self.last_frame_type = FRAME_TYPE_AUDIO
         self._zeroized = False
 
-    # -- send -------------------------------------------------------------
+    @property
+    def _recv_sub(self) -> int:
+        """Receive-chain sub-epoch.  A counter, so it stays readable.
 
-    def _advance_send(self, sub: int) -> None:
-        while self._send_sub < sub:
-            new_key = ratchet_key(self._send_key)
-            _wipe(self._send_key)
-            self._send_key = new_key
-            self._send_sub += 1
-            self.ratchet_steps += 1
-        self._send_gcm = self._AESGCM(bytes(self._send_key))
+        Kept under the old private name because the security tests that
+        assert a forged frame cannot advance the chain were written against
+        it, and re-pointing them at a new name would have obscured that the
+        property is unchanged.
+        """
+        return int(self._rust.recv_sub)
+
+    @property
+    def _send_sub(self) -> int:
+        return int(self._rust.send_sub)
+
+    @property
+    def ratchet_steps(self) -> int:
+        """Sub-epoch advances, counted Rust-side where they happen."""
+        try:
+            return int(self._rust.ratchet_steps)
+        except Exception:
+            return 0
+
+    # -- send -------------------------------------------------------------
 
     def seal(self, plaintext: bytes, frame_type: int = FRAME_TYPE_AUDIO) -> bytes:
         """Encrypt one padded frame.  Returns the complete wire packet."""
         if self._zeroized:
-            raise FrameError("media cipher already zeroized")
+            raise FrameError("media cipher already zeroized",
+                             FrameError.NO_KEY)
         if self._send_counter >= self.MAX_COUNTER:
             raise FrameError("frame counter exhausted")
-
-        sub = self._send_counter // self.RATCHET_INTERVAL
-        if sub != self._send_sub:
-            self._advance_send(sub)
 
         counter = self._send_counter
         header = pack_media_header(self.epoch, counter, VOICE_SEALED_LEN,
                                    frame_type=frame_type)
         aad = media_aad(self.call_id, self.send_dir, header)
-        sealed = self._send_gcm.encrypt(media_nonce(self.epoch, counter),
-                                        plaintext, aad)
+        try:
+            _counter, sealed = self._rust.seal(plaintext, aad)
+        except RuntimeError as exc:
+            raise FrameError(str(exc), FrameError.NO_KEY)
+        except ValueError as exc:
+            raise FrameError(str(exc), FrameError.MALFORMED)
         if len(sealed) != VOICE_SEALED_LEN:
-            raise FrameError("sealed frame has the wrong length")
+            raise FrameError("sealed frame has the wrong length", FrameError.MALFORMED)
         self._send_counter += 1
         return header + sealed
 
     # -- receive ----------------------------------------------------------
-
-    def _advance_recv(self, sub: int) -> None:
-        while self._recv_sub < sub:
-            if self._recv_prev_key is not None:
-                _wipe(self._recv_prev_key)
-            self._recv_prev_key = self._recv_key
-            self._recv_prev_gcm = self._recv_gcm
-            self._recv_key = ratchet_key(self._recv_key)
-            self._recv_gcm = self._AESGCM(bytes(self._recv_key))
-            self._recv_sub += 1
-            self.ratchet_steps += 1
 
     def open(self, header: bytes, sealed: bytes) -> bytes:
         """Authenticate and decrypt one frame.
@@ -1002,47 +1815,35 @@ class VoiceFrameCrypto:
         replay test, then authentication, and only then any state mutation.
         A forged frame can neither push the ratchet forward nor consume a
         counter, because nothing commits until the tag verifies.
+
+        The sub-epoch handling moved into Rust with the keys; the speculative
+        advance is still speculative there, committing only after the frame
+        authenticates.  Everything above the AEAD -- header parsing, the
+        epoch check, the replay window -- stays here, because none of it
+        touches key material and all of it is already tested here.
         """
         if self._zeroized:
-            raise FrameError("media cipher already zeroized")
+            raise FrameError("media cipher already zeroized",
+                             FrameError.NO_KEY)
         epoch, counter, length, ftype = parse_media_header(header)
         if epoch != self.epoch:
             raise FrameError("frame epoch %d is not this cipher's epoch %d"
-                             % (epoch, self.epoch))
+                             % (epoch, self.epoch), FrameError.NO_KEY)
         if length != len(sealed):
-            raise FrameError("declared length does not match the frame")
+            raise FrameError("declared length does not match the frame", FrameError.MALFORMED)
         if self._replay.seen(counter):
-            raise FrameError("replayed or stale frame counter %d" % counter)
-
-        sub = counter // self.RATCHET_INTERVAL
-        if sub > self._recv_sub + self._MAX_SUBEPOCH_JUMP:
-            raise FrameError("sub-epoch too far ahead")
+            raise FrameError("replayed or stale frame counter %d" % counter, FrameError.REPLAY)
 
         aad = media_aad(self.call_id, self.recv_dir, header)
-        nonce = media_nonce(epoch, counter)
-
-        if sub == self._recv_sub:
-            plaintext = self._recv_gcm.decrypt(nonce, sealed, aad)
-        elif (sub == self._recv_sub - self._EPOCH_GRACE
-              and self._recv_prev_gcm is not None):
-            plaintext = self._recv_prev_gcm.decrypt(nonce, sealed, aad)
-        elif sub > self._recv_sub:
-            # Speculative: derive forward on a scratch copy and commit the
-            # ratchet only once the frame authenticates, so a forged frame
-            # cannot advance our chain and lock the genuine peer out.
-            probe = bytearray(self._recv_key)
-            try:
-                for _ in range(sub - self._recv_sub):
-                    nxt = ratchet_key(probe)
-                    _wipe(probe)
-                    probe = nxt
-                plaintext = self._AESGCM(bytes(probe)).decrypt(
-                    nonce, sealed, aad)
-            finally:
-                _wipe(probe)
-            self._advance_recv(sub)
-        else:
-            raise FrameError("frame from an expired sub-epoch")
+        try:
+            plaintext = self._rust.open(sealed, aad, counter)
+        except RuntimeError as exc:
+            raise FrameError(str(exc), FrameError.NO_KEY)
+        except ValueError as exc:
+            text = str(exc)
+            if "sub-epoch" in text:
+                raise FrameError(text, FrameError.RETIRED)
+            raise FrameError(text, FrameError.AUTH)
 
         # Committed only now, after authentication.
         self._replay.check_and_set(counter)
@@ -1058,13 +1859,12 @@ class VoiceFrameCrypto:
     def zeroize(self) -> None:
         """Destroy every key this epoch holds.  Idempotent, never raises."""
         self._zeroized = True
-        self._send_gcm = None
-        self._recv_gcm = None
-        self._recv_prev_gcm = None
-        for name in ("_send_key", "_recv_key", "_recv_prev_key"):
-            key = getattr(self, name, None)
-            if key is not None:
-                _wipe(key)
+        rust = getattr(self, "_rust", None)
+        if rust is not None:
+            try:
+                rust.zeroize()
+            except Exception:
+                pass
                 setattr(self, name, None)
 
 
@@ -1130,6 +1930,12 @@ class VoiceKeySchedule:
 
     RETAIN_EPOCHS = 1
     MAX_EPOCH = (1 << 63)
+    #: A responder that missed one or more REKEYCOMMITs is behind the
+    #: initiator and must be able to rejoin; a peer claiming to be
+    #: arbitrarily far ahead must not be able to make us derive forever.
+    #: Mirrors VOICE_REKEY_MAX_CATCHUP, which bounds the same jump at the
+    #: signalling layer.
+    MAX_CATCHUP = 64
 
     def __init__(self, call_id: bytes, is_initiator: bool):
         self.call_id = bytes(call_id)
@@ -1155,6 +1961,13 @@ class VoiceKeySchedule:
     def pending_epoch(self):
         return None if self._pending is None else self._pending["epoch"]
 
+    @property
+    def pending_age(self):
+        """Seconds since the pending epoch was derived, or None if idle."""
+        if self._pending is None:
+            return None
+        return max(0.0, time.monotonic() - self._pending["started"])
+
     def current_root(self):
         """The committed root.  Internal: callers must not retain it."""
         if self._root is None:
@@ -1176,13 +1989,11 @@ class VoiceKeySchedule:
         """Commit epoch 0.  Returns (confirm_initiator, confirm_responder)."""
         if self._root is not None:
             raise RuntimeError("initial epoch already installed")
-        if len(root) != ROOT_LEN:
-            raise ValueError("root must be %d bytes" % ROOT_LEN)
-        self._root = bytearray(root)
+        self._root = _as_root_handle(root)
         self._epoch = 0
         self._ciphers[0] = VoiceFrameCrypto(self._root, self.call_id, 0,
                                             self.is_initiator)
-        return derive_confirmations(self._root, self.call_id, 0)
+        return self._root.confirmations(self.call_id, 0)
 
     # -- rekey ------------------------------------------------------------
 
@@ -1193,20 +2004,24 @@ class VoiceKeySchedule:
         """
         if self._root is None:
             raise RuntimeError("cannot rekey before the initial agreement")
-        if epoch != self._epoch + 1:
+        if epoch <= self._epoch:
+            # The epoch counter only ever moves forward.  Re-deriving one we
+            # already hold would replace a key the peer may still be using.
             raise ValueError(
-                "rekey epoch must be exactly current+1 (%d), got %d"
-                % (self._epoch + 1, epoch))
+                "rekey epoch must be ahead of the committed one (%d), got %d"
+                % (self._epoch, epoch))
+        if epoch > self._epoch + self.MAX_CATCHUP:
+            # A gap this large is not a peer that missed a few commits.
+            raise ValueError(
+                "rekey epoch %d is more than %d ahead of %d"
+                % (epoch, self.MAX_CATCHUP, self._epoch))
         if epoch >= self.MAX_EPOCH:
             raise ValueError("epoch space exhausted")
         if self._pending is not None:
             raise RuntimeError("a rekey is already pending for epoch %d"
                                % self._pending["epoch"])
-        if len(root) != ROOT_LEN:
-            raise ValueError("root must be %d bytes" % ROOT_LEN)
-
-        pending_root = bytearray(root)
-        confirms = derive_confirmations(pending_root, self.call_id, epoch)
+        pending_root = _as_root_handle(root)
+        confirms = pending_root.confirmations(self.call_id, epoch)
 
         # Build the pending cipher NOW and register it for RECEIVE, while
         # leaving _epoch alone so we keep sending on the committed epoch.
@@ -1230,7 +2045,8 @@ class VoiceKeySchedule:
                                           self.is_initiator)
         self._ciphers[epoch] = pending_cipher
         self._pending = {"epoch": epoch, "root": pending_root,
-                         "confirms": confirms, "cipher": pending_cipher}
+                         "confirms": confirms, "cipher": pending_cipher,
+                         "started": time.monotonic()}
         return confirms
 
     def expected_peer_confirm(self) -> bytes:
@@ -1258,7 +2074,9 @@ class VoiceKeySchedule:
             return False
         expected = self.expected_peer_confirm()
         if not hmac.compare_digest(bytes(peer_confirm or b""), expected):
-            self.abort_rekey()
+            # A tag that does not verify is evidence, not silence: nothing
+            # legitimate will ever be encrypted under this root.
+            self.abort_rekey(discard_receive=True)
             return False
 
         pending = self._pending
@@ -1270,22 +2088,45 @@ class VoiceKeySchedule:
             cipher = VoiceFrameCrypto(pending["root"], self.call_id, epoch,
                                       self.is_initiator)
         self._ciphers[epoch] = cipher
-        _wipe(self._root)
+        self._root.zeroize()
         self._root = pending["root"]
         self._epoch = epoch
         self.rekeys_committed += 1
         self._retire_old_epochs()
         return True
 
-    def abort_rekey(self) -> None:
-        """Discard pending material.  Idempotent."""
+    def abort_rekey(self, discard_receive: bool = False) -> None:
+        """Stop sending on the pending epoch.  Idempotent.
+
+        `discard_receive` decides whether the pending cipher is also removed
+        from the RECEIVE set, and the distinction is the whole point.
+
+        A rekey can end for two very different reasons.
+
+        *The peer's confirmation tag did not verify.*  That is evidence: the
+        material is wrong, or the message was forged.  Nothing legitimate
+        will ever be encrypted under that root, so the cipher goes -- pass
+        `discard_receive=True`.
+
+        *Nothing arrived before the timeout, or a newer REKEY superseded it.*
+        That is the ABSENCE of evidence, and treating it as failure is what
+        broke long calls.  The initiator commits the moment the responder's
+        tag verifies and only then sends REKEYCOMMIT; if that message is lost
+        the initiator is already SENDING on the new epoch while the responder
+        still has it merely pending.  A responder that then discarded the
+        receive cipher could no longer decrypt anything the peer sent, and
+        every frame landed in `auth_fail` -- one-way audio that reads exactly
+        like a broken tunnel.  So by default the receive cipher STAYS, under
+        the normal retirement policy, and only the intent to send is dropped.
+
+        Retaining it costs nothing: a frame still has to pass its AEAD tag,
+        and `_retire_old_epochs` drops the key once the epoch moves on.
+        """
         if self._pending is None:
             return
-        _wipe(self._pending["root"])
+        self._pending["root"].zeroize()
         cipher = self._pending.get("cipher")
-        if cipher is not None:
-            # Registered for receive by begin_rekey; a failed rekey must take
-            # it back out so a stale epoch cannot keep decrypting.
+        if cipher is not None and discard_receive:
             self._ciphers.pop(self._pending["epoch"], None)
             cipher.zeroize()
         self._pending = None
@@ -1306,7 +2147,7 @@ class VoiceKeySchedule:
     def zeroize(self) -> None:
         """Destroy every root and cipher.  Idempotent, never raises."""
         try:
-            self.abort_rekey()
+            self.abort_rekey(discard_receive=True)
         except Exception:
             self._pending = None
         for epoch in list(self._ciphers):
@@ -1315,7 +2156,7 @@ class VoiceKeySchedule:
             except Exception:
                 self._ciphers.pop(epoch, None)
         if self._root is not None:
-            _wipe(self._root)
+            self._root.zeroize()
             self._root = None
         self._epoch = -1
 
@@ -1339,7 +2180,10 @@ class JitterBuffer:
 
     def __init__(self, prefill=VOICE_JITTER_PREFILL, maxlen=VOICE_JITTER_MAX,
                  late_tolerance=VOICE_JITTER_LATE_TOLERANCE,
-                 drift_high=VOICE_JITTER_DRIFT_HIGH, adaptive=True):
+                 drift_high=VOICE_JITTER_DRIFT_HIGH, adaptive=True,
+                 shed_margin=VOICE_JITTER_SHED_MARGIN,
+                 safety_factor=VOICE_JITTER_SAFETY_FACTOR,
+                 drain_ms=VOICE_JITTER_DRAIN_MS):
         import heapq
         self._heapq = heapq
         self._heap = []
@@ -1349,6 +2193,13 @@ class JitterBuffer:
         self._maxlen = int(maxlen)
         self._late_tolerance = int(late_tolerance)
         self._drift_high = max(int(prefill) + 1, int(drift_high))
+        self._shed_margin = max(1, int(shed_margin))
+        self._safety_factor = float(safety_factor)
+        # Pops needed to return to target after a burst. Proportional
+        # shedding divides the excess across this many pops, so convergence
+        # takes the same wall-clock time whether the burst was 5 frames or
+        # 50.
+        self._drain_pops = max(1, int(drain_ms) // max(1, VOICE_FRAME_MS))
         self._primed = False
         self._last_played = -1
 
@@ -1361,8 +2212,22 @@ class JitterBuffer:
         self._jitter_est = 0.0          # seconds, RFC 3550 style smoothing
         self._last_arrival = None
         self._last_seq = None
+        # depth_min/depth_max are held across a reporting window, like the
+        # level meters: an instantaneous depth says nothing about whether the
+        # buffer is stable or swinging between empty and full.
+        self._depth_min = None
+        self._depth_max = 0
+        # Inter-arrival spacing. The smoothed estimate above drives the
+        # target; this records the distribution behind it, because a mean
+        # deviation cannot distinguish a steadily late path from a punctual
+        # one with a long tail, and only the second is worth buffering for.
+        self.spacing = Percentiles()
+        #: Measured arrival-to-playout dwell per frame. This is the jitter
+        #: buffer's real contribution to mouth-to-ear delay.
+        self.dwell = Percentiles()
         self.stats = {"queued": 0, "late": 0, "duplicate": 0,
-                      "overflow": 0, "gaps": 0, "drift": 0}
+                      "overflow": 0, "gaps": 0, "drift": 0,
+                      "underrun": 0, "burst_drain": 0}
 
     @staticmethod
     def sequence(epoch: int, counter: int) -> int:
@@ -1385,10 +2250,9 @@ class JitterBuffer:
             D = (arrival_delta) - (expected_delta)
             J += (|D| - J) / 16
 
-        The target is three standard-ish deviations of that, plus one frame of
-        slack, clamped so it can never collapse below the floor or run away to
-        the hard cap. Three is the usual choice: it absorbs nearly every
-        spike without paying for the very worst one permanently.
+        The target is VOICE_JITTER_SAFETY_FACTOR deviations of that, plus one
+        frame of slack, clamped so it can never collapse below the floor or
+        run away to the hard cap.
         """
         if not self._adaptive:
             return
@@ -1398,12 +2262,17 @@ class JitterBuffer:
                 expected = seq_delta * (FRAME_INTERVAL_S)
                 observed = now - self._last_arrival
                 d = abs(observed - expected)
+                self.spacing.add(observed * 1000.0)
                 self._jitter_est += (d - self._jitter_est) / 16.0
-                frames = (3.0 * self._jitter_est) / FRAME_INTERVAL_S
+                frames = ((self._safety_factor * self._jitter_est)
+                          / FRAME_INTERVAL_S)
                 self._target = max(
                     float(self._prefill),
                     min(float(self._drift_high), frames + 1.0))
-        if seq > (self._last_seq or -1):
+        # `self._last_seq or -1` treated a legitimate sequence 0 as -1, since
+        # 0 is falsy. sequence(0, 0) is exactly 0, so the first frame of a
+        # call hit it every time.
+        if self._last_seq is None or seq > self._last_seq:
             self._last_arrival = now
             self._last_seq = seq
 
@@ -1420,9 +2289,11 @@ class JitterBuffer:
         seq = self.sequence(epoch, counter)
         with self._lock:
             self._observe_arrival(seq, time.monotonic())
-            if seq <= self._last_played - self._late_tolerance:
-                self.stats["late"] += 1
-                return False
+            # Anything at or before the last frame played is late by
+            # definition -- playout cannot be undone -- so there is no
+            # tolerance to apply. The guard that tried to
+            # (seq <= last_played - late_tolerance) was strictly subsumed by
+            # this one and never changed an outcome.
             if seq <= self._last_played:
                 self.stats["late"] += 1
                 return False
@@ -1433,13 +2304,18 @@ class JitterBuffer:
                 # Playout is behind.  Drop the OLDEST rather than the newest:
                 # stale audio is worthless and keeping it only grows latency.
                 try:
-                    stale_seq, stale_pcm = self._heapq.heappop(self._heap)
+                    stale_seq, stale_pcm, _t = self._heapq.heappop(self._heap)
                     self._seqs.discard(stale_seq)
                     _wipe(stale_pcm)
                 except Exception:
                     pass
                 self.stats["overflow"] += 1
-            self._heapq.heappush(self._heap, (seq, pcm))
+            # Arrival time rides with the frame so dwell is measured per
+            # frame rather than inferred from depth. Depth times frame
+            # duration assumes playout is running exactly on time, and the
+            # moment that assumption breaks is precisely when the number
+            # matters.
+            self._heapq.heappush(self._heap, (seq, pcm, time.monotonic()))
             self._seqs.add(seq)
             self.stats["queued"] += 1
             return True
@@ -1459,6 +2335,7 @@ class JitterBuffer:
                 # Re-arm the cushion: resuming instantly after a stall makes
                 # the next burst choppy.
                 self._primed = False
+                self.stats["underrun"] += 1
                 return None
 
             # Shed the oldest while we are above the latency ceiling. One
@@ -1468,19 +2345,55 @@ class JitterBuffer:
             # Shed against the adaptive target rather than a fixed ceiling,
             # so a call that starts on a congested path and then settles gets
             # its latency back instead of carrying the bad minute all night.
-            # Margin of at least 4 frames (160 ms) beyond target before we
-            # reclaim anything. Proportional-to-prefill was too tight on a
-            # small cushion: four frames arriving out of order looked like
-            # accumulated latency and the oldest got shed, reordering the
-            # audio it was there to fix.
-            if len(self._heap) > self.target_depth + max(self._prefill, 4):
-                stale_seq, stale_pcm = self._heapq.heappop(self._heap)
-                self._seqs.discard(stale_seq)
-                _wipe(stale_pcm)
-                self.stats["drift"] += 1
+            #
+            # This threshold IS the call's steady-state latency: arrivals and
+            # playout run at the same rate, so nothing else pulls the buffer
+            # down and it settles exactly here. That makes the margin a
+            # latency decision, not a tuning detail, which is why it is
+            # expressed in milliseconds rather than in frames.
+            excess = len(self._heap) - (self.target_depth + self._shed_margin)
+            if excess > 0:
+                # Proportional, not one-per-pop. One-per-pop drains at exactly
+                # the playout rate, so a 30-frame burst spent 1.5 s at high
+                # latency before recovering -- and every one of those frames
+                # was played late. Dividing the excess across _drain_pops
+                # makes recovery time independent of burst size.
+                #
+                # Discarding is correct here rather than regrettable: a frame
+                # this far back in the queue is already past the point where
+                # it could have been played in sequence, and the gap counter
+                # below hands it to concealment.
+                shed = max(1, -(-excess // self._drain_pops))
+                shed = min(shed, len(self._heap) - 1)
+                for _ in range(max(0, shed)):
+                    stale_seq, stale_pcm, _t = self._heapq.heappop(self._heap)
+                    self._seqs.discard(stale_seq)
+                    _wipe(stale_pcm)
+                    self.stats["drift"] += 1
+                    # Do NOT let our own shedding look like transit loss.
+                    #
+                    # `gap` below is computed from the sequence numbers, so a
+                    # shed frame left a hole and the playback worker answered
+                    # it with FEC or concealment -- writing TWO frames to the
+                    # device for one pop. Each write blocks about a frame
+                    # period, so the pop rate halved, the buffer grew, and the
+                    # shedder fired harder: measured at 13.0 pops/s against
+                    # 16.2 arriving, shedding 19.8% and synthesising
+                    # replacements for the very frames it had just discarded.
+                    #
+                    # Concealment exists for frames that never arrived. These
+                    # arrived and were dropped deliberately to cut latency, so
+                    # spending more device time reconstructing them is exactly
+                    # backwards. Advancing the marker says "consumed, not
+                    # lost".
+                    if stale_seq > self._last_played:
+                        self._last_played = stale_seq
+                if shed > 1:
+                    self.stats["burst_drain"] += 1
 
-            seq, pcm = self._heapq.heappop(self._heap)
+            seq, pcm, arrived = self._heapq.heappop(self._heap)
             self._seqs.discard(seq)
+            self.dwell.add((time.monotonic() - arrived) * 1000.0)
             gap = 0
             if self._last_played >= 0:
                 gap = max(0, seq - self._last_played - 1)
@@ -1491,14 +2404,27 @@ class JitterBuffer:
 
     def depth(self) -> int:
         with self._lock:
-            return len(self._heap)
+            depth = len(self._heap)
+            self._depth_max = max(self._depth_max, depth)
+            self._depth_min = (depth if self._depth_min is None
+                               else min(self._depth_min, depth))
+            return depth
+
+    def sample_depth(self):
+        """Latch (min, max) depth for the window and start a new one."""
+        with self._lock:
+            lo = 0 if self._depth_min is None else self._depth_min
+            hi = self._depth_max
+            self._depth_min = None
+            self._depth_max = len(self._heap)
+            return lo, hi
 
     def clear(self) -> None:
         """Wipe and discard everything queued.  Never raises."""
         with self._lock:
             while self._heap:
                 try:
-                    _, pcm = self._heapq.heappop(self._heap)
+                    _, pcm, _t = self._heapq.heappop(self._heap)
                     _wipe(pcm)
                 except Exception:
                     break
@@ -1547,6 +2473,112 @@ def unpad_opus(plain: bytes) -> bytes:
 # Control-plane rate limiting
 # ---------------------------------------------------------------------------
 
+class Percentiles:
+    """Bounded sample window with percentile readout.
+
+    A mean hides exactly what matters for real-time media. A path that
+    delivers at 60 ms with a 900 ms tail and one that delivers steadily at
+    120 ms have similar means and completely different conversations; the
+    tail is what sets the jitter buffer and therefore the delay. p95 and p99
+    are the numbers to engineer against.
+
+    Fixed window rather than all-time: a bad first minute must not describe
+    the call for the next ten.
+    """
+
+    __slots__ = ("_samples", "_n")
+
+    def __init__(self, window=512):
+        import collections
+        self._samples = collections.deque(maxlen=int(window))
+        self._n = 0
+
+    def add(self, value: float) -> None:
+        self._samples.append(float(value))
+        self._n += 1
+
+    def __len__(self) -> int:
+        return len(self._samples)
+
+    def percentile(self, q: float) -> float:
+        if not self._samples:
+            return 0.0
+        ordered = sorted(self._samples)
+        if len(ordered) == 1:
+            return ordered[0]
+        # Nearest-rank. With a few hundred samples the interpolation choice
+        # is noise, and nearest-rank never invents a value between two real
+        # observations.
+        idx = int(round(q * (len(ordered) - 1)))
+        return ordered[max(0, min(idx, len(ordered) - 1))]
+
+    def summary(self, scale=1.0, unit="ms") -> str:
+        if not self._samples:
+            return "n=0"
+        return ("n=%d p50=%.0f p95=%.0f p99=%.0f max=%.0f%s"
+                % (len(self._samples),
+                   self.percentile(0.50) * scale,
+                   self.percentile(0.95) * scale,
+                   self.percentile(0.99) * scale,
+                   max(self._samples) * scale, unit))
+
+    def clear(self) -> None:
+        self._samples.clear()
+
+
+class StageTimers:
+    """Per-stage pipeline timings, in milliseconds, with percentiles.
+
+    The question this exists to answer: a 700-1000 ms one-way reading is
+    either I2P or it is us, and the aggregate number cannot tell them apart.
+    The send stamp goes on right after Opus encode and is read right after
+    AEAD decrypt, so everything between -- seal, the hop to the event loop,
+    the wait for the loop to run the callback, sendto, I2P, receive, verify
+    -- is inside that one figure.
+
+    Timing every stage separately makes the split explicit. If `queue` is
+    300 ms then a third of the one-way delay is our own scheduling and no
+    amount of I2P tuning will touch it. If `queue` is 2 ms then the path
+    really is that slow and the only lever left is the jitter buffer.
+
+    Cheap enough for the real-time path: a monotonic read and a deque append
+    per stage per frame, at 16.7 frames/s.
+    """
+
+    #: Stages, in pipeline order.
+    NAMES = ("encode", "seal", "queue", "decrypt", "dwell", "decode",
+             "conv", "write", "play")
+
+    def __init__(self, window=256):
+        self.t = {name: Percentiles(window) for name in self.NAMES}
+
+    def record(self, name: str, seconds: float) -> None:
+        bucket = self.t.get(name)
+        if bucket is not None and seconds >= 0.0:
+            bucket.add(seconds * 1000.0)
+
+    def record_since(self, name: str, start: float) -> None:
+        self.record(name, time.monotonic() - start)
+
+    def summary(self) -> str:
+        parts = []
+        for name in self.NAMES:
+            bucket = self.t[name]
+            if len(bucket):
+                parts.append("%s %.1f/%.1f" % (name,
+                                               bucket.percentile(0.50),
+                                               bucket.percentile(0.95)))
+        return " ".join(parts) if parts else "no samples"
+
+    def local_send_ms(self, q=0.50) -> float:
+        """What the sender adds inside the one-way figure."""
+        return (self.t["seal"].percentile(q) + self.t["queue"].percentile(q))
+
+    def pipeline_ms(self, q=0.50) -> float:
+        """Everything this device adds, both directions, excluding network."""
+        return sum(self.t[n].percentile(q) for n in self.NAMES)
+
+
 class LatencyTracker:
     """RTT and one-way latency over the media stream.
 
@@ -1592,6 +2624,10 @@ class LatencyTracker:
         # entirely by the ping/pong offset calculation, so it costs nothing.
         self._base = int.from_bytes(secrets.token_bytes(4), "big")
         self._rtt = collections.deque(maxlen=self.RTT_WINDOW)
+        #: Every RTT sample of the call, for the tail. The rolling median
+        #: above is what the buffer reacts to; this is what a benchmark
+        #: reports.
+        self.rtt_pct = Percentiles()
         self._oneway = collections.deque(maxlen=self.ONEWAY_WINDOW)
         self._pending = {}                 # ping_id -> t1
         self._offset_ms = None             # peer clock minus ours
@@ -1673,6 +2709,7 @@ class LatencyTracker:
             if rtt < 0 or rtt > 120000:
                 return False               # implausible; drop rather than skew
             self._rtt.append(rtt)
+            self.rtt_pct.add(rtt)
             self._offset_ms = ((t2 - t1) + (t3 - t4)) / 2.0
             self.answered += 1
         return True
@@ -1717,9 +2754,11 @@ class LatencyTracker:
 
     def summary(self) -> str:
         rtt, ow = self.rtt_ms, self.oneway_ms
+        # Only the one-way figure is banded. RTT is a diagnostic; one-way is
+        # the half of it the listener actually waits through.
         return "rtt=%s oneway=%s" % (
             "%.0fms" % rtt if rtt is not None else "-",
-            "%.0fms" % ow if ow is not None else "-")
+            colour_latency(ow))
 
 
 class RateLimiter:
@@ -1791,6 +2830,30 @@ class RateLimiter:
 # Call session
 # ---------------------------------------------------------------------------
 
+#: Every media counter, in one place. Test doubles build their stats from
+#: here rather than restating the keys, so adding a counter cannot leave a
+#: fake behind with a KeyError.
+MEDIA_STAT_KEYS = (
+    "sent", "recv", "dropped", "late", "oversize", "backpressure",
+    "auth_fail", "replay", "resync", "fec_recovered", "stale", "foreign",
+    # Rejection causes, split out at v10.13.1.  `auth_fail` used to absorb
+    # all of these, so "authfail=87" could equally mean a forged frame or a
+    # peer that had rekeyed ahead of us.  Only `auth_fail` is now an
+    # authentication failure; the others are state, not attack.
+    "rej_no_key", "rej_retired", "rej_malformed",
+    # Raw arrivals, counted before every filter. Without this, recv=0 with
+    # every rejection counter also at 0 is ambiguous: nothing arrived, or
+    # things arrived and were discarded on a path that counts nothing. The
+    # live failure produced exactly that reading and could not be classified
+    # from it.
+    "dgram_in", "dgram_empty", "dgram_closed",
+)
+
+
+def new_media_stats() -> dict:
+    return {name: 0 for name in MEDIA_STAT_KEYS}
+
+
 class VoiceCallSession:
     """One encrypted call carried over a single bidirectional SAM stream.
 
@@ -1849,9 +2912,49 @@ class VoiceCallSession:
         self._mlkem_ct = None              # responder's ciphertext (transcript)
         self._rekey_kex = None
         self._rekey_waiter = None          # (epoch, Future) while in flight
+        # (epoch, confirm_hex) of the last REKEYCOMMIT we sent.  Initiator
+        # only; retransmitted with the next REKEY so a lost commit cannot
+        # strand the responder an epoch behind for the rest of the call.
+        # The tag is a public MAC output that already travelled the wire.
+        self._last_rekey_commit = None
 
         self._sam_control = None
+        #: Control sockets whose SESSION CREATE is still in flight. The
+        #: create runs in an executor, so cancelling the coroutine that
+        #: awaits it does NOT stop the thread: it finishes, returns a live
+        #: socket to a caller that has gone, and the router-side session
+        #: stays open for the life of the process. Publishing the socket the
+        #: moment it exists is what makes it reclaimable.
+        self._sam_pending = []
         self._sam_session_id = None
+        self._transport_mode = voice_transport_mode()
+        self._dgram_sock = None          # our bound UDP receive socket
+        self._dgram_transport = None     # asyncio datagram transport
+        self._dgram_send_addr = None     # (host, port) of the SAM UDP bridge
+        self._dgram_send_header = None   # cached "3.0 <session> <dest>\n"
+        self._foreign_warned = False
+        #: Pipeline stage timings. See StageTimers -- this is what separates
+        #: "I2P is slow" from "we are slow" inside the one-way figure.
+        self.stages = StageTimers()
+        # Level control. Two devices on one call measured 4090 and 31226 for
+        # the same microphone self-test, so the far end heard one of them as
+        # a quiet, thin call regardless of the codec settings.
+        self._mic_gain = _audio.make_mic_gain()
+        self._speaker_gain = _audio.make_speaker_gain()
+        # Compression before gain. Peak gain cannot make a call loud: speech
+        # has a 12-18 dB crest factor, so playback measured 24422 of 32767 --
+        # 2.5 dB from full scale -- and was still described as barely
+        # audible. There was no headroom left to turn up because the peaks
+        # were never the problem; the quiet parts were.
+        self._mic_comp = _audio.make_mic_compressor()
+        self._speaker_comp = _audio.make_speaker_compressor()
+        # Ahead of the compressor, not after it. Measured on speech with a
+        # 60 Hz rumble: the high-pass takes level the compressor was turning
+        # the whole frame down for, and the presence lift puts the consonant
+        # band back that a loudness compressor flattens. Speech RMS goes
+        # -16.0 -> -13.9 dBFS at an unchanged -1.0 dBFS peak, and the 1-4 kHz
+        # share of energy 0.348 -> 0.421. Louder voice, same headroom.
+        self._speech_clarity = _audio.make_speech_clarity()
         self._our_dest = None
         self._media_sock = None
         self._accept_sock = None
@@ -1870,6 +2973,30 @@ class VoiceCallSession:
         self._capture_thread = None
         self._playback_thread = None
         self._reader_task = None
+        self._rx_watchdog_task = None
+        self._rx_last_datagram = None   # monotonic: anything at the socket
+        self._rx_last_frame = None      # monotonic: anything that authenticated
+        self._rx_degraded = False       # a warning is outstanding
+        #: Media-endpoint announcements. Both counters are per call, so they
+        #: cannot be carried into the call that replaces this one.
+        self._endpoint_seq_sent = 0     # last sequence we announced
+        self._endpoint_seq_seen = 0     # highest we have accepted
+        #: Authenticated inbound frames, and the reading taken when the media
+        #: path was last rebuilt. A rebuild resets the liveness clock so the
+        #: new path gets a fair chance, which means the clock alone cannot
+        #: distinguish "media resumed" from "we just reset the clock" -- only
+        #: this counter moving past the mark proves anything arrived.
+        self._rx_authenticated = 0
+        self._rx_mark = 0
+        self._recover_task = None
+        self._recover_attempts = 0
+        self._recovering = False        # a rebuild is genuinely in flight
+        #: The endpoint was replaced but the peer was never told, because the
+        #: control plane was down when the announcement went out. Rebuilding
+        #: again would destroy a second endpoint for nothing; what is missing
+        #: is the announcement, so that is what gets retried.
+        self._endpoint_announce_pending = False
+        self.on_media_stalled = None    # set by the manager, call_id-bound
         self._accept_task = None
         self._prewarm = None
 
@@ -1883,9 +3010,7 @@ class VoiceCallSession:
         self._loss_signalled = False
         self.debug_binding = False
 
-        self.stats = {"sent": 0, "recv": 0, "dropped": 0, "late": 0,
-                      "oversize": 0, "backpressure": 0, "auth_fail": 0,
-                      "replay": 0, "resync": 0, "fec_recovered": 0}
+        self.stats = new_media_stats()
 
     # -- state machine ----------------------------------------------------
 
@@ -1948,10 +3073,9 @@ class VoiceCallSession:
             _wipe(kem_ss)
             self.kex.destroy()
 
-        try:
-            confirm_i, confirm_r = self.schedule.install_initial(root)
-        finally:
-            _wipe(root)
+        # The schedule owns the handle from here; zeroize() on teardown is
+        # what destroys it, so there is nothing to wipe locally.
+        confirm_i, confirm_r = self.schedule.install_initial(root)
 
         self._mlkem_ct = mlkem_ct
         self._peer_x448 = peer_x448_pub
@@ -1981,10 +3105,9 @@ class VoiceCallSession:
             _wipe(kem_ss)
             self.kex.destroy()
 
-        try:
-            confirm_i, confirm_r = self.schedule.install_initial(root)
-        finally:
-            _wipe(root)
+        # The schedule owns the handle from here; zeroize() on teardown is
+        # what destroys it, so there is nothing to wipe locally.
+        confirm_i, confirm_r = self.schedule.install_initial(root)
 
         self._mlkem_ct = mlkem_ct
         self._peer_x448 = peer_x448_pub
@@ -2050,12 +3173,13 @@ class VoiceCallSession:
             transcript = self._transcript(epoch, peer_x448_pub, kex.public,
                                           peer_mlkem_ek, mlkem_ct)
             with self._key_lock:
-                new_root = derive_rekey_root(self.schedule.current_root(), x_ss,
-                                             kem_ss, transcript)
-                try:
-                    self.schedule.begin_rekey(epoch, new_root)
-                finally:
-                    _wipe(new_root)
+                # derive_rekey chains inside Rust: neither the old root nor
+                # the new one is ever a Python object.  The schedule takes
+                # ownership of the handle, so there is nothing left here to
+                # wipe -- abort_rekey and commit_rekey zeroize it.
+                new_root = self.schedule.current_root().derive_rekey(
+                    x_ss, kem_ss, transcript)
+                self.schedule.begin_rekey(epoch, new_root)
                 our_confirm = self.schedule.our_confirm()
         finally:
             _wipe(x_ss)
@@ -2080,12 +3204,9 @@ class VoiceCallSession:
             transcript = self._transcript(epoch, kex.public, peer_x448_pub,
                                           kex.mlkem_ek, mlkem_ct)
             with self._key_lock:
-                new_root = derive_rekey_root(self.schedule.current_root(), x_ss,
-                                             kem_ss, transcript)
-                try:
-                    self.schedule.begin_rekey(epoch, new_root)
-                finally:
-                    _wipe(new_root)
+                new_root = self.schedule.current_root().derive_rekey(
+                    x_ss, kem_ss, transcript)
+                self.schedule.begin_rekey(epoch, new_root)
                 return (self.schedule.our_confirm(),
                         self.schedule.expected_peer_confirm())
         finally:
@@ -2096,31 +3217,66 @@ class VoiceCallSession:
         with self._key_lock:
             return self.schedule.commit_rekey(epoch, peer_confirm)
 
-    def abort_rekey(self) -> None:
+    def abort_rekey(self, discard_receive: bool = False) -> None:
         with self._key_lock:
-            self.schedule.abort_rekey()
+            self.schedule.abort_rekey(discard_receive=discard_receive)
 
     # -- SAM transport ----------------------------------------------------
 
-    async def create_session(self) -> str:
-        """Create a TRANSIENT SAM session.  Returns our base64 destination."""
+    async def create_session(self, session_timeout=None) -> str:
+        """Create a TRANSIENT SAM session.  Returns our base64 destination.
+
+        ``session_timeout`` bounds the blocking SESSION STATUS read. Recovery
+        passes its own budget so the executor thread cannot outlive the
+        deadline its caller is held to.
+        """
+        if session_timeout is None:
+            session_timeout = SAM_SESSION_TIMEOUT
         sam_open = _HOST["sam_open"]
         sam_read_line = _HOST["sam_read_line"]
         sam_parse = _HOST["sam_parse"]
         if not all((sam_open, sam_read_line, sam_parse)):
             raise RuntimeError("SAM helpers not bound — call bind_host()")
 
+        # In datagram mode the router forwards inbound datagrams to a UDP
+        # port of our choosing, so the socket has to exist -- and its port be
+        # known -- before SESSION CREATE is sent.
+        forward_port = 0
+        if self._transport_mode == VOICE_TRANSPORT_DATAGRAM:
+            try:
+                forward_port = self._bind_datagram_socket()
+            except Exception as exc:
+                _print("[voice] datagram transport unavailable (%s); "
+                       "falling back to the stream transport"
+                       % _san(str(exc), 120))
+                self._transport_mode = VOICE_TRANSPORT_STREAM
+
         def _create():
             ctrl = sam_open(self.sam_host, self.sam_port, SAM_HELLO_TIMEOUT)
+            # Reachable from the session before the blocking read starts, so
+            # a cancelled await cannot strand it.
+            self._sam_pending.append(ctrl)
             try:
                 session_id = "otrv4voice_%s" % secrets.token_hex(6)
-                ctrl.sendall(
-                    ("SESSION CREATE STYLE=STREAM ID=%s "
-                     "DESTINATION=TRANSIENT SIGNATURE_TYPE=7\n"
-                     % session_id).encode("ascii"))
+                if self._transport_mode == VOICE_TRANSPORT_DATAGRAM:
+                    # STYLE=DATAGRAM is repliable: the sender's destination
+                    # arrives with every packet, which gives a cheap pre-AEAD
+                    # filter and lets the initiator learn the callee's
+                    # destination without extra signalling. PORT/HOST ask the
+                    # router to forward inbound datagrams straight to us
+                    # rather than multiplexing them onto the control socket.
+                    create = ("SESSION CREATE STYLE=DATAGRAM ID=%s "
+                              "DESTINATION=TRANSIENT SIGNATURE_TYPE=7 "
+                              "PORT=%d HOST=127.0.0.1\n"
+                              % (session_id, forward_port))
+                else:
+                    create = ("SESSION CREATE STYLE=STREAM ID=%s "
+                              "DESTINATION=TRANSIENT SIGNATURE_TYPE=7\n"
+                              % session_id)
+                ctrl.sendall(create.encode("ascii"))
                 # i2pd builds a full tunnel set before answering, so this is
                 # minutes rather than seconds on a busy phone.
-                fields = sam_parse(sam_read_line(ctrl, SAM_SESSION_TIMEOUT),
+                fields = sam_parse(sam_read_line(ctrl, session_timeout),
                                    "SESSION STATUS ")
                 dest = fields.get("DESTINATION")
                 if not dest:
@@ -2128,18 +3284,163 @@ class VoiceCallSession:
                 ctrl.settimeout(None)
                 return ctrl, session_id, dest
             except Exception:
-                try:
-                    ctrl.close()
-                except Exception:
-                    pass
+                self._discard_pending_sam(ctrl)
                 raise
 
-        self._sam_control, self._sam_session_id, self._our_dest = (
-            await self.loop.run_in_executor(None, _create))
+        control, session_id, blob = await self.loop.run_in_executor(
+            None, _create)
+        # Handed over: it is the live session now, not a pending one.
+        try:
+            self._sam_pending.remove(control)
+        except ValueError:
+            pass
+        self._sam_control, self._sam_session_id = control, session_id
+        # SESSION STATUS hands back the private key blob. Nothing after this
+        # point needs it -- the session is bound to the control socket, not to
+        # the key -- so derive the destination and let the blob go.
+        try:
+            self._our_dest = i2p_public_destination(blob)
+        except ValueError as exc:
+            raise RuntimeError("SAM returned an unparseable DESTINATION: %s"
+                               % exc)
         return self._our_dest
+
+    # -- datagram transport ------------------------------------------------
+
+    def _bind_datagram_socket(self) -> int:
+        """Bind the UDP socket the router will forward our media to.
+
+        Returns the port, which SESSION CREATE has to carry.  Bound to
+        loopback only: this socket accepts anything the host can send it, and
+        the AEAD is the only thing standing behind it, so it must not be
+        reachable off the device.
+        """
+        sock = _socket.socket(_socket.AF_INET, _socket.SOCK_DGRAM)
+        try:
+            sock.bind(("127.0.0.1", 0))
+            sock.setblocking(False)
+        except Exception:
+            try:
+                sock.close()
+            except Exception:
+                pass
+            raise
+        self._dgram_sock = sock
+        return sock.getsockname()[1]
+
+    def _datagram_ready(self) -> bool:
+        return (self._transport_mode == VOICE_TRANSPORT_DATAGRAM
+                and self._dgram_transport is not None)
+
+    async def open_datagram_endpoint(self) -> None:
+        """Attach the bound UDP socket to the event loop and arm sending."""
+        if self._transport_mode != VOICE_TRANSPORT_DATAGRAM:
+            return
+        if self._dgram_sock is None:
+            raise RuntimeError("datagram socket was never bound")
+
+        session = self
+
+        class _MediaDatagramProtocol(asyncio.DatagramProtocol):
+            def datagram_received(self, data, addr):
+                session._on_datagram(data)
+
+            def error_received(self, exc):
+                # ICMP port-unreachable from the SAM bridge arrives here.  It
+                # is per-packet and recoverable, so it must not tear the call
+                # down; the stats already show the result as silence.
+                session.stats["dropped"] += 1
+
+        transport, _proto = await self.loop.create_datagram_endpoint(
+            _MediaDatagramProtocol, sock=self._dgram_sock)
+        self._dgram_transport = transport
+        self._dgram_send_addr = (self.sam_host, sam_udp_port())
+        self._refresh_datagram_header()
+
+    def _refresh_datagram_header(self) -> None:
+        """Cache the SAM send header once the peer destination is known."""
+        if self._sam_session_id and self._peer_dest:
+            self._dgram_send_header = build_datagram_send_header(
+                self._sam_session_id, self._peer_dest)
+        else:
+            self._dgram_send_header = None
+
+    def _on_datagram(self, data: bytes) -> None:
+        """One forwarded SAM datagram -> AEAD -> jitter buffer.
+
+        A datagram boundary is a frame boundary, so unlike the stream path
+        there is no reassembly and no resynchronisation across packets: a
+        corrupt datagram costs exactly itself.
+        """
+        # Counted first, before every filter, and stamped before every
+        # possible return. This is what separates "the router stopped
+        # forwarding" from "datagrams are arriving and being discarded" --
+        # a distinction the previous telemetry could not make, because both
+        # read as rx=0 with every rejection counter at 0.
+        self.stats["dgram_in"] += 1
+        self._rx_last_datagram = time.monotonic()
+        if not self._running:
+            self.stats["dgram_closed"] += 1
+            return
+        source, payload = split_datagram_receive(data)
+        if not payload:
+            self.stats["dgram_empty"] += 1
+            return
+        # Cheap pre-AEAD filter.  Not a security boundary -- the AEAD is --
+        # but it keeps an unrelated sender from reaching the cipher at all.
+        #
+        # Counted separately from "dropped". When this filter was comparing a
+        # destination against a private key blob it discarded every packet of
+        # the call, and folded into the general drop counter that was
+        # indistinguishable from a path losing frames.
+        if (source is not None and self._peer_dest
+                and source != self._peer_dest):
+            self.stats["foreign"] += 1
+            if not self._foreign_warned:
+                self._foreign_warned = True
+                _print("[voice] media datagrams are arriving from a "
+                       "destination other than the peer's and are being "
+                       "discarded — if the call is silent, the two sides "
+                       "disagree about the peer's destination")
+            return
+        before = self.stats["recv"]
+        buf = bytearray(payload)
+        try:
+            self._drain_buffer(buf)
+        except Exception:
+            self.stats["dropped"] += 1
+        finally:
+            _wipe(buf)
+        # The initiator never learns the callee's destination from signalling:
+        # it published one and waited to be connected to.  Latching it from
+        # the first datagram that actually authenticates is safe -- an
+        # attacker cannot produce one -- and saves a signalling round trip.
+        if (source is not None and self._peer_dest is None
+                and self.stats["recv"] > before):
+            self._peer_dest = source
+            self._refresh_datagram_header()
+
+    def _send_datagram(self, packet: bytes) -> bool:
+        """Send one media packet through the SAM UDP bridge."""
+        header = self._dgram_send_header
+        if header is None or self._dgram_transport is None:
+            return False
+        try:
+            self._dgram_transport.sendto(header + packet,
+                                         self._dgram_send_addr)
+            return True
+        except Exception:
+            return False
 
     async def accept_media_stream(self) -> None:
         """Park in STREAM ACCEPT until the peer connects (initiator role)."""
+        if self._transport_mode == VOICE_TRANSPORT_DATAGRAM:
+            # Nothing to accept: datagrams need no connection.  The initiator
+            # cannot send until the callee's first packet arrives and
+            # _on_datagram latches its destination, which happens within one
+            # frame of the callee starting audio.
+            await self.open_datagram_endpoint()
+            return
         sam_open = _HOST["sam_open"]
         sam_read_line = _HOST["sam_read_line"]
         sam_parse = _HOST["sam_parse"]
@@ -2163,6 +3464,7 @@ class VoiceCallSession:
                 # frame boundary is wrong.
                 sam_read_line(sock, SAM_ACCEPT_TIMEOUT)
                 sock.settimeout(None)
+                limit_media_send_buffer(sock)
                 sock.setblocking(False)
                 return sock
             except Exception:
@@ -2184,6 +3486,10 @@ class VoiceCallSession:
         """STREAM CONNECT to the initiator's destination (responder role)."""
         if not peer_dest or len(peer_dest) < 64:
             raise RuntimeError("peer destination missing or implausibly short")
+        if self._transport_mode == VOICE_TRANSPORT_DATAGRAM:
+            self._peer_dest = peer_dest
+            await self.open_datagram_endpoint()
+            return
         sam_open = _HOST["sam_open"]
         sam_read_line = _HOST["sam_read_line"]
         sam_parse = _HOST["sam_parse"]
@@ -2197,6 +3503,7 @@ class VoiceCallSession:
                 sam_parse(sam_read_line(sock, SAM_CONNECT_TIMEOUT),
                           "STREAM STATUS ")
                 sock.settimeout(None)
+                limit_media_send_buffer(sock)
                 sock.setblocking(False)
                 return sock
             except Exception:
@@ -2254,6 +3561,29 @@ class VoiceCallSession:
         _print("[voice] codec: Opus %d Hz mono, %d ms frames, %d kbit/s %s"
                % (VOICE_SAMPLE_RATE, VOICE_FRAME_MS, VOICE_BITRATE // 1000,
                   "CBR" if self.constant_rate else "VBR"))
+        _print("[voice] levels: mic gain %.2f%s, speaker gain %.2f, "
+               "playback compressor %s (%.0f dB makeup) — output is limited "
+               "so nothing here can clip"
+               % (self._mic_gain.gain,
+                  " + auto" if self._mic_gain.auto else "",
+                  self._speaker_gain.gain,
+                  "on" if self._speaker_comp.enabled else "off",
+                  self._speaker_comp.makeup_db))
+        if self._playback_usage_is_voice():
+            _print("[voice] playback is declared as VOICE_COMMUNICATION, "
+                   "which some phones route to the EARPIECE rather than the "
+                   "speaker. If the level readings below look healthy but "
+                   "the call is still faint, that is routing, not gain: set "
+                   "OTRV4PLUS_AUDIO_USAGE=media.")
+        if self._transport_mode == VOICE_TRANSPORT_DATAGRAM:
+            _print("[voice] transport: I2P datagrams — no retransmission, so "
+                   "congestion arrives as loss (concealed) rather than as "
+                   "delay that accumulates.")
+        else:
+            _print("[voice] transport: I2P streams — reliable and ordered, so "
+                   "a lost segment stalls everything behind it for one 9 s "
+                   "retransmit timeout. Unset OTRV4PLUS_VOICE_TRANSPORT for "
+                   "datagrams.")
         if self.constant_rate:
             _print("[voice] application-layer constant-rate shaping active — "
                    "packet size and timing carry no speech information. Call "
@@ -2319,6 +3649,63 @@ class VoiceCallSession:
                   ", resampling to %d Hz" % VOICE_SAMPLE_RATE
                   if cap.get("resampling") else ""))
 
+        # The playback side, spelled out, on every call rather than only when
+        # someone thinks to run /audioprobe.  A playout deficit is invisible in
+        # the frame counters -- the buffer sheds the surplus and the call reads
+        # as healthy -- so the device parameters that decide how long a write
+        # blocks belong in the same log as the symptom.
+        try:
+            play = self._playback.diagnostics()
+            cap_frames = play.get("buffer_capacity_frames") or 0
+            rate = play.get("device_rate") or VOICE_SAMPLE_RATE
+            held_ms = (1000.0 * cap_frames / float(rate)) if cap_frames and rate else 0.0
+            _print("[voice] playout: %s Hz / %s ch%s, burst %s frames, "
+                   "capacity %s frames (%.0f ms) vs %d ms per packet"
+                   % (play.get("device_rate"), play.get("device_channels"),
+                      " (resampling)" if play.get("resampling") else "",
+                      play.get("frames_per_burst"), cap_frames or "?",
+                      held_ms, VOICE_FRAME_MS))
+            if held_ms and held_ms < VOICE_FRAME_MS:
+                _print("[voice] playout: the device buffer holds less than one "
+                       "packet, so every write waits on the device")
+        except Exception:
+            pass
+
+        # Loudness, spelled out, because "it is too quiet" has one digital
+        # answer and two Android ones and they are not interchangeable. The
+        # compressor is already worth about +7 dB of RMS and leaves only a few
+        # dB of headroom, so when a call is still quiet the cause is usually
+        # the stream it is routed to rather than anything measured here.
+        try:
+            comp = self._speaker_comp
+            gain = self._speaker_gain
+            usage = _audio.playback_usage()
+            on_call_stream = (usage == getattr(
+                _audio, "AAUDIO_USAGE_VOICE_COMMUNICATION", None))
+            clarity = self._speech_clarity
+            _print("[voice] loudness: clarity %s (high-pass %.0f Hz, "
+                   "presence +%.1f dB at %.0f Hz)"
+                   % ("on" if getattr(clarity, "enabled", False) else "OFF",
+                      getattr(clarity, "hpf_hz", 0.0),
+                      getattr(clarity, "presence_db", 0.0),
+                      getattr(clarity, "presence_hz", 0.0)))
+            _print("[voice] loudness: compressor %s (makeup %.1f dB, %.0f:1 "
+                   "above %.0f dBFS), speaker gain x%.2f"
+                   % ("on" if getattr(comp, "enabled", False) else "OFF",
+                      getattr(comp, "makeup_db", 0.0),
+                      getattr(comp, "ratio", 1.0),
+                      getattr(comp, "threshold", 0.0),
+                      getattr(gain, "gain", 1.0)))
+            if on_call_stream:
+                _print("[voice] loudness: routed to the CALL stream — the "
+                       "volume keys during a call")
+                _print("[voice]   change this, not the media volume. For the "
+                       "louder media route:")
+                _print("[voice]   OTRV4PLUS_AUDIO_USAGE=media  (costs the "
+                       "platform echo canceller)")
+        except Exception:
+            pass
+
     async def start_audio(self) -> None:
         """Bring the media path up.
 
@@ -2326,7 +3713,7 @@ class VoiceCallSession:
         single check that makes "no audio before confirmation" structural
         rather than a property of the call ordering.
         """
-        if self._writer is None:
+        if self._writer is None and not self._datagram_ready():
             raise RuntimeError("media stream not established")
         if not self.schedule.ready:
             raise RuntimeError("refusing to start audio: no media keys")
@@ -2350,7 +3737,17 @@ class VoiceCallSession:
         self._playback_thread = threading.Thread(
             target=self._playback_worker, name="voice-playback", daemon=True)
         self._playback_thread.start()
-        self._reader_task = asyncio.ensure_future(self._network_reader())
+        if self._writer is not None:
+            self._reader_task = asyncio.ensure_future(self._network_reader())
+        # Both transports. The stream reader only reports a path the peer
+        # CLOSED; a path that simply stops delivering produces no EOF on
+        # either transport, so neither has been covered until now.
+        now = time.monotonic()
+        self._rx_last_datagram = now
+        self._rx_last_frame = now
+        self._rx_mark = self._rx_authenticated
+        self._rx_degraded = False
+        self._rx_watchdog_task = asyncio.ensure_future(self._rx_watchdog())
 
     # -- capture ----------------------------------------------------------
 
@@ -2454,11 +3851,16 @@ class VoiceCallSession:
             if not self._running:
                 break
 
-            pcm = bytearray(raw)
+            # Gain before Opus, not after: the encoder allocates bits by
+            # what it is given, so encoding a -18 dBFS signal and amplifying
+            # at the far end amplifies the coding noise with it.
+            _t_stage = time.monotonic()
+            pcm = self._mic_gain.process(self._mic_comp.process(raw))
             opus_frame = None
             try:
                 opus_frame = bytearray(
                     self._opus_enc.encode(bytes(pcm), VOICE_FRAME_SAMPLES))
+                self.stages.record_since("encode", _t_stage)
                 _wipe(pcm)
                 padded = pad_opus(bytes(opus_frame),
                                   self.latency.call_ms(self._call_t0))
@@ -2487,6 +3889,14 @@ class VoiceCallSession:
             # measurement.
             self._maybe_ping()
 
+    def _playback_usage_is_voice(self) -> bool:
+        """True when playback asked for the voice-communication usage."""
+        try:
+            return (getattr(self._playback, "usage", None)
+                    == _audio.AAUDIO_USAGE_VOICE_COMMUNICATION)
+        except Exception:
+            return False
+
     def _emit_probe(self, frame_type: int, payload: bytes) -> None:
         """Send a PING or PONG as a full-size frame.
 
@@ -2505,7 +3915,10 @@ class VoiceCallSession:
         except Exception:
             return
         try:
-            self.loop.call_soon_threadsafe(self._write_packet, packet)
+            # Probes are exempt from the staleness deadline below: they are
+            # rare, and a probe that waited in the queue is measuring exactly
+            # the delay we want reported.
+            self.loop.call_soon_threadsafe(self._write_packet, packet, None)
         except Exception:
             pass
 
@@ -2523,8 +3936,10 @@ class VoiceCallSession:
         """Seal one padded frame and hand it to the event loop."""
         if padded is None:
             return
+        _t_seal = time.monotonic()
         try:
             packet = self._seal_frame(padded)
+            self.stages.record_since("seal", _t_seal)
         except FrameError as exc:
             # Counter exhaustion is unreachable in practice (2^62 frames) but
             # it is permanent when it happens: every later frame fails the
@@ -2541,12 +3956,22 @@ class VoiceCallSession:
             return
         if packet is None:
             return
-        self.loop.call_soon_threadsafe(self._write_packet, packet)
+        self.loop.call_soon_threadsafe(self._write_packet, packet,
+                                       time.monotonic())
 
-    # asyncio buffers writes without limit.  For real-time audio a backlog is
-    # worthless — by the time it drains the audio is stale — so transmission
-    # is bounded and excess frames are discarded rather than queued.
-    _MAX_WRITE_BACKLOG = VOICE_PACKET_LEN * 50
+    # Every queue between here and the peer's speaker has to be bounded in
+    # TIME, because audio that arrives late is not late audio, it is noise.
+    #
+    # This one is asyncio's write buffer.  50 packets is 3 s at 60 ms — long
+    # enough that a call could sound three seconds behind purely on our own
+    # backlog.  8 packets is ~480 ms, which is the same order as the jitter
+    # buffer's own ceiling and therefore the most that can be useful.
+    _MAX_WRITE_BACKLOG = VOICE_PACKET_LEN * 8
+
+    #: A frame still unwritten this long after capture is discarded rather
+    #: than transmitted.  It bounds the queue that call_soon_threadsafe builds
+    #: when the event loop is busy, independently of any socket buffer.
+    _SEND_DEADLINE_S = 0.25
 
     def _signal_stream_lost(self, why: str) -> None:
         """Report a media failure exactly once, on the loop."""
@@ -2562,9 +3987,40 @@ class VoiceCallSession:
         except Exception:
             pass
 
-    def _write_packet(self, packet: bytes) -> None:
-        """Write one framed packet.  Event-loop thread only."""
-        if not self._running or self._writer is None:
+    def _write_packet(self, packet: bytes, queued_at=None) -> None:
+        """Write one framed packet.  Event-loop thread only.
+
+        ``queued_at`` is the ``time.monotonic()`` reading taken when the
+        capture thread handed this frame over.  A frame that has been waiting
+        longer than ``_SEND_DEADLINE_S`` is dropped: transmitting it would
+        push a fresher frame further behind, and it is already too late to be
+        played in sequence.  Pass ``None`` to exempt a frame (probes).
+        """
+        if not self._running:
+            return
+        if self._writer is None and not self._datagram_ready():
+            return
+        if queued_at is not None:
+            # How long the frame waited between the capture thread handing it
+            # over and this callback running. This is event-loop scheduling
+            # delay, and it counts inside the reported one-way figure -- so a
+            # large value here means the one-way number is measuring us, not
+            # I2P.
+            self.stages.record_since("queue", queued_at)
+            if (time.monotonic() - queued_at) > self._SEND_DEADLINE_S:
+                self.stats["stale"] += 1
+                return
+        if self._datagram_ready():
+            if self._dgram_send_header is None:
+                # Initiator, still waiting to learn the callee's destination.
+                # Counted rather than silently discarded so a peer that never
+                # sends is visible in the stats rather than looking like loss.
+                self.stats["backpressure"] += 1
+                return
+            if self._send_datagram(packet):
+                self.stats["sent"] += 1
+            else:
+                self.stats["dropped"] += 1
             return
         try:
             if self._writer.is_closing():
@@ -2596,8 +4052,17 @@ class VoiceCallSession:
         with self._key_lock:
             cipher = self.schedule.cipher_for_epoch(epoch)
             if cipher is None:
-                raise FrameError("no live key for epoch %d" % epoch)
-            plaintext = cipher.open(header, sealed)
+                raise FrameError("no live key for epoch %d" % epoch, FrameError.NO_KEY)
+            try:
+                plaintext = cipher.open(header, sealed)
+            except _INVALID_TAG:
+                # The ONLY rejection that is an authentication failure: a
+                # frame we hold the key for, whose AES-256-GCM tag did not
+                # verify.  Everything else is state -- wrong epoch, retired
+                # epoch, unparseable header -- and counting those here is
+                # what made "authfail=87" unreadable.
+                raise FrameError("frame failed authentication",
+                                 FrameError.AUTH)
         return epoch, counter, plaintext, ftype
 
     async def _network_reader(self) -> None:
@@ -2644,6 +4109,376 @@ class VoiceCallSession:
         if self._running:
             self._signal_stream_lost("peer closed the media stream")
 
+    # -- media endpoint announcements --------------------------------------
+
+    def _endpoint_tag(self, epoch: int, seq: int, destination: str,
+                      from_initiator: bool) -> bytes:
+        """Tag an announcement under the committed epoch root."""
+        with self._key_lock:
+            if self.schedule.epoch != epoch:
+                raise FrameError("endpoint epoch %d is not the committed one"
+                                 % epoch)
+            return self.schedule.current_root().endpoint_tag(
+                self.call_id, epoch, seq, destination, from_initiator)
+
+    def build_endpoint_announcement(self):
+        """Describe our current media endpoint.  Returns (epoch, seq, dest, tag).
+
+        The sequence advances on every announcement and is inside the tag, so
+        the peer can order two announcements that overtake each other on the
+        control channel and refuse the older one.
+        """
+        destination = self._our_dest
+        if not destination:
+            raise FrameError("no local media destination to announce")
+        with self._key_lock:
+            epoch = self.schedule.epoch
+        self._endpoint_seq_sent += 1
+        seq = self._endpoint_seq_sent
+        return epoch, seq, destination, self._endpoint_tag(
+            epoch, seq, destination, self.is_initiator)
+
+    def accept_endpoint(self, epoch: int, seq: int, destination: str,
+                        tag: bytes) -> str:
+        """Validate a peer announcement and adopt it.  Returns a reason string.
+
+        "ok" means the peer destination was replaced. Everything else names
+        why it was refused, so a refusal is diagnosable rather than silent.
+
+        The order is deliberate: everything cheap and non-cryptographic first,
+        the tag last, and no state moves until the tag verifies. A forged or
+        replayed announcement therefore costs nothing and changes nothing.
+        """
+        if self.state != CallState.ACTIVE:
+            return "call is not active"
+        if seq <= self._endpoint_seq_seen:
+            # Covers replays, reordering on the control channel, and a
+            # deliberate attempt to reinstate an endpoint we have moved past.
+            return "stale sequence %d (already at %d)" % (
+                seq, self._endpoint_seq_seen)
+        try:
+            destination = i2p_public_destination(destination)
+        except ValueError:
+            return "unparseable destination"
+        if destination == self._peer_dest:
+            return "endpoint unchanged"
+        try:
+            expected = self._endpoint_tag(epoch, seq, destination,
+                                          not self.is_initiator)
+        except FrameError as exc:
+            return str(exc)
+        except Exception:
+            return "no committed media key"
+        if not hmac.compare_digest(bytes(tag or b""), expected):
+            return "authentication failed"
+
+        self._peer_dest = destination
+        self._endpoint_seq_seen = seq
+        self._refresh_datagram_header()
+        return "ok"
+
+    async def rebuild_media_endpoint(self) -> str:
+        """Replace the local SAM datagram session.  Returns the new destination.
+
+        The old session is closed first and unconditionally. Leaving it open
+        would hold a router-side session and a bound UDP socket for the rest
+        of the call, and create_session() overwrites both handles, so anything
+        not closed here is leaked rather than merely idle.
+
+        Nothing cryptographic changes: the media keys, the epoch, the replay
+        windows and the call identity all survive. Only where our packets
+        arrive changes, which is why this needs an announcement rather than a
+        rekey.
+        """
+        if self._transport_mode != VOICE_TRANSPORT_DATAGRAM:
+            raise RuntimeError("only the datagram transport has an endpoint "
+                               "that can be replaced")
+        self._close_datagram_transport()
+        self._our_dest = None
+        destination = await self.create_session(
+            session_timeout=VOICE_RECOVER_TIMEOUT_S)
+        if not self._running:
+            # Teardown ran while the router was building tunnels. Do not leave
+            # the replacement behind.
+            self._close_datagram_transport()
+            raise RuntimeError("call ended while the media path was rebuilding")
+        await self.open_datagram_endpoint()
+        now = time.monotonic()
+        # The new path has had no chance to deliver anything yet; judging it
+        # by the old clock would declare it dead the moment it opened. That
+        # reset is also why the clock cannot be used to decide whether the
+        # rebuild worked -- the mark is what the watchdog compares against.
+        self._rx_last_datagram = now
+        self._rx_last_frame = now
+        self._rx_mark = self._rx_authenticated
+        return destination
+
+    def _discard_pending_sam(self, control) -> None:
+        """Close and forget one in-flight control socket.  Never raises."""
+        try:
+            self._sam_pending.remove(control)
+        except ValueError:
+            pass
+        release = _HOST.get("sam_release")
+        try:
+            if release is not None:
+                release(control)
+            else:
+                control.close()
+        except Exception:
+            pass
+
+    def _close_datagram_transport(self) -> None:
+        """Release the datagram endpoint and its SAM session.  Idempotent."""
+        if self._dgram_transport is not None:
+            try:
+                self._dgram_transport.close()
+            except Exception:
+                pass
+            self._dgram_transport = None
+            self._dgram_sock = None       # closed with the transport
+        elif self._dgram_sock is not None:
+            try:
+                self._dgram_sock.close()
+            except Exception:
+                pass
+            self._dgram_sock = None
+        self._dgram_send_header = None
+        release = _HOST.get("sam_release")
+        control, self._sam_control = self._sam_control, None
+        if control is not None:
+            try:
+                if release is not None:
+                    release(control)
+                else:
+                    control.close()
+            except Exception:
+                pass
+        self._sam_session_id = None
+        # A create whose await was cancelled leaves its socket here. Draining
+        # is the only thing that can reclaim it, because nothing else still
+        # holds a reference.
+        while self._sam_pending:
+            self._discard_pending_sam(self._sam_pending[-1])
+
+    # -- inbound liveness --------------------------------------------------
+
+    def _sam_control_state(self) -> str:
+        """Whether the SAM session that owns this transport still exists.
+
+        A SAM v3 session lives exactly as long as its control socket. If the
+        router tears the session down, inbound forwarding to our UDP port
+        stops, while sendto() to the local bridge keeps succeeding -- so the
+        call looks healthy from the transmit side and receives nothing
+        forever. This code never read that socket after SESSION STATUS, so
+        the condition was undetectable. Reading it costs one non-blocking
+        select and turns a hypothesis into a diagnosis.
+
+        Returns "closed", "open", or "unknown". Never raises, never blocks,
+        and never consumes bytes: MSG_PEEK leaves the stream untouched.
+        """
+        sock = self._sam_control
+        if sock is None:
+            return "unknown"
+        try:
+            import select
+            readable, _w, _x = select.select([sock], [], [], 0)
+            if not readable:
+                return "open"          # nothing pending: session still held
+            return "closed" if sock.recv(1, _socket.MSG_PEEK) == b"" else "open"
+        except Exception:
+            return "unknown"
+
+    def _rx_thresholds(self):
+        """(warn, rebuild, dead) for this call, in seconds.
+
+        Three points, not two, because telling the user and replacing the
+        endpoint are different decisions and want different timing.
+
+        `warn` is when to say something. It stays early: silence with no
+        explanation is the worst of the three states to be in.
+
+        `rebuild` is when to actually replace the endpoint, and it is held
+        back while the SAM session that owns our destination is still alive
+        -- the router is rebuilding tunnels under an address that is still
+        ours, and replacing it throws away a working session, stops our own
+        transmission for the duration, and makes the peer adopt an address it
+        did not need.
+
+        `dead` moves with the rebuild point, so holding can never mean the
+        call sits dead for longer than the hold it earned.
+
+        Everything widens until media has ever flowed: a cold I2P path taking
+        its time to deliver the first frame is not a broken path, and
+        treating it as one rebuilt a working endpoint and cost a live call
+        ~70 s of silence.
+        """
+        if self._rx_authenticated == 0:
+            warn = VOICE_RX_START_GRACE_S
+            dead = VOICE_RX_START_GRACE_S + VOICE_RX_DEAD_S
+        else:
+            warn, dead = VOICE_RX_WARN_S, VOICE_RX_DEAD_S
+        rebuild = warn
+        if VOICE_RX_SESSION_HOLD_S and self._sam_control_state() == "open":
+            rebuild += VOICE_RX_SESSION_HOLD_S
+            dead += VOICE_RX_SESSION_HOLD_S
+        return warn, rebuild, dead
+
+    def _rx_idle_seconds(self, now=None):
+        """Seconds since anything authenticated, or None before audio starts."""
+        if self._rx_last_frame is None:
+            return None
+        return max(0.0, (now or time.monotonic()) - self._rx_last_frame)
+
+    def _rx_diagnosis(self) -> str:
+        """Name the first stage that stopped, from counters rather than guess."""
+        if self._rx_last_datagram is None:
+            arrived = False
+        else:
+            arrived = (self._rx_last_frame is None
+                       or self._rx_last_datagram > self._rx_last_frame)
+        if arrived:
+            # Datagrams are reaching the socket but none authenticate: the
+            # transport is fine and the fault is above it.
+            # Split by cause, because the causes need different actions.
+            # nokey dominating means the peers disagree about the epoch --
+            # a rekey problem.  authfail dominating means frames are being
+            # forged or corrupted.  They used to be the same number.
+            return ("datagrams are arriving but none authenticate "
+                    "(foreign=%d empty=%d nokey=%d retired=%d malformed=%d "
+                    "authfail=%d replay=%d)"
+                    % (self.stats["foreign"], self.stats["dgram_empty"],
+                       self.stats["rej_no_key"], self.stats["rej_retired"],
+                       self.stats["rej_malformed"],
+                       self.stats["auth_fail"], self.stats["replay"]))
+        state = self._sam_control_state()
+        if state == "closed":
+            return ("no media datagrams are arriving and the SAM session is "
+                    "gone — the router stopped forwarding to us")
+        return ("no media datagrams are arriving at all "
+                "(SAM control socket %s)" % state)
+
+    async def _rx_watchdog(self) -> None:
+        """Notice an inbound media path that has stopped, and act on it.
+
+        The transmit side cannot detect this: a datagram handed to the local
+        SAM bridge is accepted whether or not the session behind it still
+        exists, so `sent` keeps climbing over a dead path. Only the absence of
+        inbound traffic shows it, and before this nothing was watching.
+
+        Three bounded stages. A warning names the failing stage once -- not
+        once per tick, which is how the old debug-only message printed 116
+        times. Recovery is then attempted, and only if that is impossible or
+        exhausted is the call declared lost through the existing
+        _signal_stream_lost path, which ends it and tells the peer.
+
+        Recovery can extend the deadline, never remove it: the dead check is
+        suspended only while a rebuild is genuinely in flight, and the rebuild
+        itself is bounded by VOICE_RECOVER_TIMEOUT_S and by a fixed number of
+        attempts.
+        """
+        try:
+            while self._running:
+                await asyncio.sleep(VOICE_RX_CHECK_S)
+                if not self._running:
+                    return
+                idle = self._rx_idle_seconds()
+                if idle is None:
+                    continue
+                warn_after, rebuild_after, dead_after = self._rx_thresholds()
+                if idle < warn_after:
+                    # Recovery is confirmed by a frame that authenticated
+                    # AFTER the rebuild, never by the clock: rebuilding resets
+                    # the clock, so treating a small idle as success declared
+                    # victory over a path that had delivered nothing and
+                    # handed back the attempt budget, which made the rebuild
+                    # loop unbounded.
+                    if self._rx_degraded:
+                        if self._rx_authenticated > self._rx_mark:
+                            self._rx_degraded = False
+                            self._recover_attempts = 0
+                            _print("[voice] inbound audio recovered")
+                    continue
+                if self._recovering:
+                    # A rebuild owns the deadline while it runs. It cannot run
+                    # forever -- it is wrapped in wait_for -- and when it ends
+                    # this check resumes on the next tick.
+                    continue
+                if not self._rx_degraded:
+                    self._rx_degraded = True
+                    held = rebuild_after > warn_after
+                    _print("[voice] %s for %ds — %s%s"
+                           % ("no audio yet on a new call"
+                              if self._rx_authenticated == 0
+                              else "no inbound audio",
+                              int(idle), self._rx_diagnosis(),
+                              ("; the router still holds our session, giving "
+                               "it %ds to rebuild its tunnels before we "
+                               "replace the endpoint"
+                               % int(rebuild_after - warn_after))
+                              if held else ""))
+                if idle >= rebuild_after and self._request_recovery():
+                    continue
+                if idle >= dead_after:
+                    self._signal_stream_lost(
+                        "no media received for %ds — %s"
+                        % (int(idle), self._rx_diagnosis()))
+                    return
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            # The watchdog failing must not take the call with it, but it
+            # must not fail silently either: a dead watchdog means the very
+            # condition it exists to catch would go unnoticed again.
+            _print("[voice] media watchdog stopped: %s" % _san(str(exc), 120))
+
+    def _recovery_possible(self) -> bool:
+        """Whether replacing our endpoint could plausibly help.
+
+        Only the datagram transport has an endpoint to replace, and only a
+        path delivering nothing at all is one a new endpoint could fix. If
+        datagrams are arriving and failing to authenticate, the transport is
+        working and rebuilding it would discard a healthy path for nothing.
+        """
+        if self._transport_mode != VOICE_TRANSPORT_DATAGRAM:
+            return False
+        if self._recover_attempts >= VOICE_RECOVER_ATTEMPTS:
+            return False
+        if self._rx_last_datagram is not None and self._rx_last_frame is not None \
+                and self._rx_last_datagram > self._rx_last_frame:
+            return False
+        return self.state == CallState.ACTIVE
+
+    def _request_recovery(self) -> bool:
+        """Ask the manager to rebuild the media path.  True if it was asked."""
+        if not self._recovery_possible():
+            return False
+        callback = self.on_media_stalled
+        if callback is None:
+            return False
+        self._recovering = True
+        self._recover_attempts += 1
+        try:
+            started = callback(self.peer, self.call_id)
+        except Exception as exc:
+            self._recovering = False
+            self._recover_attempts -= 1
+            self._vlog("media recovery could not start: %s"
+                       % _san(str(exc), 120))
+            return False
+        if not started:
+            # Declined -- the control plane cannot carry the announcement
+            # yet. Refund the attempt: nothing was rebuilt, so nothing was
+            # spent, and the budget exists to bound rebuilds rather than
+            # to bound asking.
+            self._recovering = False
+            self._recover_attempts -= 1
+            return False
+        return True
+
+    def _vlog(self, message: str) -> None:
+        _print("[voice] %s" % message)
+
     def _drain_buffer(self, buf: bytearray) -> None:
         """Parse, authenticate and enqueue every complete frame in buf.
 
@@ -2677,9 +4512,17 @@ class VoiceCallSession:
             sealed = bytes(buf[VOICE_HDR_LEN:VOICE_HDR_LEN + length])
             opus_frame = None
             pcm = None
+            _t_open = time.monotonic()
             try:
                 epoch, counter, plaintext, ftype = self.open_packet(
                     header, sealed)
+                self.stages.record_since("decrypt", _t_open)
+                # Stamped for every authenticated frame, not only audio: a
+                # PING or PONG proves the receive path just as well, and
+                # during the live failure the probe replies died in the same
+                # instant as the audio.
+                self._rx_last_frame = time.monotonic()
+                self._rx_authenticated += 1
                 del buf[:VOICE_HDR_LEN + length]
 
                 if ftype == FRAME_TYPE_PING:
@@ -2701,7 +4544,7 @@ class VoiceCallSession:
                 # playout is what makes Opus in-band FEC usable: recovering a
                 # lost frame requires the NEXT packet, which does not exist
                 # yet at receive time. It also cuts the buffer's memory by
-                # 8x, since 160 bytes of Opus replaces 1280 of PCM.
+                # 12x, since 152 bytes of Opus replaces 1920 of PCM.
                 _opus, _send_ms = unpad_frame(plaintext)
                 self.latency.observe_frame(_send_ms, self._call_t0)
                 opus_frame = bytearray(_opus)
@@ -2711,11 +4554,13 @@ class VoiceCallSession:
                 else:
                     self.stats["late"] += 1
             except FrameError as exc:
-                text = str(exc)
-                if "replay" in text:
-                    self.stats["replay"] += 1
-                else:
-                    self.stats["auth_fail"] += 1
+                # Classified by the raise site.  This used to read
+                # `if "replay" in str(exc)` and count everything else as an
+                # authentication failure, which meant a rekey the peer had
+                # moved ahead of was indistinguishable from a forged frame.
+                self.stats[FrameError.STAT_FOR_REASON.get(
+                    getattr(exc, "reason", FrameError.MALFORMED),
+                    "rej_malformed")] += 1
                 self.stats["dropped"] += 1
                 del buf[:1]
                 self.stats["resync"] += 1
@@ -2791,14 +4636,38 @@ class VoiceCallSession:
                 elif gap > 1:
                     recovered.extend(self._conceal(gap))
 
+                _t_dec = time.monotonic()
                 pcm = self._decode(opus_frame)
+                self.stages.record_since("decode", _t_dec)
                 if pcm is not None:
                     recovered.append(pcm)
 
                 for chunk in recovered:
+                    loud = None
                     try:
                         if playback is not None:
-                            playback.write_frame(bytes(chunk))
+                            loud = self._speaker_gain.process(
+                                self._speaker_comp.process(
+                                    self._speech_clarity.process(chunk)))
+                            _t_play = time.monotonic()
+                            playback.write_frame(bytes(loud))
+                            # write_frame blocks against the device ring. A
+                            # p95 near the frame duration means playout is
+                            # device-paced and healthy; well above it means
+                            # the device is the bottleneck, not the network.
+                            self.stages.record_since("play", _t_play)
+                            # Split it, because "play is slow" has two very
+                            # different causes and opposite fixes: `conv` is
+                            # CPU we are burning on resample/upmix before the
+                            # device is involved at all, `write` is the device
+                            # declining to accept audio faster than it plays
+                            # it. Reading only the total led an analysis to
+                            # blame sender clock drift for what turned out to
+                            # be a playout deficit.
+                            self.stages.record(
+                                "conv", getattr(playback, "last_convert_s", 0.0))
+                            self.stages.record(
+                                "write", getattr(playback, "last_device_s", 0.0))
                     except _audio.AudioError as exc:
                         if exc.code == _audio.AUDIO_DEVICE_DISCONNECTED:
                             self._signal_stream_lost(
@@ -2807,6 +4676,8 @@ class VoiceCallSession:
                     except Exception:
                         pass
                     finally:
+                        if loud is not None:
+                            _wipe(loud)
                         _wipe(chunk)
                 recovered = []
             except Exception:
@@ -2837,19 +4708,26 @@ class VoiceCallSession:
             cipher = self.schedule.cipher_for_send()
             ratchets = getattr(cipher, "ratchet_steps", 0)
         rate = "constant-rate" if self.constant_rate else "VARIABLE-RATE"
+        transport = self._transport_mode
         audio = self.audio_backend or "-"
-        return ("state=%s role=%s audio=%s %s keys=%s epoch=%d pending=%s sent=%d "
-                "recv=%d dropped=%d late=%d authfail=%d replay=%d resync=%d "
-                "backpressure=%d oversize=%d fec=%d "
+        return ("state=%s role=%s audio=%s %s transport=%s keys=%s epoch=%d "
+                "pending=%s sent=%d dgram_in=%d "
+                "recv=%d dropped=%d late=%d nokey=%d retired=%d "
+                "malformed=%d authfail=%d replay=%d resync=%d "
+                "backpressure=%d stale=%d foreign=%d oversize=%d fec=%d "
                 "jitter=%d/%d (%.0fms) %s ratchets=%d rekeys=%d/%d"
-                % (self.state, self.role, audio, rate,
+                % (self.state, self.role, audio, rate, transport,
                    "confirmed" if self.keys_confirmed.is_set() else "pending",
                    epoch, "-" if pending is None else pending,
-                   self.stats["sent"], self.stats["recv"],
+                   self.stats["sent"], self.stats["dgram_in"],
+                   self.stats["recv"],
                    self.stats["dropped"], self.stats["late"],
+                   self.stats["rej_no_key"], self.stats["rej_retired"],
+                   self.stats["rej_malformed"],
                    self.stats["auth_fail"], self.stats["replay"],
                    self.stats["resync"],
-                   self.stats["backpressure"], self.stats["oversize"],
+                   self.stats["backpressure"], self.stats["stale"],
+                   self.stats["foreign"], self.stats["oversize"],
                    self.stats["fec_recovered"],
                    self.jitter.depth(), self.jitter.target_depth,
                    self.jitter.jitter_ms, self.latency.summary(),
@@ -2878,6 +4756,23 @@ class VoiceCallSession:
             except Exception:
                 pass
             setattr(self, name, None)
+
+        dgram = getattr(self, "_dgram_transport", None)
+        if dgram is not None:
+            try:
+                dgram.close()
+            except Exception:
+                pass
+        self._dgram_transport = None
+        self._dgram_send_header = None
+        # create_datagram_endpoint takes ownership of the socket and closes it
+        # with the transport; closing it again here would hit an unrelated fd.
+        if getattr(self, "_dgram_sock", None) is not None and dgram is None:
+            try:
+                self._dgram_sock.close()
+            except Exception:
+                pass
+        self._dgram_sock = None
 
         release = _HOST["sam_release"]
         for name in ("_accept_sock", "_media_sock", "_sam_control"):
@@ -2963,7 +4858,8 @@ class VoiceCallSession:
         self._accept_sock = None
 
         # 4. Cancel every asyncio task this session owns.
-        for name in ("_prewarm", "_reader_task", "_accept_task"):
+        for name in ("_prewarm", "_reader_task", "_accept_task",
+                     "_rx_watchdog_task", "_recover_task"):
             task = getattr(self, name, None)
             if task is not None and not task.done():
                 task.cancel()
@@ -2979,7 +4875,8 @@ class VoiceCallSession:
         except Exception:
             pass
 
-        # 6. Close the media stream, then the SAM session.
+        # 6. Close the media transport, then the SAM session.
+        self._close_datagram_transport()
         if self._writer is not None:
             try:
                 self._writer.close()
@@ -2996,7 +4893,7 @@ class VoiceCallSession:
                     except Exception:
                         pass
         self._media_sock = None
-        self._sam_control = None
+        self._sam_control = None       # _close_datagram_transport cleared it
 
         # 7. Destroy every key last.
         try:
@@ -3084,6 +4981,279 @@ def _epoch_field(text: str) -> int:
     return epoch
 
 
+class CallControlChannel:
+    """The path from a Termux notification button back into a running call.
+
+    A Termux:API notification action is a shell command the Termux app runs
+    in its own process.  It cannot call answer_call() directly, so the button
+    writes one short line into a FIFO that the client is reading, and the
+    client turns that line into exactly the same call the terminal makes.
+
+    Nothing here is a second state machine.  A command resolves to
+    ``answer_call`` or ``reject_call`` verbatim, so every gate those already
+    enforce still applies — most importantly the SMP check in ``_on_invite``,
+    which rejects an unverified peer before a session exists at all.  A
+    button can only ever act on a call the client already decided to ring.
+
+    Three properties make the channel safe to hand to the Android UI layer:
+
+    * The generated command contains only a path we chose and a token we
+      generated.  No peer-derived text ever reaches a shell command.
+    * The token is single-use and bound to one (peer, call_id).  A stale
+      "answer" from a previous call cannot answer the one that replaced it,
+      and a replayed line finds its token already spent.
+    * Every command is re-checked against live session state on arrival, on
+      the event loop, exactly as ``/answer`` is.
+    """
+
+    VERBS = ("answer", "decline")
+    TOKEN_BYTES = 16
+    MAX_TOKENS = 8
+    TOKEN_TTL = 900.0                 # backstop; disarm() is the normal path
+    MAX_LINE = 256
+    MAX_BUFFER = 4096
+
+    # The FIFO path is embedded in a shell command, so it may contain only
+    # characters that cannot change the command's meaning.  A path failing
+    # this yields no buttons rather than a quoted guess.
+    _PATH_ALLOWED = frozenset(
+        "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+        "_./@+-")
+
+    def __init__(self, loop, path=None, which=None, dispatch=None):
+        self.loop = loop
+        self.path = path or self.default_path()
+        self._which = which
+        self._dispatch = dispatch
+        self._tokens = {}             # token -> (peer, call_id, expiry)
+        self._rfd = None
+        self._wfd = None
+        self._buffer = b""
+        self.error = None
+
+    @staticmethod
+    def default_path() -> str:
+        override = os.environ.get("OTRV4PLUS_CALL_CTL")
+        if override:
+            return override
+        return os.path.join(os.path.expanduser("~"), ".otrv4plus", "call-ctl")
+
+    # -- availability -----------------------------------------------------
+
+    def available(self) -> bool:
+        """True when notification buttons can actually do something.
+
+        Off Termux, or without Termux:API installed, this is False and the
+        ringer posts the notification it always posted.  There is no partial
+        mode: a button that cannot be delivered is worse than no button.
+        """
+        if not hasattr(os, "mkfifo"):
+            return False
+        if not _HOST.get("is_termux"):
+            return False
+        which = self._which or _HOST.get("which")
+        if which is None:
+            return False
+        try:
+            return bool(which("termux-notification"))
+        except Exception:
+            return False
+
+    # -- arming -----------------------------------------------------------
+
+    def arm(self, peer: str, call_id: bytes):
+        """Mint a token for one ringing call.  Returns the button list."""
+        if not self.available():
+            return []
+        if set(self.path) - self._PATH_ALLOWED:
+            self._note("control path has characters a shell command cannot "
+                       "safely carry — buttons disabled")
+            return []
+        if not self._open():
+            return []
+
+        self._expire_tokens()
+        if len(self._tokens) >= self.MAX_TOKENS:
+            return []
+        token = secrets.token_hex(self.TOKEN_BYTES)
+        self._tokens[token] = (peer, bytes(call_id),
+                               time.monotonic() + self.TOKEN_TTL)
+        return [("Answer", self._command("answer", token)),
+                ("Decline", self._command("decline", token))]
+
+    def _command(self, verb: str, token: str) -> str:
+        # `test -p` first: if the client is gone the FIFO is gone with it, so
+        # the button becomes a no-op instead of creating a stray file or
+        # blocking the Termux action shell on a pipe nobody is reading.
+        return ("test -p '%s' && printf '%s %s\\n' > '%s'"
+                % (self.path, verb, token, self.path))
+
+    def disarm(self, peer: str) -> None:
+        """Revoke every token for a peer.  Called when the ringing stops."""
+        for token, (owner, _cid, _exp) in list(self._tokens.items()):
+            if owner == peer:
+                self._tokens.pop(token, None)
+        if not self._tokens:
+            self.close()
+
+    def _expire_tokens(self) -> None:
+        now = time.monotonic()
+        for token, (_p, _c, expiry) in list(self._tokens.items()):
+            if expiry <= now:
+                self._tokens.pop(token, None)
+
+    # -- the pipe ---------------------------------------------------------
+
+    def _open(self) -> bool:
+        if self._rfd is not None:
+            return True
+        try:
+            directory = os.path.dirname(self.path) or "."
+            os.makedirs(directory, mode=0o700, exist_ok=True)
+            try:
+                os.chmod(directory, 0o700)
+            except OSError:
+                pass
+            if os.path.exists(self.path) and not _is_fifo(self.path):
+                # Something else owns the name.  Ours is the only thing that
+                # belongs here, and a regular file would silently swallow
+                # every button press.
+                os.unlink(self.path)
+            if not os.path.exists(self.path):
+                os.mkfifo(self.path, 0o600)
+            os.chmod(self.path, 0o600)
+
+            rfd = os.open(self.path, os.O_RDONLY | os.O_NONBLOCK)
+        except Exception as exc:
+            return self._open_failed(exc)
+        try:
+            # Hold a writer of our own so the reader never sees EOF when the
+            # last button-press shell exits.  Without this the fd reports
+            # readable forever and the loop spins.
+            wfd = os.open(self.path, os.O_WRONLY | os.O_NONBLOCK)
+        except Exception as exc:
+            _close_fd(rfd)
+            return self._open_failed(exc)
+        try:
+            self.loop.add_reader(rfd, self._readable)
+        except Exception as exc:
+            _close_fd(rfd)
+            _close_fd(wfd)
+            return self._open_failed(exc)
+        self._rfd, self._wfd = rfd, wfd
+        return True
+
+    def _open_failed(self, exc) -> bool:
+        self.error = str(exc)
+        self._note("call control channel unavailable: %s" % _san(str(exc), 120))
+        return False
+
+    def close(self) -> None:
+        """Tear the channel down.  Idempotent, never raises."""
+        rfd, self._rfd = self._rfd, None
+        wfd, self._wfd = self._wfd, None
+        self._buffer = b""
+        if rfd is not None:
+            try:
+                self.loop.remove_reader(rfd)
+            except Exception:
+                pass
+        for fd in (rfd, wfd):
+            if fd is not None:
+                try:
+                    os.close(fd)
+                except Exception:
+                    pass
+        try:
+            if os.path.exists(self.path) and _is_fifo(self.path):
+                os.unlink(self.path)
+        except Exception:
+            pass
+
+    def shutdown(self) -> None:
+        self._tokens.clear()
+        self.close()
+
+    # -- reading ----------------------------------------------------------
+
+    def _readable(self) -> None:
+        """One readable event on the FIFO.  Event-loop thread only."""
+        rfd = self._rfd
+        if rfd is None:
+            return
+        try:
+            chunk = os.read(rfd, self.MAX_BUFFER)
+        except BlockingIOError:
+            return
+        except OSError:
+            self.close()
+            return
+        if not chunk:
+            return
+        self._buffer += chunk
+        if len(self._buffer) > self.MAX_BUFFER:
+            # A writer sending unbounded data is not one of our buttons.
+            self._buffer = b""
+            return
+        while b"\n" in self._buffer:
+            line, self._buffer = self._buffer.split(b"\n", 1)
+            self._consume(line)
+
+    def _consume(self, raw: bytes) -> None:
+        if not raw or len(raw) > self.MAX_LINE:
+            return
+        try:
+            text = raw.decode("ascii").strip()
+        except UnicodeDecodeError:
+            return
+        parts = text.split()
+        if len(parts) != 2:
+            return
+        verb, token = parts
+        if verb not in self.VERBS:
+            return
+        if len(token) != self.TOKEN_BYTES * 2:
+            return
+
+        entry = self._tokens.get(token)
+        if entry is None:
+            return
+        peer, call_id, expiry = entry
+        # Single use, whichever button was pressed: the call is being decided
+        # right now, so neither token survives the decision.
+        self.disarm(peer)
+        if expiry <= time.monotonic():
+            return
+        dispatch = self._dispatch
+        if dispatch is None:
+            return
+        try:
+            dispatch(verb, peer, call_id)
+        except Exception as exc:
+            self._note("call control dispatch failed: %s" % _san(str(exc), 120))
+
+    def _note(self, message: str) -> None:
+        try:
+            _print("[voice] %s" % message)
+        except Exception:
+            pass
+
+
+def _close_fd(fd) -> None:
+    try:
+        os.close(fd)
+    except Exception:
+        pass
+
+
+def _is_fifo(path: str) -> bool:
+    try:
+        import stat
+        return stat.S_ISFIFO(os.stat(path).st_mode)
+    except OSError:
+        return False
+
+
 class VoiceCallManager:
     """Voice-call lifecycle, signalling and policy.
 
@@ -3120,6 +5290,9 @@ class VoiceCallManager:
 
     def __init__(self, xmpp_client, loop, sam_host="127.0.0.1", sam_port=7656):
         self.client = xmpp_client
+        #: Event-loop scheduling lag. See _loop_lag_monitor.
+        self.loop_lag = Percentiles(512)
+        self._lag_task = None
         self.loop = loop
         self.sam_host = sam_host
         self.sam_port = sam_port
@@ -3129,8 +5302,16 @@ class VoiceCallManager:
         self._rekey_tasks = {}
         self._last_invite = {}
         self._ringers = {}
+        # Notification ACCEPT/DECLINE. Opened lazily on the first ring and
+        # torn down when nothing is ringing, so a client that never receives
+        # a call never creates the FIFO.
+        self._call_control = CallControlChannel(
+            loop, dispatch=self._on_control_command)
         self._control_limiter = RateLimiter(VOICE_MAX_CONTROL_PER_MIN)
         self._rekey_limiter = RateLimiter(VOICE_MAX_REKEY_PER_MIN)
+        # Endpoint changes are rare by nature. A tighter bound than the
+        # general control limiter keeps a peer from forcing endpoint churn.
+        self._endpoint_limiter = RateLimiter(VOICE_MAX_MEDIAPATH_PER_MIN)
         self.debug = False
         self._debug_t0 = {}
 
@@ -3147,8 +5328,13 @@ class VoiceCallManager:
         _print("[voice-dbg %6.2fs] %s: %s"
                % (elapsed, _san(peer, 40), _san(message, 200)))
 
-    def _signal(self, peer: str, verb: str, fields=()) -> None:
+    def _signal(self, peer: str, verb: str, fields=()) -> bool:
         """Send one control message INSIDE the OTR channel.
+
+        Returns True only if the frame was handed to the transport. Most
+        callers ignore it -- a lost REKEY already fails safe on the committed
+        epoch -- but media recovery must not, because it changes our own
+        destination before telling the peer where it went.
 
         Call setup is never sent as plaintext.  An eavesdropper on the XMPP
         link — including the server operator — would otherwise learn who
@@ -3163,13 +5349,23 @@ class VoiceCallManager:
         except Exception as exc:
             _print("[voice] could not encrypt call signal: %s"
                    % _san(str(exc), 120))
-            return
+            return False
         if not (should_send and frame):
             _print("[voice] call signal dropped — OTR channel unavailable "
                    "(signalling is never sent in the clear)")
-            return
-        self.client.send_otr_fragmented(
-            peer, frame if isinstance(frame, str) else frame.decode())
+            return False
+        try:
+            self.client.send_otr_fragmented(
+                peer, frame if isinstance(frame, str) else frame.decode())
+        except Exception as exc:
+            # A dropped signal used to be indistinguishable from a delivered
+            # one. Media recovery cannot afford that: it changes our own
+            # destination and then tells the peer, so a silent failure leaves
+            # the peer addressing an endpoint that no longer exists.
+            _print("[voice] call signal could not be sent: %s"
+                   % _san(str(exc), 120))
+            return False
+        return True
 
     # -- policy -----------------------------------------------------------
 
@@ -3377,6 +5573,7 @@ class VoiceCallManager:
                    % _san(str(exc), 200))
             return False
         session.on_stream_lost = self._handle_stream_lost
+        session.on_media_stalled = self._handle_media_stalled
         session.otr_material = material
         session.debug_binding = self.debug
         session.transition(CallState.INVITING)
@@ -3410,10 +5607,14 @@ class VoiceCallManager:
         return True
 
     async def _await_media(self, peer: str, session) -> None:
-        """Initiator side: block in STREAM ACCEPT, then start audio.
+        """Initiator side: bring the media transport up, then start audio.
 
-        The media stream can come up before the ACCEPT has been processed, so
-        this waits for mutual key confirmation before any audio starts.
+        On the stream transport this blocks in STREAM ACCEPT.  On datagrams
+        there is nothing to accept, so it returns at once and the session
+        simply cannot send until the callee's first packet authenticates and
+        its destination is latched.  Either way the media path can come up
+        before the ACCEPT has been processed, so this waits for mutual key
+        confirmation before any audio starts.
         """
         try:
             await session.accept_media_stream()
@@ -3552,6 +5753,7 @@ class VoiceCallManager:
             "REKEYACK": self._on_rekey_ack,
             "REKEYCOMMIT": self._on_rekey_commit,
             "END": self._on_end,
+            "MEDIAPATH": self._on_media_path,
         }
         handler = handlers.get(verb)
         if handler is None:
@@ -3605,6 +5807,18 @@ class VoiceCallManager:
         if not caller_dest or len(caller_dest) < 64 or len(caller_dest) > 2048:
             self._signal(peer, "REJECT", (call_id.hex(), "bad-destination"))
             return
+        # Normalise to the Destination alone. A peer running the older code
+        # sends the whole SAM private key blob; the datagram source filter
+        # compares against SAM's reported source, which is always the
+        # destination, so the two have to be in the same form or every media
+        # packet is discarded.
+        try:
+            caller_dest = i2p_public_destination(caller_dest)
+        except ValueError as exc:
+            self._vdbg(peer, "INVITE destination did not parse: %s"
+                       % _san(str(exc), 120))
+            self._signal(peer, "REJECT", (call_id.hex(), "bad-destination"))
+            return
 
         now = time.monotonic()
         if now - self._last_invite.get(peer, 0.0) < VOICE_MIN_INVITE_INTERVAL:
@@ -3620,6 +5834,7 @@ class VoiceCallManager:
             self._vdbg(peer, "could not build session: %s" % _san(str(exc), 120))
             return
         session.on_stream_lost = self._handle_stream_lost
+        session.on_media_stalled = self._handle_media_stalled
         session.otr_material = material
         session.debug_binding = self.debug
         session._peer_dest = caller_dest
@@ -3638,15 +5853,28 @@ class VoiceCallManager:
         self._calls[peer] = session
         self._arm_timeout(peer, call_id)
 
-        self._start_ringing(peer)
+        self._start_ringing(peer, call_id)
         _print("\n[voice] incoming call from %s" % _san(peer, 64))
-        _print("[voice] /answer to accept, /reject to decline\n")
+        if self._ringers.get(peer) is not None \
+                and getattr(self._ringers[peer], "_actions", None):
+            _print("[voice] Answer/Decline on the notification, or "
+                   "/answer and /reject here\n")
+        else:
+            _print("[voice] /answer to accept, /reject to decline\n")
 
-    def _start_ringing(self, peer: str) -> None:
+    def _start_ringing(self, peer: str, call_id: bytes = b"") -> None:
         """Ring, notify and vibrate for an incoming call."""
         self._stop_ringing(peer)
+        actions = []
+        if call_id:
+            try:
+                actions = self._call_control.arm(peer, call_id)
+            except Exception as exc:
+                # The buttons are a convenience; the tone and /answer are not.
+                self._vdbg(peer, "call control unavailable: %s"
+                           % _san(str(exc), 120))
         try:
-            ringer = _audio.Ringer()
+            ringer = _audio.Ringer(actions=actions)
             ringer.start(peer=peer, which=_HOST["which"],
                          write_all=_HOST["pipe_write_all"])
             self._ringers[peer] = ringer
@@ -3656,6 +5884,10 @@ class VoiceCallManager:
 
     def _stop_ringing(self, peer: str) -> None:
         """Silence the ringer.  Must run before the call opens playback."""
+        try:
+            self._call_control.disarm(peer)
+        except Exception:
+            pass
         ringer = self._ringers.pop(peer, None)
         if ringer is None:
             return
@@ -3663,6 +5895,32 @@ class VoiceCallManager:
             ringer.stop()
         except Exception:
             pass
+
+    def _on_control_command(self, verb: str, peer: str, call_id: bytes) -> None:
+        """One ACCEPT/DECLINE press.  Event-loop thread only.
+
+        The token proved which call the button belonged to; this re-checks
+        that the call is still that call and still ringing, then takes the
+        ordinary path.  A press that arrives after the call moved on — the
+        caller hung up, the timeout fired, the terminal already answered —
+        does nothing at all.
+        """
+        session = self._calls.get(peer)
+        if session is None or session.call_id != call_id:
+            self._vdbg(peer, "notification %s for a call that has gone" % verb)
+            return
+        if session.state != CallState.RINGING:
+            self._vdbg(peer, "notification %s in state %s — ignored"
+                       % (verb, session.state))
+            return
+        _print("[voice] %s from the notification" % verb)
+        # create_task rather than ensure_future: this runs from the reader
+        # callback, so the manager's own loop is the only correct one and
+        # naming it removes any dependence on a current-loop lookup.
+        if verb == "answer":
+            self.loop.create_task(self.answer_call(peer))
+        else:
+            self.loop.create_task(self.reject_call(peer))
 
     async def _on_accept(self, peer: str, fields) -> None:
         if len(fields) != 4:
@@ -3765,6 +6023,24 @@ class VoiceCallManager:
         """
         if session.state != CallState.ACTIVE:
             return
+
+        # Re-announce the previous commit before asking for the next epoch.
+        #
+        # We commit an epoch the moment the peer's confirmation verifies and
+        # only then send REKEYCOMMIT.  If that one message is lost the peer
+        # stays an epoch behind forever: every REKEY we send afterwards is for
+        # an epoch it considers two ahead, so it rejects all of them and the
+        # call never rekeys again.  Repeating the last commit costs one small
+        # signal per rekey interval and is idempotent — a peer that already
+        # committed has nothing pending and ignores it.  The tag proves the
+        # same thing it proved the first time, and can promote only the exact
+        # epoch it names.
+        last_commit = getattr(session, "_last_rekey_commit", None)
+        if last_commit is not None:
+            self._signal(peer, "REKEYCOMMIT",
+                         (session.call_id.hex(), last_commit[0],
+                          last_commit[1]))
+
         try:
             epoch, kex = session.begin_rekey_initiator()
         except Exception as exc:
@@ -3811,14 +6087,16 @@ class VoiceCallManager:
             self._vdbg(peer, "rekey %d confirmation mismatch — pending key "
                        "discarded, call continues on epoch %d"
                        % (epoch, session.schedule.epoch))
-            session.abort_rekey()
+            session.abort_rekey(discard_receive=True)
             return
 
         if not session.commit_rekey(epoch, peer_confirm):
             session.abort_rekey()
             return
+        commit_hex = our_confirm.hex()
+        session._last_rekey_commit = (epoch, commit_hex)
         self._signal(peer, "REKEYCOMMIT", (session.call_id.hex(), epoch,
-                                           our_confirm.hex()))
+                                           commit_hex))
         self._vdbg(peer, "rekey %d committed" % epoch)
 
     async def _on_rekey(self, peer: str, fields) -> None:
@@ -3843,17 +6121,63 @@ class VoiceCallManager:
         peer_x448 = _hex_field(fields[2], VoiceKeyExchange.PUB_LEN)
         peer_ek = _hex_field(fields[3], MLKEM_EK_LEN)
 
-        if epoch != session.schedule.epoch + 1:
-            # Old, duplicate, skipped and implausible-future epochs all land
-            # here.  An unauthenticated REKEY must not be able to move the
-            # epoch counter at all.
-            self._vdbg(peer, "REKEY epoch %d rejected (expected %d)"
-                       % (epoch, session.schedule.epoch + 1))
+        if epoch <= session.schedule.epoch:
+            # Old and duplicate epochs.  The counter only ever moves forward,
+            # so a REKEY for an epoch we already hold proves nothing and is
+            # the shape a replay takes.
+            self._vdbg(peer, "REKEY epoch %d rejected (already at %d)"
+                       % (epoch, session.schedule.epoch))
             return
+        if epoch > session.schedule.epoch + VOICE_REKEY_MAX_CATCHUP:
+            # An implausible jump.  Bounded so a peer cannot make us derive
+            # arbitrarily far ahead, and so the epoch space cannot be burned.
+            self._vdbg(peer, "REKEY epoch %d rejected (more than %d ahead of %d)"
+                       % (epoch, VOICE_REKEY_MAX_CATCHUP,
+                          session.schedule.epoch))
+            return
+        if epoch > session.schedule.epoch + 1:
+            # The peer is AHEAD of us, not merely next.
+            #
+            # This used to be rejected together with replays, and that is how
+            # a long call lost forward secrecy permanently.  The initiator
+            # commits an epoch as soon as our tag verifies; if the REKEYCOMMIT
+            # that tells us so goes missing, it moves on and we do not.  Every
+            # REKEY afterwards is for an epoch we consider two ahead, so we
+            # rejected all of them -- and no later message could ever repair
+            # it, because the repair was the thing being rejected.
+            #
+            # Catching up is safe.  REKEY arrives inside the authenticated OTR
+            # channel, so only the real peer can send one; accepting it only
+            # DERIVES a pending epoch, and committing still requires a
+            # confirmation tag that only the real peer can produce.  Nothing
+            # is rolled back: the epoch strictly increases either way.
+            self._vdbg(peer, "REKEY epoch %d is ahead of ours (%d) — "
+                       "catching up" % (epoch, session.schedule.epoch))
+            if session.schedule.pending_epoch is not None:
+                session.abort_rekey()
         if session.schedule.pending_epoch is not None:
-            self._vdbg(peer, "REKEY while epoch %d already pending — ignored"
-                       % session.schedule.pending_epoch)
-            return
+            # A pending epoch that is still young belongs to a REKEY we are
+            # already answering: a duplicate or a replay must not restart it.
+            #
+            # An old one is a different animal.  The initiator gives up on an
+            # unanswered rekey after VOICE_REKEY_TIMEOUT and retries with a
+            # fresh key exchange, but the responder had no expiry at all — so
+            # a single REKEYACK or REKEYCOMMIT lost to a control-plane blip
+            # left `pending` set forever and every later REKEY was ignored.
+            # A 69-minute call rekeyed 12 times, lost one REKEYCOMMIT, and
+            # then failed all 15 remaining attempts: no forward-secrecy
+            # refresh for the last 40 minutes.  Give the responder the same
+            # expiry the initiator has, so a blip costs one rekey, not all of
+            # them.
+            age = session.schedule.pending_age
+            if age is not None and age < VOICE_REKEY_TIMEOUT:
+                self._vdbg(peer, "REKEY while epoch %d already pending — "
+                           "ignored" % session.schedule.pending_epoch)
+                return
+            self._vdbg(peer, "pending epoch %d unconfirmed for %.0fs — "
+                       "superseded" % (session.schedule.pending_epoch,
+                                       age or 0.0))
+            session.abort_rekey()
 
         try:
             our_confirm, mlkem_ct, our_x448 = session.rekey_responder(
@@ -3861,7 +6185,7 @@ class VoiceCallManager:
         except Exception as exc:
             self._vdbg(peer, "rekey %d rejected: %s"
                        % (epoch, _san(str(exc), 120)))
-            session.abort_rekey()
+            session.abort_rekey(discard_receive=True)
             return
 
         self._signal(peer, "REKEYACK", (session.call_id.hex(), epoch,
@@ -3901,8 +6225,14 @@ class VoiceCallManager:
         epoch = _epoch_field(fields[1])
         peer_confirm = _hex_field(fields[2], CONFIRM_LEN)
         if session.schedule.pending_epoch != epoch:
-            self._vdbg(peer, "REKEYCOMMIT for epoch %d with none pending"
-                       % epoch)
+            if epoch <= session.schedule.epoch:
+                # The initiator repeats its last commit with every REKEY.
+                # Once we have committed that epoch the repeat is a no-op.
+                self._vdbg(peer, "REKEYCOMMIT for epoch %d already applied"
+                           % epoch)
+            else:
+                self._vdbg(peer, "REKEYCOMMIT for epoch %d with none pending"
+                           % epoch)
             return
         if session.commit_rekey(epoch, peer_confirm):
             self._vdbg(peer, "rekey %d committed" % epoch)
@@ -3957,15 +6287,116 @@ class VoiceCallManager:
                 cur = session.stats
                 delta = {k: cur.get(k, 0) - last.get(k, 0) for k in cur}
                 last = dict(cur)
-                self._vdbg(peer, "5s: tx=%d rx=%d drop=%d late=%d authfail=%d "
-                           "replay=%d jitter=%d/%d epoch=%d %s"
-                           % (delta.get("sent", 0), delta.get("recv", 0),
-                              delta.get("dropped", 0), delta.get("late", 0),
+                # backpressure and stale are the two counters that tell a
+                # congested path apart from a lossy one: a path that is simply
+                # dropping shows rx far below tx with both at zero, whereas a
+                # path whose queues are full shows them climbing while rx
+                # arrives in bursts. Without them in this line the two look
+                # identical, which is how a 24-second send queue went
+                # undiagnosed across several calls.
+                # jitter is reported as depth/target with the measured
+                # arrival deviation and the resulting buffer delay beside it.
+                # depth/max said nothing about whether the buffer was sized
+                # for the path or merely parked at its shed threshold, which
+                # is what it was doing at 840 ms.
+                # dg= is the raw arrival count. rx=0 with dg=0 means the
+                # path is dead; rx=0 with dg>0 means it is not, and the fault
+                # is above the transport. The live failure could not be
+                # classified because this number did not exist.
+                self._vdbg(peer, "5s: tx=%d dg=%d rx=%d drop=%d bp=%d "
+                           "stale=%d "
+                           "foreign=%d late=%d nokey=%d authfail=%d replay=%d "
+                           "jitter=%d/%d jit=%.0fms buf=%dms epoch=%d %s"
+                           % (delta.get("sent", 0), delta.get("dgram_in", 0),
+                              delta.get("recv", 0),
+                              delta.get("dropped", 0),
+                              delta.get("backpressure", 0),
+                              delta.get("stale", 0),
+                              delta.get("foreign", 0),
+                              delta.get("late", 0),
+                              delta.get("rej_no_key", 0),
                               delta.get("auth_fail", 0), delta.get("replay", 0),
-                              session.jitter.depth(), VOICE_JITTER_MAX,
+                              session.jitter.depth(),
+                              session.jitter.target_depth,
+                              session.jitter.jitter_ms,
+                              session.jitter.depth() * VOICE_FRAME_MS,
                               session.schedule.epoch,
                               session.latency.summary()))
-                expect = 1000 // VOICE_FRAME_MS * 5
+                # A call can run its whole length with rtt=- and oneway=-,
+                # which says only that no probe completed -- not whether the
+                # PINGs went out, whether they were answered, or whether the
+                # answers timed out. Those three are already tracked; printing
+                # them is what turns "no measurement" into a measurement.
+                # Levels. "Hard to hear on one phone, clear on the other"
+                # is a measurable statement and was left unmeasured for
+                # several calls; the two devices differed by 17 dB at the
+                # microphone.
+                try:
+                    session._mic_gain.sample()
+                    session._speaker_gain.sample()
+                    self._vdbg(peer, "levels: %s %s"
+                               % (session._mic_gain.summary(),
+                                  session._mic_comp.summary()))
+                    self._vdbg(peer, "levels: %s %s"
+                               % (session._speaker_gain.summary(),
+                                  session._speaker_comp.summary()))
+                except Exception:
+                    pass
+                # Distributions, not just the current value. Phase 2 of the
+                # brief asks where every millisecond goes; a single instant
+                # cannot answer that, and the tail is what sets the buffer.
+                try:
+                    lo, hi = session.jitter.sample_depth()
+                    self._vdbg(peer,
+                               "spacing: %s | buffer depth %d-%d frames "
+                               "(%d-%d ms) target %d | underrun=%d "
+                               "overflow=%d shed=%d bursts=%d"
+                               % (session.jitter.spacing.summary(),
+                                  lo, hi, lo * VOICE_FRAME_MS,
+                                  hi * VOICE_FRAME_MS,
+                                  session.jitter.target_depth,
+                                  session.jitter.stats["underrun"],
+                                  session.jitter.stats["overflow"],
+                                  session.jitter.stats["drift"],
+                                  session.jitter.stats["burst_drain"]))
+                    self._vdbg(peer, "rtt: %s"
+                               % session.latency.rtt_pct.summary())
+                    # The decomposition. p50/p95 per stage, in ms.
+                    self._vdbg(peer, "stages(p50/p95): %s"
+                               % session.stages.summary())
+                    self._vdbg(peer, "dwell: %s | loop lag: %s"
+                               % (session.jitter.dwell.summary(),
+                                  self.loop_lag.summary()))
+                    # The headline: how much of the reported one-way figure
+                    # this device produced rather than the network.
+                    oneway = session.latency.oneway_ms or 0.0
+                    local = session.stages.local_send_ms()
+                    if oneway > 0:
+                        dwell = session.jitter.dwell.percentile(0.50)
+                        playout = (session.stages.t["decode"].percentile(0.50)
+                                   + session.stages.t["play"].percentile(0.50))
+                        m2e = oneway + dwell + playout
+                        self._vdbg(
+                            peer,
+                            "budget: one-way %s = local send %.0fms + "
+                            "network %.0fms (%.0f%% local) | + dwell %.0fms "
+                            "+ playout %.0fms = mouth-to-ear ~%s"
+                            % (colour_latency(oneway), local,
+                               max(0.0, oneway - local),
+                               100.0 * local / oneway, dwell, playout,
+                               colour_latency(m2e)))
+                except Exception:
+                    pass
+                lat = session.latency
+                if lat.sent and not lat.answered:
+                    self._vdbg(peer,
+                               "probes: %d sent, 0 answered, %d timed out — "
+                               "latency cannot be reported until one "
+                               "completes" % (lat.sent, lat.timed_out))
+                # 5000 // FRAME_MS, not (1000 // FRAME_MS) * 5: at 60 ms the
+                # latter truncates 16.67 to 16 and reports the expectation as
+                # 80 frames instead of 83.
+                expect = 5000 // VOICE_FRAME_MS
                 if delta.get("recv", 0) == 0:
                     self._vdbg(peer, "WARNING: no audio received in 5 s")
                 elif delta.get("recv", 0) < expect // 2:
@@ -3977,13 +6408,205 @@ class VoiceCallManager:
         except Exception:
             pass
 
+    async def _loop_lag_monitor(self) -> None:
+        """Measure how late the shared event loop runs its own timers.
+
+        otrv4plus_xmpp hands this manager asyncio.get_event_loop() -- the same
+        loop slixmpp runs on. Media sendto, AEAD verify and decrypt for every
+        inbound frame, XMPP TLS and XML, OTR handling including ML-DSA-87
+        verification, and rekey key generation all execute on that one thread,
+        and the GIL means none of it overlaps.
+
+        So XMPP work delays media, and in the existing telemetry that is
+        indistinguishable from network jitter -- both show up as irregular
+        arrival spacing. Sleeping for a known interval and measuring the
+        overshoot separates them: lag here is ours, spacing minus lag is the
+        path's.
+
+        Ten samples a second, one timer each. Negligible against the media
+        work already on this loop, and it is the only way to tell a busy loop
+        from a slow network.
+        """
+        interval = 0.1
+        try:
+            while True:
+                start = time.monotonic()
+                await asyncio.sleep(interval)
+                overshoot = (time.monotonic() - start - interval) * 1000.0
+                self.loop_lag.add(max(0.0, overshoot))
+        except asyncio.CancelledError:
+            pass
+        except Exception:
+            pass
+
     def _start_stats(self, peer: str) -> None:
         if not self.debug:
             return
         task = self._stats_tasks.get(peer)
         if task is None or task.done():
+            # Once per call, so the colours mean something without having to
+            # remember the thresholds.
+            self._vdbg(peer, latency_legend())
             self._stats_tasks[peer] = asyncio.ensure_future(
                 self._stats_loop(peer))
+        # One monitor for the loop, not one per call: it measures the loop,
+        # and there is only one of those.
+        if self._lag_task is None or self._lag_task.done():
+            self._lag_task = asyncio.ensure_future(self._loop_lag_monitor())
+
+    # -- media endpoint recovery -------------------------------------------
+
+    def _control_plane_ready(self, peer: str) -> bool:
+        """Whether an authenticated signal can actually reach the peer now.
+
+        Media recovery is not a local operation: it replaces our destination
+        and then tells the peer where it moved. Doing the first half without
+        the second is strictly worse than doing nothing -- the peer keeps
+        addressing an endpoint we have just destroyed, and the old one can no
+        longer come back when the router rebuilds its tunnels.
+
+        A WiFi-to-mobile transition takes both planes down together, and the
+        media watchdog fires at 15 s while XMPP reconnects in 10-70 s, so
+        this is the common case rather than a corner one.
+        """
+        client = self.client
+        try:
+            is_connected = getattr(client, "is_connected", None)
+            if is_connected is not None and not is_connected():
+                return False
+        except Exception:
+            return False
+        try:
+            return bool(client.otr.has_encrypted_session(peer))
+        except Exception:
+            return False
+
+    def _handle_media_stalled(self, peer: str, call_id: bytes) -> bool:
+        """The session's watchdog wants its media endpoint replaced.
+
+        Called on the event loop from the watchdog. Returns True only if a
+        recovery task was actually started; False refunds the attempt, since
+        the budget bounds rebuilds rather than bounding how often we ask.
+
+        Starts at most one task per session; the session set _recovering and
+        counted the attempt, and the task clears the flag however it ends.
+        """
+        session = self._calls.get(peer)
+        if session is None or session.call_id != call_id:
+            return False
+        existing = session._recover_task
+        if existing is not None and not existing.done():
+            return False
+        if not self._control_plane_ready(peer):
+            self._vdbg(peer, "media recovery deferred — no signalling path "
+                             "to announce a new endpoint on")
+            return False
+        session._recover_task = self.loop.create_task(
+            self._recover_media(peer, call_id))
+        return True
+
+    async def _recover_media(self, peer: str, call_id: bytes) -> None:
+        """Replace our media endpoint and tell the peer where it moved.
+
+        Bound to the call_id at every step that can outlive an await: a
+        rebuild takes as long as an I2P tunnel build, and the call it started
+        for can end, be replaced, or be torn down while the router works.
+        Nothing here may act on the call that replaced this one.
+        """
+        session = self._calls.get(peer)
+        if session is None or session.call_id != call_id:
+            return
+        # An endpoint we already replaced but never managed to announce needs
+        # the announcement, not another endpoint.
+        announce_only = bool(session._endpoint_announce_pending
+                             and session._our_dest)
+        if announce_only:
+            _print("[voice] re-announcing the media path — the signalling "
+                   "channel was down when it moved")
+        else:
+            _print("[voice] rebuilding the media path (%d/%d) — this takes as "
+                   "long as a new I2P tunnel"
+                   % (session._recover_attempts, VOICE_RECOVER_ATTEMPTS))
+        # The deadline is handed back on EVERY exit, including cancellation.
+        # A suspended deadline that is never returned would leave the call
+        # dead and silent forever, which is the condition all of this exists
+        # to remove -- so it is structural rather than something to get right
+        # at each of five return paths.
+        try:
+            if not announce_only:
+                try:
+                    await asyncio.wait_for(session.rebuild_media_endpoint(),
+                                           timeout=VOICE_RECOVER_TIMEOUT_S)
+                except asyncio.CancelledError:
+                    raise
+                except asyncio.TimeoutError:
+                    self._vdbg(peer, "media rebuild timed out")
+                    return
+                except Exception as exc:
+                    self._vdbg(peer, "media rebuild failed: %s"
+                               % _san(str(exc), 120))
+                    return
+
+            # Re-resolve: the call may have ended or been replaced while the
+            # router was building tunnels.
+            session = self._calls.get(peer)
+            if session is None or session.call_id != call_id:
+                return
+            try:
+                epoch, seq, destination, tag = \
+                    session.build_endpoint_announcement()
+            except Exception as exc:
+                self._vdbg(peer, "endpoint announcement failed: %s"
+                           % _san(str(exc), 120))
+                return
+            if self._signal(peer, "MEDIAPATH", (call_id.hex(), epoch, seq,
+                                                destination, tag.hex())):
+                session._endpoint_announce_pending = False
+                self._vdbg(peer, "announced media endpoint seq=%d epoch=%d"
+                           % (seq, epoch))
+            else:
+                # The endpoint moved and the peer does not know. Rebuilding
+                # again would strand a second one; retry the announcement.
+                session._endpoint_announce_pending = True
+                session._recover_attempts = max(
+                    0, session._recover_attempts - 1)
+                self._vdbg(peer, "endpoint announcement could not be sent — "
+                                 "will retry when signalling returns")
+        finally:
+            self._finish_recovery(peer, call_id)
+
+    def _finish_recovery(self, peer: str, call_id: bytes) -> None:
+        """Hand the deadline back to the watchdog.  Idempotent."""
+        session = self._calls.get(peer)
+        if session is None or session.call_id != call_id:
+            return
+        session._recovering = False
+
+    async def _on_media_path(self, peer: str, fields) -> None:
+        """The peer's media endpoint moved.  Adopt it if it authenticates."""
+        if len(fields) != 5:
+            raise SignalError("MEDIAPATH takes 5 fields")
+        session = self._call_for(peer, fields[0])
+        if session is None:
+            return
+        if not self._endpoint_limiter.allow(peer):
+            self._vdbg(peer, "endpoint announcement rate limit hit — dropped")
+            return
+        epoch = _epoch_field(fields[1])
+        seq = _epoch_field(fields[2])
+        destination = fields[3]
+        if not destination or len(destination) > 2048:
+            self._vdbg(peer, "MEDIAPATH carried no usable destination")
+            return
+        tag = _hex_field(fields[4], CONFIRM_LEN)
+        reason = session.accept_endpoint(epoch, seq, destination, tag)
+        if reason != "ok":
+            self._vdbg(peer, "MEDIAPATH seq=%d rejected: %s"
+                       % (seq, _san(reason, 80)))
+            return
+        _print("[voice] %s moved its media path — audio should resume"
+               % _san(peer, 64))
+        self._vdbg(peer, "adopted endpoint seq=%d epoch=%d" % (seq, epoch))
 
     def _handle_stream_lost(self, peer: str, call_id: bytes, why: str) -> None:
         """Media path died by itself.
@@ -4046,8 +6669,23 @@ class VoiceCallManager:
         else:
             _print("[voice] no active call")
 
+    def _stop_lag_monitor(self) -> None:
+        """Cancel the loop-lag monitor. Idempotent."""
+        task = self._lag_task
+        self._lag_task = None
+        if task is not None and not task.done():
+            try:
+                task.cancel()
+            except Exception:
+                pass
+
     async def cleanup(self) -> None:
         """End every call gracefully and destroy every media key."""
+        self._stop_lag_monitor()
+        try:
+            self._call_control.shutdown()
+        except Exception:
+            pass
         for peer in list(self._calls.keys()):
             try:
                 await self.end_call(peer, notify_peer=True)
@@ -4058,8 +6696,13 @@ class VoiceCallManager:
 
     def cleanup_sync(self) -> int:
         """Synchronous teardown for paths with no usable event loop."""
+        self._stop_lag_monitor()
         for peer in list(self._ringers):
             self._stop_ringing(peer)
+        try:
+            self._call_control.shutdown()
+        except Exception:
+            pass
         count = 0
         for peer in list(self._calls.keys()):
             session = self._calls.pop(peer, None)
