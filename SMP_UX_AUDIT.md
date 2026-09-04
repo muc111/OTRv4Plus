@@ -268,11 +268,60 @@ A voice call followed on the same verified session: 5½ minutes, two rekeys
 settling at ~725 ms. Recorded here only because it shares the session; the
 voice numbers belong in VOICE_MEDIA_PATH.md.
 
+### 8.3.2 Third device run, v10.15.1 — the responder flow, confirmed
+
+Both handsets on v10.15.1, neither with a stored passphrase. Bob typed `/smp`;
+Alice typed nothing. **This is the case the whole feature exists for, and it
+had never once run.**
+
+Alice's side, in order:
+
+```
+/smp                     → no encrypted session with bob@… Run /otr first.
+[otr] handshake: received DAKE1 … DAKE3 → ENCRYPTED, fingerprint PINNED
+[otr] receiving 1/2 fragments from bob@…
+🔐 SMP · Your peer asked to verify this session. A shared passphrase is
+         needed to answer.
+════════════════════════════════════════════
+🔐 SMP VERIFICATION REQUEST
+   bob@… wants to verify this encrypted session using a passphrase you
+   agreed in advance.
+   Press  y  to enter that passphrase, or  n  to decline.
+   Nothing you type now is sent to them, and typing an ordinary message
+   here just sends an ordinary message.
+════════════════════════════════════════════
+y
+[smp] Enter the passphrase you agreed with this contact.
+[smp] Passphrase (hidden), or Enter to cancel:
+[smp] Passphrase stored — answering your peer…
+🔐 SMP step 2/4 · Passphrase accepted - answering the challenge…
+[smp] Answered — verification in progress…
+🔐 SMP step 4/4 · IDENTITY VERIFIED
+```
+
+Every link in the chain is visible there: the SMP1 arrived, the engine
+**held** it rather than aborting, the banner was raised by a remote message,
+the hidden read opened only after a local `y`, and — the point of holding —
+step 2/4 says *answering the challenge*, not restarting one. The SMP1 Bob
+sent before Alice had any passphrase is the SMP1 she answered.
+
+Bob's side went 1/4 → 2/4 → 3/4 → 4/4 as a plain initiator with no glare, and
+both ended VERIFIED.
+
+Also confirmed incidentally: `/smp` before a session exists is refused with
+"no encrypted session … Run /otr first" rather than arming anything.
+
+**Status of §8.4's plan after three runs:** steps 1, 2, 3, 5, 6 and 11 have
+now been observed. Steps 4 (an ordinary message typed at the banner), 7 (`n`
+to decline), 8 (a deliberately wrong passphrase), 9 (letting the request
+expire) and 10 (going offline with the banner open) have not.
+
 ### 8.4 Still not tested
 
-The responder prompt **has never been seen working on a device**, because
-defect 1 made it unreachable. Both handsets need v10.15.1 before step 3 below
-means anything. The following is the plan, not a result.
+Step 4 is the one that matters most and is still unrun: it is the security
+property the design exists for, and a unit test can be wrong about it in a way
+a phone would notice. The following is the plan; the rows marked **done** were
+observed in §8.3.1 and §8.3.2.
 
 | # | Step | Pass condition |
 |---|---|---|
