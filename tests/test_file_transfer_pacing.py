@@ -63,8 +63,17 @@ class _Transfer:
         class _Offer:
             transfer_id = b"\x01" * 16
             filename = "photo.png"
+            chunk_count = chunks
+            plaintext_size = chunks * 16 * 1024
+
+            @staticmethod
+            def human_size():
+                return "%d KB" % (chunks * 16)
+
         self.offer = _Offer()
         self.accepted = False
+        self.started_at = 0.0
+        self.last_report_at = 0.0
 
 
 def _manager(transport, spawn=None):

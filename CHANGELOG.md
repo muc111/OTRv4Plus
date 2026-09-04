@@ -4,6 +4,59 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## v10.18.0 — a transfer says what it is doing, and says when it is done
+
+*2026-09-04.  `VERSION → 10.18.0`.  Python only.  Minor bump: new user-visible
+output.*
+
+A 254-byte transfer was accepted and then printed nothing at all. It very
+likely worked. There was no way to tell.
+
+**A completed transfer was silent.** `on_done` verified the hashes, placed the
+file and returned its path — and `handle_control` discards a handler's return
+value. So the announcement went into a value nothing read: the file appeared in
+`~/.otrv4plus/files` and the user was never told it had arrived, where it went,
+or that its hashes checked out. Both ends now say so:
+
+```
+[file] received holiday-photo.jpg (1.9 MB) — hashes verified, saved to …
+[file] sent holiday-photo.jpg (1.9 MB) in 1:14 — waiting for bob@… to verify it
+```
+
+**And nothing reported progress.** `render_progress` had existed since
+v10.14.0, with its own tests, and was never once called by the client. Over
+I2P a transfer takes a minute or more, so "is this working or has it stalled?"
+was unanswerable — which is precisely the question that mattered while the
+transport bugs of v10.16.2 and v10.17.1 were being hunted. Both directions now
+report:
+
+```
+[file] ↓ holiday-photo.jpg [████░░░░░░] 40% · 784.8 KB/1.9 MB · 21.2 KB/s · ETA 0:54
+[file] ↑ holiday-photo.jpg [█████░░░░░] 50% · 981.0 KB/1.9 MB · 26.5 KB/s · ETA 0:36
+```
+
+Three things the numbers get right rather than approximately right:
+
+* **The clock starts at accept, not at the offer.** The gap while a human
+  reads the prompt is not transfer time, and counting it makes every rate and
+  ETA wrong for the whole run.
+* **No ETA is extrapolated from a single instant.** One chunk in a fraction of
+  a second gives an absurd rate and an ETA of zero on a transfer that will
+  take a minute; rate and ETA appear once there is a second of history to
+  divide by. An unknown duration prints `--` rather than a confident `0:00`.
+* **One line a second, not one per chunk.** 119 chunks would be 119 lines —
+  the same wall of text the rate-limit log used to produce. The final line is
+  never throttled away, so a transfer always ends on `100%`.
+
+The filename in every line goes through `sanitise_filename`; it is remote
+input, and a progress line is not exempt from that.
+
+24 tests, 4 mutations applied and killed: the completion announcement back in
+the discarded return value, the receiver's progress removed, the throttle
+removed, and an ETA invented from no elapsed time.
+
+---
+
 ## v10.17.2 — NOTICE, generated from the graph rather than written by hand
 
 *2026-09-04.  `VERSION → 10.17.2`.  No code change.  The attribution file

@@ -724,6 +724,9 @@ class OutgoingTransfer:
     accepted: bool = False
     cancelled: bool = False
     started_at: float = field(default_factory=time.monotonic)
+    #: When the last progress line was printed, so they are throttled rather
+    #: than one per chunk.
+    last_report_at: float = 0.0
 
     @property
     def progress(self) -> float:
@@ -742,6 +745,11 @@ class IncomingTransfer:
     accepted: bool = False
     cancelled: bool = False
     offered_at: float = field(default_factory=time.monotonic)
+    #: When the first chunk could arrive, i.e. when it was accepted.  The
+    #: rate must not be measured from the OFFER: the gap while a human reads
+    #: the prompt would be counted as transfer time and make every ETA wrong.
+    started_at: float = 0.0
+    last_report_at: float = 0.0
     #: Inbound messages this transfer may cost before the chat rate limiter
     #: applies again.  Set on accept from the offer's own chunk count, so the
     #: exemption is bounded by the file the USER agreed to receive rather than
@@ -759,6 +767,32 @@ def render_progress(fraction: float, width: int = 10) -> str:
     filled = int(round(max(0.0, min(1.0, fraction)) * width))
     return "[%s%s] %d%%" % ("█" * filled, "░" * (width - filled),
                             int(round(fraction * 100)))
+
+
+def human_bytes(n: float) -> str:
+    """`Offer.human_size` for an arbitrary count, not just a whole file."""
+    n = float(max(0, n))
+    for unit in ("B", "KB", "MB", "GB"):
+        if n < 1024 or unit == "GB":
+            return "%d B" % n if unit == "B" else "%.1f %s" % (n, unit)
+        n /= 1024
+    return "%d B" % n
+
+
+def human_duration(seconds: float) -> str:
+    """m:ss, or h:mm:ss past an hour.  `--` when it cannot be known yet."""
+    if seconds is None or seconds < 0 or seconds != seconds:      # NaN
+        return "--"
+    seconds = int(seconds)
+    if seconds >= 3600:
+        return "%d:%02d:%02d" % (seconds // 3600,
+                                 (seconds % 3600) // 60, seconds % 60)
+    return "%d:%02d" % (seconds // 60, seconds % 60)
+
+
+#: Seconds between progress lines.  One line per chunk is 119 lines for a
+#: 1.9 MB file, which is the same wall of text the rate-limit log was.
+_PROGRESS_INTERVAL_S = 1.0
 
 
 # --------------------------------------------------------------------------
@@ -799,6 +833,52 @@ class FileTransferManager:
         # was ~430 of them each printing "DATA rejected: no such transfer".
         # The reason is worth saying once, not once per straggler.
         self._abandoned: Dict[str, int] = {}
+
+    def _report_progress(self, transfer, arrow: str, done_chunks: int,
+                         force: bool = False) -> None:
+        """One progress line, at most once a second.
+
+        A transfer over I2P takes a minute or more and said nothing at all
+        while it ran, so there was no way to tell a working transfer from a
+        stalled one -- which is exactly the distinction the user needed while
+        the transport bugs were being found.
+
+        Throttled rather than per-chunk: 119 chunks is 119 lines, the same
+        wall of text the rate-limit log used to produce. `force` is for the
+        last one, which must always be shown however recently the previous
+        line went out.
+        """
+        offer = transfer.offer
+        total_chunks = max(1, getattr(offer, "chunk_count", 1))
+        now = time.monotonic()
+        if not force and now - transfer.last_report_at < _PROGRESS_INTERVAL_S:
+            return
+        transfer.last_report_at = now
+
+        fraction = min(1.0, done_chunks / total_chunks)
+        total_bytes = getattr(offer, "plaintext_size", 0) or 0
+        done_bytes = int(total_bytes * fraction)
+
+        started = getattr(transfer, "started_at", 0.0) or now
+        elapsed = max(0.0, now - started)
+        # Rate and ETA need a little history: from one chunk in a fraction of
+        # a second, extrapolating gives an absurd figure and an ETA of zero.
+        rate = ""
+        eta = ""
+        if elapsed >= 1.0 and done_bytes > 0:
+            per_sec = done_bytes / elapsed
+            rate = " · %s/s" % human_bytes(per_sec)
+            if per_sec > 0 and fraction < 1.0:
+                eta = " · ETA %s" % human_duration(
+                    (total_bytes - done_bytes) / per_sec)
+        if fraction >= 1.0:
+            eta = " · %s" % human_duration(elapsed)
+
+        self._notify("[file] %s %s %s · %s/%s%s%s"
+                     % (arrow, sanitise_filename(offer.filename),
+                        render_progress(fraction),
+                        human_bytes(done_bytes), human_bytes(total_bytes),
+                        rate, eta))
 
     def absorb_transfer_message(self, peer: str) -> bool:
         """Spend one message of an accepted transfer's rate allowance.
@@ -927,6 +1007,13 @@ class FileTransferManager:
         if index >= len(sealed):
             self.transport.send_control(transfer.peer, "DONE",
                                         transfer.offer.transfer_id.hex())
+            self._notify("[file] sent %s (%s) in %s — waiting for %s to "
+                         "verify it"
+                         % (sanitise_filename(transfer.offer.filename),
+                            transfer.offer.human_size(),
+                            human_duration(time.monotonic()
+                                           - transfer.started_at),
+                            transfer.peer))
             return False
         if not self.transport.send_chunk(
                 transfer.peer, transfer.offer.transfer_id, index,
@@ -934,6 +1021,8 @@ class FileTransferManager:
             self.cancel(transfer.offer.transfer_id, "the transport failed")
             return False
         transfer.chunks_sent = index + 1
+        self._report_progress(transfer, "↑", transfer.chunks_sent,
+                              force=(transfer.chunks_sent == len(sealed)))
         return True
 
     def _pump(self, transfer: OutgoingTransfer) -> None:
@@ -978,6 +1067,10 @@ class FileTransferManager:
         transfer.handle = os.fdopen(fd, "wb")
         transfer.tmp_path = tmp
         transfer.accepted = True
+        # The clock starts here, not at the offer: the gap while a human reads
+        # the prompt is not transfer time, and counting it makes every rate
+        # and ETA wrong for the whole run.
+        transfer.started_at = time.monotonic()
         transfer.rate_allowance = (transfer.offer.chunk_count
                                    * _STANZAS_PER_CHUNK_CEILING
                                    + _TRANSFER_RATE_SLACK)
@@ -1064,17 +1157,32 @@ class FileTransferManager:
                                 "abandoned" % index) from exc
         transfer.handle.write(plain)
         transfer.chunks_received = index + 1
+        self._report_progress(transfer, "↓", transfer.chunks_received,
+                              force=is_final)
 
     def on_done(self, peer: str, payload: str) -> str:
-        """Verify everything, then place the file.  Returns the final path."""
+        """Verify everything, then place the file.  Returns the final path.
+
+        And SAYS SO. `handle_control` discards a handler's return value, so
+        for as long as the announcement lived in the return, a completed
+        transfer printed nothing at all: the file appeared on disk and the
+        user had no way to tell success from a transfer that had silently
+        stalled. Found on a device, with a 254-byte file that very likely
+        worked.
+        """
         transfer = self._require_incoming(bytes.fromhex(payload.strip()))
         if transfer.peer != peer:
             raise TransferError("completion from the wrong peer")
         try:
-            return self._finish(transfer)
+            final = self._finish(transfer)
         except Exception:
             self._destroy_incoming(transfer)
             raise
+        self._notify(
+            "[file] received %s (%s) — hashes verified, saved to %s"
+            % (sanitise_filename(transfer.offer.filename),
+               transfer.offer.human_size(), final))
+        return final
 
     def _finish(self, transfer: IncomingTransfer) -> str:
         offer = transfer.offer

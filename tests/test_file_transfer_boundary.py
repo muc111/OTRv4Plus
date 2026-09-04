@@ -18,6 +18,7 @@ import inspect
 import os
 import sys
 import tempfile
+import time
 
 import pytest
 
@@ -717,3 +718,164 @@ class TestPythonHoldsNoKey:
         for note in wire.notes:
             assert len(note) < 400, (
                 "a notification is long enough to be carrying a payload")
+
+
+class TestATransferSaysWhatItIsDoing:
+    """A transfer over I2P takes a minute or more and said nothing at all.
+
+    `render_progress` existed and was tested, and was never once called by
+    the client. Worse, `handle_control` discards a handler's return value, so
+    `on_done` returning the final path meant a COMPLETED transfer printed
+    nothing: the file appeared on disk and there was no way to tell success
+    from a silent stall. Found on a device with a 254-byte file that very
+    likely worked.
+    """
+
+    def _run(self, wired, size=200_000):
+        """A whole transfer, collecting every line either side printed."""
+        wire, a_ratchet, b_ratchet = wired
+        said = []
+        wire.alice._notify = said.append
+        wire.bob._notify = said.append
+        path, _ = _source_file(size)
+        transfer = wire.alice.offer_file("bob", path, a_ratchet)
+        incoming = wire.bob.find_incoming(
+            wire.alice._key(transfer.offer.transfer_id)[:8])
+        wire.bob.accept(incoming.offer.transfer_id, b_ratchet)
+        # Force every progress line: the throttle would swallow them in a
+        # test that runs in milliseconds, and the point is the content.
+        real = wire.alice._report_progress
+        wire.alice._report_progress = (
+            lambda t, a, d, force=False: real(t, a, d, force=True))
+        real_b = wire.bob._report_progress
+        wire.bob._report_progress = (
+            lambda t, a, d, force=False: real_b(t, a, d, force=True))
+        wire.alice._pump(transfer)
+        return said
+
+    def test_the_receiver_reports_progress(self, wired):
+        said = self._run(wired)
+        down = [ln for ln in said if "↓" in ln]
+        assert down, "the receiver printed no progress at all: %r" % said[:4]
+
+    def test_the_sender_reports_progress(self, wired):
+        said = self._run(wired)
+        up = [ln for ln in said if "↑" in ln]
+        assert up, "the sender printed no progress at all"
+
+    def test_progress_carries_a_bar_and_a_percentage(self, wired):
+        said = self._run(wired)
+        bars = [ln for ln in said if "█" in ln or "░" in ln]
+        assert bars, "no progress bar was rendered"
+        assert any("%" in ln for ln in bars), "no percentage"
+
+    def test_progress_carries_bytes_done_and_total(self, wired):
+        said = self._run(wired)
+        bars = [ln for ln in said if "█" in ln or "░" in ln]
+        assert any("/" in ln and ("KB" in ln or "B" in ln) for ln in bars), (
+            "progress does not say how much of how many: %r" % bars[:2])
+
+    def test_the_last_progress_line_reaches_100_percent(self, wired):
+        said = self._run(wired)
+        assert any("100%" in ln for ln in said), (
+            "a completed transfer never showed 100%%: %r" % said[-3:])
+
+    def test_completion_is_announced_to_the_receiver(self, wired):
+        """The defect: it was in the RETURN VALUE, which is thrown away."""
+        said = self._run(wired)
+        done = [ln for ln in said if "received" in ln]
+        assert done, "a completed transfer said nothing: %r" % said[-3:]
+        assert any("verified" in ln for ln in done), (
+            "it does not say the hashes were checked, which is the point")
+
+    def test_completion_names_where_the_file_went(self, wired):
+        """A file saved somewhere the user cannot find has not arrived."""
+        said = self._run(wired)
+        done = [ln for ln in said if "received" in ln]
+        assert any("saved to" in ln for ln in done), done
+
+    def test_the_sender_is_told_the_file_is_away(self, wired):
+        said = self._run(wired)
+        assert any("sent" in ln and "waiting for" in ln for ln in said), (
+            "the sender never learns the transfer finished: %r" % said[-3:])
+
+    def test_nothing_printed_carries_the_filename_unsanitised(self, wired):
+        """Every line naming the file goes through sanitise_filename: it is
+        remote input, and a progress line is not exempt from that."""
+        import inspect
+        for fn in (ft.FileTransferManager._report_progress,
+                   ft.FileTransferManager.on_done):
+            src = inspect.getsource(fn)
+            if "offer.filename" in src:
+                assert "sanitise_filename(offer.filename)" in src \
+                    or "sanitise_filename(transfer.offer.filename)" in src, (
+                    "%s prints a raw peer-supplied filename" % fn.__name__)
+
+
+class TestProgressIsThrottled:
+    """119 chunks must not be 119 lines -- that is the wall of text the
+    rate-limit log used to produce."""
+
+    def test_repeats_inside_the_interval_are_dropped(self, wired):
+        wire, a_ratchet, b_ratchet = wired
+        said = []
+        wire.alice._notify = said.append
+        path, _ = _source_file(200_000)
+        transfer = wire.alice.offer_file("bob", path, a_ratchet)
+        transfer.started_at = time.monotonic()
+        for n in range(1, 40):
+            wire.alice._report_progress(transfer, "↑", n)
+        assert len(said) <= 2, "%d lines for 39 chunks" % len(said)
+
+    def test_the_final_line_is_never_throttled_away(self, wired):
+        wire, a_ratchet, _b = wired
+        said = []
+        wire.alice._notify = said.append
+        path, _ = _source_file(200_000)
+        transfer = wire.alice.offer_file("bob", path, a_ratchet)
+        transfer.started_at = time.monotonic()
+        wire.alice._report_progress(transfer, "↑", 1)
+        said.clear()
+        wire.alice._report_progress(transfer, "↑", transfer.offer.chunk_count,
+                                    force=True)
+        assert said, "the 100% line was swallowed by the throttle"
+        assert "100%" in said[-1]
+
+
+class TestTheDurationAndSizeFormatters:
+
+    @pytest.mark.parametrize("n,expected", [
+        (0, "0 B"), (512, "512 B"), (1024, "1.0 KB"),
+        (1536, "1.5 KB"), (1024 * 1024, "1.0 MB"),
+    ])
+    def test_bytes_read_as_sizes(self, n, expected):
+        assert ft.human_bytes(n) == expected
+
+    def test_a_negative_count_does_not_produce_nonsense(self):
+        assert ft.human_bytes(-5) == "0 B"
+
+    @pytest.mark.parametrize("s,expected", [
+        (0, "0:00"), (9, "0:09"), (75, "1:15"), (3600, "1:00:00"),
+        (3725, "1:02:05"),
+    ])
+    def test_durations_read_as_clocks(self, s, expected):
+        assert ft.human_duration(s) == expected
+
+    def test_an_unknown_duration_says_so_rather_than_lying(self):
+        """An ETA of "0:00" on a transfer that has not started is worse than
+        admitting the number is not known yet."""
+        assert ft.human_duration(-1) == "--"
+        assert ft.human_duration(float("nan")) == "--"
+
+    def test_no_eta_is_extrapolated_from_a_single_instant(self, wired):
+        """One chunk in a fraction of a second gives an absurd rate and an
+        ETA of zero on a transfer that will take a minute."""
+        wire, a_ratchet, _b = wired
+        said = []
+        wire.alice._notify = said.append
+        path, _ = _source_file(200_000)
+        transfer = wire.alice.offer_file("bob", path, a_ratchet)
+        transfer.started_at = time.monotonic()      # just now
+        wire.alice._report_progress(transfer, "↑", 1, force=True)
+        assert said and "ETA" not in said[0], (
+            "an ETA was invented from no elapsed time: %r" % said[0])

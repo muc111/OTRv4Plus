@@ -59,6 +59,29 @@ Three things to know:
   termux-api` installs shell shims; the picker is drawn by the Termux:API app
   from F-Droid. If only half is present the client says which half.
 
+### What you should see while it runs
+
+Both ends report, once a second, from the moment the transfer is accepted:
+
+```
+[file] ↓ holiday-photo.jpg [████░░░░░░] 40% · 784.8 KB/1.9 MB · 21.2 KB/s · ETA 0:54
+```
+
+`↓` is receiving, `↑` is sending. Rate and ETA appear once there is a second
+of history to divide by — before that they are genuinely unknown and are left
+out rather than guessed. The last line always reads `100%`.
+
+Completion is announced on both sides, and this is the line to look for:
+
+```
+[file] received holiday-photo.jpg (1.9 MB) — hashes verified, saved to ~/.otrv4plus/files/…
+```
+
+**"hashes verified" is the part that matters.** The file is only placed once
+the plaintext and ciphertext hashes both check out; a transfer that ends any
+other way says so instead. Before v10.18.0 none of this was printed, so a
+silent finish meant either success or a stall and there was no way to tell.
+
 ### How fast it goes, and why it is not faster
 
 A transfer is paced at 8 stanzas a second, so a 340 KB file takes roughly half
