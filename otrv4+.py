@@ -788,6 +788,98 @@ class NetworkConstants:
     I2P_SAM_PORT = 7656
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# I2P short names
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# `.i2p` names are NOT DNS.  There is no global resolver: a router only knows
+# the names in its own address book, which it builds from subscriptions.  A
+# private server is in nobody's subscription, so `xmpp-elite.i2p` resolves on
+# the machine that created it and nowhere else, while the 52-character
+# `.b32.i2p` form works everywhere because it IS the destination hash.
+#
+# That is why the b32 has to be pasted, and it is a genuine usability problem:
+# nobody is going to type 52 base32 characters correctly on a phone keyboard.
+#
+# This file is the local answer.  One line per name:
+#
+#     xmpp-elite.i2p = hq4t24b7…q.b32.i2p
+#
+# WHAT AN ALIAS IS AND IS NOT.  It is a note to yourself about what a name
+# means on this device.  It is not authenticated, it is not published, and it
+# proves nothing about who answers.  The security of a conversation does not
+# rest on it: the DAKE authenticates the peer and TOFU pins their identity
+# key, so pointing an alias at the wrong server yields a failed connection or
+# a server that cannot read anything, not a silent impersonation.
+#
+# A name given in full as .b32.i2p is never looked up here -- see
+# _apply_i2p_alias -- so a local file cannot redirect an address typed in
+# full.
+
+I2P_HOSTS_FILENAME = "i2p_hosts"
+
+
+def i2p_hosts_path() -> str:
+    """Where the local alias file lives."""
+    return os.path.join(os.path.expanduser("~/.otrv4plus"), I2P_HOSTS_FILENAME)
+
+
+def _valid_i2p_destination(value: str) -> bool:
+    """A b32 address or a full base64 destination, and nothing else.
+
+    Deliberately strict: an alias that expands to something the router cannot
+    use produces a confusing failure much later, and an alias that expands to
+    another short name would let one line chain into another.
+    """
+    if value.endswith(".b32.i2p"):
+        label = value[:-len(".b32.i2p")]
+        return (len(label) == 52
+                and all(c in "abcdefghijklmnopqrstuvwxyz234567" for c in label))
+    # A full destination is base64 (I2P's alphabet) and long.
+    return (len(value) >= 516
+            and all(c.isalnum() or c in "-~=" for c in value))
+
+
+def i2p_aliases(path: str = None) -> dict:
+    """Read the alias file.  Returns {} when it does not exist.
+
+    Never raises: a malformed line is skipped with a warning rather than
+    stopping the client from starting, because the alternative is that one
+    typo makes the whole thing unusable.
+    """
+    path = path or i2p_hosts_path()
+    out = {}
+    try:
+        with open(path, encoding="utf-8") as fh:
+            lines = fh.readlines()
+    except (OSError, UnicodeDecodeError):
+        return out
+
+    for number, raw in enumerate(lines, 1):
+        line = raw.split("#", 1)[0].strip()
+        if not line:
+            continue
+        if "=" in line:
+            name, _, dest = line.partition("=")
+        else:
+            parts = line.split()
+            if len(parts) != 2:
+                print(f"[i2p] {path }:{number }: cannot read this line, skipping")
+                continue
+            name, dest = parts
+        name, dest = name.strip().lower(), dest.strip()
+        if not name.endswith(".i2p") or name.endswith(".b32.i2p"):
+            print(f"[i2p] {path }:{number }: {name !r} is not a short .i2p "
+                  "name, skipping")
+            continue
+        if not _valid_i2p_destination(dest):
+            print(f"[i2p] {path }:{number }: {name } does not point at a "
+                  ".b32.i2p address or a full destination, skipping")
+            continue
+        out[name] = dest
+    return out
+
+
 class I2PSAMConnection:
     """Connect to I2P via the SAM bridge instead of SOCKS5.
 
@@ -850,12 +942,63 @@ class I2PSAMConnection:
         if parsed.get("RESULT") != "OK":
             raise ConnectionError(f"SAM handshake failed: {reply }")
 
+    @staticmethod
+    def _apply_i2p_alias(target_host):
+        """Substitute a short name from the local alias file.
+
+        Returns (host_to_resolve, alias_source_or_None).
+        """
+        if not target_host or target_host.endswith(".b32.i2p"):
+            # A b32 address is self-describing: the router resolves it from the
+            # hash itself, with no address book involved.  Never let an alias
+            # shadow one -- that would let a local file redirect an address the
+            # user typed in full.
+            return target_host, None
+        aliases = i2p_aliases()
+        dest = aliases.get(target_host.lower())
+        if not dest:
+            return target_host, None
+        print(f"[i2p] {target_host } -> {dest } (from {i2p_hosts_path ()})")
+        return dest, i2p_hosts_path()
+
+    @staticmethod
+    def _explain_resolve_failure(target_host, reply, alias_source):
+        """Say why a name did not resolve, and what to do about it.
+
+        The bare SAM reply ("Cannot resolve x: NAMING REPLY RESULT=KEY_NOT_FOUND")
+        is accurate and useless: it does not say that short .i2p names have to
+        come from somewhere, or that this client keeps a file for exactly that.
+        """
+        if alias_source:
+            return (f"Cannot resolve {target_host }, which came from "
+                    f"{alias_source }: {reply }\n"
+                    "The alias points at a destination the router does not "
+                    "recognise. Check the line in that file.")
+        if target_host.endswith(".b32.i2p"):
+            return (f"Cannot resolve {target_host }: {reply }\n"
+                    "That is a b32 address, so this is a router or tunnel "
+                    "problem rather than a naming one.")
+        return (
+            f"Cannot resolve {target_host }: {reply }\n"
+            f"Short .i2p names are not global the way DNS is -- the router "
+            f"only knows names in its address book, and a private server is "
+            f"not in anyone's.\n"
+            f"Either use the full <52 chars>.b32.i2p address, or add a line to "
+            f"{i2p_hosts_path ()}:\n"
+            f"    {target_host } = <52 chars>.b32.i2p")
+
     def connect(self, target_host: str, target_port: int = 0) -> "socket.socket":
         """Connect to an I2P destination via SAM. Returns a raw socket.
 
         Creates a transient destination (fresh identity, not saved).
         The port arg is ignored - I2P destinations don't use ports.
+
+        `target_host` may be a 52-character .b32.i2p address, a short name the
+        router's address book knows, or a short name in the local alias file
+        (see i2p_aliases()).  The alias file is consulted first.
         """
+
+        target_host, alias_source = self._apply_i2p_alias(target_host)
 
         resolve_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         resolve_sock.settimeout(90)
@@ -865,7 +1008,8 @@ class I2PSAMConnection:
             reply = self._send_cmd(resolve_sock, f"NAMING LOOKUP NAME={target_host }")
             parsed = self._parse_reply(reply, "NAMING REPLY ")
             if parsed.get("RESULT") != "OK":
-                raise ConnectionError(f"Cannot resolve {target_host }: {reply }")
+                raise ConnectionError(
+                    self._explain_resolve_failure(target_host, reply, alias_source))
             dest_b64 = parsed["VALUE"]
         finally:
             resolve_sock.close()
@@ -1467,7 +1611,7 @@ class OTRv4DataMessage:
             raise ValueError(f"Failed to decode message: {e }")
 
 
-VERSION = "OTRv4+ 10.15.1"
+VERSION = "OTRv4+ 10.15.2"
 
 # --- OTRv4+ client identification over IRC -------------------------------
 #

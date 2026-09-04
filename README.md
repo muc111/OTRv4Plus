@@ -189,6 +189,50 @@ python otrv4plus_xmpp.py \
   --insecure-tls --debug
 ```
 
+#### Not typing the b32 every time
+
+`.i2p` names are **not DNS**. A router resolves only the names in its own
+address book, which it builds from subscriptions, and a private server is in
+nobody's subscription — so `xmpp-elite.i2p` resolves on the machine that
+created it and nowhere else, while the 52-character `.b32.i2p` form works
+everywhere because it *is* the destination hash. That is why the long form has
+to be pasted, and it is unreasonable on a phone keyboard.
+
+Write the name down once, in `~/.otrv4plus/i2p_hosts`:
+
+```
+# name = destination
+xmpp-elite.i2p = hq4t24b7vkllfbk55e5xfocqhfi7hxprwc47zyuilbg6wgzikidq.b32.i2p
+```
+
+Then the address is the JID's own domain and **`--server` is no longer
+needed**:
+
+```bash
+python otrv4plus_xmpp.py \
+  --jid alice@xmpp-elite.i2p \
+  --peer bob@xmpp-elite.i2p \
+  --insecure-tls
+```
+
+The client prints the substitution when it uses one, so you always see which
+destination you actually reached.
+
+**What an alias is, and is not.** It is a note to yourself about what a name
+means on this device. It is not authenticated, it is not published, and it
+proves nothing about who answers. Nothing about the security of a conversation
+rests on it: the DAKE authenticates the peer and TOFU pins their identity key,
+so pointing an alias at the wrong server gives you a failed connection or a
+server that cannot read anything — not a silent impersonation. An address
+given in full as `.b32.i2p` is never looked up in the file, so a local file
+cannot redirect an address you spelled out.
+
+The alternative, if you would rather every I2P application on the device knew
+the name, is the router's own address book (`i2pd`: an entry under
+`~/.i2pd/addressbook/`). Publishing a name properly, so that *other* people's
+routers resolve it, means registering it with an I2P naming service — a
+server-operator task, with propagation delay, and out of scope for the client.
+
 `--sam-host` / `--sam-port` point it at an I2P-hosted XMPP server through the same SAM bridge setup as the IRC client. `--no-i2p` connects to a clearnet/TLS XMPP server directly. `--no-tui` switches to plain linear scrollback. `--no-reconnect` disables the reconnect loop. Run `--help` for the full flag list.
 
 ### Security hardening (v10.10.4)

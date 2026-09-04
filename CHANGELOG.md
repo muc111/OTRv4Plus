@@ -4,6 +4,68 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## v10.15.2 — short `.i2p` names, so nobody has to type a b32
+
+*2026-09-04.  `VERSION → 10.15.2`, `otrv4_core 0.10.27` unchanged.  No wire change, no Rust change.*
+
+Connecting meant pasting
+
+```
+--server hq4t24b7vkllfbk55e5xfocqhfi7hxprwc47zyuilbg6wgzikidq.b32.i2p
+```
+
+every time, because `xmpp-elite.i2p` would not resolve. That is not a bug in
+the client and it was already doing the right thing: it sends `NAMING LOOKUP`
+to the router over SAM, and the router answers honestly that it has never
+heard of the name.
+
+**`.i2p` names are not DNS.** A router resolves only what is in its own
+address book, which it builds from subscriptions, and a private server is in
+nobody's subscription. The b32 form works everywhere because it *is* the
+destination hash — 52 characters of it. On a phone keyboard that is not a
+reasonable thing to ask of anyone.
+
+**The fix is a local alias file**, `~/.otrv4plus/i2p_hosts`:
+
+```
+xmpp-elite.i2p = hq4t24b7vkllfbk55e5xfocqhfi7hxprwc47zyuilbg6wgzikidq.b32.i2p
+```
+
+With that line the address is the JID's own domain, so **`--server` is no
+longer needed at all**:
+
+```bash
+python3 otrv4plus_xmpp.py --jid bob@xmpp-elite.i2p \
+                          --peer alice@xmpp-elite.i2p --insecure-tls
+```
+
+Both clients share the file, since the lookup lives in `I2PSAMConnection`.
+
+**An alias has no authority, and one rule enforces it.** An address given in
+full as `.b32.i2p` is *never* looked up in the file, so a local file cannot
+redirect an address the user spelled out (`test_a_full_b32_is_never_looked_up`).
+Aliases must point at a b32 or a full destination — not at another short name,
+so no chaining and no loop detection — and the substitution is printed when
+used, so the destination actually reached is always visible. Nothing about
+conversation security rests on any of it: the DAKE authenticates the peer and
+TOFU pins the identity key, end to end through whatever server is in the
+middle.
+
+**The failure message now says what to do.** It used to be `Cannot resolve
+xmpp-elite.i2p: NAMING REPLY RESULT=KEY_NOT_FOUND` — accurate and useless. It
+now explains that short names are not global, and prints the exact line to
+add. A b32 that fails is reported as a router or tunnel problem instead, since
+naming is not involved.
+
+`TRANSPORT_POLICY.md` §8.1 records the resolution paths and the property that
+matters: **no system resolver ever sees an `.i2p` or `.onion` name.** b32 needs
+no lookup, the alias file is a local read, and `NAMING LOOKUP` travels the same
+loopback SAM socket as the stream.
+
+19 new tests. Python 2423 passed, 43 skipped, 1 xfailed. Rust 111 passed.
+
+---
+
 ## v10.15.1 — three bugs the phones found that the tests did not
 
 *2026-09-04.  `VERSION → 10.15.1`, `otrv4_core 0.10.27` unchanged.  No wire change.*

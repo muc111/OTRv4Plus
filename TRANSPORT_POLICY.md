@@ -261,6 +261,35 @@ this project has previously been wrong about itself.
 
 ---
 
+## 8.1 Name resolution, and why no resolver ever sees a name
+
+Added when short `.i2p` names were made usable (v10.15.2), because "how does a
+name become a destination" is a routing question and belongs here.
+
+A name reaches a destination by one of three paths, and **none of them is
+system DNS**:
+
+| Given | Resolved by | Who sees the name |
+|---|---|---|
+| `<52 chars>.b32.i2p` | nothing — the label *is* the destination hash | nobody |
+| a short `.i2p` name in `~/.otrv4plus/i2p_hosts` | a local file read | nobody |
+| any other short `.i2p` name | `NAMING LOOKUP` over the SAM socket | the local router only |
+| `.onion` | Tor, inside the SOCKS5 request | the local Tor daemon only |
+
+`getaddrinfo` is never called on a `.i2p` or `.onion` name. The SAM lookup
+travels the same loopback socket as the stream, so an operating-system
+resolver, a DHCP-supplied nameserver and a captive portal all learn nothing —
+which is the point, and is why the client refuses an `.onion` address when
+`--no-tor` is given rather than falling back to a resolver.
+
+The alias file is a **local naming convenience with no authority**. It is not
+signed, not published, and not consulted for an address already given in full
+as `.b32.i2p`, so it cannot redirect an address the user typed out. Getting an
+alias wrong costs a failed connection, not a silent redirection: the server is
+not a trust anchor in this design — the DAKE authenticates the peer and TOFU
+pins the identity key, both end to end through whatever server is in the
+middle.
+
 ## 9. Rules for anyone adding a transport
 
 1. **Selection is explicit.** By address suffix or by flag, checked before the
