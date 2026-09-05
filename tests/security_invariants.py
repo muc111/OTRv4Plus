@@ -164,9 +164,11 @@ INVARIANTS: Tuple[Invariant, ...] = (
         id="INV-11",
         statement="TOFU never silently re-pins a changed fingerprint.",
         status="ENFORCED",
-        tests=("test_identity_and_tofu.py",),
+        tests=("test_identity_and_tofu.py",
+               "test_irc_nick_session_diagnostic.py"),
         rationale="The mismatch branch keeps the old pin, offers no y/n, "
-                  "refuses voice, and requires an explicit /trust-reset.",
+                  "refuses voice, and requires an explicit /trust-reset.  "
+                  'Since v10.24.1 the nick-versus-identity boundary is asserted too: an OTR session is never re-keyed onto a new IRC nick, not even when the server authoritatively reports the rename.  Following a rename would mean encrypting to whoever holds a name now, and with sessions surviving a transport reconnect since v10.24.0 that is the one mistake that would turn a preserved session into a leak.  The old nick keeps the session, the new nick needs a new DAKE, and the user is told rather than left with a silent plaintext tab.',
     ),
     Invariant(
         id="INV-12",

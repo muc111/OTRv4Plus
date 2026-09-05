@@ -1873,7 +1873,7 @@ class OTRv4DataMessage:
             raise ValueError(f"Failed to decode message: {e }")
 
 
-VERSION = "OTRv4+ 10.24.0"
+VERSION = "OTRv4+ 10.24.1"
 
 #: SMP passphrase length bounds, shared by both clients.
 #:
@@ -11317,6 +11317,93 @@ class OTRv4IRCClient:
             self._reconnecting = False
             self.add_message("system", colorize("❌ Max reconnect attempts reached.", "red"))
 
+    #: Nicks already told about a missing session, so a peer cannot fill the
+    #: panel by repeating an undecryptable message.
+    _NO_SESSION_WARNED_MAX = 64
+
+    def _other_session_nicks(self, exclude: str):
+        """Nicks we hold OTR sessions with, other than *exclude*."""
+        try:
+            return sorted(p for p in self.session_manager.sessions
+                          if isinstance(p, str) and p != exclude)
+        except Exception:
+            return []
+
+    def _warn_nick_change_keeps_session(self, old_nick: str, new_nick: str):
+        """The server says old_nick is now new_nick and we hold their session.
+
+        The session is NOT moved, and that is the point rather than a
+        limitation.  A nick is a name the server hands out and takes back; the
+        keys belong to the DAKE that produced them.  Following a rename would
+        mean encrypting to whoever holds a name now, which is the one mistake
+        that turns a preserved session into a leak.  So the keys stay put and
+        the user is told, in the tab where the conversation was.
+        """
+        old = _sanitise(old_nick, 64)
+        new = _sanitise(new_nick, 64)
+        sec = None
+        try:
+            sec = self.session_manager.get_security_level(old_nick)
+        except Exception:
+            pass
+        self.add_message(old_nick, colorize(
+            "🔴 OTR SESSION NOT CARRIED OVER", "red"), sec)
+        self.add_message(old_nick, colorize(
+            "   %s is now %s. The encrypted session stays with %s: keys "
+            "follow the handshake that made them, not a name the server has "
+            "just reassigned." % (old, new, old), "yellow"), sec)
+        self.add_message(old_nick, colorize(
+            "   Run  /otr %s  to start a new session with them, then compare "
+            "the fingerprint against the one pinned for %s before you trust "
+            "it." % (new, old), "cyan"), sec)
+        self.add_message(old_nick, colorize(
+            "   /endotr %s  clears the old session when you no longer want "
+            "it." % old, "dim"), sec)
+
+    def _warn_no_session_for_nick(self, sender: str):
+        """An encrypted message arrived from a nick we have no session with.
+
+        Until v10.24.1 this was a bare `return`: the message was dropped and
+        nothing was said, so a peer who reconnected under a new nick simply
+        went quiet.  With sessions now surviving a reconnect that silence is
+        more likely, not less, and it looks identical to the peer having
+        nothing to say.
+
+        What this must NOT do is claim the new nick is the old peer.  Nothing
+        here proves that -- the message did not decrypt, so there is no
+        evidence of who sent it.  It reports what is true (no session for this
+        nick, sessions held for these others) and leaves the identification
+        to the user and to the fingerprint.
+        """
+        warned = getattr(self, "_no_session_warned", None)
+        if warned is None:
+            warned = self._no_session_warned = set()
+        if sender in warned:
+            return
+        if len(warned) >= self._NO_SESSION_WARNED_MAX:
+            return
+        warned.add(sender)
+
+        nick = _sanitise(sender, 64)
+        self.add_message(sender, colorize(
+            "🔴 OTR SESSION NOT FOUND", "red"))
+        self.add_message(sender, colorize(
+            "   An encrypted message arrived from %s, but there is no "
+            "session with that nick. It cannot be read and was dropped."
+            % nick, "yellow"))
+        others = self._other_session_nicks(sender)
+        if others:
+            self.add_message(sender, colorize(
+                "   You do have encrypted session(s) with: %s."
+                % _sanitise(", ".join(others), 256), "yellow"))
+            self.add_message(sender, colorize(
+                "   If this is one of them on a new nick, their keys stayed "
+                "with the old one — nothing is moved automatically, because "
+                "an IRC nick is not an identity.", "dim"))
+        self.add_message(sender, colorize(
+            "   Run  /otr %s  to start a new session, and check the "
+            "fingerprint against one you already trust." % nick, "cyan"))
+
     def _dake_stage(self, peer: str, stage: int, outcome: str,
                     detail: str = "", note: str = "") -> None:
         """One handshake stage, said once, after it has actually happened.
@@ -12002,6 +12089,18 @@ class OTRv4IRCClient:
                 _o = getattr(self, "_otrv4_users", None)
                 if _o is not None and sender in _o:
                     _o[new_nick] = _o.pop(sender)
+                # A peer we are encrypted with just changed name.  The keys do
+                # not follow, and the user has to be told rather than left
+                # wondering why the new nick is a plaintext tab.
+                if sender != self.nick:
+                    try:
+                        if self.session_manager.has_session(sender):
+                            self._warn_nick_change_keeps_session(sender, new_nick)
+                            _w = getattr(self, "_no_session_warned", None)
+                            if _w is not None:
+                                _w.discard(new_nick)
+                    except Exception:
+                        self.debug("nick-change session notice failed")
                 if sender == self.nick:
                     self.nick = new_nick
                     self.add_message(
@@ -12712,6 +12811,10 @@ class OTRv4IRCClient:
         client right after SMP verification succeeds.
         """
         if not self.session_manager.has_session(sender):
+            # Was a bare `return`.  Silence here is indistinguishable from the
+            # peer having said nothing, and with sessions now surviving a
+            # reconnect it is the likeliest way to meet a peer on a new nick.
+            self._warn_no_session_for_nick(sender)
             return
 
         self.last_ping = time.time()
@@ -14084,6 +14187,17 @@ class EnhancedOTRv4IRCClient(OTRv4IRCClient):
                     f"{_sanitise (str (exc ),60 )}",
                 )
 
+    def _clear_no_session_warning(self, peer: str) -> None:
+        """Forget that we warned about *peer*, now that a session exists.
+
+        Without this the warning is once per process: a peer who starts a
+        session, loses it and sends again would be dropped silently the second
+        time, which is the behaviour this replaced.
+        """
+        warned = getattr(self, "_no_session_warned", None)
+        if warned is not None:
+            warned.discard(peer)
+
     def _otr_panel(self, peer: str) -> str:
         """Return the panel name for OTR private conversation (always the peer's private panel)."""
         if peer not in self.panel_manager.panels:
@@ -14716,6 +14830,7 @@ class EnhancedOTRv4IRCClient(OTRv4IRCClient):
         _dake_engine = getattr(_session, "dake_engine", None)
         _dake_tag = "🦀 Rust"
         _smp_tag = "🦀 Rust" if (getattr(_session, "rust_smp", None) is not None) else "🐍 Python"
+        self._clear_no_session_warning(peer)
         self.add_message(peer, colorize("─" * 50, "dim"), sec)
         self._dake_ready(peer)
         # Which engine did the work stays on screen -- it is the difference

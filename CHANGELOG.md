@@ -4,6 +4,63 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## v10.24.1 — a nick is not an identity, and the client now says so
+
+*2026-09-05.  `VERSION → 10.24.1`.  `otrv4_core` unchanged at 0.10.28.*
+
+Follow-up to v10.24.0, raised in review of it.  Sessions now survive a
+transport reconnect, which makes one confusion **likelier, not rarer**: a peer
+comes back under a different IRC nick, the preserved session is keyed by the
+old one, and nothing matches.  Both ways that showed up were silent.
+
+**An encrypted message from a nick with no session.**
+`_handle_data_message` opened with a bare `return`.  The message was dropped
+and nothing was printed — indistinguishable from the peer having said nothing.
+
+**A live nick change.**  The server says `OldNick` is now `NewNick`; the
+client updated the channel user list and the OTRv4+ marker and said nothing
+about the encrypted session it holds under the old name.
+
+Now:
+
+```
+🔴 OTR SESSION NOT CARRIED OVER
+   IronFenrir is now SwiftOmega. The encrypted session stays with
+   IronFenrir: keys follow the handshake that made them, not a name the
+   server has just reassigned.
+   Run  /otr SwiftOmega  to start a new session with them, then compare the
+   fingerprint against the one pinned for IronFenrir before you trust it.
+   /endotr IronFenrir  clears the old session when you no longer want it.
+```
+
+**The session is not moved, and that is the feature.**  Following a rename
+would mean encrypting to whoever holds a name now, and the server hands names
+out and takes them back — the one mistake that turns a preserved session into
+a leak.  A new DAKE is required.  A test asserts the re-key does not happen,
+and a mutant that adds it is caught.
+
+**The two messages differ in what they claim, on purpose.**  On the live-NICK
+path the server told us authoritatively that one connection changed name, so
+that message names both nicks.  On the undecryptable-message path there is no
+evidence at all about the sender — the message did not decrypt — so it reports
+only what is true: no session for this nick, sessions held for these others,
+and *if* this is one of them, their keys stayed behind.  A guess printed as a
+fact, next to a fingerprint the user is about to rely on, is worse than
+silence.
+
+The trigger is a message from an unauthenticated stranger, so the warning is
+once per nick and the set of warned nicks is bounded at 64.  Establishing a
+session clears that nick's entry, so a peer who later loses a session is
+reported again rather than going quiet for the rest of the process.
+
+24 tests in `test_irc_nick_session_diagnostic.py`, 8 mutants killed —
+including the silent drop returning, the session being re-keyed onto the new
+nick, and a hostile nick's terminal escapes reaching the panel.
+
+Still not hardware-tested; this is step 7 of `TWO_DEVICE_TEST.md`.
+
+---
+
 ## v10.24.0 — the responder could not answer, and a tunnel blip killed the session
 
 *2026-09-05.  `VERSION → 10.24.0`.  `otrv4_core` unchanged at 0.10.28.*

@@ -5,7 +5,7 @@ engine and the real command dispatcher, but it does not drive a terminal, a
 Termux raw-mode read, an I2P tunnel, or two people. Everything below has to be
 seen on the devices.
 
-**Status: not yet run.** v10.24.0 is unverified on hardware.
+**Status: not yet run.** v10.24.1 is unverified on hardware.
 
 ---
 
@@ -163,7 +163,26 @@ After it comes back, expect:
 
 ---
 
-## 5. Ordinary use after all that
+## 5. Nick change — the session must NOT follow
+
+Deliberately reconnect one device under a different nick, or `/nick` on a live
+connection while a session is up.
+
+- [ ] The old nick's tab says `OTR SESSION NOT CARRIED OVER`, names both
+      nicks, and tells you to run `/otr <new>`.
+- [ ] The new nick does **not** silently attach to the preserved session.
+- [ ] An encrypted message from the new nick (before any `/otr`) reports
+      `OTR SESSION NOT FOUND` and lists the sessions you do hold — rather than
+      vanishing, which is what it used to do.
+- [ ] That warning appears **once**, not once per message.
+- [ ] `/otr <new>` starts a fresh DAKE and reports first contact. Compare the
+      fingerprint with the one pinned for the old nick — they should match if
+      it is the same person and the same process.
+- [ ] `/endotr <old>` clears the stranded session.
+
+---
+
+## 6. Ordinary use after all that
 
 - [ ] Encrypted chat both ways.
 - [ ] `/tabs`, `/switch`, `/clear` behave.
@@ -179,11 +198,12 @@ After it comes back, expect:
   client renames and reclaims (v10.19.0). During that window the peer sees a
   different nick. The session is keyed by nick, so a peer who reconnects under
   a *different* nick will not match an existing session — a new DAKE is
-  correct there and is what will happen.
+  correct there, and since v10.24.1 the client says so instead of going quiet
+  (section 5).
 - **A nick taken by someone else.** The preserved session cannot be hijacked:
   its keys are the ones from the DAKE, so a squatter's messages will not
-  decrypt and ours are ciphertext they cannot read. It will look like a broken
-  session rather than a leak. Report it if seen; it needs a clearer message.
+  decrypt and ours are ciphertext they cannot read. Their undecryptable
+  messages now produce `OTR SESSION NOT FOUND` rather than silence.
 - **Cold I2P tunnels.** 60–90s. A DAKE that takes a minute is normal.
 
 ---
