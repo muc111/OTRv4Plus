@@ -59,6 +59,22 @@ Three things to know:
   termux-api` installs shell shims; the picker is drawn by the Termux:API app
   from F-Droid. If only half is present the client says which half.
 
+### Status: working on hardware as of 2026-09-05
+
+`/sendfile` completes between two Android handsets over I2P. It took four
+releases to get there and every one of the four defects was found by running
+it, not by reading it:
+
+| | Found on device |
+|---|---|
+| v10.16.1 | the picker returned before the human did, so a file was never staged |
+| v10.16.2 | the whole file was sent on the event loop, starving the keepalive |
+| v10.17.1 | the receiver throttled the transfer as if it were a flood, and never told the sender it had given up |
+| v10.18.0 | a completed transfer printed nothing at all |
+
+The test suite passed throughout. That is the point worth remembering about
+this feature: every one of those was invisible to it.
+
 ### What you should see while it runs
 
 Both ends report, once a second, from the moment the transfer is accepted:
