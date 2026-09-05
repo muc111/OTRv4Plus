@@ -4,6 +4,96 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## v10.21.0 — `/tip`: relay a Monero address, and only an address
+
+*2026-09-05.  `VERSION → 10.21.0`.  `otrv4_core` unchanged at 0.10.28 — again
+no Rust in this release.  One optional new dependency, `segno`, for QR codes.*
+
+`otrv4plus_tip.py` asks a verified peer for their Monero address and shows it
+as text and as a scannable QR. **It sends no money.** `/tip` is short for "ask
+where to tip you"; the transfer is something you do afterwards in your own
+wallet, looking at the address. Same courier posture as v10.20.0's trade
+module, in a much smaller shape — one string instead of a state machine.
+
+```
+/setxmr <address>     store your own, persisted 0600
+/setxmr clear         stop answering
+/tip                  status
+/tip <amount> [note]  ask a verified peer
+/tipreply             answer a request that arrived before you configured one
+```
+
+### The interactive prompt in the specification is not implemented
+
+The brief asked that an inbound request from a peer with no address configured
+prompt the local user to type one, reading their next line.
+
+That is the mechanism INV-06 forbids. `_apply_tofu` once ended by setting
+`_pending[peer] = "smp_secret"`, so a peer who completed a DAKE could make the
+user's next keystrokes mean something they had not chosen;
+`tests/test_no_remote_input_capture.py` exists because of it. The address is
+public and not worth protecting — **the mechanism is the problem, not the
+payload**, and here the captured line would be *transmitted* rather than merely
+stored. It might be a passphrase, or a message meant for someone else.
+
+So an unanswerable request is reported and nothing is sent. The user answers
+with `/setxmr <address>` then `/tipreply`: two deliberate keystrokes, both
+locally initiated, neither of which a peer can cause. A test asserts the module
+contains no reference to `input`, `getpass` or `stdin` at all.
+
+### A real bug the tests caught
+
+`_AMOUNT_RE` was `^\d{1,20}(\.\d{1,12})?$`. **Python's `\d` is Unicode-aware
+for `str` patterns**, so it accepts Arabic-Indic `١٢٣` and every other decimal
+digit range — and the amount is concatenated into a `monero:` URI that a wallet
+scanner parses. Now `[0-9]`, explicitly. Found by a parametrised test, not by
+review, and the comment in the source says so.
+
+### A new engine hook, deliberately narrow
+
+TLV type `0x0020` (above OTRv4's allocated `0x0000`–`0x0009`), routed to a
+registered handler. `register_tlv_handler` refuses every type outside a
+one-element allowlist, because a forwarding hook that accepts anything is how
+an unreviewed second protocol gets bolted onto a session. `send_tlv` is
+fail-closed to match: it will not open a session, will not queue, and will not
+fall back to plaintext — a feature TLV that started a DAKE would hand a peer a
+handshake they never asked for.
+
+### The rest
+
+- **INV-26 gates both branches**, and the response direction matters most: a
+  response is a string the client is about to show the user as somewhere to
+  send money.
+- **No validation of the address.** Carried verbatim, any shape. An opinion
+  about Monero's address format is one that starts rejecting valid addresses at
+  a hard fork. The one rejected shape is an address containing a space, and not
+  as validation — a space means two things were pasted, and sending half an
+  address is worse than refusing.
+- **Your address persists 0600; a peer's never touches disk** and goes on
+  disconnect and `/quit`.
+- **Nothing reaches the session log.** `tip` is absent from `_LOG_SAFE_TAGS`:
+  an address is public, but a log of who asked whom for which address is a
+  record of who paid whom.
+- **`segno` is optional.** Missing library, or any exception from it, falls
+  back to the plain address plus a one-line install hint — a QR is a nicety and
+  a missing nicety must not withhold what the user actually needs. `error="l"`
+  and `compact=True` bring a 95-character address down to 22×43, which fits a
+  handset; a QR you have to scroll is not scannable.
+
+### Verification
+
+Python suite **2733 passed, 0 failed** on 3.12. 103 new tests. Six mutations
+run against the security properties; four were killed on the first pass and two
+survived — both because the tests I had written for them could not fail (the
+URI is encoded into the QR image and never printed, so grepping the output for
+`monero:` proved nothing; and the receiving party in the persistence test had no
+store file to write to). Both tests were rewritten and both mutants then died.
+
+**Not tested between two devices yet.** The QR has not been scanned by a real
+wallet.
+
+---
+
 ## v10.20.0 — a courier for multisig coordination, and no Monero code at all
 
 *2026-09-05.  `VERSION → 10.20.0`.  `otrv4_core` stays at 0.10.28: there is no

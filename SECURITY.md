@@ -233,6 +233,49 @@ states the counter-argument in full.
 arbitrator key. 2-of-3 works by the participants choosing their own third
 party. There is no code path that would let this client hold one of three keys.
 
+## `/tip` relays an address, and only an address (v10.21.0)
+
+`otrv4plus_tip.py` carries one string between two verified peers so one can pay
+the other by hand. It is the same courier posture as the trade module in a
+smaller shape, and it is covered by the same two invariants.
+
+**INV-25.** Its import list is asserted exactly — `json`, `os`, `re`,
+`tempfile`, `time`, `typing` — so it cannot reach a wallet, a daemon or a
+network at all. It never validates the address, because an opinion about
+Monero's address format is one that starts rejecting valid addresses at a hard
+fork. A peer's address is memory-only and never joins the store that holds your
+own.
+
+**INV-26.** The SMP gate runs before *either* branch of the TLV handler. The
+response direction is the one that matters most: a response is a string the
+client is about to show the user as somewhere to send money, and an unverified
+one must not reach the screen at all.
+
+**No inbound message arms input capture (INV-06).** The specification for this
+feature asked that an inbound request from a peer with no address configured
+prompt the user to type one. That is the mechanism `_apply_tofu` used when it
+set `_pending[peer] = "smp_secret"`, and it is not implemented: the request is
+reported, and the user answers with `/setxmr` then `/tipreply`. The address is
+public and not worth protecting; the mechanism is the problem, and here the
+captured line would be *transmitted* rather than merely stored.
+
+**Peer-controlled fields are bounded before they are used.** The amount reaches
+a `monero:` URI a wallet will parse, so it must be a plain decimal. The pattern
+is `[0-9]`, not `\d` — Python's `\d` is Unicode-aware for `str` patterns and
+accepts Arabic-Indic and every other decimal digit range, which would have been
+concatenated into that URI. A test caught it; review did not.
+
+**Nothing reaches the session log.** `tip` is deliberately absent from
+`_LOG_SAFE_TAGS`. An address is public, but a log of who asked whom for which
+address is a record of who paid whom, and that is not.
+
+**A new engine hook, kept narrow.** TLV `0x0020` is routed to a registered
+handler through `register_tlv_handler`, which refuses every type outside a
+one-element allowlist — this is not a general extension point, because a
+forwarding hook that accepts anything is how an unreviewed second protocol gets
+bolted onto a session. `send_tlv` is fail-closed to match: it will not open a
+session, will not queue, and will not fall back to plaintext.
+
 ## Known issues and limitations
 
 1. **Rust crypto crates are not audited.** `ed448-goldilocks-plus` 0.16 is the only viable pure-Rust Ed448, and `x448` 0.6 the X448, but neither has had a formal review. `pqcrypto-mlkem 0.1.1` (FIPS 203 ML-KEM-1024) and `pqcrypto-mldsa 0.1.2` (ML-DSA-87) are PQClean-derived reference implementations.

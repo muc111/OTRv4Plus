@@ -2,7 +2,7 @@
 """
 OTRv4+ XMPP - full OTR + SMP over XMPP, transported over I2P SAM
 ================================================================
-Version: 10.20.0
+Version: 10.21.0
 
 
 Post-quantum OTRv4+ end-to-end encryption over XMPP, reusing the IRC client's
@@ -237,7 +237,7 @@ def voice_available() -> "tuple[bool, str]":
             "no audio backend: libaaudio.so unavailable and parec/pacat "
             "missing  (run /audioprobe for details)")
 
-XMPP_VERSION = "10.20.0"
+XMPP_VERSION = "10.21.0"
 
 # ---------------------------------------------------------------------------
 # XMPP-private state directory
@@ -1127,6 +1127,10 @@ _voice.bind_host(
 # does not import this module.
 import otrv4plus_filetransfer as _filetransfer
 import otrv4plus_trade as _trade
+import otrv4plus_tip as _tip
+
+TipManager = _tip.TipManager
+TipError = _tip.TipError
 
 TRADE_PREFIX = _trade.TRADE_PREFIX
 TradeManager = _trade.TradeManager
@@ -1298,6 +1302,8 @@ class OTRv4PlusXMPP(ClientXMPP):
         self._file_manager = None
         self._trade_manager = None
         self._trade_disclaimed = False
+        self._tip_manager = None
+        self._tip_disclaimed = False
         self._voice_sam_host = "127.0.0.1"
         self._voice_sam_port = 7656
         self._voice_debug = False
@@ -1480,6 +1486,18 @@ class OTRv4PlusXMPP(ClientXMPP):
                 verified=self._file_peer_verified,
                 fingerprint=self._peer_fingerprint,
             )
+        if self._tip_manager is None:
+            self._tip_manager = TipManager(
+                send=self._send_tip_tlv,
+                notify=print,
+                verified=self._file_peer_verified,
+                store_path=_xmpp_state_path("xmr.json"),
+            )
+            # The engine routes DISCONNECTED, SMP and EXTRA_SYMMETRIC_KEY
+            # itself; TIP is a feature, so it registers here and the session
+            # state machine stays out of it.
+            _otr.register_tlv_handler(_tip.TIP_TLV_TYPE,
+                                      self._tip_manager.handle_tlv)
         try:
             await self.get_roster()
         except (IqError, IqTimeout):
@@ -3538,9 +3556,17 @@ class OTRv4PlusXMPP(ClientXMPP):
         try:
             count = mgr.clear()
         except Exception:
-            return 0
+            count = 0
         if count:
             print("[trade] dropped %d open trade(s) — %s" % (count, reason))
+        # Peer addresses and unanswered tip requests belong to the session
+        # too. Your own configured address is deliberately NOT cleared: it is
+        # configuration, and it is on disk.
+        if self._tip_manager is not None:
+            try:
+                self._tip_manager.clear()
+            except Exception:
+                pass
         return count
 
     def _peer_fingerprint(self, peer: str):
@@ -3584,6 +3610,95 @@ class OTRv4PlusXMPP(ClientXMPP):
             print("[trade] send failed: %s" % _sanitise(str(exc), 120))
             return False
         return True
+
+    def _send_tip_tlv(self, peer: str, payload: bytes) -> bool:
+        """One TIP TLV inside the OTR channel.
+
+        `send_tlv` is fail-closed: it will not open a session, will not
+        queue, and will not fall back to plaintext, so a False here means
+        there was no encrypted session and nothing went on the wire.
+        """
+        try:
+            frame = self.otr.send_tlv(peer, _tip.TIP_TLV_TYPE, payload)
+        except Exception as exc:
+            print("[tip] could not encrypt: %s" % _sanitise(str(exc), 120))
+            return False
+        if not frame:
+            return False
+        try:
+            self.send_otr_fragmented(
+                peer, frame if isinstance(frame, str) else frame.decode())
+        except Exception as exc:
+            print("[tip] send failed: %s" % _sanitise(str(exc), 120))
+            return False
+        return True
+
+    def _cmd_setxmr(self, args: str) -> None:
+        """/setxmr <address> | clear — your own Monero address, persisted."""
+        mgr = self._tip_manager
+        if mgr is None:
+            print("[tip] the tip subsystem is not ready yet")
+            return
+        self._tip_disclaim()
+        args = (args or "").strip()
+        try:
+            if args.lower() == "clear":
+                mgr.forget_address()
+                print("[tip] address cleared — requests will no longer be "
+                      "answered automatically")
+                return
+            saved = mgr.set_address(args)
+            print("✅ [tip] XMR address saved: %s" % saved)
+            print("[tip] verified peers who /tip you now get it "
+                  "automatically. Stored 0600 in %s — your address next to "
+                  "your OTR identity links the two for anyone who reads that "
+                  "disk." % _xmpp_state_path("xmr.json"))
+        except TipError as exc:
+            print("[tip] %s" % exc)
+
+    def _cmd_tip(self, peer: str, args: str) -> None:
+        """/tip [amount [note]] — ask a verified peer where to send it."""
+        mgr = self._tip_manager
+        if mgr is None:
+            print("[tip] the tip subsystem is not ready yet")
+            return
+        self._tip_disclaim()
+        args = (args or "").strip()
+        try:
+            if not args:
+                for line in mgr.status():
+                    print(line)
+                return
+            if not peer:
+                print("[tip] no peer selected — /otr <jid> first")
+                return
+            amount, _, note = args.partition(" ")
+            mgr.request(peer, amount, note)
+        except TipError as exc:
+            print("[tip] %s" % exc)
+
+    def _cmd_tipreply(self, peer: str) -> None:
+        """/tipreply — answer a request that arrived before /setxmr.
+
+        The explicit local action that stands in for the interactive prompt
+        a peer must not be able to trigger (INV-06).
+        """
+        mgr = self._tip_manager
+        if mgr is None:
+            print("[tip] the tip subsystem is not ready yet")
+            return
+        if not peer:
+            print("[tip] no peer selected — /otr <jid> first")
+            return
+        try:
+            mgr.reply(peer)
+        except TipError as exc:
+            print("[tip] %s" % exc)
+
+    def _tip_disclaim(self) -> None:
+        if not self._tip_disclaimed:
+            print(_tip.DISCLAIMER)
+            self._tip_disclaimed = True
 
     def _cmd_trade(self, peer: str, args: str) -> None:
         """/trade [init <terms> | accept | decline | blob <b64> | confirm |
@@ -4297,6 +4412,11 @@ class OTRv4PlusXMPP(ClientXMPP):
             "  /trade blob <b64>    relay one blob from your Monero wallet\n"
             "  /trade confirm       tell them your side is done\n"
             "  /trade cancel [why]  end a trade\n"
+            "  /setxmr <address>    store your Monero address (persisted)\n"
+            "  /setxmr clear        forget it and stop auto-answering\n"
+            "  /tip                 show tip state\n"
+            "  /tip <amt> [note]    ask a verified peer for their address\n"
+            "  /tipreply            answer a request that arrived first\n"
             "  /smpstate            show raw SMP verification state\n"
             "  /voicedebug          toggle voice setup + telemetry logging\n"
             "  Ctrl+B               scroll up one page\n"
@@ -4540,6 +4660,14 @@ class OTRv4PlusXMPP(ClientXMPP):
         # --- Trade courier (XMPP only, same as file transfer) ---
         elif lstrip == "/trade" or lstrip.startswith("/trade "):
             self._cmd_trade(peer, lstrip[6:].strip())
+
+        # --- Tip: relay a Monero address, nothing more ---
+        elif lstrip == "/setxmr" or lstrip.startswith("/setxmr "):
+            self._cmd_setxmr(lstrip[7:].strip())
+        elif lstrip == "/tipreply":
+            self._cmd_tipreply(peer)
+        elif lstrip == "/tip" or lstrip.startswith("/tip "):
+            self._cmd_tip(peer, lstrip[4:].strip())
 
         # --- Subscriptions ---
         elif lstrip == "/pending":

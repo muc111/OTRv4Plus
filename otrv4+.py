@@ -1441,6 +1441,42 @@ def _is_smp_version_mismatch(exc: BaseException) -> bool:
     return "version mismatch" in str(exc).lower()
 
 
+#: Handlers for the non-protocol TLV types, keyed by type.
+#:
+#: The engine routes DISCONNECTED, the SMP types and EXTRA_SYMMETRIC_KEY
+#: itself; anything else is a feature, and a feature does not belong in the
+#: session state machine.  A client registers here and gets called with
+#: `(peer, value)` for its type, on any session, once the payload has been
+#: decrypted and authenticated.
+#:
+#: Deliberately NOT a general extension point.  `register_tlv_handler`
+#: refuses any type outside `_HANDLER_TLV_TYPES`, so this cannot become the
+#: way arbitrary protocol gets bolted onto a session -- which is how a
+#: forwarding hook turns into an unreviewed second protocol.
+_TLV_HANDLERS: Dict[int, Callable[[str, bytes], None]] = {}
+
+#: The only types a client may register for.
+_HANDLER_TLV_TYPES = frozenset({0x0020})
+
+
+def register_tlv_handler(tlv_type: int, handler: Callable[[str, bytes], None]) -> None:
+    """Route inbound TLVs of `tlv_type` to `handler(peer, value)`.
+
+    Raises for a type the engine owns, or one nobody has thought about.
+    """
+    if tlv_type not in _HANDLER_TLV_TYPES:
+        raise ValueError(
+            "TLV type 0x%04x is not open to handlers (allowed: %s)"
+            % (tlv_type, ", ".join("0x%04x" % t
+                                   for t in sorted(_HANDLER_TLV_TYPES))))
+    _TLV_HANDLERS[tlv_type] = handler
+
+
+def clear_tlv_handlers() -> None:
+    """Drop every registered handler.  For teardown and for tests."""
+    _TLV_HANDLERS.clear()
+
+
 class OTRv4TLV:
     """Single TLV (Type-Length-Value) record inside an OTRv4 encrypted message.
 
@@ -1462,6 +1498,12 @@ class OTRv4TLV:
     SMP_ABORT = 0x0006
     SMP_MSG_1Q = 0x0007
     EXTRA_SYMMETRIC_KEY = 0x0009
+
+    #: v10.21.0: /tip -- a Monero address relayed between two SMP-verified
+    #: peers.  Above the OTRv4-allocated range (0x0000-0x0009) so it cannot
+    #: collide with a future spec type, and forward-compatible by the rule at
+    #: the top of this class: a peer that does not know it ignores it.
+    TIP = 0x0020
 
     SMP_TYPES = frozenset({SMP_MSG_1, SMP_MSG_2, SMP_MSG_3, SMP_MSG_4, SMP_ABORT, SMP_MSG_1Q})
 
@@ -1546,6 +1588,7 @@ class OTRv4TLV:
             6: "SMP_ABORT",
             7: "SMP_MSG_1Q",
             8: "EXTRA_SYMMETRIC_KEY",
+            0x0020: "TIP",
         }
         name = _NAMES.get(self.type, f"UNKNOWN(0x{self .type :04x})")
         return f"OTRv4TLV({name }, {len (self .value )} bytes)"
@@ -1822,7 +1865,7 @@ class OTRv4DataMessage:
             raise ValueError(f"Failed to decode message: {e }")
 
 
-VERSION = "OTRv4+ 10.20.0"
+VERSION = "OTRv4+ 10.21.0"
 
 #: Every timestamp the client puts on screen.  Was "%H:%M:%S", which is
 #: unreadable in a log kept overnight or across a reconnect: "02:14:07" does
@@ -7067,6 +7110,17 @@ class EnhancedOTRSession:
                 elif tlv.type in OTRv4TLV.SMP_TYPES:
                     self._enh_handle_smp_tlv(tlv)
 
+                elif tlv.type in _TLV_HANDLERS:
+                    # A registered feature handler.  It runs on decrypted,
+                    # authenticated payload from an established session, and
+                    # its exceptions are contained here: a feature must not
+                    # be able to break the session state machine.
+                    try:
+                        _TLV_HANDLERS[tlv.type](self.peer, tlv.value)
+                    except Exception as exc:
+                        self.tracer.trace(self.peer, "ERROR", "TLV-HANDLER",
+                                          "0x%04x" % tlv.type, str(exc)[:80])
+
                 elif tlv.type == OTRv4TLV.EXTRA_SYMMETRIC_KEY:
                     key = hashlib.sha3_512(
                         self.session_id + b"OTRv4-EXTRA-SYM" + tlv.value
@@ -8799,6 +8853,34 @@ class EnhancedSessionManager:
 
             session = self.sessions[peer]
             return session.is_encrypted()
+
+    def send_tlv(self, peer: str, tlv_type: int, value: bytes) -> Optional[str]:
+        """Encrypt a bare TLV for `peer`.  Returns the wire frame, or None.
+
+        Fail-closed and deliberately narrower than `handle_outgoing_message`:
+        it will NOT open a session, queue for later, or fall back to
+        plaintext.  There must already be an ENCRYPTED session, or the caller
+        gets None and is expected to say so.  A feature TLV that quietly
+        started a DAKE would send a peer a handshake they never asked for; one
+        that fell back to plaintext would put its payload on the wire in the
+        clear, which is exactly what the OTR channel exists to prevent.
+
+        The empty text is not padding waste -- OTRv4Payload adds a random
+        PADDING TLV, so a TLV-only message is not distinguishable by length
+        from a short chat message.
+        """
+        if tlv_type not in _HANDLER_TLV_TYPES:
+            raise ValueError("TLV type 0x%04x is not open to callers"
+                             % tlv_type)
+        with self.lock:
+            session = self.sessions.get(peer)
+            if session is None or not session.is_encrypted():
+                return None
+            try:
+                return session.encrypt_with_tlvs("", [OTRv4TLV(tlv_type, value)])
+            except Exception as e:
+                self.tracer.trace(peer, "ERROR", "SEND-TLV", "FAILED", str(e)[:80])
+                return None
 
     def handle_outgoing_message(self, peer: str, message: str) -> Tuple[Optional[str], bool]:
         """

@@ -338,11 +338,11 @@ INVARIANTS: Tuple[Invariant, ...] = (
     ),
     Invariant(
         id="INV-25",
-        statement="The trade courier is not a wallet: no Monero key material "
-                  "exists in the client process, and no trade state is "
-                  "written to disk.",
+        statement="The Monero-facing features are couriers, not wallets: no "
+                  "Monero key material exists in the client process, and no "
+                  "peer's data is written to disk.",
         status="ENFORCED",
-        tests=("test_trade_courier.py",),
+        tests=("test_trade_courier.py", "test_tip_address_relay.py"),
         rationale="otrv4plus_trade.py relays opaque base64 between two "
                   "wallets it does not run.  It opens no wallet file, reads "
                   "no seed or spend or view key, derives no address and "
@@ -355,14 +355,21 @@ INVARIANTS: Tuple[Invariant, ...] = (
                   "only and cleared on disconnect, /quit and process exit.  "
                   "This is INV-08 in its strongest form: the keys do not "
                   "cross the PyO3 boundary because they never enter the "
-                  "process.",
+                  "process.  otrv4plus_tip.py carries the same properties "
+                  "for a single address string: its import list is asserted "
+                  "exactly (json, os, re, tempfile, time, typing), it never "
+                  "validates the address -- an opinion about Monero's "
+                  "address format is one that starts rejecting valid "
+                  "addresses at a hard fork -- and a peer's address is held "
+                  "in memory only, never written to the store that holds "
+                  "your own.",
     ),
     Invariant(
         id="INV-26",
-        statement="A trade never opens, and never advances, on an unverified "
-                  "or changed peer.",
+        statement="No Monero-facing exchange happens with an unverified or "
+                  "changed peer, in either direction.",
         status="ENFORCED",
-        tests=("test_trade_courier.py",),
+        tests=("test_trade_courier.py", "test_tip_address_relay.py"),
         rationale="is_smp_verified(peer) is checked on EVERY trade message "
                   "in both directions, not once when the trade opens -- "
                   "otherwise a trade agreed at 09:00 and still running at "
@@ -373,7 +380,11 @@ INVARIANTS: Tuple[Invariant, ...] = (
                   "re-checked with it; a change cancels the trade and never "
                   "re-pins, matching INV-11.  Binding is to the fingerprint "
                   "and never to the I2P destination, which is TRANSIENT and "
-                  "changes every session by design.",
+                  "changes every session by design.  /tip applies the same "
+                  "gate before either branch of its TLV handler: a RESPONSE "
+                  "matters at least as much as a request, because it is a "
+                  "string the client is about to show the user as somewhere "
+                  "to send money.",
     ),
 )
 

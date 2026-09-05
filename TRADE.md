@@ -34,6 +34,56 @@ run one with your counterparty. This project will not hold one of three keys.
 
 ---
 
+## `/tip` — just swapping an address
+
+Smaller than everything below, and worth knowing about first because most of
+the time it is all you need. `/tip` asks a verified peer for their Monero
+address and shows it as text and a QR code. **It sends no money.** The name is
+short for "ask where to tip you"; you pay from your own wallet afterwards,
+looking at the address.
+
+```
+bob>   /setxmr 8B...                 # once. persisted 0600, /setxmr clear undoes it
+alice> /tip 0.5 thanks for the call test
+```
+
+Bob's client answers automatically with the address he configured, and Alice
+sees it with a scannable QR:
+
+```
+🔐 [tip] bob@example.i2p's XMR address for 0.5 XMR:
+📬 8B...
+📝 note: thanks for the call test
+📸 scan, or copy the address above:
+   [QR]
+[tip] this client sends nothing — pay from your own wallet, and check the
+      address before you do
+```
+
+If Bob has not run `/setxmr`, the request is reported and **nothing is sent**.
+He answers with two explicit commands, `/setxmr <address>` then `/tipreply`.
+There is deliberately no prompt that captures his next typed line: a remote
+message must never decide what the local user's keystrokes mean (INV-06), and
+here that line would be transmitted, not merely stored.
+
+Notes on it:
+
+- **Prefer a subaddress.** One address given to several people links them.
+  Nothing enforces this; it is your call and your wallet's feature.
+- **The address is never validated.** It is carried verbatim. An opinion about
+  Monero's address format is one that starts rejecting valid addresses at a
+  hard fork.
+- **Nothing proves the address is theirs.** The session proves it came from the
+  peer whose fingerprint you pinned and whose SMP secret you both know. That it
+  is *their* address is something no protocol can tell you — check it the way
+  you would check any address before sending.
+- **`/setxmr` puts your address on disk** (0600, next to your OTR state). Your
+  address beside your identity links the two for anyone who reads that disk.
+  If that matters, skip `/setxmr` and use `/tipreply` per request.
+- Peer addresses are memory-only and go on disconnect and `/quit`.
+
+---
+
 ## Before your first trade
 
 1. **Verify your counterparty with SMP.** Not optional and not skippable — the
