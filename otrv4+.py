@@ -1873,7 +1873,7 @@ class OTRv4DataMessage:
             raise ValueError(f"Failed to decode message: {e }")
 
 
-VERSION = "OTRv4+ 10.23.0"
+VERSION = "OTRv4+ 10.23.1"
 
 #: SMP passphrase length bounds, shared by both clients.
 #:
@@ -12409,12 +12409,14 @@ class OTRv4IRCClient:
                     if _should_switch:
                         _cur = self.panel_manager.active_panel
                         _cur_panel = self.panel_manager.panels.get(_cur)
+                        # Already on the peer's tab -> nothing to switch to.
+                        # This used to call _switch_panel anyway, which
+                        # replayed the tab's history mid-handshake.
                         _in_channel = (
                             _cur is None
                             or (_cur_panel is not None and _cur_panel.type in ("channel", "system"))
-                            or _cur == s
                         )
-                        if _in_channel or _cur == s:
+                        if _in_channel and _cur != s:
                             self._switch_panel(s)
 
                     if msg_type == "dake1" or not self.session_manager.has_session(s):
@@ -12760,7 +12762,7 @@ class OTRv4IRCClient:
 
             threading.Timer(0.3, _send_reply).start()
 
-    def _switch_panel(self, name: str) -> bool:
+    def _switch_panel(self, name: str, force: bool = False) -> bool:
         """Switch the active panel and replay its buffered history to stdout.
 
         Single choke-point for all tab switches - /switch, /tab-next,
@@ -12775,9 +12777,34 @@ class OTRv4IRCClient:
         3. Replay up to _REPLAY_LINES messages with their stored timestamps
            (dimmed) so history is distinct from live output.
         4. Print a thin "live" separator to mark where buffered history ends.
+
+        Switching to the tab that is already active is not a switch, and
+        `force` is the only way to make it replay.  Steps 2-4 are what makes
+        a redundant call visible: they reprint the whole buffer under the
+        *original* timestamps, so a user who had just started a handshake saw
+
+            14:52:59 [Iron] Starting OTR session with Iron...
+            14:53:50 [Iron] DAKE1 -> sent - waiting for response...
+            ---- Iron ----
+            14:52:59 [Iron] Starting OTR session with Iron...
+            14:53:50 [Iron] DAKE1 -> sent - waiting for response...
+            ---- live ----
+
+        and reasonably read it as the client having sent DAKE1 twice.  It had
+        sent it once; the inbound DAKE2's first fragment called back into
+        here while the peer tab was already focused.  The identical
+        timestamps are the tell -- a real second send carries a new one.
+
+        The guard lives here rather than at the call site because there are
+        fifteen call sites and only three of them checked.  `force` is for
+        the one case where the redraw *is* the request: `/switch <this tab>`
+        typed by a user who has scrolled away from the bottom.
         """
         if name not in self.panel_manager.panels:
             return False
+
+        if not force and self.panel_manager.active_panel == name:
+            return True
 
         self.panel_manager.switch_to_panel(name)
         # Rebuild scroll history from this panel-s actual messages
@@ -13277,9 +13304,9 @@ class OTRv4IRCClient:
         elif cmd in ("switch", "tab") and len(parts) > 1:
             _sw_name = parts[1]
 
-            if not self._switch_panel(_sw_name):
+            if not self._switch_panel(_sw_name, force=True):
                 _sw_hashed = "#" + _sw_name if not _sw_name.startswith("#") else _sw_name
-                if not self._switch_panel(_sw_hashed):
+                if not self._switch_panel(_sw_hashed, force=True):
                     self.add_message("system", colorize(f"❌ No panel: {_sw_name }", "red"))
         elif cmd == "tabs":
             self.show_tabs()

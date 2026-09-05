@@ -4,6 +4,55 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## v10.23.1 — DAKE1 was not sent twice, it was printed twice
+
+*2026-09-05.  `VERSION → 10.23.1`.  `otrv4_core` unchanged at 0.10.28.*
+
+From a handset, mid-handshake:
+
+```
+2026-09-05 14:52:59 [IronFenrir] 🔑 Starting OTR session with IronFenrir…
+2026-09-05 14:53:50 [IronFenrir] 🔑 DAKE1 → sent - waiting for response…
+──────────────── 🔴IronFenrir ─────────────────
+2026-09-05 14:52:59 [IronFenrir] 🔑 Starting OTR session with IronFenrir…
+2026-09-05 14:53:50 [IronFenrir] 🔑 DAKE1 → sent - waiting for response…
+──────────────── live ────────────────
+```
+
+*"strange to be sending DAKE 1 twice"*.  It was sent once.  The timestamps are
+identical, and a real second send carries a new one; the panel header and the
+`live` separator bracketing the second copy are what `_switch_panel` prints
+when you enter a tab.
+
+`_switch_panel` replays a tab's whole buffer, and its only guard was *does this
+panel exist*.  So being asked to switch to the tab already focused reprinted
+it.  The inbound DAKE2's first fragment did exactly that: `_on_first_fragment`
+computed `if _in_channel or _cur == s` — a condition that asks, in as many
+words, to switch to the tab it is already on — while the initiator sat on the
+peer's tab watching the handshake.
+
+**The guard is in `_switch_panel`, not at the call site.** Fifteen call sites;
+three of them checked `active_panel != peer` first and twelve did not, which is
+the ratio that says the check belongs in the callee.  Switching to the active
+tab is now a no-op returning `True` — `True` because `/switch` reads `False` as
+*no such panel* and retries with a `#` prefix.  The one caller that should
+still redraw the current tab is `/switch` itself, typed by a user who has
+scrolled away, and it passes the new `force=True`.  The redundant clause in
+`_on_first_fragment` is gone as well: leaving it would be a trap for whoever
+removes `force` later.
+
+Why a display bug is in the changelog at all: the panel is the only account the
+user has of what the protocol did.  A client that shows a handshake step twice
+when it happened once teaches the reader to discount duplicates — and a real
+duplicate (a glare, a replay, a second initiator) is something they need to
+see.
+
+16 tests in `test_irc_panel_replay.py`, 5 mutants killed: guard deleted, guard
+returning `False`, `force` defaulting to `True`, `force` ignored, and the old
+`or _cur == s` restored.  Not yet re-run on the two handsets.
+
+---
+
 ## v10.23.0 — the IRC client finally has the guided SMP flow
 
 *2026-09-05.  `VERSION → 10.23.0`.  `otrv4_core` unchanged at 0.10.28.*
