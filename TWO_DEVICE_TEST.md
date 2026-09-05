@@ -213,7 +213,29 @@ killed mid-SMP2:
 ```
 
 `safe` has completed two full verifications on this server. `fast` and `turbo`
-have not survived one. **Use `safe` here.** The ladder below is for a
+have not survived one. **Use `safe` here, or try `auto`.**
+
+`auto` (v10.26.0) is the fitted answer: the server charges about 2.0s a line
+with about 35s of allowance, so a message short enough can go faster than any
+sustained rate could. It sends everything at `fast` except SMP2 and SMP3 —
+the 47-fragment proofs, and the exact message that earned the kill. Both
+handsets must be set the same:
+
+```
+/fragrate auto        # on BOTH devices
+/otr <peer>           # a throwaway session first
+/smp
+```
+
+- [ ] the DAKE completes (three messages, all `fast`)
+- [ ] SMP completes — watch for the kill at SMP2/SMP3, which `auto` paces at
+      `normal` precisely to avoid
+- [ ] `/fragrate` afterwards reports the rate the last long send *used*, not
+      the word "auto"
+
+If it survives three consecutive verifications, `auto` is the answer for this
+server. If it does not, the fitted budget of 28 is too high — report the
+disconnect lines and it can come down. The ladder below is for a
 different server, or for re-testing if postman's limits change.
 
 A separate `normal` run ended in a disconnect (55s after a 17-fragment DAKE1,

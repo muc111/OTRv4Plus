@@ -1873,7 +1873,7 @@ class OTRv4DataMessage:
             raise ValueError(f"Failed to decode message: {e }")
 
 
-VERSION = "OTRv4+ 10.25.3"
+VERSION = "OTRv4+ 10.26.0"
 
 #: SMP passphrase length bounds, shared by both clients.
 #:
@@ -11791,6 +11791,9 @@ class OTRv4IRCClient:
         "fast":   (1.00, 4.00, 10.0, 0.05),
         "turbo":  (0.50, 4.00, 10.0, 0.05),
     }
+    #: What `/fragrate` accepts.  "auto" is not a fixed rate so it has no
+    #: entry above; it picks one of the others per message.
+    PACE_CHOICES = ("safe", "normal", "fast", "turbo", "auto")
     #: Back to "safe" in v10.25.1.  v10.25.0 made "normal" the default on the
     #: arithmetic -- it is the penalty mainstream ircds implement, and the old
     #: rate was paying double for no recorded reason.  The first real run at
@@ -11807,6 +11810,66 @@ class OTRv4IRCClient:
     #: diagnosis.  `/fragrate` and the disconnect report added alongside it
     #: are how the question gets answered with evidence instead.
     DEFAULT_PACE = "safe"
+
+    # ── the fitted model of irc.postman.i2p ─────────────────────────────────
+    #
+    # Three observations, all on 2026-09-05, all at 403-406 byte fragments:
+    #
+    #   24 lines at 0.54 s/line  survived   (a DAKE2 at turbo)
+    #   34 lines at 0.97 s/line  KILLED     (an SMP2 at fast, "Excess Flood")
+    #   24 lines at 2.00 s/line  survived   (a full DAKE at normal)
+    #
+    # Fit a leaky bucket -- the server charges PENALTY seconds per line, the
+    # allowance refills one second per second, and the connection dies when
+    # accumulated debt passes BUDGET.  Debt after n lines at interval i is
+    # n * (PENALTY - i).  The survived case needs BUDGET >= 35 and the killed
+    # case needs BUDGET < 35, which pins both parameters at PENALTY = 2.0 and
+    # BUDGET ~= 35 exactly.  A penalty of 1.5 is inconsistent with the pair;
+    # 2.5 fits too but is less parsimonious and would only make this more
+    # conservative.
+    #
+    # THE USEFUL CONSEQUENCE.  At a cost equal to or above the penalty, debt
+    # never accumulates and the rate is safe at any message length -- which is
+    # why `normal` carried a whole DAKE and `safe` two whole verifications.
+    # Below it, debt grows per line and the safe length is BUDGET divided by
+    # the shortfall.  So the limit is not a rate, it is a rate AND a length,
+    # and a message short enough can go faster than a sustained rate ever
+    # could.
+    #
+    # Fragment counts, measured: DAKE1 16, DAKE2 24, DAKE3 19, SMP1 23,
+    # SMP2 47, SMP3 47, SMP4 20.  Only SMP2 and SMP3 are long enough to
+    # exhaust the budget at `fast`.
+    #
+    # Two data points and a straight line through them is not a proof, so
+    # BUDGET here is 20% under what was measured, and `auto` is opt-in.
+    FLOOD_LINE_PENALTY = 2.0
+    FLOOD_DEBT_BUDGET = 28.0
+    #: Presets `auto` may choose between, fastest first.  `turbo` is excluded
+    #: deliberately: it is the preset for finding a ceiling by hitting it,
+    #: which is not a thing to do automatically.
+    AUTO_CANDIDATES = ("fast", "normal", "safe")
+
+    def _auto_preset_for(self, fragments: int) -> str:
+        """Fastest preset that can carry *fragments* lines within the budget.
+
+        The message length is the input because the server's limit is a debt,
+        not a rate: a 16-line DAKE1 at `fast` accumulates 16 seconds against a
+        budget of 28 and lands, while a 47-line SMP2 accumulates 47 and does
+        not -- which is exactly what was seen on the wire.
+
+        Assumes the debt has drained between messages.  It refills a second a
+        second and an OTRv4 handshake waits tens of seconds for each reply, so
+        that holds for the protocol as it runs; it would not hold for a client
+        that sent two long messages back to back, and nothing here does.
+        """
+        for name in self.AUTO_CANDIDATES:
+            cost = self.PACE_PRESETS[name][0]
+            shortfall = self.FLOOD_LINE_PENALTY - cost
+            if shortfall <= 0:
+                return name          # never accumulates: safe at any length
+            if fragments * shortfall <= self.FLOOD_DEBT_BUDGET:
+                return name
+        return self.AUTO_CANDIDATES[-1]
 
     #: What a server says when it has had enough.  Matching any of these drops
     #: the session to SAFE for the rest of the run: a disconnect mid-DAKE is
@@ -11919,6 +11982,33 @@ class OTRv4IRCClient:
         for line in lines:
             self.add_message("system", colorize(line, "dim"))
 
+    def _describe_auto(self) -> None:
+        """Show where `auto`'s cut-off falls, in fragments and in messages.
+
+        A rule nobody can see the boundary of is a rule nobody can check, and
+        this one is fitted from two observations rather than derived.
+        """
+        cut = {}
+        for name in self.AUTO_CANDIDATES:
+            shortfall = self.FLOOD_LINE_PENALTY - self.PACE_PRESETS[name][0]
+            if shortfall <= 0:
+                cut[name] = None     # no limit
+            else:
+                cut[name] = int(self.FLOOD_DEBT_BUDGET // shortfall)
+        parts = []
+        for name in self.AUTO_CANDIDATES:
+            limit = cut[name]
+            parts.append("%s up to %d lines" % (name, limit) if limit
+                         else "%s beyond that" % name)
+        self.add_message("system", colorize(
+            "   " + ", ".join(parts) + ".", "dim"))
+        self.add_message("system", colorize(
+            "   A DAKE message is 16-24 fragments and an SMP2/SMP3 is 47, so "
+            "the handshake goes fast and the two big proofs do not.", "dim"))
+        self.add_message("system", colorize(
+            "   Fitted from two disconnects on irc.postman.i2p, with a 20% "
+            "margin. Not proven — if it gets you killed, say so.", "yellow"))
+
     def _cmd_fragrate(self, arg: str) -> None:
         """`/fragrate` — show the pacing, or change it.
 
@@ -11931,12 +12021,18 @@ class OTRv4IRCClient:
         A new session starts at the default.
         """
         arg = (arg or "").strip().lower()
-        if arg and arg not in self.PACE_PRESETS:
+        if arg and arg not in self.PACE_CHOICES:
             self.add_message("system", colorize(
-                "Usage: /fragrate [%s]" % " | ".join(self.PACE_PRESETS), "red"))
+                "Usage: /fragrate [%s]" % " | ".join(self.PACE_CHOICES), "red"))
             return
         if arg:
             self._pace_preset = arg
+            if arg == "auto":
+                self.add_message("system", colorize(
+                    "📶 Fragment pacing: auto — the rate is chosen per "
+                    "message from its length.", "cyan"))
+                self._describe_auto()
+                return
             cost, _a, _c, floor = self.PACE_PRESETS[arg]
             self.add_message("system", colorize(
                 "📶 Fragment pacing: %s — about %.2f lines/sec sustained."
@@ -11950,10 +12046,16 @@ class OTRv4IRCClient:
             return
 
         name = self._pace_name()
-        cost, allowance, cap, floor = self.PACE_PRESETS[name]
-        self.add_message("system", colorize(
-            "📶 Fragment pacing: %s — %.2f s/line sustained, burst %.0f lines."
-            % (name, cost, allowance / cost), "cyan"))
+        if name == "auto":
+            self.add_message("system", colorize(
+                "📶 Fragment pacing: auto — chosen per message from its "
+                "length.", "cyan"))
+            self._describe_auto()
+        else:
+            cost, allowance, cap, floor = self.PACE_PRESETS[name]
+            self.add_message("system", colorize(
+                "📶 Fragment pacing: %s — %.2f s/line sustained, burst "
+                "%.0f lines." % (name, cost, allowance / cost), "cyan"))
         stats = getattr(self, "_last_send_stats", None)
         if stats:
             self.add_message("system", colorize(
@@ -11980,22 +12082,38 @@ class OTRv4IRCClient:
     def _pace_name(self) -> str:
         return getattr(self, "_pace_preset", None) or self.DEFAULT_PACE
 
-    def _pacer(self, net: str):
+    def _pacer(self, net: str, fragments: Optional[int] = None):
         """A pacer for one message.
 
         Clearnet keeps the standard penalty regardless of the preset: the
         preset exists to tune an overlay network where the round trip already
         dwarfs the pacing, and letting it loosen a clearnet connection would
         be tuning the wrong thing.
+
+        `fragments` is how long this particular message is, and only `auto`
+        uses it -- see `_auto_preset_for`.  Optional so every existing caller
+        and test keeps working; without it `auto` falls back to the rate that
+        is safe at any length rather than guessing.
+
+        The chosen preset is recorded on the returned pacer as `.preset`, so
+        the disconnect report and `/fragrate` can name what a send actually
+        used rather than what the setting was called.
         """
+        name = "normal"
         if net == NetworkConstants.NET_CLEARNET:
             cost, allowance, cap, floor = self.PACE_PRESETS["normal"]
         elif net == NetworkConstants.NET_TOR:
             cost, allowance, cap, floor = self.PACE_PRESETS["normal"]
             floor = 0.20
         else:
-            cost, allowance, cap, floor = self.PACE_PRESETS[self._pace_name()]
-        return self._Pacer(cost, allowance, cap, floor)
+            name = self._pace_name()
+            if name == "auto":
+                name = (self._auto_preset_for(fragments)
+                        if fragments else self.AUTO_CANDIDATES[-1])
+            cost, allowance, cap, floor = self.PACE_PRESETS[name]
+        pacer = self._Pacer(cost, allowance, cap, floor)
+        pacer.preset = name
+        return pacer
 
     #: How many PACED lines a sample needs on top of the burst before its
     #: lines/sec means anything.  Three is enough to separate the sustained
@@ -12195,16 +12313,18 @@ class OTRv4IRCClient:
         # and debug mode adds the fragment count.  Kept as an attribute rather
         # than returned so no caller's signature changes.
         self._last_fragment_count = len(fragments)
-        _pace = self._pacer(_net)
+        _pace = self._pacer(_net, len(fragments))
         # The preset THIS send is going out at, recorded before anything can
-        # change it.  _report_disconnect_context used to read the live value,
+        # change it.  Taken from the pacer rather than from `_pace_name()`, so
+        # that under `auto` it names the rate actually chosen for this message
+        # instead of the word "auto".  _report_disconnect_context used to read the live value,
         # which meant that on the one path where the answer matters most --
         # the server sends ERROR, _note_possible_flood drops the rate to
         # 'safe', the socket then closes -- it reported the rate we had just
         # retreated to instead of the one that earned the kill.  A handset
         # sending 46 fragments at 'fast' was told "Fragment pacing was
         # 'safe'", which is the opposite of the fact the report exists for.
-        self._last_send_preset = self._pace_name()
+        self._last_send_preset = getattr(_pace, "preset", self._pace_name())
         _started = time.monotonic()
         ok = True
         for i, frag in enumerate(fragments):
@@ -14305,7 +14425,7 @@ class OTRv4IRCClient:
                 "                       passphrase, hidden, and starts",
                 "  /smp start           Same as /smp",
                 "  /smp <secret>        Same, but typed in the clear (ECHOED)",
-                "  /fragrate [preset]   Show or set OTR fragment pacing",
+                "  /fragrate [preset]   Fragment pacing (safe/normal/fast/turbo/auto)",
                 "  /smp abort           Abort SMP",
                 "  /smp status          SMP status",
                 "  /secure              Show session security levels",

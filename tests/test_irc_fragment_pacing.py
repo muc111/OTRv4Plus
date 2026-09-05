@@ -65,7 +65,7 @@ def run_pacer(preset, n, clock=None):
 class Client:
     METHODS = ("_pacer", "_pace_name", "_cmd_fragrate", "_fragment_size",
                "_note_possible_flood", "_record_send_rate",
-               "_rate_sample_min")
+               "_rate_sample_min", "_auto_preset_for", "_describe_auto")
 
     #: The stub stands in for the class, so it carries the class attributes
     #: the borrowed methods read. Referenced, not copied: a preset changed in
@@ -79,6 +79,10 @@ class Client:
     FRAG_SAFETY_MARGIN = BASE.FRAG_SAFETY_MARGIN
     FRAG_ASSUMED_USERHOST = BASE.FRAG_ASSUMED_USERHOST
     RATE_SAMPLE_PACED_LINES = BASE.RATE_SAMPLE_PACED_LINES
+    PACE_CHOICES = BASE.PACE_CHOICES
+    AUTO_CANDIDATES = BASE.AUTO_CANDIDATES
+    FLOOD_LINE_PENALTY = BASE.FLOOD_LINE_PENALTY
+    FLOOD_DEBT_BUDGET = BASE.FLOOD_DEBT_BUDGET
     _Pacer = BASE._Pacer
 
     def __init__(self, server="irc.postman.i2p"):
@@ -874,7 +878,11 @@ class TestTheReportNamesTheRateThatCausedIt:
         fn = next(n for n in ast.walk(tree)
                   if isinstance(n, ast.FunctionDef)
                   and n.name == "send_otr_message")
-        assert "_last_send_preset = self._pace_name()" in ast.unparse(fn)
+        src = ast.unparse(fn)
+        assert "_last_send_preset" in src
+        # From the pacer, not from _pace_name(): under `auto` the setting is
+        # called "auto" and the rate actually used is fast or normal.
+        assert "getattr(_pace, 'preset'" in src
 
     def test_it_is_recorded_before_the_fragments_go_out(self):
         """After the loop it would be the post-backoff value again, because
@@ -934,3 +942,177 @@ class TestTheReconnectDoesNotContradictItself:
         assert "_report_preserved_sessions" in auto_join_src
         assert auto_join_src.index("_report_preserved_sessions") < \
             auto_join_src.index("has_session")
+
+
+class TestAutoPicksTheRateFromTheMessageLength:
+    """The limit is not a rate, it is a rate AND a length.
+
+    Three observations on irc.postman.i2p, all 2026-09-05:
+
+        24 lines at 0.54 s/line  survived   (a DAKE2 at turbo)
+        34 lines at 0.97 s/line  KILLED     (an SMP2 at fast, "Excess Flood")
+        24 lines at 2.00 s/line  survived   (a full DAKE at normal)
+
+    Fit a leaky bucket -- PENALTY seconds charged per line, allowance refilling
+    one second per second, death when debt passes BUDGET. Debt after n lines
+    at interval i is n*(PENALTY-i). The killed case needs BUDGET < 35 and the
+    survived case needs BUDGET >= 35, which pins PENALTY at 2.0 and BUDGET at
+    about 35. A penalty of 1.5 is inconsistent with the pair.
+
+    The consequence is the useful part: at or above the penalty, debt never
+    accumulates and any length is safe -- which is why `normal` carried a whole
+    DAKE. Below it, the safe length is BUDGET over the shortfall. So a short
+    message can go faster than any sustained rate could.
+    """
+
+    @pytest.fixture
+    def client(self):
+        c = Client()
+        c._auto_preset_for = CLIENT._auto_preset_for.__get__(c)
+        c.AUTO_CANDIDATES = BASE.AUTO_CANDIDATES
+        c.FLOOD_LINE_PENALTY = BASE.FLOOD_LINE_PENALTY
+        c.FLOOD_DEBT_BUDGET = BASE.FLOOD_DEBT_BUDGET
+        return c
+
+    @pytest.mark.parametrize("name,frags", [
+        ("DAKE1", 16), ("DAKE2", 24), ("DAKE3", 19), ("SMP1", 23), ("SMP4", 20),
+    ])
+    def test_the_short_messages_go_fast(self, client, name, frags):
+        assert client._auto_preset_for(frags) == "fast"
+
+    @pytest.mark.parametrize("frags", [47, 60, 200])
+    def test_the_long_ones_fall_back_to_a_rate_with_no_limit(self, client, frags):
+        """SMP2 and SMP3 are 47 fragments -- the two that got a handset
+        killed. `normal` costs exactly the fitted penalty, so its debt is zero
+        per line and it is safe at any length."""
+        chosen = client._auto_preset_for(frags)
+        assert chosen == "normal"
+        cost = BASE.PACE_PRESETS[chosen][0]
+        assert cost >= BASE.FLOOD_LINE_PENALTY
+
+    def test_every_choice_stays_inside_the_budget(self, client):
+        """The property, checked directly rather than through examples."""
+        for n in range(1, 300):
+            cost = BASE.PACE_PRESETS[client._auto_preset_for(n)][0]
+            shortfall = max(0.0, BASE.FLOOD_LINE_PENALTY - cost)
+            assert n * shortfall <= BASE.FLOOD_DEBT_BUDGET, (
+                "%d fragments at %.2fs/line accumulates %.1fs of debt against "
+                "a budget of %.1f" % (n, cost, n * shortfall,
+                                      BASE.FLOOD_DEBT_BUDGET))
+
+    def test_it_never_chooses_turbo(self, client):
+        """`turbo` is for finding a ceiling by hitting it, which is not a
+        thing to do automatically."""
+        assert "turbo" not in BASE.AUTO_CANDIDATES
+        for n in range(1, 300):
+            assert client._auto_preset_for(n) != "turbo"
+
+    def test_the_budget_is_under_what_was_measured(self, client):
+        """34 lines at 0.97s/line was killed, so the real budget is about 35.
+        Two data points and a straight line is not a proof."""
+        assert BASE.FLOOD_DEBT_BUDGET <= 35.0 * 0.85
+
+    def test_the_fitted_penalty_matches_the_observations(self):
+        """Guards the arithmetic the whole rule rests on: at PENALTY the
+        survived case and the killed case must bracket one budget."""
+        P = BASE.FLOOD_LINE_PENALTY
+        killed_implies_budget_below = 34 * (P - 33.0 / 34)
+        survived_implies_budget_atleast = 24 * (P - 13.0 / 24)
+        assert survived_implies_budget_atleast <= killed_implies_budget_below
+
+    def test_a_message_of_unknown_length_gets_the_unlimited_rate(self, client):
+        """`_pacer` is called without a count by older code paths and by
+        tests. Guessing fast there would be guessing with the one parameter
+        the rule needs."""
+        assert client._auto_preset_for(10_000) in ("normal", "safe")
+
+
+class TestAutoIsWiredThroughTheSendPath:
+
+    def test_the_pacer_takes_the_fragment_count(self, client):
+        client._pace_preset = "auto"
+        assert client._pacer(NET.NET_I2P, 16).cost == \
+            BASE.PACE_PRESETS["fast"][0]
+        assert client._pacer(NET.NET_I2P, 47).cost == \
+            BASE.PACE_PRESETS["normal"][0]
+
+    def test_without_a_count_it_does_not_guess_fast(self, client):
+        client._pace_preset = "auto"
+        assert client._pacer(NET.NET_I2P).cost >= BASE.FLOOD_LINE_PENALTY
+
+    def test_the_pacer_reports_which_preset_it_chose(self, client):
+        """So the disconnect report and /fragrate can name the rate a send
+        actually used rather than the word "auto"."""
+        client._pace_preset = "auto"
+        assert client._pacer(NET.NET_I2P, 16).preset == "fast"
+        assert client._pacer(NET.NET_I2P, 47).preset == "normal"
+
+    def test_a_fixed_preset_still_reports_itself(self, client):
+        client._pace_preset = "fast"
+        assert client._pacer(NET.NET_I2P, 47).preset == "fast"
+
+    def test_clearnet_ignores_auto_entirely(self, client):
+        client._pace_preset = "auto"
+        assert client._pacer(NET.NET_CLEARNET, 16).cost == \
+            BASE.PACE_PRESETS["normal"][0]
+
+    def test_the_send_path_passes_the_count(self):
+        import ast
+        import os
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        with open(os.path.join(root, "otrv4+.py"), encoding="utf-8") as fh:
+            tree = ast.parse(fh.read())
+        fn = next(n for n in ast.walk(tree)
+                  if isinstance(n, ast.FunctionDef)
+                  and n.name == "send_otr_message")
+        assert "_pacer(_net, len(fragments))" in ast.unparse(fn)
+
+    def test_the_recorded_preset_is_the_effective_one(self):
+        import ast
+        import os
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        with open(os.path.join(root, "otrv4+.py"), encoding="utf-8") as fh:
+            tree = ast.parse(fh.read())
+        fn = next(n for n in ast.walk(tree)
+                  if isinstance(n, ast.FunctionDef)
+                  and n.name == "send_otr_message")
+        assert "getattr(_pace, 'preset'" in ast.unparse(fn)
+
+
+class TestTheCommandAcceptsAuto:
+
+    @pytest.fixture
+    def client(self):
+        c = Client()
+        for n in ("_describe_auto", "_auto_preset_for"):
+            setattr(c, n, getattr(CLIENT, n).__get__(c))
+        c.PACE_CHOICES = BASE.PACE_CHOICES
+        c.AUTO_CANDIDATES = BASE.AUTO_CANDIDATES
+        c.FLOOD_LINE_PENALTY = BASE.FLOOD_LINE_PENALTY
+        c.FLOOD_DEBT_BUDGET = BASE.FLOOD_DEBT_BUDGET
+        return c
+
+    def test_it_can_be_selected(self, client):
+        client._cmd_fragrate("auto")
+        assert client._pace_name() == "auto"
+
+    def test_it_does_not_crash_looking_up_a_rate_it_has_no_entry_for(
+            self, client):
+        """`auto` is not in PACE_PRESETS -- it picks one of the others."""
+        client._cmd_fragrate("auto")
+        client._cmd_fragrate("")
+        assert client.said("auto")
+
+    def test_it_shows_where_the_cut_off_falls(self, client):
+        """A rule whose boundary nobody can see is a rule nobody can check."""
+        client._cmd_fragrate("auto")
+        assert client.said("up to")
+        assert client.said("47")
+
+    def test_it_says_the_rule_is_fitted_not_proven(self, client):
+        client._cmd_fragrate("auto")
+        assert client.said("Not proven")
+
+    def test_the_usage_line_lists_it(self, client):
+        client._cmd_fragrate("nonsense")
+        assert client.said("auto")

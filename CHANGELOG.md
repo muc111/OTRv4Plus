@@ -4,6 +4,78 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## v10.26.0 — `auto`: the limit is a rate AND a length
+
+*2026-09-05.  `VERSION → 10.26.0`.  `otrv4_core` unchanged at 0.10.28.*
+
+Suggested from the handsets: *"maybe do the DAKE fast and then normal for SMP
+as SMP is huge hybrid encryption plus PQC"*.  The data supports it, and says
+the cut-off sits slightly further out than that.
+
+### Fitting the server
+
+Three observations on irc.postman.i2p, all 2026-09-05, all at 403–406 byte
+fragments:
+
+| lines | interval | outcome |
+|---|---|---|
+| 24 | 0.54 s/line | survived (a DAKE2 at `turbo`) |
+| 34 | 0.97 s/line | **killed** — `Excess Flood` (an SMP2 at `fast`) |
+| 24 | 2.00 s/line | survived (a full DAKE at `normal`) |
+
+Fit a leaky bucket: the server charges `PENALTY` seconds a line, the allowance
+refills a second a second, and the connection dies when debt passes `BUDGET`.
+Debt after *n* lines at interval *i* is `n × (PENALTY − i)`.  The killed case
+needs `BUDGET < 35`; the survived case needs `BUDGET ≥ 35`.  That pins
+**`PENALTY = 2.0`, `BUDGET ≈ 35`**.  A penalty of 1.5 is inconsistent with the
+pair.
+
+### The consequence
+
+**At or above the penalty, debt never accumulates and any length is safe** —
+which is why `normal` carried a whole DAKE and `safe` two whole verifications.
+Below it, the safe length is the budget over the shortfall.  So the limit is
+not a rate, it is a rate *and* a length, and a short enough message can go
+faster than any sustained rate could.
+
+Fragment counts, measured: DAKE1 16, DAKE2 24, DAKE3 19, SMP1 23, **SMP2 47,
+SMP3 47**, SMP4 20.  Only the two big proofs are long enough to exhaust the
+budget at `fast` — which is exactly the message that got a handset killed.
+
+`/fragrate auto` picks per message:
+
+```
+DAKE1  16 → fast     SMP1  23 → fast
+DAKE2  24 → fast     SMP2  47 → normal
+DAKE3  19 → fast     SMP3  47 → normal
+                     SMP4  20 → fast
+```
+
+That is the suggestion, plus SMP1 and SMP4 which are also short enough.  On
+the fitted model it should take a verification from about 6.8 minutes of
+pacing to about 3.9, with the two messages that actually earned a kill still
+at a rate whose debt is zero.
+
+### What it is not
+
+`BUDGET` here is **28**, 20% under what was measured, and `auto` is **opt-in**
+— the default stays `safe`.  Two data points and a straight line through them
+is not a proof.  The rule assumes the debt drains between messages, which
+holds because an OTRv4 handshake waits tens of seconds for each reply and
+nothing here sends two long messages back to back.
+
+`turbo` is excluded from `auto` deliberately: it is the preset for finding a
+ceiling by hitting it, which is not a thing to do automatically.
+
+`/fragrate auto` prints where the cut-off falls and says the rule is fitted
+rather than proven, because a boundary nobody can see is one nobody can check.
+
+126 tests, 6 further mutants killed.
+
+Full suite 3126 passed / 44 skipped / 1 xfailed.
+
+---
+
 ## v10.25.3 — the server answered: Excess Flood
 
 *2026-09-05.  `VERSION → 10.25.3`.  `otrv4_core` unchanged at 0.10.28.*
