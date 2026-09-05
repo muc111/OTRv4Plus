@@ -199,8 +199,8 @@ class TestTheVerdict:
         assert "🟢" in line and "good" in line
 
     def test_a_slow_call_is_not_green(self):
-        # Between the two G.114 bands: usable, but not a call anybody would
-        # call good.
+        # Between the two bands: usable, but not a call anybody would call
+        # good on this transport.
         line = self._line(oneway=float(V.M2E_WARN_MS - 10), queued=1000,
                           gaps=0)
         assert "🟡" in line
@@ -237,6 +237,21 @@ class TestTheVerdict:
         line = self._line(oneway=network_only, dwell=120.0, decode=20.0,
                           play=30.0, queued=1000, gaps=0)
         assert "🟢" not in line
+
+    def test_the_live_two_handset_call_reads_green(self):
+        """The measured call, replayed through the summary.
+
+        1m51s, 914 ms mouth-to-ear, 96.5% delivered, 2.6% shed, 1068 frames.
+        Both people completed it. Under the pre-v10.28.1 G.114 bands this
+        printed "🔴 quality was poor", which is the reading that showed the
+        scale was calibrated for a telephone network rather than for three
+        garlic-routed hops each way.
+        """
+        line = manager()._call_summary(FakeSession(
+            age_s=111.0, oneway=914.0, queued=965, gaps=35, drift=26,
+            sent=1068))[0]
+        assert "🟢" in line
+        assert "quality was poor" not in line
 
     def test_a_call_with_nothing_measured_claims_nothing(self):
         line = self._line(age_s=3.0, oneway=None, queued=0, gaps=0)

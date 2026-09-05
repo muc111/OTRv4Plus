@@ -6,7 +6,7 @@
 <p align="center"><strong>Post-quantum hybrid encryption for Off The Record (OTR) chat <em>and voice calls</em> over IRC and XMPP. Two command-line clients, no GUI. Experimental, unaudited research prototype.</strong></p>
 
 <p align="center">
-<code>v10.28.0 · Rust crypto core · chat (X448 + ML-KEM-1024, AES-256-GCM) · hybrid PQC SMP (ML-KEM-1024 + ML-DSA-87 + ZKP) · voice (X448 + ML-KEM-1024, AES-256-GCM) · I2P SAM · AAudio · TUI</code>
+<code>v10.28.1 · Rust crypto core · chat (X448 + ML-KEM-1024, AES-256-GCM) · hybrid PQC SMP (ML-KEM-1024 + ML-DSA-87 + ZKP) · voice (X448 + ML-KEM-1024, AES-256-GCM) · I2P SAM · AAudio · TUI</code>
 </p>
 
 ---
@@ -734,23 +734,37 @@ are colour-banded so a reading is a verdict rather than a number to interpret:
 
 | Colour | Mouth-to-ear | Meaning |
 |---|---|---|
-| green | ≤ 400 ms | ITU-T G.114's "acceptable for most user applications" |
-| yellow | ≤ 800 ms | noticeable delay, still conversational |
-| red | > 800 ms | talk-over territory |
+| green | ≤ 1000 ms | at or near the floor this path can reach — as good as I2P gets |
+| yellow | ≤ 1500 ms | noticeably worse than the floor; still a conversation, with the pauses of a satellite call |
+| red | > 1500 ms | turn-taking breaks down |
 
-Over three I2P hops in each direction a healthy call reads **red**: the
-measured median mouth-to-ear on this path is about **917 ms**. That is above
-G.114's 400 ms and above the 800 ms band, and the readout says so rather than
-being recalibrated until it looks acceptable. It is the price of the anonymity
-configuration, not a fault in the codec — Opus is not the bottleneck (see
-[OPUS_AUDIT.md](OPUS_AUDIT.md)), and the playout path contributes a p50 of
-about 93 ms during degraded periods. Do not read this figure as ordinary
-low-latency VoIP performance; it is a measurement of a three-hop-each-way
-anonymising network. Reducing it is open work, and reducing the hop count is
-not on the table. Retune without touching
-code via `OTRV4PLUS_M2E_GOOD_MS` and `OTRV4PLUS_M2E_WARN_MS`; `NO_COLOR`
-disables the banding, and it is suppressed automatically when stdout is not a
-terminal, so a redirected transcript stays plain.
+**These are I2P numbers, not telephone-network numbers.** ITU-T G.114 puts
+one-way delay under 400 ms in the "acceptable for most user applications"
+range, and until v10.28.1 those were the bands used here. G.114 is a standard
+about *terrestrial* telephony, where propagation is nearly free and 400 ms
+means something has gone wrong; it explicitly carves out links with
+unavoidable long propagation — a geostationary satellite hop is about
+250–280 ms each way — as outside its range and in daily use anyway.
+
+A call here crosses three garlic-routed I2P hops in each direction plus the
+jitter buffer that absorbs each hop's variance. The measured median
+mouth-to-ear on this path is about **917 ms**, and a live two-handset call at
+**914 ms** delivered 96.5% of its audio and was completed by both people.
+Under the old bands that call was reported red, "quality was poor" — a scale
+that calls its own transport's median a fault is not strict, it is broken, and
+it spends the colour reserved for *something is wrong* on the ordinary case.
+
+The figure itself has not moved and is not being flattered: ~917 ms is the
+price of the anonymity configuration, not a fault in the codec — Opus is not
+the bottleneck (see [OPUS_AUDIT.md](OPUS_AUDIT.md)), and the playout path
+contributes a p50 of about 93 ms during degraded periods. Do not read it as
+ordinary low-latency VoIP performance. Reducing it is open work; reducing the
+hop count is not on the table.
+
+For a LAN or clearnet deployment, G.114's strict scale is one variable away:
+`OTRV4PLUS_M2E_GOOD_MS=400 OTRV4PLUS_M2E_WARN_MS=800`. `NO_COLOR` disables the
+banding, and it is suppressed automatically when stdout is not a terminal, so
+a redirected transcript stays plain.
 
 ### When the media path stops
 

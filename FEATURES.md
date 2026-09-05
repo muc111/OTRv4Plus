@@ -99,14 +99,15 @@ Android phones; still the newest and least-reviewed surface in the project.
 | AAudio capture/playback on Android | Yes, via `ctypes`; PulseAudio (`parec`/`pacat`) elsewhere |
 | Opus in-band FEC + adaptive jitter buffer | Yes |
 | Incoming-call notification with ACCEPT/DECLINE (Termux) | Yes — Termux:API notification, ringtone, FIFO actions with single-use call-bound tokens |
-| Mouth-to-ear latency colour banding | Yes — ITU-T G.114 bands, `NO_COLOR` respected |
+| Mouth-to-ear latency colour banding | Yes — I2P-calibrated bands (1000/1500 ms), G.114's 400/800 restorable by env var, `NO_COLOR` respected |
 | Voice over Tor or clearnet | **No, deliberately** — I2P only, fail closed |
 | Video | No |
 
 **Measured, not claimed.** Median mouth-to-ear on the I2P path is about
-**917 ms** — above G.114's 400 ms "acceptable" bound and above the 800 ms band.
-That is the cost of three hops each way, not a codec problem; Opus is not the
-bottleneck. A 4-hour continuous call has been sustained
+**917 ms** — far above G.114's 400 ms terrestrial "acceptable" bound, which is
+why the colour bands are calibrated for this transport (green ≤ 1000 ms)
+rather than for a phone network. The figure is the cost of three hops each
+way, not a codec problem; Opus is not the bottleneck. A 4-hour continuous call has been sustained
 ([VOICE_SOAK_TEST.md](VOICE_SOAK_TEST.md)), and a Wi-Fi-to-mobile transition
 recovered authenticated media in 51 s.
 

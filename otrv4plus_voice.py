@@ -199,19 +199,47 @@ def _env_ms(name: str, default_ms: int, lo: int, hi: int) -> int:
 # it is checked more often than anything else in the telemetry. Colouring it
 # turns a reading into a verdict at a glance.
 #
-# The thresholds come from ITU-T G.114, which puts one-way delay under 400 ms
-# in the range "acceptable for most user applications". That is applied here
-# to the full mouth-to-ear figure, because that is what a person actually
-# experiences -- network transit plus our own buffering and playout.
+# These are calibrated for I2P, NOT for a telephone network, and the
+# difference is the whole point.
 #
-# 400 ms is optimistic over three I2P hops in each direction, so a healthy
-# call on this transport usually reads yellow. That is the honest signal:
-# workable, not good. A scale calibrated so everything came out green would
-# say nothing at all. Both bands are overridable for retuning after a soak
-# test without touching code.
-M2E_GOOD_MS = _env_ms("OTRV4PLUS_M2E_GOOD_MS", 400, 50, 10000)
+# ITU-T G.114 puts one-way delay under 400 ms in the range "acceptable for
+# most user applications", and until v10.28.1 those were the numbers used
+# here: green under 400, amber to 800, red beyond. G.114 is a standard about
+# TERRESTRIAL telephony, where propagation is nearly free and 400 ms means
+# something has gone wrong. It says so itself: it carves out links with
+# unavoidable long propagation -- a geostationary satellite hop is about
+# 250-280 ms each way -- as outside its range and in daily use anyway.
+#
+# A call here crosses three I2P hops in each direction through garlic-routed
+# tunnels, plus the jitter buffer that has to absorb the variance of each
+# one. This project's own soak measured a median mouth-to-ear of 917 ms, and
+# a live two-handset call measured 914 ms with 96.5% of its audio delivered:
+# a conversation both people completed. On the old scale that call was
+# reported RED, "quality was poor".
+#
+# That is a broken instrument, not a bad call. A scale whose own transport
+# cannot reach the top band says only "this is I2P", which the user already
+# knows, and it says it in the colour reserved for "something is wrong" --
+# so the day something IS wrong it has no way left to tell them.
+#
+# So the bands are set against what this transport can actually deliver:
+#
+#   green  <= 1000 ms  at or near the floor of the path -- as good as I2P gets
+#   amber  <= 1500 ms  noticeably worse than the floor; still a conversation,
+#                      with the pauses of a satellite call
+#   red     > 1500 ms  turn-taking breaks down; people start talking over
+#                      each other and repeating themselves
+#
+# Both remain overridable, which is how a clearnet or LAN deployment gets the
+# strict G.114 scale back: OTRV4PLUS_M2E_GOOD_MS=400 OTRV4PLUS_M2E_WARN_MS=800.
+M2E_GOOD_MS = _env_ms("OTRV4PLUS_M2E_GOOD_MS", 1000, 50, 10000)
 M2E_WARN_MS = max(M2E_GOOD_MS,
-                  _env_ms("OTRV4PLUS_M2E_WARN_MS", 800, 50, 20000))
+                  _env_ms("OTRV4PLUS_M2E_WARN_MS", 1500, 50, 20000))
+
+#: The strict terrestrial scale, for anyone who wants it back.
+#: Named rather than written into a comment so the docs and the tests refer
+#: to one pair of numbers instead of three copies that can drift.
+G114_GOOD_MS, G114_WARN_MS = 400, 800
 
 _ANSI_GREEN = "\033[92m"
 _ANSI_YELLOW = "\033[93m"
@@ -281,12 +309,21 @@ def colour_latency(ms, text=None) -> str:
 
 
 def latency_legend() -> str:
+    """The scale, and what it is a scale OF.
+
+    Saying the numbers without saying they are I2P numbers invites the
+    reading these bands exist to prevent: that 900 ms is fine in general.
+    It is fine HERE, on a path with three garlic-routed hops each way, and
+    it would be a fault on a LAN.
+    """
     enabled, reason = _colour_state()
     return ("mouth-to-ear colour: %s good (<=%dms) %s workable (<=%dms) "
-            "%s poor (>%dms) [colour %s: %s]"
+            "%s poor (>%dms) — calibrated for I2P, not for a telephone "
+            "network (G.114's terrestrial scale is %d/%d) [colour %s: %s]"
             % (colour_latency(0, "green"), M2E_GOOD_MS,
                colour_latency(M2E_WARN_MS, "yellow"), M2E_WARN_MS,
                colour_latency(M2E_WARN_MS + 1, "red"), M2E_WARN_MS,
+               G114_GOOD_MS, G114_WARN_MS,
                "on" if enabled else "OFF", reason))
 
 

@@ -1,13 +1,26 @@
 """Mouth-to-ear delay, coloured so a reading is a verdict at a glance.
 
-The bands come from ITU-T G.114: one-way delay under 400 ms is "acceptable
-for most user applications". That is applied to the full mouth-to-ear figure
--- network transit plus our own dwell and playout -- because that is what a
-person actually experiences.
+The figure is the whole path a listener waits through -- network transit plus
+our own dwell, decode and playout -- because that is what a person actually
+experiences.
 
-Over three I2P hops each way a healthy call usually lands in the middle band.
-That is the point: a scale calibrated so everything came out green would say
-nothing. These tests pin the boundaries, the fallbacks, and the two ways
+The BANDS are calibrated for I2P, and that changed at v10.28.1. They used to
+be ITU-T G.114's terrestrial numbers (400 ms green, 800 ms amber), under
+which this transport could not reach the top band at all: the project's own
+soak median is 917 ms and a live two-handset call at 914 ms with 96.5% of its
+audio delivered was reported red, "quality was poor". A scale that calls its
+own median a fault is not strict, it is broken -- and it spends the colour
+reserved for "something is wrong" on the ordinary case.
+
+Three garlic-routed hops each way is closer to a satellite link than to a
+phone network, and G.114 itself carves those out as outside its range and in
+daily use anyway. So green is now the floor this path can reach (<=1000 ms),
+amber is noticeably worse than the floor (<=1500 ms), and red is where
+turn-taking breaks down. G.114's numbers are still named, and still one
+environment variable away for a LAN or clearnet deployment.
+
+These tests pin the boundaries, that every band is still REACHABLE (the real
+property the old scale was reaching for), the fallbacks, and the two ways
 colour can go wrong -- appearing where it will not render, and appearing on a
 value that was never measured.
 """
@@ -47,8 +60,13 @@ def _reload_with(**env):
 
 class TestBands:
 
-    def test_the_itu_boundary_is_the_green_edge(self):
-        assert V.M2E_GOOD_MS == 400
+    def test_the_green_edge_is_the_i2p_floor(self):
+        assert V.M2E_GOOD_MS == 1000
+
+    def test_the_terrestrial_scale_is_still_named(self):
+        # Kept as constants rather than a comment so the legend, the README
+        # and these tests cite one pair of numbers, not three copies.
+        assert (V.G114_GOOD_MS, V.G114_WARN_MS) == (400, 800)
 
     def test_bands_are_ordered(self):
         assert V.M2E_GOOD_MS <= V.M2E_WARN_MS
@@ -68,12 +86,49 @@ class TestBands:
     def test_an_unmeasured_value_has_no_band(self):
         assert V.latency_band(None) == "unknown"
 
-    def test_a_real_call_reading_is_not_green(self):
-        # Measured medians on this transport were 494-688 ms one-way and
-        # ~1050 ms mouth-to-ear. If a change ever makes those read green,
-        # the scale has stopped meaning anything.
-        assert V.latency_band(1050) == "bad"
-        assert V.latency_band(660) == "warn"
+    def test_a_healthy_i2p_call_reads_green(self):
+        """This test used to assert the opposite, and it was wrong.
+
+        It read: "measured medians on this transport were 494-688 ms one-way
+        and ~1050 ms mouth-to-ear. If a change ever makes those read green,
+        the scale has stopped meaning anything."
+
+        The instinct is right -- a scale where everything is green says
+        nothing -- but it anchored on the wrong property. Requiring a TYPICAL
+        reading to be non-green pins this transport's median into a warning
+        band permanently, and a live call at 914 ms with 96.5% of its audio
+        delivered, which both people completed, was reported red: "quality
+        was poor". A scale that cannot reach its top band on the only
+        transport it runs on is not discriminating, it is stuck; and it burns
+        the colour reserved for "something is wrong" on the ordinary case, so
+        the day something IS wrong it has nothing left to say.
+
+        What the guard actually wants is `test_the_scale_still_discriminates`
+        below: every band reachable, and a bad call distinguishable from a
+        normal one.
+        """
+        assert V.latency_band(914) == "good"        # the live two-handset call
+        assert V.latency_band(917) == "good"        # the soak median
+
+    def test_the_scale_still_discriminates(self):
+        # Each band has a realistic I2P reading in it. This is the property
+        # the old assertion was reaching for.
+        readings = {V.latency_band(ms) for ms in (600, 914, 1200, 1900, 3000)}
+        assert readings == {"good", "warn", "bad"}
+
+    def test_a_call_well_past_the_floor_is_still_bad(self):
+        # The floor is ~900 ms. Twice that is not "I2P being I2P", it is a
+        # call in which people talk over each other.
+        assert V.latency_band(1800) == "bad"
+
+    def test_the_terrestrial_scale_can_be_restored(self):
+        # A LAN or clearnet deployment wants G.114 back, and gets it without
+        # a code change.
+        good, warn, at_good, past_warn = _reload_with(
+            OTRV4PLUS_M2E_GOOD_MS=V.G114_GOOD_MS,
+            OTRV4PLUS_M2E_WARN_MS=V.G114_WARN_MS)
+        assert (good, warn) == ("400", "800")
+        assert (at_good, past_warn) == ("good", "bad")
 
 
 # ---------------------------------------------------------------------------
@@ -94,7 +149,7 @@ class TestRendering:
 
     def test_each_band_gets_its_own_colour(self):
         good = V.colour_latency(100)
-        warn = V.colour_latency(600)
+        warn = V.colour_latency(1200)
         bad = V.colour_latency(2000)
         assert good.startswith("\033[92m") and good.endswith("\033[0m")
         assert warn.startswith("\033[93m")
@@ -103,6 +158,7 @@ class TestRendering:
 
     def test_the_reading_survives_the_colouring(self):
         assert "600ms" in V.colour_latency(600)
+        assert "1200ms" in V.colour_latency(1200)
 
     def test_an_unmeasured_value_is_never_coloured(self):
         # "-" in red would read as a bad measurement rather than none.
@@ -162,7 +218,7 @@ class TestOverrides:
 
     def test_a_nonsense_value_falls_back_to_the_default(self):
         good, _warn, _a, _b = _reload_with(OTRV4PLUS_M2E_GOOD_MS="banana")
-        assert good == "400"
+        assert good == "1000"
 
 
 # ---------------------------------------------------------------------------

@@ -4,6 +4,86 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## v10.28.1 — the latency scale was calibrated for a phone network
+
+*2026-09-05.  `VERSION → 10.28.1`.  `otrv4_core` unchanged at 0.10.28.*
+
+The first real call under v10.28.0's new summary:
+
+```
+[voice] 🔴 call ended — quality was poor — 1m51s, mouth-to-ear ~914ms, 96.5% of audio delivered, 2.6% shed locally to hold latency down, 1068 frames sent
+```
+
+Two people had that conversation start to finish.  96.5% of the audio arrived,
+2.6% was shed to hold latency down, nothing failed to authenticate.  It was
+reported as a poor call because of one number, and that number was being judged
+against the wrong scale.
+
+The bands were ITU-T G.114's: green under 400 ms, amber to 800 ms.  G.114 is a
+standard about **terrestrial** telephony, where propagation is nearly free and
+400 ms means something has gone wrong.  It says so itself — it carves out links
+with unavoidable long propagation, a geostationary satellite hop being about
+250–280 ms each way, as outside its range and in daily use anyway.
+
+A call here crosses three garlic-routed I2P hops in each direction, plus the
+jitter buffer that has to absorb each hop's variance.  This repository has
+recorded the consequence for some time without acting on it: `README.md`,
+`FEATURES.md` and `ROADMAP.md` all state a measured median mouth-to-ear of
+**917 ms** on this path.  The scale was calling its own transport's median a
+fault.
+
+That is a broken instrument, not a bad call.  A scale that cannot reach its top
+band on the only transport the project supports is not strict, it is stuck —
+and it spends the colour reserved for *something is wrong* on the ordinary
+case, so the day something is genuinely wrong it has nothing left to say.
+
+The bands are now set against what this path can actually deliver:
+
+| Colour | Mouth-to-ear | Meaning |
+|---|---|---|
+| green | ≤ 1000 ms | at or near the floor of the path — as good as I2P gets |
+| yellow | ≤ 1500 ms | noticeably worse than the floor; still a conversation, with the pauses of a satellite call |
+| red | > 1500 ms | turn-taking breaks down |
+
+The 914 ms call now reads `🟢 call ended — good`.
+
+**The measurement has not moved and is not being flattered.**  917 ms is still
+917 ms, it is still the price of the anonymity configuration, and reducing it is
+still open work — `ROADMAP.md` keeps it as a target.  What changed is the
+sentence printed next to it.  G.114's numbers are kept as named constants,
+`G114_GOOD_MS` / `G114_WARN_MS`, cited by the legend, and one environment
+variable away for a LAN or clearnet deployment:
+`OTRV4PLUS_M2E_GOOD_MS=400 OTRV4PLUS_M2E_WARN_MS=800`.
+
+### The test that argued the other way
+
+`test_latency_colour.py` carried this, and it deserved an answer rather than a
+deletion:
+
+> Measured medians on this transport were 494–688 ms one-way and ~1050 ms
+> mouth-to-ear. If a change ever makes those read green, the scale has stopped
+> meaning anything.
+
+The instinct is right — a scale where everything is green says nothing — but it
+anchored on the wrong property.  Requiring a *typical* reading to be non-green
+pins the median into a warning band permanently, whatever the transport does.
+What the guard actually wants is that the scale **discriminates**, so that is
+what is now asserted: every band has a realistic I2P reading in it, a call at
+twice the floor is still red, and the live 914 ms call is replayed through
+`_call_summary` as a regression case.
+
+The legend also now names what it is a scale of — "calibrated for I2P, not for
+a telephone network" — because printing the numbers without that invites the
+reading these bands exist to prevent: that 900 ms is fine in general.  It is
+fine *here*, and it would be a fault on a LAN.
+
+Delivery and shedding thresholds are unchanged (95% and 5%); the 914 ms call
+passed both on its own merits.
+
+7 tests changed or added.  Full suite: 3243 passed, 44 skipped, 1 xfailed.
+
+---
+
 ## v10.28.0 — the call told you about buffers, not about the call
 
 *2026-09-05.  `VERSION → 10.28.0`.  `otrv4_core` unchanged at 0.10.28.*
