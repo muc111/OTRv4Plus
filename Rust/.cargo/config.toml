@@ -44,3 +44,40 @@ CFLAGS_x86_64-unknown-linux-musl = "-D__GNUC_PREREQ(maj,min)=((__GNUC__>(maj))||
 CFLAGS_aarch64-unknown-linux-musl = "-D__GNUC_PREREQ(maj,min)=((__GNUC__>(maj))||(__GNUC__==(maj)&&__GNUC_MINOR__>=(min)))"
 CFLAGS_armv7-unknown-linux-musleabihf = "-D__GNUC_PREREQ(maj,min)=((__GNUC__>(maj))||(__GNUC__==(maj)&&__GNUC_MINOR__>=(min)))"
 CFLAGS_i686-unknown-linux-musl = "-D__GNUC_PREREQ(maj,min)=((__GNUC__>(maj))||(__GNUC__==(maj)&&__GNUC_MINOR__>=(min)))"
+
+# ---------------------------------------------------------------------------
+# musl: build a shared library, not only an rlib
+# ---------------------------------------------------------------------------
+#
+# Cargo.toml declares `crate-type = ["cdylib", "rlib"]`, and the cdylib is the
+# whole point: `libotrv4_core.so` is what Python imports.
+#
+# **musl targets enable `crt-static` by default**, and rustc cannot build a
+# cdylib against a statically linked C runtime. So it DROPS the crate type,
+# prints one line about it among the compile output, and finishes
+# successfully. The build looks fine. `target/release/` then contains
+# `libotrv4_core.rlib` and `libotrv4_core.d` and no `.so`, and the next step
+# in the README --
+#
+#     cp target/release/libotrv4_core.so ../otrv4_core.so
+#
+# -- fails with "No such file or directory", minutes and several steps away
+# from the cause. That is how it was reported.
+#
+# Turning crt-static off restores the cdylib. The resulting `.so` links musl
+# dynamically, which is what a musl Python needs in order to load it.
+#
+# `build.rs` warns if this is ever bypassed -- cargo only finds this file by
+# walking up from the directory it was invoked in, so it can be.
+
+[target.x86_64-unknown-linux-musl]
+rustflags = ["-C", "target-feature=-crt-static"]
+
+[target.aarch64-unknown-linux-musl]
+rustflags = ["-C", "target-feature=-crt-static"]
+
+[target.armv7-unknown-linux-musleabihf]
+rustflags = ["-C", "target-feature=-crt-static"]
+
+[target.i686-unknown-linux-musl]
+rustflags = ["-C", "target-feature=-crt-static"]
