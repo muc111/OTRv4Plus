@@ -4,6 +4,67 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## v10.22.0 — the chat prefix now says what protected the message
+
+*2026-09-05.  `VERSION → 10.22.0`.  Display only; no protocol or wire change.*
+
+From a handset screenshot: an SMP-verified session showed
+
+```
+[otr] <bob@xmpp-elite.i2p> ohhh lala
+```
+
+with `[otr]` in green, and nothing else on the line said the message was
+encrypted or that the peer's identity had been proved. The reassurance was a
+colour, and only a colour.
+
+| | |
+|---|---|
+| 🔐 `[otr]` blue | encrypted **and** SMP-verified |
+| 🔒 `[otr]` yellow | encrypted, identity **not** verified |
+
+**Two padlocks, not one.** An unverified session really is encrypted, so a
+padlock there is not a lie — but if it were the *same* padlock, a reader who
+never ran SMP would get exactly the reassurance of one who did, which is worse
+than no padlock at all. The glyph differs and the colour differs, because
+either alone is weak: emoji are small on a handset, and colour is invisible to
+some readers. Tests assert the two differ under ANSI-stripping *and* under
+glyph-stripping, so a change that collapses one signal fails even while the
+other still distinguishes them.
+
+**The colours are the project's own, and the old one was wrong.**
+`UIConstants.SECURITY_ICONS` says 🟡 yellow is `ENCRYPTED`, 🟢 green is
+`FINGERPRINT` — pinned but *not* SMP-verified — and 🔵 blue is `SMP_VERIFIED`.
+The prefix was using green for the strongest state, so the tab bar and the
+message prefix were making different claims with the same colour. It is blue
+now, which is also the colour of the existing `🔐 [smp]` marker.
+
+**The half that would have been a security regression.** `_log_line_for_file`
+is an allowlist (INV-03) that redacts message bodies by matching
+`[otr] <peer> body`. A prefix glyph not listed in `_LOG_MARKERS` stops
+`_strip_log_markers` removing it, the pattern then fails to match, and every
+received message goes to the session log in plaintext. Both padlocks were
+already in that tuple — checked before the change, not after — and a test now
+derives the glyphs from the prefixes themselves and asserts each is registered,
+so a third state with a new glyph fails here rather than in production.
+
+Also: the message body is `_sanitise`'d in both states. It always was, but the
+old branch structure made that easy to miss on a read, and a test now pins it —
+a padlock must not arrive alongside a relaxation somewhere else.
+
+### Verification
+
+Python suite **2761 passed, 0 failed**. 18 new tests. Six mutations — same
+padlock for both, differ by colour only, differ by glyph only, an unregistered
+glyph, green for verified, and a prefix that ignores the SMP state — all six
+killed.
+
+**Not seen on a handset yet.** Whether 🔐 and 🔒 are actually distinguishable
+in Termux's font at that size is the one thing only the device can answer; the
+colour difference is the backstop if they are not.
+
+---
+
 ## v10.21.1 — the payment URI was encoded in the QR and shown nowhere
 
 *2026-09-05.  `VERSION → 10.21.1`.  Display only; no protocol or wire change.*

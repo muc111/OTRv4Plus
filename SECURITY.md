@@ -276,6 +276,48 @@ forwarding hook that accepts anything is how an unreviewed second protocol gets
 bolted onto a session. `send_tlv` is fail-closed to match: it will not open a
 session, will not queue, and will not fall back to plaintext.
 
+## The chat prefix is a security claim (v10.22.0)
+
+Every incoming chat line now carries the session's security state as its
+prefix, because a reader looking at a message needs to know what protected it
+without running a command:
+
+| | |
+|---|---|
+| 🔐 `[otr]` blue | encrypted **and** SMP-verified |
+| 🔒 `[otr]` yellow | encrypted, identity **not** verified |
+
+Before v10.22.0 the verified case was `[otr]` in green and the unverified case
+was `[otr]` in no colour at all. The reassurance was a colour and only a
+colour.
+
+**The two states differ by glyph AND by colour**, deliberately. Emoji are small
+on a handset and colour is invisible to some readers, so either signal alone is
+weak. An unverified session really is encrypted — a padlock there is not a lie
+— but it must not be the *same* padlock, or a reader who never ran SMP gets
+exactly the reassurance of one who did.
+
+**The colours are the project's own.** `UIConstants.SECURITY_ICONS` says 🟡
+yellow is `ENCRYPTED`, 🟢 green is `FINGERPRINT` (pinned, *not* SMP-verified)
+and 🔵 blue is `SMP_VERIFIED`. The old green prefix contradicted that: the tab
+bar and the message prefix were using the same colour for different claims.
+
+**The verified state is latched from the engine's own announcement**, not
+queried. `get_smp_status()` cannot answer after the fact — the engine destroys
+its Rust SMP object on completion to zeroize the secrets, so a verified peer
+becomes indistinguishable from an unverified one by query alone.
+`_latch_smp_from_trace` records the terminal success line and is the
+authoritative source; it matches only terminal announcements, never a progress
+line that merely mentions verification.
+
+**Redaction survives the prefix.** Both padlocks are in `_LOG_MARKERS`, so
+`_strip_log_markers` removes them before `_LOG_CONTENT_RE` runs and a prefixed
+line is still written as `<message body redacted: N chars>` (INV-03). A prefix
+glyph *not* in that tuple would have stopped the pattern matching and written
+every received message to the session log in plaintext — which is why a test
+derives the glyphs from the prefixes themselves and asserts each is registered,
+rather than listing them again by hand.
+
 ## Known issues and limitations
 
 1. **Rust crypto crates are not audited.** `ed448-goldilocks-plus` 0.16 is the only viable pure-Rust Ed448, and `x448` 0.6 the X448, but neither has had a formal review. `pqcrypto-mlkem 0.1.1` (FIPS 203 ML-KEM-1024) and `pqcrypto-mldsa 0.1.2` (ML-DSA-87) are PQClean-derived reference implementations.

@@ -2,7 +2,7 @@
 """
 OTRv4+ XMPP - full OTR + SMP over XMPP, transported over I2P SAM
 ================================================================
-Version: 10.21.1
+Version: 10.22.0
 
 
 Post-quantum OTRv4+ end-to-end encryption over XMPP, reusing the IRC client's
@@ -237,7 +237,7 @@ def voice_available() -> "tuple[bool, str]":
             "no audio backend: libaaudio.so unavailable and parec/pacat "
             "missing  (run /audioprobe for details)")
 
-XMPP_VERSION = "10.21.1"
+XMPP_VERSION = "10.22.0"
 
 # ---------------------------------------------------------------------------
 # XMPP-private state directory
@@ -413,6 +413,38 @@ _colorize = getattr(_otr, "colorize", lambda s, c: s)
 #: The emoji keeps its own colour whatever the terminal does -- ANSI cannot
 #: recolour a glyph the font draws -- so the blue is on the text of the tag.
 _SMP = "\U0001f510 " + _colorize("[smp]", "blue")
+
+#: The prefix on an incoming chat line, and it is a security claim, so the two
+#: states have to look different at a glance.
+#:
+#: \U0001f510 CLOSED LOCK WITH KEY, blue  -- encrypted AND SMP-verified
+#: \U0001f512 CLOSED LOCK, yellow         -- encrypted, identity NOT verified
+#:
+#: Both are accurate: an unverified session really is encrypted, so a padlock
+#: is not a lie there -- what it must not do is look like the verified one.
+#: The glyph differs (key or no key) and the colour differs, because either
+#: signal alone is weak: emoji are small on a handset and colour is invisible
+#: to some readers.
+#:
+#: The colours are the project's own, from UIConstants.SECURITY_ICONS and the
+#: level->colour tables in otrv4+.py: \U0001f7e1 yellow is ENCRYPTED and
+#: \U0001f535 blue is SMP_VERIFIED.  This prefix used to be GREEN for
+#: SMP-verified, which contradicted that table -- green there is
+#: FINGERPRINT, i.e. pinned but NOT SMP-verified.  A user reading the tab
+#: bar and the message prefix was being told two different things by the
+#: same colour.
+#:
+#: Both glyphs are already in `_LOG_MARKERS`, so `_strip_log_markers` removes
+#: them before `_LOG_CONTENT_RE` runs and a prefixed line is still redacted to
+#: `<message body redacted: N chars>` (INV-03).  Adding a prefix that was NOT
+#: in that tuple would have quietly disabled message-body redaction.
+_OTR_VERIFIED = "\U0001f510 " + _colorize("[otr]", "blue")
+_OTR_ENCRYPTED = "\U0001f512 " + _colorize("[otr]", "bold_yellow")
+
+
+def _otr_prefix(smp_verified: bool) -> str:
+    """The chat-line prefix for a peer whose SMP state is `smp_verified`."""
+    return _OTR_VERIFIED if smp_verified else _OTR_ENCRYPTED
 _EOF_SENTINEL = getattr(_otr, "_EOF_SENTINEL", object())
 _TUI_AVAILABLE = all(
     x is not None
@@ -2588,15 +2620,16 @@ class OTRv4PlusXMPP(ClientXMPP):
                 smp_ok = (peer, "SUCCEEDED") in self._smp_reported
                 peer_s = _sanitise(peer, 128)
                 text_s = _sanitise(text)
-                if smp_ok:
-                    print(
-                        _colorize("[otr] ", "green")
-                        + _colorize(f"<{peer_s}>", "yellow")
-                        + " "
-                        + _colorize(text_s, "dark_blue")
-                    )
-                else:
-                    print(f"[otr] <{peer_s}> {text_s}")
+                # The prefix carries the security state; see `_otr_prefix`.
+                # The message body is _sanitise'd either way -- a peer's text
+                # is never printed raw, verified or not.
+                print(
+                    _otr_prefix(smp_ok)
+                    + " "
+                    + _colorize(f"<{peer_s}>", "yellow")
+                    + " "
+                    + (_colorize(text_s, "dark_blue") if smp_ok else text_s)
+                )
 
         self._report_smp(peer)
         self._check_dake_complete(peer)
