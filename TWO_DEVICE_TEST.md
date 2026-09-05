@@ -5,7 +5,26 @@ engine and the real command dispatcher, but it does not drive a terminal, a
 Termux raw-mode read, an I2P tunnel, or two people. Everything below has to be
 seen on the devices.
 
-**Status: sections 1-3 passed on two handsets twice (SMP VERIFIED 2026-09-05, and the guided responder path again on v10.25.1). Sections 4, 5 and 7 are unverified. Section 6 is in progress: `safe` and `normal` have each completed a DAKE; `normal` also coincided with one unexplained disconnect.**
+**Status: PASSED on `safe`, 2026-09-05.** A full responder-side verification
+completed with no disconnect — consent prompt, hidden passphrase, SMP2, SMP
+VERIFIED — 12m12s end to end. Third full verification on `safe`.
+
+| leg | observed | note |
+|---|---|---|
+| DAKE1 arriving | 70s | their send + transit |
+| DAKE2 sending | 48s | ours — `safe` at 17 fragments predicts 47.9s |
+| DAKE3 arriving | 107s | their send + transit |
+| consent, `y`, passphrase | 26s | the human in the loop |
+| SMP2 → VERIFIED | 361s | two 47-fragment proofs each way |
+| **total** | **12m12s** | |
+
+Confirmed working on hardware: the guided responder path (three times), the
+staged DAKE output, session preservation across a reconnect, the automatic
+flood backoff from both our own `ERROR` and a peer's kill, and the disconnect
+report naming the rate a send actually used.
+
+Not yet exercised on hardware: a peer changing nick mid-session (section 5),
+`/tip` scanned by a real wallet, and the trade courier on stagenet.
 
 ---
 

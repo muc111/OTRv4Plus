@@ -58,6 +58,12 @@ faster on this one.
 verification costs about seven minutes of pacing plus I2P transit, and that is
 what this server allows.
 
+**Confirmed on hardware the same evening:** a full responder-side verification
+on `safe`, 12m12s end to end, no disconnect — the third on this setting.  The
+DAKE2 send took 48s where the model predicts 47.9s for 17 fragments, so the
+pacing is doing exactly what it is told and the remaining time is I2P transit
+and two 47-fragment proofs in each direction.
+
 138 tests, 3 further mutants killed.
 
 Full suite 3138 passed / 44 skipped / 1 xfailed.
