@@ -447,6 +447,11 @@ mod tests {
 
     /// Sig length and structure.
     #[test]
+    // `1*57` is not a typo clippy should collapse to `57`: the four asserts
+    // below read off the c1/r1/c2/r2 slots of the 4x57-byte signature, and the
+    // multiplier is which slot.  Writing the first as a bare 57 would break the
+    // column the other three line up in and lose that.
+    #[allow(clippy::identity_op)]
     fn sig_is_228_bytes() {
         let seed = [0x42u8; 57];
         let a1_scalar = derive_signing_scalar(&seed);

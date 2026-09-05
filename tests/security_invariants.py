@@ -292,6 +292,50 @@ INVARIANTS: Tuple[Invariant, ...] = (
                   "and the on-disk size all verify; any failure deletes the "
                   "temporary file and drops the transfer.",
     ),
+    Invariant(
+        id="INV-23",
+        statement="Every Rust dependency on the Python/Rust boundary is "
+                  "checked against known advisories, and the compiled "
+                  "artifact is what gets verified.",
+        status="PARTIAL",
+        tests=("test_dependency_advisories.py", "test_pyo3_boundary.py"),
+        rationale="PyO3 is the boundary itself, so an advisory against it "
+                  "is an advisory against the boundary.  Cargo.lock is "
+                  "asserted at or above the fixed release AND the "
+                  "vulnerable code is asserted unreachable, because either "
+                  "alone rots: a version check hides that the reachability "
+                  "analysis has expired, and a reachability check leaves us "
+                  "on a known-vulnerable release.  test_pyo3_boundary.py "
+                  "then drives the installed extension module, not the "
+                  "source tree, so a conversion regression introduced by an "
+                  "upgrade is caught in the artifact that ships.",
+        limits="The advisory list is not fetched automatically; "
+               "GHSA-36hh-v3qg-5jq4 is pinned by name and a new advisory "
+               "needs a human to add it.  What the tests do enforce is "
+               "that a remediated advisory cannot silently regress.",
+    ),
+    Invariant(
+        id="INV-24",
+        statement="No IRC message survives the connection it arrived on.",
+        status="PARTIAL",
+        tests=("test_irc_history_privacy.py",),
+        rationale="Panel history is capped at 1000 messages and emptied at "
+                  "every boundary between one connection and the next -- "
+                  "disconnect, reconnect, /quit, process exit -- along with "
+                  "the unread counters, the recent-user sets and the "
+                  "terminal's own saved scrollback.  On I2P the point of a "
+                  "new session is that it is not linkable to the previous "
+                  "one; replaying the old conversation into the new one "
+                  "links them on screen whatever the transport did.",
+        limits="A Python str is immutable and may be interned, so the "
+               "purge drops the last reference rather than overwriting the "
+               "characters: the bytes remain in freed heap until the "
+               "allocator reuses them.  Unfixable for chat text while the "
+               "UI is Python-side.  Material that must actually be "
+               "destroyed is not kept here at all -- it lives in Rust "
+               "behind zeroize().  See INV-02 for the same limit on "
+               "passwords.",
+    ),
 )
 
 

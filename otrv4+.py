@@ -28,8 +28,33 @@
 import sys
 import os
 import socket
-import socks
 import threading
+
+# `socks` comes from the **PySocks** distribution.  Naming it here matters:
+# there is also a PyPI project literally called `socks`, and it is an empty
+# placeholder ("automatically generated with 'register_pypi' and should be
+# deleted soon", version 0) that installs no module at all.  A tester ran
+# `pip install socks`, saw it succeed, and still got `No module named
+# 'socks'` -- so this import says which package, and checks that what it
+# got is actually PySocks rather than something that merely took the name.
+try:
+    import socks
+except ImportError as _socks_exc:            # pragma: no cover - install path
+    raise ImportError(
+        "OTRv4+ needs the 'socks' module, which is supplied by the PySocks "
+        "distribution:\n"
+        "    pip install PySocks\n"
+        "Note: the PyPI package literally named 'socks' is an empty "
+        "placeholder and installs nothing -- installing it will NOT fix this."
+    ) from _socks_exc
+if not all(hasattr(socks, _attr) for _attr in
+           ("setdefaultproxy", "socksocket", "PROXY_TYPE_SOCKS5")):
+    raise ImportError(
+        "the installed 'socks' module is not PySocks: it has no "
+        "setdefaultproxy/socksocket/PROXY_TYPE_SOCKS5.  Something else has "
+        "taken the name.  Fix with:\n"
+        "    pip uninstall -y socks && pip install PySocks"
+    )
 
 try:
     from otrv4plus_log import ChannelLogManager as _ChannelLogManager
@@ -1797,7 +1822,14 @@ class OTRv4DataMessage:
             raise ValueError(f"Failed to decode message: {e }")
 
 
-VERSION = "OTRv4+ 10.18.6"
+VERSION = "OTRv4+ 10.19.0"
+
+#: Every timestamp the client puts on screen.  Was "%H:%M:%S", which is
+#: unreadable in a log kept overnight or across a reconnect: "02:14:07" does
+#: not say whether it is this session or yesterday's, which is exactly the
+#: question when the buffer has replayed something old at you.  One constant,
+#: not four copies, so the next change is one edit.
+TIMESTAMP_FORMAT = "%Y-%m-%d %H:%M:%S"
 
 # --- OTRv4+ client identification over IRC -------------------------------
 #
@@ -5859,7 +5891,7 @@ class Screen:
         out = []
         for entry in panel.history:
             ts = colorize(
-                time.strftime("%H:%M:%S", time.localtime(entry.get("timestamp", time.time()))),
+                time.strftime(TIMESTAMP_FORMAT, time.localtime(entry.get("timestamp", time.time()))),
                 "dim",
             )
             line = f"{ts } {entry ['message']}"
@@ -5959,7 +5991,31 @@ class Screen:
 
 
 class ChatPanel:
-    """Chat panel for displaying messages"""
+    """Chat panel for displaying messages.
+
+    The history is what the tab replays when you switch to it, and until
+    v10.19.0 it was unbounded and survived everything: a disconnect, a
+    reconnect, a nick change.  A tester watched a whole evening's
+    conversation reappear under a nick that had not sent any of it, with the
+    unread badge climbing system(53) -> system(105) -> system(158) as each
+    reconnect appended a fresh copy of the same connection chatter.
+
+    That is a privacy problem before it is a cosmetic one.  This client runs
+    over I2P, where the point is that a session is not linkable to the one
+    before it; carrying the previous session's messages into the next one
+    links them on the screen, in whatever the terminal has kept in its own
+    scrollback, and in any core dump taken afterwards.
+
+    So the history now has a ceiling, and it is emptied at every point where
+    one connection ends and another begins.  See
+    `OTRv4IRCClient._purge_scrollback`.
+    """
+
+    #: Hard ceiling on retained messages per panel.  Reached in a busy
+    #: channel within an hour or two; the oldest are dropped first.  A cap
+    #: is not a substitute for clearing on disconnect, it is the bound on
+    #: how much there is to clear.
+    MAX_HISTORY = 1000
 
     def __init__(self, name: str, panel_type: str):
         self.name = name
@@ -5973,13 +6029,30 @@ class ChatPanel:
         self.last_activity = time.time()
         self.security_level = UIConstants.SecurityLevel.PLAINTEXT
         self.smp_progress = (0, 4)
+        #: Monotonic message id.  Was `len(self.history)`, which stops being
+        #: unique the moment pruning removes an entry.
+        self._next_id = 0
 
     def add_message(self, message: str, metadata: Optional[dict] = None) -> int:
-        """Add message to history"""
-        msg_id = len(self.history)
+        """Add message to history, dropping the oldest past MAX_HISTORY.
+
+        The returned id stays monotonic across pruning: it is a message
+        identity, not an index into `history`, and `get_messages` slices the
+        list rather than looking ids up.  Handing back a reused id after a
+        prune would let a caller holding an old id address a different
+        message.
+        """
+        msg_id = self._next_id
+        self._next_id += 1
         self.history.append(
             {"id": msg_id, "message": message, "timestamp": time.time(), "metadata": metadata or {}}
         )
+        if len(self.history) > self.MAX_HISTORY:
+            overflow = len(self.history) - self.MAX_HISTORY
+            for entry in self.history[:overflow]:
+                entry["message"] = ""
+                entry["metadata"] = {}
+            del self.history[:overflow]
         self.last_activity = time.time()
         return msg_id
 
@@ -6022,9 +6095,27 @@ class ChatPanel:
             progress_index = min(int((step / total) * len(progress_chars)), len(progress_chars) - 1)
             return f"🔄 {progress_chars [progress_index ]} {step }/{total }"
 
-    def clear_history(self):
-        """Clear chat history"""
+    def clear_history(self) -> int:
+        """Drop every retained message and return how many there were.
+
+        Each entry's text is overwritten before the list is emptied.  Be
+        precise about what that buys: a Python `str` is immutable and
+        possibly interned, so this does not scrub the characters out of the
+        process -- it drops the last reference the panel holds, which is the
+        most a pure-Python buffer can do.  The bytes stay in freed heap until
+        the allocator reuses them.  Secrets that must actually be destroyed
+        do not live here at all; they live in Rust behind `zeroize()`.  What
+        this does guarantee is that no later redraw, tab switch or reconnect
+        can put the old conversation back on the screen.
+        """
+        count = len(self.history)
+        for entry in self.history:
+            entry["message"] = ""
+            entry["metadata"] = {}
         self.history.clear()
+        self.unread_count = 0
+        self.recent_users.clear()
+        return count
 
 
 class PanelManager:
@@ -9952,7 +10043,11 @@ class DebugPanel(ChatPanel):
         if not self.categories.get(category, False):
             return
 
-        timestamp = time.strftime("%H:%M:%S.%f")[:-3]
+        # `%f` is a datetime directive, not a strftime one: time.strftime
+        # left it verbatim, so [:-3] was trimming "%f" off and every debug
+        # line read "12:34:56." with nothing after the dot.
+        import datetime as _dt_module
+        timestamp = _dt_module.datetime.now().strftime(TIMESTAMP_FORMAT + ".%f")[:-3]
         colored_cat = colorize(category, "magenta")
         msg = f"[{timestamp }] [{colored_cat }] {message }"
 
@@ -10358,6 +10453,12 @@ class OTRv4IRCClient:
             self.nick = TwentySevenClubNick.generate()
             self.realname = TwentySevenClubNick.real_name(self.nick)
 
+        #: The nick we want to be using.  A 433 collision may force a
+        #: temporary one on us; this is what `_schedule_nick_reclaim` asks
+        #: for back once the ghost that took it has timed out.
+        self._original_nick = self.nick
+        self._nick_reclaim_tries = 0
+
         self._running_event = threading.Event()
         self._shutdown_event = threading.Event()
         self._connected_event = threading.Event()
@@ -10515,7 +10616,7 @@ class OTRv4IRCClient:
                 self._screen.redraw_tabbar()
             return
 
-        ts = colorize(time.strftime("%H:%M:%S"), "dark_yellow")
+        ts = colorize(time.strftime(TIMESTAMP_FORMAT), "dark_yellow")
         if panel == "system":
             tag = colorize("[sys]  ", "grey")
         elif panel == "debug":
@@ -11094,10 +11195,17 @@ class OTRv4IRCClient:
         except Exception:
             pass
 
+        # Everything on screen belongs to the connection that just ended.
+        # Purge before the backoff, not after: if the user is watching the
+        # countdown, they should not be reading the dead session while they
+        # wait for the next one.
+        self._purge_scrollback("connection lost", announce=False,
+                               wipe_terminal=False)
+
         self.connection_attempts += 1
-        backoff = min(120, 5 * (2 ** min(self.connection_attempts - 1, 4)))
+        backoff = self._reconnect_backoff(self.connection_attempts)
         self.add_message(
-            "system", f"🔄 Reconnecting in {backoff }s (attempt {self .connection_attempts })…"
+            "system", f"🔄 Reconnecting in {backoff}s (attempt {self.connection_attempts})…"
         )
 
         for _ in range(backoff * 10):
@@ -11114,6 +11222,106 @@ class OTRv4IRCClient:
         else:
             self._reconnecting = False
             self.add_message("system", colorize("❌ Max reconnect attempts reached.", "red"))
+
+    #: Floor and ceiling for the reconnect backoff, in seconds.
+    #:
+    #: The old schedule started at 5s and doubled.  Five seconds is shorter
+    #: than any server's ping timeout, so the reconnect arrived while our
+    #: previous session was still registered and holding the nick: the server
+    #: answered 433, the client renamed itself, and the user watched
+    #: AngryMouse become BrokenNexus become HollowNexus over three drops --
+    #: with the old session's messages still on screen under each new name.
+    #:
+    #: Thirty seconds is the floor because it clears the common
+    #: ping-timeout window on the networks this client is used on.  It is not
+    #: a guarantee (a server with a 120s timeout will still collide once),
+    #: which is why the nick reclaim below exists as well: the backoff makes
+    #: the collision unlikely, the reclaim makes it survivable.
+    RECONNECT_BACKOFF_MIN = 30
+    RECONNECT_BACKOFF_MAX = 120
+
+    @classmethod
+    def _reconnect_backoff(cls, attempt: int) -> int:
+        """Seconds to wait before reconnect attempt `attempt` (1-based).
+
+        Linear, not exponential: 30, 60, 90, 120, 120, ...  Exponential
+        growth past two minutes is not useful here -- a server that is still
+        refusing after two minutes is down, and the user is better served by
+        a steady retry they can predict than by a wait that doubles into the
+        tens of minutes.
+        """
+        return min(cls.RECONNECT_BACKOFF_MAX,
+                   cls.RECONNECT_BACKOFF_MIN * max(1, attempt))
+
+    #: How long to leave a ghosted session to time out before asking for the
+    #: nick back, and how many times to ask.  Four attempts spans two minutes,
+    #: which covers every ping timeout this client has been run against; past
+    #: that the nick is someone else's and retrying is just noise.
+    NICK_RECLAIM_DELAY = 30
+    NICK_RECLAIM_ATTEMPTS = 4
+
+    def _on_nick_collision(self) -> None:
+        """Handle 433/436 without permanently giving up our nick.
+
+        The old behaviour was to generate a fresh random nick and keep it.
+        That is correct exactly once -- during registration you must present
+        *some* free nick or the server will not let you finish -- and wrong
+        every time after, because the usual cause of a collision here is our
+        own previous session still ghosted on the server.  Renaming
+        permanently meant one dropped connection cost the user their
+        identity, and three dropped connections produced three identities,
+        none of which their peers recognised.
+
+        So: take a temporary nick only if we are not registered yet, and
+        either way schedule a reclaim of the original once the ghost has had
+        time to expire.  If someone else genuinely holds the nick, the
+        reclaim attempts fail quietly and we keep what we have.
+        """
+        original = getattr(self, "_original_nick", None) or self.nick
+        self._original_nick = original
+
+        if self.auth_complete:
+            # Already registered: this is a failed reclaim, not a failed
+            # login.  Keep the nick we have and try again later.
+            self._schedule_nick_reclaim()
+            return
+
+        temporary = TwentySevenClubNick.generate()
+        if temporary == self.nick:
+            temporary = self.nick + str(secrets.randbelow(100))
+        self.nick = temporary
+        self.realname = TwentySevenClubNick.real_name(self.nick)
+        self.send(f"NICK {self.nick}")
+        self.add_message(
+            "system",
+            f"Nick collision → {colorize_username(self.nick)} "
+            f"(will try to reclaim {colorize_username(original)})",
+        )
+        self._schedule_nick_reclaim()
+
+    def _schedule_nick_reclaim(self) -> None:
+        """Ask for `_original_nick` back after the ghost has had time to die."""
+        original = getattr(self, "_original_nick", None)
+        if not original or original == self.nick:
+            self._nick_reclaim_tries = 0
+            return
+        tries = getattr(self, "_nick_reclaim_tries", 0)
+        if tries >= self.NICK_RECLAIM_ATTEMPTS:
+            return
+        self._nick_reclaim_tries = tries + 1
+
+        def _reclaim():
+            if getattr(self, "shutdown_flag", False) or not self.connected:
+                return
+            if self.nick == original:
+                self._nick_reclaim_tries = 0
+                return
+            self.send(f"NICK {original}")
+
+        timer = threading.Timer(self.NICK_RECLAIM_DELAY, _reclaim)
+        timer.daemon = True
+        timer.start()
+        self._nick_reclaim_timer = timer
 
     def send_raw(self, message: str) -> bool:
         """Send a raw IRC line (adds CRLF, enforces 510-byte limit).
@@ -11484,6 +11692,10 @@ class OTRv4IRCClient:
                     self.add_message(
                         "system", f"Nick → {colorize_username (_sanitise (new_nick ,64 ))}"
                     )
+                    if new_nick == getattr(self, "_original_nick", None):
+                        # Reclaim succeeded: stop asking.
+                        self._nick_reclaim_tries = 0
+                        self.realname = TwentySevenClubNick.real_name(new_nick)
                 return
 
             if command == "KICK":
@@ -11649,13 +11861,7 @@ class OTRv4IRCClient:
                 return
 
             if code in (433, 436):
-                new_nick = TwentySevenClubNick.generate()
-                if new_nick == self.nick:
-                    new_nick = self.nick + str(secrets.randbelow(100))
-                self.nick = new_nick
-                self.realname = TwentySevenClubNick.real_name(self.nick)
-                self.send(f"NICK {self .nick }")
-                self.add_message("system", f"Nick collision → {colorize_username (self .nick )}")
+                self._on_nick_collision()
                 return
 
             if code == 375:
@@ -12516,7 +12722,8 @@ class OTRv4IRCClient:
             for entry in history:
                 if not entry.get("message", "").strip():
                     continue
-                ts = colorize(time.strftime("%H:%M:%S", time.localtime(entry["timestamp"])), "dim")
+                ts = colorize(
+                    time.strftime(TIMESTAMP_FORMAT, time.localtime(entry["timestamp"])), "dim")
                 lines_out.append(f"{ts } {tag } {entry ['message']}")
         lines_out.append(colorize("─" * left + " live " + "─" * max(0, right - 1), "dim"))
         # Build tab bar line showing all open panels
@@ -12556,8 +12763,73 @@ class OTRv4IRCClient:
                 pass
         return True
 
+    def _purge_scrollback(self, reason: str, announce: bool = True,
+                          wipe_terminal: bool = True) -> int:
+        """Empty every panel's retained history.  Returns the message count.
+
+        Called at each boundary between one connection and the next --
+        disconnect, reconnect, shutdown -- and by `/clear` on demand.
+
+        The boundary is the point: an I2P session is meant to be unlinkable
+        to the one before it, and replaying the previous session's
+        conversation into the new one links them on the screen no matter what
+        the transport did.  It also stopped the unread badges accumulating
+        across reconnects (system(53) -> system(105) -> system(158)), which
+        was the visible symptom of the same bug.
+
+        `announce` is False on the shutdown path, where adding a message to a
+        panel we have just emptied would leave one line behind.
+
+        `wipe_terminal` is False on the automatic-reconnect path, and that is
+        a deliberate split rather than an oversight.  Blanking the emulator
+        is right when the user is leaving (/quit, process exit) or has asked
+        (/clear); doing it on every dropped connection would destroy the
+        error messages they are reading to find out what just happened, on a
+        transport where a blip is routine.  What the reconnect purge stops is
+        the *replay* -- the reported bug -- not the lines already printed.
+        """
+        purged = 0
+        try:
+            for panel in self.panel_manager.panels.values():
+                try:
+                    purged += panel.clear_history()
+                except Exception:
+                    pass
+        except Exception:
+            return 0
+
+        # Drop the terminal's own scrollback too.  Clearing our buffers while
+        # the emulator still holds the rendered lines would be a half
+        # measure: on Termux the visible history IS the scrollback.  \033[3J
+        # is the one that empties the saved lines rather than just the
+        # viewport.
+        try:
+            if wipe_terminal and sys.stdout.isatty():
+                sys.stdout.write("\033[3J\033[H\033[2J")
+                sys.stdout.flush()
+        except Exception:
+            pass
+
+        # The panel dicts are gone; ask for the collection rather than
+        # waiting for it, so the strings are unreferenced promptly instead of
+        # at whatever point the allocator next feels like it.
+        try:
+            gc.collect()
+        except Exception:
+            pass
+
+        if announce and purged:
+            try:
+                self.add_message(
+                    "system",
+                    colorize(f"\U0001f9f9 scrollback cleared ({purged} messages) - {reason}", "dim"),
+                )
+            except Exception:
+                pass
+        return purged
+
     def get_timestamp(self) -> str:
-        return time.strftime("%H:%M:%S")
+        return time.strftime(TIMESTAMP_FORMAT)
 
     def clear_screen(self):
         if IS_TERMUX:
@@ -12930,9 +13202,23 @@ class OTRv4IRCClient:
                     self.panel_manager.panel_order.remove(p)
                 self.panel_manager._render_ui()
         elif cmd == "clear":
-            active = self.panel_manager.get_active_panel()
-            if active:
-                self.panel_manager.clear_panel_history(active.name)
+            # Bare /clear now empties EVERY panel and the terminal's own
+            # scrollback, not just the active tab.  Clearing one tab while
+            # the others still hold the conversation -- and while the
+            # emulator still has every line of it scrolled off the top -- is
+            # not what anyone typing /clear wants; on a handset the threat
+            # is someone picking the phone up, and a per-tab clear does
+            # nothing about that.  `/clear <panel>` keeps the old behaviour
+            # for when you really do mean one tab.
+            if len(parts) > 1:
+                target = parts[1]
+                if target in self.panel_manager.panels:
+                    self.panel_manager.clear_panel_history(target)
+                else:
+                    self.add_message(
+                        "system", colorize(f"No such panel: {_sanitise(target, 64)}", "yellow"))
+            else:
+                self._purge_scrollback("/clear")
         elif cmd == "clear-screen":
             self.clear_screen()
         elif cmd == "otr" and len(parts) > 1:
@@ -13227,7 +13513,8 @@ class OTRv4IRCClient:
                 "  /tab-next            Next tab",
                 "  /tab-prev            Previous tab",
                 "  /tab-close <panel>   Close tab",
-                "  /clear               Clear current panel history",
+                "  /clear               Clear all scrollback (local only)",
+                "  /clear <panel>       Clear just that tab",
                 "  /ignore <nick>       Ignore user",
                 "  /unignore <nick>     Unignore",
                 "  /status              Connection status",
@@ -13303,7 +13590,17 @@ class OTRv4IRCClient:
             self._smp_executor.shutdown(wait=False)
         except Exception:
             pass
-        self.add_message("system", colorize("✅ Clean shutdown complete", "green"))
+
+        # Last thing before the process goes: the conversation must not be
+        # left in the terminal for whoever picks the handset up next, and it
+        # must not be sitting in the heap for whatever reads a core dump.
+        # announce=False -- there is no panel left worth writing to.
+        try:
+            self._purge_scrollback("shutdown", announce=False)
+        except Exception:
+            pass
+
+        safe_print(colorize("✅ Clean shutdown complete", "green"))
 
     def send_privmsg(self, target: str, message: str) -> bool:
         return self.send(f"PRIVMSG {target } :{message }")
@@ -15137,6 +15434,24 @@ if __name__ == "__main__":
             )
         )
 
-    atexit.register(lambda: safe_print(colorize("\nClean shutdown", "green")))
+    def _purge_on_exit():
+        """Last-chance scrollback purge.
+
+        `shutdown()` already does this on the /quit path, but /quit is not
+        the only way out: SIGINT during a blocking read, an unhandled
+        exception, `sys.exit` from an argument error.  Whichever way the
+        process leaves, the conversation should not be left rendered in the
+        terminal for the next person to hold the handset.  Idempotent -- a
+        second purge over empty panels does nothing.
+        """
+        client = getattr(__import__("builtins"), "_active_client", None)
+        if client is not None:
+            try:
+                client._purge_scrollback("process exit", announce=False)
+            except Exception:
+                pass
+        safe_print(colorize("\nClean shutdown", "green"))
+
+    atexit.register(_purge_on_exit)
 
     main()

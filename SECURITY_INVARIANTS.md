@@ -182,6 +182,24 @@ RustFileSender owns a fresh SecretBytes<32> per transfer with no getter; the wra
 
 The output directory is fixed locally and only a sanitised basename comes from the offer, so there is no peer-supplied path to traverse out of.  Placement happens by atomic rename only after the chunk tags, both hashes and the on-disk size all verify; any failure deletes the temporary file and drops the transfer.
 
+### INV-23 — Every Rust dependency on the Python/Rust boundary is checked against known advisories, and the compiled artifact is what gets verified.
+
+**Status:** `PARTIAL`  
+**Enforced by:** `tests/test_dependency_advisories.py`, `tests/test_pyo3_boundary.py`
+
+PyO3 is the boundary itself, so an advisory against it is an advisory against the boundary.  Cargo.lock is asserted at or above the fixed release AND the vulnerable code is asserted unreachable, because either alone rots: a version check hides that the reachability analysis has expired, and a reachability check leaves us on a known-vulnerable release.  test_pyo3_boundary.py then drives the installed extension module, not the source tree, so a conversion regression introduced by an upgrade is caught in the artifact that ships.
+
+**Limit:** The advisory list is not fetched automatically; GHSA-36hh-v3qg-5jq4 is pinned by name and a new advisory needs a human to add it.  What the tests do enforce is that a remediated advisory cannot silently regress.
+
+### INV-24 — No IRC message survives the connection it arrived on.
+
+**Status:** `PARTIAL`  
+**Enforced by:** `tests/test_irc_history_privacy.py`
+
+Panel history is capped at 1000 messages and emptied at every boundary between one connection and the next -- disconnect, reconnect, /quit, process exit -- along with the unread counters, the recent-user sets and the terminal's own saved scrollback.  On I2P the point of a new session is that it is not linkable to the previous one; replaying the old conversation into the new one links them on screen whatever the transport did.
+
+**Limit:** A Python str is immutable and may be interned, so the purge drops the last reference rather than overwriting the characters: the bytes remain in freed heap until the allocator reuses them.  Unfixable for chat text while the UI is Python-side.  Material that must actually be destroyed is not kept here at all -- it lives in Rust behind zeroize().  See INV-02 for the same limit on passwords.
+
 ## Where secrets live
 
 Updated at v10.13.2, when the voice path finished moving.

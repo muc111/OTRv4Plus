@@ -6,7 +6,13 @@
 //! `[features] default` so ordinary builds include everything without
 //! an explicit `--features` flag.
 #![forbid(unsafe_code)]
-#![deny(clippy::unwrap_used)]
+// `unwrap()` is banned in the shipped crate: a panic here aborts the whole
+// Python process (`panic = "abort"` in the release profile), so every failure
+// has to be an `Err` the caller can see.  Test code is exactly where an
+// unwrap *should* panic -- that is what a failing assertion is -- so the deny
+// is scoped to non-test builds.  Without the scoping, `cargo clippy
+// --all-targets` reported 88 errors in `mod tests` and hid real findings.
+#![cfg_attr(not(test), deny(clippy::unwrap_used))]
 
 pub mod error;
 pub mod secure_mem;

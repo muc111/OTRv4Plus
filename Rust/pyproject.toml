@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "otrv4_core"
-version = "0.10.27"
+version = "0.10.28"
 description = "OTRv4+ double ratchet core (Rust)"
 # Wheel metadata carries the licence too, or a built wheel says nothing
 # about its terms.  Dual-licensed from v10.17.0; see ../LICENSE and

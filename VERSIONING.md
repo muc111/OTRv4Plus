@@ -10,8 +10,8 @@ the project was on. This document exists so that cannot happen quietly again.
 
 | Track | Where | Current | Why it is separate |
 |---|---|---|---|
-| **Client** | `otrv4+.py` `VERSION`, `otrv4plus_xmpp.py` `XMPP_VERSION` | `10.14.0` | The thing a user runs and a peer must match. |
-| **Crypto core** | `Rust/Cargo.toml`, `Rust/pyproject.toml` | `0.10.26` | A crate with its own release history; it is `0.x` because its API is not stable for outside consumers. |
+| **Client** | `otrv4+.py` `VERSION`, `otrv4plus_xmpp.py` `XMPP_VERSION` | `10.19.0` | The thing a user runs and a peer must match. |
+| **Crypto core** | `Rust/Cargo.toml`, `Rust/pyproject.toml` | `0.10.28` | A crate with its own release history; it is `0.x` because its API is not stable for outside consumers. |
 | **Android app** | `android/app/build.gradle.kts` | `0.3.0-phase2+core.10.14.0` | An APK at an earlier maturity than the Termux client. Its own track, with the client version it embeds recorded as semver build metadata. |
 
 The crate and the client are bumped together at a release, so a changelog entry
@@ -73,6 +73,39 @@ A grep that should return one version and no other:
 grep -rn 'VERSION = "OTRv4+\|^XMPP_VERSION\|^version' \
      otrv4+.py otrv4plus_xmpp.py Rust/Cargo.toml Rust/pyproject.toml
 ```
+
+## Dependency versions are part of the release
+
+Three of the four version numbers above are ours to choose. The fourth kind —
+the version of a dependency in `Rust/Cargo.lock` — is not, and it is the one
+that has security consequences, so it gets a rule of its own.
+
+**A dependency on the cryptographic or Python/Rust boundary is pinned by the
+lock file, and the lock file is release evidence.** `Cargo.toml` records an
+intent (`pyo3 = "0.29"`); `Cargo.lock` records what was compiled into the
+artifact someone is running. When a release claims an advisory is remediated,
+the lock is what backs the claim — `tests/test_dependency_advisories.py`
+asserts against the lock for that reason, and asserts the manifest floor
+separately so a later `cargo update` cannot walk back to a vulnerable release.
+
+**PyO3 compatibility, as of v10.19.0 (pyo3 0.29.2):**
+
+| Constraint | Value | Where it is enforced |
+|---|---|---|
+| Rust MSRV | 1.85 (ours; pyo3 0.29 needs 1.83) | `rust-version` in `Rust/Cargo.toml` |
+| Python floor, ABI | `abi3-py39` | `Rust/Cargo.toml` features |
+| Python floor, source | **3.12** — `otrv4+.py` uses PEP 701 f-string spacing | `requires-python` in `Rust/pyproject.toml` |
+
+The two Python floors differ on purpose and it is not a mistake to fix in
+passing: the *extension module* is abi3 and loads on 3.9+, while the *client
+source* does not parse below 3.12. Dropping `abi3-py39` to match would give up
+forward compatibility of the compiled `.so` across interpreter versions for no
+gain.
+
+A PyO3 bump is a PATCH or MINOR of the crate depending on whether our own API
+moved, but it is never a silent one: it needs the full procedure in
+[DEVELOPMENT.md](DEVELOPMENT.md#upgrading-pyo3) and a `SECURITY.md` entry if an
+advisory prompted it.
 
 ## Why v10.14.0
 

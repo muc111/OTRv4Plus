@@ -4,6 +4,125 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## v10.19.0 — PyO3 0.29 for GHSA-36hh-v3qg-5jq4, and IRC scrollback stops outliving the connection
+
+*2026-09-05.  `VERSION → 10.19.0`, `otrv4_core 0.10.28`, `pyo3 0.24.2 → 0.29.2`.*
+
+Two unrelated pieces of work that both landed on the same boundary between
+"what the code says" and "what actually ships".
+
+### PyO3 GHSA-36hh-v3qg-5jq4 — audited first, then upgraded
+
+`BoundListIterator` and `BoundTupleIterator` computed `index + n` in
+`Iterator::nth` / `DoubleEndedIterator::nth_back` before bounds-checking it and
+then read the element with `get_item_unchecked`: `nth` can wrap and re-yield
+from the front, `nth_back` can underflow and read past the storage. CVSS 8.7,
+CWE-125, fixed in pyo3 0.29.0.
+
+**Not reachable from OTRv4+.** The entire Python→Rust surface of `otrv4_core` is
+`&[u8]`, `&str`, `u32`/`u64`, `bool`, `&Bound<PyByteArray>`, `&Bound<PyAny>` and
+opaque pyclass handles. `PyList` and `PyTuple` appear nowhere in the crate;
+`nth`, `nth_back` and `step_by` are called on nothing. There is no Python
+sequence for the vulnerable iterators to walk. Severity for this project:
+informational.
+
+**Upgraded anyway**, to 0.29.2, because an unreachable bug in the boundary layer
+is one refactor from reachable and the upgrade was clean: MSRV 1.83 against our
+declared 1.85, `abi3-py39` still offered, and four transitive dependencies
+*removed* (`indoc`, `unindent`, `memoffset`, `rustversion`) with none added.
+
+**One API change, two call sites.** `Bound::downcast` was renamed `Bound::cast`
+(same signature, `CastError` for `DowncastError`) — `ratchet.rs:718`,
+`voice.rs:458`. Nothing about ownership, lifetimes, conversions or exception
+propagation changed, and no secret material moved.
+
+**Rebuilt, not just re-locked.** The `.so` was rebuilt with
+`--features extension-module` and installed before anything was tested against
+it, `NOTICE` was regenerated from the new graph, and the boundary tests drive
+the installed module rather than the source tree.
+
+Also fixed while in there: `cargo clippy --all-targets` reported 88 pre-existing
+`unwrap_used` errors and 3 warnings, all in `#[cfg(test)]` code, which had been
+hiding real findings. `deny(clippy::unwrap_used)` is now
+`cfg_attr(not(test), deny(...))` — the shipped crate keeps the ban, where a
+panic aborts the whole Python process; test code is where an unwrap *should*
+panic. Clippy is clean under `--all-targets` for the first time.
+
+### IRC history stopped outliving the connection
+
+Reported from a real session: the client dropped, reconnected in five seconds,
+found its own previous session still holding the nick, renamed itself, and
+replayed the entire previous conversation into the new one — three times, with
+the unread badge climbing `system(53)` → `system(105)` → `system(158)` and the
+nick going `AngryMouse` → `BrokenNexus` → `HollowNexus`.
+
+Three separate causes, three fixes:
+
+- **Unbounded, never-cleared history.** `ChatPanel.history` had no ceiling and
+  nothing emptied it, so a tab switch replayed to the start of the process. Now
+  capped at 1000 messages, and `_purge_scrollback()` empties every panel — plus
+  the unread counters and the recent-user sets — at every boundary between one
+  connection and the next: disconnect, reconnect, `/quit`, and process exit via
+  `atexit`, so SIGINT and unhandled exceptions are covered too. The terminal's
+  own saved scrollback is cleared as well (`\033[3J`, because on Termux the
+  visible history *is* the scrollback) on `/quit`, process exit and `/clear` —
+  but **not** on an automatic reconnect, where blanking the emulator would
+  destroy the error messages the user is reading to find out what just
+  happened.
+- **A reconnect that raced the server.** The backoff started at 5s and doubled;
+  five seconds is shorter than any server's ping timeout, so the reconnect
+  arrived while the ghost still held the nick. Now a flat 30/60/90/120s.
+- **A permanent rename on 433.** The client took a fresh random nick and kept
+  it, so one dropped connection cost the user their identity. Now a temporary
+  nick is taken only if registration has not completed, and up to four attempts
+  are scheduled to reclaim the original once the ghost has timed out.
+
+`/clear` now clears everything rather than just the active tab, without touching
+the connection; `/clear <panel>` keeps the old single-tab behaviour.
+
+Timestamps carry the date: `TIMESTAMP_FORMAT = "%Y-%m-%d %H:%M:%S"`, one
+constant replacing four copies of `"%H:%M:%S"`. A debug-log line that read
+`12:34:56.` with nothing after the dot was fixed at the same time — `%f` is a
+`datetime` directive, not a `time.strftime` one, so `[:-3]` had been trimming
+the literal `%f`.
+
+**Honest about what this is not.** A Python `str` cannot be scrubbed from
+memory; it is immutable and may be interned. The purge drops the last reference
+the client holds, which is what stops the conversation coming back on screen —
+the bytes stay in freed heap until the allocator reuses them. INV-24 is recorded
+as `PARTIAL` for that reason. Anything that must genuinely be destroyed is not
+kept in a chat panel at all.
+
+### Also
+
+`No module named 'socks'` now says what to install. The engine's import guard
+blamed file placement for every failure — "ensure `otrv4+.py`, the
+`otrv4plus.py` symlink and `otrv4_core.so` are in this directory" — which sent a
+tester chasing three files that were all present and correct. The module comes
+from **PySocks**, and the PyPI project literally named `socks` is an empty
+placeholder (version 0, "should be deleted soon") that installs nothing, so
+`pip install socks` succeeded and changed nothing. The guard now names the
+missing module and its actual distribution, and `import socks` in `otrv4+.py`
+carries the same explanation plus a check that what it imported really is
+PySocks.
+
+### Verification
+
+`cargo test` 111 passed. `cargo clippy --all-targets` clean, 0 errors, 0
+warnings. Release `.so` rebuilt and installed. Python suite **2525 passed, 0
+failed, 43 skipped, 1 xfailed** on Python 3.12. 104 new tests across three files:
+`test_dependency_advisories.py` (25), `test_pyo3_boundary.py` (44 — hostile
+input against the installed module), `test_irc_history_privacy.py` (35). Six
+mutations run against the new assertions, five killed, one confirmed
+semantically equivalent (`>` vs `>=` in the prune, where `overflow` is 0 at the
+boundary either way).
+
+**Not live-tested on the two handsets yet.** The IRC reconnect and nick-reclaim
+paths need a real dropped connection against a real server to exercise; nothing
+here claims transport verification that has not happened.
+
+---
+
 ## v10.18.6 — building a Python extension with no `.so` is now an error
 
 *2026-09-05.  `VERSION → 10.18.6`.  Build configuration only; no code change.*

@@ -1,6 +1,6 @@
 [package]
 name        = "otrv4_core"
-version     = "0.10.27"
+version     = "0.10.28"
 edition     = "2021"
 authors     = ["OTRv4+ contributors"]
 description = "Post-quantum OTRv4 cryptographic core (Rust/PyO3)"
@@ -110,7 +110,7 @@ test-only-kdf = []
 legacy-dake-keys = []
 
 [dependencies]
-pyo3         = { version = "0.24", features = ["abi3-py39"] }
+pyo3         = { version = "0.29", features = ["abi3-py39"] }
 zeroize      = { version = "1.8",  features = ["derive", "alloc"] }
 aes-gcm      = { version = "0.10", features = ["aes"] }
 sha3         = { version = "0.10" }

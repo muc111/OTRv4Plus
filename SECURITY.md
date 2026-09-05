@@ -107,6 +107,76 @@ Expected: **30+ tests pass** (17 prior + 3 ML-KEM + 15 hybrid PQC SMP tests adde
 
 Two helper functions were removed at v10.6.17: `_verify_ed448_rust_compat()` and `_verify_ring_sig_rust_compat()`.  The previous comparison against the C extension's `ring_sign` and `ring_verify` is no longer performed.  As of v10.7.5 the C extension itself has been retired (see caveat 4 below), so these comparison paths are doubly obsolete.
 
+## Dependency security on the Python/Rust boundary
+
+PyO3 is not an ordinary dependency. It *is* the boundary between the Python
+client and the Rust cryptographic core, so an advisory against it is an
+advisory against the boundary, and remediating one is not finished when
+`Cargo.lock` shows a new number — the compiled artifact has to be rebuilt and
+re-tested. The order, as run for GHSA-36hh-v3qg-5jq4 at v10.19.0:
+
+```
+Cargo.lock audit → cargo build → PyO3 boundary tests → Python suite
+                 → cargo test → security-invariant tests → installed-wheel tests
+```
+
+`tests/test_dependency_advisories.py` (INV-23) pins two things at once, because
+either alone decays into a false guarantee:
+
+- **the resolved version**, from `Cargo.lock`, not from `Cargo.toml` — the
+  manifest states an intent, the lock states what is compiled;
+- **the unreachability of the vulnerable path**, so that the day someone puts a
+  Python sequence across the boundary, the analysis below is flagged as expired
+  rather than quietly wrong.
+
+`tests/test_pyo3_boundary.py` then drives the **installed extension module**
+with hostile input — out-of-range integers, non-bytes objects, lone surrogates,
+a lying `int` subclass, a 4 MB message — and asserts every one comes back as a
+Python exception. That matters more here than in most projects: the release
+profile sets `panic = "abort"`, so a Rust panic is not something Python can
+catch, it takes the client down mid-session with the peer left waiting.
+
+### GHSA-36hh-v3qg-5jq4 — PyO3 out-of-bounds read (assessed v10.19.0)
+
+| | |
+|---|---|
+| Advisory | GHSA-36hh-v3qg-5jq4 (CVSS 8.7, CWE-125), PyO3/pyo3#6086 |
+| Affected | pyo3 < 0.29.0 |
+| Was installed | pyo3 0.24.2 — direct dependency, single version in the tree, nothing else constrained it |
+| Now installed | pyo3 0.29.2 |
+| Vulnerable path reachable from OTRv4+ | **No** |
+| Severity for this project | **Informational** — upgraded regardless |
+
+`BoundListIterator` and `BoundTupleIterator` computed `index + n` in
+`Iterator::nth` / `DoubleEndedIterator::nth_back` before bounds-checking it, then
+read the element with `get_item_unchecked`. On `nth` the addition can wrap and
+re-yield elements from the front; on `nth_back` the subtraction can underflow
+and read memory past the sequence's storage.
+
+**Why it was not reachable.** The entire Python→Rust surface of `otrv4_core` is
+`&[u8]`, `&str`, `u32`/`u64`, `bool`, `&Bound<PyByteArray>`, `&Bound<PyAny>` and
+opaque pyclass handles. No `#[pyfunction]` or `#[pymethods]` entry point accepts
+a Python list or tuple, `PyList` and `PyTuple` appear nowhere in the crate, and
+`nth`/`nth_back`/`step_by` are called on nothing. There is no sequence for the
+vulnerable iterators to walk, and no attacker-controlled `n` to overflow. This
+is asserted, not asserted-once: the reachability check is a test.
+
+**Why it was upgraded anyway.** An unreachable bug in the boundary layer is one
+refactor away from reachable, and 0.29.2 was a compatible release: MSRV 1.83
+against our declared 1.85, `abi3-py39` still offered, no new transitive
+dependencies (four were *removed*: `indoc`, `unindent`, `memoffset`,
+`rustversion`).
+
+**API changes required.** One, at two call sites: `Bound::downcast` was renamed
+`Bound::cast` (same signature; `CastError` replaces `DowncastError`) —
+`ratchet.rs:718` and `voice.rs:458`. No ownership, lifetime, conversion or
+exception-propagation behaviour changed. No secret material moved.
+
+**Verification.** `cargo test` 111 passed; `cargo clippy --all-targets` clean;
+release `.so` rebuilt with `--features extension-module` and installed; Python
+suite 2525 passed, 0 failed; the 44 new boundary tests pass against the
+installed module.
+
 ## Known issues and limitations
 
 1. **Rust crypto crates are not audited.** `ed448-goldilocks-plus` 0.16 is the only viable pure-Rust Ed448, and `x448` 0.6 the X448, but neither has had a formal review. `pqcrypto-mlkem 0.1.1` (FIPS 203 ML-KEM-1024) and `pqcrypto-mldsa 0.1.2` (ML-DSA-87) are PQClean-derived reference implementations.
@@ -161,6 +231,54 @@ Two helper functions were removed at v10.6.17: `_verify_ed448_rust_compat()` and
 9. **SMP modular exponentiation is constant-time (v10.7.6, Phase 5.4).**  Prior to v10.7.6, SMP used `num-bigint`'s `modpow`, whose running time depends on the exponent's bit pattern.  Because SMP exponentiates with secret values (the per-session blinding scalars, the SMP secret itself, and the ZKP randomisers), this was a timing side-channel: an attacker able to measure SMP-round timing precisely could in principle recover bits of those secrets.  v10.7.6 routes every secret-exponent `modpow` through `crypto-bigint`'s `DynResidue` (Montgomery-form modular exponentiation, constant-time in the exponent).  The MODP-3072 group (OTRv4 §5.3) is unchanged — same prime, same generator — so the wire format and spec compliance are identical; only the implementation changed.  Caveats: (a) the *public*-value arithmetic in the ZKP reconstruction (challenge/response combination) remains on `num-bigint`, which is correct because those operands are public and carry no secret-dependent timing; (b) `crypto-bigint`'s constant-time claims, like those of the other Rust crypto crates here, have not been formally audited.  The practical attack surface for this side-channel was always narrow over I2P (multi-second fragmentation latency drowns the signal), but constant-time is the correct posture regardless.
 
 10. **SMP is hybrid post-quantum (v10.9.0).**  The classical OTRv4 four-step Schnorr ZKP over the 3072-bit MODP group is preserved unchanged and now runs alongside an ML-KEM-1024 and ML-DSA-87 binding layer.  In SMP1 the initiator appends an ML-KEM-1024 encapsulation key and ML-DSA-87 public key.  In SMP2 the responder encapsulates to derive `kem_ss`, derives `pq_binding_key = KDF(PQ_BRACE_KEY, domain || kem_ss || transcript_tag, 32)`, and signs the entire SMP2 body with ML-DSA-87 under that binding key.  SMP3/4 each verify the previous step's ML-DSA-87 signature before processing classical fields, then sign their own output.  Forging a false "verified" requires breaking the 3072-bit discrete log, ML-KEM-1024, and ML-DSA-87 simultaneously.  The wire format is versioned (`0x01` classical, `0x02` hybrid PQ) with no silent downgrade.  **Known limitation:** the ZKP scalar arithmetic (the `d = r - c*x` response computation) still uses variable-time `num-bigint`; the exponentiation is constant-time via `crypto-bigint` Montgomery form but the surrounding scalar multiply is not yet. A fully constant-time ZKP is tracked as future work.  The SMP session timeout was raised to 45 minutes (from 10) at v10.9.1 to accommodate the hybrid-PQ wire overhead over I2P, where SMP2 is 49 fragments and a full verification takes ~15–16 minutes.
+
+## Chat scrollback is not a store (v10.19.0)
+
+An IRC message must not outlive the connection it arrived on (INV-24). Until
+v10.19.0 it did: panel history was unbounded and nothing ever cleared it, so a
+disconnect-and-reconnect replayed the whole previous conversation into the new
+session, under whatever nick the client had been forced to take. A tester
+watched it happen three times in one evening, with the unread badge climbing
+`system(53)` → `system(105)` → `system(158)` as each reconnect appended another
+copy.
+
+That is a privacy problem before it is a cosmetic one. This client runs over
+I2P, where the point of a new session is that it is not linkable to the one
+before it. Replaying the old conversation into the new one links them on the
+screen no matter what the transport did.
+
+What v10.19.0 does:
+
+- history is capped at 1000 messages per panel, oldest pruned first;
+- it is emptied at every boundary between one connection and the next —
+  disconnect, reconnect, `/quit`, and process exit via `atexit` (so SIGINT and
+  an unhandled exception are covered too);
+- unread counters and recent-user sets go with it, and on the paths where the
+  user is leaving or has asked — `/quit`, process exit, `/clear` — the
+  terminal's own saved scrollback is cleared too (`\033[3J`), because on Termux
+  the visible history *is* the scrollback;
+- **not** on an automatic reconnect, deliberately: blanking the emulator during
+  a dropped connection would destroy the error messages the user is reading to
+  find out what happened, on a transport where a blip is routine. What the
+  reconnect purge stops is the replay, which was the reported bug;
+- `/clear` does all of the above on demand without touching the connection;
+  `/clear <panel>` keeps the old single-tab behaviour.
+
+**What this does not do.** It does not scrub the text from process memory. A
+Python `str` is immutable and may be interned; the purge drops the last
+reference the client holds, and the bytes remain in freed heap until the
+allocator reuses them. That limit is the same one as for passwords (INV-02) and
+it is not fixable while the UI is Python-side. Material that must genuinely be
+destroyed is not kept in a chat panel at all — it lives in Rust behind
+`zeroize()`.
+
+The reconnect backoff was raised from 5s-doubling to a flat 30/60/90/120s for
+the same reason a ghost session causes the collision: five seconds is shorter
+than any server's ping timeout, so the reconnect arrived while the previous
+session still held the nick. A 433 now takes a temporary nick only if
+registration has not completed, and schedules up to four attempts to reclaim
+the original — instead of renaming permanently, which is how one dropped
+connection used to cost the user their identity.
 
 ## Reporting issues
 

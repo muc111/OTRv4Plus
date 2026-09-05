@@ -455,7 +455,8 @@ fn take_shared(value: &Bound<'_, PyAny>, expect_len: usize, what: &str)
         return Err(PyValueError::new_err(
             format!("{} must be {} bytes", what, expect_len)));
     }
-    if let Ok(buf) = value.downcast::<PyByteArray>() {
+    // v10.19.0: `downcast` -> `cast`, renamed in PyO3 0.29 (GHSA-36hh-v3qg-5jq4).
+    if let Ok(buf) = value.cast::<PyByteArray>() {
         let n = buf.len();
         for i in 0..n {
             buf.set_item(i, 0u8)?;

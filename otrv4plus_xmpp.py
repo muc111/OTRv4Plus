@@ -2,7 +2,7 @@
 """
 OTRv4+ XMPP - full OTR + SMP over XMPP, transported over I2P SAM
 ================================================================
-Version: 10.18.6
+Version: 10.19.0
 
 
 Post-quantum OTRv4+ end-to-end encryption over XMPP, reusing the IRC client's
@@ -237,7 +237,7 @@ def voice_available() -> "tuple[bool, str]":
             "no audio backend: libaaudio.so unavailable and parec/pacat "
             "missing  (run /audioprobe for details)")
 
-XMPP_VERSION = "10.18.6"
+XMPP_VERSION = "10.19.0"
 
 # ---------------------------------------------------------------------------
 # XMPP-private state directory
@@ -318,6 +318,62 @@ def _xmpp_otr_config():
 
 
 OTR_MODULE = "otrv4plus"  # symlink -> otrv4+.py
+
+# Module name -> the pip distribution that supplies it.  These differ often
+# enough to send people the wrong way: `socks` comes from PySocks, and the
+# PyPI project literally named `socks` is an empty placeholder that installs
+# nothing, so "pip install socks" succeeds and changes nothing.
+_PIP_NAME_FOR_MODULE = {
+    "socks": "PySocks",
+    "argon2": "argon2-cffi",
+    "opuslib": "opuslib",
+    "Crypto": "pycryptodome",
+    "cryptography": "cryptography",
+}
+
+
+def _import_failure_advice(exc):
+    """What to tell the user about a failed engine import.
+
+    The old text always blamed file placement -- "ensure otrv4+.py, the
+    symlink and otrv4_core.so are in this directory" -- no matter what
+    actually went wrong.  For a missing third-party module that is simply
+    false, and it sent at least one tester chasing files that were all
+    present and correct.  Split the two cases.
+    """
+    missing = getattr(exc, "name", None) if isinstance(exc, ImportError) else None
+
+    # A missing dependency of the engine, not the engine itself.
+    if missing and missing not in (OTR_MODULE, "otrv4_core"):
+        top = missing.split(".")[0]
+        pkg = _PIP_NAME_FOR_MODULE.get(top, top)
+        lines = [
+            f"'{OTR_MODULE}' is present but one of its dependencies is not: "
+            f"the module '{missing}' is missing.",
+            f"    pip install {pkg}",
+        ]
+        if pkg.lower() != top.lower():
+            lines.append(
+                f"(The module is '{top}'; the distribution that provides it "
+                f"is '{pkg}'. They are not the same name, and installing a "
+                f"package called '{top}' will not fix this.)"
+            )
+        return lines
+
+    if missing == "otrv4_core":
+        return [
+            "The Rust core is missing. Build it and copy the shared library "
+            "next to this script:",
+            "    cd Rust && cargo build --release --features extension-module",
+            "    cp target/release/libotrv4_core.so ../otrv4_core.so",
+        ]
+
+    return [
+        "Ensure otrv4+.py, the otrv4plus.py symlink, and otrv4_core.so are "
+        "in this directory.",
+    ]
+
+
 try:
     _otr = __import__(OTR_MODULE)
     EnhancedSessionManager = _otr.EnhancedSessionManager
@@ -326,11 +382,8 @@ try:
     I2PSAMConnection = getattr(_otr, "I2PSAMConnection", None)
 except Exception as e:
     print(f"Could not import OTR engine from '{OTR_MODULE}': {e}", file=sys.stderr)
-    print(
-        "Ensure otrv4+.py, the otrv4plus.py symlink, and otrv4_core.so are "
-        "in this directory.",
-        file=sys.stderr,
-    )
+    for _line in _import_failure_advice(e):
+        print(_line, file=sys.stderr)
     sys.exit(1)
 
 
