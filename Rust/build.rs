@@ -33,6 +33,47 @@
 fn main() {
     guard_test_only_kdf();
     guard_legacy_dake_keys();
+    warn_if_cdylib_will_be_dropped();
+}
+
+/// Say so when the `.so` this crate exists to produce is not going to appear.
+///
+/// `Cargo.toml` declares `crate-type = ["cdylib", "rlib"]`. When the target is
+/// statically linking the C runtime, rustc cannot build a cdylib, so it drops
+/// that crate type and emits one line about it among the compile output --
+/// then finishes successfully. The build looks fine. `target/release/` holds
+/// `libotrv4_core.rlib` and `libotrv4_core.d` and no `.so`, and the next step
+/// in the README:
+///
+///     cp target/release/libotrv4_core.so ../otrv4_core.so
+///
+/// fails with "No such file or directory", several steps and several minutes
+/// away from the cause. That is how it was reported.
+///
+/// **musl targets enable `crt-static` by default**, so this is the normal
+/// outcome on Alpine rather than an exotic one. `.cargo/config.toml` turns it
+/// off for the musl triples -- but cargo only finds that file by walking up
+/// from the directory it was invoked in, so it is skippable, and this is the
+/// backstop for when it has been skipped.
+///
+/// A warning rather than an error: `cargo test` wants only the rlib, and
+/// failing the build would take the test suite with it.
+fn warn_if_cdylib_will_be_dropped() {
+    println!("cargo:rerun-if-env-changed=CARGO_CFG_TARGET_FEATURE");
+    let features = std::env::var("CARGO_CFG_TARGET_FEATURE").unwrap_or_default();
+    if !features.split(',').any(|f| f == "crt-static") {
+        return;
+    }
+    let target = std::env::var("TARGET").unwrap_or_default();
+    println!("cargo:warning=crt-static is enabled for {target}, so rustc will \
+        DROP the cdylib and no libotrv4_core.so will be produced -- only the \
+        .rlib. The `cp target/release/libotrv4_core.so ..` step will then fail \
+        with 'No such file or directory'.");
+    println!("cargo:warning=Fix: build with \
+        RUSTFLAGS=\"-C target-feature=-crt-static\", or run cargo from inside \
+        Rust/ so that Rust/.cargo/config.toml applies it for you. musl targets \
+        turn crt-static on by default, which is why this is the usual outcome \
+        on Alpine.");
 }
 
 /// M3: the legacy DAKE surface that returns session keys to Python as PyBytes.

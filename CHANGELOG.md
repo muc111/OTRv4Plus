@@ -4,6 +4,51 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## v10.18.5 — and on musl it now produces a `.so`, not just an `.rlib`
+
+*2026-09-05.  `VERSION → 10.18.5`.  Build configuration only; no code change.*
+
+v10.18.4 got the musl build to *compile*. It then hit a second problem, and
+this one is quieter, because the build **succeeds**:
+
+```
+$ cp target/release/libotrv4_core.so ../otrv4_core.so
+cp: cannot stat 'target/release/libotrv4_core.so': No such file or directory
+$ ls target/release/libotrv4_core.*
+target/release/libotrv4_core.d    target/release/libotrv4_core.rlib
+```
+
+**musl targets enable `crt-static` by default**, and rustc cannot build a
+cdylib against a statically linked C runtime. So it drops the crate type,
+prints `dropping unsupported crate type` in one line among several hundred
+lines of compile output, and **exits 0**. The `.so` that the whole build step
+exists to produce is simply absent, and the failure surfaces one command later
+as a `cp` that cannot find its source — minutes and several steps from the
+cause.
+
+Verified rather than assumed: forcing `+crt-static` on this machine's own
+target reproduces it exactly — `warning: dropping unsupported crate type
+'cdylib'`, and only an `.rlib` in `target/release/`.
+
+**Two changes.** `Rust/.cargo/config.toml` turns `crt-static` off for the four
+musl triples, restoring the cdylib; the resulting `.so` links musl dynamically,
+which is what a musl Python needs in order to load it. And `build.rs` now warns
+when `crt-static` is on, naming both the consequence and the fix — because
+cargo finds `.cargo/config.toml` by walking up from the invocation directory,
+so it *can* be bypassed, and a silent bypass returns you to a `cp` that fails
+for no visible reason.
+
+The warning is a warning and not an error on purpose: `cargo test` wants only
+the rlib, and failing the build there would take the Rust test suite with it.
+
+10 tests (21 in the file), 3 mutations applied and killed: the override
+removed, the flag set the wrong way round (`+crt-static`), and the build.rs
+backstop disabled. The build script is compiled and run standalone against a
+synthetic environment, so both the musl case and the ordinary case are checked
+on a machine that has no musl toolchain.
+
+---
+
 ## v10.18.4 — the Rust core builds on musl
 
 *2026-09-05.  `VERSION → 10.18.4`.  Build configuration only; no code change.*

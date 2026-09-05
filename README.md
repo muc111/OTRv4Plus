@@ -6,7 +6,7 @@
 <p align="center"><strong>Post-quantum hybrid encryption for Off The Record (OTR) chat <em>and voice calls</em> over IRC and XMPP. Experimental, unaudited research prototype.</strong></p>
 
 <p align="center">
-<code>v10.18.4 · Rust crypto core · chat (X448 + ML-KEM-1024, AES-256-GCM) · hybrid PQC SMP (ML-KEM-1024 + ML-DSA-87 + ZKP) · voice (X448 + ML-KEM-1024, AES-256-GCM) · I2P SAM · AAudio · TUI</code>
+<code>v10.18.5 · Rust crypto core · chat (X448 + ML-KEM-1024, AES-256-GCM) · hybrid PQC SMP (ML-KEM-1024 + ML-DSA-87 + ZKP) · voice (X448 + ML-KEM-1024, AES-256-GCM) · I2P SAM · AAudio · TUI</code>
 </p>
 
 ---
@@ -192,6 +192,33 @@ release to move to: 0.1.1 is the newest `pqcrypto-mlkem` published.
 triples, by supplying the macro with a definition equivalent to glibc's own.
 It is keyed per-target, so a glibc build never sees it. Just run cargo from
 inside `Rust/` so the file is found.
+
+**And no `libotrv4_core.so` is produced.** Once the compile succeeds, musl
+hits a second problem, which is quieter than the first because the build
+*succeeds*:
+
+```
+$ cp target/release/libotrv4_core.so ../otrv4_core.so
+cp: cannot stat 'target/release/libotrv4_core.so': No such file or directory
+$ ls target/release/libotrv4_core.*
+target/release/libotrv4_core.d    target/release/libotrv4_core.rlib
+```
+
+musl targets enable `crt-static` by default, and rustc cannot build a cdylib
+against a statically linked C runtime — so it drops the crate type, mentions
+it in one line among the compile output, and exits 0. The `.so` this whole
+step exists to produce simply is not there.
+
+`Rust/.cargo/config.toml` turns `crt-static` off for the musl triples, which
+restores it. The resulting `.so` links musl dynamically, which is what a musl
+Python needs to load it. If you have bypassed that file, `build.rs` says so
+rather than letting the `cp` fail unexplained, and you can pass the flag
+directly:
+
+```bash
+RUSTFLAGS="-C target-feature=-crt-static" \
+  cargo build --release --features extension-module,pq-rust
+```
 
 If you would rather not rely on that file, build with clang — the clang branch
 of that header avoids `__GNUC_PREREQ` entirely:

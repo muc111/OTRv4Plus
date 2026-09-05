@@ -187,3 +187,120 @@ class TestItIsDocumentedWhereSomeoneWillLook:
         config = io.open(CONFIG, encoding="utf-8").read()
         assert "glibc" in config and "musl" in config
         assert "cc-rs splits" in config
+
+
+class TestTheSharedLibraryIsActuallyProduced:
+    """The `.so` is the whole point; an `.rlib` is not importable by Python.
+
+    musl targets enable `crt-static` by default, and rustc cannot build a
+    cdylib against a statically linked C runtime. It DROPS the crate type,
+    prints one line about it among the compile output, and **exits
+    successfully**. `target/release/` then holds `libotrv4_core.rlib` and
+    `libotrv4_core.d` and no `.so`, so the next documented step --
+
+        cp target/release/libotrv4_core.so ../otrv4_core.so
+
+    -- fails with "No such file or directory", minutes and several steps away
+    from the cause. Reported exactly that way.
+    """
+
+    @pytest.fixture(scope="class")
+    def target_table(self):
+        if not os.path.exists(CONFIG):
+            pytest.fail("Rust/.cargo/config.toml is gone")
+        import tomllib
+        with open(CONFIG, "rb") as fh:
+            return tomllib.load(fh).get("target", {})
+
+    def test_the_crate_still_asks_for_a_cdylib(self):
+        """If this ever stops being true, the rest of this class is moot --
+        and so is the build step that copies the .so."""
+        import tomllib
+        with open(os.path.join(ROOT, "Rust", "Cargo.toml"), "rb") as fh:
+            cargo = tomllib.load(fh)
+        assert "cdylib" in cargo["lib"]["crate-type"]
+
+    @pytest.mark.parametrize("triple", MUSL_TRIPLES)
+    def test_crt_static_is_turned_off_for_musl(self, triple, target_table):
+        assert triple in target_table, (
+            "%s still defaults to crt-static, so it produces no .so" % triple)
+        flags = target_table[triple]["rustflags"]
+        assert "target-feature=-crt-static" in flags, (
+            "%s: %r does not disable crt-static" % (triple, flags))
+
+    def test_no_glibc_target_is_given_rustflags(self, target_table):
+        """glibc does not default to crt-static and needs no help. An entry
+        here would also silently replace RUSTFLAGS a developer set."""
+        for triple in target_table:
+            assert "musl" in triple, (
+                "%s has rustflags it does not need" % triple)
+
+    def test_the_config_explains_the_silent_failure(self):
+        config = io.open(CONFIG, encoding="utf-8").read()
+        assert "crt-static" in config
+        assert "No such file or directory" in config, (
+            "nothing connects the config to the error the user actually sees")
+
+
+class TestTheBuildScriptWarnsIfThisIsBypassed:
+    """`.cargo/config.toml` is found by walking up from the invocation
+    directory, so `--manifest-path Rust/Cargo.toml` from the repo root skips
+    it. That must not be silent."""
+
+    def _run_build_script(self, target, features):
+        import shutil
+        import subprocess
+        import tempfile
+        if shutil.which("rustc") is None:
+            pytest.skip("no rustc")
+        build_rs = os.path.join(ROOT, "Rust", "build.rs")
+        with tempfile.TemporaryDirectory() as work:
+            binary = os.path.join(work, "bs")
+            built = subprocess.run(["rustc", "-O", "-o", binary, build_rs],
+                                   capture_output=True)
+            assert built.returncode == 0, built.stderr.decode()[:400]
+            env = {"PATH": os.environ.get("PATH", ""),
+                   "TARGET": target,
+                   "CARGO_CFG_TARGET_FEATURE": features}
+            return subprocess.run([binary], capture_output=True, env=env,
+                                  text=True).stdout
+
+    def test_it_warns_when_crt_static_would_drop_the_cdylib(self):
+        out = self._run_build_script("x86_64-unknown-linux-musl",
+                                     "crt-static,fxsr,sse,sse2")
+        assert "cargo:warning=" in out
+        assert "no libotrv4_core.so" in out or "DROP the cdylib" in out
+
+    def test_the_warning_names_the_fix(self):
+        """A warning that reports a symptom and not a remedy just moves the
+        confusion earlier."""
+        out = self._run_build_script("x86_64-unknown-linux-musl",
+                                     "crt-static,fxsr,sse,sse2")
+        assert "target-feature=-crt-static" in out
+
+    def test_the_warning_names_the_error_the_user_will_hit(self):
+        out = self._run_build_script("x86_64-unknown-linux-musl",
+                                     "crt-static,fxsr,sse,sse2")
+        assert "No such file or directory" in out
+
+    def test_it_is_silent_on_an_ordinary_build(self):
+        """It must not fire on glibc or on `cargo test`, or it becomes noise
+        on a project that keeps its build silent."""
+        out = self._run_build_script("x86_64-unknown-linux-gnu",
+                                     "fxsr,sse,sse2")
+        assert "cargo:warning=" not in out
+
+    def test_it_warns_rather_than_failing(self):
+        """`cargo test` wants only the rlib; a hard error would take the Rust
+        test suite with it."""
+        source = io.open(os.path.join(ROOT, "Rust", "build.rs"),
+                         encoding="utf-8").read()
+        start = source.index("fn warn_if_cdylib_will_be_dropped")
+        # To the closing brace at column 0, not to end-of-file: the OTHER
+        # guards in this build script panic on purpose, and slicing past this
+        # function picks them up and fails for the wrong reason.
+        end = source.index("\n}\n", start) + 3
+        fn = source[start:end]
+        assert "warn_if_cdylib" in fn and "cargo:warning=" in fn
+        assert "panic!" not in fn, "it aborts the build instead of warning"
+        assert "process::exit" not in fn
