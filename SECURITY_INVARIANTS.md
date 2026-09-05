@@ -62,9 +62,9 @@ termios ECHO is cleared with TCSANOW; the masking helper returns whether it took
 ### INV-06 — Remote SMP messages may request local user interaction but can never capture arbitrary local input.
 
 **Status:** `ENFORCED`  
-**Enforced by:** `tests/test_no_remote_input_capture.py`, `tests/test_smp_guided_flow.py`
+**Enforced by:** `tests/test_no_remote_input_capture.py`, `tests/test_smp_guided_flow.py`, `tests/test_irc_guided_smp.py`
 
-A peer's SMP1 moves otrv4plus_smpflow.SmpFlow to AWAITING_LOCAL_CONSENT and no further.  The only edges into AWAITING_SECRET -- the state in which a typed line is read as a passphrase -- are local_secret_needed (the user typed /smp) and local_consent (the user typed y).  A chat message typed at a consent prompt is not y, so it is sent as a message.
+A peer's SMP1 moves otrv4plus_smpflow.SmpFlow to AWAITING_LOCAL_CONSENT and no further.  The only edges into AWAITING_SECRET -- the state in which a typed line is read as a passphrase -- are local_secret_needed (the user typed /smp) and local_consent (the user typed y).  A chat message typed at a consent prompt is not y, so it is sent as a message.  BOTH clients since v10.23.0: the IRC client now uses the same SmpFlow rather than a second implementation, and test_irc_guided_smp.py walks otrv4+.py's inbound call graph for any path reaching _arm_secret_prompt -- the coverage SMP_UX_AUDIT.md asked for and which was missing while otrv4plus_xmpp.py alone was walked.
 
 ### INV-07 — Rust-owned secret material zeroizes on drop.
 

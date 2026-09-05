@@ -96,14 +96,21 @@ INVARIANTS: Tuple[Invariant, ...] = (
                   "but can never capture arbitrary local input.",
         status="ENFORCED",
         tests=("test_no_remote_input_capture.py",
-               "test_smp_guided_flow.py"),
+               "test_smp_guided_flow.py",
+               "test_irc_guided_smp.py"),
         rationale="A peer's SMP1 moves otrv4plus_smpflow.SmpFlow to "
                   "AWAITING_LOCAL_CONSENT and no further.  The only edges "
                   "into AWAITING_SECRET -- the state in which a typed line "
                   "is read as a passphrase -- are local_secret_needed (the "
                   "user typed /smp) and local_consent (the user typed y).  "
                   "A chat message typed at a consent prompt is not y, so it "
-                  "is sent as a message.",
+                  "is sent as a message.  BOTH clients since v10.23.0: the "
+                  "IRC client now uses the same SmpFlow rather than a second "
+                  "implementation, and test_irc_guided_smp.py walks "
+                  "otrv4+.py's inbound call graph for any path reaching "
+                  "_arm_secret_prompt -- the coverage SMP_UX_AUDIT.md asked "
+                  "for and which was missing while otrv4plus_xmpp.py alone "
+                  "was walked.",
     ),
     Invariant(
         id="INV-07",

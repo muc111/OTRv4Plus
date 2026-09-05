@@ -56,6 +56,14 @@ if not all(hasattr(socks, _attr) for _attr in
         "    pip uninstall -y socks && pip install PySocks"
     )
 
+# The SMP consent state machine, shared with the XMPP client.  Imported
+# rather than reimplemented: INV-06 is the property that a remote peer may
+# make the client ASK for the passphrase but never make the next typed line
+# BECOME one, and that property is structural in SmpFlow -- there is no edge
+# from a remote transition into AWAITING_SECRET.  A second copy of the logic
+# here would be a second chance to get it wrong.
+import otrv4plus_smpflow as _smpflow
+
 try:
     from otrv4plus_log import ChannelLogManager as _ChannelLogManager
     _LOG_AVAILABLE = True
@@ -1865,7 +1873,17 @@ class OTRv4DataMessage:
             raise ValueError(f"Failed to decode message: {e }")
 
 
-VERSION = "OTRv4+ 10.22.0"
+VERSION = "OTRv4+ 10.23.0"
+
+#: SMP passphrase length bounds, shared by both clients.
+#:
+#: They lived in otrv4plus_xmpp.py only, so the IRC client had no bounds at
+#: all -- it took whatever was typed.  Defined here because the engine is
+#: what both clients import, and two clients disagreeing about how long a
+#: shared secret may be is a way for one side to store something the other
+#: will refuse.
+SMP_MIN_LEN = 8
+SMP_MAX_LEN = 512
 
 #: Every timestamp the client puts on screen.  Was "%H:%M:%S", which is
 #: unreadable in a log kept overnight or across a reconnect: "02:14:07" does
@@ -13316,30 +13334,19 @@ class OTRv4IRCClient:
             self.session_manager.trust_db.add_trust(parts[1], parts[2])
             self.add_message("system", f"✅ Trusted {parts [1 ]}: {parts [2 ][:16 ]}…")
         elif cmd == "smp" and len(parts) == 1:
-            # Bare /smp.  IRC has no hidden prompt of its own -- see
-            # SMP_UX_AUDIT.md; the guided flow is the XMPP client's -- so this
-            # says what to type rather than arming anything.
+            # Bare /smp: ask for whatever is missing, hidden.  This used to
+            # print "type /smp <passphrase> (it will be visible on this
+            # terminal)", which asked the user to put a shared secret into
+            # their own scrollback -- and contradicted `_finish_trust`, which
+            # had been promising "it will ask for the passphrase" since
+            # v10.15.  The masking machinery (set_input_mask) existed the
+            # whole time and nothing called it.
             active = self.panel_manager.get_active_panel()
             peer = active.name if active and active.type not in ("system", "debug") else None
             if not peer:
                 self.add_message("system", colorize("⚠ Switch to a peer panel first", "yellow"))
             else:
-                stored = ""
-                if hasattr(self.session_manager, "smp_storage"):
-                    stored = self.session_manager.smp_storage.get_secret(peer) or ""
-                if stored:
-                    self.add_message(
-                        "system",
-                        colorize(f"🔐 Stored passphrase found for {peer } — verifying…", "cyan"),
-                    )
-                    self._start_smp(peer, stored)
-                else:
-                    self.add_message(
-                        "system",
-                        colorize("🔐 Verification needs the passphrase you agreed with "
-                                 "them. Type  /smp <passphrase>  (it will be visible "
-                                 "on this terminal).", "yellow"),
-                    )
+                self._smp_verify(peer)
         elif cmd == "smp" and len(parts) > 1:
             active = self.panel_manager.get_active_panel()
             peer = active.name if active and active.type not in ("system", "debug") else None
@@ -13708,6 +13715,29 @@ class EnhancedOTRv4IRCClient(OTRv4IRCClient):
         self._pending_action: Optional[dict] = None
         self._pending_lock = threading.Lock()
 
+        # v10.23.0: the guided SMP flow the XMPP client has had since
+        # v10.15.  The registry decides which question the user is being
+        # asked and, crucially, whether the answer may be a passphrase.
+        self._smp_flows = _smpflow.SmpFlowRegistry()
+        #: Peer whose passphrase we are reading right now, or None.  Set ONLY
+        #: from a local path -- a bare /smp, or a local `y` answering a
+        #: consent prompt.  Nothing a peer sends may set it (INV-06).
+        self._secret_request: Optional[str] = None
+        #: "start" (we go first) or "resume" (answer the SMP1 already held).
+        self._secret_purpose: Optional[str] = None
+        #: Peer whose consent prompt is on screen, so a resent SMP1 cannot
+        #: print it twice.
+        self._smp_consent_shown: Optional[str] = None
+
+        # Tell the engine to PARK an inbound SMP1 when no passphrase is set,
+        # rather than aborting it.  Without this the responder's SMP1 dies
+        # before the user can be asked, and answering means a second round
+        # trip over I2P.  The XMPP client sets the same flag.
+        try:
+            self.session_manager.smp_guided_prompt = True
+        except Exception:
+            pass
+
     def _set_pending(self, action_type: str, peer: str, **kwargs):
         """Register a pending action waiting for user input in chat."""
         with self._pending_lock:
@@ -13737,6 +13767,21 @@ class EnhancedOTRv4IRCClient(OTRv4IRCClient):
         if atype == "trust":
             self._handle_trust_response(peer, text.strip().lower(), action)
             return True
+
+        if atype == "smp_consent":
+            # A REMOTE SMP1 armed this prompt, and that is allowed: it asks a
+            # y/n question and consumes one keystroke's worth of answer. What
+            # it must never do is consume the line as a passphrase -- only
+            # `y` reaches `_arm_secret_prompt`, and an ordinary message here
+            # is refused rather than swallowed.
+            answer = text.strip().lower()
+            if answer in ("y", "yes", "n", "no"):
+                self._handle_smp_consent(peer, answer)
+                return True
+            # Not an answer. Re-arm the question and let the line through as
+            # the ordinary message it is.
+            self._set_pending("smp_consent", peer)
+            return False
 
         # There is deliberately no "smp_secret" branch.  It existed, it was
         # armed from a remote-reachable path, and it turned the user's next
@@ -13894,22 +13939,355 @@ class EnhancedOTRv4IRCClient(OTRv4IRCClient):
                 except Exception:
                     already_trusted = False
 
+            # v10.23.0: TOFU, matching the XMPP client.  A y/n prompt here
+            # asked the user to make a decision they had no way to make --
+            # nobody compares a 57-byte fingerprint against nothing on first
+            # contact -- and it was armed by a remote DAKE, which is the
+            # shape INV-06 exists to keep out of the client.  First contact
+            # now pins silently; a CHANGE is reported and never auto-accepted.
+            #
+            # Nothing is written to disk: INV-10 says an IRC run persists no
+            # trust state, and TrustDatabase._save already returns early when
+            # not persistent.  This pin lives for the session, which is what
+            # an ephemeral IRC identity should have.
             if already_trusted:
                 self.add_message(peer, colorize("✅ Fingerprint already trusted", "green"), sec)
                 self._finish_trust(
                     peer, trusted=True, remote_fp=remote_fp, is_initiator=is_initiator
                 )
-            else:
-                self.add_message(
-                    peer, colorize("❓ Trust this fingerprint? Type  y  or  n", "yellow"), sec
+            elif self._fingerprint_changed(peer, remote_fp):
+                # The one case that must stop and ask.  A different key for a
+                # nick we have seen before is either a new person on that nick
+                # -- routine on IRC -- or someone in the middle, and the
+                # client cannot tell which.  Never auto-accept it (INV-11).
+                self.add_message(peer, colorize(
+                    "⚠️  FINGERPRINT CHANGED for this nick. This is either a "
+                    "different person using the nick, or someone in the "
+                    "middle.", "red"), sec)
+                self.add_message(peer, colorize(
+                    "Encrypted, but NOT verified. Use  /trust-reset " + peer +
+                    "  if you are sure, then verify with  /smp.", "yellow"), sec)
+                self._finish_trust(
+                    peer, trusted=False, remote_fp=remote_fp,
+                    is_initiator=is_initiator
                 )
-                self._set_pending("trust", peer, remote_fp=remote_fp, is_initiator=is_initiator)
+            else:
+                self.add_message(peer, colorize(
+                    "🔑 First contact — fingerprint pinned for this nick.",
+                    "cyan"), sec)
+                self.add_message(peer, colorize(
+                    "A change will be reported. Pinning is not verification: "
+                    "run  /smp  to prove who they are.", "dim"), sec)
+                try:
+                    if hasattr(self.session_manager, "trust_fingerprint"):
+                        self.session_manager.trust_fingerprint(peer, remote_fp)
+                except Exception:
+                    self.debug("first-contact pin failed")
+                self._finish_trust(
+                    peer, trusted=True, remote_fp=remote_fp, is_initiator=is_initiator
+                )
 
         except Exception as exc:
             self.debug("_handle_session_established error")
             self.add_message(
                 "system", f"{colorize ('❌ Session setup error:','red')} {str (exc )[:100 ]}"
             )
+
+    def _fingerprint_changed(self, peer: str, remote_fp: str) -> bool:
+        """True if we have a DIFFERENT fingerprint stored for this nick.
+
+        First contact (nothing stored) is not a change; that is the case
+        TOFU pins silently. Compared with `hmac.compare_digest` rather than
+        `!=` for the same reason the trust database does: a fingerprint
+        comparison is a security decision and should not leak its result
+        through timing, cheap as that leak is here.
+        """
+        if not remote_fp:
+            return False
+        try:
+            db = getattr(self.session_manager, "trust_db", None)
+            if db is None:
+                return False
+            entry = db._db.get(peer)
+            if not entry:
+                return False
+            stored = entry.get("fingerprint", "")
+            if not stored:
+                return False
+            return not hmac.compare_digest(stored.encode("utf-8"),
+                                           remote_fp.encode("utf-8"))
+        except Exception:
+            # Cannot tell -> treat as unchanged rather than crying wolf on
+            # every session. The pin below is a no-op if one already exists.
+            return False
+
+    # -- the guided SMP flow, shared with the XMPP client -----------------
+    #
+    # The rule, and the whole reason this goes through SmpFlow rather than
+    # the old _set_pending("smp_secret"): a remote message may move the local
+    # state to AWAITING_LOCAL_CONSENT and no further. Only local input --
+    # a bare /smp, or a `y` the user pressed -- reaches AWAITING_SECRET,
+    # which is the state in which the next line is read as a passphrase.
+    # SmpFlow has no edge that skips the consent step (INV-06).
+
+    def _arm_secret_prompt(self, peer: str, purpose: str) -> None:
+        """Arm the hidden read. `purpose` is "start" or "resume"."""
+        self._secret_request = peer
+        self._secret_purpose = purpose
+        set_input_mask(True)
+        sec = self._panel_sec(peer)
+        self.add_message(peer, colorize(
+            "🔐 Passphrase (hidden), or Enter to cancel:", "cyan"), sec)
+        if self._prompt_refresh_cb is not None:
+            try:
+                self._prompt_refresh_cb()
+            except Exception:
+                pass
+
+    def _disarm_secret_prompt(self) -> None:
+        """Stop reading a passphrase, whatever the outcome.
+
+        Always paired with arming, including on every error path: leaving the
+        mask on would hide the user's ordinary chat, and leaving
+        `_secret_request` set would make their next line a passphrase.
+        """
+        self._secret_request = None
+        self._secret_purpose = None
+        set_input_mask(False)
+        if self._prompt_refresh_cb is not None:
+            try:
+                self._prompt_refresh_cb()
+            except Exception:
+                pass
+
+    def _panel_sec(self, peer: str):
+        try:
+            return self.session_manager.get_security_level(peer)
+        except Exception:
+            return UIConstants.SecurityLevel.ENCRYPTED
+
+    def _consume_secret_line(self, text: str) -> bool:
+        """Take one line as the passphrase, if one was asked for locally.
+
+        Returns True if the line was consumed. `_secret_request` is set only
+        by `_smp_verify` (a typed /smp) and `_handle_smp_consent` (a typed
+        y) -- never by anything a peer sends.
+        """
+        peer = self._secret_request
+        if peer is None:
+            return False
+        purpose = self._secret_purpose
+        self._disarm_secret_prompt()
+        flow = self._smp_flows.get(peer)
+
+        secret = text  # NOT stripped: leading/trailing spaces are the user's
+        if not secret:
+            try:
+                flow.secret_cancelled()
+            except _smpflow.SmpFlowError:
+                pass
+            self.add_message(peer, colorize(
+                "🔐 Cancelled — nothing was stored or sent.", "yellow"),
+                self._panel_sec(peer))
+            if purpose == "resume":
+                self._decline_smp_request(peer, "declined")
+            return True
+
+        if not (SMP_MIN_LEN <= len(secret) <= SMP_MAX_LEN):
+            try:
+                flow.secret_cancelled()
+            except _smpflow.SmpFlowError:
+                pass
+            # The LENGTH is named, never the value.
+            self.add_message(peer, colorize(
+                "🔐 Passphrase must be %d-%d characters. Nothing stored; "
+                "run /smp again." % (SMP_MIN_LEN, SMP_MAX_LEN), "yellow"),
+                self._panel_sec(peer))
+            return True
+
+        try:
+            self.session_manager.smp_storage.set_secret(peer, secret)
+            flow.secret_supplied()
+        except Exception as exc:
+            self.add_message(peer, colorize(
+                "🔐 Could not store the passphrase: %s"
+                % type(exc).__name__, "red"), self._panel_sec(peer))
+            try:
+                flow.reset()
+            except _smpflow.SmpFlowError:
+                pass
+            return True
+        finally:
+            # The local copy goes now. It is a Python str so this drops the
+            # reference rather than wiping the characters -- the engine has
+            # already copied it into Rust-owned zeroizing memory, which is
+            # the copy that matters (INV-02 records the same limit).
+            secret = None
+
+        self.add_message(peer, colorize(
+            "🔐 Passphrase stored — verifying…", "cyan"), self._panel_sec(peer))
+        if purpose == "resume":
+            self._resume_smp(peer)
+        else:
+            try:
+                flow.running()
+            except _smpflow.SmpFlowError:
+                pass
+            stored = self.session_manager.smp_storage.get_secret(peer)
+            self._start_smp(peer, stored)
+        return True
+
+    def _smp_verify(self, peer: str) -> None:
+        """Bare `/smp` — verify, asking for whatever is missing.
+
+        Replaces "type /smp <passphrase> (it will be visible on this
+        terminal)", which asked the user to put a shared secret into their
+        scrollback. `_finish_trust` had been promising this prompt existed
+        since v10.15; on this client it did not.
+        """
+        flow = self._smp_flows.get(peer)
+        if flow.state in (_smpflow.AWAITING_LOCAL_CONSENT,
+                          _smpflow.AWAITING_SECRET):
+            self.add_message(peer, colorize(
+                "🔐 Already asking you for the passphrase — answer that "
+                "prompt.", "yellow"), self._panel_sec(peer))
+            return
+
+        stored = ""
+        try:
+            stored = self.session_manager.smp_storage.get_secret(peer) or ""
+        except Exception:
+            stored = ""
+        if stored:
+            self.add_message(peer, colorize(
+                "🔐 Stored passphrase found for %s — verifying…" % peer,
+                "cyan"), self._panel_sec(peer))
+            try:
+                flow.running()
+            except _smpflow.SmpFlowError:
+                pass
+            self._start_smp(peer, stored)
+            return
+
+        try:
+            flow.local_secret_needed()
+        except _smpflow.SmpFlowError as e:
+            self.add_message(peer, colorize("🔐 %s" % e, "yellow"),
+                             self._panel_sec(peer))
+            return
+        sec = self._panel_sec(peer)
+        self.add_message(peer, colorize(
+            "🔐 Verification needs the passphrase you agreed with this "
+            "contact, out of band.", "cyan"), sec)
+        self.add_message(peer, colorize(
+            "🔐 Both sides must enter the SAME text (%d-%d characters)."
+            % (SMP_MIN_LEN, SMP_MAX_LEN), "dim"), sec)
+        self._arm_secret_prompt(peer, purpose="start")
+
+    def _announce_secret_required(self, peer: str) -> None:
+        """A peer asked to verify and we hold no passphrase for them.
+
+        Prints and moves to AWAITING_LOCAL_CONSENT. It arms NOTHING that
+        could consume a line as a secret: if the user types an ordinary
+        message here it is sent as an ordinary message.
+        """
+        flow = self._smp_flows.get(peer)
+        try:
+            state = flow.remote_smp1_arrived()
+        except _smpflow.SmpFlowError:
+            return
+        if state != _smpflow.AWAITING_LOCAL_CONSENT:
+            return
+        if self._smp_consent_shown == peer:
+            return          # a resent SMP1 must not print a second prompt
+        self._smp_consent_shown = peer
+        sec = self._panel_sec(peer)
+        self.add_message(peer, colorize("─" * 50, "dim"), sec)
+        self.add_message(peer, colorize(
+            "🔐 SMP VERIFICATION REQUEST", "blue"), sec)
+        self.add_message(peer, colorize(
+            "%s wants to verify this session using a passphrase you agreed "
+            "in advance." % _sanitise(peer, 64), "cyan"), sec)
+        self.add_message(peer, colorize(
+            "Press  y  to enter that passphrase, or  n  to decline.",
+            "yellow"), sec)
+        self.add_message(peer, colorize(
+            "Nothing you type now is sent to them, and an ordinary message "
+            "here is just an ordinary message.", "dim"), sec)
+        self.add_message(peer, colorize("─" * 50, "dim"), sec)
+        self._set_pending("smp_consent", peer)
+
+    def _handle_smp_consent(self, peer: str, answer: str) -> None:
+        """The local y/n. The only door into the passphrase prompt for a
+        request a peer made."""
+        flow = self._smp_flows.get(peer)
+        agreed = answer.strip().lower() in ("y", "yes")
+        try:
+            flow.local_consent(agreed)
+        except _smpflow.SmpFlowError as e:
+            self.add_message(peer, colorize("🔐 %s" % e, "yellow"),
+                             self._panel_sec(peer))
+            return
+        self._smp_consent_shown = None
+        if not agreed:
+            self._decline_smp_request(peer, "declined")
+            return
+        self.add_message(peer, colorize(
+            "🔐 Enter the passphrase you agreed with this contact.", "cyan"),
+            self._panel_sec(peer))
+        self._arm_secret_prompt(peer, purpose="resume")
+
+    def _decline_smp_request(self, peer: str, why: str) -> None:
+        """Tell the peer, drop the held SMP1, keep nothing."""
+        flow = self._smp_flows.get(peer)
+        try:
+            flow.reset()
+        except _smpflow.SmpFlowError:
+            pass
+        self._smp_consent_shown = None
+        abort = None
+        try:
+            abort = self.session_manager.decline_held_smp1(peer)
+        except Exception:
+            self.debug("decline_held_smp1 failed")
+        if abort:
+            try:
+                self.send_otr_message(peer, abort)
+            except Exception:
+                self.debug("could not send SMP abort")
+        self.add_message(peer, colorize(
+            "🔐 Verification declined." if why == "declined"
+            else "🔐 Verification request expired.", "yellow"),
+            self._panel_sec(peer))
+
+    def _resume_smp(self, peer: str) -> None:
+        """Answer the SMP1 the engine parked, without a second round trip."""
+        try:
+            smp2 = self.session_manager.resume_held_smp1(peer)
+        except Exception as exc:
+            self.add_message(peer, colorize(
+                "🔐 Could not answer the held request: %s"
+                % type(exc).__name__, "red"), self._panel_sec(peer))
+            return
+        if not smp2:
+            self.add_message(peer, colorize(
+                "🔐 The held request is gone — ask them to run /smp again.",
+                "yellow"), self._panel_sec(peer))
+            return
+        try:
+            self._smp_flows.get(peer).running()
+        except _smpflow.SmpFlowError:
+            pass
+        self.send_otr_message(peer, smp2)
+
+    def _check_smp_secret_required(self, peer: str) -> None:
+        """Show the consent prompt if the engine is holding a peer's SMP1."""
+        try:
+            if not self.session_manager.smp_secret_required(peer):
+                return
+        except Exception:
+            return
+        self._announce_secret_required(peer)
 
     def _handle_trust_response(self, peer: str, response: str, action: dict):
         """Process y/n trust response from user."""
@@ -14008,6 +14386,22 @@ class EnhancedOTRv4IRCClient(OTRv4IRCClient):
             f"{colorize ('Commands:','cyan')} "
             f"/fingerprint  /smp <secret>  /smp start  /trust <nick>  /secure",
         )
+
+    def _handle_data_message(self, sender: str, payload: str):
+        """Inbound OTR data message, plus the held-SMP1 check.
+
+        The engine parks a peer's SMP1 when no passphrase is stored; nothing
+        was asking it whether it had. Checked here, after the message has
+        been processed, because that is the point at which the park has
+        happened. Idempotent -- `_announce_secret_required` refuses to print
+        a second prompt for the same peer.
+        """
+        result = OTRv4IRCClient._handle_data_message(self, sender, payload)
+        try:
+            self._check_smp_secret_required(sender)
+        except Exception:
+            self.debug("held-SMP1 check failed")
+        return result
 
     def process_smp_message(self, sender: str, data: bytes):
         """DEAD CODE - disabled to prevent duplicate SMP dispatch.
@@ -14345,6 +14739,14 @@ class EnhancedOTRv4IRCClient(OTRv4IRCClient):
         If a pending action is waiting, consume it.
         Otherwise encrypt+send normally.
         """
+        # FIRST, and before any command parsing: a passphrase the user was
+        # asked for locally. It goes first because the passphrase is
+        # arbitrary text -- one that happens to begin with `/` is still the
+        # passphrase, not a command. `_secret_request` is set only from a
+        # typed /smp or a typed y, never by anything a peer sends (INV-06).
+        if self._consume_secret_line(msg):
+            return
+
         if self._dispatch_pending_response(msg):
             return
 

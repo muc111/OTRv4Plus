@@ -318,6 +318,55 @@ every received message to the session log in plaintext — which is why a test
 derives the glyphs from the prefixes themselves and asserts each is registered,
 rather than listing them again by hand.
 
+## The IRC client's SMP flow, brought level with XMPP's (v10.23.0)
+
+Three gaps, all visible on a handset, all closed by reusing the XMPP client's
+machinery rather than writing a second copy of it.
+
+**A y/n trust prompt on first contact.** `Trust this fingerprint? Type y or n`
+asked a question nobody can answer — on first contact there is nothing to
+compare against — and it was *armed by a remote DAKE*, which is the shape
+INV-06 exists to keep out of the client. First contact now pins silently and
+says so, matching XMPP. A **changed** fingerprint is reported loudly, left
+untrusted, and never auto-accepted (INV-11); clearing it stays a deliberate
+`/trust-reset`. Nothing is written to disk — INV-10 still holds, so the pin
+lives for the session, which is what an ephemeral IRC identity should have.
+
+**`/smp` did not ask for anything.** Bare `/smp` printed *"Type
+`/smp <passphrase>` (it will be visible on this terminal)"*, asking the user to
+put a shared secret into their own scrollback — while `_finish_trust` had been
+promising *"it will ask for the passphrase"* since v10.15, and
+`set_input_mask()` had existed the whole time **with no caller**. It now arms a
+masked read, and the mask is lifted on every exit: accepted, cancelled,
+too short, too long, and storage failure.
+
+**The responder was never asked.** A peer's SMP1 arriving with no stored
+passphrase was parked by the engine and nothing surfaced it, so verification
+could only be driven from one side. The consent prompt is now shown, `y` opens
+the passphrase read, and the answer *resumes the held SMP1* rather than
+restarting — no second round trip over I2P.
+
+**Why it reuses `otrv4plus_smpflow.SmpFlow`.** INV-06 is the property that a
+remote peer may make the client ASK for the passphrase but never make the next
+typed line BECOME one. In `SmpFlow` that is structural: there is no edge from a
+remote transition into `AWAITING_SECRET`. A second implementation in the IRC
+client would have been a second chance to get it wrong.
+
+**INV-06 now covers both clients.** `SMP_UX_AUDIT.md` §7 item 4 asked for the
+remotely-armed capture to be removed from `otrv4+.py` *and* for INV-06's test
+to be extended to cover it. The removal shipped in v10.15; the coverage did
+not, and `otrv4plus_xmpp.py` alone was being walked — which is how the IRC
+client could grow a masked read with nobody checking what could reach it.
+`tests/test_irc_guided_smp.py` now walks `otrv4+.py`'s inbound call graph and
+asserts no remote entry point reaches `_arm_secret_prompt`, and that the two
+local ones do.
+
+**The passphrase length bounds moved into the engine.** They lived in
+`otrv4plus_xmpp.py` only, so the IRC client enforced none at all and took
+whatever was typed. Both clients now read `SMP_MIN_LEN`/`SMP_MAX_LEN` from
+`otrv4+.py`, because two clients disagreeing about how long a shared secret may
+be is a way for one side to store something the other refuses.
+
 ## Known issues and limitations
 
 1. **Rust crypto crates are not audited.** `ed448-goldilocks-plus` 0.16 is the only viable pure-Rust Ed448, and `x448` 0.6 the X448, but neither has had a formal review. `pqcrypto-mlkem 0.1.1` (FIPS 203 ML-KEM-1024) and `pqcrypto-mldsa 0.1.2` (ML-DSA-87) are PQClean-derived reference implementations.

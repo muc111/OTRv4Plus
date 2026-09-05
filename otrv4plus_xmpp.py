@@ -2,7 +2,7 @@
 """
 OTRv4+ XMPP - full OTR + SMP over XMPP, transported over I2P SAM
 ================================================================
-Version: 10.22.0
+Version: 10.23.0
 
 
 Post-quantum OTRv4+ end-to-end encryption over XMPP, reusing the IRC client's
@@ -237,7 +237,7 @@ def voice_available() -> "tuple[bool, str]":
             "no audio backend: libaaudio.so unavailable and parec/pacat "
             "missing  (run /audioprobe for details)")
 
-XMPP_VERSION = "10.22.0"
+XMPP_VERSION = "10.23.0"
 
 # ---------------------------------------------------------------------------
 # XMPP-private state directory
@@ -625,8 +625,12 @@ OTR_PREFIX = "?OTRv4 "
 OTR_PREFIX_B = b"?OTRv4 "
 
 # SMP passphrase length bounds enforced before passing to the Rust engine.
-SMP_MIN_LEN = 8
-SMP_MAX_LEN = 512
+# Defined in the engine (otrv4+.py) since v10.23.0 so both clients agree;
+# re-exported here because this module's own code and its tests refer to
+# them by these names. getattr with the old literals as the fallback keeps
+# this working against an engine that predates the move.
+SMP_MIN_LEN = getattr(_otr, "SMP_MIN_LEN", 8)
+SMP_MAX_LEN = getattr(_otr, "SMP_MAX_LEN", 512)
 
 # Rate limiting: max inbound messages per peer per window.
 _RATE_MAX = 20

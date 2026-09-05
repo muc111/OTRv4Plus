@@ -4,6 +4,85 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## v10.23.0 — the IRC client finally has the guided SMP flow
+
+*2026-09-05.  `VERSION → 10.23.0`.  `otrv4_core` unchanged at 0.10.28.*
+
+From a handset screenshot of an IRC session with `GlacialWolf`: a y/n trust
+prompt on first contact, then *"Type `/smp` when you are ready to verify. It
+will ask for the passphrase"* — followed, when you actually type `/smp`, by
+*"Type `/smp <passphrase>` (it will be visible on this terminal)"*.
+
+The client was promising a prompt it did not have. `set_input_mask()` had
+existed since v10.15 with **no caller anywhere in the file**.
+
+### Three gaps, all closed by reusing the XMPP machinery
+
+**First contact pins instead of asking.** `Trust this fingerprint? Type y or n`
+asked a question nobody can answer — there is nothing to compare against on
+first contact — and it was *armed by a remote DAKE*, which is the shape INV-06
+exists to keep out of the client. A **changed** fingerprint is now reported
+loudly, left untrusted and never auto-accepted (INV-11); clearing it stays a
+deliberate `/trust-reset`. INV-10 is untouched: nothing is written to disk, so
+the pin lives for the session.
+
+**Bare `/smp` asks, hidden.** Masked read, and the mask is lifted on every
+exit — accepted, cancelled, too short, too long, storage failure. Four
+parametrised cases plus a monkeypatched failure, because a mask left on hides
+the user's ordinary chat and `_secret_request` left set makes their next line a
+passphrase.
+
+**The responder gets asked.** A peer's SMP1 with no stored passphrase was
+parked by the engine and nothing surfaced it, so verification could only ever
+be driven from one side. The consent prompt now appears, `y` opens the
+passphrase read, and the answer **resumes the held SMP1** rather than
+restarting — no second round trip over I2P.
+
+### Why it imports `SmpFlow` instead of reimplementing it
+
+INV-06 is the property that a remote peer may make the client ASK for the
+passphrase but never make the next typed line BECOME one. In `SmpFlow` that is
+structural — there is no edge from a remote transition into `AWAITING_SECRET`.
+A second copy of the logic in the IRC client would have been a second chance to
+get it wrong.
+
+### The coverage that was asked for in the audit and never shipped
+
+`SMP_UX_AUDIT.md` §7 item 4: *"IRC. Remove the remotely-armed generic capture
+and extend INV-06's test to cover `otrv4+.py`."* The removal shipped in v10.15.
+The coverage did not — `test_no_remote_input_capture.py` walks
+`otrv4plus_xmpp.py` only, which is how this client could grow a masked read
+with nobody checking what could reach it.
+
+`tests/test_irc_guided_smp.py` now walks `otrv4+.py`'s inbound call graph from
+eight entry points and asserts none reaches `_arm_secret_prompt` — and that the
+two local paths do, because a reachability check that passes because nothing
+reaches the armer at all is worthless. INV-06 lists both clients.
+
+### Also
+
+The passphrase length bounds lived in `otrv4plus_xmpp.py` only, so the IRC
+client enforced **none** and took whatever was typed. `SMP_MIN_LEN` and
+`SMP_MAX_LEN` are now defined in the engine and re-exported by the XMPP client,
+because two clients disagreeing about how long a shared secret may be is a way
+for one side to store something the other refuses.
+
+### Verification
+
+Python suite **2817 passed, 0 failed**. 53 new tests. Seven mutations — consent
+prompt arming the read directly, mask never lifted, no length bounds, a changed
+fingerprint auto-accepted, the old visible-typing advice returning, an ordinary
+message at the consent prompt swallowed as consent, and the prompt not re-armed
+after a non-answer — all seven killed. The sixth survived the first pass: I had
+no test that an ordinary message at the consent prompt stays ordinary, which is
+precisely what that prompt promises.
+
+**Not tested between two handsets.** The flow was driven end to end against a
+stub — initiator, responder, decline, cancel — but a real two-device run is
+what would show whether the masked read behaves in Termux's raw mode.
+
+---
+
 ## v10.22.0 — the chat prefix now says what protected the message
 
 *2026-09-05.  `VERSION → 10.22.0`.  Display only; no protocol or wire change.*
