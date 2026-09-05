@@ -128,11 +128,15 @@ pub fn seal_identity<'py>(
 
     let mut nonce_bytes = [0u8; NONCE_LEN];
     OsRng.fill_bytes(&mut nonce_bytes);
-    let nonce = Nonce::from_slice(&nonce_bytes);
+    // `Nonce::from`, not `from_slice`: the latter is deprecated in the
+    // generic-array the tree now resolves, and it panics on a wrong length
+    // rather than failing to compile.  Here the array is already the right
+    // size by its type, so the conversion is checked once, by the compiler.
+    let nonce = Nonce::from(nonce_bytes);
 
     let aad = build_aad(IDENTITY_RECORD_VERSION, key_id);
     let ciphertext = cipher
-        .encrypt(nonce, Payload { msg: plaintext.as_slice(), aad: &aad })
+        .encrypt(&nonce, Payload { msg: plaintext.as_slice(), aad: &aad })
         .map_err(|_| PyValueError::new_err("identity sealing failed"))?;
 
     let mut record = Vec::with_capacity(1 + NONCE_LEN + ciphertext.len());
@@ -171,13 +175,20 @@ pub fn unseal_identity(
         return Err(reject());
     }
 
-    let nonce = Nonce::from_slice(&blob[1..1 + NONCE_LEN]);
+    // The length was checked above, so this cannot fail -- but `from_slice`
+    // would have PANICKED if it ever did, on a blob that is attacker-supplied
+    // in every deployment that syncs its identity file.  `try_into` turns
+    // that into a refusal.
+    let nonce_bytes: [u8; NONCE_LEN] = blob[1..1 + NONCE_LEN]
+        .try_into()
+        .map_err(|_| reject())?;
+    let nonce = Nonce::from(nonce_bytes);
     let ciphertext = &blob[1 + NONCE_LEN..];
     let aad = build_aad(version, key_id);
 
     let plaintext = Zeroizing::new(
         cipher
-            .decrypt(nonce, Payload { msg: ciphertext, aad: &aad })
+            .decrypt(&nonce, Payload { msg: ciphertext, aad: &aad })
             .map_err(|_| reject())?,
     );
 
@@ -215,11 +226,15 @@ pub fn create_sealed_identity<'py>(
 
     let mut nonce_bytes = [0u8; NONCE_LEN];
     OsRng.fill_bytes(&mut nonce_bytes);
-    let nonce = Nonce::from_slice(&nonce_bytes);
+    // `Nonce::from`, not `from_slice`: the latter is deprecated in the
+    // generic-array the tree now resolves, and it panics on a wrong length
+    // rather than failing to compile.  Here the array is already the right
+    // size by its type, so the conversion is checked once, by the compiler.
+    let nonce = Nonce::from(nonce_bytes);
 
     let aad = build_aad(IDENTITY_RECORD_VERSION, key_id);
     let ciphertext = cipher
-        .encrypt(nonce, Payload { msg: plaintext.as_slice(), aad: &aad })
+        .encrypt(&nonce, Payload { msg: plaintext.as_slice(), aad: &aad })
         .map_err(|_| PyValueError::new_err("identity sealing failed"))?;
 
     let mut record = Vec::with_capacity(1 + NONCE_LEN + ciphertext.len());

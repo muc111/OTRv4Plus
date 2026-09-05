@@ -148,18 +148,27 @@ pqcrypto-mlkem  = { version = "0.1.1", optional = true, default-features = false
 pqcrypto-mldsa  = { version = "0.1.2", optional = true, default-features = false, features = ["std"] }
 pqcrypto-traits = { version = "0.3",   optional = true }
 
-ed448-goldilocks-plus = {
-    version          = "0.16",
-    optional         = true,
-    default-features = false,
-    features         = ["alloc", "signing", "pkcs8"],
-}
 # v10.13.0: Argon2id for the SMP passphrase stretch (SMP wire version 0x03).
 # default-features = false drops the `password-hash`/`rand` surface -- we only
 # use the low-level Argon2::hash_password_into, and the PHC string format has
 # no place in a wire protocol where both sides must derive identical bytes.
 # `alloc` is what actually supplies the memory blocks; `zeroize` wipes them.
 argon2        = { version = "0.5",   optional = true, default-features = false, features = ["alloc", "zeroize"] }
+
+# A dedicated table, not a multi-line inline table.  TOML 1.0 forbids newlines
+# inside `{ }`; cargo's own parser accepts them as an extension, so `cargo
+# build` never complained -- but a TOML-1.0-conformant reader rejects the file
+# outright, and maturin <= 1.8 died with "TOML parse error: invalid inline
+# table" before compiling anything. This form is valid everywhere and keeps
+# the one-field-per-line layout the entry had.
+#
+# It sits after [dependencies] rather than inside it because a second
+# [dependencies] header would be a duplicate key.
+[dependencies.ed448-goldilocks-plus]
+version          = "0.16"
+optional         = true
+default-features = false
+features         = ["alloc", "signing", "pkcs8"]
 
 [profile.release]
 opt-level     = 3

@@ -7,7 +7,6 @@
 /// only needs the resulting shared secrets.  This avoids linking
 /// OpenSSL into the Rust build and keeps the DH operations in the
 /// existing audited Python/C code path.
-
 use std::collections::{BTreeMap, HashSet, VecDeque};
 use aes_gcm::{Aes256Gcm, KeyInit, Nonce};
 use aes_gcm::aead::Aead;
@@ -476,6 +475,15 @@ impl DoubleRatchet {
     }
 
     // ── Decrypt with DH ratchet ─────────────────────────────────
+    // Nine arguments, and clippy is right that seven is usually the limit.
+    // They are not incidental here: each one is a distinct field of the
+    // OTRv4 wire message this function constructs, and the alternative --
+    // bundling them into a struct -- moves the compiler's arity check from
+    // the call site into a struct literal, where a transposed pair of
+    // same-typed byte slices stops being a type error. For a function whose
+    // whole job is laying out an authenticated message in a fixed order,
+    // that trade is the wrong way round.
+    #[allow(clippy::too_many_arguments)]
     pub fn decrypt_new_dh(
         &mut self, header_bytes: &[u8], ciphertext: &[u8],
         nonce: &[u8; 12], tag: &[u8; 16],
@@ -754,7 +762,7 @@ impl RustDoubleRatchet {
 
         // Get a single &mut Dakeresult from the PyRefMut so all field
         // accesses below go through one well-typed borrow.
-        let dr: &mut Dakeresult = &mut *bound;
+        let dr: &mut Dakeresult = &mut bound;
 
         let root_key    = take_aggressive(&mut dr.root_key,    "root_key",    32)?;
         let chain_key_a = take_aggressive(&mut dr.chain_key_a, "chain_key_a", 32)?;
@@ -891,6 +899,15 @@ impl RustDoubleRatchet {
         Ok(d)
     }
 
+    // Nine arguments, and clippy is right that seven is usually the limit.
+    // They are not incidental here: each one is a distinct field of the
+    // OTRv4 wire message this function constructs, and the alternative --
+    // bundling them into a struct -- moves the compiler's arity check from
+    // the call site into a struct literal, where a transposed pair of
+    // same-typed byte slices stops being a type error. For a function whose
+    // whole job is laying out an authenticated message in a fixed order,
+    // that trade is the wrong way round.
+    #[allow(clippy::too_many_arguments)]
     fn decrypt_new_dh<'py>(&mut self, py: Python<'py>,
         header: &[u8], ciphertext: &[u8], nonce: &[u8], tag: &[u8],
         dh_secret_recv: &[u8], dh_secret_send: &[u8], new_local_pub: &[u8],

@@ -323,10 +323,13 @@ impl PyVoiceCipher {
 
         let cipher = chain.cipher().map_err(PyValueError::new_err)?;
         let nonce_bytes = media_nonce(self.epoch, counter);
-        let nonce = Nonce::from_slice(&nonce_bytes);
+        // `media_nonce` returns [u8; NONCE_LEN], so the size is already a
+        // type-level fact; `Nonce::from` keeps it that way.  `from_slice` is
+        // deprecated and would panic on a length the type rules out.
+        let nonce = Nonce::from(nonce_bytes);
 
         let sealed = cipher
-            .encrypt(nonce, Payload { msg: plaintext, aad })
+            .encrypt(&nonce, Payload { msg: plaintext, aad })
             .map_err(|_| PyRuntimeError::new_err("AES-256-GCM encryption failed"))?;
 
         self.send_counter += 1;
@@ -349,7 +352,10 @@ impl PyVoiceCipher {
         }
         let target = counter / RATCHET_INTERVAL;
         let nonce_bytes = media_nonce(self.epoch, counter);
-        let nonce = Nonce::from_slice(&nonce_bytes);
+        // `media_nonce` returns [u8; NONCE_LEN], so the size is already a
+        // type-level fact; `Nonce::from` keeps it that way.  `from_slice` is
+        // deprecated and would panic on a length the type rules out.
+        let nonce = Nonce::from(nonce_bytes);
 
         let current_sub = self.recv.as_ref()
             .ok_or_else(|| PyRuntimeError::new_err("receive chain gone"))?
@@ -361,7 +367,7 @@ impl PyVoiceCipher {
             if let Some(prev) = self.recv_prev.as_ref() {
                 let cipher = prev.cipher().map_err(PyValueError::new_err)?;
                 return cipher
-                    .decrypt(nonce, Payload { msg: sealed, aad })
+                    .decrypt(&nonce, Payload { msg: sealed, aad })
                     .map(|pt| PyBytes::new(py, &pt))
                     .map_err(|_| PyValueError::new_err("frame failed authentication"));
             }
@@ -390,15 +396,12 @@ impl PyVoiceCipher {
             let probe = Aes256Gcm::new_from_slice(probe_key.expose_slice())
                 .map_err(|_| PyValueError::new_err("AES-256-GCM rejected a key"))?;
             let plaintext = probe
-                .decrypt(nonce, Payload { msg: sealed, aad })
+                .decrypt(&nonce, Payload { msg: sealed, aad })
                 .map_err(|_| PyValueError::new_err("frame failed authentication"))?;
 
             // Authenticated: commit the advance, retaining the sub-epoch we
             // are leaving so reordered frames still open.
-            let old = std::mem::replace(
-                &mut self.recv,
-                Some(Chain { key: probe_key, sub: target }),
-            );
+            let old = self.recv.replace(Chain { key: probe_key, sub: target });
             self.recv_prev = old;
             self.ratchet_steps += steps;
             return Ok(PyBytes::new(py, &plaintext));
@@ -408,7 +411,7 @@ impl PyVoiceCipher {
             .ok_or_else(|| PyRuntimeError::new_err("receive chain gone"))?;
         let cipher = chain.cipher().map_err(PyValueError::new_err)?;
         cipher
-            .decrypt(nonce, Payload { msg: sealed, aad })
+            .decrypt(&nonce, Payload { msg: sealed, aad })
             .map(|pt| PyBytes::new(py, &pt))
             .map_err(|_| PyValueError::new_err("frame failed authentication"))
     }

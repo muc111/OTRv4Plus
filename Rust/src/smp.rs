@@ -690,7 +690,7 @@ impl SmpState {
 
     fn zkp_challenge(version: u8, commitment: &[u8], statement: &[u8]) -> num_bigint::BigUint {
         let mut h = Sha3_512::new();
-        Digest::update(&mut h, &[version]);
+        Digest::update(&mut h, [version]);
         Digest::update(&mut h, commitment);
         Digest::update(&mut h, statement);
         num_bigint::BigUint::from_bytes_be(&h.finalize()) % &*SMP_ORDER
@@ -747,7 +747,7 @@ impl SmpState {
 
     fn random_exponent() -> SecretVec {
         use num_bigint::RandBigInt;
-        let v = OsRng.gen_biguint_range(&num_bigint::BigUint::from(2u8), &*SMP_ORDER);
+        let v = OsRng.gen_biguint_range(&num_bigint::BigUint::from(2u8), &SMP_ORDER);
         SecretVec::from_slice(&Self::fixed_bytes(&v, SMP_SCALAR_BYTES))
     }
 
@@ -896,7 +896,7 @@ impl SmpState {
             // this, (session_id="ab", fp="c") and (session_id="a", fp="bc")
             // would hash to the same salt.
             for field in [session_id, first_fp, second_fp] {
-                Digest::update(&mut h, &(field.len() as u64).to_be_bytes());
+                Digest::update(&mut h, (field.len() as u64).to_be_bytes());
                 Digest::update(&mut h, field);
             }
             let out = h.finalize();

@@ -7,21 +7,21 @@
 //! PQClean reference implementation underneath):
 //!
 //! - `mldsa87_keygen() -> (bytes, bytearray)`
-//!     Generates a fresh ML-DSA-87 keypair.  Returns `(pub_bytes, priv_bytearray)`.
-//!     Public bytes as immutable `bytes`; private bytes as mutable `bytearray`
-//!     so the caller can `_ossl.cleanse(priv)` it.  Same shape as the C
-//!     extension's `mldsa87_keygen()`.
+//!   Generates a fresh ML-DSA-87 keypair.  Returns `(pub_bytes, priv_bytearray)`.
+//!   Public bytes as immutable `bytes`; private bytes as mutable `bytearray`
+//!   so the caller can `_ossl.cleanse(priv)` it.  Same shape as the C
+//!   extension's `mldsa87_keygen()`.
 //!
 //! - `mldsa87_sign(priv: bytes, msg: bytes) -> bytes`
-//!     Signs `msg` with the ML-DSA-87 secret key.  Returns the 4627-byte
-//!     detached signature (FIPS 204 §5.4).  Wire-identical to the C
-//!     extension output.  Raises `ValueError` on invalid private key bytes.
+//!   Signs `msg` with the ML-DSA-87 secret key.  Returns the 4627-byte
+//!   detached signature (FIPS 204 §5.4).  Wire-identical to the C
+//!   extension output.  Raises `ValueError` on invalid private key bytes.
 //!
 //! - `mldsa87_verify(pub: bytes, msg: bytes, sig: bytes) -> bool`
-//!     Verifies a detached signature.  Returns `True` on success, `False`
-//!     on any failure (parse error, signature mismatch).  Never raises;
-//!     matches the C extension's tolerant verify behaviour so the
-//!     Python `MLDSA87Auth.verify()` classmethod logic stays unchanged.
+//!   Verifies a detached signature.  Returns `True` on success, `False`
+//!   on any failure (parse error, signature mismatch).  Never raises;
+//!   matches the C extension's tolerant verify behaviour so the
+//!   Python `MLDSA87Auth.verify()` classmethod logic stays unchanged.
 //!
 //! Byte sizes (FIPS 204 §4 - ML-DSA-87 parameter set):
 //!   Public key: 2592 bytes  (PQCLEAN_MLDSA87_CLEAN_CRYPTO_PUBLICKEYBYTES)

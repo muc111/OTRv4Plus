@@ -227,6 +227,14 @@ fn derive_ephemeral_scalar(seed: &[u8], msg: &[u8]) -> Scalar {
 /// ```text
 ///     form is hashed directly; only a2 is used in scalar multiplication)
 /// ```
+// The `0*57..1*57` below reads as an erasing_op / identity_op to clippy, and
+// arithmetically it is right: `0*57` is 0 and `1*57` is 57. It is written that
+// way on purpose. The signature is four 57-byte scalars in a fixed order, and
+// `n*57..(n+1)*57` on every line makes the layout checkable against the spec at
+// a glance. Collapsing the first to `..57` and the second to `57..114` breaks
+// the symmetry that makes a field-order mistake visible, which for a signature
+// encoding is the property worth protecting.
+#[allow(clippy::erasing_op, clippy::identity_op)]
 pub fn ring_sign_bytes(
     seed: &[u8],
     a1:   &[u8],
@@ -297,6 +305,14 @@ pub fn ring_sign_bytes(
 /// ring signature verification is not security-sensitive to timing
 /// against an attacker who controls the signature (they already know
 /// the signature bytes).
+// The `0*57..1*57` below reads as an erasing_op / identity_op to clippy, and
+// arithmetically it is right: `0*57` is 0 and `1*57` is 57. It is written that
+// way on purpose. The signature is four 57-byte scalars in a fixed order, and
+// `n*57..(n+1)*57` on every line makes the layout checkable against the spec at
+// a glance. Collapsing the first to `..57` and the second to `57..114` breaks
+// the symmetry that makes a field-order mistake visible, which for a signature
+// encoding is the property worth protecting.
+#[allow(clippy::erasing_op, clippy::identity_op)]
 pub fn ring_verify_bytes(
     a1:  &[u8],
     a2:  &[u8],

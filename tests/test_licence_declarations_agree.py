@@ -321,3 +321,69 @@ class TestTheNoticeGeneratorItself:
         shipped = gen.shipped_packages(meta)
         assert 0 < len(shipped) < len(meta["packages"]) - 1, (
             "the walk returned everything, so it is not filtering at all")
+
+
+class TestTheManifestsParseUnderAStrictTomlParser:
+    """`cargo build` is not a TOML conformance test.
+
+    `Cargo.toml` carried a MULTI-LINE inline table:
+
+        ed448-goldilocks-plus = {
+            version = "0.16",
+            ...
+        }
+
+    TOML 1.0 forbids newlines inside `{ }`. Cargo's own parser accepts them as
+    an extension, so `cargo build` was green for as long as the entry existed
+    -- while `maturin build` died before compiling anything with "TOML parse
+    error: invalid inline table". Anything that reads the manifest with a
+    conformant parser (packaging tools, licence scanners, SBOM generators,
+    this test) rejected the file outright.
+    """
+
+    @pytest.mark.parametrize("manifest", ["Rust/Cargo.toml",
+                                          "Rust/pyproject.toml"])
+    def test_it_parses_under_tomllib(self, manifest):
+        """tomllib is TOML 1.0 only, which is the point."""
+        import tomllib
+        path = os.path.join(ROOT, *manifest.split("/"))
+        with open(path, "rb") as fh:
+            tomllib.load(fh)
+
+    def test_no_inline_table_spans_lines(self):
+        """Checked directly, so the reason survives even if a future tomllib
+        relaxes to TOML 1.1 and stops objecting."""
+        offenders = []
+        for manifest in ("Rust/Cargo.toml", "Rust/pyproject.toml",
+                         "Rust/audit.toml"):
+            path = os.path.join(ROOT, *manifest.split("/"))
+            if not os.path.exists(path):
+                continue
+            with open(path, encoding="utf-8") as fh:
+                for n, line in enumerate(fh, 1):
+                    code = line.split("#", 1)[0].rstrip()
+                    if "=" in code and code.count("{") > code.count("}"):
+                        offenders.append("%s:%d" % (manifest, n))
+        assert offenders == [], (
+            "multi-line inline table (invalid TOML 1.0; breaks maturin and "
+            "every conformant reader): %s" % offenders)
+
+    def test_the_dependency_survived_the_rewrite(self):
+        """The fix moved an entry between TOML forms. The thing that must not
+        change is what it resolves to."""
+        import tomllib
+        with open(os.path.join(ROOT, "Rust", "Cargo.toml"), "rb") as fh:
+            cargo = tomllib.load(fh)
+        ed448 = cargo["dependencies"]["ed448-goldilocks-plus"]
+        assert ed448["version"] == "0.16"
+        assert ed448["optional"] is True
+        assert ed448["default-features"] is False
+        assert ed448["features"] == ["alloc", "signing", "pkcs8"]
+
+    def test_the_wheel_metadata_still_carries_the_licence(self):
+        """The manifest edit sits beside the licence declaration; a rewrite
+        that dropped it would be silent."""
+        import tomllib
+        with open(os.path.join(ROOT, "Rust", "pyproject.toml"), "rb") as fh:
+            pyproject = tomllib.load(fh)
+        assert pyproject["project"]["license"] == SPDX

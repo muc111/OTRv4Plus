@@ -1797,7 +1797,7 @@ class OTRv4DataMessage:
             raise ValueError(f"Failed to decode message: {e }")
 
 
-VERSION = "OTRv4+ 10.17.2"
+VERSION = "OTRv4+ 10.18.2"
 
 # --- OTRv4+ client identification over IRC -------------------------------
 #
@@ -9172,6 +9172,55 @@ class EnhancedSessionManager:
 
             self.tracer.trace(peer, "TERMINATE", "ACTIVE", "TERMINATED", reason)
 
+            return True
+
+    def end_session(self, peer: str, reason: str = "session ended") -> bool:
+        """Forget everything about this peer's session so a fresh DAKE can run.
+
+        This method did not exist until v10.18.1, and three call sites in the
+        XMPP client had been calling it since they were written -- clearing an
+        offline peer's session, yielding the initiator role on DAKE glare, and
+        `/otr` force-resetting a stuck handshake. All three raised
+        AttributeError into an `except` that printed it and carried on, so
+        none of them ever tore anything down. "`/otr` can always unstick a
+        hung handshake" was simply untrue, and stayed untrue until a device
+        got wedged and said so.
+
+        `terminate_session` is NOT the same thing and cannot stand in for it:
+        it terminates the session object but leaves the entry in
+        `self.sessions`, so the next `get_or_create_session` hands back the
+        dead one and the handshake stays stuck.
+
+        **No DISCONNECTED TLV is sent.** This is a local teardown, and all
+        three callers want exactly that. Announcing it would be wrong in two
+        of the three cases: a stuck handshake has no encrypted session to send
+        through, and on glare we are about to answer the peer's DAKE1 as
+        responder -- telling them we disconnected first is the opposite of
+        what is happening. `SessionManager.end_session` does emit one, because
+        it is the graceful-goodbye path; this is the reset path.
+
+        The trust database is untouched. A pinned fingerprint is long-term
+        identity, and forgetting it here would turn every reset into a fresh
+        trust-on-first-use decision -- which is the failure mode TOFU exists
+        to make visible.
+
+        Returns True if there was something to end.
+        """
+        with self.lock:
+            session = self.sessions.pop(peer, None)
+            engine = self.dake_engines.pop(peer, None)
+            if session is None and engine is None:
+                return False
+            if session is not None:
+                try:
+                    session.terminate(reason)
+                except Exception as exc:            # pragma: no cover
+                    # A half-built session from an interrupted DAKE may not
+                    # terminate cleanly. It is already out of the table, which
+                    # is what the caller needed; failing here would put us
+                    # back to the reset not working.
+                    self.logger.debug("end_session: terminate raised: %s" % exc)
+            self.tracer.trace(peer, "END_SESSION", "ACTIVE", "ENDED", reason)
             return True
 
     def clear_all_sessions(self, reason: str = "cleanup"):

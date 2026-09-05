@@ -158,13 +158,30 @@ class TestOnlyDakeOutputIsUnsendable:
         root = pathlib.Path(__file__).resolve().parent.parent / "Rust" / "src"
         if not root.is_dir():
             pytest.skip("Rust sources not present")
+        # Identified by the STRUCT IT MARKS, not by line number. The line
+        # number was pinned here originally and broke the moment a comment
+        # was added higher up the file -- reporting "the set of unsendable
+        # pyclasses changed" when the set had not changed at all. A test that
+        # cries wolf on unrelated edits is one that gets its expectation
+        # bumped without being read, which for this particular check is the
+        # whole value gone.
         found = []
-        for path in root.glob("*.rs"):
-            for number, line in enumerate(
-                    path.read_text(encoding="utf-8").split("\n"), 1):
-                if "unsendable" in line and "pyclass" in line:
-                    found.append("%s:%d" % (path.name, number))
-        assert found == ["dake.rs:183"], (
+        for path in sorted(root.glob("*.rs")):
+            lines = path.read_text(encoding="utf-8").split("\n")
+            for number, line in enumerate(lines, 1):
+                if "unsendable" not in line or "pyclass" not in line:
+                    continue
+                # The declaration it applies to is the next non-attribute,
+                # non-blank line.
+                marked = "?"
+                for follow in lines[number:number + 6]:
+                    stripped = follow.strip()
+                    if not stripped or stripped.startswith(("#[", "//", "///")):
+                        continue
+                    marked = stripped.rstrip(" {")
+                    break
+                found.append("%s: %s" % (path.name, marked))
+        assert found == ["dake.rs: pub struct DakeOutput"], (
             "the set of unsendable pyclasses changed: %r. Each one is pinned "
             "to its creating thread, so any new one has to be checked against "
             "the executor boundary." % found)
