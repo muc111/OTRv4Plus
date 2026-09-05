@@ -237,7 +237,7 @@ def voice_available() -> "tuple[bool, str]":
             "no audio backend: libaaudio.so unavailable and parec/pacat "
             "missing  (run /audioprobe for details)")
 
-XMPP_VERSION = "10.28.1"
+XMPP_VERSION = "10.29.0"
 
 # ---------------------------------------------------------------------------
 # XMPP-private state directory
@@ -682,7 +682,50 @@ def _colour_tag(msg: str) -> str:
         return msg
 
 
+#: Monotonic count of lines this module has printed.
+#:
+#: Used by the plain-mode echo below to tell "nothing has been printed since
+#: the user pressed Enter" from "an inbound message arrived in between". The
+#: first case can safely rewrite the line the terminal echoed; the second
+#: must not, because the line above the cursor is no longer the user's input.
+_PRINT_SEQ = 0
+
+
+def _terminal_cols():
+    """Width of the terminal, or None if stdout is not one we can measure.
+
+    One seam rather than two checks at the call site, because everything that
+    depends on this is destructive: the caller uses it to decide how many
+    rows to move the cursor up, and "not a terminal" and "a terminal of
+    unknown width" have to fail exactly the same way -- by not moving it.
+    """
+    try:
+        if not sys.stdout.isatty():
+            return None
+        cols = os.get_terminal_size().columns
+        return cols if cols and cols > 0 else None
+    except Exception:
+        return None
+
+
+def _raw_write(text):
+    """Write control text straight to the terminal, unlogged.
+
+    Deliberately not `print`: this carries cursor movement, not content.  It
+    must not reach the session transcript, must not advance `_PRINT_SEQ`
+    (which exists to detect that content was printed), and must not be
+    routed to a TUI panel.
+    """
+    try:
+        sys.stdout.write(text)
+        sys.stdout.flush()
+    except Exception:
+        pass
+
+
 def print(*args, **kwargs):  # noqa: A001 (intentional module-scope shadow)
+    global _PRINT_SEQ
+    _PRINT_SEQ += 1
     c = _ACTIVE_TUI_CLIENT
     sep = kwargs.get("sep", " ")
     msg = sep.join(str(a) for a in args)
@@ -1456,6 +1499,9 @@ class OTRv4PlusXMPP(ClientXMPP):
         self._voice_sam_host = "127.0.0.1"
         self._voice_sam_port = 7656
         self._voice_debug = False
+        #: (print-count, text) of the line the terminal echoed in plain mode,
+        #: so our own attributed echo can replace it rather than repeat it.
+        self._plain_echo = None
 
         # Diagnostic verbosity is fixed HERE, before the engine exists. The
         # tracer prints protocol state transitions itself, so constructing it
@@ -4289,6 +4335,7 @@ class OTRv4PlusXMPP(ClientXMPP):
             mine = ""
         mine_s = _sanitise(mine or "me", 128)
         smp_ok = (peer, "SUCCEEDED") in self._smp_reported
+        self._erase_plain_echo(text)
         print(
             _otr_prefix(smp_ok)
             + " "
@@ -4296,6 +4343,67 @@ class OTRv4PlusXMPP(ClientXMPP):
             + " "
             + _sanitise(text)
         )
+
+    #: Longest input we will try to erase, in terminal rows.
+    #:
+    #: A pasted wall of text is not worth unwinding, and getting the row
+    #: count wrong on a very long line scrolls real output off the screen.
+    PLAIN_ECHO_MAX_ROWS = 12
+
+    def _erase_plain_echo(self, text):
+        """Remove the copy of `text` the terminal echoed, if it is still there.
+
+        In plain mode the input loop sits in `sys.stdin.readline()` with the
+        tty in canonical mode, so the terminal has ALREADY drawn what the
+        user typed by the time we are called. v10.27.0 added our own
+        attributed echo without accounting for that, and every sent message
+        appeared twice: once bare, once as `[otr] alice@host: ...`.
+
+        The TUI is unaffected -- it owns the screen in raw mode and echoes
+        the input itself -- so this does nothing there.
+
+        Three conditions, and all of them must hold, because the cost of
+        being wrong is scrolling real output away:
+
+          * the line we are echoing is the one the terminal just echoed;
+          * NOTHING has been printed since (an inbound message arriving
+            between Enter and here means the rows above the cursor are no
+            longer the user's input);
+          * stdout is a terminal whose width we can actually read.
+
+        If any fails, nothing is erased. The message then appears twice,
+        which is the v10.27.0 behaviour: ugly, and strictly better than
+        eating a line of somebody's conversation.
+        """
+        try:
+            if getattr(self, "_tui_enabled", False):
+                return
+            pending = getattr(self, "_plain_echo", None)
+            self._plain_echo = None
+            if not pending:
+                return
+            seq, echoed = pending
+            if echoed != text or seq != _PRINT_SEQ:
+                return
+            cols = _terminal_cols()
+            if cols is None:
+                return
+            # How many rows the terminal used to draw it. A line exactly
+            # `cols` wide occupies one row, not two -- the wrap happens on
+            # the character after.
+            rows = max(1, -(-len(text) // cols))
+            if rows > self.PLAIN_ECHO_MAX_ROWS:
+                return
+            # Up `rows`, to column one, then clear everything below. Clearing
+            # the whole region rather than each line keeps it correct when
+            # the last row is shorter than the ones above it.
+            _raw_write("\x1b[%dA\r\x1b[J" % rows)
+        except Exception:
+            # Terminal geometry is unavailable often enough (a pipe, a pty
+            # that does not answer TIOCGWINSZ, a closed stdout during
+            # shutdown) that this must never be the thing that breaks
+            # sending a message.
+            pass
 
     def _remember_server_alias(self):
         """Write down the b32 the first time it actually works.
@@ -5708,6 +5816,11 @@ async def _input_loop(client):
             # -- the next pass through is the hidden one. This is why the
             # auth message says "press Enter, then type the password again".
             continue
+        # Remember that the terminal has just echoed this line itself, and
+        # that nothing has been printed since. `_echo_sent` uses both facts
+        # to rewrite that echo in place instead of printing the message a
+        # second time underneath it.
+        client._plain_echo = (_PRINT_SEQ, line.rstrip("\n"))
         if not client.dispatch_line(client.peer, line.rstrip("\n")):
             break
     client._shutting_down = True

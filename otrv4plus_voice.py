@@ -785,7 +785,20 @@ DIR_RESPONDER = 0x02        # callee -> caller
 # Every one of these is a LOCAL playout decision. Unlike VOICE_OPUS_SLOT they
 # are not wire format, so two peers may run different values safely and a
 # device on a worse path can buy itself more cushion without breaking calls.
-VOICE_JITTER_PREFILL_MS = _env_ms("OTRV4PLUS_JITTER_MIN_MS", 180, 60, 1000)
+#: The depth the target can never fall below.
+#:
+#: 180 ms until v10.29.0, and on the measured path it WAS the target: the
+#: mean-deviation estimator asked for about 1.7 frames on a p50 lateness of
+#: 9 ms, so the floor decided the buffer's depth for the whole call and the
+#: adaptive machinery above it never once bound.
+#:
+#: A hand-set floor is a guess about the worst path the client will ever run
+#: on, paid on every frame of every call including the good ones. It is now
+#: 120 ms, two frames, because the buffer earns depth back from evidence --
+#: the lateness tail below, and a frame per underrun -- rather than being
+#: insured by a constant. If that mechanism is wrong the floor is one
+#: variable away from where it was: OTRV4PLUS_JITTER_MIN_MS=180.
+VOICE_JITTER_PREFILL_MS = _env_ms("OTRV4PLUS_JITTER_MIN_MS", 120, 60, 1000)
 VOICE_JITTER_DRIFT_HIGH_MS = _env_ms("OTRV4PLUS_JITTER_TARGET_MS", 480,
                                      120, 2000)
 #: Hard cap on queued audio. Not a target -- the adaptive target and the shed
@@ -814,7 +827,14 @@ VOICE_JITTER_DRAIN_MS = _env_ms("OTRV4PLUS_JITTER_DRAIN_MS", 400, 100, 2000)
 #: the same rate, so nothing else pulls the buffer down -- which made the
 #: observed 840 ms floor (target pinned at 10, plus 4) the design rather than
 #: an accident.
-VOICE_JITTER_SHED_MARGIN_MS = _env_ms("OTRV4PLUS_JITTER_MARGIN_MS", 180,
+#:
+#: 180 ms until v10.29.0, now 120 ms. This is the cheapest 60 ms in the
+#: budget, because the shed margin does NOT protect against underruns -- the
+#: target does. The margin is hysteresis above the target, and its only job
+#: is to stop the shedder firing on every pop; lowering it lowers the band
+#: the buffer settles in without moving the depth that guards against a
+#: dropout by a single frame.
+VOICE_JITTER_SHED_MARGIN_MS = _env_ms("OTRV4PLUS_JITTER_MARGIN_MS", 120,
                                       60, 1000)
 
 #: Multiplier on the smoothed arrival deviation when sizing the target.
@@ -825,6 +845,62 @@ VOICE_JITTER_SHED_MARGIN_MS = _env_ms("OTRV4PLUS_JITTER_MARGIN_MS", 180,
 #: for a third less delay on every single frame. For conversation that is the
 #: better side of the trade, and it is a trade rather than a free win.
 VOICE_JITTER_SAFETY_FACTOR = 2.0
+
+#: Which percentile of arrival lateness the target is sized to cover.
+#:
+#: RFC 3550's J -- the smoothed estimate above -- is a MEAN absolute
+#: deviation, and this path is not remotely symmetric.  The v10.15.1 soak
+#: measured inter-arrival spacing of p50 69 ms, p95 128 ms, p99 211 ms and
+#: max 281 ms against a 60 ms expected spacing: the median frame is 9 ms
+#: late, the p99 frame is 151 ms late.  The tail is sixteen times the median.
+#:
+#: 2xJ on that distribution asks for about two frames, so the target pinned
+#: at the hand-set floor and never moved, while the frames that actually
+#: empty the buffer are two and a half frames late.  The result is in the
+#: soak's own counters: `underrun=27 shed=313`.  Both at once is not a buffer
+#: that is too big or too small, it is a buffer that never settles.
+#:
+#: The distribution was already being collected -- `self.spacing` exists for
+#: exactly this reason and its comment says a mean deviation "cannot
+#: distinguish a steadily late path from a punctual one with a long tail,
+#: and only the second is worth buffering for" -- and then only ever printed.
+#: This closes that loop.
+#:
+#: p95 rather than p99: p99 on this path is 2.5 frames and buying it costs
+#: 150 ms on every frame for the whole call, to save one dropout in a
+#: hundred. p95 costs about one frame and the underrun feedback below picks
+#: up whatever it misses.
+VOICE_JITTER_TAIL_PCT = _env_int("OTRV4PLUS_JITTER_TAIL_PCT", 95, 50, 100)
+
+#: How many recent arrivals the tail is measured over.
+#:
+#: A lifetime percentile cannot recover: one bad tunnel minute would hold the
+#: buffer deep for the rest of the call, which is the failure the adaptive
+#: target exists to avoid. 200 frames is about 12 s at 60 ms -- long enough
+#: to contain the tail, short enough to forget a tunnel that has been
+#: replaced.
+VOICE_JITTER_TAIL_WINDOW = _env_int("OTRV4PLUS_JITTER_TAIL_WINDOW",
+                                    200, 20, 2000)
+
+#: Frames added to the target each time the buffer runs dry.
+#:
+#: An underrun is the only DIRECT evidence that the buffer was too shallow --
+#: everything else is inference from arrival times. Nothing in the previous
+#: design used it: the soak underran 27 times and the target was the same
+#: after the 27th as before the first. A buffer that cannot learn from the
+#: one measurement that matters is not adaptive, whatever it computes.
+VOICE_JITTER_UNDERRUN_STEP = _env_int("OTRV4PLUS_JITTER_UNDERRUN_STEP",
+                                      1, 0, 8)
+
+#: Consecutive clean pops before one learned frame is given back.
+#:
+#: Asymmetric on purpose: rise fast, fall slowly. A dropout is immediate and
+#: audible; the latency it costs to avoid the next one is paid quietly. 300
+#: pops is about 18 s at 60 ms, so a path that has genuinely improved gets
+#: its latency back within a minute, and one that is merely between hiccups
+#: does not.
+VOICE_JITTER_UNDERRUN_DECAY = _env_int("OTRV4PLUS_JITTER_UNDERRUN_DECAY",
+                                       300, 10, 10000)
 
 
 VOICE_JITTER_PREFILL = max(2, VOICE_JITTER_PREFILL_MS // VOICE_FRAME_MS)
@@ -2283,6 +2359,16 @@ class JitterBuffer:
         self._jitter_est = 0.0          # seconds, RFC 3550 style smoothing
         self._last_arrival = None
         self._last_seq = None
+        # Rolling window of how LATE each frame was against its expected
+        # arrival, in seconds. The smoothed estimate above is a mean and this
+        # path's tail is sixteen times its median, so the mean alone sizes
+        # the buffer for a distribution the path does not have.
+        import collections as _c
+        self._late = _c.deque(maxlen=VOICE_JITTER_TAIL_WINDOW)
+        # Frames of depth bought with evidence rather than arithmetic: one
+        # per underrun, given back after a long clean run.
+        self._learned = 0
+        self._clean_pops = 0
         # depth_min/depth_max are held across a reporting window, like the
         # level meters: an instantaneous depth says nothing about whether the
         # buffer is stable or swinging between empty and full.
@@ -2335,8 +2421,17 @@ class JitterBuffer:
                 d = abs(observed - expected)
                 self.spacing.add(observed * 1000.0)
                 self._jitter_est += (d - self._jitter_est) / 16.0
-                frames = ((self._safety_factor * self._jitter_est)
-                          / FRAME_INTERVAL_S)
+                # Only LATE counts. A frame that arrives early costs the
+                # buffer nothing -- it simply waits -- while `d` above is
+                # symmetric and so charges earliness as if it were a risk.
+                self._late.append(max(0.0, observed - expected))
+                mean_frames = ((self._safety_factor * self._jitter_est)
+                               / FRAME_INTERVAL_S)
+                # The larger of the two estimators wins. The mean responds
+                # within a frame or two and is what catches a path that has
+                # just got worse; the tail is slower but is the only one that
+                # sees the arrivals that actually empty the buffer.
+                frames = max(mean_frames, self._tail_frames())
                 self._target = max(
                     float(self._prefill),
                     min(float(self._drift_high), frames + 1.0))
@@ -2347,9 +2442,59 @@ class JitterBuffer:
             self._last_arrival = now
             self._last_seq = seq
 
+    def _tail_frames(self) -> float:
+        """Frames of depth needed to cover the measured lateness tail.
+
+        Nearest-rank over the rolling window, so the figure is always an
+        arrival that really happened rather than one interpolated between
+        two that did.
+        """
+        if len(self._late) < 8:
+            # Too few samples for a percentile to mean anything. Returning 0
+            # leaves the mean estimator and the floor in charge, which is
+            # what governed the whole call before this existed.
+            return 0.0
+        ordered = sorted(self._late)
+        idx = int(round((VOICE_JITTER_TAIL_PCT / 100.0) * len(ordered) + 0.5)) - 1
+        idx = max(0, min(len(ordered) - 1, idx))
+        return ordered[idx] / FRAME_INTERVAL_S
+
+    def note_underrun(self) -> None:
+        """The buffer ran dry: buy a frame of depth, up to the ceiling.
+
+        This is the ONLY direct evidence that the target was too shallow.
+        Everything else here is inference from arrival times, and the v10.15.1
+        soak shows what inference alone achieved: 27 underruns, and a target
+        that was identical after the 27th to what it had been before the
+        first. Rise on evidence, fall on time.
+        """
+        headroom = int(self._drift_high) - int(self._prefill)
+        if headroom > 0:
+            self._learned = min(self._learned + VOICE_JITTER_UNDERRUN_STEP,
+                                headroom)
+        self._clean_pops = 0
+
+    def _note_clean_pop(self) -> None:
+        if self._learned <= 0:
+            return
+        self._clean_pops += 1
+        if self._clean_pops >= VOICE_JITTER_UNDERRUN_DECAY:
+            self._clean_pops = 0
+            self._learned -= 1
+
     @property
     def target_depth(self) -> int:
-        return int(self._target + 0.5)
+        # The learned frames are added to the computed target and the CEILING
+        # applies to the sum: a path bad enough to underrun repeatedly must
+        # not be able to walk the buffer past the latency cap one dropout at
+        # a time. OTRV4PLUS_JITTER_MAX_MS is still the last word on depth.
+        return int(min(self._target + self._learned,
+                       float(self._drift_high)) + 0.5)
+
+    @property
+    def learned_frames(self) -> int:
+        """Frames of depth currently held because of past underruns."""
+        return int(self._learned)
 
     @property
     def jitter_ms(self) -> float:
@@ -2407,6 +2552,7 @@ class JitterBuffer:
                 # the next burst choppy.
                 self._primed = False
                 self.stats["underrun"] += 1
+                self.note_underrun()
                 return None
 
             # Shed the oldest while we are above the latency ceiling. One
@@ -2471,6 +2617,7 @@ class JitterBuffer:
                 if gap:
                     self.stats["gaps"] += gap
             self._last_played = seq
+            self._note_clean_pop()
             return pcm, gap
 
     def depth(self) -> int:
@@ -6990,7 +7137,44 @@ class VoiceCallManager:
         if sent:
             parts.append("%d frames sent" % sent)
 
-        return ["[voice] %s %s — %s" % (mark, verdict, ", ".join(parts))]
+        lines = ["[voice] %s %s — %s" % (mark, verdict, ", ".join(parts))]
+        budget = self._budget_line(session, m2e)
+        if budget:
+            lines.append(budget)
+        return lines
+
+    def _budget_line(self, session, m2e):
+        """Where the mouth-to-ear delay went: network, buffer, playout.
+
+        The single most useful line in a latency investigation, and until now
+        it existed only inside `--voice-debug`.  Without it "914 ms" invites
+        the assumption that the cryptography is expensive; with it, the
+        v10.15.1 soak's answer is visible on every call -- sealing and
+        opening together cost half a millisecond of an 855 ms budget, and
+        the network is two thirds of it.
+
+        Only the two parts this client can do anything about are separated
+        out.  The network figure is six I2P hops each way and is not ours;
+        the buffer and the playout path are.
+        """
+        try:
+            if m2e is None:
+                return None
+            oneway = float(session.latency.oneway_ms or 0.0)
+            dwell = float(session.jitter.dwell.percentile(0.50))
+            playout = (float(session.stages.t["decode"].percentile(0.50))
+                       + float(session.stages.t["play"].percentile(0.50)))
+            if oneway <= 0:
+                return None
+            line = ("[voice]   %.0fms network (6 I2P hops) + %.0fms jitter "
+                    "buffer + %.0fms playout" % (oneway, dwell, playout))
+            learned = getattr(session.jitter, "learned_frames", 0)
+            if learned:
+                line += ("; buffer holding %d extra frame(s) after "
+                         "underruns" % learned)
+            return line
+        except Exception:
+            return None
 
     async def reject_call(self, peer: str) -> None:
         peer = self._bare(peer)

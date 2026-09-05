@@ -119,7 +119,15 @@ class TestTheOutgoingSideIsPrintedAtAll:
             self.boundjid = type("J", (), {"bare": "alice@example.i2p"})()
             self._sent_ok = sent_ok
             self.otr = self
-            for name in ("send_user_text", "_echo_sent"):
+            # v10.29.0: _echo_sent now erases the terminal's own copy of the
+            # line first, so the stub has to carry that method and the class
+            # attribute it reads. Borrowed from the real class rather than
+            # copied -- a stub that reimplements what it is standing in for
+            # stops testing the thing under test.
+            self._tui_enabled = False
+            self._plain_echo = None
+            self.PLAIN_ECHO_MAX_ROWS = xmpp.OTRv4PlusXMPP.PLAIN_ECHO_MAX_ROWS
+            for name in ("send_user_text", "_echo_sent", "_erase_plain_echo"):
                 setattr(self, name, getattr(
                     xmpp.OTRv4PlusXMPP, name).__get__(self))
 

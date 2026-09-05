@@ -350,8 +350,48 @@ class TestTheFigures:
     def test_it_reports_how_much_we_sent(self):
         assert "1244 frames sent" in self._line(oneway=50.0, sent=1244)
 
-    def test_it_is_one_line(self):
-        assert len(manager()._call_summary(FakeSession(oneway=50.0))) == 1
+    def test_the_verdict_is_one_line(self):
+        # One line for the verdict, plus a budget breakdown when there is a
+        # measurement to break down. Anything more is a debug stream.
+        lines = manager()._call_summary(FakeSession(oneway=50.0))
+        assert len(lines) == 2
+        assert lines[0].startswith("[voice] ")
+        assert "network" in lines[1]
+
+    def test_an_unmeasured_call_gets_no_budget_line(self):
+        lines = manager()._call_summary(FakeSession(age_s=3.0, oneway=None))
+        assert len(lines) == 1
+
+    def test_the_budget_names_the_three_places_the_time_goes(self):
+        line = manager()._call_summary(FakeSession(
+            oneway=576.0, dwell=229.0, decode=20.0, play=31.0,
+            queued=1000))[1]
+        assert "576ms network" in line
+        assert "229ms jitter buffer" in line
+        assert "51ms playout" in line
+
+    def test_the_budget_says_the_hops_are_not_ours(self):
+        # The figure invites the assumption that the post-quantum crypto is
+        # expensive. The soak measured sealing and opening together at half a
+        # millisecond of an 855 ms budget; naming the hops says where it went.
+        line = manager()._call_summary(FakeSession(oneway=576.0))[1]
+        assert "I2P hops" in line
+
+    def test_a_buffer_holding_extra_frames_says_so(self):
+        session = FakeSession(oneway=500.0, queued=100)
+        session.jitter.learned_frames = 2
+        line = manager()._call_summary(session)[1]
+        assert "2 extra frame(s) after underruns" in line
+
+    def test_an_unmeasured_network_figure_is_omitted_not_printed_as_zero(self):
+        # "0ms network" would read as a measurement of a path with no delay.
+        session = FakeSession(oneway=0.0, dwell=100.0, queued=100)
+        assert manager()._budget_line(session, 500.0) is None
+
+    def test_a_budget_that_cannot_be_built_is_omitted_not_faked(self):
+        class Hostile:
+            pass
+        assert manager()._budget_line(Hostile(), 500.0) is None
 
 
 # ---------------------------------------------------------------------------

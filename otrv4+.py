@@ -1873,7 +1873,7 @@ class OTRv4DataMessage:
             raise ValueError(f"Failed to decode message: {e }")
 
 
-VERSION = "OTRv4+ 10.28.1"
+VERSION = "OTRv4+ 10.29.0"
 
 #: SMP passphrase length bounds, shared by both clients.
 #:

@@ -4,6 +4,120 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## v10.29.0 — the buffer was sized from an average, on a path that has a tail
+
+*2026-09-05.  `VERSION → 10.29.0`.  `otrv4_core` unchanged at 0.10.28.*
+
+Asked to find whatever latency could be found without touching the three-hop
+tunnel configuration, which is not negotiable and is the reason the project
+exists.  Full analysis in **[VOICE_LATENCY_BUDGET.md](VOICE_LATENCY_BUDGET.md)**.
+
+The measured budget, from the v10.15.1 soak:
+
+```
+mouth-to-ear ~855 ms  =  network 576 ms  +  jitter buffer 229 ms  +  playout 51 ms
+```
+
+Two thirds of it is six I2P hops at about 96 ms each and is not ours.  The
+cryptography is 0.5 ms of it — sealing and opening together — so no amount of
+work on the cipher suite moves this number.  The jitter buffer is the only
+quarter this client controls.
+
+### What was wrong with it
+
+The target depth was `2 x J`, RFC 3550's smoothed **mean absolute deviation**
+of inter-arrival time.  The measured spacing against a 60 ms expected: p50
+69 ms, p95 128 ms, p99 211 ms, max 281 ms.  The median frame is 9 ms late and
+the p99 frame is 151 ms late — **the tail is sixteen times the median**.
+
+On that distribution `2 x J` asks for under two frames, so the target sat on
+the hand-set floor of three for the whole call and the adaptive machinery
+never once bound, while the frames that actually empty a buffer are two and a
+half frames late.  The soak's own counters say what happened: `underrun=27
+shed=313`.  Both at once is not a buffer that is too deep or too shallow, it
+is a buffer that never settles.
+
+Two things had been sitting in the code waiting to be noticed.
+
+`JitterBuffer.spacing` already collected the distribution, and its own comment
+already said why it mattered — a mean deviation "cannot distinguish a steadily
+late path from a punctual one with a long tail, and only the second is worth
+buffering for" — and it was then only ever printed into the debug stream.  The
+same shape as v10.28.0's bug: the right figure computed for a log nobody
+watching a call would read.
+
+And nothing learned from an underrun, which is the only DIRECT evidence that
+the buffer was too shallow.  The target after the soak's twenty-seventh
+underrun was identical to what it had been before the first.
+
+### What it does now
+
+- Sized from the measured **lateness tail** (p95 over a rolling 200-frame
+  window) as well as from J, whichever asks for more.  Only lateness counts: a
+  frame that arrives early costs the buffer nothing, while J is symmetric and
+  charges earliness as though it were a risk.
+- **An underrun buys a frame of depth**, to the latency ceiling, given back
+  after ~300 clean frames.  Rise on evidence, fall on time.
+- Because depth is now earned rather than insured by a constant, the static
+  floor came down: prefill 180 → 120 ms, shed margin 180 → 120 ms.  The shed
+  margin is the cheapest 60 ms in the budget — it is hysteresis above the
+  target, and it is the TARGET that guards against a dropout.
+
+Replaying the soak's distribution through the new estimator moves the
+steady-state band from 180–360 ms to 120–240 ms, predicting **mouth-to-ear
+~855 → ~779 ms**.  That is a prediction from a replayed distribution and not a
+measurement, it is about 9%, and it is roughly the whole of what was available
+locally.
+
+Every call now prints the decomposition at hangup, so checking it no longer
+needs `--voice-debug`:
+
+```
+[voice]   560ms network (6 I2P hops) + 170ms jitter buffer + 50ms playout
+```
+
+Nothing here is wire format — these are local playout decisions, so the two
+handsets can run different values.  `OTRV4PLUS_JITTER_MIN_MS=180
+OTRV4PLUS_JITTER_MARGIN_MS=180` restores v10.28.1's depth exactly.
+
+### Deliberately not attempted
+
+Tunnel options, a SAM write pacer and `TCP_NODELAY` were the reverted pass at
+`8683be3`, which "broke a working system twice on a real I2P path".  40 ms
+frames would save 20 ms of packetisation and raise the packet rate to 25/s, at
+which a live call has already starved.  Neither is worth spending a test
+window on.
+
+### The message you typed appeared twice
+
+```
+i shiuld not seewgat i type twice
+🔒 [otr] alice@xmpp-elite.i2p: i shiuld not seewgat i type twice
+```
+
+v10.27.0 added an attributed echo of outgoing messages, because without it the
+session log recorded only one side of the conversation.  In the TUI that is
+right — it owns the screen in raw mode and echoes input itself.  In plain
+mode, which is the default, the input loop sits in `sys.stdin.readline()` with
+the tty in canonical mode, so the terminal has already drawn the line before
+our echo runs.
+
+The echo now erases the terminal's copy and prints the attributed line in its
+place.  Moving the cursor up is destructive, so it happens only when all three
+of these hold: the line is the one the terminal just echoed, **nothing has
+been printed since** (an inbound message arriving in between means the rows
+above the cursor are no longer the user's input), and stdout is a terminal
+whose width can be read.  Wrapped input is counted properly, a pasted wall of
+text over twelve rows is left alone, and any failure falls back to the
+v10.28.1 behaviour — printing twice is ugly, deleting a line of somebody's
+conversation is not recoverable.
+
+51 tests, 25 mutations killed.  Full suite: 3299 passed, 44 skipped, 1 xfailed.
+The buffer change is predicted, not measured; the two-handset run in the
+morning is what settles it, and VOICE_LATENCY_BUDGET.md says what to look at.
+
+---
+
 ## v10.28.1 — the latency scale was calibrated for a phone network
 
 *2026-09-05.  `VERSION → 10.28.1`.  `otrv4_core` unchanged at 0.10.28.*
