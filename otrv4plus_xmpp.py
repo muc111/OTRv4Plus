@@ -2,7 +2,7 @@
 """
 OTRv4+ XMPP - full OTR + SMP over XMPP, transported over I2P SAM
 ================================================================
-Version: 10.19.0
+Version: 10.20.0
 
 
 Post-quantum OTRv4+ end-to-end encryption over XMPP, reusing the IRC client's
@@ -237,7 +237,7 @@ def voice_available() -> "tuple[bool, str]":
             "no audio backend: libaaudio.so unavailable and parec/pacat "
             "missing  (run /audioprobe for details)")
 
-XMPP_VERSION = "10.19.0"
+XMPP_VERSION = "10.20.0"
 
 # ---------------------------------------------------------------------------
 # XMPP-private state directory
@@ -1126,6 +1126,11 @@ _voice.bind_host(
 # v10.14.0: /sendfile.  XMPP only -- the IRC client has no file transfer and
 # does not import this module.
 import otrv4plus_filetransfer as _filetransfer
+import otrv4plus_trade as _trade
+
+TRADE_PREFIX = _trade.TRADE_PREFIX
+TradeManager = _trade.TradeManager
+TradeError = _trade.TradeError
 
 FILE_PREFIX = _filetransfer.FILE_PREFIX
 FileTransferManager = _filetransfer.FileTransferManager
@@ -1291,6 +1296,8 @@ class OTRv4PlusXMPP(ClientXMPP):
         # Voice call manager (initialized lazily after event loop is available)
         self._voice_manager = None
         self._file_manager = None
+        self._trade_manager = None
+        self._trade_disclaimed = False
         self._voice_sam_host = "127.0.0.1"
         self._voice_sam_port = 7656
         self._voice_debug = False
@@ -1462,6 +1469,16 @@ class OTRv4PlusXMPP(ClientXMPP):
                 notify=print,
                 verified=self._file_peer_verified,
                 spawn=self._start_file_pump,
+            )
+        if self._trade_manager is None:
+            # Same three dependencies the transfer engine takes, plus the
+            # fingerprint accessor. The courier holds no keys and speaks to
+            # no wallet, so there is nothing else to give it.
+            self._trade_manager = TradeManager(
+                send=self._send_trade_signal,
+                notify=print,
+                verified=self._file_peer_verified,
+                fingerprint=self._peer_fingerprint,
             )
         try:
             await self.get_roster()
@@ -1927,6 +1944,11 @@ class OTRv4PlusXMPP(ClientXMPP):
         print("\n[disconnected]")
         if self._keepalive_task:
             self._keepalive_task.cancel()
+        # A trade belongs to the session it was agreed in. Carrying one across
+        # a reconnect would mean resuming a financial coordination against a
+        # peer whose fingerprint has not been re-checked and whose SMP state
+        # has been torn down with the session -- so it is dropped, loudly.
+        self._clear_trades("the session ended")
         # Our stream is what went away. Every peer will look unavailable for
         # the duration, and none of them has actually gone anywhere.
         self._clear_peer_gone("our transport dropped")
@@ -2531,6 +2553,18 @@ class OTRv4PlusXMPP(ClientXMPP):
                     else:
                         print("[file] file signal received before the "
                               "transfer subsystem was ready — ignoring")
+                    return
+
+                # Trade coordination, routed for the same reason: a multisig
+                # blob rendered as chat is a screenful of base64 nobody can
+                # use, and it would land in the panel history as chat rather
+                # than as something the trade layer can account for.
+                if text.startswith(TRADE_PREFIX):
+                    if self._trade_manager is not None:
+                        self._trade_manager.handle_control(peer, text)
+                    else:
+                        print("[trade] trade signal received before the "
+                              "trade subsystem was ready — ignoring")
                     return
 
                 smp_ok = (peer, "SUCCEEDED") in self._smp_reported
@@ -3490,6 +3524,119 @@ class OTRv4PlusXMPP(ClientXMPP):
         except Exception:
             return False
 
+    def _clear_trades(self, reason: str) -> int:
+        """Forget every trade. Returns how many there were.
+
+        Trade state is in memory only and never written to disk, so this is
+        the whole of it. Called on disconnect, /quit, and by the same
+        reasoning as the v10.19.0 scrollback purge (INV-24): what belonged to
+        one session must not appear in the next.
+        """
+        mgr = self._trade_manager
+        if mgr is None:
+            return 0
+        try:
+            count = mgr.clear()
+        except Exception:
+            return 0
+        if count:
+            print("[trade] dropped %d open trade(s) — %s" % (count, reason))
+        return count
+
+    def _peer_fingerprint(self, peer: str):
+        """The peer's live fingerprint, or None.
+
+        What binds a trade to a counterparty. Deliberately not the JID and
+        deliberately not the I2P destination: destinations are TRANSIENT and
+        change every session, and a JID is a name anyone can present.
+        """
+        try:
+            getter = getattr(self.otr, "get_peer_fingerprint", None)
+            if getter is None:
+                return None
+            return getter(peer)
+        except Exception:
+            return None
+
+    def _send_trade_signal(self, peer: str, verb: str, payload: str) -> bool:
+        """One trade control message inside the OTR channel.
+
+        The same shape as `_send_file_signal`, and the same rule: if the
+        encrypted channel is unavailable the message is DROPPED, never
+        downgraded. A multisig blob sent in the clear would tell the server
+        who is coordinating a trade with whom, and would let an off-session
+        party inject a blob into someone's wallet.
+        """
+        body = TRADE_PREFIX + verb + ((":" + payload) if payload else "")
+        try:
+            frame, should_send = self.otr.handle_outgoing_message(peer, body)
+        except Exception as exc:
+            print("[trade] could not encrypt: %s" % _sanitise(str(exc), 120))
+            return False
+        if not (should_send and frame):
+            print("[trade] dropped — OTR channel unavailable (trade messages "
+                  "are never sent in the clear)")
+            return False
+        try:
+            self.send_otr_fragmented(
+                peer, frame if isinstance(frame, str) else frame.decode())
+        except Exception as exc:
+            print("[trade] send failed: %s" % _sanitise(str(exc), 120))
+            return False
+        return True
+
+    def _cmd_trade(self, peer: str, args: str) -> None:
+        """/trade [init <terms> | accept | decline | blob <b64> | confirm |
+        cancel] — the courier command surface.
+
+        Bare /trade shows status. Everything else needs an SMP-verified peer,
+        which the manager enforces on every call rather than here: a check in
+        the command handler protects only the commands, and inbound messages
+        do not come through here.
+        """
+        mgr = self._trade_manager
+        if mgr is None:
+            print("[trade] the trade subsystem is not ready yet")
+            return
+        if not self._trade_disclaimed:
+            print(_trade.DISCLAIMER)
+            self._trade_disclaimed = True
+
+        args = (args or "").strip()
+        sub, _, rest = args.partition(" ")
+        sub = sub.strip().lower()
+        rest = rest.strip()
+
+        try:
+            if not sub or sub == "status":
+                for line in mgr.status():
+                    print(line)
+                return
+            if not peer:
+                print("[trade] no peer selected — start a session with /otr "
+                      "<jid> first")
+                return
+            if sub == "init":
+                mgr.start(peer, rest)
+            elif sub == "accept":
+                mgr.accept(peer)
+            elif sub == "decline":
+                mgr.decline(peer, rest)
+            elif sub == "cancel":
+                mgr.cancel(peer, rest)
+            elif sub == "blob":
+                mgr.send_blob(peer, rest)
+            elif sub == "confirm":
+                mgr.confirm(peer, rest)
+            else:
+                print("[trade] unknown subcommand %s — try /trade, /trade "
+                      "init <terms>, accept, decline, blob <base64>, "
+                      "confirm, cancel" % _sanitise(sub, 32))
+        except TradeError as exc:
+            print("[trade] %s" % exc)
+        except Exception as exc:
+            print("[trade] failed: %s" % type(exc).__name__)
+
     def _file_transfer_ratchet(self, peer: str):
         """The peer's live RustDoubleRatchet, or None.
 
@@ -4141,6 +4288,15 @@ class OTRv4PlusXMPP(ClientXMPP):
             "  /calls               show voice call state and frame counters\n"
             "  /audiotest           verify the microphone captures audio\n"
             "  /audioprobe          test each audio backend on this device\n"
+            "  /sendfile [path]     send a file (encrypted, verified peer)\n"
+            "  /transfer            show file transfer state\n"
+            "  /trade               list open trades\n"
+            "  /trade init <terms>  propose a trade to the verified peer\n"
+            "  /trade accept        agree to a proposal\n"
+            "  /trade decline [why] refuse a proposal\n"
+            "  /trade blob <b64>    relay one blob from your Monero wallet\n"
+            "  /trade confirm       tell them your side is done\n"
+            "  /trade cancel [why]  end a trade\n"
             "  /smpstate            show raw SMP verification state\n"
             "  /voicedebug          toggle voice setup + telemetry logging\n"
             "  Ctrl+B               scroll up one page\n"
@@ -4257,6 +4413,7 @@ class OTRv4PlusXMPP(ClientXMPP):
 
         # --- Quit ---
         if lstrip == "/quit":
+            self._clear_trades("/quit")
             return False
 
         # --- OTR ---
@@ -4379,6 +4536,10 @@ class OTRv4PlusXMPP(ClientXMPP):
             self._cmd_sendfile(peer, lstrip[9:].strip())
         elif lstrip == "/transfer" or lstrip.startswith("/transfer "):
             self._cmd_transfer(lstrip[9:].strip())
+
+        # --- Trade courier (XMPP only, same as file transfer) ---
+        elif lstrip == "/trade" or lstrip.startswith("/trade "):
+            self._cmd_trade(peer, lstrip[6:].strip())
 
         # --- Subscriptions ---
         elif lstrip == "/pending":

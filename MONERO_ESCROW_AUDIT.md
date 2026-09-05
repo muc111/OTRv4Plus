@@ -1,7 +1,19 @@
 # Monero multisig escrow — audit and integration plan
 
-**Status: audit and plan only. Nothing here is implemented, and the recommendation
-is not the architecture the brief proposed.** Read §2.4 before approving anything.
+**Status: the courier recommendation in §2.2 was approved and shipped in
+v10.20.0** — `otrv4plus_trade.py`, INV-25 and INV-26, no Rust changes and no
+new dependencies. See [TRADE.md](TRADE.md) for the runbook and the wire
+protocol. The rest of this document is the audit that led there and is kept as
+the record of why.
+
+Two decisions were settled at approval:
+
+* **No arbitration service.** The maintainer will not act as arbitrator and
+  ships no arbitrator key. §2.4.3 asked the question; the answer is that users
+  bring their own third party. 2-of-3 works — the third party runs a trade
+  session like anyone else — but this project holds none of the three keys.
+* **The Rust-core path stays closed for now.** Phase 4 below (reassess
+  `monero-oxide` after FCMP++) is the only route back to it.
 
 Audited at `v10.19.0` / `otrv4_core 0.10.28`, commit `f89b328`, 2026-09-05.
 

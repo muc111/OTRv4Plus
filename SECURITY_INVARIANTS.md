@@ -200,6 +200,18 @@ Panel history is capped at 1000 messages and emptied at every boundary between o
 
 **Limit:** A Python str is immutable and may be interned, so the purge drops the last reference rather than overwriting the characters: the bytes remain in freed heap until the allocator reuses them.  Unfixable for chat text while the UI is Python-side.  Material that must actually be destroyed is not kept here at all -- it lives in Rust behind zeroize().  See INV-02 for the same limit on passwords.
 
+### INV-25 — The trade courier is not a wallet: no Monero key material exists in the client process, and no trade state is written to disk.
+
+**Status:** `ENFORCED`  
+**Enforced by:** `tests/test_trade_courier.py`
+
+otrv4plus_trade.py relays opaque base64 between two wallets it does not run.  It opens no wallet file, reads no seed or spend or view key, derives no address and signs nothing -- a blob is checked for base64 alphabet and length and passed through verbatim, never parsed.  Its import list is asserted exactly (base64, hashlib, re, secrets, time, typing), so it cannot reach a daemon or a wallet at all, and its identifiers are walked for any key-, network- or wallet-shaped name.  State is in memory only and cleared on disconnect, /quit and process exit.  This is INV-08 in its strongest form: the keys do not cross the PyO3 boundary because they never enter the process.
+### INV-26 — A trade never opens, and never advances, on an unverified or changed peer.
+
+**Status:** `ENFORCED`  
+**Enforced by:** `tests/test_trade_courier.py`
+
+is_smp_verified(peer) is checked on EVERY trade message in both directions, not once when the trade opens -- otherwise a trade agreed at 09:00 and still running at 14:00 spans five hours in which a session teardown goes unnoticed while blobs keep flowing.  Fail-closed like INV-12: a predicate that raises counts as unverified.  The peer's fingerprint is bound when the trade opens and re-checked with it; a change cancels the trade and never re-pins, matching INV-11.  Binding is to the fingerprint and never to the I2P destination, which is TRANSIENT and changes every session by design.
 ## Where secrets live
 
 Updated at v10.13.2, when the voice path finished moving.

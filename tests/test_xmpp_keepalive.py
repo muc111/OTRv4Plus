@@ -333,6 +333,8 @@ class TestNoDuplicateLoops:
             _on_disconnected = xmpp.OTRv4PlusXMPP._on_disconnected
             _on_connection_failed = xmpp.OTRv4PlusXMPP._on_connection_failed
             _clear_peer_gone = xmpp.OTRv4PlusXMPP._clear_peer_gone
+            # v10.20.0: the disconnect path also drops open trades.
+            _clear_trades = xmpp.OTRv4PlusXMPP._clear_trades
 
             def __init__(self):
                 self._shutting_down = False
@@ -343,6 +345,7 @@ class TestNoDuplicateLoops:
                 self._keepalive_task = None
                 self._password_prompt = None
                 self._peer_gone_at = {}
+                self._trade_manager = None
                 self.started = 0
 
             async def _reconnect(self):

@@ -4,6 +4,130 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## v10.20.0 — a courier for multisig coordination, and no Monero code at all
+
+*2026-09-05.  `VERSION → 10.20.0`.  `otrv4_core` stays at 0.10.28: there is no
+Rust change in this release, and that is the headline rather than an omission.*
+
+`MONERO_ESCROW_AUDIT.md` looked at putting Monero's multisig cryptography in
+the Rust core and recommended against it. `monero-serai` is `0.1.4-alpha` from
+May 2023 with every version yanked; its successor `monero-oxide` implements
+multisig as **FROST** (`modular-frost 0.11`), which produces wallets
+`monero-wallet-cli` cannot create, join or spend from; native Monero multisig
+is experimental, off by default, and its enabling flag cannot be set over RPC;
+and FCMP++ removes CLSAG, with the stressnet not supporting multisig at all.
+
+So the client became a **courier** instead. It relays opaque base64 between two
+Monero wallets the users run themselves, and holds no Monero code. No
+Ed25519, no curve25519-dalek, no FROST, no consensus-coupled transaction
+format, no MSRV bump, and nothing new that can panic inside a `panic = "abort"`
+process while funds sit in a half-built multisig.
+
+### What shipped
+
+`otrv4plus_trade.py`, plus routing and six subcommands in the XMPP client:
+
+```
+/trade                    list open trades
+/trade init <terms>       propose to the verified peer
+/trade accept | decline   answer a proposal
+/trade blob <base64>      relay one blob from your wallet
+/trade confirm | cancel
+```
+
+Framing is `?OTRv4-TRADE:VERB:version|trade_id|seq|fields`, dispatched exactly
+like `?OTRv4-FILE:` and travelling inside the established session — if the OTR
+channel is unavailable the message is dropped, never downgraded. XMPP only,
+same as file transfer; IRC's 510-byte lines make it pointless there.
+
+### The two invariants this rests on
+
+**INV-25 — it is not a wallet.** No wallet file is opened, no seed or spend or
+view key read, no address derived, nothing signed. A blob is checked for
+base64 alphabet and length and passed through verbatim; it is never parsed,
+because parsing is the first step toward interpreting. The module's import
+list is asserted *exactly* — `base64`, `hashlib`, `re`, `secrets`, `time`,
+`typing` — so it cannot reach a daemon or a wallet at all, and its identifiers
+are walked for anything key-, network- or wallet-shaped. This is INV-08 in its
+strongest form: the keys do not cross the PyO3 boundary because they never
+enter the process.
+
+**INV-26 — no trade on an unverified or changed peer.** `is_smp_verified` is
+checked on **every** message in both directions, not once when the trade
+opens: a trade agreed at 09:00 and still running at 14:00 would otherwise span
+five hours in which a session teardown goes unnoticed while blobs keep
+flowing. Fail-closed like INV-12 — a predicate that raises counts as
+unverified. The peer's fingerprint is bound at trade creation and re-checked
+with it; a change cancels the trade and never re-pins (INV-11). Binding is to
+the fingerprint and never to the I2P destination, which is `TRANSIENT` and
+changes every session by design.
+
+### Other properties, each because of a specific failure mode
+
+- **Terms-hash echo.** The responder echoes a hash of the terms it read. A
+  mismatch stops the trade rather than reconciling silently — the terms are
+  the trade.
+- **Strictly increasing sequence numbers** per direction. The concrete case:
+  an ACCEPT captured and replayed after a CANCEL would otherwise put the
+  proposer back into ACTIVE with no counterparty.
+- **Trade id checked before the sequence advances.** The other order would let
+  an unrelated id burn the replay window and wedge the trade.
+- **24 KiB blob cap**, refused up front rather than sent and throttled halfway.
+  This is a rate-limit constraint and a test derives it from the XMPP client's
+  own `_RATE_MAX` so the two files cannot drift apart. Bigger blobs
+  (`export_multisig_info` on a busy wallet, a large signed tx set) do not fit;
+  the fix is to route them through the file-transfer engine, which already
+  solved this, and that is deliberately not in this version.
+- **Nothing reaches the session log.** `trade` is deliberately absent from
+  `_LOG_SAFE_TAGS`, so every `[trade]` line is redacted by the INV-03
+  allowlist rather than by a rule someone remembered. A blob is sensitive —
+  the 2021 Monero disclosure included view-secret-key recovery by an
+  eavesdropper on the setup exchange — and a test pins the tag's absence,
+  because the obvious "improvement" is to add it so the transcript reads
+  better.
+- **State is in memory only**, cleared on disconnect, `/quit` and process
+  exit. No resume: a trade restored from a file would mean trusting that file
+  about who the counterparty was and how far it had got.
+- **Terminal escapes stripped** from peer-supplied terms and reasons before
+  anything prints them.
+
+### No arbitration service
+
+The project does not act as an arbitrator and ships no arbitrator key. 2-of-3
+works — the third party runs a trade session like anyone else — but this
+client holds none of the three keys, and a test asserts there is no code path
+that could. That is a deliberate decision on legal grounds: holding one of
+three keys is the part of an escrow design most likely to be read as a
+financial activity.
+
+### What it does not do, stated plainly
+
+It cannot tell you a multisig address was formed from the right keys, that a
+payment landed, or that a signature is valid. Your wallet does. Comparing the
+multisig address with your counterparty out of band is the one check nothing
+here can do for you, and [TRADE.md](TRADE.md) says so at the step where it
+matters. This is a real limitation, and it is the price of the client not
+becoming a wallet.
+
+### Verification
+
+Python suite **2627 passed, 0 failed, 43 skipped, 1 xfailed** on 3.12. 86 new
+tests in `tests/test_trade_courier.py`. Six mutations run against the security
+properties — SMP gate per-message, fingerprint re-pin, replay window, terms
+hash, check ordering, blob cap — all six killed; the blob-cap mutant survived
+the first attempt because the test tracked the constant instead of pinning it,
+which is why the cap now derives from `_RATE_MAX`.
+
+Two test stubs (`test_xmpp_keepalive.py`, `test_xmpp_session_lifecycle.py`)
+gained `_clear_trades`, since the disconnect path now calls it.
+
+**Not live-tested between wallets.** Nothing here has carried a real
+`prepare_multisig` blob between two `monero-wallet-cli` instances yet. The
+next step is [TRADE.md](TRADE.md)'s runbook on stagenet, by hand, on the two
+handsets — which is also what will tell us whether 24 KiB is the right cap.
+
+---
+
 ## v10.19.0 — PyO3 0.29 for GHSA-36hh-v3qg-5jq4, and IRC scrollback stops outliving the connection
 
 *2026-09-05.  `VERSION → 10.19.0`, `otrv4_core 0.10.28`, `pyo3 0.24.2 → 0.29.2`.*

@@ -177,6 +177,62 @@ release `.so` rebuilt with `--features extension-module` and installed; Python
 suite 2538 passed, 0 failed; the 44 new boundary tests pass against the
 installed module.
 
+## Trade coordination is a courier, not a wallet (v10.20.0)
+
+`otrv4plus_trade.py` relays multisig coordination blobs between two people
+inside the OTRv4+ channel. It is a transport, and the security argument rests
+on it staying one.
+
+**What it never does** (INV-25). It opens no wallet file, reads no seed, spend
+key or view key, derives no address and signs nothing. A blob is checked for
+base64 alphabet and length and passed through verbatim — never parsed, because
+parsing is the first step toward interpreting. Its import list is asserted
+exactly (`base64`, `hashlib`, `re`, `secrets`, `time`, `typing`), so it cannot
+reach a daemon or a wallet at all, and `tests/test_trade_courier.py` walks its
+identifiers for anything key-, network- or wallet-shaped.
+
+This is INV-08 in its strongest form. INV-08 says Python does not receive key
+material Rust can own instead; here there is no key material in either, because
+the keys never enter the process.
+
+**What gates a trade** (INV-26). `is_smp_verified(peer)` is checked on every
+message in both directions, not once when the trade opens. A trade agreed at
+09:00 and still running at 14:00 would otherwise span five hours in which a
+session teardown or a fingerprint change goes unnoticed while blobs keep
+flowing. Fail-closed, matching INV-12: a predicate that raises counts as
+unverified. The peer's fingerprint is bound when the trade opens and re-checked
+with it; a change cancels the trade and never re-pins, matching INV-11.
+
+Binding is to the **fingerprint**, never to the I2P destination. Destinations
+are `TRANSIENT` and change every session by design — that is the transport's
+main privacy property, and tying a trade to one would either undo it or break
+the trade.
+
+**Trade output never reaches the session log.** `trade` is deliberately absent
+from `_LOG_SAFE_TAGS`, so every `[trade]` line is redacted to
+`<unlogged line: N chars>` by the allowlist in INV-03 rather than by a rule
+someone remembered to write. That matters because a multisig blob is
+sensitive: the 2021 Monero disclosure included recovery of the view secret key
+by an eavesdropper on the setup exchange. A test pins the tag's absence,
+because the obvious "improvement" is to add it so the transcript reads better.
+
+**State is in memory only** and is cleared on disconnect, `/quit` and process
+exit, alongside the scrollback purge (INV-24). A trade does not survive a
+restart: resuming from a file would mean trusting that file about who the
+counterparty was and how far the trade had got.
+
+**What it does not protect you from.** It cannot tell you a multisig address
+was formed from the right keys, that a payment landed, or that a partial
+signature is well formed. Your wallet tells you that, and comparing the
+multisig address with your counterparty out of band is the one check nothing
+here can do for you. This is a real limitation and the price of the client not
+becoming a wallet — [MONERO_ESCROW_AUDIT.md](MONERO_ESCROW_AUDIT.md) §2.2
+states the counter-argument in full.
+
+**No arbitration.** The project does not act as an arbitrator and ships no
+arbitrator key. 2-of-3 works by the participants choosing their own third
+party. There is no code path that would let this client hold one of three keys.
+
 ## Known issues and limitations
 
 1. **Rust crypto crates are not audited.** `ed448-goldilocks-plus` 0.16 is the only viable pure-Rust Ed448, and `x448` 0.6 the X448, but neither has had a formal review. `pqcrypto-mlkem 0.1.1` (FIPS 203 ML-KEM-1024) and `pqcrypto-mldsa 0.1.2` (ML-DSA-87) are PQClean-derived reference implementations.
