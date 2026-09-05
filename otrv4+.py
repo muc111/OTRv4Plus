@@ -1873,7 +1873,7 @@ class OTRv4DataMessage:
             raise ValueError(f"Failed to decode message: {e }")
 
 
-VERSION = "OTRv4+ 10.26.1"
+VERSION = "OTRv4+ 10.26.2"
 
 #: SMP passphrase length bounds, shared by both clients.
 #:
@@ -11842,22 +11842,36 @@ class OTRv4IRCClient:
     #
     # Two data points and a straight line through them is not a proof, so
     # BUDGET here is 20% under what was measured, and `auto` is opt-in.
-    FLOOD_LINE_PENALTY = 2.0
-    #: Refitted in v10.26.1 after `auto` was killed on its first real run --
-    #: an SMP1, 19 of 23 fragments, at `fast`.  Two errors in the v10.26.0
-    #: model, and the second is the one that mattered:
+    #: Refitted a second time in v10.26.2, and this is the last time the
+    #: number moves on guesswork.  A fifth observation -- a 47-fragment SMP2
+    #: at `normal`, killed -- makes a penalty of 2.0 arithmetically
+    #: impossible: `normal` costs exactly 2.0, so at that penalty its debt
+    #: after the burst is zero and no length could ever be refused, yet one
+    #: was.  Solving the five observations together needs a penalty of at
+    #: least 2.75, and 3.0 fits with room.
     #:
-    #:   * BUDGET was 28.  With the corrected debt below, the observations
-    #:     bracket it at survived-21 / killed-23, so it is about 22.
+    #: THE CONSEQUENCE IS THE WHOLE ANSWER.  At 3.0, `safe` (3.15 s/line) is
+    #: the ONLY preset whose debt per line is negative, and therefore the only
+    #: one safe at the lengths this protocol sends.  That is not a coincidence
+    #: discovered here -- it is why `safe` has completed two full
+    #: verifications on this server while `normal`, `fast` and `turbo` have
+    #: been killed with "Excess Flood" between them four times.
     #:
-    #:   * THE BURST WAS CHARGED WRONG.  Debt was computed as
-    #:     n * (PENALTY - cost) for every line, but the first `allowance/cost`
-    #:     lines go out back to back at essentially zero interval, so each of
-    #:     them costs the FULL penalty.  At `fast` that is four lines and
-    #:     eight seconds of debt spent before the message has properly
-    #:     started -- more than a third of the budget, buying four lines of
-    #:     time.  A burst is nearly free in seconds and expensive in debt,
-    #:     which is the opposite of how the first model treated it.
+    #: Three refits now, every one of them correcting in the unsafe
+    #: direction.  The model is a heuristic for an UNKNOWN server, not a
+    #: licence to go faster on this one.
+    FLOOD_LINE_PENALTY = 3.0
+    #: The burst is charged at the FULL penalty, not the shortfall -- see
+    #: `_flood_debt`.  Lines covered by the allowance go out back to back at
+    #: essentially zero interval, so the server bills each of them in full
+    #: while the client waits almost nothing.  Getting that backwards in
+    #: v10.26.0 under-counted every message by (allowance/cost) * cost.
+    #:
+    #: At penalty 3.0 the five observations put the real budget between 38 and
+    #: 42.  This is 15: low enough that `auto` chooses `safe` for every
+    #: message this protocol sends, which is the answer the wire has given
+    #: four times.  It is deliberately not the fitted value -- fitting it
+    #: closely is what produced two releases that got a handset killed.
     FLOOD_DEBT_BUDGET = 15.0
     #: Presets `auto` may choose between, fastest first.  `turbo` is excluded
     #: deliberately: it is the preset for finding a ceiling by hitting it,

@@ -212,39 +212,26 @@ killed mid-SMP2:
 18:52:58 [LucidDusk] ⚠ LucidDusk disconnected: Excess Flood - OTR session ended
 ```
 
-`safe` has completed two full verifications on this server. `fast` and `turbo`
-have been killed with `Excess Flood` three times between them, at 19, 24 and 34
-fragments. **The floor on this server is `normal`.**
+**SETTLED for irc.postman.i2p.** Use `safe`. It is the default, so there is
+nothing to set.
 
-The fitted model, refined over four observations: the server charges about
-2.0s per line with about 22 seconds of allowance, and **the burst is charged
-at the full penalty** — four back-to-back lines at `fast` owe 8 seconds before
-the message has started. At or above 2.0s/line the debt per line is zero and
-any length is safe; below it, `fast` tops out at eleven lines and the shortest
-OTR message is sixteen.
+`safe` has completed two full verifications here. `normal`, `fast` and `turbo`
+have been killed with `Excess Flood` four times between them, at 19, 24, 34 and
+47 fragments.
 
-So there are two sensible settings here:
+The fitted model, over five observations: the server charges about **3.0
+seconds per line** with roughly 40 seconds of allowance, and the burst is
+charged at the full penalty. At 3.0, `safe` (3.15 s/line) is the only preset
+whose debt per line is negative — the only one that never accumulates, and so
+the only one safe at the lengths this protocol sends. `auto` picks `safe` for
+every OTR message here.
 
-```
-/fragrate normal      # zero debt accumulation, ~35% faster than safe
-/fragrate auto        # the same thing, arrived at by the rule
-```
+That model has been refitted three times and corrected in the unsafe direction
+every time. Treat it as a floor, not a target. If you test another server, use
+`/fragrate auto` — the arithmetic will pick a faster rate where one is
+genuinely available.
 
-`auto` picks `normal` for every OTR message on this server. It is worth using
-anyway on an unknown server, where the same arithmetic will pick `fast` if the
-server tolerates it or `safe` if it does not.
-
-Both handsets must be set the same:
-
-```
-/fragrate normal      # on BOTH devices
-/otr <peer>           # a throwaway session first
-/smp
-```
-
-- [ ] the DAKE completes
-- [ ] SMP completes — SMP2/SMP3 are the 47-fragment proofs that killed `fast`
-- [ ] three consecutive verifications with no disconnect
+- [ ] three consecutive verifications on `safe` with no disconnect
 
 If it survives three consecutive verifications, `auto` is the answer for this
 server. If it does not, the fitted budget of 28 is too high — report the

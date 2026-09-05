@@ -4,6 +4,66 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## v10.26.2 — `safe` is the answer, and the model now says so
+
+*2026-09-05.  `VERSION → 10.26.2`.  `otrv4_core` unchanged at 0.10.28.*
+
+A fifth observation, from the peer this time: a **47-fragment SMP2 at
+`normal`, killed with `Excess Flood`**.
+
+The v10.26.1 peer-flood backoff caught it and dropped this end to `safe`
+before its own SMP3 — also 47 fragments — went out.  That is the mechanism
+working exactly as intended on its first real firing, and it probably saved
+the session.
+
+### A penalty of 2.0 is now arithmetically impossible
+
+`normal` costs exactly 2.0 s/line.  At a penalty of 2.0 its debt after the
+burst is **zero**, so no length could ever be refused — and one was.  Solving
+all five observations together needs a penalty of at least 2.75; 3.0 fits with
+room:
+
+| lines | rate | debt at 3.0 | outcome |
+|---|---|---|---|
+| 17 | `fast` | 38 | survived |
+| 19 | `fast` | 42 | killed |
+| 34 | `fast` | 72 | killed |
+| 24 | `normal` | 28 | survived |
+| **47** | **`normal`** | **51** | **killed** |
+
+### The consequence is the whole answer
+
+At a penalty of 3.0, **`safe` (3.15 s/line) is the only preset whose debt per
+line is negative** — the only one that never accumulates, and therefore the
+only one safe at the lengths this protocol sends.
+
+That is not a coincidence discovered here.  It is why `safe` has completed two
+full verifications on this server while `normal`, `fast` and `turbo` have been
+killed four times between them.  `auto` now returns `safe` for every OTR
+message, which is the answer the wire has given repeatedly.
+
+### On the model itself
+
+Three refits, **every one correcting in the unsafe direction**: 2.0 with a
+budget of 28, then 2.0 with the burst charged properly, now 3.0.  Twice that
+produced a release which got a handset killed.
+
+So the budget is deliberately **not** the fitted value.  It stays at 15 against
+a fitted 38–42, which is low enough that `auto` picks `safe` for everything
+here while the arithmetic still picks a faster rate on a genuinely tolerant
+server.  The model is a heuristic for an unknown server, not a licence to go
+faster on this one.
+
+**The tuning is finished.**  `safe` is the setting for irc.postman.i2p.  A
+verification costs about seven minutes of pacing plus I2P transit, and that is
+what this server allows.
+
+138 tests, 3 further mutants killed.
+
+Full suite 3138 passed / 44 skipped / 1 xfailed.
+
+---
+
 ## v10.26.1 — the burst was the expensive part
 
 *2026-09-05.  `VERSION → 10.26.1`.  `otrv4_core` unchanged at 0.10.28.*

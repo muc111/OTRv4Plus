@@ -999,39 +999,28 @@ class TestTheReconnectDoesNotContradictItself:
 
 
 class TestAutoPicksTheRateFromTheMessageLength:
-    """The limit is a debt, not a rate -- and the debt was computed wrongly.
+    """Five observations from irc.postman.i2p, and three model revisions.
 
-    v10.26.0 shipped `auto` on a model fitted to three observations. It was
-    killed on its first real run: an SMP1, 19 of 23 fragments, at `fast`.
+        17 lines at fast     survived
+        19 lines at fast     KILLED   (an SMP1, cut off at fragment 19)
+        34 lines at fast     KILLED   (an SMP2, cut off at fragment 34)
+        24 lines at normal   survived
+        47 lines at normal   KILLED   (an SMP2 -- the peer, 2026-09-05 19:51)
 
-        18:22:08 Server: Closing Link: FierceRidge[...] (Excess Flood)
-        18:22:08    Fragment pacing was 'fast' for that send, and is 'safe' now.
+    The fifth killed the model twice over. A penalty of 2.0 is now
+    arithmetically impossible: `normal` costs exactly 2.0, so at that penalty
+    its debt after the burst is zero and no length could ever be refused --
+    yet one was. Solving all five together needs a penalty of at least 2.75.
 
-    Two errors, and the second is the one that mattered.
+    AT 3.0, `safe` (3.15 s/line) IS THE ONLY PRESET WHOSE DEBT PER LINE IS
+    NEGATIVE. That is not a coincidence found here; it is why `safe` has
+    completed two full verifications on this server while everything faster
+    has been killed four times between them.
 
-    **The burst was charged as a paced line.** Debt was `n * (PENALTY - cost)`
-    for every line, but the lines covered by the allowance go out back to back
-    at essentially zero interval -- so the server charges each of them the
-    FULL penalty while the client waits almost nothing. At `fast` that is four
-    lines and eight seconds of debt spent before the message has started,
-    against a budget of fifteen. A burst is nearly free in seconds and
-    expensive in debt; the first model had it exactly backwards.
-
-    **The budget was too high.** With the debt corrected the four observations
-    bracket it tightly:
-
-        17 lines at fast   debt 21   survived
-        19 lines at fast   debt 23   KILLED
-        34 lines at fast   debt 38   KILLED
-        24 lines at normal debt  4   survived
-
-    So the real budget is about 22, and this uses 15.
-
-    THE ANSWER IS NOT THE ONE THIS WAS BUILT FOR. At `fast` the corrected
-    limit is eleven lines and the shortest OTR message is sixteen, so `auto`
-    now returns `normal` for every real message. The honest reading is that
-    `normal` -- whose debt per line is exactly zero -- is the floor on this
-    server, not that `auto` found something clever.
+    Three refits, every one correcting in the unsafe direction. The budget is
+    therefore deliberately NOT the fitted value: fitting it closely is what
+    produced two releases that got a handset killed. The model is a heuristic
+    for an unknown server, not a licence to go faster on this one.
     """
 
     @pytest.fixture
@@ -1044,69 +1033,68 @@ class TestAutoPicksTheRateFromTheMessageLength:
         c.FLOOD_DEBT_BUDGET = BASE.FLOOD_DEBT_BUDGET
         return c
 
-    # (label, lines, cost, allowance, killed?)  -- all four real runs.
+    # (label, lines, cost, allowance, killed?) -- every real run to date.
     OBSERVED = [
-        ("DAKE2 17 lines at fast",  17, 1.00, 4.00, False),
-        ("SMP1  19 lines at fast",  19, 1.00, 4.00, True),
-        ("SMP2  34 lines at fast",  34, 1.00, 4.00, True),
-        ("DAKE  24 lines at normal", 24, 2.00, 4.00, False),
+        ("17 lines at fast",   17, 1.00, 4.00, False),
+        ("19 lines at fast",   19, 1.00, 4.00, True),
+        ("34 lines at fast",   34, 1.00, 4.00, True),
+        ("24 lines at normal", 24, 2.00, 4.00, False),
+        ("47 lines at normal", 47, 2.00, 4.00, True),
     ]
 
     @pytest.mark.parametrize("label,n,cost,allowance,killed", OBSERVED)
-    def test_the_model_classifies_every_real_observation(
+    def test_the_model_refuses_everything_the_wire_killed(
             self, client, label, n, cost, allowance, killed):
-        """The only test here that is evidence rather than arithmetic."""
-        debt = client._flood_debt(n, cost, allowance)
+        """The only assertions here that are evidence rather than arithmetic.
+
+        One-sided on purpose: the model must never permit something that was
+        killed, but it is allowed to refuse something that survived. Every
+        correction so far has been in the unsafe direction, so the margin goes
+        that way."""
         if killed:
-            assert debt > BASE.FLOOD_DEBT_BUDGET, (
-                "%s was killed on the wire but the model permits it "
-                "(debt %.1f, budget %.1f)"
-                % (label, debt, BASE.FLOOD_DEBT_BUDGET))
+            assert client._flood_debt(n, cost, allowance) > \
+                BASE.FLOOD_DEBT_BUDGET, (
+                    "%s was killed on the wire but the model permits it"
+                    % label)
 
-    def test_the_two_kills_are_dearer_than_both_survivals(self, client):
-        """A model that cannot separate them is not a model."""
-        killed = [client._flood_debt(n, c, a)
-                  for _l, n, c, a, k in self.OBSERVED if k]
-        lived = [client._flood_debt(n, c, a)
-                 for _l, n, c, a, k in self.OBSERVED if not k]
-        assert min(killed) > min(lived)
+    def test_a_penalty_of_two_is_now_impossible(self, client):
+        """`normal` costs exactly 2.0. At a penalty of 2.0 its debt after the
+        burst is zero, so no length could ever be refused -- and a 47-line
+        `normal` message was killed. The number had to move."""
+        assert BASE.FLOOD_LINE_PENALTY > BASE.PACE_PRESETS["normal"][0]
 
-    def test_the_burst_costs_the_full_penalty(self, client):
-        """The bug. Four burst lines at `fast` owe 8s, not 4s."""
-        assert client._flood_debt(4, 1.00, 4.00) == \
-            pytest.approx(4 * BASE.FLOOD_LINE_PENALTY)
-
-    def test_a_paced_line_costs_only_the_shortfall(self, client):
-        burst_only = client._flood_debt(4, 1.00, 4.00)
-        one_more = client._flood_debt(5, 1.00, 4.00)
-        assert one_more - burst_only == pytest.approx(
-            BASE.FLOOD_LINE_PENALTY - 1.00)
-
-    def test_a_bigger_burst_is_dearer_for_the_same_message(self, client):
-        """Which is why a burst is not free, and why the first model's
-        conclusion was wrong in the unsafe direction."""
-        assert client._flood_debt(20, 1.00, 8.00) > \
-            client._flood_debt(20, 1.00, 2.00)
+    def test_only_safe_has_a_negative_debt_per_line(self, client):
+        """The whole finding in one assertion."""
+        never_accumulates = [
+            name for name, (cost, _a, _c, _f) in BASE.PACE_PRESETS.items()
+            if BASE.FLOOD_LINE_PENALTY - cost <= 0]
+        assert never_accumulates == ["safe"]
 
     @pytest.mark.parametrize("name,frags", [
         ("DAKE1", 16), ("DAKE2", 24), ("DAKE3", 19),
         ("SMP1", 23), ("SMP2", 47), ("SMP3", 47), ("SMP4", 20),
     ])
-    def test_every_real_message_now_gets_a_rate_with_zero_debt(
+    def test_every_real_message_gets_a_rate_that_never_accumulates(
             self, client, name, frags):
         chosen = client._auto_preset_for(frags)
         cost = BASE.PACE_PRESETS[chosen][0]
-        assert cost >= BASE.FLOOD_LINE_PENALTY, (
-            "%s (%d fragments) was given %s, which accumulates debt"
-            % (name, frags, chosen))
+        assert BASE.FLOOD_LINE_PENALTY - cost <= 0, (
+            "%s (%d fragments) was given %s, which accumulates debt on a "
+            "server like the one measured" % (name, frags, chosen))
 
-    def test_the_shortest_otr_message_is_longer_than_fast_allows(self, client):
-        """States the finding as an assertion: this is why `auto` collapses to
-        `normal` rather than a bug in it."""
-        limit = max(n for n in range(1, 200)
-                    if client._flood_debt(n, 1.00, 4.00)
-                    <= BASE.FLOOD_DEBT_BUDGET)
-        assert limit < 16
+    def test_the_burst_costs_the_full_penalty(self, client):
+        """The v10.26.0 bug: burst lines were charged the shortfall."""
+        assert client._flood_debt(4, 1.00, 4.00) == \
+            pytest.approx(4 * BASE.FLOOD_LINE_PENALTY)
+
+    def test_a_paced_line_costs_only_the_shortfall(self, client):
+        step = (client._flood_debt(5, 1.00, 4.00)
+                - client._flood_debt(4, 1.00, 4.00))
+        assert step == pytest.approx(BASE.FLOOD_LINE_PENALTY - 1.00)
+
+    def test_a_bigger_burst_is_dearer_for_the_same_message(self, client):
+        assert client._flood_debt(20, 1.00, 8.00) > \
+            client._flood_debt(20, 1.00, 2.00)
 
     def test_every_choice_stays_inside_the_budget(self, client):
         for n in range(1, 300):
@@ -1120,18 +1108,20 @@ class TestAutoPicksTheRateFromTheMessageLength:
         for n in range(1, 300):
             assert client._auto_preset_for(n) != "turbo"
 
-    def test_the_budget_is_under_the_cheapest_kill(self, client):
+    def test_the_budget_is_well_under_the_cheapest_kill(self, client):
+        """Not the fitted value. Fitting it closely is what shipped twice and
+        got a handset killed twice."""
         cheapest_kill = min(client._flood_debt(n, c, a)
                             for _l, n, c, a, k in self.OBSERVED if k)
-        assert BASE.FLOOD_DEBT_BUDGET <= cheapest_kill * 0.75
+        assert BASE.FLOOD_DEBT_BUDGET <= cheapest_kill * 0.5
 
     def test_a_zero_cost_preset_cannot_divide_by_it(self, client):
         assert client._flood_debt(10, 0.0, 4.0) == float("inf")
 
-    def test_it_would_still_pick_fast_on_a_tolerant_server(self, client):
-        """The arithmetic is the part worth keeping: raise the budget and the
-        same rule picks a faster rate, without anybody rewriting it."""
-        client.FLOOD_DEBT_BUDGET = 500.0
+    def test_it_would_still_pick_faster_on_a_tolerant_server(self, client):
+        """The arithmetic is what is worth keeping: the same rule goes faster
+        where a server allows it, without anybody rewriting it."""
+        client.FLOOD_DEBT_BUDGET = 5000.0
         assert client._auto_preset_for(16) == "fast"
 
 
@@ -1140,13 +1130,14 @@ class TestAutoIsWiredThroughTheSendPath:
     def test_the_pacer_takes_the_fragment_count(self, client):
         """The count reaches the rule. On this server's fitted budget every
         real message lands on `normal`, so the discriminating case is a
-        message short enough to qualify for `fast` -- which no OTR message
-        is, and which is the finding rather than a gap in the test."""
+        message short enough to qualify for a faster rate -- which no OTR
+        message is, and which is the finding rather than a gap in the
+        test."""
         client._pace_preset = "auto"
-        short = client._pacer(NET.NET_I2P, 4).cost
+        short = client._pacer(NET.NET_I2P, 1).cost
         long_ = client._pacer(NET.NET_I2P, 47).cost
         assert short <= long_
-        assert long_ == BASE.PACE_PRESETS["normal"][0]
+        assert long_ == BASE.PACE_PRESETS["safe"][0]
 
     def test_without_a_count_it_does_not_guess_fast(self, client):
         client._pace_preset = "auto"
@@ -1158,7 +1149,7 @@ class TestAutoIsWiredThroughTheSendPath:
         client._pace_preset = "auto"
         assert client._pacer(NET.NET_I2P, 16).preset in BASE.AUTO_CANDIDATES
         assert client._pacer(NET.NET_I2P, 16).preset != "auto"
-        assert client._pacer(NET.NET_I2P, 47).preset == "normal"
+        assert client._pacer(NET.NET_I2P, 47).preset == "safe"
 
     def test_a_fixed_preset_still_reports_itself(self, client):
         client._pace_preset = "fast"
