@@ -226,7 +226,7 @@ impl PyFileSender {
                 "file transfer: system RNG unavailable"))?;
         let aad = envelope_aad(&transfer_id).map_err(PyValueError::new_err)?;
         let sealed = cipher_for(&wrap)?
-            .encrypt(Nonce::from_slice(&nonce),
+            .encrypt(&Nonce::from(nonce),
                      Payload { msg: file_key.expose_slice(), aad: &aad })
             .map_err(|_| PyRuntimeError::new_err(
                 "file transfer: could not seal the key envelope"))?;
@@ -305,7 +305,7 @@ impl PyFileSender {
         let aad = chunk_aad(&self.transfer_id, index, is_final)
             .map_err(PyValueError::new_err)?;
         let sealed = cipher_for(&self.file_key)?
-            .encrypt(Nonce::from_slice(&chunk_nonce(index)),
+            .encrypt(&Nonce::from(chunk_nonce(index)),
                      Payload { msg: plaintext, aad: &aad })
             .map_err(|_| PyRuntimeError::new_err(
                 "file transfer: chunk encryption failed"))?;
@@ -378,10 +378,16 @@ impl PyFileReceiver {
         }
         let wrap = derive_wrap_key(extra_sym_key, &transfer_id)?;
         let aad = envelope_aad(&transfer_id).map_err(PyValueError::new_err)?;
+        // The exact length was checked above, so this cannot fail -- but the
+        // envelope is peer-supplied, and `from_slice` would have panicked
+        // rather than refused if the guard above ever moved.
+        let nonce_bytes: [u8; NONCE_LEN] = envelope[..NONCE_LEN]
+            .try_into()
+            .map_err(|_| PyValueError::new_err("malformed key envelope"))?;
         // Fails if the envelope was made for another transfer id, another
         // session, or tampered with -- all three change the tag.
         let mut opened = cipher_for(&wrap)?
-            .decrypt(Nonce::from_slice(&envelope[..NONCE_LEN]),
+            .decrypt(&Nonce::from(nonce_bytes),
                      Payload { msg: &envelope[NONCE_LEN..], aad: &aad })
             .map_err(|_| PyValueError::new_err(
                 "key envelope failed authentication (wrong session, wrong \
@@ -450,7 +456,7 @@ impl PyFileReceiver {
         let aad = chunk_aad(&self.transfer_id, index, is_final)
             .map_err(PyValueError::new_err)?;
         let plaintext = cipher_for(&self.file_key)?
-            .decrypt(Nonce::from_slice(&chunk_nonce(index)),
+            .decrypt(&Nonce::from(chunk_nonce(index)),
                      Payload { msg: sealed, aad: &aad })
             .map_err(|_| PyValueError::new_err(
                 "chunk failed authentication"))?;
@@ -604,14 +610,14 @@ mod tests {
         let sealed = {
             let aad = chunk_aad(&id, 0, true).expect("aad");
             cipher_for(&tx.file_key).expect("cipher")
-                .encrypt(Nonce::from_slice(&chunk_nonce(0)),
+                .encrypt(&Nonce::from(chunk_nonce(0)),
                          Payload { msg: b"hello file", aad: &aad })
                 .expect("seal")
         };
         let rx = PyFileReceiver::create(&key, id, &env).expect("receiver");
         let aad = chunk_aad(&id, 0, true).expect("aad");
         let out = cipher_for(&rx.file_key).expect("cipher")
-            .decrypt(Nonce::from_slice(&chunk_nonce(0)),
+            .decrypt(&Nonce::from(chunk_nonce(0)),
                      Payload { msg: &sealed, aad: &aad })
             .expect("open");
         assert_eq!(out, b"hello file");

@@ -15,27 +15,27 @@
 //! Exposed to Python:
 //!
 //! - `mlkem1024_keygen() -> (bytes, bytearray)`
-//!     Generates a fresh ML-KEM-1024 keypair.  Returns
-//!     `(encap_key_bytes, decap_key_bytearray)`.  The encapsulation key
-//!     (public) is immutable `bytes`; the decapsulation key (private) is
-//!     a mutable `bytearray` so the caller can wipe it via `_secure_wipe`
-//!     on `MLKEM1024BraceKEM.zeroize()`.  Same shape as the C extension's
-//!     `mlkem1024_keygen()`.
+//!   Generates a fresh ML-KEM-1024 keypair.  Returns
+//!   `(encap_key_bytes, decap_key_bytearray)`.  The encapsulation key
+//!   (public) is immutable `bytes`; the decapsulation key (private) is
+//!   a mutable `bytearray` so the caller can wipe it via `_secure_wipe`
+//!   on `MLKEM1024BraceKEM.zeroize()`.  Same shape as the C extension's
+//!   `mlkem1024_keygen()`.
 //!
 //! - `mlkem1024_encaps(ek: bytes) -> (bytes, bytes)`
-//!     Encapsulates to a peer's encapsulation key.  Returns
-//!     `(ciphertext, shared_secret)` — CIPHERTEXT FIRST.
-//!     IMPORTANT: `pqcrypto_mlkem::mlkem1024::encapsulate` returns
-//!     `(SharedSecret, Ciphertext)` — the opposite order.  This wrapper
-//!     inverts it to `(ct, ss)` to match both the C extension's contract
-//!     and the Python caller `ct, ss = MLKEM1024BraceKEM.encapsulate(ek)`.
-//!     Getting this order wrong silently desyncs the brace key.
-//!     Raises `ValueError` on a malformed encapsulation key.
+//!   Encapsulates to a peer's encapsulation key.  Returns
+//!   `(ciphertext, shared_secret)` — CIPHERTEXT FIRST.
+//!   IMPORTANT: `pqcrypto_mlkem::mlkem1024::encapsulate` returns
+//!   `(SharedSecret, Ciphertext)` — the opposite order.  This wrapper
+//!   inverts it to `(ct, ss)` to match both the C extension's contract
+//!   and the Python caller `ct, ss = MLKEM1024BraceKEM.encapsulate(ek)`.
+//!   Getting this order wrong silently desyncs the brace key.
+//!   Raises `ValueError` on a malformed encapsulation key.
 //!
 //! - `mlkem1024_decaps(ct: bytes, dk: bytes) -> bytes`
-//!     Decapsulates a ciphertext with our decapsulation (secret) key.
-//!     Returns the 32-byte shared secret.  Raises `ValueError` on a
-//!     malformed ciphertext or decapsulation key.
+//!   Decapsulates a ciphertext with our decapsulation (secret) key.
+//!   Returns the 32-byte shared secret.  Raises `ValueError` on a
+//!   malformed ciphertext or decapsulation key.
 //!
 //! Byte sizes (FIPS 203 — ML-KEM-1024 parameter set):
 //!   Encapsulation key (public):  1568 bytes

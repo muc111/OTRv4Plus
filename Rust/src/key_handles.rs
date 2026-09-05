@@ -127,7 +127,7 @@ impl Ed448KeyHandle {
     ) -> PyResult<Py<PyBytes>> {
         let sig = crate::ring_sig::ring_sign_bytes(
             self.seed.expose_slice(), a1, a2, msg
-        ).map_err(|e| PyValueError::new_err(e))?;
+        ).map_err(PyValueError::new_err)?;
         Ok(PyBytes::new(py, &sig).unbind())
     }
 
@@ -378,7 +378,7 @@ fn hex_short(bytes: &[u8]) -> String {
         use std::fmt::Write;
         let _ = write!(s, "{:02x}", b);
     }
-    if bytes.len() > 8 { s.push_str("…"); }
+    if bytes.len() > 8 { s.push('…'); }
     s
 }
 

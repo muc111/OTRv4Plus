@@ -2,7 +2,7 @@
 """
 OTRv4+ XMPP - full OTR + SMP over XMPP, transported over I2P SAM
 ================================================================
-Version: 10.18.0
+Version: 10.18.2
 
 
 Post-quantum OTRv4+ end-to-end encryption over XMPP, reusing the IRC client's
@@ -237,7 +237,7 @@ def voice_available() -> "tuple[bool, str]":
             "no audio backend: libaaudio.so unavailable and parec/pacat "
             "missing  (run /audioprobe for details)")
 
-XMPP_VERSION = "10.18.0"
+XMPP_VERSION = "10.18.2"
 
 # ---------------------------------------------------------------------------
 # XMPP-private state directory
@@ -3679,16 +3679,22 @@ class OTRv4PlusXMPP(ClientXMPP):
             # Engine refused — DAKE already in progress or session in bad state.
             # Force-reset and retry so /otr can always unstick a hung handshake.
             print(f"[otr] resetting stuck session with {peer}, retrying DAKE...")
+            # Two separate steps, deliberately. They were one try block, and
+            # when the engine teardown raised, every line below it was skipped
+            # -- so a failure in the ENGINE also left the CLIENT holding stale
+            # state, and the retry had no chance. That is what a device saw:
+            # one AttributeError and the reset did nothing at all.
             try:
                 self.otr.end_session(peer)
-                self._encrypted.discard(peer)
-                self._last_dake1.pop(peer, None)
-                if self._secret_request == peer:
-                    self._secret_request = None
-                    self._mask_next_input(False)
-                self._smp_reported = {k for k in self._smp_reported if k[0] != peer}
             except Exception as e:
-                print(f"[otr] reset error: {e}")
+                print(f"[otr] engine teardown failed: {e}")
+            self._encrypted.discard(peer)
+            self._last_dake1.pop(peer, None)
+            if self._secret_request == peer:
+                self._secret_request = None
+                self._mask_next_input(False)
+            self._smp_reported = {k for k in self._smp_reported if k[0] != peer}
+            self._smp_flows.drop(peer)
             try:
                 msg, should_send = self.otr.handle_outgoing_message(peer, "")
             except Exception as e:

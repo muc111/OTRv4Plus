@@ -170,6 +170,13 @@ impl PySMPVault {
 
 #[pymethods]
 impl PySMPVault {
+    // No `Default`. Clippy suggests one for any `new()` taking no
+    // arguments, and for most types that is right -- but this is the store
+    // that holds SMP passphrases, and `Default::default()` is the trait
+    // every derive, container and generic helper reaches for implicitly.
+    // Constructing a secret store should be something the code visibly asks
+    // for, not something it can fall into.
+    #[allow(clippy::new_without_default)]
     #[new]
     pub fn new() -> Self { Self { inner: Vault::new() } }
 
@@ -181,7 +188,7 @@ impl PySMPVault {
     /// the garbage collector to deal with whenever it feels like it.
     fn store(&mut self, name: &str, value: &[u8]) -> PyResult<u64> {
         self.inner.store(name, value)
-            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e))
+            .map_err(pyo3::exceptions::PyValueError::new_err)
     }
 
     /// Store a secret from a Python `bytearray`, zeroing the caller's buffer.
@@ -203,7 +210,7 @@ impl PySMPVault {
     ) -> PyResult<u64> {
         let mut snapshot: Vec<u8> = value.to_vec();
         let result = self.inner.store(name, &snapshot)
-            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e));
+            .map_err(pyo3::exceptions::PyValueError::new_err);
 
         // Wipe our own copy whatever happened, including on the error path:
         // a rejected secret is still a secret.

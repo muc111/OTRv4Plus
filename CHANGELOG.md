@@ -4,6 +4,161 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## v10.18.2 — the Rust core builds silent, and `Cargo.toml` is valid TOML
+
+*2026-09-04.  `VERSION → 10.18.2`.  No behaviour change intended; the wire
+format, the key schedule and every derivation are byte-for-byte unchanged.*
+
+`cargo build --release` emitted **10 warnings**. It now emits none, and
+neither does `cargo clippy` or `cargo test`.
+
+### The one that was not cosmetic: `Cargo.toml` was invalid TOML
+
+```toml
+ed448-goldilocks-plus = {
+    version          = "0.16",
+    ...
+}
+```
+
+**TOML 1.0 forbids newlines inside `{ }`.** Cargo's own parser accepts them as
+an extension, so `cargo build` never said a word — while `maturin build` died
+before compiling anything:
+
+```
+Caused by: TOML parse error at line 151, column 26
+invalid inline table
+```
+
+Verified by building with maturin 1.7.8 and 1.8.1 (fails before the fix,
+succeeds after, and both carry the licence field). Anything else that reads
+the manifest with a conformant parser — packaging tools, licence scanners,
+SBOM generators — rejected the file outright, which for a project that has
+just taken on a dual licence and needs its metadata read by other people's
+tooling is worse than a warning. It is a dedicated `[dependencies.…]` table
+now, valid everywhere, with the same one-field-per-line layout and the same
+resolved dependency.
+
+### Nine deprecated nonce constructions, two of which could panic
+
+`Nonce::from_slice` is deprecated in the generic-array the tree resolves. It
+also **panics** on a wrong length rather than failing to compile. Seven sites
+already held a `[u8; NONCE_LEN]`, where the size is a type-level fact, and
+became `Nonce::from`. The other two took a *slice* of peer- or
+disk-supplied bytes:
+
+* the identity record's nonce, from a file that syncs between devices;
+* the file-transfer key envelope's nonce, straight off the wire.
+
+Both had a length check above them, so neither could actually panic — but the
+panic was one moved guard away, and `panic = "abort"` in release means a panic
+is the process. They use `try_into` and refuse now, which is what the rest of
+the parsing in those functions already does.
+
+### The rest
+
+* **`Dakeresult::success` reported as dead code.** It is not dead: all three
+  callers are behind `legacy-dake-keys`. Gated to match them, so the warning
+  stays meaningful for the day it becomes dead for real. `#[allow(dead_code)]`
+  would have silenced that permanently.
+* **Two clippy `erasing_op` *errors*** on `sig[0*57..1*57]` in `ring_sig.rs`.
+  Arithmetically clippy is right; the intent is a uniform four-field table
+  where `n*57..(n+1)*57` on every line makes a field-order mistake visible
+  against the spec. Documented allow rather than a rewrite that would lose
+  that.
+* **~40 further clippy findings** fixed: redundant closures, needless borrows,
+  a `push_str` of one character, an `Option` replace, doc-list indentation.
+  Four `too_many_arguments` and one `new_without_default` are documented
+  allows — restructuring an authenticated message's argument list, or giving a
+  passphrase vault a `Default`, are semantic decisions, not lint compliance.
+
+### One test had to stop pinning a line number
+
+`test_the_rust_core_declares_one_unsendable_pyclass` asserted
+`found == ["dake.rs:183"]`. Adding the `legacy-dake-keys` gate above it shifted
+the file by eight lines and the test failed reporting "the set of unsendable
+pyclasses changed" — when the set had not changed at all; the same single
+`DakeOutput` was eight lines lower. It now identifies the class by the struct
+it marks. A check that cries wolf on unrelated edits is one whose expectation
+gets bumped without being read, and for a test guarding thread affinity across
+the executor boundary that is the whole value gone.
+
+**Verification.** 111 Rust tests pass; the Python suite runs against a wheel
+rebuilt from the changed source, not the old one. Five tests pin the manifest:
+it must parse under `tomllib` (TOML 1.0 only), no inline table may span lines,
+and the rewritten dependency must still resolve to exactly what it did.
+
+---
+
+## v10.18.1 — `/otr` can actually unstick a hung handshake now
+
+*2026-09-04.  `VERSION → 10.18.1`.  A method that three call sites had been
+calling since they were written, and that never existed.*
+
+```
+/otr
+[otr] resetting stuck session with bob@xmpp-elite.i2p, retrying DAKE...
+[otr] reset error: 'EnhancedSessionManager' object has no attribute 'end_session'
+[otr] could not start DAKE with bob@xmpp-elite.i2p — try /otr again
+```
+
+**`EnhancedSessionManager.end_session` did not exist.** Three places in the
+XMPP client call it — `_forget_otr` clearing a peer whose session should not
+survive, the DAKE glare path yielding the initiator role, and `/otr`
+force-resetting a stuck handshake. All three raised `AttributeError` into an
+`except` that printed it and carried on, so **none of them ever tore anything
+down**. The comment promising that `/otr` "can always unstick a hung
+handshake" has been false since it was written, and stayed false until a phone
+got wedged and said so out loud.
+
+`terminate_session` could not stand in for it, which is presumably how the gap
+survived: it terminates the session object but leaves the entry in
+`self.sessions`, so the next `get_or_create_session` hands back the dead one
+and the handshake stays exactly as stuck. `end_session` removes the session
+*and* the DAKE engine, tolerates a half-built session that cannot terminate
+cleanly — the reset has to work on precisely the sessions that are broken —
+and is idempotent.
+
+**It sends no DISCONNECTED TLV.** All three callers want a local teardown, and
+announcing it would be wrong in two of the three: a stuck handshake has no
+encrypted session to send through, and on glare we are about to answer the
+peer's DAKE1 as responder, so telling them we disconnected first is the
+opposite of what is happening. `SessionManager.end_session` keeps its TLV
+because that one is the graceful goodbye; this is the reset path. The trust
+database is untouched — a pinned fingerprint is long-term identity, and
+forgetting it on reset would turn every reset into a fresh
+trust-on-first-use decision.
+
+### The half that was worse than the missing method
+
+The reset's client-side cleanup sat in the **same `try`** as the engine
+teardown:
+
+```python
+try:
+    self.otr.end_session(peer)      # raised here
+    self._encrypted.discard(peer)   # never ran
+    self._last_dake1.pop(peer, None)
+    ...
+except Exception as e:
+    print(f"[otr] reset error: {e}")
+```
+
+So one AttributeError on the first line skipped every line below it, and a
+failure in the *engine* also left the *client* holding stale state. The retry
+never had a chance. They are two steps now, and the reset additionally drops
+the SMP flow state it had been leaving behind.
+
+16 tests, 3 mutations applied and killed: `end_session` terminating without
+removing (the `terminate_session` trap), a broken session aborting the
+teardown, and the client cleanup coupled back into the engine's `try`.
+
+**This changes three previously-inert paths into live ones**, including DAKE
+glare — which has been live-tested successfully *with the no-op in place*.
+Worth a two-handset glare re-test.
+
+---
+
 ## v10.18.0 — a transfer says what it is doing, and says when it is done
 
 *2026-09-04.  `VERSION → 10.18.0`.  Python only.  Minor bump: new user-visible

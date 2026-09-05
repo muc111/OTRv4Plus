@@ -148,6 +148,14 @@ impl Dakeresult {
         self.consumed = true;
     }
 
+    /// Gated exactly as its callers are.
+    ///
+    /// Every use of this -- `generate_dake2`, `process_dake2` and
+    /// `get_session_keys` -- is behind `legacy-dake-keys`, so in a normal
+    /// build it is genuinely dead and rustc said so. `#[allow(dead_code)]`
+    /// would have silenced that permanently, including on the day it becomes
+    /// dead for real; matching the gate keeps the warning meaningful.
+    #[cfg(feature = "legacy-dake-keys")]
     fn success() -> Self { Self { success: true, error: None, ..Self::new() } }
 }
 
@@ -913,6 +921,15 @@ impl PyDake {
     /// defensively.
     #[staticmethod]
     #[pyo3(signature = (is_initiator, our_profile_bytes, unsigned_body, our_ik_bytes, our_prekey_bytes, mldsa_priv=None, mldsa_pub=None, sender_tag=0))]
+    // Nine arguments, and clippy is right that seven is usually the limit.
+    // They are not incidental here: each one is a distinct field of the
+    // OTRv4 wire message this function constructs, and the alternative --
+    // bundling them into a struct -- moves the compiler's arity check from
+    // the call site into a struct literal, where a transposed pair of
+    // same-typed byte slices stops being a type error. For a function whose
+    // whole job is laying out an authenticated message in a fixed order,
+    // that trade is the wrong way round.
+    #[allow(clippy::too_many_arguments)]
     fn sign_profile_body_and_construct<'py>(
         py: Python<'py>,
         is_initiator: bool,
@@ -1029,6 +1046,15 @@ impl PyDake {
     /// material without re-extracting.
     #[staticmethod]
     #[pyo3(signature = (is_initiator, our_profile_bytes, unsigned_body, ed448_handle, x448_handle, mldsa_priv=None, mldsa_pub=None, sender_tag=0))]
+    // Nine arguments, and clippy is right that seven is usually the limit.
+    // They are not incidental here: each one is a distinct field of the
+    // OTRv4 wire message this function constructs, and the alternative --
+    // bundling them into a struct -- moves the compiler's arity check from
+    // the call site into a struct literal, where a transposed pair of
+    // same-typed byte slices stops being a type error. For a function whose
+    // whole job is laying out an authenticated message in a fixed order,
+    // that trade is the wrong way round.
+    #[allow(clippy::too_many_arguments)]
     fn sign_profile_body_and_construct_with_handles<'py>(
         py: Python<'py>,
         is_initiator: bool,
