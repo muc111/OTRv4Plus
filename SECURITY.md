@@ -174,7 +174,7 @@ exception-propagation behaviour changed. No secret material moved.
 
 **Verification.** `cargo test` 111 passed; `cargo clippy --all-targets` clean;
 release `.so` rebuilt with `--features extension-module` and installed; Python
-suite 2525 passed, 0 failed; the 44 new boundary tests pass against the
+suite 2538 passed, 0 failed; the 44 new boundary tests pass against the
 installed module.
 
 ## Known issues and limitations

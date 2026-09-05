@@ -109,11 +109,11 @@ PySocks.
 ### Verification
 
 `cargo test` 111 passed. `cargo clippy --all-targets` clean, 0 errors, 0
-warnings. Release `.so` rebuilt and installed. Python suite **2525 passed, 0
-failed, 43 skipped, 1 xfailed** on Python 3.12. 104 new tests across three files:
+warnings. Release `.so` rebuilt and installed. Python suite **2538 passed, 0
+failed, 43 skipped, 1 xfailed** on Python 3.12. 117 new tests across four files:
 `test_dependency_advisories.py` (25), `test_pyo3_boundary.py` (44 — hostile
-input against the installed module), `test_irc_history_privacy.py` (35). Six
-mutations run against the new assertions, five killed, one confirmed
+input against the installed module), `test_irc_history_privacy.py` (35), `test_import_diagnostics.py` (13). Eight
+mutations run against the new assertions, seven killed, one confirmed
 semantically equivalent (`>` vs `>=` in the prune, where `overflow` is 0 at the
 boundary either way).
 
