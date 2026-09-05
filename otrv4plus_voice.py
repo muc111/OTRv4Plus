@@ -338,6 +338,40 @@ def _print(*args):
     _HOST["print"](*args)
 
 
+#: What protects a call, in the words a user needs rather than the words the
+#: code uses.  Named once so the terminal, the README and the tests cannot
+#: drift apart, and derived from what this module actually does: the media
+#: root is hybrid X448 + ML-KEM-1024 (both mandatory, neither alone
+#: sufficient) and each frame is sealed with AES-256-GCM by a Rust-held key.
+VOICE_SUITE_NAME = "X448 + ML-KEM-1024 → AES-256-GCM"
+
+#: Whether the per-call setup detail is printed.
+#:
+#: Bringing a call up used to emit fourteen lines: codec, mic and speaker
+#: gains, transport, shaping, audio backend, playout geometry, three loudness
+#: lines and two about which Android stream the volume keys control.  All of
+#: it is true and almost none of it is what a person wants at the moment they
+#: start talking, and on a phone it pushed the one line that matters -- that
+#: the call is up -- off the top of the screen.
+#:
+#: It is not deleted, because every one of those lines was added to answer a
+#: real question during a real failure.  It is behind a flag: `--debug`, or
+#: OTRV4PLUS_VOICE_VERBOSE=1 without one.
+VOICE_VERBOSE = bool(os.environ.get("OTRV4PLUS_VOICE_VERBOSE"))
+
+
+def set_voice_verbose(on: bool) -> None:
+    """Turn the setup detail on, from the host's --debug flag."""
+    global VOICE_VERBOSE
+    VOICE_VERBOSE = bool(on) or bool(os.environ.get("OTRV4PLUS_VOICE_VERBOSE"))
+
+
+def _vprint(*args):
+    """Print only when the setup detail was asked for."""
+    if VOICE_VERBOSE:
+        _print(*args)
+
+
 def _san(text, max_len=1024):
     return _HOST["sanitise"](text, max_len)
 
@@ -3558,38 +3592,42 @@ class VoiceCallSession:
         # protection they do not have.
         self.constant_rate = ("vbr" in applied) and ("dtx" in applied)
 
-        _print("[voice] codec: Opus %d Hz mono, %d ms frames, %d kbit/s %s"
-               % (VOICE_SAMPLE_RATE, VOICE_FRAME_MS, VOICE_BITRATE // 1000,
+        _vprint("[voice] codec: Opus %d Hz mono, %d ms frames, %d kbit/s %s"
+                % (VOICE_SAMPLE_RATE, VOICE_FRAME_MS, VOICE_BITRATE // 1000,
                   "CBR" if self.constant_rate else "VBR"))
-        _print("[voice] levels: mic gain %.2f%s, speaker gain %.2f, "
-               "playback compressor %s (%.0f dB makeup) — output is limited "
-               "so nothing here can clip"
-               % (self._mic_gain.gain,
+        _vprint("[voice] levels: mic gain %.2f%s, speaker gain %.2f, "
+                "playback compressor %s (%.0f dB makeup) — output is limited "
+                "so nothing here can clip"
+                % (self._mic_gain.gain,
                   " + auto" if self._mic_gain.auto else "",
                   self._speaker_gain.gain,
                   "on" if self._speaker_comp.enabled else "off",
                   self._speaker_comp.makeup_db))
         if self._playback_usage_is_voice():
-            _print("[voice] playback is declared as VOICE_COMMUNICATION, "
-                   "which some phones route to the EARPIECE rather than the "
-                   "speaker. If the level readings below look healthy but "
-                   "the call is still faint, that is routing, not gain: set "
-                   "OTRV4PLUS_AUDIO_USAGE=media.")
+            _vprint("[voice] playback is declared as VOICE_COMMUNICATION, "
+                    "which some phones route to the EARPIECE rather than the "
+                    "speaker. If the level readings below look healthy but "
+                    "the call is still faint, that is routing, not gain: set "
+                    "OTRV4PLUS_AUDIO_USAGE=media.")
         if self._transport_mode == VOICE_TRANSPORT_DATAGRAM:
-            _print("[voice] transport: I2P datagrams — no retransmission, so "
-                   "congestion arrives as loss (concealed) rather than as "
-                   "delay that accumulates.")
+            _vprint("[voice] transport: I2P datagrams — no retransmission, so "
+                    "congestion arrives as loss (concealed) rather than as "
+                    "delay that accumulates.")
         else:
-            _print("[voice] transport: I2P streams — reliable and ordered, so "
-                   "a lost segment stalls everything behind it for one 9 s "
-                   "retransmit timeout. Unset OTRV4PLUS_VOICE_TRANSPORT for "
-                   "datagrams.")
+            _vprint("[voice] transport: I2P streams — reliable and ordered, so "
+                    "a lost segment stalls everything behind it for one 9 s "
+                    "retransmit timeout. Unset OTRV4PLUS_VOICE_TRANSPORT for "
+                    "datagrams.")
+        # The shaping line stays at normal volume when it is BAD news.  A
+        # user who has been told the call is constant-rate is entitled to be
+        # told when it is not, and burying that with the codec settings would
+        # hide the one setup line that changes what the call protects.
         if self.constant_rate:
-            _print("[voice] application-layer constant-rate shaping active — "
-                   "packet size and timing carry no speech information. Call "
-                   "timing, duration and tunnel behaviour remain observable.")
+            _vprint("[voice] application-layer constant-rate shaping active — "
+                    "packet size and timing carry no speech information. Call "
+                    "timing, duration and tunnel behaviour remain observable.")
         else:
-            _print("[voice] WARNING: could not disable VBR/DTX (%s); packet "
+            _print("[voice] ⚠ WARNING: could not disable VBR/DTX (%s); packet "
                    "size and timing may leak conversation rhythm"
                    % ", ".join(failed))
 
@@ -3598,6 +3636,29 @@ class VoiceCallSession:
                 b"\x00" * VOICE_FRAME_BYTES, VOICE_FRAME_SAMPLES))
         except Exception:
             self._silence_frame = None
+
+    def security_line(self) -> str:
+        """One line naming what actually protects the call.
+
+        Asked for from a handset: the setup output said a great deal about
+        gains and buffers and nothing about the cryptography, so a user had
+        no way to know what the call was protected by.  Every value here is
+        read from the session rather than written down twice -- a hard-coded
+        cipher name is a lie waiting for the day somebody changes one.
+
+        The shaping claim is the reason this is built rather than printed as
+        a constant: if VBR or DTX could not be disabled the call is NOT
+        constant-rate, and a fixed string would tell the user it was.
+        """
+        shaped = ("constant-rate" if self.constant_rate
+                  else "NOT constant-rate")
+        return ("[voice] 🔒 %s over %s, %s — keys are per call, held in Rust, "
+                "and zeroized on hangup"
+                % (VOICE_SUITE_NAME,
+                   "I2P datagrams"
+                   if self._transport_mode == VOICE_TRANSPORT_DATAGRAM
+                   else "I2P streams",
+                   shaped))
 
     def _open_audio_devices(self) -> None:
         """Open the microphone and speaker through otrv4plus_audio.
@@ -3642,9 +3703,9 @@ class VoiceCallSession:
 
         self.audio_backend = self._capture.name
         cap = self._capture.diagnostics()
-        _print("[voice] audio: %s capture %s Hz / %s ch, playback %s — "
-               "PCM_16BIT%s"
-               % (self.audio_backend, cap.get("device_rate"),
+        _vprint("[voice] audio: %s capture %s Hz / %s ch, playback %s — "
+                "PCM_16BIT%s"
+                % (self.audio_backend, cap.get("device_rate"),
                   cap.get("device_channels"), self._playback.name,
                   ", resampling to %d Hz" % VOICE_SAMPLE_RATE
                   if cap.get("resampling") else ""))
@@ -3659,15 +3720,27 @@ class VoiceCallSession:
             cap_frames = play.get("buffer_capacity_frames") or 0
             rate = play.get("device_rate") or VOICE_SAMPLE_RATE
             held_ms = (1000.0 * cap_frames / float(rate)) if cap_frames and rate else 0.0
-            _print("[voice] playout: %s Hz / %s ch%s, burst %s frames, "
-                   "capacity %s frames (%.0f ms) vs %d ms per packet"
-                   % (play.get("device_rate"), play.get("device_channels"),
+            _vprint("[voice] playout: %s Hz / %s ch%s, burst %s frames, "
+                    "capacity %s frames (%.0f ms) vs %d ms per packet"
+                    % (play.get("device_rate"), play.get("device_channels"),
                       " (resampling)" if play.get("resampling") else "",
                       play.get("frames_per_burst"), cap_frames or "?",
                       held_ms, VOICE_FRAME_MS))
+            # The CONCLUSION stays at normal volume; the parameters above do
+            # not.  This is the one playout condition that ruins a call while
+            # every counter reads healthy: the write blocks, the pop rate
+            # falls below the arrival rate, and the jitter buffer sheds the
+            # difference -- deliberately, so it is not counted as loss.  A
+            # 1960 s call destroyed a third of its own audio this way and
+            # nothing in the frame counters said so.  Four numbers of device
+            # geometry are a diagnostic; "every write waits on the device" is
+            # a finding, and findings are not put behind a flag.
             if held_ms and held_ms < VOICE_FRAME_MS:
-                _print("[voice] playout: the device buffer holds less than one "
-                       "packet, so every write waits on the device")
+                _print("[voice] ⚠ playout: the device buffer holds less than "
+                       "one packet (%.0f ms vs %d ms), so every write waits "
+                       "on the device — audio will be dropped locally to keep "
+                       "up. --voice-debug for the device parameters."
+                       % (held_ms, VOICE_FRAME_MS))
         except Exception:
             pass
 
@@ -3683,26 +3756,26 @@ class VoiceCallSession:
             on_call_stream = (usage == getattr(
                 _audio, "AAUDIO_USAGE_VOICE_COMMUNICATION", None))
             clarity = self._speech_clarity
-            _print("[voice] loudness: clarity %s (high-pass %.0f Hz, "
-                   "presence +%.1f dB at %.0f Hz)"
-                   % ("on" if getattr(clarity, "enabled", False) else "OFF",
+            _vprint("[voice] loudness: clarity %s (high-pass %.0f Hz, "
+                    "presence +%.1f dB at %.0f Hz)"
+                    % ("on" if getattr(clarity, "enabled", False) else "OFF",
                       getattr(clarity, "hpf_hz", 0.0),
                       getattr(clarity, "presence_db", 0.0),
                       getattr(clarity, "presence_hz", 0.0)))
-            _print("[voice] loudness: compressor %s (makeup %.1f dB, %.0f:1 "
-                   "above %.0f dBFS), speaker gain x%.2f"
-                   % ("on" if getattr(comp, "enabled", False) else "OFF",
+            _vprint("[voice] loudness: compressor %s (makeup %.1f dB, %.0f:1 "
+                    "above %.0f dBFS), speaker gain x%.2f"
+                    % ("on" if getattr(comp, "enabled", False) else "OFF",
                       getattr(comp, "makeup_db", 0.0),
                       getattr(comp, "ratio", 1.0),
                       getattr(comp, "threshold", 0.0),
                       getattr(gain, "gain", 1.0)))
             if on_call_stream:
-                _print("[voice] loudness: routed to the CALL stream — the "
-                       "volume keys during a call")
-                _print("[voice]   change this, not the media volume. For the "
-                       "louder media route:")
-                _print("[voice]   OTRV4PLUS_AUDIO_USAGE=media  (costs the "
-                       "platform echo canceller)")
+                _vprint("[voice] loudness: routed to the CALL stream — the "
+                        "volume keys during a call")
+                _vprint("[voice]   change this, not the media volume. For the "
+                        "louder media route:")
+                _vprint("[voice]   OTRV4PLUS_AUDIO_USAGE=media  (costs the "
+                        "platform echo canceller)")
         except Exception:
             pass
 
@@ -5317,6 +5390,24 @@ class VoiceCallManager:
 
     # -- helpers ----------------------------------------------------------
 
+    #: Diagnostics and the setup detail are ONE switch.
+    #:
+    #: The call-setup lines moved behind `_vprint` when the terminal output
+    #: was tidied, and a second, separate flag for them would have been a
+    #: trap: the person who types /voicedebug because a call sounds wrong is
+    #: asking for exactly those lines, and would have got telemetry without
+    #: the codec, transport and playout geometry that explain it.  Wiring the
+    #: two together means --voice-debug and /voicedebug restore the whole of
+    #: the old output, and nothing new has to be discovered to get it back.
+    @property
+    def debug(self) -> bool:
+        return self._debug
+
+    @debug.setter
+    def debug(self, on) -> None:
+        self._debug = bool(on)
+        set_voice_verbose(self._debug)
+
     @staticmethod
     def _bare(jid: str) -> str:
         return (jid or "").split("/", 1)[0]
@@ -5651,6 +5742,7 @@ class VoiceCallManager:
         self._start_rekey(peer)
         _print("[voice] call active with %s — /hangup to end, /mute to toggle mic"
                % _san(peer, 64))
+        self._announce_security(session)
 
     async def answer_call(self, peer: str) -> None:
         """Responder role: derive keys, then create our session and connect."""
@@ -5727,6 +5819,7 @@ class VoiceCallManager:
         self._start_rekey(peer)
         _print("[voice] call active with %s — /hangup to end, /mute to toggle mic"
                % _san(peer, 64))
+        self._announce_security(session)
 
     # -- inbound ----------------------------------------------------------
 
@@ -6643,11 +6736,224 @@ class VoiceCallManager:
                 self._signal(peer, "END", (session.call_id.hex(),))
             except Exception:
                 pass
+        # Gathered BEFORE end(), which tears down the jitter buffer and the
+        # latency tracker the figures come from. Printed after, so the two
+        # lines are not split by whatever teardown has to say.
+        summary = self._call_summary(session)
         stats = await session.end()
-        _print("[voice] call ended — sent %d, received %d, dropped %d, "
-               "auth-failed %d, replayed %d; every media key zeroized"
-               % (stats["sent"], stats["recv"], stats["dropped"],
-                  stats["auth_fail"], stats["replay"]))
+        for line in summary:
+            _print(line)
+        self._report_teardown(stats)
+
+    def _report_teardown(self, stats) -> None:
+        """The second hangup line: keys gone, and anything that smelled wrong.
+
+        The full packet tally used to print on every call.  Five counters is
+        a diagnostic, and it is the wrong thing to hand somebody who has just
+        put the phone down -- but two of those counters are NOT diagnostics.
+        A non-zero auth-failure or replay count means frames arrived that did
+        not authenticate under our key, and burying that behind a debug flag
+        would hide the one number a user of an encrypted call is entitled to
+        see.  So they are printed whenever they are non-zero, and only then.
+
+        The wipe confirmation is printed LAST and outside every try, because
+        it is the one statement here that is not a reading: the keys were
+        zeroized by `session.end()` before this was called, and a counter
+        that could not be formatted must not be able to withhold the fact.
+        """
+        def _n(key):
+            try:
+                return int(stats.get(key, 0))
+            except Exception:
+                return 0
+
+        try:
+            bad = _n("auth_fail") + _n("replay")
+            if bad:
+                _print("[voice] ⚠ %d frame(s) failed authentication or "
+                       "replayed and were DISCARDED — sent %d, received %d, "
+                       "auth-failed %d, replayed %d"
+                       % (bad, _n("sent"), _n("recv"),
+                          _n("auth_fail"), _n("replay")))
+            else:
+                _vprint("[voice] sent %d, received %d, dropped %d"
+                        % (_n("sent"), _n("recv"), _n("dropped")))
+        except Exception:
+            pass
+        _print("[voice] 🔒 every media key for this call has been zeroized")
+
+    def _announce_security(self, session) -> None:
+        """Say what protects the call, once, as it goes live.
+
+        The setup output described gains, buffers and Android stream types
+        and never once named the cryptography, so a user had no way to tell a
+        post-quantum call from a classical one.  This is the line that
+        answers "what am I protected by", and it prints at normal volume
+        because it is the only setup line that changes what the call means.
+
+        Never raises: a report that fails must not take the call with it.
+        """
+        try:
+            _print(session.security_line())
+        except Exception as exc:
+            self._vdbg(getattr(session, "peer", "?"),
+                       "security line failed: %s" % type(exc).__name__)
+
+    #: A call is reported bad below this delivery ratio, whatever the delay.
+    #: Concealment hides a few per cent; a fifth of the audio missing is a
+    #: call the other person struggled through.
+    CALL_GOOD_DELIVERY = 0.95
+
+    #: How much audio the buffer may shed before the call is reported bad.
+    #:
+    #: Shedding is a healthy mechanism in small amounts -- it is how a call
+    #: that started on a congested path gets its latency back.  Above this it
+    #: is the symptom of a playout device that cannot keep up, which is what
+    #: destroyed a third of a 1960 s call while every counter read healthy.
+    CALL_MAX_SHED = 0.05
+
+    def _call_summary(self, session) -> list:
+        """The lines that say whether the call was any good.
+
+        Asked for from a handset: the only thing printed at hangup was a
+        packet tally, which says whether the software worked and nothing
+        about whether the CALL worked.  Mouth-to-ear delay and delivery are
+        what a person actually experienced, and they were computed already --
+        for the debug stream, where nobody watching a call would see them.
+
+        Read BEFORE `session.end()`, because end() tears down the jitter
+        buffer and the latency tracker that these come from.  A summary
+        gathered afterwards reports zeros, which is worse than no summary at
+        all: it looks like a measurement.
+
+        Never raises.  A hangup that fails because the report failed would be
+        a call you cannot leave.
+        """
+        try:
+            return self._call_summary_inner(session)
+        except Exception as exc:
+            self._vdbg(getattr(session, "peer", "?"),
+                       "summary failed: %s" % type(exc).__name__)
+            return ["[voice] call ended"]
+
+    def _call_summary_inner(self, session) -> list:
+        # Wall-clock length of the call. NOT LatencyTracker.call_ms(), which
+        # despite the name is a masked frame timestamp with a random per-call
+        # origin -- using it here would print a duration of several weeks.
+        secs = 0.0
+        timed = False
+        try:
+            secs = max(0.0, time.monotonic() - session._call_t0)
+            timed = True
+        except Exception:
+            pass
+        duration = ("%dm%02ds" % (int(secs) // 60, int(secs) % 60)
+                    if secs >= 60 else "%ds" % int(secs))
+
+        # Mouth-to-ear: the same decomposition the debug stream reports --
+        # network one-way, plus how long a frame waited in our jitter buffer,
+        # plus decode and playout.  Not the round trip, and not the network
+        # alone: what the far end says takes this long to reach an ear.
+        m2e = None
+        try:
+            oneway = session.latency.oneway_ms
+            if oneway:
+                m2e = (oneway
+                       + session.jitter.dwell.percentile(0.50)
+                       + session.stages.t["decode"].percentile(0.50)
+                       + session.stages.t["play"].percentile(0.50))
+        except Exception:
+            m2e = None
+
+        sent = 0
+        try:
+            sent = int(session.stats.get("sent", 0))
+        except Exception:
+            pass
+
+        # How much of the far end's speech an ear actually received.
+        #
+        # NOT recv/(recv+dropped): `dropped` mixes send-side drops into a
+        # receive-side ratio, so a call that could not transmit would report
+        # as one that could not listen.  The jitter buffer already knows the
+        # answer -- `queued` is every frame accepted for playout and `gaps`
+        # is every frame missing from the sequence when its turn came, which
+        # is exactly the audio that had to be concealed.
+        delivery = None
+        try:
+            played = int(session.jitter.stats.get("queued", 0))
+            gaps = int(session.jitter.stats.get("gaps", 0))
+            if played + gaps:
+                delivery = float(played) / float(played + gaps)
+        except Exception:
+            delivery = None
+
+        # Audio we threw away ourselves.
+        #
+        # `drift` is the jitter buffer shedding frames to pull latency back
+        # down.  It is deliberately NOT counted as loss above -- a shed frame
+        # advances the playout marker, so it leaves no gap and conceals
+        # nothing -- which is right for the mechanism and wrong for the user:
+        # a 1960 s call whose playout device blocked on every write shed a
+        # THIRD of its audio, eight times more than the network lost, and
+        # every counter read healthy.  It is reported here because this is
+        # the only place a person would see it.
+        shed = None
+        try:
+            dropped_locally = int(session.jitter.stats.get("drift", 0))
+            if played + gaps and dropped_locally:
+                shed = float(dropped_locally) / float(played + gaps)
+        except Exception:
+            shed = None
+
+        # If NOTHING could be read, say nothing.
+        #
+        # Every field above degrades on its own, which is right for one
+        # missing counter and wrong for a session that has been torn down or
+        # was never a session: those produce "0s, mouth-to-ear not measured
+        # (call too short)", which is a sentence full of figures that were
+        # never measured.  The docstring's own warning applies to this
+        # function as much as to a caller who reads it too late.
+        if not timed and m2e is None and delivery is None and not sent:
+            return ["[voice] call ended"]
+
+        # The verdict. Delay and loss both have to be acceptable: a call with
+        # no delay that lost a fifth of its audio was not a good call, and
+        # neither was a perfectly delivered one two seconds behind.
+        bands = []
+        if m2e is not None:
+            bands.append(latency_band(m2e))
+        if delivery is not None:
+            bands.append("good" if delivery >= self.CALL_GOOD_DELIVERY
+                         else "bad")
+        if shed is not None:
+            bands.append("good" if shed <= self.CALL_MAX_SHED else "bad")
+        if not bands:
+            mark, verdict = "•", "call ended"
+        elif "bad" in bands:
+            mark, verdict = "🔴", "call ended — quality was poor"
+        elif "warn" in bands:
+            mark, verdict = "🟡", "call ended — workable"
+        else:
+            mark, verdict = "🟢", "call ended — good"
+
+        parts = [duration]
+        if m2e is not None:
+            parts.append("mouth-to-ear ~%s" % colour_latency(m2e))
+        else:
+            # Say why rather than printing a dash. On a short call the probes
+            # have not completed and that is not a fault.
+            parts.append("mouth-to-ear not measured"
+                         + (" (call too short)" if secs < 10 else ""))
+        if delivery is not None:
+            parts.append("%.1f%% of audio delivered" % (100.0 * delivery))
+        if shed:
+            parts.append("%.1f%% shed locally to hold latency down"
+                         % (100.0 * shed))
+        if sent:
+            parts.append("%d frames sent" % sent)
+
+        return ["[voice] %s %s — %s" % (mark, verdict, ", ".join(parts))]
 
     async def reject_call(self, peer: str) -> None:
         peer = self._bare(peer)

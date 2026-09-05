@@ -237,7 +237,7 @@ def voice_available() -> "tuple[bool, str]":
             "no audio backend: libaaudio.so unavailable and parec/pacat "
             "missing  (run /audioprobe for details)")
 
-XMPP_VERSION = "10.27.0"
+XMPP_VERSION = "10.28.0"
 
 # ---------------------------------------------------------------------------
 # XMPP-private state directory
@@ -594,6 +594,94 @@ def _log_to_file(msg):
         pass
 
 
+#: `[tag]` -> the colour it is drawn in.
+#:
+#: Nearly every line this client prints is `[tag] free text`, and until now
+#: every one of those tags was the same colourless grey as the sentence after
+#: it.  On a handset that is a wall: a fingerprint-change warning and a
+#: keepalive tick look identical until you have read both.  Asked for from
+#: the device -- "colour coding to improve the layout".
+#:
+#: The grouping is by what the line MEANS to a reader, not by which module
+#: emitted it:
+#:
+#:   red      something failed or is refusing to proceed
+#:   yellow   attention: the transport wobbled, or trust needs a decision
+#:   cyan     things the user asked for -- transfers, trades, tips
+#:   magenta  the call subsystem
+#:   grey     plumbing that is working: I2P, SAM, presence, the log itself
+#:
+#: `[otr]` and `[smp]` are absent deliberately.  Those two already carry
+#: their own padlock-and-colour prefixes, built above, and a second colour
+#: applied here would fight them.
+_TAG_COLOURS = {
+    "fatal": "bold_red",
+    "auth failed": "bold_red",
+    "rate-limit": "red",
+
+    "trust": "bold_yellow",
+    "reconnect": "yellow",
+    "keepalive": "yellow",
+    "auth": "yellow",
+
+    "file": "cyan",
+    "trade": "cyan",
+    "tip": "cyan",
+    "roster": "cyan",
+
+    "voice": "magenta",
+    "audio": "magenta",
+
+    "i2p": "grey",
+    "tor": "grey",
+    "log": "grey",
+    "tui": "grey",
+    "ping": "grey",
+    "presence": "grey",
+    "identity": "grey",
+}
+
+#: `[tag]` at the very start of a line, with nothing before it.
+#:
+#: The anchor is the whole design.  `re.search` here would colour the `[otr]`
+#: inside "use [otr] to start a session", and an lstrip() before the match
+#: would colour the indented continuation lines of a multi-line report --
+#: repeating the heading's mark down the block.  Matched against the raw
+#: line, from position zero, so only a line whose SUBJECT is the tag is
+#: touched.
+_TAG_AT_START_RE = re.compile(r"^\[([a-z0-9 _-]{1,16})\]")
+
+
+def _colour_tag(msg: str) -> str:
+    """Colour a leading `[tag]`, and nothing else on the line.
+
+    Display only.  This runs AFTER the line has been handed to the session
+    log and the channel log, so nothing coloured is ever what gets written --
+    INV-03's redaction reasons about shapes, and it should not have to
+    reason about escape sequences as well.
+
+    The client's existing palette is safe from this by construction rather
+    than by a guard: the chat transcript and the SMP prompts begin with a
+    padlock glyph or an escape sequence, so the anchored pattern never
+    matches them.  The one shape that does reach here already carrying
+    colour is the voice call summary, whose mouth-to-ear reading is coloured
+    by its band -- and a magenta `[voice]` in front of that is exactly what
+    the rest of the call's output has.
+    """
+    try:
+        if not msg:
+            return msg
+        m = _TAG_AT_START_RE.match(msg)
+        if not m:
+            return msg
+        colour = _TAG_COLOURS.get(m.group(1).strip().lower())
+        if not colour:
+            return msg
+        return _colorize(m.group(0), colour) + msg[m.end():]
+    except Exception:
+        return msg
+
+
 def print(*args, **kwargs):  # noqa: A001 (intentional module-scope shadow)
     c = _ACTIVE_TUI_CLIENT
     sep = kwargs.get("sep", " ")
@@ -608,13 +696,27 @@ def print(*args, **kwargs):  # noqa: A001 (intentional module-scope shadow)
             lc.channel_log.append(peer or "system", msg)
         except Exception:
             pass
+    # The TUI is handed the PLAIN line, deliberately.
+    #
+    # _tui_route_output decides which panel a line belongs to with
+    # `stripped.startswith("[keepalive]")` and the rest of _SYS_PREFIXES.  A
+    # coloured tag begins with an escape sequence, so every one of those
+    # tests would quietly fail and keepalive ticks would land in the peer's
+    # chat panel.  The panels apply their own palette anyway; this colouring
+    # is for the plain terminal, which is the default mode.
     if c is not None and getattr(c, "_tui_enabled", False):
         try:
             c._tui_route_output(msg)
             return
         except Exception:
             pass
-    builtins.print(*args, **kwargs)
+    # Colour goes on LAST, after both logs have taken the plain text.
+    shown = _colour_tag(msg)
+    if shown is msg:
+        builtins.print(*args, **kwargs)
+    else:
+        builtins.print(shown, **{k: v for k, v in kwargs.items()
+                                 if k != "sep"})
 
 
 try:

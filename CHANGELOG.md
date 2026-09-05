@@ -4,6 +4,128 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## v10.28.0 — the call told you about buffers, not about the call
+
+*2026-09-05.  `VERSION → 10.28.0`.  `otrv4_core` unchanged at 0.10.28.*
+
+Two complaints from the handsets, and both are about a person watching a call
+rather than a developer reading a log.
+
+Bringing a call up printed fourteen lines — codec settings, mic and speaker
+gains, transport, shaping, audio backend, playout geometry, three about
+loudness and two about which Android stream the volume keys control — and not
+one word about the cryptography.  A user could not tell a post-quantum call
+from a classical one, and on a phone the one line that mattered, that the call
+was live, had already scrolled off the top.
+
+Hanging up printed a packet tally.  That says whether the software worked.  It
+does not say whether the *call* worked, and the two figures that answer that —
+how long speech took to reach an ear, and how much of it arrived — were being
+computed already, for the debug stream, where nobody on a call would ever see
+them.
+
+Call setup is now three lines, one of which is new:
+
+```
+[voice] call active with alice@example.i2p — /hangup to end, /mute to toggle mic
+[voice] 🔒 X448 + ML-KEM-1024 → AES-256-GCM over I2P datagrams, constant-rate — keys are per call, held in Rust, and zeroized on hangup
+```
+
+and hangup is two:
+
+```
+[voice] 🟢 call ended — good — 2m14s, mouth-to-ear ~340ms, 99.8% of audio delivered, 1244 frames sent
+[voice] 🔒 every media key for this call has been zeroized
+```
+
+Nothing was deleted.  Every one of those fourteen lines was added to answer a
+real question during a real failure, so they moved behind `_vprint` and come
+back with `--voice-debug`, `/voicedebug` or `OTRV4PLUS_VOICE_VERBOSE=1`.  That
+is deliberately the *same* switch as the telemetry, not a second one: somebody
+who types `/voicedebug` because a call sounds wrong wants the codec, transport
+and playout lines, not telemetry with the explanation missing.
+
+Four things stayed at normal volume because a flag would hide the wrong
+thing.  The shaping line, when it is bad news: a user told the call is
+constant-rate is entitled to be told when VBR or DTX could not be disabled and
+it is not.  The authentication-failure and replay counters, when either is
+non-zero: frames arrived that did not authenticate under our key.  The
+confirmation that the media keys were wiped, which is printed outside every
+`try`, because a counter that could not be formatted must not be able to
+withhold it.  And the playout finding, for a reason a pre-existing test made
+on better evidence than this change had.
+
+`test_playout_instrumentation.py` required the playout line on *every* call,
+from a 1960 s diagnosis in which the playback device buffer held less than one
+packet, every write blocked, the pop rate fell below the arrival rate and the
+jitter buffer shed a third of the audio — eight times more than the network
+lost, with every counter reading healthy, because a shed frame advances the
+playout marker rather than leaving a gap.  That reasoning survives the tidy,
+but what it actually demands is that the *finding* be unmissable, not that
+four numbers of device geometry print on every healthy call.  So
+"every write waits on the device" stays at normal volume, names the flag that
+produces the numbers, and the numbers moved.
+
+Better still, the shedding itself is now reported at hangup — `33.4% shed
+locally to hold latency down` — and counts against the verdict above 5%.  That
+is the figure the 1960 s diagnosis needed and never had: the setup line can
+only say the device buffer is small, while this says how much audio the call
+actually destroyed.
+
+### What the verdict actually measures
+
+Mouth-to-ear is the full path a listener waits through — network one-way, plus
+dwell in our jitter buffer, plus decode, plus playout — banded green/amber/red
+on ITU-T G.114 (400 ms / 800 ms), the same thresholds the debug stream already
+used.  Delivery is `queued / (queued + gaps)` from the jitter buffer: the
+fraction of the far end's audio that arrived in time to be played.  Not
+`recv / (recv + dropped)`, because `dropped` counts send-side failures too, so
+a call that could not transmit would have been reported as one that could not
+listen.  Local shedding is reported separately and deliberately not folded
+into that ratio: those frames arrived, and calling them loss would blame the
+network for something this device did.
+
+Delay, loss and shedding are judged independently and the worst one wins.  A
+call two seconds behind was not good however completely it arrived; a call
+that lost a fifth of its audio was not good however fast the rest of it was;
+and a call that threw away a third of its own audio was not good at all.
+
+The summary is gathered *before* `session.end()`, which tears down the jitter
+buffer and the latency tracker it reads.  Taken afterwards it reports zeros,
+which is worse than no summary: it looks like a measurement.  And a session
+from which nothing could be read at all now says `call ended` and stops,
+rather than `0s, mouth-to-ear not measured (call too short)` — a sentence full
+of figures that were never taken.
+
+### XMPP status tags are colour-coded
+
+Nearly every line the XMPP client prints is `[tag] free text`, and every one of
+those tags used to be the same grey as the sentence after it.  Tags are now
+coloured by what the line *means* — red for a failure, yellow for attention,
+cyan for things the user asked for, magenta for the call subsystem, grey for
+plumbing that is working.
+
+Two things that colour must not disturb, and does not.  The session log takes
+the line before any colour is applied, so INV-03's redaction still reasons
+about shapes rather than escape sequences.  And the TUI is handed the plain
+line, because `_tui_route_output` picks a panel with
+`startswith("[keepalive]")` — a coloured tag would have failed every one of
+those tests silently and put keepalive ticks in the peer's chat panel.
+
+`[otr]` and `[smp]` are deliberately absent: they already carry their own
+padlock-and-colour prefixes, and a second scheme on the same line would fight
+them.  So are ten tags that colour *would* suit but the log allowlist
+deliberately excludes — `[file]` prints filenames, `[roster]` prints contacts,
+`[tip]` prints a Monero address — because making the two tables symmetrical
+would put all of that on disk to tidy up a colour table.  A test pins the
+asymmetry so the "obvious" fix has to be a deliberate edit.
+
+77 tests, 34 mutations killed.  Not yet exercised on the handsets: everything
+in this entry is terminal output, and the call figures in particular need a
+real I2P call to confirm the bands read sensibly.
+
+---
+
 ## v10.27.0 — the XMPP transcript was missing one side of the conversation
 
 *2026-09-05.  `VERSION → 10.27.0`.  `otrv4_core` unchanged at 0.10.28.*

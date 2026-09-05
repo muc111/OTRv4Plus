@@ -157,35 +157,92 @@ class TestTheProbeReportsThePlaybackDevice:
 
 class TestTheCallLogsThePlayoutDevice:
 
-    def test_every_call_records_the_playout_parameters(self):
-        """Not only when someone thinks to run /audioprobe. A playout deficit
-        does not show up in the frame counters -- the buffer sheds the surplus
-        and the call reads healthy.
+    @staticmethod
+    def _strings_reaching(func_name):
+        """Every literal that reaches `func_name` from VoiceCallSession.
 
-        Asserts the string reaches `_print`, not merely that it exists: a
-        literal assigned to a dead local is still in the source.
+        Asserts the string is PRINTED, not merely present: a literal assigned
+        to a dead local is still in the source.
         """
         src = textwrap.dedent(inspect.getsource(voice.VoiceCallSession))
         tree = ast.parse(src)
-        printed = []
+        out = []
         for node in ast.walk(tree):
             if not (isinstance(node, ast.Call)
                     and isinstance(node.func, ast.Name)
-                    and node.func.id == "_print"):
+                    and node.func.id == func_name):
                 continue
-            printed += [c.value for c in ast.walk(node)
-                        if isinstance(c, ast.Constant)
-                        and isinstance(c.value, str)]
-        joined = "".join(printed)
+            out += [c.value for c in ast.walk(node)
+                    if isinstance(c, ast.Constant) and isinstance(c.value, str)]
+        return "".join(out)
+
+    def test_the_playout_finding_is_printed_on_every_call(self):
+        """The CONCLUSION is unconditional; the parameters are not.
+
+        This test used to require the whole device-geometry line on every
+        call, and v10.28.0's terminal tidy moved it behind --voice-debug.
+        The reasoning survives the move: a playout deficit does not show up
+        in the frame counters, because the buffer sheds the surplus and shed
+        frames advance the playout marker rather than leaving a gap. What
+        that reasoning actually demands is that the FINDING be unmissable --
+        "every write waits on the device" -- not that four numbers of device
+        geometry print on every healthy call. The finding stays at normal
+        volume, like the VBR/DTX warning; the numbers behind it moved.
+        """
+        joined = self._strings_reaching("_print")
+        assert "every write waits on the device" in joined, (
+            "the playout finding is no longer printed unconditionally")
+
+    def test_the_playout_parameters_are_still_available(self):
+        joined = self._strings_reaching("_vprint")
         assert "[voice] playout:" in joined, (
-            "the playout parameters are no longer printed")
+            "the playout parameters are gone, not merely demoted")
         for slot in ("burst %s frames", "capacity %s frames"):
             assert slot in joined, "the playout line dropped %s" % slot
 
+    def test_the_finding_says_how_to_get_the_numbers(self):
+        # A finding whose detail is behind a flag has to name the flag, or
+        # the demotion has just hidden the follow-up question.
+        joined = self._strings_reaching("_print")
+        i = joined.index("every write waits on the device")
+        assert "voice-debug" in joined[i:i + 200]
+
+    def test_the_shedding_itself_is_reported_at_hangup(self):
+        """Better evidence than the precondition: what actually happened.
+
+        The setup line can only say the device buffer is small. The hangup
+        summary says how much audio this call actually destroyed locally,
+        which is the number the 1960 s diagnosis needed and never had.
+        """
+        src = inspect.getsource(voice.VoiceCallManager._call_summary_inner)
+        assert 'get("drift"' in src, (
+            "the summary no longer reads the local-shed counter")
+        assert "shed locally" in src
+
     def test_it_never_takes_the_call_down(self):
-        src = inspect.getsource(voice.VoiceCallSession)
-        i = src.index("[voice] playout:")
-        tail = src[i:i + 1400]
-        assert "except Exception" in tail, (
-            "diagnostics that can raise are wrapped nowhere; a telemetry line "
-            "must not be able to fail a call")
+        """Both playout lines sit inside a try.
+
+        Checked structurally rather than by looking a fixed number of
+        characters further down the source: the earlier version searched the
+        next 1400 bytes, and grew a false failure the moment the warning text
+        got longer than that. The `except` had not moved.
+        """
+        src = textwrap.dedent(inspect.getsource(voice.VoiceCallSession))
+        tree = ast.parse(src)
+        guarded = set()
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Try):
+                continue
+            if not any(h.type is None
+                       or getattr(h.type, "id", None) == "Exception"
+                       for h in node.handlers):
+                continue
+            for child in ast.walk(node):
+                if isinstance(child, ast.Constant) and isinstance(
+                        child.value, str):
+                    guarded.add(child.value)
+        joined = "".join(guarded)
+        for needle in ("[voice] playout:", "every write waits on the device"):
+            assert needle in joined, (
+                "%r is printed outside any try; a telemetry line must not be "
+                "able to fail a call" % needle)
