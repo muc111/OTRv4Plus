@@ -1873,7 +1873,7 @@ class OTRv4DataMessage:
             raise ValueError(f"Failed to decode message: {e }")
 
 
-VERSION = "OTRv4+ 10.26.0"
+VERSION = "OTRv4+ 10.26.1"
 
 #: SMP passphrase length bounds, shared by both clients.
 #:
@@ -11843,7 +11843,22 @@ class OTRv4IRCClient:
     # Two data points and a straight line through them is not a proof, so
     # BUDGET here is 20% under what was measured, and `auto` is opt-in.
     FLOOD_LINE_PENALTY = 2.0
-    FLOOD_DEBT_BUDGET = 28.0
+    #: Refitted in v10.26.1 after `auto` was killed on its first real run --
+    #: an SMP1, 19 of 23 fragments, at `fast`.  Two errors in the v10.26.0
+    #: model, and the second is the one that mattered:
+    #:
+    #:   * BUDGET was 28.  With the corrected debt below, the observations
+    #:     bracket it at survived-21 / killed-23, so it is about 22.
+    #:
+    #:   * THE BURST WAS CHARGED WRONG.  Debt was computed as
+    #:     n * (PENALTY - cost) for every line, but the first `allowance/cost`
+    #:     lines go out back to back at essentially zero interval, so each of
+    #:     them costs the FULL penalty.  At `fast` that is four lines and
+    #:     eight seconds of debt spent before the message has properly
+    #:     started -- more than a third of the budget, buying four lines of
+    #:     time.  A burst is nearly free in seconds and expensive in debt,
+    #:     which is the opposite of how the first model treated it.
+    FLOOD_DEBT_BUDGET = 15.0
     #: Presets `auto` may choose between, fastest first.  `turbo` is excluded
     #: deliberately: it is the preset for finding a ceiling by hitting it,
     #: which is not a thing to do automatically.
@@ -11853,9 +11868,18 @@ class OTRv4IRCClient:
         """Fastest preset that can carry *fragments* lines within the budget.
 
         The message length is the input because the server's limit is a debt,
-        not a rate: a 16-line DAKE1 at `fast` accumulates 16 seconds against a
-        budget of 28 and lands, while a 47-line SMP2 accumulates 47 and does
-        not -- which is exactly what was seen on the wire.
+        not a rate.
+
+        WHAT THIS NOW ANSWERS, AND IT IS NOT WHAT IT WAS BUILT FOR.  With the
+        burst charged correctly and the budget refitted, nothing below the
+        penalty can carry a message of the size this protocol sends: at
+        `fast` the limit is eleven lines and the shortest OTR message is
+        sixteen.  So `auto` returns `normal` for every real message on a
+        server like this one, and the honest reading is that `normal` -- the
+        rate whose debt is exactly zero -- is the floor, not that `auto` is
+        clever.  It is kept because the arithmetic is the useful part: on a
+        more tolerant server the same rule would pick `fast`, and on a
+        stricter one it will pick `safe` without anybody having to notice.
 
         Assumes the debt has drained between messages.  It refills a second a
         second and an OTRv4 handshake waits tens of seconds for each reply, so
@@ -11863,13 +11887,32 @@ class OTRv4IRCClient:
         that sent two long messages back to back, and nothing here does.
         """
         for name in self.AUTO_CANDIDATES:
-            cost = self.PACE_PRESETS[name][0]
+            cost, allowance, _cap, _floor = self.PACE_PRESETS[name]
             shortfall = self.FLOOD_LINE_PENALTY - cost
             if shortfall <= 0:
                 return name          # never accumulates: safe at any length
-            if fragments * shortfall <= self.FLOOD_DEBT_BUDGET:
+            if self._flood_debt(fragments, cost, allowance) <= \
+                    self.FLOOD_DEBT_BUDGET:
                 return name
         return self.AUTO_CANDIDATES[-1]
+
+    def _flood_debt(self, fragments: int, cost: float,
+                    allowance: float) -> float:
+        """Seconds of penalty *fragments* lines would owe the server.
+
+        The burst is the part that was wrong before.  Lines covered by the
+        allowance go out back to back, so the server charges each of them the
+        full penalty while we wait almost no time at all; only the lines after
+        it are paced, and those owe just the shortfall.  Treating the burst
+        like a paced line under-counted the debt by (allowance/cost) * cost --
+        eight seconds at `fast`, against a budget of fifteen.
+        """
+        if cost <= 0:
+            return float("inf")
+        burst = min(max(0, fragments), int(allowance // cost))
+        paced = max(0, fragments - burst)
+        return (burst * self.FLOOD_LINE_PENALTY
+                + paced * max(0.0, self.FLOOD_LINE_PENALTY - cost))
 
     #: What a server says when it has had enough.  Matching any of these drops
     #: the session to SAFE for the rest of the run: a disconnect mid-DAKE is
@@ -11954,12 +11997,21 @@ class OTRv4IRCClient:
                              % since_ping)
         except Exception:
             pass
-        last_sent = 0.0
-        try:
-            for _peer, _ts in getattr(self, "_last_otr_sent", {}).items():
-                last_sent = max(last_sent, _ts)
-        except Exception:
-            pass
+        # `_last_otr_sent` records only SUCCESSFUL sends, and the send that
+        # earns a flood kill is by definition the one that failed -- so on a
+        # handset this reported "29s since our last OTR message (23
+        # fragments)" where the 29s came from the DAKE3 that landed and the 23
+        # from the SMP1 that was cut off at fragment 19.  Two different
+        # messages in one sentence, in a report whose whole job is to say what
+        # was happening.  `_last_send_started` is written when a send begins,
+        # so the pair belong to each other.
+        last_sent = float(getattr(self, "_last_send_started", 0.0) or 0.0)
+        if not last_sent:
+            try:
+                for _peer, _ts in getattr(self, "_last_otr_sent", {}).items():
+                    last_sent = max(last_sent, _ts)
+            except Exception:
+                pass
         if last_sent:
             lines.append("   %.0fs since our last OTR message (%d fragments)."
                          % (now - last_sent,
@@ -12325,6 +12377,10 @@ class OTRv4IRCClient:
         # sending 46 fragments at 'fast' was told "Fragment pacing was
         # 'safe'", which is the opposite of the fact the report exists for.
         self._last_send_preset = getattr(_pace, "preset", self._pace_name())
+        # Wall clock, paired with _last_fragment_count above: the disconnect
+        # report needs the time and the size of the SAME message, including
+        # when that message is the one that never finished.
+        self._last_send_started = time.time()
         _started = time.monotonic()
         ok = True
         for i, frag in enumerate(fragments):

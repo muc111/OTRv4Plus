@@ -65,7 +65,8 @@ def run_pacer(preset, n, clock=None):
 class Client:
     METHODS = ("_pacer", "_pace_name", "_cmd_fragrate", "_fragment_size",
                "_note_possible_flood", "_record_send_rate",
-               "_rate_sample_min", "_auto_preset_for", "_describe_auto")
+               "_rate_sample_min", "_auto_preset_for", "_describe_auto",
+               "_flood_debt")
 
     #: The stub stands in for the class, so it carries the class attributes
     #: the borrowed methods read. Referenced, not copied: a preset changed in
@@ -869,6 +870,59 @@ class TestTheReportNamesTheRateThatCausedIt:
         reporter._report_disconnect_context()
         assert reporter.said("Fragment pacing was 'normal'")
 
+    def test_the_seconds_and_the_fragments_come_from_one_message(self):
+        """A handset reported:
+
+            29s since our last OTR message (23 fragments).
+
+        The 29s came from the DAKE3 that landed and the 23 from the SMP1 that
+        was cut off at fragment 19 -- because `_last_otr_sent` records only
+        SUCCESSFUL sends, and the send that earns a flood kill is by
+        definition the one that failed. Two different messages in one
+        sentence, in the report whose whole job is to say what was
+        happening."""
+        import time as _time
+        c = Client()
+        c._report_disconnect_context = \
+            CLIENT._report_disconnect_context.__get__(c)
+        c.last_ping = _time.time()
+        now = _time.time()
+        c._last_otr_sent = {"FeralMimir": now - 29}   # the DAKE3 that landed
+        c._last_send_started = now - 14               # the SMP1 that did not
+        c._last_fragment_count = 23
+        c._report_disconnect_context()
+        assert c.said("14s since our last OTR message (23 fragments)"), (
+            "the report paired the failed send's size with an earlier send's "
+            "timestamp")
+        assert not c.said("29s since our last OTR message")
+
+    def test_it_falls_back_when_no_send_was_started(self):
+        import time as _time
+        c = Client()
+        c._report_disconnect_context = \
+            CLIENT._report_disconnect_context.__get__(c)
+        c.last_ping = _time.time()
+        c._last_otr_sent = {"FeralMimir": _time.time() - 29}
+        c._last_fragment_count = 16
+        c._report_disconnect_context()
+        assert c.said("since our last OTR message")
+
+    def test_the_send_path_records_when_it_started(self):
+        import ast
+        import os
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        with open(os.path.join(root, "otrv4+.py"), encoding="utf-8") as fh:
+            tree = ast.parse(fh.read())
+        fn = next(n for n in ast.walk(tree)
+                  if isinstance(n, ast.FunctionDef)
+                  and n.name == "send_otr_message")
+        src = ast.unparse(fn)
+        assert "_last_send_started" in src
+        # Beside the fragment count, and both before the loop, or they can
+        # describe different messages again.
+        assert src.index("_last_fragment_count") < src.index("_pace.wait()")
+        assert src.index("_last_send_started") < src.index("_pace.wait()")
+
     def test_the_send_path_records_the_preset(self):
         import ast
         import os
@@ -945,96 +999,154 @@ class TestTheReconnectDoesNotContradictItself:
 
 
 class TestAutoPicksTheRateFromTheMessageLength:
-    """The limit is not a rate, it is a rate AND a length.
+    """The limit is a debt, not a rate -- and the debt was computed wrongly.
 
-    Three observations on irc.postman.i2p, all 2026-09-05:
+    v10.26.0 shipped `auto` on a model fitted to three observations. It was
+    killed on its first real run: an SMP1, 19 of 23 fragments, at `fast`.
 
-        24 lines at 0.54 s/line  survived   (a DAKE2 at turbo)
-        34 lines at 0.97 s/line  KILLED     (an SMP2 at fast, "Excess Flood")
-        24 lines at 2.00 s/line  survived   (a full DAKE at normal)
+        18:22:08 Server: Closing Link: FierceRidge[...] (Excess Flood)
+        18:22:08    Fragment pacing was 'fast' for that send, and is 'safe' now.
 
-    Fit a leaky bucket -- PENALTY seconds charged per line, allowance refilling
-    one second per second, death when debt passes BUDGET. Debt after n lines
-    at interval i is n*(PENALTY-i). The killed case needs BUDGET < 35 and the
-    survived case needs BUDGET >= 35, which pins PENALTY at 2.0 and BUDGET at
-    about 35. A penalty of 1.5 is inconsistent with the pair.
+    Two errors, and the second is the one that mattered.
 
-    The consequence is the useful part: at or above the penalty, debt never
-    accumulates and any length is safe -- which is why `normal` carried a whole
-    DAKE. Below it, the safe length is BUDGET over the shortfall. So a short
-    message can go faster than any sustained rate could.
+    **The burst was charged as a paced line.** Debt was `n * (PENALTY - cost)`
+    for every line, but the lines covered by the allowance go out back to back
+    at essentially zero interval -- so the server charges each of them the
+    FULL penalty while the client waits almost nothing. At `fast` that is four
+    lines and eight seconds of debt spent before the message has started,
+    against a budget of fifteen. A burst is nearly free in seconds and
+    expensive in debt; the first model had it exactly backwards.
+
+    **The budget was too high.** With the debt corrected the four observations
+    bracket it tightly:
+
+        17 lines at fast   debt 21   survived
+        19 lines at fast   debt 23   KILLED
+        34 lines at fast   debt 38   KILLED
+        24 lines at normal debt  4   survived
+
+    So the real budget is about 22, and this uses 15.
+
+    THE ANSWER IS NOT THE ONE THIS WAS BUILT FOR. At `fast` the corrected
+    limit is eleven lines and the shortest OTR message is sixteen, so `auto`
+    now returns `normal` for every real message. The honest reading is that
+    `normal` -- whose debt per line is exactly zero -- is the floor on this
+    server, not that `auto` found something clever.
     """
 
     @pytest.fixture
     def client(self):
         c = Client()
-        c._auto_preset_for = CLIENT._auto_preset_for.__get__(c)
+        for n in ("_auto_preset_for", "_flood_debt"):
+            setattr(c, n, getattr(CLIENT, n).__get__(c))
         c.AUTO_CANDIDATES = BASE.AUTO_CANDIDATES
         c.FLOOD_LINE_PENALTY = BASE.FLOOD_LINE_PENALTY
         c.FLOOD_DEBT_BUDGET = BASE.FLOOD_DEBT_BUDGET
         return c
 
-    @pytest.mark.parametrize("name,frags", [
-        ("DAKE1", 16), ("DAKE2", 24), ("DAKE3", 19), ("SMP1", 23), ("SMP4", 20),
-    ])
-    def test_the_short_messages_go_fast(self, client, name, frags):
-        assert client._auto_preset_for(frags) == "fast"
+    # (label, lines, cost, allowance, killed?)  -- all four real runs.
+    OBSERVED = [
+        ("DAKE2 17 lines at fast",  17, 1.00, 4.00, False),
+        ("SMP1  19 lines at fast",  19, 1.00, 4.00, True),
+        ("SMP2  34 lines at fast",  34, 1.00, 4.00, True),
+        ("DAKE  24 lines at normal", 24, 2.00, 4.00, False),
+    ]
 
-    @pytest.mark.parametrize("frags", [47, 60, 200])
-    def test_the_long_ones_fall_back_to_a_rate_with_no_limit(self, client, frags):
-        """SMP2 and SMP3 are 47 fragments -- the two that got a handset
-        killed. `normal` costs exactly the fitted penalty, so its debt is zero
-        per line and it is safe at any length."""
+    @pytest.mark.parametrize("label,n,cost,allowance,killed", OBSERVED)
+    def test_the_model_classifies_every_real_observation(
+            self, client, label, n, cost, allowance, killed):
+        """The only test here that is evidence rather than arithmetic."""
+        debt = client._flood_debt(n, cost, allowance)
+        if killed:
+            assert debt > BASE.FLOOD_DEBT_BUDGET, (
+                "%s was killed on the wire but the model permits it "
+                "(debt %.1f, budget %.1f)"
+                % (label, debt, BASE.FLOOD_DEBT_BUDGET))
+
+    def test_the_two_kills_are_dearer_than_both_survivals(self, client):
+        """A model that cannot separate them is not a model."""
+        killed = [client._flood_debt(n, c, a)
+                  for _l, n, c, a, k in self.OBSERVED if k]
+        lived = [client._flood_debt(n, c, a)
+                 for _l, n, c, a, k in self.OBSERVED if not k]
+        assert min(killed) > min(lived)
+
+    def test_the_burst_costs_the_full_penalty(self, client):
+        """The bug. Four burst lines at `fast` owe 8s, not 4s."""
+        assert client._flood_debt(4, 1.00, 4.00) == \
+            pytest.approx(4 * BASE.FLOOD_LINE_PENALTY)
+
+    def test_a_paced_line_costs_only_the_shortfall(self, client):
+        burst_only = client._flood_debt(4, 1.00, 4.00)
+        one_more = client._flood_debt(5, 1.00, 4.00)
+        assert one_more - burst_only == pytest.approx(
+            BASE.FLOOD_LINE_PENALTY - 1.00)
+
+    def test_a_bigger_burst_is_dearer_for_the_same_message(self, client):
+        """Which is why a burst is not free, and why the first model's
+        conclusion was wrong in the unsafe direction."""
+        assert client._flood_debt(20, 1.00, 8.00) > \
+            client._flood_debt(20, 1.00, 2.00)
+
+    @pytest.mark.parametrize("name,frags", [
+        ("DAKE1", 16), ("DAKE2", 24), ("DAKE3", 19),
+        ("SMP1", 23), ("SMP2", 47), ("SMP3", 47), ("SMP4", 20),
+    ])
+    def test_every_real_message_now_gets_a_rate_with_zero_debt(
+            self, client, name, frags):
         chosen = client._auto_preset_for(frags)
-        assert chosen == "normal"
         cost = BASE.PACE_PRESETS[chosen][0]
-        assert cost >= BASE.FLOOD_LINE_PENALTY
+        assert cost >= BASE.FLOOD_LINE_PENALTY, (
+            "%s (%d fragments) was given %s, which accumulates debt"
+            % (name, frags, chosen))
+
+    def test_the_shortest_otr_message_is_longer_than_fast_allows(self, client):
+        """States the finding as an assertion: this is why `auto` collapses to
+        `normal` rather than a bug in it."""
+        limit = max(n for n in range(1, 200)
+                    if client._flood_debt(n, 1.00, 4.00)
+                    <= BASE.FLOOD_DEBT_BUDGET)
+        assert limit < 16
 
     def test_every_choice_stays_inside_the_budget(self, client):
-        """The property, checked directly rather than through examples."""
         for n in range(1, 300):
-            cost = BASE.PACE_PRESETS[client._auto_preset_for(n)][0]
-            shortfall = max(0.0, BASE.FLOOD_LINE_PENALTY - cost)
-            assert n * shortfall <= BASE.FLOOD_DEBT_BUDGET, (
-                "%d fragments at %.2fs/line accumulates %.1fs of debt against "
-                "a budget of %.1f" % (n, cost, n * shortfall,
-                                      BASE.FLOOD_DEBT_BUDGET))
+            name = client._auto_preset_for(n)
+            cost, allowance, _c, _f = BASE.PACE_PRESETS[name]
+            assert client._flood_debt(n, cost, allowance) <= \
+                BASE.FLOOD_DEBT_BUDGET
 
     def test_it_never_chooses_turbo(self, client):
-        """`turbo` is for finding a ceiling by hitting it, which is not a
-        thing to do automatically."""
         assert "turbo" not in BASE.AUTO_CANDIDATES
         for n in range(1, 300):
             assert client._auto_preset_for(n) != "turbo"
 
-    def test_the_budget_is_under_what_was_measured(self, client):
-        """34 lines at 0.97s/line was killed, so the real budget is about 35.
-        Two data points and a straight line is not a proof."""
-        assert BASE.FLOOD_DEBT_BUDGET <= 35.0 * 0.85
+    def test_the_budget_is_under_the_cheapest_kill(self, client):
+        cheapest_kill = min(client._flood_debt(n, c, a)
+                            for _l, n, c, a, k in self.OBSERVED if k)
+        assert BASE.FLOOD_DEBT_BUDGET <= cheapest_kill * 0.75
 
-    def test_the_fitted_penalty_matches_the_observations(self):
-        """Guards the arithmetic the whole rule rests on: at PENALTY the
-        survived case and the killed case must bracket one budget."""
-        P = BASE.FLOOD_LINE_PENALTY
-        killed_implies_budget_below = 34 * (P - 33.0 / 34)
-        survived_implies_budget_atleast = 24 * (P - 13.0 / 24)
-        assert survived_implies_budget_atleast <= killed_implies_budget_below
+    def test_a_zero_cost_preset_cannot_divide_by_it(self, client):
+        assert client._flood_debt(10, 0.0, 4.0) == float("inf")
 
-    def test_a_message_of_unknown_length_gets_the_unlimited_rate(self, client):
-        """`_pacer` is called without a count by older code paths and by
-        tests. Guessing fast there would be guessing with the one parameter
-        the rule needs."""
-        assert client._auto_preset_for(10_000) in ("normal", "safe")
+    def test_it_would_still_pick_fast_on_a_tolerant_server(self, client):
+        """The arithmetic is the part worth keeping: raise the budget and the
+        same rule picks a faster rate, without anybody rewriting it."""
+        client.FLOOD_DEBT_BUDGET = 500.0
+        assert client._auto_preset_for(16) == "fast"
 
 
 class TestAutoIsWiredThroughTheSendPath:
 
     def test_the_pacer_takes_the_fragment_count(self, client):
+        """The count reaches the rule. On this server's fitted budget every
+        real message lands on `normal`, so the discriminating case is a
+        message short enough to qualify for `fast` -- which no OTR message
+        is, and which is the finding rather than a gap in the test."""
         client._pace_preset = "auto"
-        assert client._pacer(NET.NET_I2P, 16).cost == \
-            BASE.PACE_PRESETS["fast"][0]
-        assert client._pacer(NET.NET_I2P, 47).cost == \
-            BASE.PACE_PRESETS["normal"][0]
+        short = client._pacer(NET.NET_I2P, 4).cost
+        long_ = client._pacer(NET.NET_I2P, 47).cost
+        assert short <= long_
+        assert long_ == BASE.PACE_PRESETS["normal"][0]
 
     def test_without_a_count_it_does_not_guess_fast(self, client):
         client._pace_preset = "auto"
@@ -1044,7 +1156,8 @@ class TestAutoIsWiredThroughTheSendPath:
         """So the disconnect report and /fragrate can name the rate a send
         actually used rather than the word "auto"."""
         client._pace_preset = "auto"
-        assert client._pacer(NET.NET_I2P, 16).preset == "fast"
+        assert client._pacer(NET.NET_I2P, 16).preset in BASE.AUTO_CANDIDATES
+        assert client._pacer(NET.NET_I2P, 16).preset != "auto"
         assert client._pacer(NET.NET_I2P, 47).preset == "normal"
 
     def test_a_fixed_preset_still_reports_itself(self, client):

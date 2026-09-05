@@ -4,6 +4,74 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## v10.26.1 — the burst was the expensive part
+
+*2026-09-05.  `VERSION → 10.26.1`.  `otrv4_core` unchanged at 0.10.28.*
+
+`auto` was killed on its first real run — an SMP1, 19 of 23 fragments, at
+`fast`:
+
+```
+19:22:08 Server: Closing Link: FierceRidge[...] (Excess Flood)
+19:22:08    Fragment pacing was 'fast' for that send, and is 'safe' now.
+```
+
+That second line is the v10.25.3 fix earning its keep: without it the report
+would have said `safe`, which is what the rate had already been changed to.
+
+### Two errors in the v10.26.0 model
+
+**The burst was charged as a paced line.**  Debt was `n × (PENALTY − cost)`
+for every line — but the lines covered by the allowance go out back to back
+at essentially zero interval, so the server charges each of them the **full**
+penalty while the client waits almost nothing.  At `fast` that is four lines
+and eight seconds of debt spent before the message has properly started,
+against a budget of fifteen.  **A burst is nearly free in seconds and
+expensive in debt**, and the first model had that exactly backwards.
+
+**The budget was too high.**  With the debt corrected, the four real
+observations bracket it tightly:
+
+| lines | rate | debt | outcome |
+|---|---|---|---|
+| 17 | `fast` | 21 | survived |
+| **19** | **`fast`** | **23** | **killed** |
+| 34 | `fast` | 38 | killed |
+| 24 | `normal` | 4 | survived |
+
+Survived at 21, killed at 23.  The real budget is about 22; this uses **15**.
+
+### The answer is not the one `auto` was built for
+
+At `fast` the corrected limit is **eleven lines**, and the shortest OTR
+message is sixteen.  So `auto` now returns `normal` for every real message,
+and the honest reading is that **`normal` — whose debt per line is exactly
+zero — is the floor on this server**, not that `auto` found something clever.
+
+It is kept because the arithmetic is the useful part: on a more tolerant
+server the same rule picks `fast`, and on a stricter one it picks `safe`,
+without anybody rewriting it.  `normal` is still 35% faster than `safe`, which
+is the whole of the speed-up that was ever available here.
+
+### A third defect from the same log
+
+```
+29s since our last OTR message (23 fragments).
+```
+
+The 29s came from the DAKE3 that landed and the 23 from the SMP1 that was cut
+off at fragment 19 — because `_last_otr_sent` records only *successful* sends,
+and the send that earns a flood kill is by definition the one that failed.
+Two different messages in one sentence, in the report whose whole job is to
+say what was happening.  The start time is now recorded beside the fragment
+count, so the pair belong to each other.
+
+137 tests, 7 further mutants killed.
+
+Full suite 3137 passed / 44 skipped / 1 xfailed.
+
+---
+
 ## v10.26.0 — `auto`: the limit is a rate AND a length
 
 *2026-09-05.  `VERSION → 10.26.0`.  `otrv4_core` unchanged at 0.10.28.*
