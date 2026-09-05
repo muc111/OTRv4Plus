@@ -237,7 +237,7 @@ def voice_available() -> "tuple[bool, str]":
             "no audio backend: libaaudio.so unavailable and parec/pacat "
             "missing  (run /audioprobe for details)")
 
-XMPP_VERSION = "10.26.2"
+XMPP_VERSION = "10.27.0"
 
 # ---------------------------------------------------------------------------
 # XMPP-private state directory
@@ -503,7 +503,18 @@ def _sanitise(text, max_len: int = 1024) -> str:
 #: Message-content lines.  The prefix is kept, the body is not: knowing that
 #: a message arrived from a peer at a time is the diagnostic value; the words
 #: are the thing being protected.
-_LOG_CONTENT_RE = re.compile(r"^(\[(?:otr|plain)\] <[^>]*>)\s(.*)$", re.DOTALL)
+#: `[otr] alice@host: body` and the older `[otr] <alice@host> body`.
+#:
+#: Both shapes are matched because the display moved from the second to the
+#: first in v10.27.0 and this is the allowlist that keeps message bodies off
+#: disk (INV-03).  A pattern that knew only the old shape would not have
+#: LEAKED -- `_log_line_for_file` falls through to "<unlogged line: N chars>"
+#: for anything it cannot classify -- but it would have thrown the sender away
+#: with the body, and a transcript that cannot say who spoke is most of the
+#: way to useless.  The old alternative stays because other paths may still
+#: print it, and dropping it would silently downgrade those to unlogged.
+_LOG_CONTENT_RE = re.compile(
+    r"^(\[(?:otr|plain)\] (?:<[^>]*>|[^\s:]+:))\s(.*)$", re.DOTALL)
 
 #: Tags whose lines are wholly diagnostic and carry no user or key material.
 #: Adding one is a deliberate act: whatever that subsystem prints becomes
@@ -2468,7 +2479,7 @@ class OTRv4PlusXMPP(ClientXMPP):
                   "transfer is only accepted inside an OTR session"
                   % _sanitise(peer, 128))
         else:
-            print(f"[plain] <{_sanitise(peer, 128)}> {_sanitise(body)}")
+            print(f"[plain] {_sanitise(peer, 128)}: {_sanitise(body)}")
 
     def _check_smp_secret_required(self, peer):
         """Show the consent prompt if the engine is holding a peer's SMP1.
@@ -2630,7 +2641,7 @@ class OTRv4PlusXMPP(ClientXMPP):
                 print(
                     _otr_prefix(smp_ok)
                     + " "
-                    + _colorize(f"<{peer_s}>", "yellow")
+                    + _colorize(peer_s + ":", "yellow")
                     + " "
                     + (_colorize(text_s, "dark_blue") if smp_ok else text_s)
                 )
@@ -4130,6 +4141,20 @@ class OTRv4PlusXMPP(ClientXMPP):
             print(f"[otr] could not start DAKE with {peer} — try /otr again")
 
     def send_user_text(self, peer, text):
+        """Encrypt and send one typed line, and show it in the transcript.
+
+        Until v10.27.0 nothing was echoed here: a sent message produced no
+        output at all, so the session read as a monologue by the peer with
+        the user's own half missing entirely.  On a handset, where the typed
+        line scrolls away behind the next arriving message, there was no way
+        to read back who had said what.  The IRC client has always echoed
+        both sides; this brings XMPP level.
+
+        The echo goes out AFTER the send, and only when the engine actually
+        produced ciphertext.  The line carries the same padlock the inbound
+        path uses, and a padlock on a message that never left would be a
+        false claim about the one thing this client exists to be right about.
+        """
         try:
             msg, should_send = self.otr.handle_outgoing_message(peer, text)
         except Exception as e:
@@ -4139,8 +4164,36 @@ class OTRv4PlusXMPP(ClientXMPP):
             self.send_otr_fragmented(
                 peer, msg if isinstance(msg, str) else msg.decode()
             )
+            self._echo_sent(peer, text)
         elif not should_send:
             print(f"[queued] will send once OTR with {peer} is ready")
+
+    def _echo_sent(self, peer, text):
+        """Print our own message in the same shape as an incoming one.
+
+        Same `[otr]` tag and the same padlock, so the redaction allowlist
+        treats both identically -- an outgoing body must be as absent from
+        the session log as an incoming one, and it is the same person's
+        conversation either way.
+
+        Our own JID rather than "me" or a nickname: the peer's side already
+        shows a full JID, and two names in two formats is how a transcript
+        stops being readable at exactly the moment somebody needs to quote
+        it.  A different colour separates the two sides at a glance.
+        """
+        try:
+            mine = self.boundjid.bare
+        except Exception:
+            mine = ""
+        mine_s = _sanitise(mine or "me", 128)
+        smp_ok = (peer, "SUCCEEDED") in self._smp_reported
+        print(
+            _otr_prefix(smp_ok)
+            + " "
+            + _colorize(mine_s + ":", "cyan")
+            + " "
+            + _sanitise(text)
+        )
 
     def _remember_server_alias(self):
         """Write down the b32 the first time it actually works.

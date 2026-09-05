@@ -4,6 +4,74 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## v10.27.0 — the XMPP transcript was missing one side of the conversation
+
+*2026-09-05.  `VERSION → 10.27.0`.  `otrv4_core` unchanged at 0.10.28.*
+
+From a handset, the IRC client:
+
+```
+20:50:55 [EchoingNexus] 🔵EchoingNexus: ey
+20:50:57 [EchoingNexus] 🔵ScarletEmber: lol
+```
+
+Two people, two names, one readable conversation — and a request to make XMPP
+do the same.  Looking at why it could not turned up something worse than a
+formatting difference.
+
+### Outgoing messages were never printed at all
+
+`send_user_text` encrypted the line, sent it, and returned.  Nothing was
+echoed.  The typed line scrolled away behind the next arriving message, and
+the session read as a monologue by the peer with the user's own half missing
+entirely.  On a handset there was no way to read back who had said what.
+
+That is the defect; the shape was the cosmetic part.
+
+```
+🔐 [otr] bob@example.i2p: ey
+🔐 [otr] alice@example.i2p: lol
+```
+
+Same padlock on both sides, same `[otr]` tag, our own JID rather than "me" —
+two names in two formats is how a transcript stops being quotable.  A
+different colour separates the two sides at a glance.  The echo goes out
+**after** the send and only when the engine produced ciphertext: a padlock on
+a message that never left would be a false claim about the one thing this
+client exists to be right about.
+
+Incoming lines moved from `[otr] <bob@host> text` to `[otr] bob@host: text`,
+and the plaintext path with them — a transcript that changes shape between
+encrypted and plain lines is harder to read than either shape alone.
+
+### The part that needed care
+
+`_LOG_CONTENT_RE` is the INV-03 allowlist that keeps message bodies off disk,
+and it matched the old shape by hand:
+
+```
+^(\[(?:otr|plain)\] <[^>]*>)\s(.*)$
+```
+
+Changing the display without it would **not** have leaked — `_log_line_for_file`
+falls through to `<unlogged line: N chars>` for anything it cannot classify,
+which is the right way round — but every chat line would have become an
+anonymous byte count.  A transcript that cannot say who spoke is most of the
+way to useless, so the pattern moved with the display and still accepts the
+old shape for any path that has not.
+
+23 tests in `test_xmpp_transcript_shape.py`, 6 mutants killed — including the
+echo going out before the send, the echo always claiming verified, the name
+pattern loosened enough to swallow a colon in the body, and a peer forging
+`[otr]` from inside their own message text.
+
+Full suite 3161 passed / 44 skipped / 1 xfailed.
+
+**Not hardware-tested.**  The two-device check is simply whether a conversation
+reads back correctly on both handsets afterwards.
+
+---
+
 ## v10.26.2 — `safe` is the answer, and the model now says so
 
 *2026-09-05.  `VERSION → 10.26.2`.  `otrv4_core` unchanged at 0.10.28.*
