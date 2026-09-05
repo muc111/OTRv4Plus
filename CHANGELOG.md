@@ -4,6 +4,105 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## v10.25.3 — the server answered: Excess Flood
+
+*2026-09-05.  `VERSION → 10.25.3`.  `otrv4_core` unchanged at 0.10.28.*
+
+The question left open since v10.25.0 has an answer.  Both handsets at a fast
+preset, mid-verification:
+
+```
+18:46:57 [LucidDusk] 🔐 DAKE 2
+18:46:57 [LucidDusk] 🟢 OK                      <- 24 fragments in 13s
+...
+18:52:58 [LucidDusk] ⚠ LucidDusk disconnected: Excess Flood - OTR session ended
+```
+
+**irc.postman.i2p enforces a flood limit, and it is below `fast`.**  The peer
+was killed while sending a 47-fragment SMP2.  `safe` — the default since
+v10.25.1 — has now completed two full verifications; `fast` and `turbo` have
+not survived one.
+
+That also settles the 17:42 disconnect from v10.25.0 by contrast rather than
+by proof: a real flood kill on this server produces a named reason, and that
+one produced none.  Two different events.
+
+### The gap it exposed
+
+The peer was killed.  **This client carried on at the same rate having learned
+nothing**, because only an `ERROR` addressed to us counted as evidence.
+
+Both ends of an OTRv4+ conversation run this client at whatever preset the
+pair agreed, and the messages are symmetrical — SMP2 and SMP3 are 47
+fragments each.  If their SMP2 was too fast for this server, our SMP3 was
+about to be.  The peer's kill is the cheapest warning available, because it
+arrives before ours.
+
+A flood-shaped QUIT reason from a peer we hold a session with now drops this
+end to `safe` as well, and says why:
+
+```
+⚠ LucidDusk was disconnected by the server for flooding, at the same
+  fragment rate this client is using.
+   Pacing dropped to 'safe' here too — the next long message from this end
+   would have been the one to go.
+```
+
+The reason string is attacker-controlled: a peer can `/quit` with any text,
+including that one.  The worst it buys them is making us slower, which is why
+acting on it is safe — and why nothing ever raises the rate automatically.
+The quit reason was also reaching the terminal unsanitised, which is fixed
+here.
+
+### Two defects the killed handset's own log exposed
+
+The other side of that event was the useful one. Four new mechanisms fired
+correctly — the automatic backoff, the ERROR handler, the four-line disconnect
+report, and the v10.24.0 session preservation — and two things were wrong.
+
+**The report named the retreat, not the cause.**
+
+```
+18:52:57 [sys] The server complained about the send rate - pacing dropped to 'safe'
+18:52:57 [sys] Server: Closing Link: LucidDusk[...] (Excess Flood)
+18:52:58 [sys]    43s since our last OTR message (46 fragments).
+18:52:58 [sys]    Fragment pacing was 'safe'.
+```
+
+It was not `safe`.  34 of those 46 fragments went out in 33 seconds, which is
+`fast`.  `_note_possible_flood` had already dropped the live value one second
+earlier and the report read it — so on the single path the report exists for,
+it named what we had retreated to rather than what earned the kill.  The
+preset in force is now recorded when a send starts, before anything can
+change it, and both values are shown when they differ.
+
+**The reconnect contradicted itself.**  Two lines apart, about one session:
+
+```
+🔐 1 OTR session(s) kept through the reconnect — identity keys and pinned
+   fingerprints unchanged.
+⚠ OTR sessions lost on reconnect - /otr IvoryDelta
+```
+
+The second was left over from when `_try_reconnect` really did clear the
+sessions.  Of the two it was the wrong one, and it is the one that tells the
+user to throw away a working session and spend four minutes rebuilding it.  It
+now lists only peers with no live session, and says so in those terms.
+
+101 tests, 8 further mutants killed.
+
+Full suite 3101 passed / 44 skipped / 1 xfailed.
+
+### Where this leaves the speed question
+
+`safe` is the answer for this server until someone measures otherwise, and a
+verification costs about seven minutes of pacing on top of I2P transit.  The
+remaining levers are structural rather than tunable — the fragment count is
+set by ML-KEM-1024 and ML-DSA-87 message sizes and by base64 — and none of
+them is worth touching for the 8% they would return.
+
+---
+
 ## v10.25.2 — the tuning number was measuring the burst
 
 *2026-09-05.  `VERSION → 10.25.2`.  `otrv4_core` unchanged at 0.10.28.*

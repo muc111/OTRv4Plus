@@ -1873,7 +1873,7 @@ class OTRv4DataMessage:
             raise ValueError(f"Failed to decode message: {e }")
 
 
-VERSION = "OTRv4+ 10.25.2"
+VERSION = "OTRv4+ 10.25.3"
 
 #: SMP passphrase length bounds, shared by both clients.
 #:
@@ -11903,8 +11903,19 @@ class OTRv4IRCClient:
                             getattr(self, "_last_fragment_count", 0)))
         else:
             lines.append("   No OTR message sent on this connection.")
-        lines.append("   Fragment pacing was '%s'. /fragrate to change it."
-                     % self._pace_name())
+        # The preset the LAST SEND used, not the live one.  On the path this
+        # report exists for, _note_possible_flood has already dropped the
+        # live value to 'safe' by the time the socket closes, so reading it
+        # here reported the retreat rather than the cause.
+        sent_at = getattr(self, "_last_send_preset", None)
+        now_at = self._pace_name()
+        if sent_at and sent_at != now_at:
+            lines.append("   Fragment pacing was '%s' for that send, and is "
+                         "'%s' now. /fragrate to change it."
+                         % (sent_at, now_at))
+        else:
+            lines.append("   Fragment pacing was '%s'. /fragrate to change it."
+                         % (sent_at or now_at))
         for line in lines:
             self.add_message("system", colorize(line, "dim"))
 
@@ -12037,6 +12048,33 @@ class OTRv4IRCClient:
                                  "lines_per_sec": round(fragments / elapsed, 2),
                                  "preset": self._pace_name()})
 
+    def _note_peer_flood(self, peer: str, reason: str) -> bool:
+        """Back off after a PEER is disconnected for flooding.
+
+        Distinct from `_note_possible_flood`, which reads an ERROR addressed
+        to us, because the wording has to be different: nothing has gone wrong
+        here yet, and the user needs to know why their working session just
+        slowed down.
+        """
+        blob = (reason or "").lower()
+        if not any(marker in blob for marker in self.FLOOD_MARKERS):
+            return False
+        already_safe = self._pace_name() == "safe"
+        self._pace_preset = "safe"
+        if already_safe:
+            return True
+        self.add_message("system", colorize(
+            "⚠ %s was disconnected by the server for flooding, at the same "
+            "fragment rate this client is using." % _sanitise(peer, 64),
+            "yellow"))
+        self.add_message("system", colorize(
+            "   Pacing dropped to 'safe' here too — the next long message "
+            "from this end would have been the one to go.", "yellow"))
+        self.add_message("system", colorize(
+            "   /fragrate shows it. It is not raised again automatically.",
+            "dim"))
+        return True
+
     def _note_possible_flood(self, reason: str) -> bool:
         """Drop to SAFE if *reason* looks like the server complaining.
 
@@ -12158,6 +12196,15 @@ class OTRv4IRCClient:
         # than returned so no caller's signature changes.
         self._last_fragment_count = len(fragments)
         _pace = self._pacer(_net)
+        # The preset THIS send is going out at, recorded before anything can
+        # change it.  _report_disconnect_context used to read the live value,
+        # which meant that on the one path where the answer matters most --
+        # the server sends ERROR, _note_possible_flood drops the rate to
+        # 'safe', the socket then closes -- it reported the rate we had just
+        # retreated to instead of the one that earned the kill.  A handset
+        # sending 46 fragments at 'fast' was told "Fragment pacing was
+        # 'safe'", which is the opposite of the fact the report exists for.
+        self._last_send_preset = self._pace_name()
         _started = time.monotonic()
         ok = True
         for i, frag in enumerate(fragments):
@@ -13332,16 +13379,39 @@ class OTRv4IRCClient:
             except Exception:
                 self.debug("could not report preserved sessions")
 
-            peers = [
-                name
-                for name, p in self.panel_manager.panels.items()
-                if not name.startswith("#") and name not in ("system", "debug") and p.history
-            ]
+            # Only peers whose session did NOT survive.  This used to list
+            # every peer panel that had any history, which was correct while
+            # _try_reconnect cleared the sessions and became a flat
+            # contradiction when v10.24.0 stopped: a handset printed
+            #
+            #   🔐 1 OTR session(s) kept through the reconnect — identity keys
+            #      and pinned fingerprints unchanged.
+            #   ⚠ OTR sessions lost on reconnect - /otr IvoryDelta
+            #
+            # two lines apart, about the same session.  Of the two the second
+            # was the wrong one, and it is the one that tells the user to
+            # throw away a working session and spend four minutes rebuilding
+            # it.
+            try:
+                peers = [
+                    name
+                    for name, p in self.panel_manager.panels.items()
+                    if not name.startswith("#")
+                    and name not in ("system", "debug")
+                    and p.history
+                    and not self.session_manager.has_session(name)
+                ]
+            except Exception:
+                # Fail quiet rather than fail loud: a wrong "sessions lost"
+                # costs the user a rebuild, a missing one costs a message.
+                peers = []
             if peers:
                 self.add_message(
                     "system",
                     colorize(
-                        "⚠ OTR sessions lost on reconnect - "
+                        "⚠ No OTR session with "
+                        + ", ".join(f"{p }" for p in peers)
+                        + " after the reconnect - "
                         + ", ".join(f"/otr {p }" for p in peers),
                         "yellow",
                     ),
@@ -15449,10 +15519,24 @@ class EnhancedOTRv4IRCClient(OTRv4IRCClient):
         self._disconnected_peers.add(peer)
 
         sec = UIConstants.SecurityLevel.PLAINTEXT
-        reason_str = f": {reason }" if reason else ""
+        reason_str = f": {_sanitise (reason ,160 )}" if reason else ""
         self.add_message(
             peer, colorize(f"⚠ {peer } disconnected{reason_str } - OTR session ended", "red"), sec
         )
+        # A peer killed for flooding is evidence about OUR send rate, not just
+        # theirs.  Both ends of an OTRv4+ conversation run this client, at
+        # whatever preset the pair agreed, and the messages are symmetrical:
+        # if their 47-fragment SMP2 was too fast for this server, our SMP3 is
+        # about to be too.  Seen on irc.postman.i2p -- the peer was killed
+        # with "Excess Flood" while answering an SMP challenge, and this
+        # client carried on at the same rate having learned nothing, because
+        # only an ERROR addressed to us was being read as evidence.
+        #
+        # The reason string is attacker-controlled: a peer can /quit with any
+        # text, including this one.  The worst that buys them is making us
+        # slower, which is why acting on it is safe and why the rate is never
+        # raised automatically in response to anything.
+        self._note_peer_flood(peer, reason)
 
         self.panel_manager.update_panel_security(peer, sec)
         self.panel_manager.update_smp_progress(peer, 0, 0)

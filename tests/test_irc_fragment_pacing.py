@@ -717,3 +717,220 @@ class TestTheRecvThreadHazardIsRecorded:
         with open(os.path.join(root, "otrv4+.py"), encoding="utf-8") as fh:
             src = fh.read()
         assert "_smp_executor" in src
+
+
+class TestAPeerKilledForFloodingIsEvidenceAboutUs:
+    """Observed on irc.postman.i2p at a fast preset:
+
+        ⚠ LucidDusk disconnected: Excess Flood - OTR session ended
+
+    The server killed the PEER, mid-SMP2. This client carried on at the same
+    rate having learned nothing, because only an ERROR addressed to us
+    counted as evidence.
+
+    Both ends run this client at whatever preset the pair agreed, and the
+    messages are symmetrical -- SMP2 and SMP3 are 47 fragments each. If their
+    SMP2 was too fast for this server, our SMP3 was about to be. The peer's
+    kill is the cheapest warning available: it arrives before ours.
+    """
+
+    @pytest.fixture
+    def client(self):
+        c = Client()
+        c._note_peer_flood = CLIENT._note_peer_flood.__get__(c)
+        return c
+
+    @pytest.mark.parametrize("reason", [
+        "Excess Flood",
+        "Closing Link: LucidDusk[i2p] (Excess Flood)",
+        "Max SendQ exceeded",
+        "Killed (flooding)",
+    ])
+    def test_a_peer_flood_kill_drops_our_rate(self, client, reason):
+        client._pace_preset = "turbo"
+        assert client._note_peer_flood("LucidDusk", reason) is True
+        assert client._pace_name() == "safe"
+
+    def test_it_explains_why_a_working_session_slowed_down(self, client):
+        client._pace_preset = "fast"
+        client._note_peer_flood("LucidDusk", "Excess Flood")
+        assert client.said("was disconnected by the server for flooding")
+        assert client.said("same fragment rate")
+
+    def test_an_ordinary_quit_changes_nothing(self, client):
+        client._pace_preset = "fast"
+        assert client._note_peer_flood("LucidDusk", "Leaving") is False
+        assert client._pace_name() == "fast"
+
+    def test_a_quit_with_no_reason_changes_nothing(self, client):
+        client._pace_preset = "fast"
+        assert client._note_peer_flood("LucidDusk", "") is False
+        assert client._pace_name() == "fast"
+
+    def test_it_says_nothing_when_already_safe(self, client):
+        client._note_peer_flood("LucidDusk", "Excess Flood")
+        assert not client.said("was disconnected by the server")
+
+    def test_a_hostile_quit_message_can_only_slow_us_down(self, client):
+        """The reason is attacker-controlled -- a peer can /quit with any
+        text. Acting on it is safe precisely because the only reachable
+        outcome is a more conservative rate, and nothing ever raises it
+        automatically."""
+        client._pace_preset = "turbo"
+        client._note_peer_flood("Mallory", "Excess Flood")
+        assert client._pace_name() == "safe"
+        for _ in range(10):
+            client._note_peer_flood("Mallory", "definitely not a flood")
+        assert client._pace_name() == "safe"
+
+    def test_a_hostile_peer_name_cannot_inject_escapes(self, client):
+        client._pace_preset = "fast"
+        client._note_peer_flood("evil\x1b[2Jnick", "Excess Flood")
+        assert "\x1b[2J" not in "".join(client.lines)
+
+    def test_the_disconnect_handler_calls_it(self):
+        import ast
+        import os
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        with open(os.path.join(root, "otrv4+.py"), encoding="utf-8") as fh:
+            tree = ast.parse(fh.read())
+        fn = next(n for n in ast.walk(tree)
+                  if isinstance(n, ast.FunctionDef)
+                  and n.name == "_on_peer_disconnected")
+        assert "_note_peer_flood" in ast.unparse(fn)
+
+    def test_the_quit_reason_is_sanitised_before_display(self):
+        """It reaches the terminal, and it is server- or peer-supplied."""
+        import ast
+        import os
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        with open(os.path.join(root, "otrv4+.py"), encoding="utf-8") as fh:
+            tree = ast.parse(fh.read())
+        fn = next(n for n in ast.walk(tree)
+                  if isinstance(n, ast.FunctionDef)
+                  and n.name == "_on_peer_disconnected")
+        assert "_sanitise(reason, 160)" in ast.unparse(fn)
+
+
+class TestTheReportNamesTheRateThatCausedIt:
+    """From the handset that was actually killed:
+
+        18:52:57 [sys] The server complained about the send rate - fragment
+                       pacing dropped to 'safe' for this session.
+        18:52:57 [sys] Server: Closing Link: LucidDusk[...] (Excess Flood)
+        18:52:58 [sys] Server closed the connection...
+        18:52:58 [sys]    43s since our last OTR message (46 fragments).
+        18:52:58 [sys]    Fragment pacing was 'safe'.
+
+    It was not 'safe'. 34 of those 46 fragments went out in 33 seconds, which
+    is 'fast'. `_note_possible_flood` had already retreated to 'safe' one
+    second earlier, and the report read the live value -- so on the one path
+    where the answer matters most, it named the retreat instead of the cause.
+    """
+
+    @pytest.fixture
+    def reporter(self):
+        c = Client()
+        c._report_disconnect_context = \
+            CLIENT._report_disconnect_context.__get__(c)
+        c.last_ping = __import__("time").time()
+        c._last_otr_sent = {"IvoryDelta": __import__("time").time() - 43}
+        c._last_fragment_count = 46
+        return c
+
+    def test_it_names_the_preset_the_send_used(self, reporter):
+        reporter._last_send_preset = "fast"
+        reporter._pace_preset = "safe"          # the backoff already fired
+        reporter._report_disconnect_context()
+        assert reporter.said("was 'fast' for that send")
+
+    def test_it_also_says_what_the_rate_is_now(self, reporter):
+        """Both, because the user needs to know the retreat happened as well
+        as what caused it."""
+        reporter._last_send_preset = "fast"
+        reporter._pace_preset = "safe"
+        reporter._report_disconnect_context()
+        assert reporter.said("is 'safe' now")
+
+    def test_one_value_when_nothing_changed(self, reporter):
+        reporter._last_send_preset = "safe"
+        reporter._pace_preset = "safe"
+        reporter._report_disconnect_context()
+        assert reporter.said("Fragment pacing was 'safe'.")
+        assert not reporter.said("for that send")
+
+    def test_it_falls_back_to_the_live_value(self, reporter):
+        """No send recorded yet -- there is nothing better to report."""
+        reporter._pace_preset = "normal"
+        reporter._report_disconnect_context()
+        assert reporter.said("Fragment pacing was 'normal'")
+
+    def test_the_send_path_records_the_preset(self):
+        import ast
+        import os
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        with open(os.path.join(root, "otrv4+.py"), encoding="utf-8") as fh:
+            tree = ast.parse(fh.read())
+        fn = next(n for n in ast.walk(tree)
+                  if isinstance(n, ast.FunctionDef)
+                  and n.name == "send_otr_message")
+        assert "_last_send_preset = self._pace_name()" in ast.unparse(fn)
+
+    def test_it_is_recorded_before_the_fragments_go_out(self):
+        """After the loop it would be the post-backoff value again, because
+        the ERROR can arrive while the send is still running."""
+        import ast
+        import os
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        with open(os.path.join(root, "otrv4+.py"), encoding="utf-8") as fh:
+            tree = ast.parse(fh.read())
+        fn = next(n for n in ast.walk(tree)
+                  if isinstance(n, ast.FunctionDef)
+                  and n.name == "send_otr_message")
+        src = ast.unparse(fn)
+        assert src.index("_last_send_preset") < src.index("_pace.wait()")
+
+
+class TestTheReconnectDoesNotContradictItself:
+    """A handset printed, two lines apart, about one session:
+
+        🔐 1 OTR session(s) kept through the reconnect - identity keys and
+           pinned fingerprints unchanged.
+        ⚠ OTR sessions lost on reconnect - /otr IvoryDelta
+
+    The second was left over from when `_try_reconnect` really did clear the
+    sessions. Of the two it was the wrong one, and it is the one that tells
+    the user to throw away a working session and spend four minutes
+    rebuilding it.
+    """
+
+    @staticmethod
+    @pytest.fixture(scope="class")
+    def auto_join_src():
+        import ast
+        import os
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        with open(os.path.join(root, "otrv4+.py"), encoding="utf-8") as fh:
+            tree = ast.parse(fh.read())
+        fn = next(n for n in ast.walk(tree)
+                  if isinstance(n, ast.FunctionDef)
+                  and n.name == "auto_join_channel")
+        return ast.unparse(fn)
+
+    def test_a_surviving_session_is_not_listed_as_lost(self, auto_join_src):
+        assert "has_session" in auto_join_src, (
+            "every peer panel with history is still being reported as a lost "
+            "session, whether or not the session survived")
+
+    def test_the_claim_is_no_longer_that_sessions_were_lost(self, auto_join_src):
+        assert "OTR sessions lost on reconnect" not in auto_join_src
+
+    def test_it_still_reports_peers_with_no_session(self, auto_join_src):
+        """The message is worth keeping for the case it was written for."""
+        assert "/otr " in auto_join_src
+
+    def test_it_reports_alongside_the_preserved_notice(self, auto_join_src):
+        """Both come from the same place, so they cannot drift apart again."""
+        assert "_report_preserved_sessions" in auto_join_src
+        assert auto_join_src.index("_report_preserved_sessions") < \
+            auto_join_src.index("has_session")

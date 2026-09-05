@@ -205,15 +205,25 @@ Then raise it one step and repeat:
 /otr <peer>
 ```
 
-**One run of `normal` already ended in a disconnect** (2026-09-05, 55s after a
-17-fragment DAKE1, no ERROR line, while idle). That is why the default went
-back to `safe`. It is not established that the pacing caused it — read the
-four lines the client now prints on a disconnect before concluding anything.
+**ANSWERED for irc.postman.i2p, 2026-09-05.** At a fast preset the peer was
+killed mid-SMP2:
 
-- [ ] `normal` completes a DAKE without a disconnect.
-- [ ] `fast` completes a DAKE without a disconnect.
-- [ ] `turbo` — expect this one to be refused by the server; that is what it
-      is for. If it survives, the server is unusually tolerant.
+```
+18:52:58 [LucidDusk] ⚠ LucidDusk disconnected: Excess Flood - OTR session ended
+```
+
+`safe` has completed two full verifications on this server. `fast` and `turbo`
+have not survived one. **Use `safe` here.** The ladder below is for a
+different server, or for re-testing if postman's limits change.
+
+A separate `normal` run ended in a disconnect (55s after a 17-fragment DAKE1,
+while idle, **no ERROR line**) and another completed a DAKE cleanly. Since a
+real flood kill on this server does produce a named reason, that one was
+probably something else — an I2P tunnel, most likely.
+
+- [ ] `normal` completes three DAKEs without a disconnect.
+- [ ] `fast` — expect refusal on postman.
+- [ ] `turbo` — expect refusal.
 - [ ] If the server does complain, the client says so and drops to `safe`
       **by itself**. Check that it does, and that it does not creep back up.
 - [ ] `/fragrate` reports a fragment size derived from the prefix (403 for a
