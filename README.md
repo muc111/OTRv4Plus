@@ -6,7 +6,7 @@
 <p align="center"><strong>Post-quantum hybrid encryption for Off The Record (OTR) chat <em>and voice calls</em> over IRC and XMPP. Experimental, unaudited research prototype.</strong></p>
 
 <p align="center">
-<code>v10.18.3 · Rust crypto core · chat (X448 + ML-KEM-1024, AES-256-GCM) · hybrid PQC SMP (ML-KEM-1024 + ML-DSA-87 + ZKP) · voice (X448 + ML-KEM-1024, AES-256-GCM) · I2P SAM · AAudio · TUI</code>
+<code>v10.18.4 · Rust crypto core · chat (X448 + ML-KEM-1024, AES-256-GCM) · hybrid PQC SMP (ML-KEM-1024 + ML-DSA-87 + ZKP) · voice (X448 + ML-KEM-1024, AES-256-GCM) · I2P SAM · AAudio · TUI</code>
 </p>
 
 ---
@@ -152,6 +152,12 @@ cp target/release/libotrv4_core.so ../otrv4_core.so
 cd ..
 ```
 
+**Run cargo from inside `Rust/`**, as above. `Rust/.cargo/config.toml`
+supplies a build fix for musl targets (Alpine and similar), and cargo only
+finds that file by walking up from the directory it is invoked in — so
+`cargo build --manifest-path Rust/Cargo.toml` from the repository root will
+skip it and fail. See [Building on musl](#building-on-musl) below.
+
 The `extension-module` feature is explicit as of v10.11.1. It was previously in
 `default`, which told PyO3 not to link libpython — correct for the `.so`, and
 fatal for anything else. It meant `cargo test` failed at link time, so all 35
@@ -163,6 +169,46 @@ As of v10.7.5 there are no C extensions to compile. The **chat** path is Rust-co
 The **voice** path was the exception until v10.13.2, and this paragraph used to say so. `otrv4plus_voice.py` used the Python `cryptography` library for the media AES-256-GCM, the HKDF-SHA512 voice key schedule and the X448 half of the voice key exchange — so there were two AES-256-GCM implementations in the tree and "one cryptographic surface" would have been false. All three moved into `otrv4_core` at v10.13.2: the epoch root is `SecretBytes<64>` behind a handle with no accessor, media keys are `SecretBytes<32>` with no getter, and the X448 private scalar is `SecretBytes<56>`, single-use. `_require_rust_voice()` is a hard requirement with no Python fallback, because falling back would restore exactly what was removed.
 
 So voice no longer needs `cryptography` at run time, and the library is a **test** dependency rather than a runtime one. What remains Python-side in the voice path touches no key material: the frame header, the AAD construction, the replay window, the jitter buffer and the rekey state machine.
+
+### Building on musl
+
+On Alpine, or any musl toolchain, the build fails before compiling a single
+line of Rust:
+
+```
+pqclean/common/compat.h:20:21: error: missing binary operator before token "("
+   20 | #  if !__GNUC_PREREQ(7, 1) // at least GCC 7.1
+error: failed to run custom build command for `pqcrypto-mlkem v0.1.1`
+```
+
+Nothing is wrong with your checkout. `pqcrypto-mlkem` vendors PQClean, whose
+`compat.h` includes `<features.h>` and then uses `__GNUC_PREREQ` — a **glibc**
+macro. musl ships a `<features.h>` that does not define it, so the
+preprocessor meets an undefined identifier followed by `(`, which is not a
+valid `#if` expression. It is an upstream assumption, and there is no fixed
+release to move to: 0.1.1 is the newest `pqcrypto-mlkem` published.
+
+**`Rust/.cargo/config.toml` already fixes this** for the four common musl
+triples, by supplying the macro with a definition equivalent to glibc's own.
+It is keyed per-target, so a glibc build never sees it. Just run cargo from
+inside `Rust/` so the file is found.
+
+If you would rather not rely on that file, build with clang — the clang branch
+of that header avoids `__GNUC_PREREQ` entirely:
+
+```bash
+CC=clang cargo build --release --features extension-module,pq-rust
+```
+
+or supply the macro yourself for one build:
+
+```bash
+CFLAGS='-D__GNUC_PREREQ(maj,min)=((__GNUC__>(maj))||(__GNUC__==(maj)&&__GNUC_MINOR__>=(min)))' \
+  cargo build --release --features extension-module,pq-rust
+```
+
+The definition has no spaces on purpose: `cc-rs` splits `CFLAGS` on
+whitespace.
 
 ### 3. Verify the build (recommended)
 

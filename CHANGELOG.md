@@ -4,6 +4,64 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## v10.18.4 — the Rust core builds on musl
+
+*2026-09-05.  `VERSION → 10.18.4`.  Build configuration only; no code change.*
+
+On Alpine, or any musl toolchain, the build died before compiling a single
+line of Rust:
+
+```
+pqclean/common/compat.h:20:21: error: missing binary operator before token "("
+   20 | #  if !__GNUC_PREREQ(7, 1) // at least GCC 7.1
+error: failed to run custom build command for `pqcrypto-mlkem v0.1.1`
+```
+
+**`__GNUC_PREREQ` is a glibc macro.** `pqcrypto-mlkem` vendors PQClean, whose
+`compat.h` includes `<features.h>` and then uses it. musl ships a
+`<features.h>` that does not define it, so the preprocessor meets an undefined
+identifier followed by `(` — which is not a valid `#if` expression. Nothing is
+wrong with the checkout; it is an upstream assumption that glibc is the only
+libc, and there is no fixed release to move to: 0.1.1 is the newest
+`pqcrypto-mlkem` published.
+
+**`Rust/.cargo/config.toml` now supplies the macro** for the four common musl
+triples. Three things make that safe rather than a blunt override:
+
+* The definition is **logically identical to glibc's own**. Verified by
+  compiling and running both against each other — glibc's
+  `((__GNUC__ << 16) + __GNUC_MINOR__ >= ((maj) << 16) + (min))` versus the
+  space-free form — across every version either side of the 7.1 boundary the
+  header tests.
+* It is written **without spaces**, because `cc-rs` splits `CFLAGS` on
+  whitespace and a single space would truncate it into fragments that are not
+  valid flags.
+* It is keyed to the **musl triples only**. `cc-rs` prefers `CFLAGS_<target>`
+  over plain `CFLAGS`, so a glibc build never sees it and cannot pick up a
+  macro-redefinition warning from it — which matters on a project that just
+  spent a release getting the build silent.
+
+`CC=clang` is an equally good workaround and is documented alongside: the
+clang branch of that header avoids `__GNUC_PREREQ` entirely.
+
+**One caveat worth knowing.** cargo finds `.cargo/config.toml` by walking up
+from the directory it is *invoked* in, not from the manifest. So
+`cargo build --manifest-path Rust/Cargo.toml` run at the repository root
+silently skips the fix and fails exactly as before. The README's build steps
+already `cd Rust` first; that is now stated as a requirement rather than a
+habit.
+
+11 tests, 5 mutations applied and killed — including one that survived the
+first attempt: changing `>=` to `>` in the macro passed, because a fixed list
+of low GCC versions never reaches the minor-number comparison at all
+(`__GNUC__ > maj` short-circuits the `||`). The equivalence cases are derived
+from the compiler's own version now, so the boundary is actually exercised.
+The end-to-end test compiles PQClean's real `compat.h` with musl's behaviour
+simulated — an empty `<features.h>` shadowing the real one — and asserts it
+fails without the flag and succeeds with it.
+
+---
+
 ## v10.18.3 — a wrong `--peer` now looks like a wrong `--peer`
 
 *2026-09-05.  `VERSION → 10.18.3`.  Python only.  No protocol change.*

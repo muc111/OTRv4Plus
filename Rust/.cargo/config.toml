@@ -1,0 +1,46 @@
+# Build configuration for the OTRv4+ Rust core.
+#
+# ---------------------------------------------------------------------------
+# musl: supply the glibc macro that PQClean assumes exists
+# ---------------------------------------------------------------------------
+#
+# `pqcrypto-mlkem` vendors PQClean, whose `pqclean/common/compat.h` does this:
+#
+#     #if defined(__GNUC__) && !defined(__clang__)
+#     #include <features.h>
+#     #  if !__GNUC_PREREQ(7, 1)          // at least GCC 7.1
+#
+# `__GNUC_PREREQ` is a **glibc** macro, defined in glibc's <sys/cdefs.h> and
+# reached through <features.h>. musl ships a <features.h> that does not define
+# it. The preprocessor then sees an undefined identifier followed by `(`, which
+# is not a valid `#if` expression, and the build dies before compiling a single
+# line of Rust:
+#
+#     pqclean/common/compat.h:20:21: error: missing binary operator before token "("
+#        20 | #  if !__GNUC_PREREQ(7, 1) // at least GCC 7.1
+#
+# That is an upstream assumption, not something wrong with this project, and
+# there is no fixed release to upgrade to: 0.1.1 is the newest `pqcrypto-mlkem`
+# on crates.io as of v10.18.4. So the macro is supplied here.
+#
+# WHY IT IS SAFE:
+#   * The definition is logically identical to glibc's own -- verified against
+#     glibc's `((__GNUC__ << 16) + __GNUC_MINOR__ >= ((maj) << 16) + (min))`
+#     across GCC versions either side of the 7.1 boundary the header tests.
+#   * It is written without spaces because cc-rs splits CFLAGS on whitespace.
+#   * It is keyed to the **musl triples only**. cc-rs prefers
+#     `CFLAGS_<target>` over plain `CFLAGS`, so a glibc build never sees these
+#     and cannot get a macro-redefinition warning from them.
+#   * Its only use in the header guards a polyfill for GCC older than 7.1, so
+#     on any compiler that can build this project it evaluates to "new enough"
+#     and no polyfill is emitted -- the same outcome as on glibc.
+#
+# The clang branch of that header avoids `__GNUC_PREREQ` entirely, so
+# `CC=clang cargo build ...` is an equally good workaround if you prefer not
+# to rely on this file.
+
+[env]
+CFLAGS_x86_64-unknown-linux-musl = "-D__GNUC_PREREQ(maj,min)=((__GNUC__>(maj))||(__GNUC__==(maj)&&__GNUC_MINOR__>=(min)))"
+CFLAGS_aarch64-unknown-linux-musl = "-D__GNUC_PREREQ(maj,min)=((__GNUC__>(maj))||(__GNUC__==(maj)&&__GNUC_MINOR__>=(min)))"
+CFLAGS_armv7-unknown-linux-musleabihf = "-D__GNUC_PREREQ(maj,min)=((__GNUC__>(maj))||(__GNUC__==(maj)&&__GNUC_MINOR__>=(min)))"
+CFLAGS_i686-unknown-linux-musl = "-D__GNUC_PREREQ(maj,min)=((__GNUC__>(maj))||(__GNUC__==(maj)&&__GNUC_MINOR__>=(min)))"
