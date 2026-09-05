@@ -4,6 +4,106 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## v10.25.0 — the handshake was mostly this client sleeping
+
+*2026-09-05.  `VERSION → 10.25.0`.  `otrv4_core` unchanged at 0.10.28.*
+
+First full two-handset run of v10.24.1 on irc.postman.i2p reached **SMP
+VERIFIED** — the responder bug is fixed and the staged DAKE output works. It
+took seventeen minutes, and about **ten of those were this client sleeping
+between IRC lines.** Not I2P latency, not the PQC computation.
+
+### Where the time went
+
+A 12 KiB SMP2 is 48 IRC lines. The I2P path slept 6s after every second
+fragment — an average of 3.15s a line — while the clearnet path in the same
+function had always used the model mainstream ircds actually implement: a
+leaky bucket, each line costing a fixed penalty, the allowance refilling one
+second per second, at 2.0s a line with a burst. The overlay path was paying
+roughly double, with no reason recorded.
+
+The model predicts the observed log closely: SMP1 at 23 fragments predicts
+69s, and the handset shows 75s between "Challenge sent" and the send
+finishing. That agreement is why the rest of this is arithmetic rather than
+hope.
+
+| | fragments | pacing |
+|---|---|---|
+| before (fixed 380, 6s/2 lines) | 198 | 9.8 min |
+| `safe` (the old rate, kept) | 185 | 9.3 min |
+| **`normal` (default, ircd penalty)** | **185** | **5.7 min** |
+| `fast` | 185 | 2.6 min |
+| `turbo` | 185 | 1.1 min |
+
+### `/fragrate`
+
+The sweet spot for a given server cannot be derived, only found. `/fragrate`
+reports what the last multi-fragment send actually achieved, so a rate can be
+raised, tried on a real handshake, and kept or reverted **on evidence**. In
+memory only, like everything else this client holds.
+
+`fast` and `turbo` are above the standard ircd penalty and say so when
+selected. If the server complains — `Excess Flood`, `Max SendQ exceeded`,
+`throttl`, and the rest — the client drops to `safe` immediately, says why,
+and **never raises it again on its own**: a server that threw us off once will
+do it again, and an automatic recovery would rediscover the limit the
+expensive way, mid-handshake.
+
+### A latent bug found on the way
+
+The fragment size was a fixed 380 for every I2P line. The binding limit is not
+the line we send, it is the one the **recipient** sees —
+`:nick!user@host PRIVMSG target :<fragment>` — and the prefix is added by the
+server after we hand the line over.
+
+380 was sized for a worst case that it did not actually cover. With a
+thirty-character nick sending to a thirty-character target over a b32 host
+cloak the line comes to **520 bytes**, and the server truncates it — taking
+the fragment's terminating `.` with it and corrupting the message. It has not
+bitten because the nicks in use are short (the tested session had 31 bytes of
+headroom), but it was there.
+
+The size is now computed: from the prefix the server echoes back with our own
+JOIN when we have it, and from our nick plus a worst-case `user@host` when we
+do not. For the tested session that is 403 rather than 380 — 13 fewer
+fragments across the handshake.
+
+The first attempt at this had the same bug in a new place: `max(380,
+computed)` still returned 380 when the real limit was 364. A floor may be a
+fallback for not knowing; it may never override knowing. Caught by a test,
+not by review.
+
+### And a docstring that claimed a protection that does not exist
+
+`OTRMessageFragmenter.fragment` said every multi-fragment message was padded
+to a uniform fragment count so an observer could not tell DAKE1 from DAKE3 by
+counting IRC lines. No such padding is implemented and no `MIN_FRAGMENTS`
+constant exists anywhere in the file. The claim described an intention, and a
+reader checking whether the traffic pattern was protected would have found the
+answer and been wrong.
+
+The claim is removed rather than the padding added: padding every message to
+48 fragments costs more than this whole release saves. It is now recorded as a
+known limitation. On I2P the fragment count is visible to the IRC server and
+to nobody else.
+
+### Tests
+
+`test_irc_fragment_pacing.py`, 53 tests, 12 mutants killed. Three of those
+mutants survived the first attempt — the ceiling masked the bare-nick check,
+the inter-line floor masked the bucket cap, and nothing pinned the safety
+margin at all — and the notes on those tests say so, because a test that
+cannot fail is worse than no test.
+
+Full suite 3053 passed / 44 skipped / 1 xfailed.
+
+**Not hardware-tested.** The arithmetic matches the observed handshake, but
+whether irc.postman.i2p tolerates the new default is exactly the thing only a
+real run can answer. `TWO_DEVICE_TEST.md` section 7 says how to find out
+without losing a session to it.
+
+---
+
 ## v10.24.1 — a nick is not an identity, and the client now says so
 
 *2026-09-05.  `VERSION → 10.24.1`.  `otrv4_core` unchanged at 0.10.28.*

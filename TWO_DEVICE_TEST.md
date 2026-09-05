@@ -5,7 +5,7 @@ engine and the real command dispatcher, but it does not drive a terminal, a
 Termux raw-mode read, an I2P tunnel, or two people. Everything below has to be
 seen on the devices.
 
-**Status: not yet run.** v10.24.1 is unverified on hardware.
+**Status: v10.24.1 sections 1-3 passed on two handsets (SMP VERIFIED, 2026-09-05). Sections 4-6 and all of v10.25.0 are unverified.**
 
 ---
 
@@ -182,7 +182,47 @@ connection while a session is up.
 
 ---
 
-## 6. Ordinary use after all that
+## 6. Fragment pacing — finding the sweet spot
+
+v10.25.0 changed the default from 3.15s a line to the standard ircd penalty
+(2.0s with a burst). Whether irc.postman.i2p tolerates more than that is the
+one thing only a real run can answer, so find out deliberately rather than
+mid-handshake.
+
+Start where a lost session costs nothing: no encrypted conversation open.
+
+```
+/fragrate                 # shows the current setting and the last measurement
+/otr <peer>               # a DAKE is ~59 fragments across three messages
+/fragrate                 # what did it actually achieve?
+```
+
+Then raise it one step and repeat:
+
+```
+/fragrate fast            # 1.0 s/line
+/endotr <peer>
+/otr <peer>
+```
+
+- [ ] `normal` completes a DAKE without a disconnect.
+- [ ] `fast` completes a DAKE without a disconnect.
+- [ ] `turbo` — expect this one to be refused by the server; that is what it
+      is for. If it survives, the server is unusually tolerant.
+- [ ] If the server does complain, the client says so and drops to `safe`
+      **by itself**. Check that it does, and that it does not creep back up.
+- [ ] `/fragrate` reports a fragment size derived from the prefix (403 for a
+      `WildSignal`-length nick), not the old fixed 380.
+
+**Do not tune this with a verified session open.** A disconnect mid-SMP costs
+the whole run.
+
+Record the highest preset that survives three consecutive DAKEs. That is the
+sweet spot for this server, and it is worth writing down here.
+
+---
+
+## 7. Ordinary use after all that
 
 - [ ] Encrypted chat both ways.
 - [ ] `/tabs`, `/switch`, `/clear` behave.

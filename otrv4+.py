@@ -1873,7 +1873,7 @@ class OTRv4DataMessage:
             raise ValueError(f"Failed to decode message: {e }")
 
 
-VERSION = "OTRv4+ 10.24.1"
+VERSION = "OTRv4+ 10.25.0"
 
 #: SMP passphrase length bounds, shared by both clients.
 #:
@@ -10096,14 +10096,20 @@ class OTRMessageFragmenter:
         Unfragmented (fits in max_line): returned as-is (``?OTRv4 <base64>``).
         Fragmented: emits spec-compliant ``?OTRv4|stag|rtag|k|n|data.`` lines.
 
-        Anti-fingerprinting: all multi-fragment messages are padded to a
-        uniform fragment count (MIN_FRAGMENTS).  Without this, an observer
-        can distinguish DAKE1 (~20 frags), DAKE3 (~22 frags), and data
-        messages by counting IRC lines - revealing protocol state.
+        NOT anti-fingerprinting.  This docstring used to claim that every
+        multi-fragment message was padded to a uniform fragment count so an
+        observer could not tell DAKE1 from DAKE3 by counting IRC lines.  No
+        such padding is implemented here, and no MIN_FRAGMENTS constant
+        exists anywhere in the file -- the claim described an intention, and
+        a reader checking whether the traffic pattern is protected would have
+        found the answer and been wrong.
 
-        Padding uses random base64 characters appended after the real
-        payload.  The receiver's parser reads exact byte offsets from the
-        decoded binary and ignores trailing data.
+        The fragment count is therefore a reliable signal of which protocol
+        message is in flight, to anyone who can see the lines: the IRC server
+        always, and on I2P nobody else.  Fixing it means padding every
+        message to the largest (48 fragments for SMP2/SMP3), which would cost
+        more time than the whole pacing change in v10.25.0 saves.  Recorded
+        as a known limitation rather than silently implied to be solved.
         """
         if not otr_message.startswith(cls._LEGACY_PREFIX):
             return [otr_message]
@@ -11751,6 +11757,268 @@ class OTRv4IRCClient:
         """Send only if connected."""
         return self.send_raw(message) if self.running else False
 
+    # ── outbound line pacing ────────────────────────────────────────────────
+    #
+    # A 12 KiB SMP2 is 48 IRC lines.  How fast those may go out is set by the
+    # server, not by us, and getting it wrong costs a disconnect mid-handshake
+    # -- which on I2P means several more minutes to rebuild.  So the model
+    # here is the one mainstream ircds actually implement rather than a guess:
+    # a leaky bucket where each line costs a fixed penalty, the allowance
+    # refills at one second per second, and exceeding the cap is what earns
+    # "Excess Flood".
+    #
+    # The clearnet path has always used it (cost 2.0, cap 10.0).  The I2P path
+    # did not: it slept 6s after every second fragment, an average of 3.15s a
+    # line, which is roughly half the rate the same model permits.  Measured
+    # against a real handshake on irc.postman.i2p that pacing accounted for
+    # about ten minutes of a seventeen-minute verification -- pure sleeping,
+    # not latency and not computation.
+    #
+    # The presets below are the tuning surface.  NORMAL is the standard ircd
+    # penalty; SAFE is the old I2P behaviour, kept because it is the one rate
+    # known to survive; FAST is for a server that tolerates more, and is
+    # opt-in because nobody here can prove which servers do.
+    #: name -> (cost per line, starting allowance, cap, minimum gap)
+    PACE_PRESETS = {
+        "safe":   (3.15, 3.15, 10.0, 0.30),
+        "normal": (2.00, 4.00, 10.0, 0.05),
+        "fast":   (1.00, 4.00, 10.0, 0.05),
+        "turbo":  (0.50, 4.00, 10.0, 0.05),
+    }
+    DEFAULT_PACE = "normal"
+
+    #: What a server says when it has had enough.  Matching any of these drops
+    #: the session to SAFE for the rest of the run: a disconnect mid-DAKE is
+    #: far more expensive than a slow one, so evidence of throttling is acted
+    #: on immediately and never automatically undone.
+    FLOOD_MARKERS = ("excess flood", "flooding", "flood detected",
+                     "max sendq", "sendq exceeded", "too many lines",
+                     "throttl")
+
+    class _Pacer:
+        """Leaky-bucket line pacer.  One per send, seeded from the client.
+
+        Kept as an object rather than inline arithmetic so the pacing can be
+        tested without a socket -- `wait()` is pure except for the sleep, and
+        the tests substitute a clock.
+        """
+
+        def __init__(self, cost, allowance, cap, floor, sleep=time.sleep,
+                     clock=time.monotonic):
+            self.cost = cost
+            self.bucket = allowance
+            self.cap = cap
+            self.floor = floor
+            self._sleep = sleep
+            self._clock = clock
+            self._prev = clock()
+            self.slept = 0.0
+
+        def wait(self):
+            now = self._clock()
+            self.bucket = min(self.cap, self.bucket + (now - self._prev))
+            self._prev = now
+            delay = 0.0
+            if self.bucket < self.cost:
+                delay = self.cost - self.bucket
+            if self.floor > delay:
+                delay = self.floor
+            if delay > 0:
+                self._sleep(delay)
+                self.slept += delay
+                self.bucket = min(self.cap, self.bucket + delay)
+                self._prev = self._clock()
+            self.bucket -= self.cost
+
+    def _cmd_fragrate(self, arg: str) -> None:
+        """`/fragrate` — show the pacing, or change it.
+
+        The sweet spot for a given server cannot be derived; it has to be
+        found. This shows what the last multi-fragment send actually achieved
+        so a rate can be raised, tried against a real handshake, and kept or
+        reverted on evidence rather than on feel.
+
+        In memory only, like everything else the IRC client holds (INV-10).
+        A new session starts at the default.
+        """
+        arg = (arg or "").strip().lower()
+        if arg and arg not in self.PACE_PRESETS:
+            self.add_message("system", colorize(
+                "Usage: /fragrate [%s]" % " | ".join(self.PACE_PRESETS), "red"))
+            return
+        if arg:
+            self._pace_preset = arg
+            cost, _a, _c, floor = self.PACE_PRESETS[arg]
+            self.add_message("system", colorize(
+                "📶 Fragment pacing: %s — about %.2f lines/sec sustained."
+                % (arg, 1.0 / cost), "cyan"))
+            if arg in ("fast", "turbo"):
+                self.add_message("system", colorize(
+                    "   Above the standard ircd penalty. If the server "
+                    "disconnects you mid-handshake, this is why — it drops "
+                    "back to 'safe' on its own if the server says so.",
+                    "yellow"))
+            return
+
+        name = self._pace_name()
+        cost, allowance, cap, floor = self.PACE_PRESETS[name]
+        self.add_message("system", colorize(
+            "📶 Fragment pacing: %s — %.2f s/line sustained, burst %.0f lines."
+            % (name, cost, allowance / cost), "cyan"))
+        stats = getattr(self, "_last_send_stats", None)
+        if stats:
+            self.add_message("system", colorize(
+                "   Last multi-fragment send: %d fragments in %.1fs "
+                "(%.2f lines/sec)."
+                % (stats["fragments"], stats["elapsed"],
+                   stats["lines_per_sec"]), "dim"))
+        else:
+            self.add_message("system", colorize(
+                "   No multi-fragment send yet this session.", "dim"))
+        size = self._fragment_size(
+            "peer", NetworkConstants.detect(getattr(self, "server", "")))
+        if getattr(self, "_own_prefix", None):
+            self.add_message("system", colorize(
+                "   Fragment size %d bytes (from the server-reported prefix)."
+                % size, "dim"))
+        else:
+            self.add_message("system", colorize(
+                "   Fragment size %d bytes (prefix not seen yet — join a "
+                "channel and it is measured)." % size, "dim"))
+        self.add_message("system", colorize(
+            "   /fragrate %s" % " | ".join(self.PACE_PRESETS), "dim"))
+
+    def _pace_name(self) -> str:
+        return getattr(self, "_pace_preset", None) or self.DEFAULT_PACE
+
+    def _pacer(self, net: str):
+        """A pacer for one message.
+
+        Clearnet keeps the standard penalty regardless of the preset: the
+        preset exists to tune an overlay network where the round trip already
+        dwarfs the pacing, and letting it loosen a clearnet connection would
+        be tuning the wrong thing.
+        """
+        if net == NetworkConstants.NET_CLEARNET:
+            cost, allowance, cap, floor = self.PACE_PRESETS["normal"]
+        elif net == NetworkConstants.NET_TOR:
+            cost, allowance, cap, floor = self.PACE_PRESETS["normal"]
+            floor = 0.20
+        else:
+            cost, allowance, cap, floor = self.PACE_PRESETS[self._pace_name()]
+        return self._Pacer(cost, allowance, cap, floor)
+
+    def _record_send_rate(self, fragments: int, elapsed: float) -> None:
+        """Remember what the last multi-fragment send actually achieved.
+
+        The point of measuring is that the sweet spot cannot be derived, only
+        found: `/fragrate` reports this so a rate can be raised, tried on a
+        real handshake, and kept or reverted on evidence.
+        """
+        if fragments < 2 or elapsed <= 0:
+            return
+        self._last_send_stats = {
+            "fragments": fragments,
+            "elapsed": elapsed,
+            "lines_per_sec": fragments / elapsed,
+            "preset": self._pace_name(),
+        }
+        self.debug("send rate", {"frags": fragments,
+                                 "secs": round(elapsed, 1),
+                                 "lines_per_sec": round(fragments / elapsed, 2),
+                                 "preset": self._pace_name()})
+
+    def _note_possible_flood(self, reason: str) -> bool:
+        """Drop to SAFE if *reason* looks like the server complaining.
+
+        Never raises the rate again on its own.  A server that threw us off
+        once will do it again, and an automatic recovery would rediscover the
+        limit the expensive way, mid-handshake.
+        """
+        blob = (reason or "").lower()
+        if not any(marker in blob for marker in self.FLOOD_MARKERS):
+            return False
+        if self._pace_name() == "safe":
+            return True
+        self._pace_preset = "safe"
+        self.add_message("system", colorize(
+            "⚠ The server complained about the send rate — fragment pacing "
+            "dropped to 'safe' for this session.", "yellow"))
+        self.add_message("system", colorize(
+            "   /fragrate  shows the current setting. It is not raised again "
+            "automatically.", "dim"))
+        return True
+
+    #: Bounds on the derived fragment size.
+    #:
+    #: FRAG_SIZE_MAX is a ceiling, and it is a real one: it leaves room for a
+    #: server that rewrites our prefix after we measured it (a vhost applied
+    #: post-JOIN) without the line overflowing.
+    #:
+    #: FRAG_SIZE_FLOOR is a sanity bound, NOT a "known good" value.  It used
+    #: to be 380 applied with max(), which is a bug rather than a safety net:
+    #: when the computed limit came out BELOW 380 -- a long nick and a long
+    #: target on top of a b32 host cloak -- the floor overrode it and the line
+    #: went out at 520 bytes, to be truncated by the server along with the
+    #: fragment's terminating "." and the message with it.  A floor may only
+    #: ever be a fallback for not knowing, never an override for knowing.
+    FRAG_SIZE_FLOOR = 64
+    FRAG_SIZE_MAX = 440
+    #: Retained under the old name because tests and docs refer to it: the
+    #: value this client used for every I2P fragment before the size was
+    #: derived.  Nothing computes with it any more.
+    FRAG_SIZE_MIN = 380
+    #: Slack kept below the 512-byte line limit.
+    FRAG_SAFETY_MARGIN = 8
+    #: Worst-case user@host to assume before the server has told us ours.
+    #: An IRC host is at most 63 characters and a user at most 10, so this
+    #: over-estimates rather than truncates.
+    FRAG_ASSUMED_USERHOST = 10 + 1 + 63
+
+    def _fragment_size(self, target: str, net: str) -> int:
+        """How many characters of fragment fit in one IRC line to *target*.
+
+        The binding limit is not the line we send, it is the one the
+        RECIPIENT sees: `:nick!user@host PRIVMSG target :<fragment>\r\n` must
+        be at most 512 bytes, and the prefix is added by the server after we
+        hand the line over.
+
+        This was a fixed 380 for every I2P fragment.  Two things were wrong
+        with that.  It was too small in the common case -- on a server that
+        hands out a short host cloak it wasted about a tenth of every line,
+        which is a tenth of the fragments and a tenth of the handshake -- and
+        it was too large in the uncommon one: a thirty-character nick sending
+        to a thirty-character target over a b32 cloak produces a 520-byte
+        line, and the server truncates it.
+
+        So it is computed, from the prefix the server echoed back with our own
+        JOIN when we have it, and from our nick plus a worst-case user@host
+        when we do not.  Both are bounded above by FRAG_SIZE_MAX and below
+        only by a sanity floor.
+        """
+        if net != NetworkConstants.NET_I2P:
+            return UIConstants.OTR_FRAGMENT_SIZE
+        if not target:
+            return self.FRAG_SIZE_MIN
+        try:
+            prefix = getattr(self, "_own_prefix", None)
+            # A bare nick under-counts the overhead by the whole user@host
+            # the server adds, so it is not a prefix for this purpose.
+            if not prefix or "!" not in prefix or "@" not in prefix:
+                nick = getattr(self, "nick", "") or ""
+                prefix_len = len(nick) + 1 + self.FRAG_ASSUMED_USERHOST
+            else:
+                prefix_len = len(prefix)
+            overhead = (1 + prefix_len + len(" PRIVMSG ") + len(target)
+                        + len(" :") + 2 + self.FRAG_SAFETY_MARGIN)
+            size = 512 - overhead
+        except Exception:
+            return self.FRAG_SIZE_MIN
+        # Ceiling, then sanity floor.  The floor is deliberately far below any
+        # plausible computed value: if it ever binds, the arithmetic above is
+        # wrong and a small fragment is the safe way to be wrong.
+        return max(self.FRAG_SIZE_FLOOR, min(self.FRAG_SIZE_MAX, size))
+
     def send_otr_message(self, target: str, otr_message: str) -> bool:
         """Fragment OTR message if needed and send each part.
 
@@ -11769,8 +12037,7 @@ class OTRv4IRCClient:
             pass
 
         _net = NetworkConstants.detect(getattr(self, "server", ""))
-        _is_overlay = _net in (NetworkConstants.NET_I2P, NetworkConstants.NET_TOR)
-        _frag_sz = 380 if _net == NetworkConstants.NET_I2P else UIConstants.OTR_FRAGMENT_SIZE
+        _frag_sz = self._fragment_size(target, _net)
         fragments = self.otr_fragmenter.fragment(
             otr_message,
             sender_tag=sender_tag,
@@ -11781,30 +12048,12 @@ class OTRv4IRCClient:
         # and debug mode adds the fragment count.  Kept as an attribute rather
         # than returned so no caller's signature changes.
         self._last_fragment_count = len(fragments)
-        _bucket = 4.0
-        _prev_ts = time.monotonic()
+        _pace = self._pacer(_net)
+        _started = time.monotonic()
         ok = True
         for i, frag in enumerate(fragments):
-            if len(fragments) > 1 and not _is_overlay:
-                _now = time.monotonic()
-                _bucket = min(10.0, _bucket + (_now - _prev_ts) * 1.0)
-                if _bucket < 2.0:
-                    _wait = (2.0 - _bucket) + 0.30
-                    time.sleep(_wait)
-                    _bucket = min(10.0, _bucket + (2.0 - _bucket) + 0.30)
-                _bucket -= 2.0
-                _prev_ts = time.monotonic()
-            elif len(fragments) > 1 and _is_overlay and i > 0:
-                # irc.postman.i2p flood limit: send 2 fragments then pause 6s.
-                # ~0.33 lines/sec average - conservative but reliable.
-                # Tor uses simple 200ms delay.
-                if _net == NetworkConstants.NET_I2P:
-                    if i % 2 == 0:
-                        time.sleep(6.0)
-                    else:
-                        time.sleep(0.30)
-                else:
-                    time.sleep(0.20)
+            if len(fragments) > 1:
+                _pace.wait()
             if len(fragments) > 1:
                 try:
                     _tb = "█" * (i + 1) + "░" * (len(fragments) - i - 1)
@@ -11826,6 +12075,8 @@ class OTRv4IRCClient:
                 break
         if ok:
             self._last_otr_sent[target] = time.time()
+        if len(fragments) > 1:
+            self._record_send_rate(len(fragments), time.monotonic() - _started)
         if len(fragments) > 1:
             try:
                 if self._prompt_refresh_cb:
@@ -11949,6 +12200,17 @@ class OTRv4IRCClient:
                 self.handle_numeric_reply(int(command), params, trailing)
                 return
 
+            if command == "ERROR":
+                # The last thing a server says before closing the link, and
+                # the only place it names the reason.  Read for a flood
+                # complaint before the socket goes: it is the evidence that
+                # the send rate was too high, and it arrives exactly once.
+                _why = trailing or " ".join(params)
+                self._note_possible_flood(_why)
+                self.add_message("system", colorize(
+                    "⚠ Server: %s" % _sanitise(_why, 256), "red"))
+                return
+
             if command == "PING":
                 target = trailing or (params[0] if params else "server")
                 self.send(f"PONG :{target }")
@@ -12029,6 +12291,14 @@ class OTRv4IRCClient:
                 if not channel or len(channel) > 64 or "\r" in channel or "\n" in channel:
                     return
                 if sender == self.nick:
+                    # The server echoes our JOIN back with our full prefix.
+                    # That is the only place we learn it, and knowing it is
+                    # worth about a tenth of every fragment -- see
+                    # _fragment_size.  "!" and "@" both required: a bare nick
+                    # would under-count the overhead and truncate lines.
+                    if prefix and "!" in prefix and "@" in prefix:
+                        self._own_prefix = prefix
+                        self.debug("own prefix", {"len": len(prefix)})
                     if channel not in self.panel_manager.panels:
                         self.panel_manager.add_panel(channel, "channel")
                     self._switch_panel(channel)
@@ -13632,6 +13902,8 @@ class OTRv4IRCClient:
                 _sw_hashed = "#" + _sw_name if not _sw_name.startswith("#") else _sw_name
                 if not self._switch_panel(_sw_hashed, force=True):
                     self.add_message("system", colorize(f"❌ No panel: {_sw_name }", "red"))
+        elif cmd == "fragrate":
+            self._cmd_fragrate(parts[1] if len(parts) > 1 else "")
         elif cmd == "tabs":
             self.show_tabs()
         elif cmd == "tab-next":
@@ -13853,6 +14125,7 @@ class OTRv4IRCClient:
                 "                       passphrase, hidden, and starts",
                 "  /smp start           Same as /smp",
                 "  /smp <secret>        Same, but typed in the clear (ECHOED)",
+                "  /fragrate [preset]   Show or set OTR fragment pacing",
                 "  /smp abort           Abort SMP",
                 "  /smp status          SMP status",
                 "  /secure              Show session security levels",
