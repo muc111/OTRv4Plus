@@ -4,6 +4,59 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## v10.25.2 — the tuning number was measuring the burst
+
+*2026-09-05.  `VERSION → 10.25.2`.  `otrv4_core` unchanged at 0.10.28.*
+
+Second full two-handset run, both sides on v10.25.1 at `safe`.  **The
+responder path worked again** — `Passphrase stored — verifying…` →
+`SMP step 2/4 · Passphrase accepted - answering the challenge…`, no
+`ValueError`.  Second hardware confirmation of the v10.24.0 fix.
+
+Both sides also matched the pacing model exactly:
+
+| leg | observed | predicted at `safe` |
+|---|---|---|
+| DAKE1 send, 16 fragments | 47s | 45s |
+| SMP1 send, 23 fragments | 66s | 67s |
+| SMP2 send, 47 fragments | 141.8s | 142.3s |
+
+### The defect
+
+`/fragrate` on the initiator reported:
+
+```
+Last multi-fragment send: 2 fragments in 0.6s (3.32 lines/sec).
+```
+
+3.32 lines/sec, on a preset whose sustained rate is 0.32.  A 60-second
+heartbeat is two fragments, both of which come out of the burst allowance
+without waiting — so it measured the burst and called it the rate, overwriting
+the 23-fragment SMP1 sample at the moment the number was being read to decide
+whether to go faster.
+
+Sends shorter than the burst plus three paced lines are no longer recorded.
+
+**And the threshold has to follow the preset**, which is the part a fixed
+number would have got wrong: `safe` and `normal` clear two lines before the
+penalty bites, `fast` four and `turbo` eight.  A flat threshold of five is
+three paced lines on `safe` and *pure allowance* on `turbo`, where it would
+have reported 8 lines/sec for a preset whose sustained rate is 2 — the same
+defect, one preset along.  Caught by a parametrised test rather than by
+review.
+
+79 tests, 4 further mutants killed.
+
+Full suite 3079 passed / 44 skipped / 1 xfailed.
+
+**Still open:** whether irc.postman.i2p tolerates anything faster than `safe`.
+`normal` completed a full DAKE cleanly at 18:26 including a 24-fragment send,
+and separately coincided with a disconnect at 17:42 while idle and with no
+ERROR line.  One success and one ambiguous failure is not an answer.
+`TWO_DEVICE_TEST.md` section 6 is the ladder for getting one.
+
+---
+
 ## v10.25.1 — back to the rate that was working, and say why next time
 
 *2026-09-05.  `VERSION → 10.25.1`.  `otrv4_core` unchanged at 0.10.28.*

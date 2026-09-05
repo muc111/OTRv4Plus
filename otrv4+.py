@@ -1873,7 +1873,7 @@ class OTRv4DataMessage:
             raise ValueError(f"Failed to decode message: {e }")
 
 
-VERSION = "OTRv4+ 10.25.1"
+VERSION = "OTRv4+ 10.25.2"
 
 #: SMP passphrase length bounds, shared by both clients.
 #:
@@ -11986,14 +11986,45 @@ class OTRv4IRCClient:
             cost, allowance, cap, floor = self.PACE_PRESETS[self._pace_name()]
         return self._Pacer(cost, allowance, cap, floor)
 
+    #: How many PACED lines a sample needs on top of the burst before its
+    #: lines/sec means anything.  Three is enough to separate the sustained
+    #: rate from the allowance.
+    RATE_SAMPLE_PACED_LINES = 3
+
+    def _rate_sample_min(self) -> int:
+        """Fewest fragments that make a meaningful rate sample, for the preset
+        currently in force.
+
+        Not a constant, because the burst is not.  `safe` and `normal` clear
+        two lines before the penalty bites, `fast` four and `turbo` eight --
+        so a five-fragment sample is three paced lines on `safe` and pure
+        allowance on `turbo`, where it would report 8 lines/sec for a preset
+        whose sustained rate is 2.  A fixed threshold is right for exactly one
+        of the four presets.
+        """
+        try:
+            cost, allowance, _cap, _floor = self.PACE_PRESETS[self._pace_name()]
+            burst = int(allowance // cost)
+        except Exception:
+            burst = 2
+        return burst + self.RATE_SAMPLE_PACED_LINES
+
     def _record_send_rate(self, fragments: int, elapsed: float) -> None:
         """Remember what the last multi-fragment send actually achieved.
 
         The point of measuring is that the sweet spot cannot be derived, only
         found: `/fragrate` reports this so a rate can be raised, tried on a
         real handshake, and kept or reverted on evidence.
+
+        Short sends are ignored, and that is the difference between a useful
+        number and a misleading one.  A heartbeat is two fragments, both of
+        which come out of the burst allowance without waiting, so it measures
+        3.3 lines/sec on a preset whose sustained rate is 0.32.  Seen on a
+        handset: a 60-second heartbeat overwrote the measurement of a
+        23-fragment SMP1 with exactly that, at the moment the number was
+        being used to decide whether to go faster.
         """
-        if fragments < 2 or elapsed <= 0:
+        if fragments < self._rate_sample_min() or elapsed <= 0:
             return
         self._last_send_stats = {
             "fragments": fragments,

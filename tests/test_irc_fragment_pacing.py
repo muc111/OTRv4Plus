@@ -64,7 +64,8 @@ def run_pacer(preset, n, clock=None):
 
 class Client:
     METHODS = ("_pacer", "_pace_name", "_cmd_fragrate", "_fragment_size",
-               "_note_possible_flood", "_record_send_rate")
+               "_note_possible_flood", "_record_send_rate",
+               "_rate_sample_min")
 
     #: The stub stands in for the class, so it carries the class attributes
     #: the borrowed methods read. Referenced, not copied: a preset changed in
@@ -77,6 +78,7 @@ class Client:
     FRAG_SIZE_FLOOR = BASE.FRAG_SIZE_FLOOR
     FRAG_SAFETY_MARGIN = BASE.FRAG_SAFETY_MARGIN
     FRAG_ASSUMED_USERHOST = BASE.FRAG_ASSUMED_USERHOST
+    RATE_SAMPLE_PACED_LINES = BASE.RATE_SAMPLE_PACED_LINES
     _Pacer = BASE._Pacer
 
     def __init__(self, server="irc.postman.i2p"):
@@ -445,6 +447,52 @@ class TestTheCommand:
     def test_a_single_fragment_send_is_not_recorded(self, client):
         client._record_send_rate(1, 5.0)
         assert getattr(client, "_last_send_stats", None) is None
+
+    def test_a_heartbeat_does_not_clobber_a_real_measurement(self, client):
+        """Seen on a handset: `/fragrate` reported "2 fragments in 0.6s
+        (3.32 lines/sec)" on a preset whose sustained rate is 0.32, because a
+        60-second heartbeat had overwritten the measurement of a 23-fragment
+        SMP1 -- at the moment the number was being read to decide whether to
+        go faster.
+
+        Both fragments of a heartbeat come out of the burst allowance without
+        waiting, so it measures the burst and calls it the rate."""
+        client._record_send_rate(23, 66.7)
+        client._record_send_rate(2, 0.6)
+        stats = client._last_send_stats
+        assert stats["fragments"] == 23, (
+            "a 2-fragment heartbeat overwrote the real sample")
+        assert stats["lines_per_sec"] < 1.0
+
+    @pytest.mark.parametrize("n", [2, 3, 4])
+    def test_sends_too_short_to_measure_are_ignored(self, client, n):
+        client._record_send_rate(n, 0.5)
+        assert getattr(client, "_last_send_stats", None) is None
+
+    def test_a_send_long_enough_to_pace_is_recorded(self, client):
+        client._record_send_rate(client._rate_sample_min(), 12.0)
+        assert client._last_send_stats["fragments"] == \
+            client._rate_sample_min()
+
+    @pytest.mark.parametrize("preset", ["safe", "normal", "fast", "turbo"])
+    def test_the_threshold_always_leaves_the_burst_behind(self, client, preset):
+        """The sample has to contain paced lines, not just the allowance --
+        and how many lines are free depends on the preset. A fixed threshold
+        of 5 is three paced lines on `safe` and pure burst on `turbo`, whose
+        allowance clears eight."""
+        client._pace_preset = preset
+        cost, allowance, _cap, _floor = BASE.PACE_PRESETS[preset]
+        burst = allowance / cost
+        assert client._rate_sample_min() >= burst + BASE.RATE_SAMPLE_PACED_LINES
+
+    def test_a_pure_burst_sample_is_refused_on_every_preset(self, client):
+        for preset in BASE.PACE_PRESETS:
+            client._pace_preset = preset
+            client._last_send_stats = None
+            cost, allowance, _c, _f = BASE.PACE_PRESETS[preset]
+            client._record_send_rate(int(allowance // cost), 0.4)
+            assert client._last_send_stats is None, (
+                "%s recorded a sample that was entirely burst" % preset)
 
 
 class TestItIsWiredIn:

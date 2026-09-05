@@ -5,7 +5,7 @@ engine and the real command dispatcher, but it does not drive a terminal, a
 Termux raw-mode read, an I2P tunnel, or two people. Everything below has to be
 seen on the devices.
 
-**Status: v10.24.1 sections 1-3 passed on two handsets (SMP VERIFIED, 2026-09-05). Sections 4-6 and all of v10.25.0 are unverified.**
+**Status: sections 1-3 passed on two handsets twice (SMP VERIFIED 2026-09-05, and the guided responder path again on v10.25.1). Sections 4, 5 and 7 are unverified. Section 6 is in progress: `safe` and `normal` have each completed a DAKE; `normal` also coincided with one unexplained disconnect.**
 
 ---
 
