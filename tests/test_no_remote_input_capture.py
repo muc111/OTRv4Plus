@@ -262,11 +262,16 @@ class _Client:
         self._screen = None
         self.sent = []
         self.peer = "alice@example.i2p"
+        self._encrypted = set()
         for name in ("take_secret_request", "has_pending",
                      "_request_smp_secret", "_announce_smp_needed",
                      "_handle_smp_secret_answer", "_arm_secret_prompt",
                      "_pending_consent_peer", "_announce_secret_required",
                      "_handle_smp_consent", "_decline_smp_request",
+                     # Bound rather than stubbed: it reads _encrypted, which
+                     # this stub owns, and a "no encrypted session" message
+                     # now carries it.
+                     "_no_session_hint",
                      "smp_verify"):
             setattr(self, name, getattr(cls, name).__get__(self, cls))
         # A staticmethod must NOT be rebound, or it swallows `self` as the

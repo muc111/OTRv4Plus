@@ -4,6 +4,53 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## v10.18.3 — a wrong `--peer` now looks like a wrong `--peer`
+
+*2026-09-05.  `VERSION → 10.18.3`.  Python only.  No protocol change.*
+
+A device run was started with `--peer bob@xmpp-elite` — missing the `.i2p`.
+Nothing about that address is malformed: one `@`, a non-empty local part, a
+non-empty domain, so `_check_jid` passed it happily. What followed looked like
+a protocol bug for the whole session, and **both people concluded the software
+was broken at the other end**.
+
+Here is what actually happened, in order:
+
+1. `/otr` sent a DAKE to `bob@xmpp-elite`. The server bounced it —
+   `Communication with remote domains is not enabled` — printed once, with no
+   explanation, and the run carried on.
+2. The *peer's* DAKE arrived and established a session under their **real**
+   JID, `bob@xmpp-elite.i2p`. So the log showed ENCRYPTED, fingerprints, TOFU
+   pinning and the full SMP exchange, all working.
+3. `/smp` said `no encrypted session with bob@xmpp-elite. Run /otr first` —
+   about an address that could never have one — while a fully verified session
+   sat under the real JID.
+4. The verified banner printed twice, once per identity.
+
+Every one of those lines was individually correct. Together they told the user
+everything except the one thing that mattered.
+
+**Three places now say it.**
+
+* **At startup**, before a single stanza goes out: if `--peer` and `--jid` are
+  on different servers, both are printed side by side, and when one domain is
+  a prefix of the other the missing part is named with the corrected command
+  to type. Not fatal — federated XMPP across domains is ordinary and this
+  client should not refuse it — but a mismatch is worth stopping to read.
+* **When the server refuses the domain**, that is a definitive answer about
+  the address rather than a transient failure, and it now says so: which
+  domain was refused, that you are on a different one, the likely truncation,
+  and that nothing sent to that address will arrive.
+* **When a command reports no session**, it now names the session that *does*
+  exist under another address. "Run /otr first" is sound advice unless `/otr`
+  can never work, in which case it sends the user round the same loop.
+
+15 tests, 3 mutations applied and killed: the startup warning removed, one of
+the four no-session messages left without the hint, and the truncation
+detection disabled.
+
+---
+
 ## v10.18.2 — the Rust core builds silent, and `Cargo.toml` is valid TOML
 
 *2026-09-04.  `VERSION → 10.18.2`.  No behaviour change intended; the wire

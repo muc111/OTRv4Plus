@@ -2,7 +2,7 @@
 """
 OTRv4+ XMPP - full OTR + SMP over XMPP, transported over I2P SAM
 ================================================================
-Version: 10.18.2
+Version: 10.18.3
 
 
 Post-quantum OTRv4+ end-to-end encryption over XMPP, reusing the IRC client's
@@ -237,7 +237,7 @@ def voice_available() -> "tuple[bool, str]":
             "no audio backend: libaaudio.so unavailable and parec/pacat "
             "missing  (run /audioprobe for details)")
 
-XMPP_VERSION = "10.18.2"
+XMPP_VERSION = "10.18.3"
 
 # ---------------------------------------------------------------------------
 # XMPP-private state directory
@@ -2021,13 +2021,37 @@ class OTRv4PlusXMPP(ClientXMPP):
 
     def _on_message_error(self, msg):
         peer = msg["from"].bare
-        text = msg["error"]["text"] or msg["error"]["condition"]
+        condition = msg["error"]["condition"]
+        text = msg["error"]["text"] or condition
         print(f"\n[delivery rejected] to {_sanitise(peer, 128)}: {_sanitise(text)}")
-        if msg["error"]["condition"] == "forbidden":
+        if condition == "forbidden":
             print(
                 "  -> not mutually subscribed; both accounts must accept each "
                 "other as contacts.\n"
             )
+            return
+        # The server telling us it will not route to that domain is a
+        # definitive answer about the address, not a transient failure. On a
+        # device this was printed once, unexplained, and then the run carried
+        # on for several minutes looking like a protocol bug -- while every
+        # message to that peer was being dropped at the server.
+        blob = ("%s %s" % (condition, msg["error"]["text"] or "")).lower()
+        if ("remote-server" in blob or "remote domains" in blob
+                or "remote server" in blob):
+            print("  -> the server will not route to %s at all."
+                  % _sanitise(peer.partition("@")[2] or peer, 128))
+            if self.boundjid is not None:
+                mine = self.boundjid.bare.partition("@")[2]
+                theirs = peer.partition("@")[2]
+                if mine and theirs and mine != theirs:
+                    print("  -> you are on %s and --peer is on %s."
+                          % (_sanitise(mine, 128), _sanitise(theirs, 128)))
+                    if mine.startswith(theirs):
+                        print("  -> --peer looks truncated. Did you mean %s%s ?"
+                              % (_sanitise(peer, 128),
+                                 _sanitise(mine[len(theirs):], 64)))
+            print("  -> nothing sent to this address will arrive. Restart with "
+                  "the corrected --peer.\n")
 
     def _on_delivery_receipt(self, receipt):
         """XEP-0184: fired when a peer acknowledges delivery of our message."""
@@ -2507,6 +2531,37 @@ class OTRv4PlusXMPP(ClientXMPP):
     # DAKE completion -> trust prompt
     # -------------------------------------------------------------------------
 
+    def _no_session_hint(self, peer: str) -> str:
+        """Extra words for "no encrypted session with X", when we have one
+        with someone else.
+
+        "Run /otr first" is sound advice unless the reason there is no
+        session with X is that X is not the address the peer is actually on --
+        in which case /otr will fail forever and the advice sends the user
+        round the same loop. A device run hit exactly that: `--peer
+        bob@xmpp-elite` (missing `.i2p`) while a fully established, SMP-ready
+        session sat under `bob@xmpp-elite.i2p`.
+        """
+        try:
+            live = sorted(p for p in self._encrypted if p != peer)
+        except Exception:
+            return ""
+        if not live:
+            return ""
+        hint = ("\n[peer] But there IS an encrypted session with: %s"
+                % ", ".join(_sanitise(p, 128) for p in live))
+        wanted = peer.partition("@")[2].lower()
+        for other in live:
+            got = other.partition("@")[2].lower()
+            if wanted and got and got.startswith(wanted):
+                hint += ("\n[peer] --peer %s looks truncated; the session is "
+                         "with %s." % (_sanitise(peer, 128),
+                                       _sanitise(other, 128)))
+                break
+        hint += ("\n[peer] Commands act on --peer, so restart with the "
+                 "address that has the session.")
+        return hint
+
     def _check_dake_complete(self, peer):
         """When a peer's session first becomes encrypted, show fingerprints
         and prompt for trust - identical to the IRC client."""
@@ -2766,7 +2821,8 @@ class OTRv4PlusXMPP(ClientXMPP):
         exists.
         """
         if not self.otr.has_encrypted_session(peer):
-            print(_SMP + f" no encrypted session with {peer}. Run /otr first.")
+            print(_SMP + f" no encrypted session with {peer}. Run /otr first."
+                  + self._no_session_hint(peer))
             return
         flow = self._smp_flows.get(peer)
         if flow.state in (_smpflow.AWAITING_LOCAL_CONSENT,
@@ -2919,7 +2975,8 @@ class OTRv4PlusXMPP(ClientXMPP):
         re-arms it except this method.
         """
         if not self.otr.has_encrypted_session(peer):
-            print(_SMP + f" no encrypted session with {peer}. Run /otr first.")
+            print(_SMP + f" no encrypted session with {peer}. Run /otr first."
+                  + self._no_session_hint(peer))
             return
         try:
             self._smp_flows.get(peer).local_secret_needed()
@@ -3782,7 +3839,8 @@ class OTRv4PlusXMPP(ClientXMPP):
     def store_smp_secret(self, peer, secret):
         """/smp-secret: store passphrase for auto-respond without starting SMP."""
         if not self.otr.has_encrypted_session(peer):
-            print(_SMP + f" no encrypted session with {peer}. Run /otr first.")
+            print(_SMP + f" no encrypted session with {peer}. Run /otr first."
+                  + self._no_session_hint(peer))
             return
         secret = secret.strip()
         err = self._validate_smp_secret(secret)
@@ -3804,7 +3862,8 @@ class OTRv4PlusXMPP(ClientXMPP):
         """/smp start or /smp <secret>: initiate SMP verification.
         Runs the 3072-bit DH in a background thread to keep the loop free."""
         if not self.otr.has_encrypted_session(peer):
-            print(_SMP + f" no encrypted session with {peer}. Run /otr first.")
+            print(_SMP + f" no encrypted session with {peer}. Run /otr first."
+                  + self._no_session_hint(peer))
             return
         if secret:
             secret = secret.strip()
@@ -5958,6 +6017,43 @@ def main():
     # Validate the addresses BEFORE prompting for a password. A malformed JID
     # otherwise surfaces as a slixmpp stringprep traceback after the user has
     # already typed their password — unreadable, and it discards the input.
+    def _warn_if_domains_differ(jid, peer):
+        """A --peer on a different server than --jid is almost always a typo.
+
+        `_check_jid` accepts `bob@xmpp-elite` -- one `@`, a non-empty local
+        part, a non-empty domain, no doubled dots. Nothing about it is
+        malformed. It is simply the wrong server, and a device run lost
+        `.i2p` off the end of `--peer` and spent the whole session looking
+        like a protocol bug: the outgoing DAKE was bounced by the server
+        ("Communication with remote domains is not enabled"), the peer's own
+        DAKE arrived and established a session under their REAL jid, and
+        every command that acts on --peer then reported "no encrypted
+        session ... Run /otr first" about a peer that was never reachable.
+
+        Not fatal: federated XMPP across domains is perfectly ordinary, and
+        this client should not refuse it. But both ends of an OTRv4+ pair are
+        normally on the same server, and the servers this is used with reject
+        remote domains outright, so a mismatch is worth stopping to read.
+        """
+        if not jid or not peer:
+            return
+        jid_domain = jid.partition("@")[2].lower()
+        peer_domain = peer.partition("@")[2].lower()
+        if jid_domain == peer_domain:
+            return
+        print("\n[peer] --jid and --peer are on DIFFERENT servers:")
+        print("[peer]   --jid  %s   (server: %s)" % (jid, jid_domain))
+        print("[peer]   --peer %s   (server: %s)" % (peer, peer_domain))
+        if peer_domain and jid_domain.startswith(peer_domain):
+            missing = jid_domain[len(peer_domain):]
+            print("[peer] The peer's server looks like it is missing %r."
+                  % missing)
+            print("[peer] Did you mean  --peer %s%s ?" % (peer, missing))
+        print("[peer] Continuing, because federated XMPP is legitimate -- but "
+              "if this")
+        print("[peer] server does not allow remote domains, nothing you send "
+              "will arrive.\n")
+
     def _check_jid(value, label):
         if not value:
             return
@@ -5982,6 +6078,7 @@ def main():
 
     _check_jid(args.jid, "--jid")
     _check_jid(args.peer, "--peer")
+    _warn_if_domains_differ(args.jid, args.peer)
 
     password = getpass.getpass(f"Password for {args.jid}: ")
     try:
