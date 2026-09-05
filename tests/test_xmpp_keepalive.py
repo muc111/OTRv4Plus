@@ -144,7 +144,18 @@ class TestDeadButWritableStreamIsDetected:
 
     def _drive(self, client, monkeypatch, ticks):
         """Run the loop with sleeps and the clock collapsed."""
+        real_monotonic = xmpp.time.monotonic
         now = {"t": 1000.0}
+
+        # Same rebase as _run_loop and as TestFailureCountIsPerSession's
+        # driver: `_FakeClient.__init__` measured `_last_inbound` against the
+        # real clock, and this replaces that clock with one starting at
+        # 1000.0.  Without the rebase `_stream_quiet_for` returns
+        # `1000.0 - (real_uptime - 10_000)`, which goes negative once the
+        # host has been up for about 3 hours -- a silent stream then reads as
+        # busy and the probe never runs.
+        age = max(0.0, real_monotonic() - client._last_inbound)
+        client._last_inbound = now["t"] - age
 
         async def _sleep(_seconds):
             now["t"] += client.KEEPALIVE_WHITESPACE_S
@@ -246,9 +257,26 @@ class TestFailureCountIsPerSession:
     """
 
     def _drive(self, client, monkeypatch, budget_s):
+        real_monotonic = xmpp.time.monotonic
         """Run one loop instance on a virtual clock until it disconnects."""
         now = {"t": getattr(client, "_sim_now", 0.0)}
         deadline = now["t"] + budget_s
+
+        # Rebase _last_inbound onto the collapsed clock, exactly as
+        # _run_loop below already does.  `_FakeClient.__init__` measures it
+        # against the REAL monotonic clock -- `now - 10_000` for a silent
+        # stream -- and this driver then replaces that clock with one
+        # starting at 0.0.  `_stream_quiet_for` was therefore computing
+        # `0.0 - (real_uptime - 10_000)`: positive while the host had been up
+        # for less than about 2.8 hours, negative after.  Negative reads as a
+        # busy stream, the probe is skipped, the counter never climbs, and
+        # all three tests in this class fail.
+        #
+        # So they passed or failed according to the machine's uptime. A suite
+        # green in the morning was red in the afternoon on identical code,
+        # and a green run was luck rather than evidence.
+        age = max(0.0, real_monotonic() - client._last_inbound)
+        client._last_inbound = now["t"] - age
 
         async def _sleep(seconds):
             now["t"] += seconds

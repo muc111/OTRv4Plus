@@ -1873,7 +1873,7 @@ class OTRv4DataMessage:
             raise ValueError(f"Failed to decode message: {e }")
 
 
-VERSION = "OTRv4+ 10.25.0"
+VERSION = "OTRv4+ 10.25.1"
 
 #: SMP passphrase length bounds, shared by both clients.
 #:
@@ -11162,6 +11162,7 @@ class OTRv4IRCClient:
                                 "yellow",
                             ),
                         )
+                        self._report_disconnect_context()
                         self._try_reconnect()
                         return
                     self.connected = False
@@ -11780,12 +11781,32 @@ class OTRv4IRCClient:
     # opt-in because nobody here can prove which servers do.
     #: name -> (cost per line, starting allowance, cap, minimum gap)
     PACE_PRESETS = {
-        "safe":   (3.15, 3.15, 10.0, 0.30),
+        # allowance 2x cost: the behaviour being reproduced sent two lines
+        # 0.30s apart and then paused 6s, so two lines have to clear before
+        # the penalty bites.  With a one-line allowance a two-fragment message
+        # took 3.15s where the old code took 0.30 -- slower, in the name of
+        # reproducing it.
+        "safe":   (3.15, 6.30, 10.0, 0.30),
         "normal": (2.00, 4.00, 10.0, 0.05),
         "fast":   (1.00, 4.00, 10.0, 0.05),
         "turbo":  (0.50, 4.00, 10.0, 0.05),
     }
-    DEFAULT_PACE = "normal"
+    #: Back to "safe" in v10.25.1.  v10.25.0 made "normal" the default on the
+    #: arithmetic -- it is the penalty mainstream ircds implement, and the old
+    #: rate was paying double for no recorded reason.  The first real run at
+    #: it ended with the server closing the connection 55 seconds after a
+    #: 17-fragment DAKE1, and one observed disconnect is enough: a lost
+    #: handshake costs minutes on I2P, and the conservative rate is the one
+    #: the user already had working.
+    #:
+    #: What that run did NOT establish is that the pacing caused it.  No
+    #: ERROR line arrived -- a flood kill on most ircds says "Closing Link:
+    #: ... (Excess Flood)" first -- the disconnected side was idle at the
+    #: time rather than sending, and an I2P tunnel dropping looks identical
+    #: from here.  So this is a retreat to the known-good value, not a
+    #: diagnosis.  `/fragrate` and the disconnect report added alongside it
+    #: are how the question gets answered with evidence instead.
+    DEFAULT_PACE = "safe"
 
     #: What a server says when it has had enough.  Matching any of these drops
     #: the session to SAFE for the rest of the run: a disconnect mid-DAKE is
@@ -11829,6 +11850,63 @@ class OTRv4IRCClient:
                 self.bucket = min(self.cap, self.bucket + delay)
                 self._prev = self._clock()
             self.bucket -= self.cost
+
+    def _report_disconnect_context(self) -> None:
+        """Say what was happening when the connection went, not just that it did.
+
+        A dropped connection on I2P has several causes that look identical
+        from here -- a flood kill, a ping timeout, the SAM tunnel dying, the
+        server restarting -- and "Server closed the connection" distinguishes
+        none of them.  A session was lost mid-DAKE with the pacing newly
+        changed, and there was no way to tell from the log whether the pacing
+        had anything to do with it.  These four facts separate the cases:
+
+          * an ERROR line, if one arrived.  Most ircds send "Closing Link:
+            ... (Excess Flood)" before a flood kill, so its ABSENCE is
+            evidence too, and worth printing as such.
+          * seconds since the last PING/PONG.  A large number points at a
+            ping timeout, which on this client means the receive thread was
+            blocked -- see _send_worker.
+          * seconds since our last outbound OTR message, and how many
+            fragments it was.  A drop during or just after a burst points at
+            the send rate; a drop while idle does not.
+          * the pacing preset in force, because that is the setting under
+            suspicion and it should not have to be remembered separately.
+
+        Prints nothing sensitive: counts, seconds, a preset name, and a
+        server-supplied string that is sanitised.
+        """
+        now = time.time()
+        lines = []
+        err = getattr(self, "_last_server_error", None)
+        if err and now - err[1] < 120:
+            lines.append("   Server said: %s" % _sanitise(err[0], 200))
+        else:
+            lines.append("   No ERROR line from the server — a flood kill "
+                         "usually sends one first.")
+        try:
+            since_ping = now - float(getattr(self, "last_ping", 0) or 0)
+            if since_ping < 86400:
+                lines.append("   %.0fs since the last message from the server."
+                             % since_ping)
+        except Exception:
+            pass
+        last_sent = 0.0
+        try:
+            for _peer, _ts in getattr(self, "_last_otr_sent", {}).items():
+                last_sent = max(last_sent, _ts)
+        except Exception:
+            pass
+        if last_sent:
+            lines.append("   %.0fs since our last OTR message (%d fragments)."
+                         % (now - last_sent,
+                            getattr(self, "_last_fragment_count", 0)))
+        else:
+            lines.append("   No OTR message sent on this connection.")
+        lines.append("   Fragment pacing was '%s'. /fragrate to change it."
+                     % self._pace_name())
+        for line in lines:
+            self.add_message("system", colorize(line, "dim"))
 
     def _cmd_fragrate(self, arg: str) -> None:
         """`/fragrate` — show the pacing, or change it.
@@ -12206,6 +12284,7 @@ class OTRv4IRCClient:
                 # complaint before the socket goes: it is the evidence that
                 # the send rate was too high, and it arrives exactly once.
                 _why = trailing or " ".join(params)
+                self._last_server_error = (_why, time.time())
                 self._note_possible_flood(_why)
                 self.add_message("system", colorize(
                     "⚠ Server: %s" % _sanitise(_why, 256), "red"))
@@ -14423,7 +14502,31 @@ class EnhancedOTRv4IRCClient(OTRv4IRCClient):
     def _route_otr_to_session_manager(
         self, sender: str, payload: str, label: str, is_initiator: bool
     ):
-        """Feed a raw OTRv4 payload to the session manager and handle the response."""
+        """Feed a raw OTRv4 payload to the session manager and handle the response.
+
+        KNOWN HAZARD, not fixed here.  This runs on the receive thread --
+        `_recv_loop` calls `handle_message` directly -- and the answer it
+        sends is a multi-fragment message.  A responder's DAKE2 is 24
+        fragments, which at the default pacing is about 72 seconds during
+        which the receive thread is inside `time.sleep()` and therefore
+        cannot read the socket or answer a server PING.  Most ircds ping
+        every 120s and kill after another 120s, so one send does not do it,
+        but they stack.
+
+        The same disease was fixed for the SMP path -- `_handle_data_message`
+        offloads to `_smp_executor` with a comment saying exactly this -- and
+        the DAKE path never was.
+
+        It is left alone deliberately for now.  Fixing it means sending on a
+        worker, which means the stage report ("DAKE 2 / OK") has to move to a
+        completion callback so it still fires only after the send succeeded,
+        and that is a restructure of the handshake display on the same day it
+        first worked end to end.  The disconnect this was investigated for
+        happened on the INITIATOR, whose sends run on the main thread and
+        whose receive thread was not blocked, so this is not the cause of it.
+        `_report_disconnect_context` prints seconds-since-last-server-message
+        precisely so the next occurrence says whether it is.
+        """
         try:
             result = self.session_manager.handle_incoming_message(sender, payload)
             if result and isinstance(result, (bytes, str)):

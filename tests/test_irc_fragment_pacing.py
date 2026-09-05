@@ -163,9 +163,46 @@ class TestItIsActuallyFasterThanWhatItReplaced:
             "expected a clear improvement on 3.15s/line; got %.1fs vs %.1fs"
             % (new, old))
 
-    def test_the_default_is_not_slower_than_the_old_behaviour(self):
-        for n in (2, 5, 16, 24, 48):
-            assert run_pacer(BASE.DEFAULT_PACE, n) <= self.old_i2p_pacing(n)
+    def test_the_default_is_the_rate_known_to_survive(self):
+        """v10.25.0 defaulted to `normal` on the arithmetic. The first real
+        run at it ended with the server closing the connection, so the
+        default is the conservative rate again -- the one the user already
+        had working -- and the faster ones are opt-in.
+
+        This is not a claim that the pacing caused that disconnect. No ERROR
+        line arrived and the disconnected side was idle at the time. It is a
+        claim that a default should be the value with evidence behind it."""
+        assert BASE.DEFAULT_PACE == "safe"
+        # At the sizes that actually occur -- every DAKE and SMP message is
+        # 16 to 48 fragments -- it reproduces the old rate closely. That is
+        # what "known to survive" means: the same lines/sec on the wire.
+        for n in (16, 24, 48):
+            assert run_pacer(BASE.DEFAULT_PACE, n) == \
+                pytest.approx(self.old_i2p_pacing(n), rel=0.05)
+
+    def test_the_default_tracks_the_old_schedule_to_within_one_line(self):
+        """The two are not identical at every count and do not need to be.
+        The old schedule paid its 6s pause BEFORE every second line, so at an
+        odd number of fragments it has already paid a pause the bucket has
+        not -- a phase offset of at most one line's cost, in either
+        direction. The sustained rate is what matters and it is the same.
+
+        Bounded rather than one-sided, because "never faster" turned out to
+        be false for a reason that is not a problem, and a test asserting it
+        would have been testing the phase rather than the rate."""
+        cost = BASE.PACE_PRESETS["safe"][0]
+        for n in range(2, 60):
+            drift = run_pacer("safe", n) - self.old_i2p_pacing(n)
+            assert abs(drift) <= cost + 0.01, (
+                "safe drifts %.2fs from the old schedule at %d fragments, "
+                "more than the one-line offset the two shapes explain"
+                % (drift, n))
+
+    def test_the_faster_rates_are_still_available(self):
+        """Backing off the default must not remove the tuning surface --
+        finding the sweet spot is the whole point of /fragrate."""
+        for preset in ("normal", "fast", "turbo"):
+            assert run_pacer(preset, 48) < self.old_i2p_pacing(48) * 0.75
 
     def test_safe_reproduces_roughly_the_old_rate(self):
         """`safe` is kept because it is the one rate known to survive on
@@ -212,8 +249,16 @@ class TestEvidenceOfThrottlingDropsTheRate:
         assert client._pace_name() == "safe"
 
     def test_the_user_is_told_why_it_slowed_down(self, client):
+        client._pace_preset = "fast"
         client._note_possible_flood("Closing Link: x (Excess Flood)")
         assert client.said("complained about the send rate")
+
+    def test_nothing_is_said_when_it_is_already_safe(self, client):
+        """The default is `safe`, so most flood complaints have nothing to
+        change. Announcing a change that did not happen is noise at exactly
+        the moment the user needs the real reason."""
+        client._note_possible_flood("Closing Link: x (Excess Flood)")
+        assert not client.said("complained about the send rate")
 
     def test_an_ordinary_error_does_not_change_anything(self, client):
         client._pace_preset = "fast"
@@ -362,7 +407,7 @@ class TestTheCommand:
 
     def test_it_reports_the_current_setting(self, client):
         client._cmd_fragrate("")
-        assert client.said("Fragment pacing: normal")
+        assert client.said("Fragment pacing: %s" % BASE.DEFAULT_PACE)
 
     def test_it_sets_a_known_preset(self, client):
         client._cmd_fragrate("fast")
@@ -486,3 +531,141 @@ class TestTheFragmentCountStillLeaksWhichMessageItIs:
         doc = otr.OTRMessageFragmenter.fragment.__doc__ or ""
         assert "MIN_FRAGMENTS" not in doc or "no MIN_FRAGMENTS" in doc
         assert "NOT anti-fingerprinting" in doc
+
+
+class TestTheDisconnectSaysWhatWasHappening:
+    """A session was lost mid-DAKE the day after the pacing changed, and the
+    log said only "Server closed the connection". That distinguishes none of
+    the causes -- a flood kill, a ping timeout, the SAM tunnel dying, the
+    server restarting all look identical from here -- so the pacing could be
+    neither blamed nor cleared.
+
+    These four facts separate them, and none of them is sensitive: counts,
+    seconds, a preset name, and a sanitised server string.
+    """
+
+    @pytest.fixture
+    def reporter(self):
+        c = Client()
+        c._report_disconnect_context = \
+            CLIENT._report_disconnect_context.__get__(c)
+        c.last_ping = __import__("time").time()
+        c._last_otr_sent = {}
+        return c
+
+    def test_a_server_error_is_quoted(self, reporter):
+        import time
+        reporter._last_server_error = (
+            "Closing Link: TurbidBranch (Excess Flood)", time.time())
+        reporter._report_disconnect_context()
+        assert reporter.said("Excess Flood")
+
+    def test_the_absence_of_an_error_is_itself_reported(self, reporter):
+        """Most ircds send "Closing Link: ... (Excess Flood)" before a flood
+        kill. Nothing arriving is evidence too, and the reader needs to be
+        told that rather than left to infer it from silence."""
+        reporter._report_disconnect_context()
+        assert reporter.said("No ERROR line")
+
+    def test_a_stale_error_is_not_quoted(self, reporter):
+        """An ERROR from twenty minutes ago has nothing to do with this
+        disconnect, and quoting it would point at the wrong cause."""
+        import time
+        reporter._last_server_error = ("Closing Link: (Excess Flood)",
+                                       time.time() - 3600)
+        reporter._report_disconnect_context()
+        assert not reporter.said("Excess Flood")
+        assert reporter.said("No ERROR line")
+
+    def test_it_reports_how_long_the_server_was_silent(self, reporter):
+        """A large number points at a ping timeout rather than a flood kill."""
+        import time
+        reporter.last_ping = time.time() - 240
+        reporter._report_disconnect_context()
+        assert reporter.said("since the last message from the server")
+
+    def test_it_reports_how_long_since_we_sent(self, reporter):
+        """A drop during or just after a burst points at the send rate. A
+        drop while idle -- which is what actually happened -- does not."""
+        import time
+        reporter._last_otr_sent = {"LoneStyx": time.time() - 55}
+        reporter._last_fragment_count = 17
+        reporter._report_disconnect_context()
+        assert reporter.said("since our last OTR message")
+        assert reporter.said("17 fragments")
+
+    def test_it_says_when_nothing_was_sent(self, reporter):
+        reporter._report_disconnect_context()
+        assert reporter.said("No OTR message sent")
+
+    def test_it_names_the_pacing_in_force(self, reporter):
+        """The setting under suspicion should not have to be remembered
+        separately from the failure it is suspected of."""
+        reporter._pace_preset = "fast"
+        reporter._report_disconnect_context()
+        assert reporter.said("pacing was 'fast'")
+
+    def test_a_hostile_error_string_cannot_inject_escapes(self, reporter):
+        import time
+        reporter._last_server_error = ("bye \x1b[2Jgone", time.time())
+        reporter._report_disconnect_context()
+        assert "\x1b[2J" not in "".join(reporter.lines)
+
+    def test_it_survives_a_client_with_nothing_recorded(self, reporter):
+        del reporter.last_ping
+        del reporter._last_otr_sent
+        reporter._report_disconnect_context()
+        assert reporter.lines
+
+    def test_the_recv_loop_calls_it(self):
+        import ast
+        import os
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        with open(os.path.join(root, "otrv4+.py"), encoding="utf-8") as fh:
+            tree = ast.parse(fh.read())
+        fn = next(n for n in ast.walk(tree)
+                  if isinstance(n, ast.FunctionDef) and n.name == "_recv_loop")
+        assert "_report_disconnect_context" in ast.unparse(fn)
+
+    def test_the_error_handler_records_the_reason_for_it(self):
+        import ast
+        import os
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        with open(os.path.join(root, "otrv4+.py"), encoding="utf-8") as fh:
+            tree = ast.parse(fh.read())
+        assert any("_last_server_error" in ast.unparse(n)
+                   for n in ast.walk(tree)
+                   if isinstance(n, ast.FunctionDef)
+                   and n.name == "handle_message")
+
+
+class TestTheRecvThreadHazardIsRecorded:
+    """A responder's DAKE2 is sent from the receive thread, which is inside
+    time.sleep() for the duration and cannot answer a server PING. Not fixed
+    in this release -- it did not cause the disconnect being investigated,
+    and fixing it moves the handshake display onto completion callbacks the
+    day after it first worked. Asserted as documented so it cannot be
+    forgotten rather than asserted as solved."""
+
+    def test_the_hazard_is_written_down_where_it_lives(self):
+        import ast
+        import os
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        with open(os.path.join(root, "otrv4+.py"), encoding="utf-8") as fh:
+            tree = ast.parse(fh.read())
+        fn = next(n for n in ast.walk(tree)
+                  if isinstance(n, ast.FunctionDef)
+                  and n.name == "_route_otr_to_session_manager")
+        doc = ast.get_docstring(fn) or ""
+        assert "KNOWN HAZARD" in doc
+        assert "receive thread" in doc
+
+    def test_the_smp_path_still_offloads(self):
+        """The same disease was fixed there. If that offload is ever removed,
+        both paths block and the stacking gets much worse."""
+        import ast
+        import os
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        with open(os.path.join(root, "otrv4+.py"), encoding="utf-8") as fh:
+            src = fh.read()
+        assert "_smp_executor" in src

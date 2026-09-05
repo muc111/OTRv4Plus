@@ -4,6 +4,114 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## v10.25.1 — back to the rate that was working, and say why next time
+
+*2026-09-05.  `VERSION → 10.25.1`.  `otrv4_core` unchanged at 0.10.28.*
+
+v10.25.0 made the ircd penalty (`normal`, 2.0s a line) the default on the
+arithmetic.  The first real run at it ended like this:
+
+```
+17:40:38 [LoneStyx] 🔑 Starting OTR session with LoneStyx…
+17:41:08 [LoneStyx] 🔐 DAKE 1
+17:41:08 [LoneStyx] 🟢 OK
+17:41:08 [LoneStyx]    waiting for their answer…
+17:42:03 [sys]   ⚠ Server closed the connection. Reconnecting automatically…
+```
+
+**The default is `safe` again.** One observed disconnect is enough: a lost
+handshake costs minutes on I2P, and the conservative rate is the one that was
+already working.  `normal`, `fast` and `turbo` remain, opt-in, through
+`/fragrate`.
+
+### What that log does not establish
+
+It is worth being precise, because the obvious reading is not supported:
+
+- **No ERROR line arrived.**  Most ircds send `Closing Link: … (Excess
+  Flood)` before a flood kill.  The client would have printed it — v10.25.0
+  added that handler — and did not.
+- **The disconnected side was idle.**  It finished sending DAKE1 at 17:41:08
+  and the connection went 55 seconds later, while it was waiting.  A flood
+  kill lands during or just after the burst.
+- **The 30 seconds to send DAKE1 is exactly what `normal` predicts** for 17
+  fragments, so the pacing was doing what it was told.
+- **An I2P SAM tunnel dropping looks identical from here.**
+
+So this is a retreat to a known-good value, not a diagnosis.  Calling it a
+flood kill would be a guess presented as a finding.
+
+### Making the next one answerable
+
+`_report_disconnect_context` prints, on every unexpected close:
+
+```
+   No ERROR line from the server — a flood kill usually sends one first.
+   240s since the last message from the server.
+   55s since our last OTR message (17 fragments).
+   Fragment pacing was 'safe'. /fragrate to change it.
+```
+
+Four facts, and between them they separate a flood kill from a ping timeout
+from a dead tunnel.  Nothing sensitive: counts, seconds, a preset name, and a
+sanitised server string.
+
+### A hazard found while looking, and deliberately not fixed
+
+`handle_message` runs on the receive thread, so a responder's DAKE2 — 24
+fragments, about 72 seconds at the default pacing — is sent from inside
+`_recv_loop`, which spends that time in `time.sleep()` and cannot read the
+socket or answer a `PING`.  The same disease was fixed for the SMP path
+(`_handle_data_message` offloads to `_smp_executor`, with a comment saying
+exactly this); the DAKE path never was.
+
+It is **not** fixed here, for two reasons.  It does not explain the disconnect
+above — that was the initiator, whose sends run on the main thread.  And
+fixing it means sending on a worker, which means the `DAKE 2 / OK` report has
+to move onto a completion callback to keep firing only after the send actually
+succeeded — a restructure of the handshake display on the same day it first
+worked end to end.  Recorded in the docstring, and a test asserts the record
+is still there.
+
+### Also
+
+`safe` gets its two-line burst back.  Reproducing the old schedule with a
+one-line allowance made a two-fragment message take 3.15s where the old code
+took 0.30 — slower, in the name of reproducing it.  It now tracks the old
+schedule to within one line's cost at every count from 2 to 60.
+
+69 tests in `test_irc_fragment_pacing.py`, 8 further mutants killed.
+
+### And a test that was passing by the clock
+
+Chasing the disconnect turned up three failures in
+`test_xmpp_keepalive.py::TestFailureCountIsPerSession` that had nothing to do
+with any of this — **and that a full-suite run had reported green a few hours
+earlier on identical code.**
+
+`_FakeClient.__init__` measures `_last_inbound` against the real
+`time.monotonic()` (`now - 10_000` for a silent stream).  The driver then
+replaces that clock with a simulated one starting at 0.0, so
+`_stream_quiet_for` was computing `0.0 - (real_uptime - 10_000)`.  On a host
+up for less than about 2.8 hours that is positive and the stream reads as
+silent, which is what the test needs.  Past that it goes negative, the stream
+reads as busy, the probe is skipped and the counter never climbs.
+
+So those tests passed or failed **according to the machine's uptime**.  The
+v10.25.0 release note in this file claimed "3053 passed" and that was luck,
+not evidence: the same commit checked out clean and re-run reports 3050 passed
+and 3 failed.  Corrected here rather than quietly.
+
+`_run_loop` in the same file had always rebased `_last_inbound` onto the
+collapsed clock and said why.  The other two drivers never did.  They do now,
+and the fix is verified against simulated uptimes of 500 000 and 5 000 000
+seconds as well as the real one — a fourth test, in the second driver, was
+failing at the higher values.
+
+Full suite 3069 passed / 44 skipped / 1 xfailed.
+
+---
+
 ## v10.25.0 — the handshake was mostly this client sleeping
 
 *2026-09-05.  `VERSION → 10.25.0`.  `otrv4_core` unchanged at 0.10.28.*
@@ -95,7 +203,11 @@ the inter-line floor masked the bucket cap, and nothing pinned the safety
 margin at all — and the notes on those tests say so, because a test that
 cannot fail is worse than no test.
 
-Full suite 3053 passed / 44 skipped / 1 xfailed.
+Full suite 3053 passed / 44 skipped / 1 xfailed — **and that figure was
+wrong**: three tests in `test_xmpp_keepalive.py` pass or fail according to the
+host's uptime, and that run happened to be inside the window where they pass.
+Re-run on a clean checkout the same commit reports 3050 passed and 3 failed.
+See v10.25.1.
 
 **Not hardware-tested.** The arithmetic matches the observed handshake, but
 whether irc.postman.i2p tolerates the new default is exactly the thing only a

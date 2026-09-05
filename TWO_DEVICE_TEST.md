@@ -205,6 +205,11 @@ Then raise it one step and repeat:
 /otr <peer>
 ```
 
+**One run of `normal` already ended in a disconnect** (2026-09-05, 55s after a
+17-fragment DAKE1, no ERROR line, while idle). That is why the default went
+back to `safe`. It is not established that the pacing caused it — read the
+four lines the client now prints on a disconnect before concluding anything.
+
 - [ ] `normal` completes a DAKE without a disconnect.
 - [ ] `fast` completes a DAKE without a disconnect.
 - [ ] `turbo` — expect this one to be refused by the server; that is what it
