@@ -155,7 +155,13 @@ teardown, and the client cleanup coupled back into the engine's `try`.
 
 **This changes three previously-inert paths into live ones**, including DAKE
 glare — which has been live-tested successfully *with the no-op in place*.
-Worth a two-handset glare re-test.
+
+*Status at 2026-09-05:* the two-handset run that followed reported the client
+working, and `/otr` recovering a stuck handshake is part of ordinary use. **A
+deliberate glare test — both sides typing `/otr` at once — has still not been
+run**, and a general "works well" does not close it: glare is a race, and the
+path that changed is the one taken only when both sides start at the same
+moment.
 
 ---
 
@@ -314,7 +320,10 @@ point.
 without telling the sender, the limiter ignoring the allowance, and the
 allowance made unbounded.
 
-**Still not confirmed on a device.**
+**Confirmed on two handsets over I2P, 2026-09-05**, with the v10.18.x builds
+that followed: `/sendfile` completes, and the client is reported working. The
+`[rate-limit] dropping message` wall and the `chunk N arrived out of order`
+that this release was written to fix have not recurred.
 
 ---
 
