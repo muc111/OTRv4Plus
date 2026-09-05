@@ -247,7 +247,7 @@ class TestTheBuildScriptWarnsIfThisIsBypassed:
     directory, so `--manifest-path Rust/Cargo.toml` from the repo root skips
     it. That must not be silent."""
 
-    def _run_build_script(self, target, features):
+    def _run_build_script(self, target, features, extra_env=None):
         import shutil
         import subprocess
         import tempfile
@@ -256,43 +256,85 @@ class TestTheBuildScriptWarnsIfThisIsBypassed:
         build_rs = os.path.join(ROOT, "Rust", "build.rs")
         with tempfile.TemporaryDirectory() as work:
             binary = os.path.join(work, "bs")
-            built = subprocess.run(["rustc", "-O", "-o", binary, build_rs],
-                                   capture_output=True)
+            # --edition 2021 to match what cargo uses for this package. Plain
+            # rustc defaults to an older edition, where inline format captures
+            # like `{fix}` render as that literal text -- so a message that was
+            # entirely broken would still have satisfied a test looking only
+            # for the "cargo:warning=" prefix. Found exactly that way.
+            built = subprocess.run(
+                ["rustc", "--edition", "2021", "-O", "-o", binary, build_rs],
+                capture_output=True)
             assert built.returncode == 0, built.stderr.decode()[:400]
+            assert b"warning" not in built.stderr, (
+                "build.rs does not compile cleanly: %s"
+                % built.stderr.decode()[:300])
             env = {"PATH": os.environ.get("PATH", ""),
                    "TARGET": target,
                    "CARGO_CFG_TARGET_FEATURE": features}
-            return subprocess.run([binary], capture_output=True, env=env,
-                                  text=True).stdout
+            env.update(extra_env or {})
+            done = subprocess.run([binary], capture_output=True, env=env,
+                                  text=True)
+            return done
 
     def test_it_warns_when_crt_static_would_drop_the_cdylib(self):
-        out = self._run_build_script("x86_64-unknown-linux-musl",
-                                     "crt-static,fxsr,sse,sse2")
-        assert "cargo:warning=" in out
-        assert "no libotrv4_core.so" in out or "DROP the cdylib" in out
+        done = self._run_build_script("x86_64-unknown-linux-musl",
+                                      "crt-static,fxsr,sse,sse2")
+        assert "cargo:warning=" in done.stdout
+        assert "NO libotrv4_core.so" in done.stdout
 
     def test_the_warning_names_the_fix(self):
         """A warning that reports a symptom and not a remedy just moves the
         confusion earlier."""
-        out = self._run_build_script("x86_64-unknown-linux-musl",
-                                     "crt-static,fxsr,sse,sse2")
-        assert "target-feature=-crt-static" in out
+        done = self._run_build_script("x86_64-unknown-linux-musl",
+                                      "crt-static,fxsr,sse,sse2")
+        assert "target-feature=-crt-static" in done.stdout
 
     def test_the_warning_names_the_error_the_user_will_hit(self):
-        out = self._run_build_script("x86_64-unknown-linux-musl",
-                                     "crt-static,fxsr,sse,sse2")
-        assert "No such file or directory" in out
+        done = self._run_build_script("x86_64-unknown-linux-musl",
+                                      "crt-static,fxsr,sse,sse2")
+        assert "No such file or directory" in done.stdout
+
+    def test_the_message_is_not_an_unrendered_format_placeholder(self):
+        """The message went out as the literal text "{fix}" once, and a test
+        that only looked for the "cargo:warning=" prefix passed anyway."""
+        done = self._run_build_script("x86_64-unknown-linux-musl",
+                                      "crt-static,fxsr,sse,sse2")
+        assert "{fix}" not in done.stdout and "{line}" not in done.stdout
+        assert "{target}" not in done.stdout
+        assert "x86_64-unknown-linux-musl" in done.stdout, (
+            "the target name was never substituted in")
 
     def test_it_is_silent_on_an_ordinary_build(self):
         """It must not fire on glibc or on `cargo test`, or it becomes noise
         on a project that keeps its build silent."""
-        out = self._run_build_script("x86_64-unknown-linux-gnu",
-                                     "fxsr,sse,sse2")
-        assert "cargo:warning=" not in out
+        done = self._run_build_script("x86_64-unknown-linux-gnu",
+                                      "fxsr,sse,sse2")
+        assert "cargo:warning=" not in done.stdout
+        assert done.returncode == 0
 
-    def test_it_warns_rather_than_failing(self):
-        """`cargo test` wants only the rlib; a hard error would take the Rust
-        test suite with it."""
+    def test_asking_for_the_extension_module_is_a_HARD_error(self):
+        """`--features extension-module` means "build the Python extension".
+        Finishing without one is not a success worth reporting, and a warning
+        was not enough: it scrolls past in several hundred lines of compile
+        output exactly like rustc's own `dropping unsupported crate type`
+        line, which is the line that already went unread twice."""
+        done = self._run_build_script(
+            "x86_64-unknown-linux-musl", "crt-static,fxsr,sse,sse2",
+            extra_env={"CARGO_FEATURE_EXTENSION_MODULE": "1"})
+        assert done.returncode != 0, (
+            "the build still 'succeeds' while producing no .so")
+        assert "crt-static is enabled" in done.stderr
+        assert "target-feature=-crt-static" in done.stderr
+
+    def test_the_hard_error_does_not_fire_without_the_feature(self):
+        """`cargo test` wants only the rlib and must still run."""
+        done = self._run_build_script("x86_64-unknown-linux-musl",
+                                      "crt-static,fxsr,sse,sse2")
+        assert done.returncode == 0
+
+    def test_the_hard_error_is_gated_on_the_feature(self):
+        """`cargo test` wants only the rlib; an unconditional hard error would
+        take the Rust test suite with it."""
         source = io.open(os.path.join(ROOT, "Rust", "build.rs"),
                          encoding="utf-8").read()
         start = source.index("fn warn_if_cdylib_will_be_dropped")
@@ -301,6 +343,9 @@ class TestTheBuildScriptWarnsIfThisIsBypassed:
         # function picks them up and fails for the wrong reason.
         end = source.index("\n}\n", start) + 3
         fn = source[start:end]
-        assert "warn_if_cdylib" in fn and "cargo:warning=" in fn
-        assert "panic!" not in fn, "it aborts the build instead of warning"
-        assert "process::exit" not in fn
+        assert "cargo:warning=" in fn, "the warning path is gone"
+        # It DOES panic -- but only behind the feature gate, so `cargo test`
+        # is unaffected. That gate is the thing worth pinning.
+        assert "CARGO_FEATURE_EXTENSION_MODULE" in fn, (
+            "the hard error is no longer conditional on the feature, so it "
+            "would take the Rust test suite down with it")
