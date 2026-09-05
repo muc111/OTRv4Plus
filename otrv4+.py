@@ -1873,7 +1873,7 @@ class OTRv4DataMessage:
             raise ValueError(f"Failed to decode message: {e }")
 
 
-VERSION = "OTRv4+ 10.23.1"
+VERSION = "OTRv4+ 10.23.2"
 
 #: SMP passphrase length bounds, shared by both clients.
 #:
@@ -13360,60 +13360,15 @@ class OTRv4IRCClient:
         elif cmd == "trust" and len(parts) > 2:
             self.session_manager.trust_db.add_trust(parts[1], parts[2])
             self.add_message("system", f"✅ Trusted {parts [1 ]}: {parts [2 ][:16 ]}…")
-        elif cmd == "smp" and len(parts) == 1:
-            # Bare /smp: ask for whatever is missing, hidden.  This used to
-            # print "type /smp <passphrase> (it will be visible on this
-            # terminal)", which asked the user to put a shared secret into
-            # their own scrollback -- and contradicted `_finish_trust`, which
-            # had been promising "it will ask for the passphrase" since
-            # v10.15.  The masking machinery (set_input_mask) existed the
-            # whole time and nothing called it.
-            active = self.panel_manager.get_active_panel()
-            peer = active.name if active and active.type not in ("system", "debug") else None
-            if not peer:
-                self.add_message("system", colorize("⚠ Switch to a peer panel first", "yellow"))
-            else:
-                self._smp_verify(peer)
-        elif cmd == "smp" and len(parts) > 1:
-            active = self.panel_manager.get_active_panel()
-            peer = active.name if active and active.type not in ("system", "debug") else None
-            sub = parts[1].lower()
-            if not peer:
-                self.add_message("system", colorize("⚠ Switch to a peer panel first", "yellow"))
-            elif sub == "start":
-                stored = ""
-                if hasattr(self.session_manager, "smp_storage"):
-                    stored = self.session_manager.smp_storage.get_secret(peer) or ""
-                if not stored:
-                    self.add_message(
-                        "system",
-                        colorize("⚠ No SMP secret stored - use /smp <secret> first", "yellow"),
-                    )
-                else:
-                    self._start_smp(peer, stored)
-            elif sub == "abort":
-                self.clear_pending_smp(peer)
-                self.add_message("system", f"🛑 SMP aborted for {peer }")
-            elif sub == "status":
-                status = (
-                    self.session_manager.get_smp_status(peer)
-                    if hasattr(self.session_manager, "get_smp_status")
-                    else {}
-                )
-                self.add_message("system", f"SMP {peer }: {status }")
-            else:
-                secret = " ".join(parts[1:])
-                if len(secret) < 8:
-                    self.add_message(
-                        "system",
-                        colorize(
-                            f"⚠ SMP secret rejected - only {len (secret )} chars. "
-                            "Minimum 8 required to resist brute-force attacks.",
-                            "red",
-                        ),
-                    )
-                    return
-                self._start_smp(peer, secret)
+        # `/smp` is NOT handled here.  It was, from v10.23.0 until v10.23.2,
+        # and it never once ran: EnhancedOTRv4IRCClient -- the only class this
+        # program instantiates -- overrides handle_command and claims "smp"
+        # before the branch that delegates here, so a user typing /smp got
+        # "Usage: /smp <command> [args]" from the override while the guided
+        # prompt sat in this method unreachable.  Two dispatchers for one
+        # command is how that happened; there is now one, in the subclass.
+        # `self._smp_verify` is defined there too, so a branch here would
+        # raise AttributeError on this class in any case.
         elif cmd == "smp-secret" and len(parts) > 2:
             peer = parts[1]
             secret = " ".join(parts[2:])
@@ -13570,8 +13525,10 @@ class OTRv4IRCClient:
                 "  /endotr <nick>       End session",
                 "  /fingerprint         Show your Ed448 fingerprint",
                 "  /trust <nick> <fp>   Trust a fingerprint",
-                "  /smp <secret>        Verify identity (shared secret)",
-                "  /smp start           Start SMP",
+                "  /smp                 Verify identity - asks for the",
+                "                       passphrase, hidden, and starts",
+                "  /smp start           Same as /smp",
+                "  /smp <secret>        Same, but typed in the clear (ECHOED)",
                 "  /smp abort           Abort SMP",
                 "  /smp status          SMP status",
                 "  /secure              Show session security levels",
@@ -13644,7 +13601,7 @@ class OTRv4IRCClient:
                 colorize("  Quick start:", "yellow"),
                 "    /join #channel     Join a channel",
                 "    /otr <nick>        Start encrypted chat",
-                "    /smp <secret>      Verify identity",
+                "    /smp               Verify identity - prompts, hidden",
                 "    /names             List users - \U0001F535 = OTRv4+ (identification only)",
                 "    /list              List all channels - pager",
                 "    /quit              Exit",
@@ -14307,6 +14264,63 @@ class EnhancedOTRv4IRCClient(OTRv4IRCClient):
             pass
         self.send_otr_message(peer, smp2)
 
+    def _active_peer(self) -> Optional[str]:
+        """The peer whose tab is in front, or None if it is not a peer tab.
+
+        Five call sites spelled this out inline, identically.  Once is
+        enough, and a shared helper means the "system and debug are not
+        peers" rule cannot drift between them -- typing /smp on the system
+        tab must not resolve to a peer named "system".
+        """
+        try:
+            active = self.panel_manager.get_active_panel()
+        except Exception:
+            return None
+        if active is None or active.type in ("system", "debug"):
+            return None
+        return active.name
+
+    def _smp_session_ready(self, peer: str) -> bool:
+        """Refuse to ask for a passphrase there is nothing to verify with.
+
+        Fail-closed: a session_manager that raises counts as not ready.  The
+        cost of getting this wrong is a user typing a shared secret at a
+        prompt whose session does not exist.
+        """
+        try:
+            if not self.session_manager.has_session(peer):
+                self.add_message("system",
+                                 f"{colorize ('❌ No session with','red')} {peer }")
+                return False
+            if (self.session_manager.get_security_level(peer)
+                    == UIConstants.SecurityLevel.PLAINTEXT):
+                self.add_message(
+                    "system",
+                    f"{colorize ('❌ No encrypted session with','red')} {peer }")
+                return False
+        except Exception:
+            self.add_message("system", colorize(
+                "❌ Could not check the session state — not asking for a "
+                "passphrase.", "red"))
+            return False
+        return True
+
+    def _warn_inline_secret(self, peer: str) -> None:
+        """Say that an inline passphrase was echoed, because it was.
+
+        The input line is cleared on Enter so it leaves the screen, but a
+        `script` capture or a scrollback buffer recorded the keystrokes as
+        they were echoed.  Better to say so than to let it look like it was
+        never shown.  Same wording as the XMPP client's.
+        """
+        sec = self._panel_sec(peer)
+        self.add_message(peer, colorize(
+            "🔐 NOTE: that passphrase was typed in the clear, so it is in "
+            "this terminal's scrollback and in any session capture.", "yellow"),
+            sec)
+        self.add_message(peer, colorize(
+            "🔐 Bare  /smp  asks for it hidden instead.", "dim"), sec)
+
     def _check_smp_secret_required(self, peer: str) -> None:
         """Show the consent prompt if the engine is holding a peer's SMP1."""
         try:
@@ -14411,7 +14425,8 @@ class EnhancedOTRv4IRCClient(OTRv4IRCClient):
         self.add_message(
             "system",
             f"{colorize ('Commands:','cyan')} "
-            f"/fingerprint  /smp <secret>  /smp start  /trust <nick>  /secure",
+            f"/smp  (asks for the passphrase, hidden)  /fingerprint  "
+            f"/trust <nick>  /secure",
         )
 
     def _handle_data_message(self, sender: str, payload: str):
@@ -14846,20 +14861,29 @@ class EnhancedOTRv4IRCClient(OTRv4IRCClient):
                 self.add_message("system", colorize("No active session to trust", "red"))
 
         elif cmd in ("smp", "verify"):
+            # Bare /smp is the normal verb, and it has to be handled HERE.
+            # v10.23.0 added it to OTRv4IRCClient.handle_command, but this
+            # override claims "smp" before the `else` that delegates to the
+            # base class, so what a user actually got on a handset was
+            # "Usage: /smp <command> [args]" -- the guided flow existed and
+            # was unreachable.  The tests that shipped with it bound the flow
+            # methods onto a stub and never drove the dispatcher, so nothing
+            # failed.  tests/test_irc_smp_command_routing.py drives it.
             if len(parts) < 2:
-                self.add_message("system", colorize("Usage: /smp <command> [args]", "red"))
+                peer = self._active_peer()
+                if not peer:
+                    self.add_message("system", colorize(
+                        "⚠ Switch to a peer panel first, then type /smp", "yellow"))
+                    return
+                if not self._smp_session_ready(peer):
+                    return
+                self._smp_verify(peer)
                 return
 
             subcmd = parts[1].lower()
 
             if subcmd == "start":
-                peer = None
-                if len(parts) > 2:
-                    peer = parts[2]
-                else:
-                    active = self.panel_manager.get_active_panel()
-                    if active and active.type not in ("system", "debug"):
-                        peer = active.name
+                peer = parts[2] if len(parts) > 2 else self._active_peer()
 
                 if not peer:
                     self.add_message(
@@ -14881,33 +14905,18 @@ class EnhancedOTRv4IRCClient(OTRv4IRCClient):
                     )
                     return
 
-                secret = None
-
-                if hasattr(self.session_manager, "smp_storage"):
-                    secret = self.session_manager.smp_storage.get_secret(peer)
-                    self.debug("SMP secret loaded")
-
-                if not secret:
-                    self.add_message(
-                        "system",
-                        colorize(
-                            f"No SMP secret stored for {peer } - use /smp <peer> <secret> first",
-                            "yellow",
-                        ),
-                    )
-                    return
-
+                # Same as bare /smp.  This used to refuse with "use
+                # /smp <peer> <secret> first" when nothing was stored, which
+                # sent the user to the one form that puts a shared secret in
+                # their own scrollback.  _smp_verify starts immediately when
+                # a passphrase is stored and asks for it, hidden, when it is
+                # not -- so the two spellings do the same thing, as they do
+                # in the XMPP client.
                 self.debug("Starting SMP")
-                self._start_smp(peer, secret)
+                self._smp_verify(peer)
 
             elif subcmd == "abort":
-                peer = None
-                if len(parts) > 2:
-                    peer = parts[2]
-                else:
-                    active = self.panel_manager.get_active_panel()
-                    if active and active.type not in ("system", "debug"):
-                        peer = active.name
+                peer = parts[2] if len(parts) > 2 else self._active_peer()
 
                 if not peer:
                     self.add_message("system", colorize("Usage: /smp abort [peer]", "red"))
@@ -14919,13 +14928,7 @@ class EnhancedOTRv4IRCClient(OTRv4IRCClient):
                 self.add_message("system", f"🛑 SMP aborted for {colorize_username (peer )}")
 
             elif subcmd == "status":
-                peer = None
-                if len(parts) > 2:
-                    peer = parts[2]
-                else:
-                    active = self.panel_manager.get_active_panel()
-                    if active and active.type not in ("system", "debug"):
-                        peer = active.name
+                peer = parts[2] if len(parts) > 2 else self._active_peer()
 
                 if not peer:
                     self.add_message("system", colorize("Usage: /smp status [peer]", "red"))
@@ -14934,8 +14937,7 @@ class EnhancedOTRv4IRCClient(OTRv4IRCClient):
                 self._show_smp_status(peer)
 
             else:
-                active = self.panel_manager.get_active_panel()
-                peer = active.name if active and active.type not in ("system", "debug") else None
+                peer = self._active_peer()
 
                 if not peer and len(parts) > 2:
                     peer = parts[1]
@@ -14974,13 +14976,23 @@ class EnhancedOTRv4IRCClient(OTRv4IRCClient):
                             colorize("✅ SMP secret stored (🦀 Rust vault)", "green"),
                             sec_level,
                         )
-                        self.add_message(
-                            self._otr_panel(peer),
-                            colorize("🔐 Type  /smp start  to begin verification.", "cyan"),
-                            sec_level,
-                        )
+                        self._warn_inline_secret(peer)
+                        # Verify now.  Storing and then telling the user to
+                        # type a second command was a step with no decision
+                        # in it: nobody types /smp <secret> meaning "store
+                        # this but do not verify" -- that is /smp-secret.
+                        #
+                        # Through _smp_verify rather than straight into
+                        # _start_smp, so this spelling cannot start a second
+                        # run while the engine is holding a peer's SMP1: it
+                        # reads the passphrase just stored, and in every
+                        # other flow state it says what is already pending
+                        # instead of talking over it.
+                        self._smp_verify(peer)
                     except Exception as exc:
                         self.add_message("system", f"{colorize ('❌','red')} {exc }")
+                    finally:
+                        secret = None
                 else:
                     self.add_message(
                         "system", colorize("Usage: /smp <secret>  or  /smp start [peer]", "red")

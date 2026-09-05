@@ -4,6 +4,74 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## v10.23.2 — the guided /smp existed and was unreachable
+
+*2026-09-05.  `VERSION → 10.23.2`.  `otrv4_core` unchanged at 0.10.28.*
+
+v10.23.0 shipped the guided SMP flow for the IRC client.  On a handset it did
+nothing:
+
+```
+14:56:49 [sys]   Usage: /smp <command> [args]
+14:57:07 [IronFenrir] ✅ SMP secret stored (🦀 Rust vault)
+14:57:07 [IronFenrir] 🔐 Type  /smp start  to begin verification.
+```
+
+The masked prompt, the auto-start, the responder consent — all present, all
+correct, none of it reachable.  `otrv4+.py` had **two** `/smp` dispatchers:
+one in `OTRv4IRCClient.handle_command` and one in the
+`EnhancedOTRv4IRCClient` override.  v10.23.0's branch went into the base
+class.  The subclass claims `smp` before the `else` that delegates down, and
+the subclass is the only class the program instantiates.
+
+### What changed
+
+**Bare `/smp` is handled in the class that runs.** Masked prompt, passphrase
+stored in the Rust vault, verification started — one command, no second step.
+
+**`/smp start` is the same thing.** It used to refuse with *"No SMP secret
+stored — use `/smp <peer> <secret>` first"*, sending the user to the one
+spelling that puts a shared passphrase in their own scrollback.  It now asks
+for the passphrase when none is stored and starts when one is, exactly as the
+XMPP client does.
+
+**`/smp <secret>` verifies immediately** instead of storing and demanding
+`/smp start`.  Nobody types that meaning "store but do not verify" — that is
+`/smp-secret`.  It now also says the passphrase was echoed: the input line is
+cleared on Enter, but a `script` capture recorded the keystrokes before the
+erase, and saying nothing implies it was hidden.
+
+**The dead dispatcher is gone.** 54 lines removed from
+`OTRv4IRCClient.handle_command`, which also called `self._smp_verify` — a
+method defined only on the subclass, so it would have raised `AttributeError`
+had anything reached it.
+
+**A passphrase is never asked for when there is nothing to verify.**
+`_smp_session_ready` gates every spelling, fail-closed: a `session_manager`
+that raises counts as not ready.  A prompt for a session that does not exist
+is a shared secret typed for nothing, and the user cannot tell the difference.
+
+### Why the tests passed on code nobody could run
+
+`test_irc_guided_smp.py` binds the flow methods onto a stub and calls
+`_smp_verify` directly.  Every assertion in it was true.  Not one went through
+`handle_command`, so *"can a user get here by typing /smp"* was never asked.
+
+`test_irc_smp_command_routing.py` (27 tests) starts at the typing: every case
+enters through the real `handle_command` on the real class.  13 of them fail
+against v10.23.1 and 12 more error on the helpers that did not exist.  8
+mutants killed, including the guard failing open on an exception, the inline
+form storing without starting, and the inline form going straight to
+`_start_smp` — which would start a second SMP run while the engine is holding
+a peer's SMP1, leaving the peer waiting on a message that never comes.  Two
+structural tests assert that the base class does not claim `smp` again and
+that the subclass routes to `_smp_verify` — because two dispatchers for one
+command is the defect, not the branch that was wrong.
+
+Not yet re-run on the two handsets.
+
+---
+
 ## v10.23.1 — DAKE1 was not sent twice, it was printed twice
 
 *2026-09-05.  `VERSION → 10.23.1`.  `otrv4_core` unchanged at 0.10.28.*

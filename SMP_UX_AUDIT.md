@@ -182,6 +182,23 @@ Full suite at `c783967`: 2336 passed, 43 skipped, 1 xfailed. Rust: 101 passed.
 4. **IRC.** Remove the remotely-armed generic capture and extend INV-06's test
    to cover `otrv4+.py`.
 
+> **Postscript (v10.23.2).** Item 4 shipped in v10.23.0 and did not work. The
+> guided flow went into `OTRv4IRCClient.handle_command`; `EnhancedOTRv4IRCClient`
+> — the only class the program instantiates — overrides `handle_command` and
+> claims `smp` before delegating, so a user typing `/smp` got
+> `Usage: /smp <command> [args]` and the masked prompt was never reached. The
+> INV-06 coverage this item asked for *was* added and *did* pass, because it
+> called `_smp_verify` on a stub rather than entering through the dispatcher.
+>
+> Two lessons, both about this audit's own method. First: a call-graph walk
+> proves nothing bad is *reachable*; it does not prove the good path is. Both
+> questions need asking, and only the first one was. Second: the audit named
+> `EnhancedOTRv4IRCClient` as the production client in §4.1 and the fix still
+> went into the base class — so naming the right class in prose is not the same
+> as testing against it. `tests/test_irc_smp_command_routing.py` enters through
+> the real `handle_command` on the real class, and asserts structurally that
+> only one class claims the command.
+
 ---
 
 ## 8. What was built, and the two-handset plan

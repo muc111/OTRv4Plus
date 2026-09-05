@@ -318,7 +318,7 @@ every received message to the session log in plaintext — which is why a test
 derives the glyphs from the prefixes themselves and asserts each is registered,
 rather than listing them again by hand.
 
-## The IRC client's SMP flow, brought level with XMPP's (v10.23.0)
+## The IRC client's SMP flow, brought level with XMPP's (v10.23.0, reachable in v10.23.2)
 
 Three gaps, all visible on a handset, all closed by reusing the XMPP client's
 machinery rather than writing a second copy of it.
@@ -360,6 +360,33 @@ client could grow a masked read with nobody checking what could reach it.
 `tests/test_irc_guided_smp.py` now walks `otrv4+.py`'s inbound call graph and
 asserts no remote entry point reaches `_arm_secret_prompt`, and that the two
 local ones do.
+
+**And then none of it ran (v10.23.2).** `otrv4+.py` had two `/smp`
+dispatchers — one in `OTRv4IRCClient.handle_command`, one in the
+`EnhancedOTRv4IRCClient` override — and v10.23.0's branch went into the base
+class, which the subclass shadows for that command. The subclass is the only
+class the program instantiates, so a handset typing `/smp` got
+`Usage: /smp <command> [args]` while the masked prompt sat unreachable for a
+whole release. Every test of it passed: they bound the flow methods onto a stub
+and called `_smp_verify` directly, so the question *"can a user get here by
+typing /smp"* was never asked. `tests/test_irc_smp_command_routing.py` asks it —
+every case enters through the real `handle_command` on the real class — and
+asserts structurally that the base class does not claim `smp` again. The dead
+dispatcher is deleted, because two handlers for one command is the defect
+rather than the branch that happened to be wrong.
+
+A related consequence, worth naming because it is a security property and not
+a UX one: `/smp start` used to refuse with *"No SMP secret stored — use
+`/smp <peer> <secret>` first"*, which pointed the user at the one spelling that
+puts a shared passphrase into their own scrollback. Both spellings now ask for
+it hidden. The inline form still works and now says plainly that what was typed
+is in the terminal's scrollback and in any session capture — the input line is
+cleared on Enter, so saying nothing would imply it was never shown.
+
+`_smp_session_ready` gates every spelling, fail-closed: a session manager that
+raises counts as not ready. A passphrase prompt for a session that does not
+exist is a shared secret typed for nothing, and the user cannot tell the
+difference from one that worked.
 
 **The passphrase length bounds moved into the engine.** They lived in
 `otrv4plus_xmpp.py` only, so the IRC client enforced none at all and took

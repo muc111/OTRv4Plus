@@ -97,7 +97,8 @@ INVARIANTS: Tuple[Invariant, ...] = (
         status="ENFORCED",
         tests=("test_no_remote_input_capture.py",
                "test_smp_guided_flow.py",
-               "test_irc_guided_smp.py"),
+               "test_irc_guided_smp.py",
+               "test_irc_smp_command_routing.py"),
         rationale="A peer's SMP1 moves otrv4plus_smpflow.SmpFlow to "
                   "AWAITING_LOCAL_CONSENT and no further.  The only edges "
                   "into AWAITING_SECRET -- the state in which a typed line "
@@ -110,7 +111,12 @@ INVARIANTS: Tuple[Invariant, ...] = (
                   "otrv4+.py's inbound call graph for any path reaching "
                   "_arm_secret_prompt -- the coverage SMP_UX_AUDIT.md asked "
                   "for and which was missing while otrv4plus_xmpp.py alone "
-                  "was walked.",
+                  "was walked.  Since v10.23.2 the coverage also enters "
+                  "through handle_command on the class the program actually "
+                  "instantiates: v10.23.0 put the guided flow in a base-class "
+                  "dispatcher that the subclass shadows, so the masked prompt "
+                  "was unreachable for a whole release while every stub-level "
+                  "assertion about it passed.",
     ),
     Invariant(
         id="INV-07",
