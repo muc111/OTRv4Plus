@@ -36,28 +36,33 @@ fn main() {
     warn_if_cdylib_will_be_dropped();
 }
 
-/// Say so when the `.so` this crate exists to produce is not going to appear.
+/// Refuse to "succeed" at building a Python extension that has no `.so`.
 ///
-/// `Cargo.toml` declares `crate-type = ["cdylib", "rlib"]`. When the target is
-/// statically linking the C runtime, rustc cannot build a cdylib, so it drops
-/// that crate type and emits one line about it among the compile output --
-/// then finishes successfully. The build looks fine. `target/release/` holds
-/// `libotrv4_core.rlib` and `libotrv4_core.d` and no `.so`, and the next step
-/// in the README:
+/// `Cargo.toml` declares `crate-type = ["cdylib", "rlib"]`. When the target
+/// statically links the C runtime, rustc cannot build a cdylib, so it drops
+/// that crate type, prints one line about it among the compile output, and
+/// **exits 0**. `target/release/` then holds `libotrv4_core.rlib` and
+/// `libotrv4_core.d` and no `.so`, and the next step in the README:
 ///
 ///     cp target/release/libotrv4_core.so ../otrv4_core.so
 ///
 /// fails with "No such file or directory", several steps and several minutes
-/// away from the cause. That is how it was reported.
+/// from the cause. That is exactly how it was reported, twice.
 ///
-/// **musl targets enable `crt-static` by default**, so this is the normal
+/// **musl targets enable `crt-static` by default**, so this is the ordinary
 /// outcome on Alpine rather than an exotic one. `.cargo/config.toml` turns it
-/// off for the musl triples -- but cargo only finds that file by walking up
-/// from the directory it was invoked in, so it is skippable, and this is the
+/// off for the musl triples -- but cargo finds that file by walking up from
+/// the directory it was INVOKED in, so it is skippable, and this is the
 /// backstop for when it has been skipped.
 ///
-/// A warning rather than an error: `cargo test` wants only the rlib, and
-/// failing the build would take the test suite with it.
+/// **Hard error, not a warning, when `extension-module` is on.** That feature
+/// means "I am building the Python extension"; finishing without one is not a
+/// success worth reporting, and a warning was not enough -- it scrolls past in
+/// several hundred lines of compile output exactly like rustc's own
+/// `dropping unsupported crate type` line, which is what already went unread.
+///
+/// Without the feature -- `cargo test`, which wants only the rlib -- it stays
+/// a warning, because failing there would take the Rust test suite with it.
 fn warn_if_cdylib_will_be_dropped() {
     println!("cargo:rerun-if-env-changed=CARGO_CFG_TARGET_FEATURE");
     let features = std::env::var("CARGO_CFG_TARGET_FEATURE").unwrap_or_default();
@@ -65,15 +70,30 @@ fn warn_if_cdylib_will_be_dropped() {
         return;
     }
     let target = std::env::var("TARGET").unwrap_or_default();
-    println!("cargo:warning=crt-static is enabled for {target}, so rustc will \
-        DROP the cdylib and no libotrv4_core.so will be produced -- only the \
-        .rlib. The `cp target/release/libotrv4_core.so ..` step will then fail \
-        with 'No such file or directory'.");
-    println!("cargo:warning=Fix: build with \
-        RUSTFLAGS=\"-C target-feature=-crt-static\", or run cargo from inside \
-        Rust/ so that Rust/.cargo/config.toml applies it for you. musl targets \
-        turn crt-static on by default, which is why this is the usual outcome \
-        on Alpine.");
+    // Positional args rather than inline captures (`{target}`): this file is
+    // compiled standalone by the test suite with plain `rustc`, which defaults
+    // to an older edition where inline captures render as the literal text
+    // "{target}" -- so a broken message would still have looked fine.
+    let fix = format!(
+        "crt-static is enabled for {}, so rustc drops the cdylib and \
+         NO libotrv4_core.so is produced -- only the .rlib. The next step, \
+         `cp target/release/libotrv4_core.so ..`, then fails with 'No such \
+         file or directory'.\n\n\
+         Fix, either one:\n  \
+           * run cargo from inside Rust/, so Rust/.cargo/config.toml applies \
+             -crt-static for you (cargo finds that file from the directory it \
+             is invoked in, not from the manifest); or\n  \
+           * build with RUSTFLAGS=\"-C target-feature=-crt-static\".\n\n\
+         musl targets turn crt-static on by default, which is why this is the \
+         usual outcome on Alpine.",
+        target
+    );
+    if std::env::var_os("CARGO_FEATURE_EXTENSION_MODULE").is_some() {
+        panic!("\n\n{}\n", fix);
+    }
+    for line in fix.lines() {
+        println!("cargo:warning={}", line);
+    }
 }
 
 /// M3: the legacy DAKE surface that returns session keys to Python as PyBytes.

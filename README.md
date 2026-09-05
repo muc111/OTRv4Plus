@@ -6,7 +6,7 @@
 <p align="center"><strong>Post-quantum hybrid encryption for Off The Record (OTR) chat <em>and voice calls</em> over IRC and XMPP. Experimental, unaudited research prototype.</strong></p>
 
 <p align="center">
-<code>v10.18.5 · Rust crypto core · chat (X448 + ML-KEM-1024, AES-256-GCM) · hybrid PQC SMP (ML-KEM-1024 + ML-DSA-87 + ZKP) · voice (X448 + ML-KEM-1024, AES-256-GCM) · I2P SAM · AAudio · TUI</code>
+<code>v10.18.6 · Rust crypto core · chat (X448 + ML-KEM-1024, AES-256-GCM) · hybrid PQC SMP (ML-KEM-1024 + ML-DSA-87 + ZKP) · voice (X448 + ML-KEM-1024, AES-256-GCM) · I2P SAM · AAudio · TUI</code>
 </p>
 
 ---
@@ -219,6 +219,19 @@ directly:
 RUSTFLAGS="-C target-feature=-crt-static" \
   cargo build --release --features extension-module,pq-rust
 ```
+
+**`cargo test` on Alpine needs the same flag.** Without it the test binary is
+linked `-static-pie` and the linker asks for a static libpython that Alpine
+does not ship:
+
+```
+cannot find -lpython3.12: No such file or directory
+have you installed the static version of the python3.12 library ?
+```
+
+The test binary links libpython on purpose — that is why `extension-module`
+is not in `default` — so it needs a *dynamic* link to find
+`libpython3.12.so`. Running cargo from inside `Rust/` covers this too.
 
 If you would rather not rely on that file, build with clang — the clang branch
 of that header avoids `__GNUC_PREREQ` entirely:

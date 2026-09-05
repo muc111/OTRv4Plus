@@ -4,6 +4,55 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## v10.18.6 — building a Python extension with no `.so` is now an error
+
+*2026-09-05.  `VERSION → 10.18.6`.  Build configuration only; no code change.*
+
+v10.18.5 added a **warning** when `crt-static` would drop the cdylib. A second
+Alpine report showed why that was not enough:
+
+```
+$ CC=clang cargo build --release --features extension-module,pq-rust
+warning: dropping unsupported crate type `cdylib` for target `x86_64-unknown-linux-musl`
+warning: `otrv4_core` (lib) generated 1 warning
+    Finished `release` profile [optimized] target(s) in 0.15s
+```
+
+**`--features extension-module` means "build the Python extension".** Finishing
+without one is not a success worth reporting, and a warning is not enough: it
+scrolls past in several hundred lines of compile output looking exactly like
+rustc's own `dropping unsupported crate type` line — which is the line that had
+already gone unread twice.
+
+So with that feature on, it is a hard error naming both the cause and the two
+fixes. Without the feature — `cargo test`, which wants only the rlib — it stays
+a warning, because failing there would take the Rust test suite with it.
+
+**`cargo test` on Alpine hits the same root cause** and is now documented: the
+test binary links libpython on purpose (that is why `extension-module` is not
+in `default`), and under `-static-pie` the linker asks for a static libpython
+Alpine does not ship — `cannot find -lpython3.12`. The same `-crt-static`
+makes it a dynamic link that finds `libpython3.12.so`.
+
+### A test that would have passed on a broken message
+
+The build script is compiled standalone by the test suite. Plain `rustc`
+defaults to an older edition, where inline format captures like `{fix}` render
+as that **literal text** — so the message went out as `{fix}` and a test
+looking only for the `cargo:warning=` prefix passed anyway. The test now
+compiles with `--edition 2021` to match cargo, asserts the build script
+compiles without warnings, and asserts no unrendered placeholder survives into
+the output. The message itself uses positional arguments so it is correct under
+any edition.
+
+3 new tests (24 in the file). Two mutations killed — the hard error downgraded
+to a warning, and the hard error made unconditional. A third, reverting to
+inline captures, correctly **survives**: at edition 2021 it renders properly,
+so it is equivalent rather than a defect. Fixing the test's edition removed
+that whole class of bug.
+
+---
+
 ## v10.18.5 — and on musl it now produces a `.so`, not just an `.rlib`
 
 *2026-09-05.  `VERSION → 10.18.5`.  Build configuration only; no code change.*
