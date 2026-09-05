@@ -1865,7 +1865,7 @@ class OTRv4DataMessage:
             raise ValueError(f"Failed to decode message: {e }")
 
 
-VERSION = "OTRv4+ 10.21.0"
+VERSION = "OTRv4+ 10.21.1"
 
 #: Every timestamp the client puts on screen.  Was "%H:%M:%S", which is
 #: unreadable in a log kept overnight or across a reconnect: "02:14:07" does

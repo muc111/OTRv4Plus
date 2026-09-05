@@ -180,6 +180,60 @@ def render_qr(address: str, amount: str = "") -> Optional[str]:
         return None
 
 
+def format_address_block(peer: str, address: str, amount: str = "",
+                         note: str = "") -> str:
+    """The block shown when a peer's address arrives.
+
+    Three ways to use it, because a wallet may support any one of them:
+
+      1. **scan the QR** -- easiest, and it carries the amount;
+      2. **copy the address** -- works when the wallet cannot scan;
+      3. **copy the payment URI** -- keeps the amount when the wallet
+         understands `monero:` URIs but you cannot scan.
+
+    (3) was missing until v10.21.1. The QR encoded the URI and nothing showed
+    it, so anyone whose wallet could not scan fell back to the bare address
+    and **silently lost the amount** -- they would have had to be told it
+    separately and type it in.
+
+    ORDER MATTERS, and it is the reverse of what it was. The copyable text
+    now comes AFTER the QR. A 95-character address makes a symbol about 22
+    rows tall; with the address above it, the address scrolls off the top of
+    a handset terminal and the last thing on screen is a caveat. What you
+    want to select is what should still be visible.
+    """
+    lines = ["\U0001f510 [tip] %s's Monero address:" % peer]
+
+    # The amount reaches the URI only if it is a plain decimal. A peer can
+    # put anything in that field and it must not go into a string a wallet's
+    # URI parser will read.
+    uri_amount = amount if _AMOUNT_RE.match(amount or "") else ""
+    qr = render_qr(address, uri_amount)
+    if qr:
+        lines.append("\U0001f4f8 scan this, or copy the text below:")
+        lines.append(qr)
+    else:
+        lines.append("[tip] pip install segno for a scannable QR code")
+
+    lines.append("\U0001f4ec address:")
+    lines.append("   %s" % address)
+    if uri_amount:
+        # Only worth a line when it carries something the bare address does
+        # not. `monero:<address>` with no parameters is just the address
+        # again, in a form fewer wallets accept.
+        lines.append("\U0001f517 payment URI (keeps the amount):")
+        lines.append("   %s" % monero_uri(address, uri_amount))
+    if amount:
+        lines.append("\U0001f4b0 amount: %s XMR%s"
+                     % (amount, "" if uri_amount else
+                        "  (not a plain decimal — left out of the QR and URI)"))
+    if note:
+        lines.append("\U0001f4dd note: %s" % note)
+    lines.append("[tip] this client sends nothing — pay from your own "
+                 "wallet, and check the address before you do")
+    return "\n".join(lines)
+
+
 class TipManager:
     """Handles `/setxmr`, `/tip` and the inbound TLV.
 
@@ -371,25 +425,7 @@ class TipManager:
         note = _clean(str(payload.get("note", "")), MAX_NOTE_LEN)
         self.received[peer] = {"address": address, "amount": amount,
                                "at": time.time()}
-
-        lines = ["\U0001f510 [tip] %s's XMR address%s:"
-                 % (peer, (" for %s XMR" % amount) if amount else ""),
-                 "\U0001f4ec %s" % address]
-        if note:
-            lines.append("\U0001f4dd note: %s" % note)
-        # The amount only goes in the URI if it is a plain decimal. A peer
-        # can put anything in that field, and it must not reach a wallet's
-        # URI parser unchecked.
-        qr_amount = amount if _AMOUNT_RE.match(amount) else ""
-        qr = render_qr(address, qr_amount)
-        if qr:
-            lines.append("\U0001f4f8 scan, or copy the address above:")
-            lines.append(qr)
-        else:
-            lines.append("[tip] pip install segno for a scannable QR code")
-        lines.append("[tip] this client sends nothing — pay from your own "
-                     "wallet, and check the address before you do")
-        self._notify("\n".join(lines))
+        self._notify(format_address_block(peer, address, amount, note))
 
     def _respond(self, peer: str, amount: str) -> None:
         payload = {"cmd": CMD_RESPONSE, "address": self.address}

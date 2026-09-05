@@ -332,6 +332,110 @@ class TestAmounts:
         assert seen == ["0.5"]
 
 
+class TestTheThreeWaysToPay:
+    """A wallet may support scanning, pasting an address, or pasting a
+    `monero:` URI. All three have to be on screen, because the client cannot
+    know which one the reader's wallet does.
+
+    The URI was missing until v10.21.1: the QR encoded it and nothing
+    displayed it, so a reader whose wallet could not scan fell back to the
+    bare address and silently lost the amount.
+    """
+
+    def test_all_three_are_present_with_an_amount(self):
+        block = tip.format_address_block("bob", ADDRESS, "0.01")
+        assert "scan this" in block                       # 1. QR
+        assert ADDRESS in block                           # 2. address
+        assert tip.monero_uri(ADDRESS, "0.01") in block   # 3. URI
+
+    def test_the_uri_carries_the_amount(self):
+        block = tip.format_address_block("bob", ADDRESS, "0.01")
+        assert "monero:" + ADDRESS + "?tx_amount=0.01" in block
+
+    def test_the_amount_is_a_labelled_field_not_only_prose(self):
+        """It used to appear once, inside the header sentence. Someone
+        skimming for what to send should find it labelled."""
+        block = tip.format_address_block("bob", ADDRESS, "0.01")
+        assert "amount: 0.01 XMR" in block
+
+    def test_no_amount_means_no_uri_line(self):
+        """`monero:<address>` with no parameters is the address again, in a
+        form fewer wallets accept. A line that adds nothing is noise."""
+        block = tip.format_address_block("bob", ADDRESS)
+        assert ADDRESS in block
+        assert "payment URI" not in block
+
+    def test_a_hostile_amount_is_shown_but_kept_out_of_the_uri(self):
+        """Both halves matter: the reader is told what the peer claimed AND
+        told it was not usable, rather than one or the other."""
+        block = tip.format_address_block("bob", ADDRESS, "1&recipient=evil")
+        assert "payment URI" not in block
+        assert "1&recipient=evil" in block
+        assert "not a plain decimal" in block
+
+    def test_the_copyable_text_comes_after_the_qr(self):
+        """A 95-character address makes a symbol ~22 rows tall. With the
+        address above it, the address scrolls off the top of a handset
+        terminal and the last thing on screen is a caveat. What you want to
+        select should still be visible."""
+        segno = pytest.importorskip("segno")
+        block = tip.format_address_block("bob", ADDRESS, "0.01")
+        lines = block.split("\n")
+        qr_row = max(i for i, l in enumerate(lines) if "\u2588" in l)
+        # The BARE address line, not any line that merely contains the
+        # address: the URI line contains it too, and is below the QR, so a
+        # `max(... if ADDRESS in l)` passes even with the bare address left
+        # above the QR. That is exactly the mutant this has to catch.
+        bare = [i for i, l in enumerate(lines) if l.strip() == ADDRESS]
+        assert bare, "no line holds the address on its own to be selected"
+        assert min(bare) > qr_row, (
+            "the address is above the QR and scrolls off screen")
+
+    def test_the_caveat_is_the_last_line(self):
+        """The line that says this client sends no money is the one that
+        must survive a scroll."""
+        block = tip.format_address_block("bob", ADDRESS, "0.01")
+        assert block.rstrip().split("\n")[-1].startswith(
+            "[tip] this client sends nothing")
+
+    def test_all_three_routes_carry_the_same_address(self):
+        """The failure that would matter most: a QR encoding one address and
+        the text showing another."""
+        segno = pytest.importorskip("segno")
+        block = tip.format_address_block("bob", ADDRESS, "0.01")
+        uri = tip.monero_uri(ADDRESS, "0.01")
+        assert uri.startswith("monero:" + ADDRESS)
+        assert uri in block
+        assert block.count(ADDRESS) >= 2      # once bare, once inside the URI
+
+    def test_without_segno_both_text_routes_survive(self, monkeypatch):
+        """The QR is the optional one. Losing it must not cost the address
+        or the amount."""
+        import builtins
+        real_import = builtins.__import__
+
+        def no_segno(name, *args, **kwargs):
+            if name == "segno":
+                raise ImportError("no segno")
+            return real_import(name, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "__import__", no_segno)
+        block = tip.format_address_block("bob", ADDRESS, "0.01")
+        assert ADDRESS in block
+        assert tip.monero_uri(ADDRESS, "0.01") in block
+        assert "pip install segno" in block
+
+    def test_the_block_is_what_a_received_response_shows(self, pair):
+        """The renderer is only right if it is the one actually used."""
+        alice, bob = pair
+        bob.mgr.set_address(ADDRESS)
+        alice.mgr.request("bob", "0.01")
+        bob.deliver(alice)
+        alice.deliver(bob)
+        assert alice.said(tip.monero_uri(ADDRESS, "0.01"))
+        assert alice.said("amount: 0.01 XMR")
+
+
 class TestMalformedInput:
 
     @pytest.mark.parametrize("raw", [

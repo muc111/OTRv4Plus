@@ -51,14 +51,29 @@ Bob's client answers automatically with the address he configured, and Alice
 sees it with a scannable QR:
 
 ```
-🔐 [tip] bob@example.i2p's XMR address for 0.5 XMR:
-📬 8B...
-📝 note: thanks for the call test
-📸 scan, or copy the address above:
+🔐 [tip] bob@example.i2p's Monero address:
+📸 scan this, or copy the text below:
    [QR]
+
+📬 address:
+   8B...
+🔗 payment URI (keeps the amount):
+   monero:8B...?tx_amount=0.5
+💰 amount: 0.5 XMR
+📝 note: thanks for the call test
 [tip] this client sends nothing — pay from your own wallet, and check the
       address before you do
 ```
+
+Three ways to pay, because the client cannot know which your wallet supports:
+**scan the QR** (easiest, carries the amount), **copy the address** (works when
+the wallet cannot scan), or **copy the payment URI** (keeps the amount when the
+wallet understands `monero:` URIs but you cannot scan). The copyable text sits
+*below* the QR on purpose — the symbol is about 22 rows tall, and anything
+above it scrolls off a handset terminal.
+
+If the peer sent an amount that is not a plain decimal, it is shown but kept
+out of both the QR and the URI, and the line says so.
 
 If Bob has not run `/setxmr`, the request is reported and **nothing is sent**.
 He answers with two explicit commands, `/setxmr <address>` then `/tipreply`.

@@ -4,6 +4,69 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## v10.21.1 — the payment URI was encoded in the QR and shown nowhere
+
+*2026-09-05.  `VERSION → 10.21.1`.  Display only; no protocol or wire change.*
+
+Reported on review of the v10.21.0 notes, and correct: the release said the QR
+was generated from the `monero:` URI and sized for scanning, but it did not say
+the URI itself was displayed — **because it was not**.
+
+A reader whose wallet could not scan fell back to the bare address and
+**silently lost the amount**. They would have had to be told it separately and
+type it in, which is the sort of gap that produces a payment for the wrong
+number without anyone noticing it went wrong.
+
+There are three ways a wallet might take a payment, and the client cannot know
+which one the reader has, so all three are now on screen:
+
+1. **scan the QR** — easiest, and it carries the amount;
+2. **copy the address** — works when the wallet cannot scan;
+3. **copy the payment URI** — keeps the amount when the wallet understands
+   `monero:` URIs but you cannot scan.
+
+```
+🔐 [tip] bob@example.i2p's Monero address:
+📸 scan this, or copy the text below:
+   [QR]
+
+📬 address:
+   8B…
+🔗 payment URI (keeps the amount):
+   monero:8B…?tx_amount=0.01
+💰 amount: 0.01 XMR
+📝 note: thanks for the call test
+[tip] this client sends nothing — pay from your own wallet, and check the
+      address before you do
+```
+
+**The order is reversed from v10.21.0, and that is the other half of the fix.**
+The copyable text now comes *after* the QR. A 95-character address makes a
+symbol about 22 rows tall; with the address above it, the address scrolled off
+the top of a handset terminal and the last thing on screen was a caveat. What
+you want to select should still be visible.
+
+The amount is also a labelled field now rather than a clause inside the header
+sentence. An amount that is not a plain decimal is still displayed — it is what
+the peer claimed — but it is kept out of both the QR and the URI, and the line
+says why.
+
+Rendering moved out of `_on_response` into `format_address_block`, a pure
+function, so it is tested on its output rather than through a manager's notify
+strings.
+
+### Verification
+
+Python suite **2743 passed, 0 failed**. 10 new tests. Five mutations run
+against the new display guarantees — drop the URI line, put the text back above
+the QR, silently drop a hostile amount, let a hostile amount into the URI, move
+the caveat off the end — all five killed. The ordering mutant survived the
+first attempt: the test looked for the last line *containing* the address, and
+the URI line contains it too, so moving the bare address above the QR still
+passed. It now looks for the line that holds the address on its own.
+
+---
+
 ## v10.21.0 — `/tip`: relay a Monero address, and only an address
 
 *2026-09-05.  `VERSION → 10.21.0`.  `otrv4_core` unchanged at 0.10.28 — again
