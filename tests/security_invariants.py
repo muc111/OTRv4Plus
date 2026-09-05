@@ -331,7 +331,8 @@ INVARIANTS: Tuple[Invariant, ...] = (
         id="INV-24",
         statement="No IRC message survives the connection it arrived on.",
         status="PARTIAL",
-        tests=("test_irc_history_privacy.py",),
+        tests=("test_irc_history_privacy.py",
+               "test_irc_reconnect_preserves_otr.py"),
         rationale="Panel history is capped at 1000 messages and emptied at "
                   "every boundary between one connection and the next -- "
                   "disconnect, reconnect, /quit, process exit -- along with "
@@ -339,7 +340,7 @@ INVARIANTS: Tuple[Invariant, ...] = (
                   "terminal's own saved scrollback.  On I2P the point of a "
                   "new session is that it is not linkable to the previous "
                   "one; replaying the old conversation into the new one "
-                  "links them on screen whatever the transport did.",
+                  "links them on screen whatever the transport did.  " + """Since v10.24.0 this covers the DISPLAY only.  The reconnect path no longer zeroizes the ratchet or clears session_manager.sessions: an I2P SAM tunnel dropping is a transport event, not a security boundary, and treating it as one meant a blip destroyed every encrypted conversation and forced a restart.  The cryptographic state now survives a reconnect exactly as it always has in the XMPP client; the conversation on screen still does not.  /quit, shutdown and process exit remain real boundaries and still tear everything down.""",
         limits="A Python str is immutable and may be interned, so the "
                "purge drops the last reference rather than overwriting the "
                "characters: the bytes remain in freed heap until the "

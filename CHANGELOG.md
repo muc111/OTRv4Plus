@@ -4,6 +4,140 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## v10.24.0 — the responder could not answer, and a tunnel blip killed the session
+
+*2026-09-05.  `VERSION → 10.24.0`.  `otrv4_core` unchanged at 0.10.28.*
+
+Two real-device failures and a handshake that was hard to read.
+
+### 1. "Could not answer the held request: ValueError"
+
+Two handsets. The receiving side got all the way through the guided flow —
+consent prompt, `y`, hidden passphrase entry — and then:
+
+```
+🔐 Passphrase stored – verifying...
+🔐 Could not answer the held request: ValueError
+```
+
+**Root cause.** `_consume_secret_line` stored the passphrase with
+`session_manager.smp_storage.set_secret(...)`.  That call writes the file and
+stops there.  The engine copy — the one
+`resume_held_smp1_generate_smp2()` reads — was never bound, so Rust failed
+closed with
+
+```
+SMP protocol: secret still not set: cannot answer the held SMP1
+```
+
+which the PyO3 wrapper raises as `ValueError`.  Reproduced exactly against the
+real engine in `tests/test_irc_smp_responder_resume.py`.
+
+The initiator never showed it because `_start_smp` binds the secret itself on
+the way past.  One path bound and the other did not; the asymmetry was the
+whole defect.  `set_smp_secret` is the two-layer write — storage **and**
+engine — and is what the XMPP client has always called here.  Binding twice on
+the initiator path is deliberate: `session.set_smp_secret` permits a rebind in
+`IDLE` and `SECRET_REQUIRED`, and one extra SHAKE-256 stretch is a better
+trade than two paths that differ.
+
+**The diagnostic was the second defect.** The handler printed
+`type(exc).__name__`, turning a sentence that says exactly what is wrong into
+the word "ValueError" — and cost a two-handset session to work out.  It now
+prints the engine's own reason, sanitised and length-capped.  Every string
+raised on that path is a fixed literal in `Rust/src/smp.rs` and the passphrase
+is not an argument to any call made there.
+
+Three smaller repairs alongside it:
+
+- `_resume_smp` refuses when the flow holds no request, so a second `y` or a
+  post-decline resume says so rather than surfacing an engine error.
+- A failed resume returns the flow to `IDLE`, not `FAILED`: nothing was
+  compared, so nothing failed, and the user can retry cleanly.
+- `Session.resume_held_smp1` asks `has_held_smp1()` before consuming and
+  clears `_smp_secret_required` **after** the engine has produced the answer.
+  Clearing it first left the session claiming no request was outstanding while
+  the engine still held one.
+
+`_redact_secret` is new: on the one path where an error is reported while the
+passphrase is still in scope, the message is scrubbed first.  Nothing there is
+known to quote its argument — "known" being a property of today's code.
+
+### 2. A SAM tunnel blip destroyed every encrypted session
+
+The I2P tunnel dropped, IRC went with it, and the OTR session became unusable;
+the only way back was `/quit` and a full restart.
+
+`_try_reconnect` was doing it on purpose: `ratchet.zeroize()` on every session,
+the root and chain keys wiped by hand, then `session_manager.sessions.clear()`.
+
+**A transport interruption is not a security boundary.** The XMPP client has
+never treated it as one — `_on_disconnected` drops trades and presence,
+rebuilds the tunnel, reconnects the stream and leaves `self.otr.sessions`
+untouched.  The double ratchet is a property of the two peers, not of the
+socket that carried the bytes.  IRC now matches.
+
+**Kept:** the session objects, and with them the ratchet, root and chain keys,
+message counters, the pinned fingerprint and the SMP state.  The identity key
+was never touched here and still is not, so a reconnect does not look like a
+new person.
+
+**Dropped, each for its own reason:** half-reassembled inbound messages (their
+remaining fragments died with the socket, and keeping the prefix means the
+next connection's fragments get appended to it); an armed passphrase prompt
+(it must not outlive the thing it was armed for — the other half of INV-06);
+a pending consent question.
+
+**Replayed: nothing.**  Not a data message, not a fragment, not an SMP
+message.  OTRv4 replay protection is not something to work around.
+
+After the rejoin the client says what survived, because a padlock that came
+through a transport drop with no explanation is a claim the user cannot check.
+A verification that was part-way through is named, with what to do about it.
+`/quit` still tears everything down — preserving across a blip must not become
+preserving across a deliberate exit, and a test asserts it.
+
+### 3. The handshake says which stage it is on
+
+```
+🔐 DAKE 1
+🟢 OK
+   waiting for their answer…
+🔐 DAKE 2
+🟢 OK
+🔐 DAKE 3
+🟢 OK
+🟢 OTR SESSION READY
+   DAKE 🦀 Rust | Ratchet 🦀 Rust | SMP 🐍 Python
+```
+
+The header and the verdict come from one call, made after the operation
+returned.  That is structural rather than tidy: there is no code path that
+prints a header on its own, so there is none that can print `OK` for a stage
+that has not succeeded.  The initiator's stage 1 reports from the *result* of
+the send — a DAKE1 that never left the socket is not a completed stage.  A
+failure prints against its own number: `🔴 FAILED — reason`, sanitised.
+
+Fragment counts are not deleted, they are moved: `detail` goes to
+`self.debug`, which reaches the debug panel only under `DEBUG_MODE`.  The TOFU
+wording is untouched and pinned by a test — *pinned* and *SMP verified* remain
+different states.
+
+### Tests
+
+`test_irc_smp_responder_resume.py` (38), `test_irc_reconnect_preserves_otr.py`
+(36), `test_irc_dake_stages.py` (33).  The responder file drives the real
+`otrv4_core.RustSMP` rather than a stubbed manager — a stub cannot express
+this bug, which is why the c3070e7 suite was green throughout — and enters at
+`handle_chat_message`, where the user enters.  13 of its tests fail against
+v10.23.2.  16 mutants killed across the three areas, including the storage-only
+write, the resume guard, the fail-open session check, `OK` printed regardless
+of outcome, and the initiator reporting `OK` without checking the send.
+
+Two-handset re-test of all three is still outstanding, and `TWO_DEVICE_TEST.md` is new: it says what the suite proves, what it cannot (the Termux hidden read, a real SAM tunnel dropping, a resumed ratchet actually carrying messages), and the order to check them in.
+
+---
+
 ## v10.23.2 — the guided /smp existed and was unreachable
 
 *2026-09-05.  `VERSION → 10.23.2`.  `otrv4_core` unchanged at 0.10.28.*

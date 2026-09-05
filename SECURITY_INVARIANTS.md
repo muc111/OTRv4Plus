@@ -62,9 +62,9 @@ termios ECHO is cleared with TCSANOW; the masking helper returns whether it took
 ### INV-06 — Remote SMP messages may request local user interaction but can never capture arbitrary local input.
 
 **Status:** `ENFORCED`  
-**Enforced by:** `tests/test_no_remote_input_capture.py`, `tests/test_smp_guided_flow.py`, `tests/test_irc_guided_smp.py`, `tests/test_irc_smp_command_routing.py`
+**Enforced by:** `tests/test_no_remote_input_capture.py`, `tests/test_smp_guided_flow.py`, `tests/test_irc_guided_smp.py`, `tests/test_irc_smp_command_routing.py`, `tests/test_irc_smp_responder_resume.py`, `tests/test_irc_reconnect_preserves_otr.py`
 
-A peer's SMP1 moves otrv4plus_smpflow.SmpFlow to AWAITING_LOCAL_CONSENT and no further.  The only edges into AWAITING_SECRET -- the state in which a typed line is read as a passphrase -- are local_secret_needed (the user typed /smp) and local_consent (the user typed y).  A chat message typed at a consent prompt is not y, so it is sent as a message.  BOTH clients since v10.23.0: the IRC client now uses the same SmpFlow rather than a second implementation, and test_irc_guided_smp.py walks otrv4+.py's inbound call graph for any path reaching _arm_secret_prompt -- the coverage SMP_UX_AUDIT.md asked for and which was missing while otrv4plus_xmpp.py alone was walked.  Since v10.23.2 the coverage also enters through handle_command on the class the program actually instantiates: v10.23.0 put the guided flow in a base-class dispatcher that the subclass shadows, so the masked prompt was unreachable for a whole release while every stub-level assertion about it passed.
+A peer's SMP1 moves otrv4plus_smpflow.SmpFlow to AWAITING_LOCAL_CONSENT and no further.  The only edges into AWAITING_SECRET -- the state in which a typed line is read as a passphrase -- are local_secret_needed (the user typed /smp) and local_consent (the user typed y).  A chat message typed at a consent prompt is not y, so it is sent as a message.  BOTH clients since v10.23.0: the IRC client now uses the same SmpFlow rather than a second implementation, and test_irc_guided_smp.py walks otrv4+.py's inbound call graph for any path reaching _arm_secret_prompt -- the coverage SMP_UX_AUDIT.md asked for and which was missing while otrv4plus_xmpp.py alone was walked.  Since v10.23.2 the coverage also enters through handle_command on the class the program actually instantiates: v10.23.0 put the guided flow in a base-class dispatcher that the subclass shadows, so the masked prompt was unreachable for a whole release while every stub-level assertion about it passed.  Since v10.24.0 the responder path is driven against the real otrv4_core.RustSMP rather than a stubbed manager, and the other half of the property is covered too: an armed passphrase prompt does not outlive the transport it was armed for, because a prompt surviving a reconnect would make the user's next line a passphrase for a session that no longer exists.
 
 ### INV-07 — Rust-owned secret material zeroizes on drop.
 
@@ -194,9 +194,11 @@ PyO3 is the boundary itself, so an advisory against it is an advisory against th
 ### INV-24 — No IRC message survives the connection it arrived on.
 
 **Status:** `PARTIAL`  
-**Enforced by:** `tests/test_irc_history_privacy.py`
+**Enforced by:** `tests/test_irc_history_privacy.py`, `tests/test_irc_reconnect_preserves_otr.py`
 
 Panel history is capped at 1000 messages and emptied at every boundary between one connection and the next -- disconnect, reconnect, /quit, process exit -- along with the unread counters, the recent-user sets and the terminal's own saved scrollback.  On I2P the point of a new session is that it is not linkable to the previous one; replaying the old conversation into the new one links them on screen whatever the transport did.
+
+Since v10.24.0 this covers the DISPLAY only.  The reconnect path no longer zeroizes the ratchet or clears session_manager.sessions: an I2P SAM tunnel dropping is a transport event, not a security boundary, and treating it as one meant a blip destroyed every encrypted conversation and forced a restart.  The cryptographic state now survives a reconnect exactly as it always has in the XMPP client; the conversation on screen still does not.  /quit, shutdown and process exit remain real boundaries and still tear everything down.
 
 **Limit:** A Python str is immutable and may be interned, so the purge drops the last reference rather than overwriting the characters: the bytes remain in freed heap until the allocator reuses them.  Unfixable for chat text while the UI is Python-side.  Material that must actually be destroyed is not kept here at all -- it lives in Rust behind zeroize().  See INV-02 for the same limit on passwords.
 
