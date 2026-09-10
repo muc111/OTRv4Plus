@@ -88,27 +88,39 @@ jobs:
         # `tasks` forces full configuration -- plugin resolution, the Chaquopy
         # plugin, the Compose compiler extension -- without compiling anything.
         # If dl.google.com were the only problem, this alone would go green.
-        run: |
-          # Gradle prints "What went wrong" a long way from the end of a big
-          # log, which makes a failure expensive to read. Repeat it last.
-          set -o pipefail
-          ./gradlew tasks --no-daemon --console=plain 2>&1 | tee /tmp/tasks.log || {
-            echo "================ WHAT WENT WRONG ================"
-            sed -n '/^\* What went wrong:/,/^BUILD FAILED/p' /tmp/tasks.log | head -60
-            exit 1
-          }
+        # ../.github/scripts/gradle.sh prints the region of the log that
+        # carries the diagnosis, which for a Chaquopy or kotlinc failure is
+        # not the "What went wrong" summary at the end.
+        run: ../.github/scripts/gradle.sh ./gradlew tasks --no-daemon --console=plain
 
       - name: Resolve the app's dependency graph
         working-directory: android
-        run: |
-          # Gradle prints "What went wrong" a long way from the end of a big
-          # log, which makes a failure expensive to read. Repeat it last.
-          set -o pipefail
-          ./gradlew :app:dependencies --configuration debugRuntimeClasspath --no-daemon --console=plain 2>&1 | tee /tmp/deps.log || {
-            echo "================ WHAT WENT WRONG ================"
-            sed -n '/^\* What went wrong:/,/^BUILD FAILED/p' /tmp/deps.log | head -60
-            exit 1
-          }
+        # ../.github/scripts/gradle.sh prints the region of the log that
+        # carries the diagnosis, which for a Chaquopy or kotlinc failure is
+        # not the "What went wrong" summary at the end.
+        run: ../.github/scripts/gradle.sh ./gradlew :app:dependencies --configuration debugRuntimeClasspath --no-daemon --console=plain
+
+  # ---------------------------------------------------------------------------
+  # Proves: the APK's hand-written pip list is the full dependency closure.
+  #
+  # The build sets `--no-deps`, because slixmpp requires aiodns, aiodns
+  # requires pycares, and pycares compiles c-ares with cmake -- which Chaquopy
+  # cannot do, and pip cannot be told to drop a single dependency.  The cost is
+  # that a dependency nobody names is no longer a build failure but an
+  # ImportError on a handset.  This is that check, moved somewhere it can run.
+  # ---------------------------------------------------------------------------
+  python-deps:
+    name: The APK's pip list is the whole closure
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Re-resolve the declared roots with dependencies on
+        run: python .github/scripts/verify_python_closure.py
 
   # ---------------------------------------------------------------------------
   # Proves: otrv4_core cross-compiles for the two shipped ABIs.
@@ -270,15 +282,10 @@ jobs:
 
       - name: assembleDebug
         working-directory: android
-        run: |
-          # Gradle prints "What went wrong" a long way from the end of a big
-          # log, which makes a failure expensive to read. Repeat it last.
-          set -o pipefail
-          ./gradlew :app:assembleDebug --no-daemon --console=plain 2>&1 | tee /tmp/apk.log || {
-            echo "================ WHAT WENT WRONG ================"
-            sed -n '/^\* What went wrong:/,/^BUILD FAILED/p' /tmp/apk.log | head -60
-            exit 1
-          }
+        # ../.github/scripts/gradle.sh prints the region of the log that
+        # carries the diagnosis, which for a Chaquopy or kotlinc failure is
+        # not the "What went wrong" summary at the end.
+        run: ../.github/scripts/gradle.sh ./gradlew :app:assembleDebug --no-daemon --console=plain
 
       - uses: actions/upload-artifact@v4
         if: always()
@@ -309,15 +316,10 @@ jobs:
 
       - name: Unit tests
         working-directory: android
-        run: |
-          # Gradle prints "What went wrong" a long way from the end of a big
-          # log, which makes a failure expensive to read. Repeat it last.
-          set -o pipefail
-          ./gradlew :app:testDebugUnitTest --no-daemon --console=plain 2>&1 | tee /tmp/tests.log || {
-            echo "================ WHAT WENT WRONG ================"
-            sed -n '/^\* What went wrong:/,/^BUILD FAILED/p' /tmp/tests.log | head -60
-            exit 1
-          }
+        # ../.github/scripts/gradle.sh prints the region of the log that
+        # carries the diagnosis, which for a Chaquopy or kotlinc failure is
+        # not the "What went wrong" summary at the end.
+        run: ../.github/scripts/gradle.sh ./gradlew :app:testDebugUnitTest --no-daemon --console=plain
 
       - uses: actions/upload-artifact@v4
         if: always()

@@ -113,38 +113,76 @@ chaquopy {
         version = "3.12"
 
         pip {
+            // WHY --no-deps, AND WHY EVERY DISTRIBUTION IS NAMED BELOW
+            // --------------------------------------------------------
+            // slixmpp declares `aiodns>=3.2.0` as a hard requirement -- not an
+            // extra, in every release from 1.9.0 onwards -- and aiodns pulls
+            // pycares, which compiles c-ares from source with cmake. Chaquopy
+            // has no wheel for it and cannot compile native code, so the build
+            // dies during requirement resolution:
+            //
+            //   ERROR: Failed to install pycares<6,>=5.0.0 (from aiodns>=3.2.0
+            //          ->slixmpp)
+            //   CMake Error: Chaquopy_cannot_compile_native_code.
+            //
+            // Removing an `install("aiodns")` line does not help: the request
+            // comes from slixmpp's own metadata. pip has no way to drop a
+            // single dependency, and `install()` takes one requirement, so
+            // --no-deps is the only lever and it is necessarily global.
+            //
+            // The cost of --no-deps is that a dependency we fail to name is no
+            // longer a build error -- it is an ImportError on a handset. So
+            // the list below is the FULL closure, and `verify-python-closure`
+            // in .github/workflows/android.yml re-resolves it on every CI run
+            // and fails if anything is missing.
+            //
+            // The compensation is that this is now an exact manifest: nothing
+            // reaches the APK without being written down here, which for this
+            // app is worth more than the convenience it costs.
+            options("--no-deps")
+
+            // -- asked for directly ------------------------------------------
+            //
             // PySocks: imported at module scope by otrv4+.py. Pure Python.
             install("PySocks")
-            // slixmpp: the XMPP transport. Pure Python.
+            // slixmpp: the XMPP transport. Pure Python, built from an sdist.
             install("slixmpp")
+            // argon2-cffi: the at-rest KDF. Without it the engine falls back
+            // to scrypt and warns. Chaquopy has prebuilt android wheels for
+            // the whole cffi chain, so a resolution failure here is a real
+            // finding rather than a reason to drop it.
+            install("argon2-cffi")
 
-            // NOT aiodns. The comment that used to be here said this was
-            // "the dependency most likely to need a native build", and the
-            // first CI build proved it:
+            // -- required by the above, and now named because of --no-deps ---
             //
-            //   ERROR: Failed to install pycares<6,>=5.0.0 (from aiodns)
-            //   CalledProcessError: ['/usr/local/bin/cmake', '.../c-ares', ...]
+            // slixmpp -> pyasn1, pyasn1-modules (both pure Python).
+            install("pyasn1")
+            install("pyasn1-modules")
+            // argon2-cffi -> argon2-cffi-bindings -> cffi -> pycparser, and
+            // cffi's android wheel -> chaquopy-libffi. The last of those is
+            // Chaquopy's own packaging of libffi; it is named here only
+            // because --no-deps stops cffi asking for it. If Chaquopy ever
+            // renames it the build fails loudly at this line, which is the
+            // failure mode to want.
+            install("argon2-cffi-bindings")
+            install("cffi")
+            install("pycparser")
+            install("chaquopy-libffi")
+
+            // -- deliberately absent -----------------------------------------
             //
-            // aiodns pulls pycares, which compiles c-ares from source with
-            // cmake. There is no Chaquopy wheel for it and cross-compiling
-            // c-ares for every ABI is not a dependency this app needs to own.
-            //
-            // Dropping it costs nothing HERE, which is the part that matters:
-            //   * slixmpp treats it as optional. resolver.py sets
-            //     AIODNS_AVAILABLE and logs "Could not find aiodns package"
-            //     before falling back to getaddrinfo without SRV support.
-            //   * this client never resolves a name anyway. An .i2p address
-            //     is reached through the local SAM bridge -- the connection
-            //     is to 127.0.0.1 on a port the bridge picked -- so there is
-            //     no SRV lookup to lose.
+            // aiodns / pycares. Dropping them costs nothing HERE:
+            //   * slixmpp treats aiodns as optional at RUNTIME. resolver.py
+            //     sets AIODNS_AVAILABLE = False and logs "Could not find
+            //     aiodns package" before falling back to getaddrinfo without
+            //     SRV support.
+            //   * this client never resolves a name anyway. An .i2p address is
+            //     reached through the local SAM bridge -- the connection is to
+            //     127.0.0.1 on a port the bridge picked -- so there is no SRV
+            //     lookup to lose.
             //
             // If a clearnet XMPP transport is ever added, SRV resolution
             // becomes real and this decision needs revisiting.
-            // argon2-cffi: optional. Without it the engine falls back to
-            // scrypt and warns. Wanted on Android for the at-rest KDF; needs a
-            // native build, so treat a resolution failure here as a real
-            // finding rather than dropping the dependency.
-            install("argon2-cffi")
         }
 
         // otrv4_core is NOT installed from an index. It is the Rust wheel built

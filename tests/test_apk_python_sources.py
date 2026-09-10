@@ -19,6 +19,7 @@ the app.
 import ast
 import os
 import re
+import sys
 
 import pytest
 
@@ -33,8 +34,20 @@ FORBIDDEN = {
     "otrv4_testlib.py": "test-only helpers",
 }
 
-pytestmark = pytest.mark.skipif(
-    not os.path.exists(GRADLE), reason="no android/ project in this checkout")
+pytestmark = [
+    pytest.mark.skipif(
+        not os.path.exists(GRADLE),
+        reason="no android/ project in this checkout"),
+    # import_closure() parses otrv4+.py, which uses PEP 701 f-string syntax
+    # (f"{s !r }"). That is a SyntaxError on 3.11, so an older interpreter
+    # cannot compute the closure at all and every test here fails for a reason
+    # that has nothing to do with the copy list. The app itself requires 3.12
+    # for exactly the same reason -- see `version = "3.12"` in the Chaquopy
+    # block -- so this is the project's floor, not a concession.
+    pytest.mark.skipif(
+        sys.version_info < (3, 12),
+        reason="otrv4+.py needs Python 3.12 to parse (PEP 701 f-strings)"),
+]
 
 
 def import_closure():
