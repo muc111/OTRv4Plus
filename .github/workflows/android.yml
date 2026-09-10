@@ -47,6 +47,10 @@ env:
   # Chaquopy needs this exact version: otrv4+.py uses PEP 701 f-string syntax
   # that does not parse on 3.11 or earlier.
   PYTHON_VERSION: "3.12"
+  # Chaquopy's prebuilt CPython for Android, from Maven Central. Needed at
+  # LINK time, not just at runtime -- see the "Android libpython" step below.
+  # Must stay on the same 3.12 line as PYTHON_VERSION.
+  CHAQUOPY_TARGET: "3.12.12-0"
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -84,11 +88,11 @@ jobs:
         # `tasks` forces full configuration -- plugin resolution, the Chaquopy
         # plugin, the Compose compiler extension -- without compiling anything.
         # If dl.google.com were the only problem, this alone would go green.
-        run: ./gradlew tasks --stacktrace
+        run: ./gradlew tasks --no-daemon
 
       - name: Resolve the app's dependency graph
         working-directory: android
-        run: ./gradlew :app:dependencies --configuration debugRuntimeClasspath --stacktrace
+        run: ./gradlew :app:dependencies --configuration debugRuntimeClasspath --no-daemon
 
   # ---------------------------------------------------------------------------
   # Proves: otrv4_core cross-compiles for the two shipped ABIs.
@@ -126,6 +130,38 @@ jobs:
           echo "CARGO_TARGET_${UPPER}_LINKER=$NDK_BIN/${{ matrix.cc }}" >> "$GITHUB_ENV"
           echo "CC_${{ matrix.target }}=$NDK_BIN/${{ matrix.cc }}" >> "$GITHUB_ENV"
           echo "AR_${{ matrix.target }}=$NDK_BIN/llvm-ar" >> "$GITHUB_ENV"
+
+      - name: Android libpython, because the linker demands one
+        # `ld.lld: error: unable to find library -lpython3`, run #1.
+        #
+        # On desktop Linux a Python extension leaves the Py* symbols undefined
+        # and the interpreter resolves them at dlopen, which is what
+        # `pyo3/extension-module` arranges. Android's linker does not permit
+        # that: every symbol must resolve at link time, so PyO3 emits
+        # `-lpython3` and something has to satisfy it.
+        #
+        # Chaquopy already ships exactly the right object -- it is the CPython
+        # the APK will run -- and publishes it on Maven Central. So the link
+        # is against the same libpython that will be present on the device,
+        # rather than a stub that merely silences the linker.
+        #
+        # The name differs: PyO3 is building abi3 (see the generated
+        # pyo3-config-*-abi3.txt) so it asks for `python3`, while Chaquopy
+        # ships `libpython3.12.so`. abi3 is the stable ABI, so a symlink is
+        # accurate rather than a fudge.
+        run: |
+          set -euo pipefail
+          BASE=https://repo.maven.apache.org/maven2/com/chaquo/python/target
+          V="${{ env.CHAQUOPY_TARGET }}"
+          curl -sSfLo target.zip "$BASE/$V/target-$V-${{ matrix.abi }}.zip"
+          unzip -q -o target.zip -d chaquopy
+          mkdir -p "$PWD/pylib"
+          cp "chaquopy/jniLibs/${{ matrix.abi }}/libpython${{ env.PYTHON_VERSION }}.so" pylib/
+          ln -sf "libpython${{ env.PYTHON_VERSION }}.so" "pylib/libpython3.so"
+          ls -l pylib
+          echo "PYO3_CROSS_LIB_DIR=$PWD/pylib" >> "$GITHUB_ENV"
+          echo "PYO3_CROSS_PYTHON_VERSION=${{ env.PYTHON_VERSION }}" >> "$GITHUB_ENV"
+          echo "RUSTFLAGS=-L native=$PWD/pylib" >> "$GITHUB_ENV"
 
       - name: Build the wheel
         working-directory: Rust
@@ -179,7 +215,7 @@ jobs:
 
       - name: assembleDebug
         working-directory: android
-        run: ./gradlew :app:assembleDebug --stacktrace
+        run: ./gradlew :app:assembleDebug --no-daemon
 
       - uses: actions/upload-artifact@v4
         if: always()
@@ -210,7 +246,7 @@ jobs:
 
       - name: Unit tests
         working-directory: android
-        run: ./gradlew :app:testDebugUnitTest --stacktrace
+        run: ./gradlew :app:testDebugUnitTest --no-daemon
 
       - uses: actions/upload-artifact@v4
         if: always()

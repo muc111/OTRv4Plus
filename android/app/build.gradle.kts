@@ -1,6 +1,7 @@
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
+    id("org.jetbrains.kotlin.plugin.compose")
     id("com.chaquo.python")
 }
 
@@ -72,9 +73,10 @@ android {
         buildConfig = true
     }
 
-    composeOptions {
-        kotlinCompilerExtensionVersion = "1.5.15"
-    }
+    // No composeOptions block. `kotlinCompilerExtensionVersion` selected the
+    // old standalone Compose compiler and is ignored from Kotlin 2.0 -- the
+    // version now comes from the Compose plugin applied above. Leaving the
+    // old 1.5.15 pin here would be a number nothing reads.
 
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
