@@ -213,24 +213,35 @@ Voice over Tor is **not** planned. There is no Tor UDP transport, and carrying
 constant-rate media over TCP would trade the property the datagram transport
 exists to provide. I2P remains the only transport that carries voice.
 
-### Voice: consolidate onto the Rust core
+### Voice: consolidate onto the Rust core — **DONE (v10.13.2)**
 
-`otrv4plus_voice.py` uses the Python `cryptography` library for the media
-AES-256-GCM, the HKDF-SHA512 key schedule, and the voice X448. That is a second
-implementation of AES-256-GCM in a project whose stated architecture is one
-cryptographic surface, and it puts voice key material in Python `bytearray`s
-wiped best-effort rather than in Rust `ZeroizeOnDrop` buffers. The Rust core
-already exposes `aes256gcm_encrypt`/`_decrypt` and `X448KeyHandle`; the KDF would
-need an HKDF-SHA512 binding. This is the largest open architectural item on the
-voice path.
+*This entry described the state before v10.13.2 and was left standing for
+sixteen releases after the work landed. Corrected 2026-09-10.*
 
-### Voice: classify authentication failures
+`otrv4plus_voice.py` no longer imports the Python `cryptography` library at
+all. The media AES-256-GCM, the HKDF-SHA512 key schedule and the voice X448 are
+Rust-owned via `PyVoiceCipher`, `PyVoiceKex` and `PyVoiceRoot` (`Rust/src/voice.rs`,
+registered in `lib.rs`). There is **no Python fallback** and that is deliberate
+— `_require_rust_voice()` raises with rebuild instructions rather than
+reverting to the implementation this replaced. The epoch root is derived inside
+Rust by `RustVoiceRoot.from_initial_agreement` and never becomes a Python
+object.
 
-`authfail` currently cannot distinguish "no live key for epoch N" — an ordinary
-consequence of a rekey in flight — from a genuine AEAD tag failure, which is an
-attack signal. They are counted together, so the interesting one is invisible
-inside the boring one. Splitting them is a telemetry and diagnosis fix, not a
-cryptographic change.
+The project now has one cryptographic surface for chat **and** voice. The
+v10.12.0 status note further up this file, which says the voice subsystem
+reintroduced Python crypto, is history rather than current state.
+
+### Voice: classify authentication failures — **DONE (v10.13.1)**
+
+*Also left standing after the work landed. Corrected 2026-09-10.*
+
+`auth_fail` is now an authentication failure and nothing else. "No live key for
+epoch N", a retired epoch and an unparseable frame are counted separately as
+`rej_no_key`, `rej_retired` and `rej_malformed` (`MEDIA_STAT_KEYS`,
+`FrameError.STAT_FOR_REASON`), so the attack signal is no longer hidden inside
+the ordinary consequence of a rekey in flight. As of v10.29.0 a non-zero
+`auth_fail` or `replay` is reported at hangup at normal volume rather than only
+under `--voice-debug`.
 
 ### Voice: latency
 

@@ -295,24 +295,35 @@ wrong-slot records all rejected; no private material anywhere in the sealed
 record; 500 records with no nonce collision; key rotation with old records still
 readable; every insecure default fails closed.
 
-### Open decision — B1-seed
+### Open decision — B1-seed — **RESOLVED as Option B (v10.12.0)**
+
+*Status corrected 2026-09-10. The decision below was taken and shipped; this
+section had been left reading as though it were still open, which overstated
+what Phase 4 is waiting on.*
 
 `generate_ed448_keypair()` creates the seed **inside Rust** and there is no PyO3
-accessor returning it (`expose_seed_slice` is `pub(crate)`). **An identity
-generated the production way cannot be persisted at all.** The only
-reconstruction path is `from_seed_bytes()`, which requires Python to have held
-the seed — costing the documented property that private bytes never appear on
-the Python heap.
-
-Rather than resolve that silently, `IdentityKeyStore` is the swap point:
+accessor returning it (`expose_seed_slice` is `pub(crate)`). The question was
+how an identity generated the production way could be persisted at all, given
+that the only reconstruction path — `from_seed_bytes()` — requires Python to
+have held the seed, costing the property that private bytes never appear on the
+Python heap.
 
 - **Option A** — seed generated in Python. No Rust change; weakens the boundary.
-- **Option B** — additive Rust `seal_ed448_handle` / `unseal_ed448_handle`; only
-  ciphertext crosses. **Recommended.**
+- **Option B** — additive Rust seal/unseal; only ciphertext crosses. **Chosen.**
 
-The package ships no concrete implementation, and a test enforces that. The test
-double uses Option A and is marked development/test only. **This needs your
-decision before Phase 4.**
+**Option B shipped.** `Rust/src/identity.rs` exposes `seal_identity`,
+`unseal_identity`, `create_sealed_identity` and `identity_record_version`, all
+registered in `lib.rs`. The sealing and unsealing happen inside Rust and only
+ciphertext crosses into Python; no `get_seed()` accessor exists or may be added.
+
+It was proved in production by a different consumer first: XMPP persistent
+identity (v10.12.0) is built on exactly this mechanism, with `otrv4plus_identity.py`
+supplying the Termux-side wiring. So the Android path inherits a mechanism that
+has been running on two handsets rather than one written for it and untested.
+
+The at-rest protection there is filesystem permissions, not a passphrase — see
+SECURITY.md caveat 5b. On Android the Keystore-backed path in §6 replaces that,
+which is the one part still to be wired up in Phase 4.
 
 ---
 
