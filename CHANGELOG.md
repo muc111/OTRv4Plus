@@ -4,6 +4,82 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## v10.30.0 — server administration, driven by the server's own forms
+
+*2026-09-10.  `VERSION → 10.30.0`.  `otrv4_core` unchanged at 0.10.28.*
+
+Asked for a while ago and left open on one question — *which* admin commands to
+implement. The question turns out not to need answering.
+
+XEP-0133 defines thirty-two commands, slixmpp implements all of them, and no
+server implements all of them: Prosody's subset is not ejabberd's. Hand-coding
+"the useful six" would have been wrong twice — offering commands a given server
+refuses, and hiding ones it supports.
+
+So nothing in `otrv4plus_admin.py` knows a command's name. The server
+advertises its commands over service discovery and each command answers with a
+XEP-0004 data form describing its own fields; this turns that form into a
+sequence of questions and the answers back into a form. A server that adds a
+command gets it for free.
+
+```
+/admin                    ask the server what it supports
+/admin <command>          run one; it prompts for whatever the form asks for
+/cancel                   abandon a form; nothing is sent
+```
+
+The state machine is a separate module with **no network I/O at all**, so
+required fields, hidden fields, multi-stage forms and passwords-that-must-not-
+echo are testable without a server, a socket or an event loop.
+
+### The three properties that are not incidental
+
+**A password never escapes.** `add-user` and `change-user-password` carry one.
+`text-private` values are excluded from every rendering path — the submission
+summary, `shown_value()`, the field's own `repr` — and the coercion errors name
+the *field* and never the value, because that path is shared with the password
+field and an echoed answer would put it in a traceback. It still reaches the
+wire: hiding it from the screen must not hide it from the server, which is the
+one place it is meant to go.
+
+**A form is armed only by the local user.** `take_admin_field()` is the same
+one-shot mechanism as the SMP passphrase and the same rule as INV-06: it is set
+in exactly one place, `_admin_ask_next`, and nothing reachable from an inbound
+stanza can get there. The server describes the QUESTIONS; it cannot decide that
+the next line typed is an answer. A test asserts the flag has exactly one
+`True` setter.
+
+**`[admin]` is not a loggable tag.** Its output carries user lists, JIDs and
+occasionally a password, so it is deliberately absent from `_LOG_SAFE_TAGS` and
+reaches the transcript as `<unlogged line: N chars>`. The tag-colour test that
+pins the coloured-but-unlogged list was updated deliberately rather than
+"fixed" by adding `admin` to the allowlist.
+
+### Said out loud, once
+
+Admin is the one surface in this client that is deliberately **not**
+end-to-end encrypted, and the client says so before the first command rather
+than leaving it in the docs:
+
+```
+[admin] NOTE: admin commands are ordinary XMPP to your own server.
+[admin] They are protected by the transport (I2P or TLS) and NOT by OTR —
+[admin] the server is the intended recipient, so there is nobody to be end-to-end with.
+```
+
+That is not a limitation to be fixed. The server *is* the recipient; there is
+nobody to be end-to-end with.
+
+`xep_0004` and `xep_0050` are registered; `xep_0133` deliberately is not — its
+plugin is thirty-two thin session-starters this client does not call, and
+registering it would be config nothing reads.
+
+60 tests, 21 mutations killed.  Full suite: 3360 passed, 44 skipped, 1 xfailed.
+Not yet exercised against a real Prosody server — `/admin` on xmpp-elite.i2p is
+the test.
+
+---
+
 ## v10.29.0 — the buffer was sized from an average, on a path that has a tail
 
 *2026-09-05.  `VERSION → 10.29.0`.  `otrv4_core` unchanged at 0.10.28.*

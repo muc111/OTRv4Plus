@@ -237,7 +237,7 @@ def voice_available() -> "tuple[bool, str]":
             "no audio backend: libaaudio.so unavailable and parec/pacat "
             "missing  (run /audioprobe for details)")
 
-XMPP_VERSION = "10.29.0"
+XMPP_VERSION = "10.30.0"
 
 # ---------------------------------------------------------------------------
 # XMPP-private state directory
@@ -620,6 +620,10 @@ _TAG_COLOURS = {
     "rate-limit": "red",
 
     "trust": "bold_yellow",
+    # Admin is the one surface that is NOT end-to-end encrypted and the one
+    # that can delete an account, so it is coloured for attention rather than
+    # grouped with the cyan things the user merely asked for.
+    "admin": "bold_yellow",
     "reconnect": "yellow",
     "keepalive": "yellow",
     "auth": "yellow",
@@ -770,6 +774,7 @@ except ImportError:
     sys.exit(1)
 
 try:
+    import otrv4plus_admin as _admin
     from otrv4plus_log import ChannelLogManager as _ChannelLogManager
     _LOG_AVAILABLE = True
 except ImportError:
@@ -1499,6 +1504,14 @@ class OTRv4PlusXMPP(ClientXMPP):
         self._voice_sam_host = "127.0.0.1"
         self._voice_sam_port = 7656
         self._voice_debug = False
+        #: XEP-0133 admin form state. All four are cleared together by
+        #: _admin_reset; a half-open form would leave _admin_awaiting set and
+        #: swallow the next line typed, which INV-06 forbids.
+        self._admin_form = None        # otrv4plus_admin.AdminForm, or None
+        self._admin_node = None        # the command node being executed
+        self._admin_session = None     # the server's session id
+        self._admin_awaiting = False   # one-shot: next line is a field value
+        self._admin_warned = False     # the not-end-to-end notice, once
         #: (print-count, text) of the line the terminal echoed in plain mode,
         #: so our own attributed echo can replace it rather than repeat it.
         self._plain_echo = None
@@ -1619,6 +1632,17 @@ class OTRv4PlusXMPP(ClientXMPP):
         # --- XEP plugins ---
         # XEP-0030: Service discovery (required base for many XEPs).
         self.register_plugin("xep_0030")
+        # XEP-0004 data forms and XEP-0050 ad-hoc commands: the two
+        # the XEP-0133 admin surface is built from. Registered
+        # unconditionally because they are pure protocol handlers --
+        # they cost nothing until /admin is typed, and a lazy
+        # registration would have to happen on the event loop.
+        self.register_plugin("xep_0004")
+        self.register_plugin("xep_0050")
+        # NOT xep_0133. Its plugin is thirty-two thin wrappers that each start
+        # an ad-hoc session, and this client drives xep_0050 directly so it
+        # can render the form itself. Registering it would be config that
+        # nothing reads.
         # XEP-0085: Chat state notifications.
         self.register_plugin("xep_0085")
         # XEP-0115: Entity capabilities (efficient feature advertisement).
@@ -4719,6 +4743,8 @@ class OTRv4PlusXMPP(ClientXMPP):
             "  /tipreply            answer a request that arrived first\n"
             "  /smpstate            show raw SMP verification state\n"
             "  /voicedebug          toggle voice setup + telemetry logging\n"
+            "  /admin               list your server's admin commands\n"
+            "  /admin <command>     run one (prompts for what it needs)\n"
             "  Ctrl+B               scroll up one page\n"
             "  Ctrl+F               scroll down one page\n"
             "  /up  /b              scroll up one page (text fallback)\n"
@@ -4752,6 +4778,251 @@ class OTRv4PlusXMPP(ClientXMPP):
         self._secret_purpose_taken, self._secret_purpose = (
             self._secret_purpose, None)
         return peer
+
+    # -- XEP-0133 service administration -----------------------------------
+    #
+    # Nothing here knows the name of a single admin command.  The server
+    # advertises what it supports and each command describes its own fields,
+    # so Prosody's subset and ejabberd's differ without this code caring.
+    # See otrv4plus_admin.py for why that is the design rather than a list.
+    #
+    # This is the ONE part of the client that deliberately speaks plaintext to
+    # a third party.  The server is the intended recipient of an admin
+    # command, so OTR does not apply -- there is nobody to be end-to-end with.
+    # `_admin_warned` makes sure that is said once per session before the
+    # first command rather than buried in the docs.
+
+    async def _cmd_admin(self, arg):
+        """`/admin` lists what the server offers; `/admin <cmd>` runs one."""
+        try:
+            if not self.is_connected():
+                print("[admin] not connected")
+                return
+            if self._admin_form is not None:
+                print("[admin] a form is already open — answer it, or "
+                      "/cancel")
+                return
+            if not self._admin_warned:
+                self._admin_warned = True
+                print("[admin] NOTE: admin commands are ordinary XMPP to your "
+                      "own server.")
+                print("[admin] They are protected by the transport (I2P or "
+                      "TLS) and NOT by OTR —")
+                print("[admin] the server is the intended recipient, so there "
+                      "is nobody to be end-to-end with.")
+            if not arg:
+                await self._admin_list()
+            else:
+                await self._admin_start(arg)
+        except Exception as exc:
+            self._admin_reset()
+            print("[admin] failed: %s" % _sanitise(str(exc), 200))
+
+    async def _admin_list(self):
+        """Ask the server which admin commands it actually has."""
+        server = self.boundjid.server
+        print("[admin] asking %s what it supports…" % _sanitise(server, 64))
+        try:
+            items = await self.plugin["xep_0050"].get_commands(
+                jid=server, local=False)
+        except Exception as exc:
+            print("[admin] the server would not list its commands: %s"
+                  % _sanitise(str(exc), 160))
+            print("[admin] that usually means this account is not an admin "
+                  "on %s" % _sanitise(server, 64))
+            return
+        names = []
+        try:
+            for item in items["disco_items"]["items"]:
+                node = item[1] if len(item) > 1 else ""
+                if node and node.startswith(_admin.ADMIN_NODE):
+                    names.append(_admin.short_name(node))
+        except Exception:
+            pass
+        if not names:
+            print("[admin] the server advertises no XEP-0133 commands for "
+                  "this account")
+            return
+        print("[admin] %d command(s):" % len(names))
+        for name in sorted(names):
+            print("[admin]   %s" % name)
+        print("[admin] run one with:  /admin <command>")
+
+    async def _admin_start(self, name):
+        """Execute a command and either show the result or open its form."""
+        server = self.boundjid.server
+        node = _admin.command_node(name)
+        print("[admin] %s → %s" % (_admin.short_name(node),
+                                   _sanitise(server, 64)))
+        try:
+            iq = await self.plugin["xep_0050"].send_command(
+                jid=server, node=node, action="execute")
+        except Exception as exc:
+            print("[admin] refused: %s" % _sanitise(str(exc), 200))
+            return
+        self._admin_node = node
+        self._admin_session = iq["command"]["sessionid"]
+        self._admin_handle_stage(iq)
+
+    def _admin_handle_stage(self, iq):
+        """One round trip: finished, or a form to fill in."""
+        cmd = iq["command"]
+        status = cmd["status"]
+        for note in self._admin_notes(cmd):
+            print("[admin] %s" % note)
+        if status == "completed":
+            lines = _admin.summarise(cmd["form"])
+            if lines:
+                for line in lines:
+                    print("[admin] %s" % _sanitise(line, 400))
+            else:
+                print("[admin] done")
+            self._admin_reset()
+            return
+        try:
+            form = _admin.AdminForm.from_payload(cmd["form"])
+        except Exception:
+            form = None
+        if form is None or form.is_complete():
+            print("[admin] the server wants something this client cannot "
+                  "render — no form fields in its reply")
+            self._admin_reset()
+            return
+        self._admin_form = form
+        if form.title:
+            print("[admin] %s" % _sanitise(form.title, 200))
+        if form.instructions:
+            print("[admin] %s" % _sanitise(form.instructions, 400))
+        print("[admin] %d question(s). Blank skips an optional one, /cancel "
+              "aborts." % form.remaining)
+        self._admin_ask_next()
+
+    @staticmethod
+    def _admin_notes(cmd):
+        """Whatever the server said in <note/>, which is often the real answer."""
+        out = []
+        try:
+            notes = cmd["notes"]
+        except Exception:
+            return out
+        for note in notes or []:
+            try:
+                text = note[1] if isinstance(note, (list, tuple)) else str(note)
+            except Exception:
+                continue
+            if text:
+                out.append(_sanitise(str(text), 300))
+        return out
+
+    def _admin_ask_next(self):
+        """Print the current question and arm the one-shot input capture."""
+        form = self._admin_form
+        if form is None:
+            return
+        field = form.current()
+        if field is None:
+            asyncio.ensure_future(self._admin_submit())
+            return
+        print("[admin] %s" % field.prompt())
+        # Hidden input for a password field, on the same mechanism the SMP
+        # passphrase uses. If hiding does not work on this front end the user
+        # is told, rather than being promised privacy that is not there.
+        if field.is_private:
+            if not self._mask_next_input(True):
+                print("[admin] ⚠ this terminal will ECHO what you type")
+        self._admin_awaiting = True
+
+    def _handle_admin_answer(self, line):
+        """One typed line, as the answer to the current field."""
+        form = self._admin_form
+        if form is None:
+            return
+        if line.strip().lower() in ("/cancel", "/abort"):
+            print("[admin] cancelled — nothing was sent")
+            asyncio.ensure_future(self._admin_cancel())
+            return
+        try:
+            form.answer(line)
+        except _admin.FormError as exc:
+            # The message names the FIELD, never the value: this path is
+            # shared with text-private and an echoed answer would be a
+            # password on screen and in the transcript.
+            print("[admin] %s" % _sanitise(str(exc), 200))
+            self._admin_ask_next()
+            return
+        self._admin_ask_next()
+
+    async def _admin_submit(self):
+        """Send the completed form."""
+        form, node = self._admin_form, self._admin_node
+        session = self._admin_session
+        if form is None:
+            return
+        shown = form.describe()
+        if shown:
+            print("[admin] submitting:")
+            for line in shown:
+                print("[admin] %s" % _sanitise(line, 300))
+        try:
+            payload = self.plugin["xep_0004"].make_form(ftype="submit")
+            for var, value in form.values().items():
+                payload.add_field(var=var, value=value)
+            iq = await self.plugin["xep_0050"].send_command(
+                jid=self.boundjid.server, node=node, action="complete",
+                sessionid=session, payload=payload)
+        except Exception as exc:
+            self._admin_reset()
+            print("[admin] the server refused it: %s" % _sanitise(str(exc), 200))
+            return
+        self._admin_handle_stage(iq)
+
+    async def _admin_cancel(self):
+        """Tell the server to drop the session, then forget it locally."""
+        node, session = self._admin_node, self._admin_session
+        self._admin_reset()
+        if not (node and session):
+            return
+        try:
+            await self.plugin["xep_0050"].send_command(
+                jid=self.boundjid.server, node=node, action="cancel",
+                sessionid=session)
+        except Exception:
+            # A cancel that does not arrive costs the server one idle
+            # session and costs us nothing; the local state is already gone.
+            pass
+
+    def _admin_reset(self):
+        """Forget the form, the session and any armed capture.
+
+        Called on every exit path, including the failures. A form left half
+        open would keep `_admin_awaiting` set and swallow the next line the
+        user typed, which is precisely the behaviour INV-06 exists to forbid.
+        """
+        self._admin_form = None
+        self._admin_node = None
+        self._admin_session = None
+        self._admin_awaiting = False
+        try:
+            self._mask_next_input(False)
+        except Exception:
+            pass
+
+    def take_admin_field(self):
+        """Consume the locally-armed admin-form request, if any.
+
+        Same rule and same reason as `take_secret_request` above: armed only
+        by this user typing `/admin`, cleared unconditionally on read, so it
+        survives exactly one dispatched line.
+
+        A form is a sequence of questions, so unlike the SMP prompt it re-arms
+        itself after each answer -- but only from `_admin_ask_next`, and only
+        while a form this user started is still open.  Nothing the server or a
+        peer sends reaches that path, which is the property that matters: the
+        server describes the QUESTIONS, it cannot decide that the next thing
+        typed is an answer.
+        """
+        armed, self._admin_awaiting = self._admin_awaiting, False
+        return armed
 
     def _pending_consent_peer(self):
         """The peer whose verification request is waiting for a y/n, if any.
@@ -4795,6 +5066,15 @@ class OTRv4PlusXMPP(ClientXMPP):
         if secret_for is not None:
             self._mask_next_input(False)
             self._handle_smp_secret_answer(secret_for, line)
+            return True
+
+        # An admin form THIS USER opened with /admin consumes the next line.
+        # Checked here, before command parsing, for the same reason as the
+        # passphrase above: a field value may legitimately begin with "/".
+        # `/cancel` is the way out and is handled inside the answer path.
+        if self.take_admin_field():
+            self._mask_next_input(False)
+            self._handle_admin_answer(line)
             return True
 
         # A consent request a PEER caused.  Unlike the secret prompt above it
@@ -5067,6 +5347,11 @@ class OTRv4PlusXMPP(ClientXMPP):
                         self._voice_manager._start_stats(p_)
             else:
                 print("[voice] not initialised")
+        elif lstrip == "/admin" or lstrip.startswith("/admin "):
+            parts = lstrip.split(None, 1)
+            arg = parts[1].strip() if len(parts) > 1 else ""
+            asyncio.ensure_future(self._cmd_admin(arg))
+
         elif lstrip in ("/identity", "/whoami"):
             self.show_identity()
 

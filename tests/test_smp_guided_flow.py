@@ -279,6 +279,14 @@ class _Client:
         self._secret_purpose_taken = None
         self._smp_flows = smpflow.SmpFlowRegistry()
         self._smp_consent_shown = None
+        # dispatch_line also takes the admin-form capture. Borrowed from the
+        # real class rather than stubbed True/False, so this test keeps
+        # exercising the real ordering: the passphrase is taken first, then
+        # the admin form, both before command parsing.
+        self._admin_form = None
+        self._admin_node = None
+        self._admin_session = None
+        self._admin_awaiting = False
         self._mask_input = False
         self._tui_enabled = False
         self._screen = None
@@ -294,6 +302,7 @@ class _Client:
                      "_arm_secret_prompt", "_request_smp_secret",
                      "_handle_smp_secret_answer", "take_secret_request",
                      "_pending_consent_peer", "dispatch_line",
+                     "take_admin_field", "_admin_reset",
                      "_expire_stale_smp_consent", "has_pending",
                      "_check_smp_secret_required", "_forget_otr"):
             setattr(self, name, getattr(cls, name).__get__(self, cls))

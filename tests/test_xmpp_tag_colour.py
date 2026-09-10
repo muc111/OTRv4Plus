@@ -184,9 +184,19 @@ class TestItDoesNotBreakTheTranscript:
         coloured_and_unlogged = sorted(
             t for t in mod["_TAG_COLOURS"] if t not in safe)
         assert coloured_and_unlogged == [
-            "auth failed", "fatal", "file", "keepalive", "rate-limit",
-            "reconnect", "roster", "tip", "tor", "trade",
+            "admin", "auth failed", "fatal", "file", "keepalive",
+            "rate-limit", "reconnect", "roster", "tip", "tor", "trade",
         ]
+
+    def test_admin_output_in_particular_is_never_written(self):
+        """The newest and worst of them.
+
+        XEP-0133 results carry user lists and JIDs, and `get-user-password`
+        carries a password. Adding "admin" to the allowlist to make the two
+        tables match would put all of that on disk.
+        """
+        safe = _module_constant("_LOG_SAFE_TAGS")
+        assert "admin" not in safe
 
     def test_every_coloured_tag_is_one_the_client_actually_prints(self, mod):
         """No colours for tags that do not exist.
