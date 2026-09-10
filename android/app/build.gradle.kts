@@ -115,11 +115,31 @@ chaquopy {
         pip {
             // PySocks: imported at module scope by otrv4+.py. Pure Python.
             install("PySocks")
-            // slixmpp + aiodns: the XMPP transport. Verify these resolve for
-            // every enabled ABI early -- this is the dependency most likely to
-            // need a native build.
+            // slixmpp: the XMPP transport. Pure Python.
             install("slixmpp")
-            install("aiodns")
+
+            // NOT aiodns. The comment that used to be here said this was
+            // "the dependency most likely to need a native build", and the
+            // first CI build proved it:
+            //
+            //   ERROR: Failed to install pycares<6,>=5.0.0 (from aiodns)
+            //   CalledProcessError: ['/usr/local/bin/cmake', '.../c-ares', ...]
+            //
+            // aiodns pulls pycares, which compiles c-ares from source with
+            // cmake. There is no Chaquopy wheel for it and cross-compiling
+            // c-ares for every ABI is not a dependency this app needs to own.
+            //
+            // Dropping it costs nothing HERE, which is the part that matters:
+            //   * slixmpp treats it as optional. resolver.py sets
+            //     AIODNS_AVAILABLE and logs "Could not find aiodns package"
+            //     before falling back to getaddrinfo without SRV support.
+            //   * this client never resolves a name anyway. An .i2p address
+            //     is reached through the local SAM bridge -- the connection
+            //     is to 127.0.0.1 on a port the bridge picked -- so there is
+            //     no SRV lookup to lose.
+            //
+            // If a clearnet XMPP transport is ever added, SRV resolution
+            // becomes real and this decision needs revisiting.
             // argon2-cffi: optional. Without it the engine falls back to
             // scrypt and warns. Wanted on Android for the at-rest KDF; needs a
             // native build, so treat a resolution failure here as a real

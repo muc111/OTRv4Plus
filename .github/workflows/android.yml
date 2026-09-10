@@ -88,11 +88,27 @@ jobs:
         # `tasks` forces full configuration -- plugin resolution, the Chaquopy
         # plugin, the Compose compiler extension -- without compiling anything.
         # If dl.google.com were the only problem, this alone would go green.
-        run: ./gradlew tasks --no-daemon
+        run: |
+          # Gradle prints "What went wrong" a long way from the end of a big
+          # log, which makes a failure expensive to read. Repeat it last.
+          set -o pipefail
+          ./gradlew tasks --no-daemon --console=plain 2>&1 | tee /tmp/tasks.log || {
+            echo "================ WHAT WENT WRONG ================"
+            sed -n '/^\* What went wrong:/,/^BUILD FAILED/p' /tmp/tasks.log | head -60
+            exit 1
+          }
 
       - name: Resolve the app's dependency graph
         working-directory: android
-        run: ./gradlew :app:dependencies --configuration debugRuntimeClasspath --no-daemon
+        run: |
+          # Gradle prints "What went wrong" a long way from the end of a big
+          # log, which makes a failure expensive to read. Repeat it last.
+          set -o pipefail
+          ./gradlew :app:dependencies --configuration debugRuntimeClasspath --no-daemon --console=plain 2>&1 | tee /tmp/deps.log || {
+            echo "================ WHAT WENT WRONG ================"
+            sed -n '/^\* What went wrong:/,/^BUILD FAILED/p' /tmp/deps.log | head -60
+            exit 1
+          }
 
   # ---------------------------------------------------------------------------
   # Proves: otrv4_core cross-compiles for the two shipped ABIs.
@@ -254,7 +270,15 @@ jobs:
 
       - name: assembleDebug
         working-directory: android
-        run: ./gradlew :app:assembleDebug --no-daemon
+        run: |
+          # Gradle prints "What went wrong" a long way from the end of a big
+          # log, which makes a failure expensive to read. Repeat it last.
+          set -o pipefail
+          ./gradlew :app:assembleDebug --no-daemon --console=plain 2>&1 | tee /tmp/apk.log || {
+            echo "================ WHAT WENT WRONG ================"
+            sed -n '/^\* What went wrong:/,/^BUILD FAILED/p' /tmp/apk.log | head -60
+            exit 1
+          }
 
       - uses: actions/upload-artifact@v4
         if: always()
@@ -285,7 +309,15 @@ jobs:
 
       - name: Unit tests
         working-directory: android
-        run: ./gradlew :app:testDebugUnitTest --no-daemon
+        run: |
+          # Gradle prints "What went wrong" a long way from the end of a big
+          # log, which makes a failure expensive to read. Repeat it last.
+          set -o pipefail
+          ./gradlew :app:testDebugUnitTest --no-daemon --console=plain 2>&1 | tee /tmp/tests.log || {
+            echo "================ WHAT WENT WRONG ================"
+            sed -n '/^\* What went wrong:/,/^BUILD FAILED/p' /tmp/tests.log | head -60
+            exit 1
+          }
 
       - uses: actions/upload-artifact@v4
         if: always()
