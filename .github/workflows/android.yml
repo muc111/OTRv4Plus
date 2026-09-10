@@ -156,8 +156,24 @@ jobs:
           curl -sSfLo target.zip "$BASE/$V/target-$V-${{ matrix.abi }}.zip"
           unzip -q -o target.zip -d chaquopy
           mkdir -p "$PWD/pylib"
-          cp "chaquopy/jniLibs/${{ matrix.abi }}/libpython${{ env.PYTHON_VERSION }}.so" pylib/
-          ln -sf "libpython${{ env.PYTHON_VERSION }}.so" "pylib/libpython3.so"
+          SO="libpython${{ env.PYTHON_VERSION }}.so"
+          cp "chaquopy/jniLibs/${{ matrix.abi }}/$SO" pylib/
+
+          # Chaquopy's libpython carries NO SONAME -- checked with readelf, it
+          # has NEEDED entries for libm/libdl/libc and nothing else. That
+          # matters here and would not have failed until the app started:
+          # with no SONAME, the linker records whatever FILENAME it opened as
+          # our DT_NEEDED. `-lpython3` opens `libpython3.so`, so the wheel
+          # would ask the device for a file the APK does not contain -- it
+          # ships libpython3.12.so. A clean build, then dlopen fails.
+          #
+          # Setting the SONAME on our copy fixes it at the root: the linker
+          # prefers the SONAME over the filename, so DT_NEEDED comes out as
+          # libpython3.12.so, which is exactly what Chaquopy installs.
+          sudo apt-get -qq update && sudo apt-get -qq install -y patchelf
+          patchelf --set-soname "$SO" "pylib/$SO"
+          ln -sf "$SO" "pylib/libpython3.so"
+          readelf -d "pylib/$SO" | grep -i soname
           ls -l pylib
           # NOT PYO3_CROSS_LIB_DIR. That names a complete Python lib/
           # directory and PyO3 looks in it for _sysconfigdata*.py, which a
@@ -178,6 +194,23 @@ jobs:
             --features pyo3/extension-module \
             --interpreter python${{ env.PYTHON_VERSION }} \
             --out dist
+
+      - name: The wheel must ask for the libpython the APK ships
+        # The check that would otherwise be a crash on first launch. A wheel
+        # naming `libpython3.so` links and packages perfectly and then cannot
+        # be loaded, because Chaquopy installs `libpython3.12.so`.
+        working-directory: Rust
+        run: |
+          set -euo pipefail
+          WHEEL=$(ls dist/*.whl)
+          unzip -q -o "$WHEEL" -d wheel-check
+          SO=$(find wheel-check -name '*.so' | head -1)
+          echo "inspecting $SO"
+          readelf -d "$SO" | grep NEEDED
+          if ! readelf -d "$SO" | grep -q "libpython${{ env.PYTHON_VERSION }}.so"; then
+            echo "::error::the wheel does not depend on libpython${{ env.PYTHON_VERSION }}.so, so it will not load under Chaquopy"
+            exit 1
+          fi
 
       - uses: actions/upload-artifact@v4
         with:
