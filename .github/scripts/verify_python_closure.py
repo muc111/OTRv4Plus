@@ -49,11 +49,17 @@ EXCLUDED_BY_DESIGN = {
                "Chaquopy cannot do",
 }
 
-#: Declared packages that exist only on Chaquopy's own index, as Android
-#: wheels.  They cannot be resolved here, so they are not used as roots -- but
-#: they still have to be declared, which is asserted below so this set cannot
-#: quietly become a way to hide a package from the check.
-ANDROID_ONLY = {
+#: Declared packages that no public index can resolve, so they cannot be used
+#: as roots here.  They still have to be DECLARED, which is asserted below, so
+#: this set cannot quietly become a way to hide a package from the check.
+#:
+#: Neither has Python dependencies of its own -- otrv4_core is a PyO3 extension
+#: and chaquopy-libffi is a packaged C library -- so nothing is lost by not
+#: resolving them.  A pure-Python dependency appearing on either would be
+#: invisible to this check, which is the one gap in it.
+NOT_ON_ANY_PUBLIC_INDEX = {
+    "otrv4-core": "the Rust core, built from Rust/ into android/app/wheels "
+                  "by the `rust` job",
     "chaquopy-libffi": "Chaquopy's packaging of libffi, required by its cffi "
                        "wheel",
 }
@@ -155,15 +161,16 @@ def main():
               "check here.")
         return 0
 
-    for name, why in ANDROID_ONLY.items():
+    for name, why in NOT_ON_ANY_PUBLIC_INDEX.items():
         if normalise(name) not in names:
             raise SystemExit(
-                "%s is listed as Android-only (%s) but is not declared in %s. "
-                "Remove it from ANDROID_ONLY rather than leaving a name here "
+                "%s is listed as unresolvable from a public index (%s) but "
+                "is not declared in %s. Remove it from "
+                "NOT_ON_ANY_PUBLIC_INDEX rather than leaving a name here "
                 "that excuses a package from the check."
                 % (name, why, args.gradle))
 
-    roots = names - {normalise(n) for n in ANDROID_ONLY}
+    roots = names - {normalise(n) for n in NOT_ON_ANY_PUBLIC_INDEX}
     resolved = resolve(roots)
     print("resolved: %s" % ", ".join(sorted(resolved)))
 

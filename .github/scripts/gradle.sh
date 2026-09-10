@@ -55,7 +55,12 @@ section "PYTHON REQUIREMENTS (Chaquopy/pip)" \
 section "KOTLIN / JAVA COMPILATION" '^e: |^\s+error: ' 0
 
 # The test task names the report directory and nothing else.
-section "FAILED TESTS" '^\S+ > \S+ FAILED|tests completed, .* failed' 0
+#
+# The pattern allows spaces in the middle because Kotlin test names have them:
+#   AttemptThrottleTest > backoff grows after each failure FAILED
+# An earlier `^\S+ > \S+ FAILED` matched only single-word test names, which is
+# almost none of them.
+section "FAILED TESTS" '^\S+ > .*FAILED$|tests completed, .*failed' 0
 
 echo
 echo "================ WHAT WENT WRONG ================"

@@ -36,6 +36,8 @@ GRADLE = "android/app/build.gradle.kts"
 #: someone knows the line can go.
 REQUIRED = {
     # asked for directly
+    "otrv4_core": "the Rust core; every cryptographic operation is behind it "
+                  "and there is no Python fallback",
     "PySocks": "imported at module scope by otrv4+.py",
     "slixmpp": "the XMPP transport",
     "argon2-cffi": "the at-rest KDF; without it the engine falls back to scrypt",
@@ -110,12 +112,12 @@ class TestTheClosureIsNamed:
     def test_the_transitive_packages_outnumber_the_asked_for_ones(self):
         """The point of the list, as an assertion.
 
-        Six of the nine entries exist only because resolution is off. Someone
+        Six of the ten entries exist only because resolution is off. Someone
         reading the block and seeing pycparser or chaquopy-libffi may well
         wonder what they are doing in a messenger; this is the record that
         they are cffi's, not ours.
         """
-        asked_for = {"pysocks", "slixmpp", "argon2-cffi"}
+        asked_for = {"otrv4-core", "pysocks", "slixmpp", "argon2-cffi"}
         assert asked_for < installed()
         assert len(installed() - asked_for) == 6
 

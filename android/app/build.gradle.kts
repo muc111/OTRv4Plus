@@ -141,8 +141,33 @@ chaquopy {
             // app is worth more than the convenience it costs.
             options("--no-deps")
 
+            // Where the Rust core comes from. It is not on any index: it is
+            // built from Rust/ for each ABI by the `rust` job in
+            // .github/workflows/android.yml, or locally with
+            //
+            //     maturin build --release --target aarch64-linux-android \
+            //       --features pyo3/extension-module --interpreter python3.12
+            //
+            // and the resulting wheels dropped in android/app/wheels/.
+            //
+            // The tags line up without any retagging, which is worth writing
+            // down because it looks like it should not: maturin emits
+            // `otrv4_core-0.10.28-cp39-abi3-android_26_arm64_v8a.whl`, and
+            // Chaquopy asks pip for `--platform android_26_arm64_v8a` because
+            // minSdk is 26. abi3 covers the cp39-vs-3.12 half.
+            //
+            // If the directory is empty, pip fails with "Could not find a
+            // version that satisfies the requirement otrv4_core". That is the
+            // correct outcome -- an APK without the crypto core is not this
+            // app -- but it is an unhelpful sentence, so: build the wheels.
+            options("--find-links", project.file("wheels").absolutePath)
+
             // -- asked for directly ------------------------------------------
             //
+            // otrv4_core: the Rust core. Every cryptographic operation in the
+            // app is behind it; there is no Python fallback and has not been
+            // since v10.13.2.
+            install("otrv4_core")
             // PySocks: imported at module scope by otrv4+.py. Pure Python.
             install("PySocks")
             // slixmpp: the XMPP transport. Pure Python, built from an sdist.

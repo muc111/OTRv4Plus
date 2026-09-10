@@ -16,11 +16,16 @@
 #
 # HOW TO READ A RUN
 # -----------------
-# The jobs are deliberately independent and ordered by how much they prove, so
-# a first red run still answers something.  `configure` failing means the build
-# files are wrong; `configure` green and `rust` red means the cross-compile
-# needs work, not the Gradle setup.  Each job says in its own name what its
-# success would establish.
+# The jobs are ordered by how much they prove, and kept independent wherever
+# they genuinely are, so a first red run still answers something.  `configure`
+# failing means the build files are wrong; `configure` green and `rust` red
+# means the cross-compile needs work, not the Gradle setup.  Each job says in
+# its own name what its success would establish.
+#
+# `configure` and `python-deps` depend on nothing.  `apk` and `kotlin-tests`
+# both wait on `rust`, because both build the debug variant and the debug
+# variant installs otrv4_core — the wheels have to exist first.  That is a real
+# dependency rather than a scheduling choice.
 
 name: Android
 
@@ -272,8 +277,17 @@ jobs:
           path: android/app/wheels
           merge-multiple: true
 
-      - name: Show the wheels the APK will embed
-        run: ls -l android/app/wheels
+      - name: The wheels must be here, or pip says something unhelpful
+        # Without them the failure is "Could not find a version that satisfies
+        # the requirement otrv4_core", several hundred lines into a Chaquopy
+        # log, which does not point at a missing artifact download.
+        run: |
+          set -euo pipefail
+          ls -l android/app/wheels || true
+          if ! ls android/app/wheels/*.whl >/dev/null 2>&1; then
+            echo "::error::no otrv4_core wheels were downloaded from the rust job; the app cannot be built without the Rust core"
+            exit 1
+          fi
 
       - uses: gradle/actions/setup-gradle@v4
 
@@ -295,12 +309,18 @@ jobs:
           if-no-files-found: warn
 
   # ---------------------------------------------------------------------------
-  # Proves: the Kotlin security layer still passes. Pure JVM, no SDK needed,
-  # so this is the one job that could always have run here.
+  # Proves: the Kotlin security layer still passes. The tests themselves are
+  # pure JVM -- AppLockManager, AttemptThrottle and LockState import nothing
+  # from Android -- but running them builds the debug variant, and the debug
+  # variant now installs otrv4_core. So this job needs the Rust wheels, and is
+  # no longer independent of `rust`. That is the honest wiring: the test task
+  # really does depend on the app building, and pretending otherwise only
+  # worked while the APK had no core in it.
   # ---------------------------------------------------------------------------
   kotlin-tests:
     name: Kotlin security-layer tests
     runs-on: ubuntu-latest
+    needs: [rust]
     steps:
       - uses: actions/checkout@v4
 
@@ -309,6 +329,27 @@ jobs:
           distribution: temurin
           java-version: "17"
 
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: otrv4_core-*
+          path: android/app/wheels
+          merge-multiple: true
+
+      - name: The wheels must be here, or pip says something unhelpful
+        # Without them the failure is "Could not find a version that satisfies
+        # the requirement otrv4_core", several hundred lines into a Chaquopy
+        # log, which does not point at a missing artifact download.
+        run: |
+          set -euo pipefail
+          ls -l android/app/wheels || true
+          if ! ls android/app/wheels/*.whl >/dev/null 2>&1; then
+            echo "::error::no otrv4_core wheels were downloaded from the rust job; the app cannot be built without the Rust core"
+            exit 1
+          fi
       - uses: gradle/actions/setup-gradle@v4
 
       - name: Accept SDK licences
