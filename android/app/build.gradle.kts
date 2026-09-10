@@ -37,17 +37,30 @@ android {
         }
     }
 
-    // Ship per-ABI APKs rather than one fat artifact carrying every CPython and
-    // every otrv4_core .so. With an embedded interpreter the difference is tens
-    // of megabytes per install.
-    splits {
-        abi {
-            isEnable = true
-            reset()
-            include("arm64-v8a", "x86_64")
-            isUniversalApk = false
-        }
-    }
+    // Per-ABI APK splits are OFF, and this is a forced choice rather than a
+    // preference.
+    //
+    // AGP refuses both at once:
+    //
+    //   Conflicting configuration : 'arm64-v8a,x86_64' in ndk abiFilters
+    //   cannot be present when splits abi filters are set : x86_64,arm64-v8a
+    //
+    // Found by the first CI run that ever configured this project. The two
+    // blocks named the same two ABIs, so nothing was ambiguous about the
+    // INTENT -- AGP simply will not take both.
+    //
+    // abiFilters wins because the two are not equally important. Splitting is
+    // a download-size optimisation: with an embedded interpreter it saves
+    // tens of megabytes per install, which matters and is recoverable later.
+    // abiFilters is the guard that keeps armeabi-v7a out of a build, and the
+    // reason for that guard is in the block below: the 32-bit build has never
+    // been exercised and the pqcrypto pin exists to avoid SIGILL. Trading a
+    // safety property for an install-size win is the wrong way round.
+    //
+    // Revisit in Phase 3, when armeabi-v7a is decided either way: at that
+    // point the ABI set is settled and splits can express it alone.
+    //
+    // splits { abi { ... } }  -- see above
 
     buildTypes {
         debug {

@@ -159,7 +159,13 @@ jobs:
           cp "chaquopy/jniLibs/${{ matrix.abi }}/libpython${{ env.PYTHON_VERSION }}.so" pylib/
           ln -sf "libpython${{ env.PYTHON_VERSION }}.so" "pylib/libpython3.so"
           ls -l pylib
-          echo "PYO3_CROSS_LIB_DIR=$PWD/pylib" >> "$GITHUB_ENV"
+          # NOT PYO3_CROSS_LIB_DIR. That names a complete Python lib/
+          # directory and PyO3 looks in it for _sysconfigdata*.py, which a
+          # jniLibs folder does not have:
+          #   Could not find _sysconfigdata*.py in .../pylib
+          # An abi3 build does not need sysconfigdata at all -- the stable
+          # ABI is what makes it unnecessary -- so it only wants the target
+          # version, and the linker only wants -L.
           echo "PYO3_CROSS_PYTHON_VERSION=${{ env.PYTHON_VERSION }}" >> "$GITHUB_ENV"
           echo "RUSTFLAGS=-L native=$PWD/pylib" >> "$GITHUB_ENV"
 
