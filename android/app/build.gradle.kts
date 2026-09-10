@@ -264,6 +264,28 @@ val syncPythonSources by tasks.registering(Copy::class) {
 
 tasks.named("preBuild") { dependsOn(syncPythonSources) }
 
+// preBuild is not enough, and the reason is worth writing down because the
+// symptom appears nowhere near the cause:
+//
+//   Task ':app:mergeDebugPythonSources' uses this output of task
+//   ':app:syncPythonSources' without declaring an explicit or implicit
+//   dependency.
+//
+// syncPythonSources WRITES src/main/python; Chaquopy's merge*PythonSources
+// READS it as a source directory. Gradle 8 requires an edge between those two
+// tasks specifically -- ordering them both after preBuild says nothing about
+// their order relative to each other, so Gradle refuses to guess and fails the
+// build. Without the edge the tasks could legitimately run in either order,
+// and the losing order packages an empty source set: an APK that builds
+// cleanly and has no Python in it.
+//
+// Matched by name rather than by variant because there is one per build type
+// (mergeDebugPythonSources, mergeReleasePythonSources), and Chaquopy registers
+// them from the variant API after this script is evaluated -- tasks.matching
+// is a live view, so configureEach still reaches them.
+tasks.matching { it.name.matches(Regex("merge[A-Z]\\w*PythonSources")) }
+    .configureEach { dependsOn(syncPythonSources) }
+
 dependencies {
     val composeBom = platform("androidx.compose:compose-bom:2024.10.01")
     implementation(composeBom)
