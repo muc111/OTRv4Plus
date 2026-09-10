@@ -221,9 +221,75 @@ retain sensitive data in the small-object arenas.
 - `aes-gcm` 0.10, `sha3` 0.10, `zeroize`, `subtle` — AEAD, hashing, wiping,
   constant-time comparison.
 
+- `pyo3` 0.29 — the Python/Rust boundary itself. See the upgrade procedure
+  below; this one does not get bumped casually.
+
 Run `cargo audit` (`cargo install cargo-audit`) on-device for the authoritative
 CVE check against the live RustSec database. `cargo update -p dashmap --precise
 5.5.3` is recommended.
+
+### Upgrading PyO3
+
+PyO3 is the boundary between the Python client and the Rust cryptographic core,
+so an upgrade can change object ownership, conversions, lifetimes or exception
+behaviour without changing a line of our code. **A dependency upgrade is not
+complete until the whole boundary has been rebuilt and re-tested. Never resolve
+an advisory by changing only `Cargo.lock`.**
+
+The order, and none of it is optional:
+
+```bash
+# 1. audit — what is actually resolved, not what the manifest asks for
+grep -A2 'name = "pyo3"' Rust/Cargo.lock
+
+# 2. bump the manifest, then the lock
+#    (edit Rust/Cargo.toml, then:)
+cd Rust && cargo update -p pyo3
+
+# 3. read the whole dependency diff.  New crates?  Downgrades forced by
+#    resolution?  Check the new MSRV against `rust-version` in Cargo.toml,
+#    and that the abi3-pyXX feature you rely on still exists.
+git diff Rust/Cargo.lock
+
+# 4. build and test the Rust side
+cargo check --all-targets && cargo clippy --all-targets && cargo test
+
+# 5. rebuild the artifact Python actually loads — the source tree passing
+#    proves nothing about the .so
+cargo build --release --features extension-module
+cp target/release/libotrv4_core.so ../otrv4_core.so
+
+# 6. regenerate NOTICE: the attribution list is derived from the graph
+python3 tools/generate_notice.py > NOTICE
+
+# 7. the boundary tests, then everything else
+python3.12 -m pytest tests/test_pyo3_boundary.py tests/test_dependency_advisories.py -q
+python3.12 -m pytest tests/ -q
+```
+
+If the advisory turns out not to apply, **document why** in `SECURITY.md` rather
+than ignoring it — see the GHSA-36hh-v3qg-5jq4 entry for the shape: which
+versions, whether the vulnerable path was reachable and on what evidence, the
+exact dependency change, and whether the API needed compatibility changes.
+
+### IRC buffer management
+
+Two rules for anything touching `ChatPanel` or the panel manager:
+
+1. **Nothing accumulates without a ceiling.** `ChatPanel.MAX_HISTORY` bounds
+   retained messages; a new buffer needs its own bound or it becomes the next
+   unbounded one.
+2. **Every connection boundary purges.** `_purge_scrollback()` is the single
+   place this happens — disconnect, reconnect, `/quit`, process exit. Add a new
+   way for the client to lose its connection and you must add the call;
+   `tests/test_irc_history_privacy.py` asserts the existing three call sites so
+   they cannot be edited away, but it cannot know about a fourth.
+
+Be accurate about zeroization in comments and docs. A Python `str` cannot be
+wiped — it is immutable and may be interned — so "zeroized" is the wrong word
+for a chat buffer and `tests/security_invariants.py` records INV-24 as
+`PARTIAL` for exactly that reason. Anything that genuinely must be destroyed
+belongs in Rust behind `zeroize()`, not in a panel.
 
 ---
 

@@ -3,10 +3,10 @@
 </p>
 
 <h1 align="center">OTRv4+</h1>
-<p align="center"><strong>Post-quantum hybrid encryption for Off The Record (OTR) chat <em>and voice calls</em> over IRC and XMPP. Experimental, unaudited research prototype.</strong></p>
+<p align="center"><strong>Post-quantum hybrid encryption for Off The Record (OTR) chat <em>and voice calls</em> over IRC and XMPP. Two command-line clients, no GUI. Experimental, unaudited research prototype.</strong></p>
 
 <p align="center">
-<code>v10.18.6 · Rust crypto core · chat (X448 + ML-KEM-1024, AES-256-GCM) · hybrid PQC SMP (ML-KEM-1024 + ML-DSA-87 + ZKP) · voice (X448 + ML-KEM-1024, AES-256-GCM) · I2P SAM · AAudio · TUI</code>
+<code>v10.30.0 · Rust crypto core · chat (X448 + ML-KEM-1024, AES-256-GCM) · hybrid PQC SMP (ML-KEM-1024 + ML-DSA-87 + ZKP) · voice (X448 + ML-KEM-1024, AES-256-GCM) · I2P SAM · AAudio · TUI</code>
 </p>
 
 ---
@@ -17,13 +17,29 @@
   <img src="example.png" width="680" alt="OTRv4+ TUI, encrypted session with SMP verified">
 </p>
 
-<p align="center"><em>Full OTRv4 DAKE + SMP verification with a hybrid PQC layer (ML-KEM-1024 + ML-DSA-87 + classical ZKP). Blue 🔵 = identity confirmed. Tested live on both Libera.chat TLS and irc.postman.i2p I2P SAM, and over XMPP with the same Rust crypto core.<br>Ctrl+P or Ctrl+S to pause and scroll back. Type <code>/tui</code> to toggle pinned chrome.</em></p>
+<p align="center"><em>The IRC client. Full OTRv4 DAKE + SMP verification with a hybrid PQC layer (ML-KEM-1024 + ML-DSA-87 + classical ZKP). Blue 🔵 = identity confirmed. Tested live on both Libera.chat TLS and irc.postman.i2p I2P SAM.<br>Ctrl+P or Ctrl+S to pause and scroll back. Type <code>/tui</code> to toggle pinned chrome.</em></p>
+
+### The XMPP client
+
+<p align="center">
+  <img src="xmpp-verify.png" width="420" alt="OTRv4+ XMPP client: device provisioning, DAKE, and SMP verified">
+</p>
+
+<p align="center"><em>Provisioning checks the packages, the microphone, the I2P SAM bridge and the Rust ratchet before it will start, then <code>/otr</code> and <code>/smp</code>. The passphrase prompt is a hidden read — it never reaches the scrollback. Same Rust crypto core as the IRC client.</em></p>
+
+<p align="center">
+  <img src="xmpp-call-sendfile.png" width="420" alt="OTRv4+ XMPP client: encrypted voice call and file transfer after SMP verification">
+</p>
+
+<p align="center"><em>The same session continuing into <code>/call</code> and <code>/sendfile</code>. Voice is Opus 16 kHz over I2P datagrams with constant-rate shaping, so packet size and timing carry no speech information; <code>/hangup</code> reports what was sent, what was dropped, and that every media key was zeroized. File transfer runs inside the established OTR session and waits for the peer to accept.</em></p>
+
+<p align="center"><em><strong>Both clients are terminal programs.</strong> There is no GUI: they run in a shell — Termux on Android, or any terminal on desktop — and everything above is the client's own output.</em></p>
 
 ---
 
 ## What this is
 
-OTRv4+ is an IRC and XMPP client that implements OTRv4 with a post-quantum hybrid layer added at each stage of the protocol, including the SMP identity-verification step and, as of v10.11.0, encrypted voice calls carried over I2P — which as of v10.12.0 detect, diagnose and recover from a media path that stops. It runs on Termux (Android) over I2P, Tor, or TLS clearnet, with a Rust crypto core wrapped by a thin Python orchestration layer.
+OTRv4+ is a pair of command-line clients — one for IRC, one for XMPP — that implement OTRv4 with a post-quantum hybrid layer added at each stage of the protocol, including the SMP identity-verification step and, as of v10.11.0, encrypted voice calls carried over I2P — which as of v10.12.0 detect, diagnose and recover from a media path that stops. It runs on Termux (Android) over I2P, Tor, or TLS clearnet, with a Rust crypto core wrapped by a thin Python orchestration layer.
 
 Hybrid classical + post-quantum cryptography: X448 with ML-KEM-1024 for key
 agreement, Ed448 with ML-DSA-87 for authentication, keying established
@@ -718,23 +734,37 @@ are colour-banded so a reading is a verdict rather than a number to interpret:
 
 | Colour | Mouth-to-ear | Meaning |
 |---|---|---|
-| green | ≤ 400 ms | ITU-T G.114's "acceptable for most user applications" |
-| yellow | ≤ 800 ms | noticeable delay, still conversational |
-| red | > 800 ms | talk-over territory |
+| green | ≤ 1000 ms | at or near the floor this path can reach — as good as I2P gets |
+| yellow | ≤ 1500 ms | noticeably worse than the floor; still a conversation, with the pauses of a satellite call |
+| red | > 1500 ms | turn-taking breaks down |
 
-Over three I2P hops in each direction a healthy call reads **red**: the
-measured median mouth-to-ear on this path is about **917 ms**. That is above
-G.114's 400 ms and above the 800 ms band, and the readout says so rather than
-being recalibrated until it looks acceptable. It is the price of the anonymity
-configuration, not a fault in the codec — Opus is not the bottleneck (see
-[OPUS_AUDIT.md](OPUS_AUDIT.md)), and the playout path contributes a p50 of
-about 93 ms during degraded periods. Do not read this figure as ordinary
-low-latency VoIP performance; it is a measurement of a three-hop-each-way
-anonymising network. Reducing it is open work, and reducing the hop count is
-not on the table. Retune without touching
-code via `OTRV4PLUS_M2E_GOOD_MS` and `OTRV4PLUS_M2E_WARN_MS`; `NO_COLOR`
-disables the banding, and it is suppressed automatically when stdout is not a
-terminal, so a redirected transcript stays plain.
+**These are I2P numbers, not telephone-network numbers.** ITU-T G.114 puts
+one-way delay under 400 ms in the "acceptable for most user applications"
+range, and until v10.28.1 those were the bands used here. G.114 is a standard
+about *terrestrial* telephony, where propagation is nearly free and 400 ms
+means something has gone wrong; it explicitly carves out links with
+unavoidable long propagation — a geostationary satellite hop is about
+250–280 ms each way — as outside its range and in daily use anyway.
+
+A call here crosses three garlic-routed I2P hops in each direction plus the
+jitter buffer that absorbs each hop's variance. The measured median
+mouth-to-ear on this path is about **917 ms**, and a live two-handset call at
+**914 ms** delivered 96.5% of its audio and was completed by both people.
+Under the old bands that call was reported red, "quality was poor" — a scale
+that calls its own transport's median a fault is not strict, it is broken, and
+it spends the colour reserved for *something is wrong* on the ordinary case.
+
+The figure itself has not moved and is not being flattered: ~917 ms is the
+price of the anonymity configuration, not a fault in the codec — Opus is not
+the bottleneck (see [OPUS_AUDIT.md](OPUS_AUDIT.md)), and the playout path
+contributes a p50 of about 93 ms during degraded periods. Do not read it as
+ordinary low-latency VoIP performance. Reducing it is open work; reducing the
+hop count is not on the table.
+
+For a LAN or clearnet deployment, G.114's strict scale is one variable away:
+`OTRV4PLUS_M2E_GOOD_MS=400 OTRV4PLUS_M2E_WARN_MS=800`. `NO_COLOR` disables the
+banding, and it is suppressed automatically when stdout is not a terminal, so
+a redirected transcript stays plain.
 
 ### When the media path stops
 

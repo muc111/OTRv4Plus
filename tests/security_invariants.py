@@ -96,14 +96,27 @@ INVARIANTS: Tuple[Invariant, ...] = (
                   "but can never capture arbitrary local input.",
         status="ENFORCED",
         tests=("test_no_remote_input_capture.py",
-               "test_smp_guided_flow.py"),
+               "test_smp_guided_flow.py",
+               "test_irc_guided_smp.py",
+               "test_irc_smp_command_routing.py"),
         rationale="A peer's SMP1 moves otrv4plus_smpflow.SmpFlow to "
                   "AWAITING_LOCAL_CONSENT and no further.  The only edges "
                   "into AWAITING_SECRET -- the state in which a typed line "
                   "is read as a passphrase -- are local_secret_needed (the "
                   "user typed /smp) and local_consent (the user typed y).  "
                   "A chat message typed at a consent prompt is not y, so it "
-                  "is sent as a message.",
+                  "is sent as a message.  BOTH clients since v10.23.0: the "
+                  "IRC client now uses the same SmpFlow rather than a second "
+                  "implementation, and test_irc_guided_smp.py walks "
+                  "otrv4+.py's inbound call graph for any path reaching "
+                  "_arm_secret_prompt -- the coverage SMP_UX_AUDIT.md asked "
+                  "for and which was missing while otrv4plus_xmpp.py alone "
+                  "was walked.  Since v10.23.2 the coverage also enters "
+                  "through handle_command on the class the program actually "
+                  "instantiates: v10.23.0 put the guided flow in a base-class "
+                  "dispatcher that the subclass shadows, so the masked prompt "
+                  "was unreachable for a whole release while every stub-level "
+                  "assertion about it passed.",
     ),
     Invariant(
         id="INV-07",
@@ -151,9 +164,11 @@ INVARIANTS: Tuple[Invariant, ...] = (
         id="INV-11",
         statement="TOFU never silently re-pins a changed fingerprint.",
         status="ENFORCED",
-        tests=("test_identity_and_tofu.py",),
+        tests=("test_identity_and_tofu.py",
+               "test_irc_nick_session_diagnostic.py"),
         rationale="The mismatch branch keeps the old pin, offers no y/n, "
-                  "refuses voice, and requires an explicit /trust-reset.",
+                  "refuses voice, and requires an explicit /trust-reset.  "
+                  'Since v10.24.1 the nick-versus-identity boundary is asserted too: an OTR session is never re-keyed onto a new IRC nick, not even when the server authoritatively reports the rename.  Following a rename would mean encrypting to whoever holds a name now, and with sessions surviving a transport reconnect since v10.24.0 that is the one mistake that would turn a preserved session into a leak.  The old nick keeps the session, the new nick needs a new DAKE, and the user is told rather than left with a silent plaintext tab.',
     ),
     Invariant(
         id="INV-12",
@@ -291,6 +306,101 @@ INVARIANTS: Tuple[Invariant, ...] = (
                   "by atomic rename only after the chunk tags, both hashes "
                   "and the on-disk size all verify; any failure deletes the "
                   "temporary file and drops the transfer.",
+    ),
+    Invariant(
+        id="INV-23",
+        statement="Every Rust dependency on the Python/Rust boundary is "
+                  "checked against known advisories, and the compiled "
+                  "artifact is what gets verified.",
+        status="PARTIAL",
+        tests=("test_dependency_advisories.py", "test_pyo3_boundary.py"),
+        rationale="PyO3 is the boundary itself, so an advisory against it "
+                  "is an advisory against the boundary.  Cargo.lock is "
+                  "asserted at or above the fixed release AND the "
+                  "vulnerable code is asserted unreachable, because either "
+                  "alone rots: a version check hides that the reachability "
+                  "analysis has expired, and a reachability check leaves us "
+                  "on a known-vulnerable release.  test_pyo3_boundary.py "
+                  "then drives the installed extension module, not the "
+                  "source tree, so a conversion regression introduced by an "
+                  "upgrade is caught in the artifact that ships.",
+        limits="The advisory list is not fetched automatically; "
+               "GHSA-36hh-v3qg-5jq4 is pinned by name and a new advisory "
+               "needs a human to add it.  What the tests do enforce is "
+               "that a remediated advisory cannot silently regress.",
+    ),
+    Invariant(
+        id="INV-24",
+        statement="No IRC message survives the connection it arrived on.",
+        status="PARTIAL",
+        tests=("test_irc_history_privacy.py",
+               "test_irc_reconnect_preserves_otr.py"),
+        rationale="Panel history is capped at 1000 messages and emptied at "
+                  "every boundary between one connection and the next -- "
+                  "disconnect, reconnect, /quit, process exit -- along with "
+                  "the unread counters, the recent-user sets and the "
+                  "terminal's own saved scrollback.  On I2P the point of a "
+                  "new session is that it is not linkable to the previous "
+                  "one; replaying the old conversation into the new one "
+                  "links them on screen whatever the transport did.  " + """Since v10.24.0 this covers the DISPLAY only.  The reconnect path no longer zeroizes the ratchet or clears session_manager.sessions: an I2P SAM tunnel dropping is a transport event, not a security boundary, and treating it as one meant a blip destroyed every encrypted conversation and forced a restart.  The cryptographic state now survives a reconnect exactly as it always has in the XMPP client; the conversation on screen still does not.  /quit, shutdown and process exit remain real boundaries and still tear everything down.""",
+        limits="A Python str is immutable and may be interned, so the "
+               "purge drops the last reference rather than overwriting the "
+               "characters: the bytes remain in freed heap until the "
+               "allocator reuses them.  Unfixable for chat text while the "
+               "UI is Python-side.  Material that must actually be "
+               "destroyed is not kept here at all -- it lives in Rust "
+               "behind zeroize().  See INV-02 for the same limit on "
+               "passwords.",
+    ),
+    Invariant(
+        id="INV-25",
+        statement="The Monero-facing features are couriers, not wallets: no "
+                  "Monero key material exists in the client process, and no "
+                  "peer's data is written to disk.",
+        status="ENFORCED",
+        tests=("test_trade_courier.py", "test_tip_address_relay.py"),
+        rationale="otrv4plus_trade.py relays opaque base64 between two "
+                  "wallets it does not run.  It opens no wallet file, reads "
+                  "no seed or spend or view key, derives no address and "
+                  "signs nothing -- a blob is checked for base64 alphabet "
+                  "and length and passed through verbatim, never parsed.  "
+                  "Its import list is asserted exactly (base64, hashlib, re, "
+                  "secrets, time, typing), so it cannot reach a daemon or a "
+                  "wallet at all, and its identifiers are walked for any "
+                  "key-, network- or wallet-shaped name.  State is in memory "
+                  "only and cleared on disconnect, /quit and process exit.  "
+                  "This is INV-08 in its strongest form: the keys do not "
+                  "cross the PyO3 boundary because they never enter the "
+                  "process.  otrv4plus_tip.py carries the same properties "
+                  "for a single address string: its import list is asserted "
+                  "exactly (json, os, re, tempfile, time, typing), it never "
+                  "validates the address -- an opinion about Monero's "
+                  "address format is one that starts rejecting valid "
+                  "addresses at a hard fork -- and a peer's address is held "
+                  "in memory only, never written to the store that holds "
+                  "your own.",
+    ),
+    Invariant(
+        id="INV-26",
+        statement="No Monero-facing exchange happens with an unverified or "
+                  "changed peer, in either direction.",
+        status="ENFORCED",
+        tests=("test_trade_courier.py", "test_tip_address_relay.py"),
+        rationale="is_smp_verified(peer) is checked on EVERY trade message "
+                  "in both directions, not once when the trade opens -- "
+                  "otherwise a trade agreed at 09:00 and still running at "
+                  "14:00 spans five hours in which a session teardown goes "
+                  "unnoticed while blobs keep flowing.  Fail-closed like "
+                  "INV-12: a predicate that raises counts as unverified.  "
+                  "The peer's fingerprint is bound when the trade opens and "
+                  "re-checked with it; a change cancels the trade and never "
+                  "re-pins, matching INV-11.  Binding is to the fingerprint "
+                  "and never to the I2P destination, which is TRANSIENT and "
+                  "changes every session by design.  /tip applies the same "
+                  "gate before either branch of its TLV handler: a RESPONSE "
+                  "matters at least as much as a request, because it is a "
+                  "string the client is about to show the user as somewhere "
+                  "to send money.",
     ),
 )
 

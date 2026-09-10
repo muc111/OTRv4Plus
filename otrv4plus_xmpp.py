@@ -2,7 +2,7 @@
 """
 OTRv4+ XMPP - full OTR + SMP over XMPP, transported over I2P SAM
 ================================================================
-Version: 10.18.6
+Version: 10.23.0
 
 
 Post-quantum OTRv4+ end-to-end encryption over XMPP, reusing the IRC client's
@@ -237,7 +237,7 @@ def voice_available() -> "tuple[bool, str]":
             "no audio backend: libaaudio.so unavailable and parec/pacat "
             "missing  (run /audioprobe for details)")
 
-XMPP_VERSION = "10.18.6"
+XMPP_VERSION = "10.30.0"
 
 # ---------------------------------------------------------------------------
 # XMPP-private state directory
@@ -318,6 +318,62 @@ def _xmpp_otr_config():
 
 
 OTR_MODULE = "otrv4plus"  # symlink -> otrv4+.py
+
+# Module name -> the pip distribution that supplies it.  These differ often
+# enough to send people the wrong way: `socks` comes from PySocks, and the
+# PyPI project literally named `socks` is an empty placeholder that installs
+# nothing, so "pip install socks" succeeds and changes nothing.
+_PIP_NAME_FOR_MODULE = {
+    "socks": "PySocks",
+    "argon2": "argon2-cffi",
+    "opuslib": "opuslib",
+    "Crypto": "pycryptodome",
+    "cryptography": "cryptography",
+}
+
+
+def _import_failure_advice(exc):
+    """What to tell the user about a failed engine import.
+
+    The old text always blamed file placement -- "ensure otrv4+.py, the
+    symlink and otrv4_core.so are in this directory" -- no matter what
+    actually went wrong.  For a missing third-party module that is simply
+    false, and it sent at least one tester chasing files that were all
+    present and correct.  Split the two cases.
+    """
+    missing = getattr(exc, "name", None) if isinstance(exc, ImportError) else None
+
+    # A missing dependency of the engine, not the engine itself.
+    if missing and missing not in (OTR_MODULE, "otrv4_core"):
+        top = missing.split(".")[0]
+        pkg = _PIP_NAME_FOR_MODULE.get(top, top)
+        lines = [
+            f"'{OTR_MODULE}' is present but one of its dependencies is not: "
+            f"the module '{missing}' is missing.",
+            f"    pip install {pkg}",
+        ]
+        if pkg.lower() != top.lower():
+            lines.append(
+                f"(The module is '{top}'; the distribution that provides it "
+                f"is '{pkg}'. They are not the same name, and installing a "
+                f"package called '{top}' will not fix this.)"
+            )
+        return lines
+
+    if missing == "otrv4_core":
+        return [
+            "The Rust core is missing. Build it and copy the shared library "
+            "next to this script:",
+            "    cd Rust && cargo build --release --features extension-module",
+            "    cp target/release/libotrv4_core.so ../otrv4_core.so",
+        ]
+
+    return [
+        "Ensure otrv4+.py, the otrv4plus.py symlink, and otrv4_core.so are "
+        "in this directory.",
+    ]
+
+
 try:
     _otr = __import__(OTR_MODULE)
     EnhancedSessionManager = _otr.EnhancedSessionManager
@@ -326,11 +382,8 @@ try:
     I2PSAMConnection = getattr(_otr, "I2PSAMConnection", None)
 except Exception as e:
     print(f"Could not import OTR engine from '{OTR_MODULE}': {e}", file=sys.stderr)
-    print(
-        "Ensure otrv4+.py, the otrv4plus.py symlink, and otrv4_core.so are "
-        "in this directory.",
-        file=sys.stderr,
-    )
+    for _line in _import_failure_advice(e):
+        print(_line, file=sys.stderr)
     sys.exit(1)
 
 
@@ -360,6 +413,38 @@ _colorize = getattr(_otr, "colorize", lambda s, c: s)
 #: The emoji keeps its own colour whatever the terminal does -- ANSI cannot
 #: recolour a glyph the font draws -- so the blue is on the text of the tag.
 _SMP = "\U0001f510 " + _colorize("[smp]", "blue")
+
+#: The prefix on an incoming chat line, and it is a security claim, so the two
+#: states have to look different at a glance.
+#:
+#: \U0001f510 CLOSED LOCK WITH KEY, blue  -- encrypted AND SMP-verified
+#: \U0001f512 CLOSED LOCK, yellow         -- encrypted, identity NOT verified
+#:
+#: Both are accurate: an unverified session really is encrypted, so a padlock
+#: is not a lie there -- what it must not do is look like the verified one.
+#: The glyph differs (key or no key) and the colour differs, because either
+#: signal alone is weak: emoji are small on a handset and colour is invisible
+#: to some readers.
+#:
+#: The colours are the project's own, from UIConstants.SECURITY_ICONS and the
+#: level->colour tables in otrv4+.py: \U0001f7e1 yellow is ENCRYPTED and
+#: \U0001f535 blue is SMP_VERIFIED.  This prefix used to be GREEN for
+#: SMP-verified, which contradicted that table -- green there is
+#: FINGERPRINT, i.e. pinned but NOT SMP-verified.  A user reading the tab
+#: bar and the message prefix was being told two different things by the
+#: same colour.
+#:
+#: Both glyphs are already in `_LOG_MARKERS`, so `_strip_log_markers` removes
+#: them before `_LOG_CONTENT_RE` runs and a prefixed line is still redacted to
+#: `<message body redacted: N chars>` (INV-03).  Adding a prefix that was NOT
+#: in that tuple would have quietly disabled message-body redaction.
+_OTR_VERIFIED = "\U0001f510 " + _colorize("[otr]", "blue")
+_OTR_ENCRYPTED = "\U0001f512 " + _colorize("[otr]", "bold_yellow")
+
+
+def _otr_prefix(smp_verified: bool) -> str:
+    """The chat-line prefix for a peer whose SMP state is `smp_verified`."""
+    return _OTR_VERIFIED if smp_verified else _OTR_ENCRYPTED
 _EOF_SENTINEL = getattr(_otr, "_EOF_SENTINEL", object())
 _TUI_AVAILABLE = all(
     x is not None
@@ -418,7 +503,18 @@ def _sanitise(text, max_len: int = 1024) -> str:
 #: Message-content lines.  The prefix is kept, the body is not: knowing that
 #: a message arrived from a peer at a time is the diagnostic value; the words
 #: are the thing being protected.
-_LOG_CONTENT_RE = re.compile(r"^(\[(?:otr|plain)\] <[^>]*>)\s(.*)$", re.DOTALL)
+#: `[otr] alice@host: body` and the older `[otr] <alice@host> body`.
+#:
+#: Both shapes are matched because the display moved from the second to the
+#: first in v10.27.0 and this is the allowlist that keeps message bodies off
+#: disk (INV-03).  A pattern that knew only the old shape would not have
+#: LEAKED -- `_log_line_for_file` falls through to "<unlogged line: N chars>"
+#: for anything it cannot classify -- but it would have thrown the sender away
+#: with the body, and a transcript that cannot say who spoke is most of the
+#: way to useless.  The old alternative stays because other paths may still
+#: print it, and dropping it would silently downgrade those to unlogged.
+_LOG_CONTENT_RE = re.compile(
+    r"^(\[(?:otr|plain)\] (?:<[^>]*>|[^\s:]+:))\s(.*)$", re.DOTALL)
 
 #: Tags whose lines are wholly diagnostic and carry no user or key material.
 #: Adding one is a deliberate act: whatever that subsystem prints becomes
@@ -498,7 +594,142 @@ def _log_to_file(msg):
         pass
 
 
+#: `[tag]` -> the colour it is drawn in.
+#:
+#: Nearly every line this client prints is `[tag] free text`, and until now
+#: every one of those tags was the same colourless grey as the sentence after
+#: it.  On a handset that is a wall: a fingerprint-change warning and a
+#: keepalive tick look identical until you have read both.  Asked for from
+#: the device -- "colour coding to improve the layout".
+#:
+#: The grouping is by what the line MEANS to a reader, not by which module
+#: emitted it:
+#:
+#:   red      something failed or is refusing to proceed
+#:   yellow   attention: the transport wobbled, or trust needs a decision
+#:   cyan     things the user asked for -- transfers, trades, tips
+#:   magenta  the call subsystem
+#:   grey     plumbing that is working: I2P, SAM, presence, the log itself
+#:
+#: `[otr]` and `[smp]` are absent deliberately.  Those two already carry
+#: their own padlock-and-colour prefixes, built above, and a second colour
+#: applied here would fight them.
+_TAG_COLOURS = {
+    "fatal": "bold_red",
+    "auth failed": "bold_red",
+    "rate-limit": "red",
+
+    "trust": "bold_yellow",
+    # Admin is the one surface that is NOT end-to-end encrypted and the one
+    # that can delete an account, so it is coloured for attention rather than
+    # grouped with the cyan things the user merely asked for.
+    "admin": "bold_yellow",
+    "reconnect": "yellow",
+    "keepalive": "yellow",
+    "auth": "yellow",
+
+    "file": "cyan",
+    "trade": "cyan",
+    "tip": "cyan",
+    "roster": "cyan",
+
+    "voice": "magenta",
+    "audio": "magenta",
+
+    "i2p": "grey",
+    "tor": "grey",
+    "log": "grey",
+    "tui": "grey",
+    "ping": "grey",
+    "presence": "grey",
+    "identity": "grey",
+}
+
+#: `[tag]` at the very start of a line, with nothing before it.
+#:
+#: The anchor is the whole design.  `re.search` here would colour the `[otr]`
+#: inside "use [otr] to start a session", and an lstrip() before the match
+#: would colour the indented continuation lines of a multi-line report --
+#: repeating the heading's mark down the block.  Matched against the raw
+#: line, from position zero, so only a line whose SUBJECT is the tag is
+#: touched.
+_TAG_AT_START_RE = re.compile(r"^\[([a-z0-9 _-]{1,16})\]")
+
+
+def _colour_tag(msg: str) -> str:
+    """Colour a leading `[tag]`, and nothing else on the line.
+
+    Display only.  This runs AFTER the line has been handed to the session
+    log and the channel log, so nothing coloured is ever what gets written --
+    INV-03's redaction reasons about shapes, and it should not have to
+    reason about escape sequences as well.
+
+    The client's existing palette is safe from this by construction rather
+    than by a guard: the chat transcript and the SMP prompts begin with a
+    padlock glyph or an escape sequence, so the anchored pattern never
+    matches them.  The one shape that does reach here already carrying
+    colour is the voice call summary, whose mouth-to-ear reading is coloured
+    by its band -- and a magenta `[voice]` in front of that is exactly what
+    the rest of the call's output has.
+    """
+    try:
+        if not msg:
+            return msg
+        m = _TAG_AT_START_RE.match(msg)
+        if not m:
+            return msg
+        colour = _TAG_COLOURS.get(m.group(1).strip().lower())
+        if not colour:
+            return msg
+        return _colorize(m.group(0), colour) + msg[m.end():]
+    except Exception:
+        return msg
+
+
+#: Monotonic count of lines this module has printed.
+#:
+#: Used by the plain-mode echo below to tell "nothing has been printed since
+#: the user pressed Enter" from "an inbound message arrived in between". The
+#: first case can safely rewrite the line the terminal echoed; the second
+#: must not, because the line above the cursor is no longer the user's input.
+_PRINT_SEQ = 0
+
+
+def _terminal_cols():
+    """Width of the terminal, or None if stdout is not one we can measure.
+
+    One seam rather than two checks at the call site, because everything that
+    depends on this is destructive: the caller uses it to decide how many
+    rows to move the cursor up, and "not a terminal" and "a terminal of
+    unknown width" have to fail exactly the same way -- by not moving it.
+    """
+    try:
+        if not sys.stdout.isatty():
+            return None
+        cols = os.get_terminal_size().columns
+        return cols if cols and cols > 0 else None
+    except Exception:
+        return None
+
+
+def _raw_write(text):
+    """Write control text straight to the terminal, unlogged.
+
+    Deliberately not `print`: this carries cursor movement, not content.  It
+    must not reach the session transcript, must not advance `_PRINT_SEQ`
+    (which exists to detect that content was printed), and must not be
+    routed to a TUI panel.
+    """
+    try:
+        sys.stdout.write(text)
+        sys.stdout.flush()
+    except Exception:
+        pass
+
+
 def print(*args, **kwargs):  # noqa: A001 (intentional module-scope shadow)
+    global _PRINT_SEQ
+    _PRINT_SEQ += 1
     c = _ACTIVE_TUI_CLIENT
     sep = kwargs.get("sep", " ")
     msg = sep.join(str(a) for a in args)
@@ -512,13 +743,27 @@ def print(*args, **kwargs):  # noqa: A001 (intentional module-scope shadow)
             lc.channel_log.append(peer or "system", msg)
         except Exception:
             pass
+    # The TUI is handed the PLAIN line, deliberately.
+    #
+    # _tui_route_output decides which panel a line belongs to with
+    # `stripped.startswith("[keepalive]")` and the rest of _SYS_PREFIXES.  A
+    # coloured tag begins with an escape sequence, so every one of those
+    # tests would quietly fail and keepalive ticks would land in the peer's
+    # chat panel.  The panels apply their own palette anyway; this colouring
+    # is for the plain terminal, which is the default mode.
     if c is not None and getattr(c, "_tui_enabled", False):
         try:
             c._tui_route_output(msg)
             return
         except Exception:
             pass
-    builtins.print(*args, **kwargs)
+    # Colour goes on LAST, after both logs have taken the plain text.
+    shown = _colour_tag(msg)
+    if shown is msg:
+        builtins.print(*args, **kwargs)
+    else:
+        builtins.print(shown, **{k: v for k, v in kwargs.items()
+                                 if k != "sep"})
 
 
 try:
@@ -529,6 +774,7 @@ except ImportError:
     sys.exit(1)
 
 try:
+    import otrv4plus_admin as _admin
     from otrv4plus_log import ChannelLogManager as _ChannelLogManager
     _LOG_AVAILABLE = True
 except ImportError:
@@ -540,8 +786,12 @@ OTR_PREFIX = "?OTRv4 "
 OTR_PREFIX_B = b"?OTRv4 "
 
 # SMP passphrase length bounds enforced before passing to the Rust engine.
-SMP_MIN_LEN = 8
-SMP_MAX_LEN = 512
+# Defined in the engine (otrv4+.py) since v10.23.0 so both clients agree;
+# re-exported here because this module's own code and its tests refer to
+# them by these names. getattr with the old literals as the fallback keeps
+# this working against an engine that predates the move.
+SMP_MIN_LEN = getattr(_otr, "SMP_MIN_LEN", 8)
+SMP_MAX_LEN = getattr(_otr, "SMP_MAX_LEN", 512)
 
 # Rate limiting: max inbound messages per peer per window.
 _RATE_MAX = 20
@@ -1073,6 +1323,15 @@ _voice.bind_host(
 # v10.14.0: /sendfile.  XMPP only -- the IRC client has no file transfer and
 # does not import this module.
 import otrv4plus_filetransfer as _filetransfer
+import otrv4plus_trade as _trade
+import otrv4plus_tip as _tip
+
+TipManager = _tip.TipManager
+TipError = _tip.TipError
+
+TRADE_PREFIX = _trade.TRADE_PREFIX
+TradeManager = _trade.TradeManager
+TradeError = _trade.TradeError
 
 FILE_PREFIX = _filetransfer.FILE_PREFIX
 FileTransferManager = _filetransfer.FileTransferManager
@@ -1238,9 +1497,24 @@ class OTRv4PlusXMPP(ClientXMPP):
         # Voice call manager (initialized lazily after event loop is available)
         self._voice_manager = None
         self._file_manager = None
+        self._trade_manager = None
+        self._trade_disclaimed = False
+        self._tip_manager = None
+        self._tip_disclaimed = False
         self._voice_sam_host = "127.0.0.1"
         self._voice_sam_port = 7656
         self._voice_debug = False
+        #: XEP-0133 admin form state. All four are cleared together by
+        #: _admin_reset; a half-open form would leave _admin_awaiting set and
+        #: swallow the next line typed, which INV-06 forbids.
+        self._admin_form = None        # otrv4plus_admin.AdminForm, or None
+        self._admin_node = None        # the command node being executed
+        self._admin_session = None     # the server's session id
+        self._admin_awaiting = False   # one-shot: next line is a field value
+        self._admin_warned = False     # the not-end-to-end notice, once
+        #: (print-count, text) of the line the terminal echoed in plain mode,
+        #: so our own attributed echo can replace it rather than repeat it.
+        self._plain_echo = None
 
         # Diagnostic verbosity is fixed HERE, before the engine exists. The
         # tracer prints protocol state transitions itself, so constructing it
@@ -1358,6 +1632,17 @@ class OTRv4PlusXMPP(ClientXMPP):
         # --- XEP plugins ---
         # XEP-0030: Service discovery (required base for many XEPs).
         self.register_plugin("xep_0030")
+        # XEP-0004 data forms and XEP-0050 ad-hoc commands: the two
+        # the XEP-0133 admin surface is built from. Registered
+        # unconditionally because they are pure protocol handlers --
+        # they cost nothing until /admin is typed, and a lazy
+        # registration would have to happen on the event loop.
+        self.register_plugin("xep_0004")
+        self.register_plugin("xep_0050")
+        # NOT xep_0133. Its plugin is thirty-two thin wrappers that each start
+        # an ad-hoc session, and this client drives xep_0050 directly so it
+        # can render the form itself. Registering it would be config that
+        # nothing reads.
         # XEP-0085: Chat state notifications.
         self.register_plugin("xep_0085")
         # XEP-0115: Entity capabilities (efficient feature advertisement).
@@ -1410,6 +1695,28 @@ class OTRv4PlusXMPP(ClientXMPP):
                 verified=self._file_peer_verified,
                 spawn=self._start_file_pump,
             )
+        if self._trade_manager is None:
+            # Same three dependencies the transfer engine takes, plus the
+            # fingerprint accessor. The courier holds no keys and speaks to
+            # no wallet, so there is nothing else to give it.
+            self._trade_manager = TradeManager(
+                send=self._send_trade_signal,
+                notify=print,
+                verified=self._file_peer_verified,
+                fingerprint=self._peer_fingerprint,
+            )
+        if self._tip_manager is None:
+            self._tip_manager = TipManager(
+                send=self._send_tip_tlv,
+                notify=print,
+                verified=self._file_peer_verified,
+                store_path=_xmpp_state_path("xmr.json"),
+            )
+            # The engine routes DISCONNECTED, SMP and EXTRA_SYMMETRIC_KEY
+            # itself; TIP is a feature, so it registers here and the session
+            # state machine stays out of it.
+            _otr.register_tlv_handler(_tip.TIP_TLV_TYPE,
+                                      self._tip_manager.handle_tlv)
         try:
             await self.get_roster()
         except (IqError, IqTimeout):
@@ -1874,6 +2181,11 @@ class OTRv4PlusXMPP(ClientXMPP):
         print("\n[disconnected]")
         if self._keepalive_task:
             self._keepalive_task.cancel()
+        # A trade belongs to the session it was agreed in. Carrying one across
+        # a reconnect would mean resuming a financial coordination against a
+        # peer whose fingerprint has not been re-checked and whose SMP state
+        # has been torn down with the session -- so it is dropped, loudly.
+        self._clear_trades("the session ended")
         # Our stream is what went away. Every peer will look unavailable for
         # the duration, and none of them has actually gone anywhere.
         self._clear_peer_gone("our transport dropped")
@@ -2339,7 +2651,7 @@ class OTRv4PlusXMPP(ClientXMPP):
                   "transfer is only accepted inside an OTR session"
                   % _sanitise(peer, 128))
         else:
-            print(f"[plain] <{_sanitise(peer, 128)}> {_sanitise(body)}")
+            print(f"[plain] {_sanitise(peer, 128)}: {_sanitise(body)}")
 
     def _check_smp_secret_required(self, peer):
         """Show the consent prompt if the engine is holding a peer's SMP1.
@@ -2480,18 +2792,31 @@ class OTRv4PlusXMPP(ClientXMPP):
                               "transfer subsystem was ready — ignoring")
                     return
 
+                # Trade coordination, routed for the same reason: a multisig
+                # blob rendered as chat is a screenful of base64 nobody can
+                # use, and it would land in the panel history as chat rather
+                # than as something the trade layer can account for.
+                if text.startswith(TRADE_PREFIX):
+                    if self._trade_manager is not None:
+                        self._trade_manager.handle_control(peer, text)
+                    else:
+                        print("[trade] trade signal received before the "
+                              "trade subsystem was ready — ignoring")
+                    return
+
                 smp_ok = (peer, "SUCCEEDED") in self._smp_reported
                 peer_s = _sanitise(peer, 128)
                 text_s = _sanitise(text)
-                if smp_ok:
-                    print(
-                        _colorize("[otr] ", "green")
-                        + _colorize(f"<{peer_s}>", "yellow")
-                        + " "
-                        + _colorize(text_s, "dark_blue")
-                    )
-                else:
-                    print(f"[otr] <{peer_s}> {text_s}")
+                # The prefix carries the security state; see `_otr_prefix`.
+                # The message body is _sanitise'd either way -- a peer's text
+                # is never printed raw, verified or not.
+                print(
+                    _otr_prefix(smp_ok)
+                    + " "
+                    + _colorize(peer_s + ":", "yellow")
+                    + " "
+                    + (_colorize(text_s, "dark_blue") if smp_ok else text_s)
+                )
 
         self._report_smp(peer)
         self._check_dake_complete(peer)
@@ -3437,6 +3762,216 @@ class OTRv4PlusXMPP(ClientXMPP):
         except Exception:
             return False
 
+    def _clear_trades(self, reason: str) -> int:
+        """Forget every trade. Returns how many there were.
+
+        Trade state is in memory only and never written to disk, so this is
+        the whole of it. Called on disconnect, /quit, and by the same
+        reasoning as the v10.19.0 scrollback purge (INV-24): what belonged to
+        one session must not appear in the next.
+        """
+        mgr = self._trade_manager
+        if mgr is None:
+            return 0
+        try:
+            count = mgr.clear()
+        except Exception:
+            count = 0
+        if count:
+            print("[trade] dropped %d open trade(s) — %s" % (count, reason))
+        # Peer addresses and unanswered tip requests belong to the session
+        # too. Your own configured address is deliberately NOT cleared: it is
+        # configuration, and it is on disk.
+        if self._tip_manager is not None:
+            try:
+                self._tip_manager.clear()
+            except Exception:
+                pass
+        return count
+
+    def _peer_fingerprint(self, peer: str):
+        """The peer's live fingerprint, or None.
+
+        What binds a trade to a counterparty. Deliberately not the JID and
+        deliberately not the I2P destination: destinations are TRANSIENT and
+        change every session, and a JID is a name anyone can present.
+        """
+        try:
+            getter = getattr(self.otr, "get_peer_fingerprint", None)
+            if getter is None:
+                return None
+            return getter(peer)
+        except Exception:
+            return None
+
+    def _send_trade_signal(self, peer: str, verb: str, payload: str) -> bool:
+        """One trade control message inside the OTR channel.
+
+        The same shape as `_send_file_signal`, and the same rule: if the
+        encrypted channel is unavailable the message is DROPPED, never
+        downgraded. A multisig blob sent in the clear would tell the server
+        who is coordinating a trade with whom, and would let an off-session
+        party inject a blob into someone's wallet.
+        """
+        body = TRADE_PREFIX + verb + ((":" + payload) if payload else "")
+        try:
+            frame, should_send = self.otr.handle_outgoing_message(peer, body)
+        except Exception as exc:
+            print("[trade] could not encrypt: %s" % _sanitise(str(exc), 120))
+            return False
+        if not (should_send and frame):
+            print("[trade] dropped — OTR channel unavailable (trade messages "
+                  "are never sent in the clear)")
+            return False
+        try:
+            self.send_otr_fragmented(
+                peer, frame if isinstance(frame, str) else frame.decode())
+        except Exception as exc:
+            print("[trade] send failed: %s" % _sanitise(str(exc), 120))
+            return False
+        return True
+
+    def _send_tip_tlv(self, peer: str, payload: bytes) -> bool:
+        """One TIP TLV inside the OTR channel.
+
+        `send_tlv` is fail-closed: it will not open a session, will not
+        queue, and will not fall back to plaintext, so a False here means
+        there was no encrypted session and nothing went on the wire.
+        """
+        try:
+            frame = self.otr.send_tlv(peer, _tip.TIP_TLV_TYPE, payload)
+        except Exception as exc:
+            print("[tip] could not encrypt: %s" % _sanitise(str(exc), 120))
+            return False
+        if not frame:
+            return False
+        try:
+            self.send_otr_fragmented(
+                peer, frame if isinstance(frame, str) else frame.decode())
+        except Exception as exc:
+            print("[tip] send failed: %s" % _sanitise(str(exc), 120))
+            return False
+        return True
+
+    def _cmd_setxmr(self, args: str) -> None:
+        """/setxmr <address> | clear — your own Monero address, persisted."""
+        mgr = self._tip_manager
+        if mgr is None:
+            print("[tip] the tip subsystem is not ready yet")
+            return
+        self._tip_disclaim()
+        args = (args or "").strip()
+        try:
+            if args.lower() == "clear":
+                mgr.forget_address()
+                print("[tip] address cleared — requests will no longer be "
+                      "answered automatically")
+                return
+            saved = mgr.set_address(args)
+            print("✅ [tip] XMR address saved: %s" % saved)
+            print("[tip] verified peers who /tip you now get it "
+                  "automatically. Stored 0600 in %s — your address next to "
+                  "your OTR identity links the two for anyone who reads that "
+                  "disk." % _xmpp_state_path("xmr.json"))
+        except TipError as exc:
+            print("[tip] %s" % exc)
+
+    def _cmd_tip(self, peer: str, args: str) -> None:
+        """/tip [amount [note]] — ask a verified peer where to send it."""
+        mgr = self._tip_manager
+        if mgr is None:
+            print("[tip] the tip subsystem is not ready yet")
+            return
+        self._tip_disclaim()
+        args = (args or "").strip()
+        try:
+            if not args:
+                for line in mgr.status():
+                    print(line)
+                return
+            if not peer:
+                print("[tip] no peer selected — /otr <jid> first")
+                return
+            amount, _, note = args.partition(" ")
+            mgr.request(peer, amount, note)
+        except TipError as exc:
+            print("[tip] %s" % exc)
+
+    def _cmd_tipreply(self, peer: str) -> None:
+        """/tipreply — answer a request that arrived before /setxmr.
+
+        The explicit local action that stands in for the interactive prompt
+        a peer must not be able to trigger (INV-06).
+        """
+        mgr = self._tip_manager
+        if mgr is None:
+            print("[tip] the tip subsystem is not ready yet")
+            return
+        if not peer:
+            print("[tip] no peer selected — /otr <jid> first")
+            return
+        try:
+            mgr.reply(peer)
+        except TipError as exc:
+            print("[tip] %s" % exc)
+
+    def _tip_disclaim(self) -> None:
+        if not self._tip_disclaimed:
+            print(_tip.DISCLAIMER)
+            self._tip_disclaimed = True
+
+    def _cmd_trade(self, peer: str, args: str) -> None:
+        """/trade [init <terms> | accept | decline | blob <b64> | confirm |
+        cancel] — the courier command surface.
+
+        Bare /trade shows status. Everything else needs an SMP-verified peer,
+        which the manager enforces on every call rather than here: a check in
+        the command handler protects only the commands, and inbound messages
+        do not come through here.
+        """
+        mgr = self._trade_manager
+        if mgr is None:
+            print("[trade] the trade subsystem is not ready yet")
+            return
+        if not self._trade_disclaimed:
+            print(_trade.DISCLAIMER)
+            self._trade_disclaimed = True
+
+        args = (args or "").strip()
+        sub, _, rest = args.partition(" ")
+        sub = sub.strip().lower()
+        rest = rest.strip()
+
+        try:
+            if not sub or sub == "status":
+                for line in mgr.status():
+                    print(line)
+                return
+            if not peer:
+                print("[trade] no peer selected — start a session with /otr "
+                      "<jid> first")
+                return
+            if sub == "init":
+                mgr.start(peer, rest)
+            elif sub == "accept":
+                mgr.accept(peer)
+            elif sub == "decline":
+                mgr.decline(peer, rest)
+            elif sub == "cancel":
+                mgr.cancel(peer, rest)
+            elif sub == "blob":
+                mgr.send_blob(peer, rest)
+            elif sub == "confirm":
+                mgr.confirm(peer, rest)
+            else:
+                print("[trade] unknown subcommand %s — try /trade, /trade "
+                      "init <terms>, accept, decline, blob <base64>, "
+                      "confirm, cancel" % _sanitise(sub, 32))
+        except TradeError as exc:
+            print("[trade] %s" % exc)
+        except Exception as exc:
+            print("[trade] failed: %s" % type(exc).__name__)
+
     def _file_transfer_ratchet(self, peer: str):
         """The peer's live RustDoubleRatchet, or None.
 
@@ -3778,6 +4313,20 @@ class OTRv4PlusXMPP(ClientXMPP):
             print(f"[otr] could not start DAKE with {peer} — try /otr again")
 
     def send_user_text(self, peer, text):
+        """Encrypt and send one typed line, and show it in the transcript.
+
+        Until v10.27.0 nothing was echoed here: a sent message produced no
+        output at all, so the session read as a monologue by the peer with
+        the user's own half missing entirely.  On a handset, where the typed
+        line scrolls away behind the next arriving message, there was no way
+        to read back who had said what.  The IRC client has always echoed
+        both sides; this brings XMPP level.
+
+        The echo goes out AFTER the send, and only when the engine actually
+        produced ciphertext.  The line carries the same padlock the inbound
+        path uses, and a padlock on a message that never left would be a
+        false claim about the one thing this client exists to be right about.
+        """
         try:
             msg, should_send = self.otr.handle_outgoing_message(peer, text)
         except Exception as e:
@@ -3787,8 +4336,98 @@ class OTRv4PlusXMPP(ClientXMPP):
             self.send_otr_fragmented(
                 peer, msg if isinstance(msg, str) else msg.decode()
             )
+            self._echo_sent(peer, text)
         elif not should_send:
             print(f"[queued] will send once OTR with {peer} is ready")
+
+    def _echo_sent(self, peer, text):
+        """Print our own message in the same shape as an incoming one.
+
+        Same `[otr]` tag and the same padlock, so the redaction allowlist
+        treats both identically -- an outgoing body must be as absent from
+        the session log as an incoming one, and it is the same person's
+        conversation either way.
+
+        Our own JID rather than "me" or a nickname: the peer's side already
+        shows a full JID, and two names in two formats is how a transcript
+        stops being readable at exactly the moment somebody needs to quote
+        it.  A different colour separates the two sides at a glance.
+        """
+        try:
+            mine = self.boundjid.bare
+        except Exception:
+            mine = ""
+        mine_s = _sanitise(mine or "me", 128)
+        smp_ok = (peer, "SUCCEEDED") in self._smp_reported
+        self._erase_plain_echo(text)
+        print(
+            _otr_prefix(smp_ok)
+            + " "
+            + _colorize(mine_s + ":", "cyan")
+            + " "
+            + _sanitise(text)
+        )
+
+    #: Longest input we will try to erase, in terminal rows.
+    #:
+    #: A pasted wall of text is not worth unwinding, and getting the row
+    #: count wrong on a very long line scrolls real output off the screen.
+    PLAIN_ECHO_MAX_ROWS = 12
+
+    def _erase_plain_echo(self, text):
+        """Remove the copy of `text` the terminal echoed, if it is still there.
+
+        In plain mode the input loop sits in `sys.stdin.readline()` with the
+        tty in canonical mode, so the terminal has ALREADY drawn what the
+        user typed by the time we are called. v10.27.0 added our own
+        attributed echo without accounting for that, and every sent message
+        appeared twice: once bare, once as `[otr] alice@host: ...`.
+
+        The TUI is unaffected -- it owns the screen in raw mode and echoes
+        the input itself -- so this does nothing there.
+
+        Three conditions, and all of them must hold, because the cost of
+        being wrong is scrolling real output away:
+
+          * the line we are echoing is the one the terminal just echoed;
+          * NOTHING has been printed since (an inbound message arriving
+            between Enter and here means the rows above the cursor are no
+            longer the user's input);
+          * stdout is a terminal whose width we can actually read.
+
+        If any fails, nothing is erased. The message then appears twice,
+        which is the v10.27.0 behaviour: ugly, and strictly better than
+        eating a line of somebody's conversation.
+        """
+        try:
+            if getattr(self, "_tui_enabled", False):
+                return
+            pending = getattr(self, "_plain_echo", None)
+            self._plain_echo = None
+            if not pending:
+                return
+            seq, echoed = pending
+            if echoed != text or seq != _PRINT_SEQ:
+                return
+            cols = _terminal_cols()
+            if cols is None:
+                return
+            # How many rows the terminal used to draw it. A line exactly
+            # `cols` wide occupies one row, not two -- the wrap happens on
+            # the character after.
+            rows = max(1, -(-len(text) // cols))
+            if rows > self.PLAIN_ECHO_MAX_ROWS:
+                return
+            # Up `rows`, to column one, then clear everything below. Clearing
+            # the whole region rather than each line keeps it correct when
+            # the last row is shorter than the ones above it.
+            _raw_write("\x1b[%dA\r\x1b[J" % rows)
+        except Exception:
+            # Terminal geometry is unavailable often enough (a pipe, a pty
+            # that does not answer TIOCGWINSZ, a closed stdout during
+            # shutdown) that this must never be the thing that breaks
+            # sending a message.
+            pass
 
     def _remember_server_alias(self):
         """Write down the b32 the first time it actually works.
@@ -4088,8 +4727,24 @@ class OTRv4PlusXMPP(ClientXMPP):
             "  /calls               show voice call state and frame counters\n"
             "  /audiotest           verify the microphone captures audio\n"
             "  /audioprobe          test each audio backend on this device\n"
+            "  /sendfile [path]     send a file (encrypted, verified peer)\n"
+            "  /transfer            show file transfer state\n"
+            "  /trade               list open trades\n"
+            "  /trade init <terms>  propose a trade to the verified peer\n"
+            "  /trade accept        agree to a proposal\n"
+            "  /trade decline [why] refuse a proposal\n"
+            "  /trade blob <b64>    relay one blob from your Monero wallet\n"
+            "  /trade confirm       tell them your side is done\n"
+            "  /trade cancel [why]  end a trade\n"
+            "  /setxmr <address>    store your Monero address (persisted)\n"
+            "  /setxmr clear        forget it and stop auto-answering\n"
+            "  /tip                 show tip state\n"
+            "  /tip <amt> [note]    ask a verified peer for their address\n"
+            "  /tipreply            answer a request that arrived first\n"
             "  /smpstate            show raw SMP verification state\n"
             "  /voicedebug          toggle voice setup + telemetry logging\n"
+            "  /admin               list your server's admin commands\n"
+            "  /admin <command>     run one (prompts for what it needs)\n"
             "  Ctrl+B               scroll up one page\n"
             "  Ctrl+F               scroll down one page\n"
             "  /up  /b              scroll up one page (text fallback)\n"
@@ -4123,6 +4778,251 @@ class OTRv4PlusXMPP(ClientXMPP):
         self._secret_purpose_taken, self._secret_purpose = (
             self._secret_purpose, None)
         return peer
+
+    # -- XEP-0133 service administration -----------------------------------
+    #
+    # Nothing here knows the name of a single admin command.  The server
+    # advertises what it supports and each command describes its own fields,
+    # so Prosody's subset and ejabberd's differ without this code caring.
+    # See otrv4plus_admin.py for why that is the design rather than a list.
+    #
+    # This is the ONE part of the client that deliberately speaks plaintext to
+    # a third party.  The server is the intended recipient of an admin
+    # command, so OTR does not apply -- there is nobody to be end-to-end with.
+    # `_admin_warned` makes sure that is said once per session before the
+    # first command rather than buried in the docs.
+
+    async def _cmd_admin(self, arg):
+        """`/admin` lists what the server offers; `/admin <cmd>` runs one."""
+        try:
+            if not self.is_connected():
+                print("[admin] not connected")
+                return
+            if self._admin_form is not None:
+                print("[admin] a form is already open — answer it, or "
+                      "/cancel")
+                return
+            if not self._admin_warned:
+                self._admin_warned = True
+                print("[admin] NOTE: admin commands are ordinary XMPP to your "
+                      "own server.")
+                print("[admin] They are protected by the transport (I2P or "
+                      "TLS) and NOT by OTR —")
+                print("[admin] the server is the intended recipient, so there "
+                      "is nobody to be end-to-end with.")
+            if not arg:
+                await self._admin_list()
+            else:
+                await self._admin_start(arg)
+        except Exception as exc:
+            self._admin_reset()
+            print("[admin] failed: %s" % _sanitise(str(exc), 200))
+
+    async def _admin_list(self):
+        """Ask the server which admin commands it actually has."""
+        server = self.boundjid.server
+        print("[admin] asking %s what it supports…" % _sanitise(server, 64))
+        try:
+            items = await self.plugin["xep_0050"].get_commands(
+                jid=server, local=False)
+        except Exception as exc:
+            print("[admin] the server would not list its commands: %s"
+                  % _sanitise(str(exc), 160))
+            print("[admin] that usually means this account is not an admin "
+                  "on %s" % _sanitise(server, 64))
+            return
+        names = []
+        try:
+            for item in items["disco_items"]["items"]:
+                node = item[1] if len(item) > 1 else ""
+                if node and node.startswith(_admin.ADMIN_NODE):
+                    names.append(_admin.short_name(node))
+        except Exception:
+            pass
+        if not names:
+            print("[admin] the server advertises no XEP-0133 commands for "
+                  "this account")
+            return
+        print("[admin] %d command(s):" % len(names))
+        for name in sorted(names):
+            print("[admin]   %s" % name)
+        print("[admin] run one with:  /admin <command>")
+
+    async def _admin_start(self, name):
+        """Execute a command and either show the result or open its form."""
+        server = self.boundjid.server
+        node = _admin.command_node(name)
+        print("[admin] %s → %s" % (_admin.short_name(node),
+                                   _sanitise(server, 64)))
+        try:
+            iq = await self.plugin["xep_0050"].send_command(
+                jid=server, node=node, action="execute")
+        except Exception as exc:
+            print("[admin] refused: %s" % _sanitise(str(exc), 200))
+            return
+        self._admin_node = node
+        self._admin_session = iq["command"]["sessionid"]
+        self._admin_handle_stage(iq)
+
+    def _admin_handle_stage(self, iq):
+        """One round trip: finished, or a form to fill in."""
+        cmd = iq["command"]
+        status = cmd["status"]
+        for note in self._admin_notes(cmd):
+            print("[admin] %s" % note)
+        if status == "completed":
+            lines = _admin.summarise(cmd["form"])
+            if lines:
+                for line in lines:
+                    print("[admin] %s" % _sanitise(line, 400))
+            else:
+                print("[admin] done")
+            self._admin_reset()
+            return
+        try:
+            form = _admin.AdminForm.from_payload(cmd["form"])
+        except Exception:
+            form = None
+        if form is None or form.is_complete():
+            print("[admin] the server wants something this client cannot "
+                  "render — no form fields in its reply")
+            self._admin_reset()
+            return
+        self._admin_form = form
+        if form.title:
+            print("[admin] %s" % _sanitise(form.title, 200))
+        if form.instructions:
+            print("[admin] %s" % _sanitise(form.instructions, 400))
+        print("[admin] %d question(s). Blank skips an optional one, /cancel "
+              "aborts." % form.remaining)
+        self._admin_ask_next()
+
+    @staticmethod
+    def _admin_notes(cmd):
+        """Whatever the server said in <note/>, which is often the real answer."""
+        out = []
+        try:
+            notes = cmd["notes"]
+        except Exception:
+            return out
+        for note in notes or []:
+            try:
+                text = note[1] if isinstance(note, (list, tuple)) else str(note)
+            except Exception:
+                continue
+            if text:
+                out.append(_sanitise(str(text), 300))
+        return out
+
+    def _admin_ask_next(self):
+        """Print the current question and arm the one-shot input capture."""
+        form = self._admin_form
+        if form is None:
+            return
+        field = form.current()
+        if field is None:
+            asyncio.ensure_future(self._admin_submit())
+            return
+        print("[admin] %s" % field.prompt())
+        # Hidden input for a password field, on the same mechanism the SMP
+        # passphrase uses. If hiding does not work on this front end the user
+        # is told, rather than being promised privacy that is not there.
+        if field.is_private:
+            if not self._mask_next_input(True):
+                print("[admin] ⚠ this terminal will ECHO what you type")
+        self._admin_awaiting = True
+
+    def _handle_admin_answer(self, line):
+        """One typed line, as the answer to the current field."""
+        form = self._admin_form
+        if form is None:
+            return
+        if line.strip().lower() in ("/cancel", "/abort"):
+            print("[admin] cancelled — nothing was sent")
+            asyncio.ensure_future(self._admin_cancel())
+            return
+        try:
+            form.answer(line)
+        except _admin.FormError as exc:
+            # The message names the FIELD, never the value: this path is
+            # shared with text-private and an echoed answer would be a
+            # password on screen and in the transcript.
+            print("[admin] %s" % _sanitise(str(exc), 200))
+            self._admin_ask_next()
+            return
+        self._admin_ask_next()
+
+    async def _admin_submit(self):
+        """Send the completed form."""
+        form, node = self._admin_form, self._admin_node
+        session = self._admin_session
+        if form is None:
+            return
+        shown = form.describe()
+        if shown:
+            print("[admin] submitting:")
+            for line in shown:
+                print("[admin] %s" % _sanitise(line, 300))
+        try:
+            payload = self.plugin["xep_0004"].make_form(ftype="submit")
+            for var, value in form.values().items():
+                payload.add_field(var=var, value=value)
+            iq = await self.plugin["xep_0050"].send_command(
+                jid=self.boundjid.server, node=node, action="complete",
+                sessionid=session, payload=payload)
+        except Exception as exc:
+            self._admin_reset()
+            print("[admin] the server refused it: %s" % _sanitise(str(exc), 200))
+            return
+        self._admin_handle_stage(iq)
+
+    async def _admin_cancel(self):
+        """Tell the server to drop the session, then forget it locally."""
+        node, session = self._admin_node, self._admin_session
+        self._admin_reset()
+        if not (node and session):
+            return
+        try:
+            await self.plugin["xep_0050"].send_command(
+                jid=self.boundjid.server, node=node, action="cancel",
+                sessionid=session)
+        except Exception:
+            # A cancel that does not arrive costs the server one idle
+            # session and costs us nothing; the local state is already gone.
+            pass
+
+    def _admin_reset(self):
+        """Forget the form, the session and any armed capture.
+
+        Called on every exit path, including the failures. A form left half
+        open would keep `_admin_awaiting` set and swallow the next line the
+        user typed, which is precisely the behaviour INV-06 exists to forbid.
+        """
+        self._admin_form = None
+        self._admin_node = None
+        self._admin_session = None
+        self._admin_awaiting = False
+        try:
+            self._mask_next_input(False)
+        except Exception:
+            pass
+
+    def take_admin_field(self):
+        """Consume the locally-armed admin-form request, if any.
+
+        Same rule and same reason as `take_secret_request` above: armed only
+        by this user typing `/admin`, cleared unconditionally on read, so it
+        survives exactly one dispatched line.
+
+        A form is a sequence of questions, so unlike the SMP prompt it re-arms
+        itself after each answer -- but only from `_admin_ask_next`, and only
+        while a form this user started is still open.  Nothing the server or a
+        peer sends reaches that path, which is the property that matters: the
+        server describes the QUESTIONS, it cannot decide that the next thing
+        typed is an answer.
+        """
+        armed, self._admin_awaiting = self._admin_awaiting, False
+        return armed
 
     def _pending_consent_peer(self):
         """The peer whose verification request is waiting for a y/n, if any.
@@ -4168,6 +5068,15 @@ class OTRv4PlusXMPP(ClientXMPP):
             self._handle_smp_secret_answer(secret_for, line)
             return True
 
+        # An admin form THIS USER opened with /admin consumes the next line.
+        # Checked here, before command parsing, for the same reason as the
+        # passphrase above: a field value may legitimately begin with "/".
+        # `/cancel` is the way out and is handled inside the answer path.
+        if self.take_admin_field():
+            self._mask_next_input(False)
+            self._handle_admin_answer(line)
+            return True
+
         # A consent request a PEER caused.  Unlike the secret prompt above it
         # does not consume the line: only an exact y/n answers it, and
         # anything else falls through to be treated as what the user typed --
@@ -4204,6 +5113,7 @@ class OTRv4PlusXMPP(ClientXMPP):
 
         # --- Quit ---
         if lstrip == "/quit":
+            self._clear_trades("/quit")
             return False
 
         # --- OTR ---
@@ -4327,6 +5237,18 @@ class OTRv4PlusXMPP(ClientXMPP):
         elif lstrip == "/transfer" or lstrip.startswith("/transfer "):
             self._cmd_transfer(lstrip[9:].strip())
 
+        # --- Trade courier (XMPP only, same as file transfer) ---
+        elif lstrip == "/trade" or lstrip.startswith("/trade "):
+            self._cmd_trade(peer, lstrip[6:].strip())
+
+        # --- Tip: relay a Monero address, nothing more ---
+        elif lstrip == "/setxmr" or lstrip.startswith("/setxmr "):
+            self._cmd_setxmr(lstrip[7:].strip())
+        elif lstrip == "/tipreply":
+            self._cmd_tipreply(peer)
+        elif lstrip == "/tip" or lstrip.startswith("/tip "):
+            self._cmd_tip(peer, lstrip[4:].strip())
+
         # --- Subscriptions ---
         elif lstrip == "/pending":
             if self._pending_subscriptions:
@@ -4425,6 +5347,11 @@ class OTRv4PlusXMPP(ClientXMPP):
                         self._voice_manager._start_stats(p_)
             else:
                 print("[voice] not initialised")
+        elif lstrip == "/admin" or lstrip.startswith("/admin "):
+            parts = lstrip.split(None, 1)
+            arg = parts[1].strip() if len(parts) > 1 else ""
+            asyncio.ensure_future(self._cmd_admin(arg))
+
         elif lstrip in ("/identity", "/whoami"):
             self.show_identity()
 
@@ -5174,6 +6101,11 @@ async def _input_loop(client):
             # -- the next pass through is the hidden one. This is why the
             # auth message says "press Enter, then type the password again".
             continue
+        # Remember that the terminal has just echoed this line itself, and
+        # that nothing has been printed since. `_echo_sent` uses both facts
+        # to rewrite that echo in place instead of printing the message a
+        # second time underneath it.
+        client._plain_echo = (_PRINT_SEQ, line.rstrip("\n"))
         if not client.dispatch_line(client.peer, line.rstrip("\n")):
             break
     client._shutting_down = True

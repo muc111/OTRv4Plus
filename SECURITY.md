@@ -107,6 +107,293 @@ Expected: **30+ tests pass** (17 prior + 3 ML-KEM + 15 hybrid PQC SMP tests adde
 
 Two helper functions were removed at v10.6.17: `_verify_ed448_rust_compat()` and `_verify_ring_sig_rust_compat()`.  The previous comparison against the C extension's `ring_sign` and `ring_verify` is no longer performed.  As of v10.7.5 the C extension itself has been retired (see caveat 4 below), so these comparison paths are doubly obsolete.
 
+## Dependency security on the Python/Rust boundary
+
+PyO3 is not an ordinary dependency. It *is* the boundary between the Python
+client and the Rust cryptographic core, so an advisory against it is an
+advisory against the boundary, and remediating one is not finished when
+`Cargo.lock` shows a new number — the compiled artifact has to be rebuilt and
+re-tested. The order, as run for GHSA-36hh-v3qg-5jq4 at v10.19.0:
+
+```
+Cargo.lock audit → cargo build → PyO3 boundary tests → Python suite
+                 → cargo test → security-invariant tests → installed-wheel tests
+```
+
+`tests/test_dependency_advisories.py` (INV-23) pins two things at once, because
+either alone decays into a false guarantee:
+
+- **the resolved version**, from `Cargo.lock`, not from `Cargo.toml` — the
+  manifest states an intent, the lock states what is compiled;
+- **the unreachability of the vulnerable path**, so that the day someone puts a
+  Python sequence across the boundary, the analysis below is flagged as expired
+  rather than quietly wrong.
+
+`tests/test_pyo3_boundary.py` then drives the **installed extension module**
+with hostile input — out-of-range integers, non-bytes objects, lone surrogates,
+a lying `int` subclass, a 4 MB message — and asserts every one comes back as a
+Python exception. That matters more here than in most projects: the release
+profile sets `panic = "abort"`, so a Rust panic is not something Python can
+catch, it takes the client down mid-session with the peer left waiting.
+
+### GHSA-36hh-v3qg-5jq4 — PyO3 out-of-bounds read (assessed v10.19.0)
+
+| | |
+|---|---|
+| Advisory | GHSA-36hh-v3qg-5jq4 (CVSS 8.7, CWE-125), PyO3/pyo3#6086 |
+| Affected | pyo3 < 0.29.0 |
+| Was installed | pyo3 0.24.2 — direct dependency, single version in the tree, nothing else constrained it |
+| Now installed | pyo3 0.29.2 |
+| Vulnerable path reachable from OTRv4+ | **No** |
+| Severity for this project | **Informational** — upgraded regardless |
+
+`BoundListIterator` and `BoundTupleIterator` computed `index + n` in
+`Iterator::nth` / `DoubleEndedIterator::nth_back` before bounds-checking it, then
+read the element with `get_item_unchecked`. On `nth` the addition can wrap and
+re-yield elements from the front; on `nth_back` the subtraction can underflow
+and read memory past the sequence's storage.
+
+**Why it was not reachable.** The entire Python→Rust surface of `otrv4_core` is
+`&[u8]`, `&str`, `u32`/`u64`, `bool`, `&Bound<PyByteArray>`, `&Bound<PyAny>` and
+opaque pyclass handles. No `#[pyfunction]` or `#[pymethods]` entry point accepts
+a Python list or tuple, `PyList` and `PyTuple` appear nowhere in the crate, and
+`nth`/`nth_back`/`step_by` are called on nothing. There is no sequence for the
+vulnerable iterators to walk, and no attacker-controlled `n` to overflow. This
+is asserted, not asserted-once: the reachability check is a test.
+
+**Why it was upgraded anyway.** An unreachable bug in the boundary layer is one
+refactor away from reachable, and 0.29.2 was a compatible release: MSRV 1.83
+against our declared 1.85, `abi3-py39` still offered, no new transitive
+dependencies (four were *removed*: `indoc`, `unindent`, `memoffset`,
+`rustversion`).
+
+**API changes required.** One, at two call sites: `Bound::downcast` was renamed
+`Bound::cast` (same signature; `CastError` replaces `DowncastError`) —
+`ratchet.rs:718` and `voice.rs:458`. No ownership, lifetime, conversion or
+exception-propagation behaviour changed. No secret material moved.
+
+**Verification.** `cargo test` 111 passed; `cargo clippy --all-targets` clean;
+release `.so` rebuilt with `--features extension-module` and installed; Python
+suite 2538 passed, 0 failed; the 44 new boundary tests pass against the
+installed module.
+
+## Trade coordination is a courier, not a wallet (v10.20.0)
+
+`otrv4plus_trade.py` relays multisig coordination blobs between two people
+inside the OTRv4+ channel. It is a transport, and the security argument rests
+on it staying one.
+
+**What it never does** (INV-25). It opens no wallet file, reads no seed, spend
+key or view key, derives no address and signs nothing. A blob is checked for
+base64 alphabet and length and passed through verbatim — never parsed, because
+parsing is the first step toward interpreting. Its import list is asserted
+exactly (`base64`, `hashlib`, `re`, `secrets`, `time`, `typing`), so it cannot
+reach a daemon or a wallet at all, and `tests/test_trade_courier.py` walks its
+identifiers for anything key-, network- or wallet-shaped.
+
+This is INV-08 in its strongest form. INV-08 says Python does not receive key
+material Rust can own instead; here there is no key material in either, because
+the keys never enter the process.
+
+**What gates a trade** (INV-26). `is_smp_verified(peer)` is checked on every
+message in both directions, not once when the trade opens. A trade agreed at
+09:00 and still running at 14:00 would otherwise span five hours in which a
+session teardown or a fingerprint change goes unnoticed while blobs keep
+flowing. Fail-closed, matching INV-12: a predicate that raises counts as
+unverified. The peer's fingerprint is bound when the trade opens and re-checked
+with it; a change cancels the trade and never re-pins, matching INV-11.
+
+Binding is to the **fingerprint**, never to the I2P destination. Destinations
+are `TRANSIENT` and change every session by design — that is the transport's
+main privacy property, and tying a trade to one would either undo it or break
+the trade.
+
+**Trade output never reaches the session log.** `trade` is deliberately absent
+from `_LOG_SAFE_TAGS`, so every `[trade]` line is redacted to
+`<unlogged line: N chars>` by the allowlist in INV-03 rather than by a rule
+someone remembered to write. That matters because a multisig blob is
+sensitive: the 2021 Monero disclosure included recovery of the view secret key
+by an eavesdropper on the setup exchange. A test pins the tag's absence,
+because the obvious "improvement" is to add it so the transcript reads better.
+
+**State is in memory only** and is cleared on disconnect, `/quit` and process
+exit, alongside the scrollback purge (INV-24). A trade does not survive a
+restart: resuming from a file would mean trusting that file about who the
+counterparty was and how far the trade had got.
+
+**What it does not protect you from.** It cannot tell you a multisig address
+was formed from the right keys, that a payment landed, or that a partial
+signature is well formed. Your wallet tells you that, and comparing the
+multisig address with your counterparty out of band is the one check nothing
+here can do for you. This is a real limitation and the price of the client not
+becoming a wallet — [MONERO_ESCROW_AUDIT.md](MONERO_ESCROW_AUDIT.md) §2.2
+states the counter-argument in full.
+
+**No arbitration.** The project does not act as an arbitrator and ships no
+arbitrator key. 2-of-3 works by the participants choosing their own third
+party. There is no code path that would let this client hold one of three keys.
+
+## `/tip` relays an address, and only an address (v10.21.0)
+
+`otrv4plus_tip.py` carries one string between two verified peers so one can pay
+the other by hand. It is the same courier posture as the trade module in a
+smaller shape, and it is covered by the same two invariants.
+
+**INV-25.** Its import list is asserted exactly — `json`, `os`, `re`,
+`tempfile`, `time`, `typing` — so it cannot reach a wallet, a daemon or a
+network at all. It never validates the address, because an opinion about
+Monero's address format is one that starts rejecting valid addresses at a hard
+fork. A peer's address is memory-only and never joins the store that holds your
+own.
+
+**INV-26.** The SMP gate runs before *either* branch of the TLV handler. The
+response direction is the one that matters most: a response is a string the
+client is about to show the user as somewhere to send money, and an unverified
+one must not reach the screen at all.
+
+**No inbound message arms input capture (INV-06).** The specification for this
+feature asked that an inbound request from a peer with no address configured
+prompt the user to type one. That is the mechanism `_apply_tofu` used when it
+set `_pending[peer] = "smp_secret"`, and it is not implemented: the request is
+reported, and the user answers with `/setxmr` then `/tipreply`. The address is
+public and not worth protecting; the mechanism is the problem, and here the
+captured line would be *transmitted* rather than merely stored.
+
+**Peer-controlled fields are bounded before they are used.** The amount reaches
+a `monero:` URI a wallet will parse, so it must be a plain decimal. The pattern
+is `[0-9]`, not `\d` — Python's `\d` is Unicode-aware for `str` patterns and
+accepts Arabic-Indic and every other decimal digit range, which would have been
+concatenated into that URI. A test caught it; review did not.
+
+**Nothing reaches the session log.** `tip` is deliberately absent from
+`_LOG_SAFE_TAGS`. An address is public, but a log of who asked whom for which
+address is a record of who paid whom, and that is not.
+
+**A new engine hook, kept narrow.** TLV `0x0020` is routed to a registered
+handler through `register_tlv_handler`, which refuses every type outside a
+one-element allowlist — this is not a general extension point, because a
+forwarding hook that accepts anything is how an unreviewed second protocol gets
+bolted onto a session. `send_tlv` is fail-closed to match: it will not open a
+session, will not queue, and will not fall back to plaintext.
+
+## The chat prefix is a security claim (v10.22.0)
+
+Every incoming chat line now carries the session's security state as its
+prefix, because a reader looking at a message needs to know what protected it
+without running a command:
+
+| | |
+|---|---|
+| 🔐 `[otr]` blue | encrypted **and** SMP-verified |
+| 🔒 `[otr]` yellow | encrypted, identity **not** verified |
+
+Before v10.22.0 the verified case was `[otr]` in green and the unverified case
+was `[otr]` in no colour at all. The reassurance was a colour and only a
+colour.
+
+**The two states differ by glyph AND by colour**, deliberately. Emoji are small
+on a handset and colour is invisible to some readers, so either signal alone is
+weak. An unverified session really is encrypted — a padlock there is not a lie
+— but it must not be the *same* padlock, or a reader who never ran SMP gets
+exactly the reassurance of one who did.
+
+**The colours are the project's own.** `UIConstants.SECURITY_ICONS` says 🟡
+yellow is `ENCRYPTED`, 🟢 green is `FINGERPRINT` (pinned, *not* SMP-verified)
+and 🔵 blue is `SMP_VERIFIED`. The old green prefix contradicted that: the tab
+bar and the message prefix were using the same colour for different claims.
+
+**The verified state is latched from the engine's own announcement**, not
+queried. `get_smp_status()` cannot answer after the fact — the engine destroys
+its Rust SMP object on completion to zeroize the secrets, so a verified peer
+becomes indistinguishable from an unverified one by query alone.
+`_latch_smp_from_trace` records the terminal success line and is the
+authoritative source; it matches only terminal announcements, never a progress
+line that merely mentions verification.
+
+**Redaction survives the prefix.** Both padlocks are in `_LOG_MARKERS`, so
+`_strip_log_markers` removes them before `_LOG_CONTENT_RE` runs and a prefixed
+line is still written as `<message body redacted: N chars>` (INV-03). A prefix
+glyph *not* in that tuple would have stopped the pattern matching and written
+every received message to the session log in plaintext — which is why a test
+derives the glyphs from the prefixes themselves and asserts each is registered,
+rather than listing them again by hand.
+
+## The IRC client's SMP flow, brought level with XMPP's (v10.23.0, reachable in v10.23.2)
+
+Three gaps, all visible on a handset, all closed by reusing the XMPP client's
+machinery rather than writing a second copy of it.
+
+**A y/n trust prompt on first contact.** `Trust this fingerprint? Type y or n`
+asked a question nobody can answer — on first contact there is nothing to
+compare against — and it was *armed by a remote DAKE*, which is the shape
+INV-06 exists to keep out of the client. First contact now pins silently and
+says so, matching XMPP. A **changed** fingerprint is reported loudly, left
+untrusted, and never auto-accepted (INV-11); clearing it stays a deliberate
+`/trust-reset`. Nothing is written to disk — INV-10 still holds, so the pin
+lives for the session, which is what an ephemeral IRC identity should have.
+
+**`/smp` did not ask for anything.** Bare `/smp` printed *"Type
+`/smp <passphrase>` (it will be visible on this terminal)"*, asking the user to
+put a shared secret into their own scrollback — while `_finish_trust` had been
+promising *"it will ask for the passphrase"* since v10.15, and
+`set_input_mask()` had existed the whole time **with no caller**. It now arms a
+masked read, and the mask is lifted on every exit: accepted, cancelled,
+too short, too long, and storage failure.
+
+**The responder was never asked.** A peer's SMP1 arriving with no stored
+passphrase was parked by the engine and nothing surfaced it, so verification
+could only be driven from one side. The consent prompt is now shown, `y` opens
+the passphrase read, and the answer *resumes the held SMP1* rather than
+restarting — no second round trip over I2P.
+
+**Why it reuses `otrv4plus_smpflow.SmpFlow`.** INV-06 is the property that a
+remote peer may make the client ASK for the passphrase but never make the next
+typed line BECOME one. In `SmpFlow` that is structural: there is no edge from a
+remote transition into `AWAITING_SECRET`. A second implementation in the IRC
+client would have been a second chance to get it wrong.
+
+**INV-06 now covers both clients.** `SMP_UX_AUDIT.md` §7 item 4 asked for the
+remotely-armed capture to be removed from `otrv4+.py` *and* for INV-06's test
+to be extended to cover it. The removal shipped in v10.15; the coverage did
+not, and `otrv4plus_xmpp.py` alone was being walked — which is how the IRC
+client could grow a masked read with nobody checking what could reach it.
+`tests/test_irc_guided_smp.py` now walks `otrv4+.py`'s inbound call graph and
+asserts no remote entry point reaches `_arm_secret_prompt`, and that the two
+local ones do.
+
+**And then none of it ran (v10.23.2).** `otrv4+.py` had two `/smp`
+dispatchers — one in `OTRv4IRCClient.handle_command`, one in the
+`EnhancedOTRv4IRCClient` override — and v10.23.0's branch went into the base
+class, which the subclass shadows for that command. The subclass is the only
+class the program instantiates, so a handset typing `/smp` got
+`Usage: /smp <command> [args]` while the masked prompt sat unreachable for a
+whole release. Every test of it passed: they bound the flow methods onto a stub
+and called `_smp_verify` directly, so the question *"can a user get here by
+typing /smp"* was never asked. `tests/test_irc_smp_command_routing.py` asks it —
+every case enters through the real `handle_command` on the real class — and
+asserts structurally that the base class does not claim `smp` again. The dead
+dispatcher is deleted, because two handlers for one command is the defect
+rather than the branch that happened to be wrong.
+
+A related consequence, worth naming because it is a security property and not
+a UX one: `/smp start` used to refuse with *"No SMP secret stored — use
+`/smp <peer> <secret>` first"*, which pointed the user at the one spelling that
+puts a shared passphrase into their own scrollback. Both spellings now ask for
+it hidden. The inline form still works and now says plainly that what was typed
+is in the terminal's scrollback and in any session capture — the input line is
+cleared on Enter, so saying nothing would imply it was never shown.
+
+`_smp_session_ready` gates every spelling, fail-closed: a session manager that
+raises counts as not ready. A passphrase prompt for a session that does not
+exist is a shared secret typed for nothing, and the user cannot tell the
+difference from one that worked.
+
+**The passphrase length bounds moved into the engine.** They lived in
+`otrv4plus_xmpp.py` only, so the IRC client enforced none at all and took
+whatever was typed. Both clients now read `SMP_MIN_LEN`/`SMP_MAX_LEN` from
+`otrv4+.py`, because two clients disagreeing about how long a shared secret may
+be is a way for one side to store something the other refuses.
+
 ## Known issues and limitations
 
 1. **Rust crypto crates are not audited.** `ed448-goldilocks-plus` 0.16 is the only viable pure-Rust Ed448, and `x448` 0.6 the X448, but neither has had a formal review. `pqcrypto-mlkem 0.1.1` (FIPS 203 ML-KEM-1024) and `pqcrypto-mldsa 0.1.2` (ML-DSA-87) are PQClean-derived reference implementations.
@@ -161,6 +448,54 @@ Two helper functions were removed at v10.6.17: `_verify_ed448_rust_compat()` and
 9. **SMP modular exponentiation is constant-time (v10.7.6, Phase 5.4).**  Prior to v10.7.6, SMP used `num-bigint`'s `modpow`, whose running time depends on the exponent's bit pattern.  Because SMP exponentiates with secret values (the per-session blinding scalars, the SMP secret itself, and the ZKP randomisers), this was a timing side-channel: an attacker able to measure SMP-round timing precisely could in principle recover bits of those secrets.  v10.7.6 routes every secret-exponent `modpow` through `crypto-bigint`'s `DynResidue` (Montgomery-form modular exponentiation, constant-time in the exponent).  The MODP-3072 group (OTRv4 §5.3) is unchanged — same prime, same generator — so the wire format and spec compliance are identical; only the implementation changed.  Caveats: (a) the *public*-value arithmetic in the ZKP reconstruction (challenge/response combination) remains on `num-bigint`, which is correct because those operands are public and carry no secret-dependent timing; (b) `crypto-bigint`'s constant-time claims, like those of the other Rust crypto crates here, have not been formally audited.  The practical attack surface for this side-channel was always narrow over I2P (multi-second fragmentation latency drowns the signal), but constant-time is the correct posture regardless.
 
 10. **SMP is hybrid post-quantum (v10.9.0).**  The classical OTRv4 four-step Schnorr ZKP over the 3072-bit MODP group is preserved unchanged and now runs alongside an ML-KEM-1024 and ML-DSA-87 binding layer.  In SMP1 the initiator appends an ML-KEM-1024 encapsulation key and ML-DSA-87 public key.  In SMP2 the responder encapsulates to derive `kem_ss`, derives `pq_binding_key = KDF(PQ_BRACE_KEY, domain || kem_ss || transcript_tag, 32)`, and signs the entire SMP2 body with ML-DSA-87 under that binding key.  SMP3/4 each verify the previous step's ML-DSA-87 signature before processing classical fields, then sign their own output.  Forging a false "verified" requires breaking the 3072-bit discrete log, ML-KEM-1024, and ML-DSA-87 simultaneously.  The wire format is versioned (`0x01` classical, `0x02` hybrid PQ) with no silent downgrade.  **Known limitation:** the ZKP scalar arithmetic (the `d = r - c*x` response computation) still uses variable-time `num-bigint`; the exponentiation is constant-time via `crypto-bigint` Montgomery form but the surrounding scalar multiply is not yet. A fully constant-time ZKP is tracked as future work.  The SMP session timeout was raised to 45 minutes (from 10) at v10.9.1 to accommodate the hybrid-PQ wire overhead over I2P, where SMP2 is 49 fragments and a full verification takes ~15–16 minutes.
+
+## Chat scrollback is not a store (v10.19.0)
+
+An IRC message must not outlive the connection it arrived on (INV-24). Until
+v10.19.0 it did: panel history was unbounded and nothing ever cleared it, so a
+disconnect-and-reconnect replayed the whole previous conversation into the new
+session, under whatever nick the client had been forced to take. A tester
+watched it happen three times in one evening, with the unread badge climbing
+`system(53)` → `system(105)` → `system(158)` as each reconnect appended another
+copy.
+
+That is a privacy problem before it is a cosmetic one. This client runs over
+I2P, where the point of a new session is that it is not linkable to the one
+before it. Replaying the old conversation into the new one links them on the
+screen no matter what the transport did.
+
+What v10.19.0 does:
+
+- history is capped at 1000 messages per panel, oldest pruned first;
+- it is emptied at every boundary between one connection and the next —
+  disconnect, reconnect, `/quit`, and process exit via `atexit` (so SIGINT and
+  an unhandled exception are covered too);
+- unread counters and recent-user sets go with it, and on the paths where the
+  user is leaving or has asked — `/quit`, process exit, `/clear` — the
+  terminal's own saved scrollback is cleared too (`\033[3J`), because on Termux
+  the visible history *is* the scrollback;
+- **not** on an automatic reconnect, deliberately: blanking the emulator during
+  a dropped connection would destroy the error messages the user is reading to
+  find out what happened, on a transport where a blip is routine. What the
+  reconnect purge stops is the replay, which was the reported bug;
+- `/clear` does all of the above on demand without touching the connection;
+  `/clear <panel>` keeps the old single-tab behaviour.
+
+**What this does not do.** It does not scrub the text from process memory. A
+Python `str` is immutable and may be interned; the purge drops the last
+reference the client holds, and the bytes remain in freed heap until the
+allocator reuses them. That limit is the same one as for passwords (INV-02) and
+it is not fixable while the UI is Python-side. Material that must genuinely be
+destroyed is not kept in a chat panel at all — it lives in Rust behind
+`zeroize()`.
+
+The reconnect backoff was raised from 5s-doubling to a flat 30/60/90/120s for
+the same reason a ghost session causes the collision: five seconds is shorter
+than any server's ping timeout, so the reconnect arrived while the previous
+session still held the nick. A 433 now takes a temporary nick only if
+registration has not completed, and schedules up to four attempts to reclaim
+the original — instead of renaming permanently, which is how one dropped
+connection used to cost the user their identity.
 
 ## Reporting issues
 

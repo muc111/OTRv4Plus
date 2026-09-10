@@ -28,8 +28,41 @@
 import sys
 import os
 import socket
-import socks
 import threading
+
+# `socks` comes from the **PySocks** distribution.  Naming it here matters:
+# there is also a PyPI project literally called `socks`, and it is an empty
+# placeholder ("automatically generated with 'register_pypi' and should be
+# deleted soon", version 0) that installs no module at all.  A tester ran
+# `pip install socks`, saw it succeed, and still got `No module named
+# 'socks'` -- so this import says which package, and checks that what it
+# got is actually PySocks rather than something that merely took the name.
+try:
+    import socks
+except ImportError as _socks_exc:            # pragma: no cover - install path
+    raise ImportError(
+        "OTRv4+ needs the 'socks' module, which is supplied by the PySocks "
+        "distribution:\n"
+        "    pip install PySocks\n"
+        "Note: the PyPI package literally named 'socks' is an empty "
+        "placeholder and installs nothing -- installing it will NOT fix this."
+    ) from _socks_exc
+if not all(hasattr(socks, _attr) for _attr in
+           ("setdefaultproxy", "socksocket", "PROXY_TYPE_SOCKS5")):
+    raise ImportError(
+        "the installed 'socks' module is not PySocks: it has no "
+        "setdefaultproxy/socksocket/PROXY_TYPE_SOCKS5.  Something else has "
+        "taken the name.  Fix with:\n"
+        "    pip uninstall -y socks && pip install PySocks"
+    )
+
+# The SMP consent state machine, shared with the XMPP client.  Imported
+# rather than reimplemented: INV-06 is the property that a remote peer may
+# make the client ASK for the passphrase but never make the next typed line
+# BECOME one, and that property is structural in SmpFlow -- there is no edge
+# from a remote transition into AWAITING_SECRET.  A second copy of the logic
+# here would be a second chance to get it wrong.
+import otrv4plus_smpflow as _smpflow
 
 try:
     from otrv4plus_log import ChannelLogManager as _ChannelLogManager
@@ -1416,6 +1449,42 @@ def _is_smp_version_mismatch(exc: BaseException) -> bool:
     return "version mismatch" in str(exc).lower()
 
 
+#: Handlers for the non-protocol TLV types, keyed by type.
+#:
+#: The engine routes DISCONNECTED, the SMP types and EXTRA_SYMMETRIC_KEY
+#: itself; anything else is a feature, and a feature does not belong in the
+#: session state machine.  A client registers here and gets called with
+#: `(peer, value)` for its type, on any session, once the payload has been
+#: decrypted and authenticated.
+#:
+#: Deliberately NOT a general extension point.  `register_tlv_handler`
+#: refuses any type outside `_HANDLER_TLV_TYPES`, so this cannot become the
+#: way arbitrary protocol gets bolted onto a session -- which is how a
+#: forwarding hook turns into an unreviewed second protocol.
+_TLV_HANDLERS: Dict[int, Callable[[str, bytes], None]] = {}
+
+#: The only types a client may register for.
+_HANDLER_TLV_TYPES = frozenset({0x0020})
+
+
+def register_tlv_handler(tlv_type: int, handler: Callable[[str, bytes], None]) -> None:
+    """Route inbound TLVs of `tlv_type` to `handler(peer, value)`.
+
+    Raises for a type the engine owns, or one nobody has thought about.
+    """
+    if tlv_type not in _HANDLER_TLV_TYPES:
+        raise ValueError(
+            "TLV type 0x%04x is not open to handlers (allowed: %s)"
+            % (tlv_type, ", ".join("0x%04x" % t
+                                   for t in sorted(_HANDLER_TLV_TYPES))))
+    _TLV_HANDLERS[tlv_type] = handler
+
+
+def clear_tlv_handlers() -> None:
+    """Drop every registered handler.  For teardown and for tests."""
+    _TLV_HANDLERS.clear()
+
+
 class OTRv4TLV:
     """Single TLV (Type-Length-Value) record inside an OTRv4 encrypted message.
 
@@ -1437,6 +1506,12 @@ class OTRv4TLV:
     SMP_ABORT = 0x0006
     SMP_MSG_1Q = 0x0007
     EXTRA_SYMMETRIC_KEY = 0x0009
+
+    #: v10.21.0: /tip -- a Monero address relayed between two SMP-verified
+    #: peers.  Above the OTRv4-allocated range (0x0000-0x0009) so it cannot
+    #: collide with a future spec type, and forward-compatible by the rule at
+    #: the top of this class: a peer that does not know it ignores it.
+    TIP = 0x0020
 
     SMP_TYPES = frozenset({SMP_MSG_1, SMP_MSG_2, SMP_MSG_3, SMP_MSG_4, SMP_ABORT, SMP_MSG_1Q})
 
@@ -1521,6 +1596,7 @@ class OTRv4TLV:
             6: "SMP_ABORT",
             7: "SMP_MSG_1Q",
             8: "EXTRA_SYMMETRIC_KEY",
+            0x0020: "TIP",
         }
         name = _NAMES.get(self.type, f"UNKNOWN(0x{self .type :04x})")
         return f"OTRv4TLV({name }, {len (self .value )} bytes)"
@@ -1797,7 +1873,24 @@ class OTRv4DataMessage:
             raise ValueError(f"Failed to decode message: {e }")
 
 
-VERSION = "OTRv4+ 10.18.6"
+VERSION = "OTRv4+ 10.30.0"
+
+#: SMP passphrase length bounds, shared by both clients.
+#:
+#: They lived in otrv4plus_xmpp.py only, so the IRC client had no bounds at
+#: all -- it took whatever was typed.  Defined here because the engine is
+#: what both clients import, and two clients disagreeing about how long a
+#: shared secret may be is a way for one side to store something the other
+#: will refuse.
+SMP_MIN_LEN = 8
+SMP_MAX_LEN = 512
+
+#: Every timestamp the client puts on screen.  Was "%H:%M:%S", which is
+#: unreadable in a log kept overnight or across a reconnect: "02:14:07" does
+#: not say whether it is this session or yesterday's, which is exactly the
+#: question when the buffer has replayed something old at you.  One constant,
+#: not four copies, so the next change is one edit.
+TIMESTAMP_FORMAT = "%Y-%m-%d %H:%M:%S"
 
 # --- OTRv4+ client identification over IRC -------------------------------
 #
@@ -2022,6 +2115,37 @@ def _sanitise(text: str, max_len: int = 512) -> str:
 
     text = re.sub(r"[\x00-\x08\x0b-\x0c\x0e-\x1f\x7f\x80-\x9f]", "", text)
     return text[:max_len]
+
+
+def _redact_secret(text: str, secret) -> str:
+    """Remove *secret* from *text* wherever a diagnostic might carry it.
+
+    Used on the one path where an error is reported while the passphrase is
+    still in scope.  Nothing on that path is known to quote its argument --
+    the storage and vault calls raise fixed messages -- but "known" is a
+    property of today's code and this is the line where a future exception
+    with a helpful repr would put a shared secret on the user's screen and
+    into their scrollback.
+
+    Redacts the passphrase and, for a `bytes` secret, its decoded form: a
+    Python exception that formats a bytearray prints `bytearray(b'...')`, so
+    matching only the exact object would miss it.  Short values are NOT
+    redacted below SMP_MIN_LEN, because blanking every occurrence of a
+    two-character string would corrupt unrelated text without protecting
+    anything -- a passphrase that short is refused before it reaches here.
+    """
+    if not text or not secret:
+        return text
+    needles = []
+    if isinstance(secret, (bytes, bytearray)):
+        needles.append(secret.decode("utf-8", errors="replace"))
+    else:
+        needles.append(str(secret))
+    for needle in needles:
+        if len(needle) < SMP_MIN_LEN:
+            continue
+        text = text.replace(needle, "[redacted]")
+    return text
 
 
 def colorize(text: str, color: str) -> str:
@@ -5859,7 +5983,7 @@ class Screen:
         out = []
         for entry in panel.history:
             ts = colorize(
-                time.strftime("%H:%M:%S", time.localtime(entry.get("timestamp", time.time()))),
+                time.strftime(TIMESTAMP_FORMAT, time.localtime(entry.get("timestamp", time.time()))),
                 "dim",
             )
             line = f"{ts } {entry ['message']}"
@@ -5959,7 +6083,31 @@ class Screen:
 
 
 class ChatPanel:
-    """Chat panel for displaying messages"""
+    """Chat panel for displaying messages.
+
+    The history is what the tab replays when you switch to it, and until
+    v10.19.0 it was unbounded and survived everything: a disconnect, a
+    reconnect, a nick change.  A tester watched a whole evening's
+    conversation reappear under a nick that had not sent any of it, with the
+    unread badge climbing system(53) -> system(105) -> system(158) as each
+    reconnect appended a fresh copy of the same connection chatter.
+
+    That is a privacy problem before it is a cosmetic one.  This client runs
+    over I2P, where the point is that a session is not linkable to the one
+    before it; carrying the previous session's messages into the next one
+    links them on the screen, in whatever the terminal has kept in its own
+    scrollback, and in any core dump taken afterwards.
+
+    So the history now has a ceiling, and it is emptied at every point where
+    one connection ends and another begins.  See
+    `OTRv4IRCClient._purge_scrollback`.
+    """
+
+    #: Hard ceiling on retained messages per panel.  Reached in a busy
+    #: channel within an hour or two; the oldest are dropped first.  A cap
+    #: is not a substitute for clearing on disconnect, it is the bound on
+    #: how much there is to clear.
+    MAX_HISTORY = 1000
 
     def __init__(self, name: str, panel_type: str):
         self.name = name
@@ -5973,13 +6121,30 @@ class ChatPanel:
         self.last_activity = time.time()
         self.security_level = UIConstants.SecurityLevel.PLAINTEXT
         self.smp_progress = (0, 4)
+        #: Monotonic message id.  Was `len(self.history)`, which stops being
+        #: unique the moment pruning removes an entry.
+        self._next_id = 0
 
     def add_message(self, message: str, metadata: Optional[dict] = None) -> int:
-        """Add message to history"""
-        msg_id = len(self.history)
+        """Add message to history, dropping the oldest past MAX_HISTORY.
+
+        The returned id stays monotonic across pruning: it is a message
+        identity, not an index into `history`, and `get_messages` slices the
+        list rather than looking ids up.  Handing back a reused id after a
+        prune would let a caller holding an old id address a different
+        message.
+        """
+        msg_id = self._next_id
+        self._next_id += 1
         self.history.append(
             {"id": msg_id, "message": message, "timestamp": time.time(), "metadata": metadata or {}}
         )
+        if len(self.history) > self.MAX_HISTORY:
+            overflow = len(self.history) - self.MAX_HISTORY
+            for entry in self.history[:overflow]:
+                entry["message"] = ""
+                entry["metadata"] = {}
+            del self.history[:overflow]
         self.last_activity = time.time()
         return msg_id
 
@@ -6022,9 +6187,27 @@ class ChatPanel:
             progress_index = min(int((step / total) * len(progress_chars)), len(progress_chars) - 1)
             return f"🔄 {progress_chars [progress_index ]} {step }/{total }"
 
-    def clear_history(self):
-        """Clear chat history"""
+    def clear_history(self) -> int:
+        """Drop every retained message and return how many there were.
+
+        Each entry's text is overwritten before the list is emptied.  Be
+        precise about what that buys: a Python `str` is immutable and
+        possibly interned, so this does not scrub the characters out of the
+        process -- it drops the last reference the panel holds, which is the
+        most a pure-Python buffer can do.  The bytes stay in freed heap until
+        the allocator reuses them.  Secrets that must actually be destroyed
+        do not live here at all; they live in Rust behind `zeroize()`.  What
+        this does guarantee is that no later redraw, tab switch or reconnect
+        can put the old conversation back on the screen.
+        """
+        count = len(self.history)
+        for entry in self.history:
+            entry["message"] = ""
+            entry["metadata"] = {}
         self.history.clear()
+        self.unread_count = 0
+        self.recent_users.clear()
+        return count
 
 
 class PanelManager:
@@ -6976,6 +7159,17 @@ class EnhancedOTRSession:
                 elif tlv.type in OTRv4TLV.SMP_TYPES:
                     self._enh_handle_smp_tlv(tlv)
 
+                elif tlv.type in _TLV_HANDLERS:
+                    # A registered feature handler.  It runs on decrypted,
+                    # authenticated payload from an established session, and
+                    # its exceptions are contained here: a feature must not
+                    # be able to break the session state machine.
+                    try:
+                        _TLV_HANDLERS[tlv.type](self.peer, tlv.value)
+                    except Exception as exc:
+                        self.tracer.trace(self.peer, "ERROR", "TLV-HANDLER",
+                                          "0x%04x" % tlv.type, str(exc)[:80])
+
                 elif tlv.type == OTRv4TLV.EXTRA_SYMMETRIC_KEY:
                     key = hashlib.sha3_512(
                         self.session_id + b"OTRv4-EXTRA-SYM" + tlv.value
@@ -7617,8 +7811,17 @@ class EnhancedOTRSession:
         try:
             if self.rust_smp is None:
                 raise RuntimeError("no SMP engine")
-            self._smp_secret_required = False
+            # The engine is the authority on whether the message is still
+            # held; ask it before consuming so a resume that cannot succeed
+            # says so plainly rather than as a generic engine error.
+            if not self.rust_smp.has_held_smp1():
+                raise RuntimeError(
+                    "no SMP1 is being held for this session")
             smp2 = self.rust_smp.resume_held_smp1_generate_smp2()
+            # Cleared only now.  Setting it before the call meant a failed
+            # resume left the session claiming no request was outstanding
+            # while the engine was still holding one.
+            self._smp_secret_required = False
             self.smp_step = 2
             self._smp_progress_notify(
                 2, 4, "Passphrase accepted - answering the challenge…",
@@ -8708,6 +8911,34 @@ class EnhancedSessionManager:
 
             session = self.sessions[peer]
             return session.is_encrypted()
+
+    def send_tlv(self, peer: str, tlv_type: int, value: bytes) -> Optional[str]:
+        """Encrypt a bare TLV for `peer`.  Returns the wire frame, or None.
+
+        Fail-closed and deliberately narrower than `handle_outgoing_message`:
+        it will NOT open a session, queue for later, or fall back to
+        plaintext.  There must already be an ENCRYPTED session, or the caller
+        gets None and is expected to say so.  A feature TLV that quietly
+        started a DAKE would send a peer a handshake they never asked for; one
+        that fell back to plaintext would put its payload on the wire in the
+        clear, which is exactly what the OTR channel exists to prevent.
+
+        The empty text is not padding waste -- OTRv4Payload adds a random
+        PADDING TLV, so a TLV-only message is not distinguishable by length
+        from a short chat message.
+        """
+        if tlv_type not in _HANDLER_TLV_TYPES:
+            raise ValueError("TLV type 0x%04x is not open to callers"
+                             % tlv_type)
+        with self.lock:
+            session = self.sessions.get(peer)
+            if session is None or not session.is_encrypted():
+                return None
+            try:
+                return session.encrypt_with_tlvs("", [OTRv4TLV(tlv_type, value)])
+            except Exception as e:
+                self.tracer.trace(peer, "ERROR", "SEND-TLV", "FAILED", str(e)[:80])
+                return None
 
     def handle_outgoing_message(self, peer: str, message: str) -> Tuple[Optional[str], bool]:
         """
@@ -9865,14 +10096,20 @@ class OTRMessageFragmenter:
         Unfragmented (fits in max_line): returned as-is (``?OTRv4 <base64>``).
         Fragmented: emits spec-compliant ``?OTRv4|stag|rtag|k|n|data.`` lines.
 
-        Anti-fingerprinting: all multi-fragment messages are padded to a
-        uniform fragment count (MIN_FRAGMENTS).  Without this, an observer
-        can distinguish DAKE1 (~20 frags), DAKE3 (~22 frags), and data
-        messages by counting IRC lines - revealing protocol state.
+        NOT anti-fingerprinting.  This docstring used to claim that every
+        multi-fragment message was padded to a uniform fragment count so an
+        observer could not tell DAKE1 from DAKE3 by counting IRC lines.  No
+        such padding is implemented here, and no MIN_FRAGMENTS constant
+        exists anywhere in the file -- the claim described an intention, and
+        a reader checking whether the traffic pattern is protected would have
+        found the answer and been wrong.
 
-        Padding uses random base64 characters appended after the real
-        payload.  The receiver's parser reads exact byte offsets from the
-        decoded binary and ignores trailing data.
+        The fragment count is therefore a reliable signal of which protocol
+        message is in flight, to anyone who can see the lines: the IRC server
+        always, and on I2P nobody else.  Fixing it means padding every
+        message to the largest (48 fragments for SMP2/SMP3), which would cost
+        more time than the whole pacing change in v10.25.0 saves.  Recorded
+        as a known limitation rather than silently implied to be solved.
         """
         if not otr_message.startswith(cls._LEGACY_PREFIX):
             return [otr_message]
@@ -9952,7 +10189,11 @@ class DebugPanel(ChatPanel):
         if not self.categories.get(category, False):
             return
 
-        timestamp = time.strftime("%H:%M:%S.%f")[:-3]
+        # `%f` is a datetime directive, not a strftime one: time.strftime
+        # left it verbatim, so [:-3] was trimming "%f" off and every debug
+        # line read "12:34:56." with nothing after the dot.
+        import datetime as _dt_module
+        timestamp = _dt_module.datetime.now().strftime(TIMESTAMP_FORMAT + ".%f")[:-3]
         colored_cat = colorize(category, "magenta")
         msg = f"[{timestamp }] [{colored_cat }] {message }"
 
@@ -10358,6 +10599,12 @@ class OTRv4IRCClient:
             self.nick = TwentySevenClubNick.generate()
             self.realname = TwentySevenClubNick.real_name(self.nick)
 
+        #: The nick we want to be using.  A 433 collision may force a
+        #: temporary one on us; this is what `_schedule_nick_reclaim` asks
+        #: for back once the ghost that took it has timed out.
+        self._original_nick = self.nick
+        self._nick_reclaim_tries = 0
+
         self._running_event = threading.Event()
         self._shutdown_event = threading.Event()
         self._connected_event = threading.Event()
@@ -10515,7 +10762,7 @@ class OTRv4IRCClient:
                 self._screen.redraw_tabbar()
             return
 
-        ts = colorize(time.strftime("%H:%M:%S"), "dark_yellow")
+        ts = colorize(time.strftime(TIMESTAMP_FORMAT), "dark_yellow")
         if panel == "system":
             tag = colorize("[sys]  ", "grey")
         elif panel == "debug":
@@ -10915,6 +11162,7 @@ class OTRv4IRCClient:
                                 "yellow",
                             ),
                         )
+                        self._report_disconnect_context()
                         self._try_reconnect()
                         return
                     self.connected = False
@@ -11046,58 +11294,19 @@ class OTRv4IRCClient:
         self.auth_complete = False
         self.nickserv_identified = False
 
-        try:
-            if hasattr(self, "session_manager"):
+        self._preserved = self._preserve_otr_across_reconnect()
 
-                for _sess in list(self.session_manager.sessions.values()):
-                    try:
-                        if hasattr(_sess, "ratchet") and _sess.ratchet is not None:
-                            if hasattr(_sess.ratchet, "zeroize"):
-                                _sess.ratchet.zeroize()
-
-                        for _attr in (
-                            "root_key",
-                            "chain_key_send",
-                            "chain_key_recv",
-                            "_chain_key_s",
-                            "_chain_key_r",
-                            "brace_key",
-                            "_brace_key",
-                        ):
-                            if hasattr(_sess, _attr):
-                                _v = getattr(_sess, _attr, None)
-                                if isinstance(_v, (bytes, bytearray)):
-                                    _ba = bytearray(_v)
-                                    _secure_wipe(_ba)
-                                setattr(_sess, _attr, None)
-                    except Exception:
-                        pass
-                self.session_manager.sessions.clear()
-        except Exception:
-            pass
-
-        try:
-            if hasattr(self, "_pending_action"):
-                self._pending_action = None
-        except Exception:
-            pass
-
-        try:
-            for panel in self.panel_manager.panels.values():
-                panel.security_level = UIConstants.SecurityLevel.PLAINTEXT
-                panel.secure_session = False
-                panel.type = (
-                    "channel"
-                    if panel.name.startswith("#")
-                    else "system" if panel.name == "system" else "private"
-                )
-        except Exception:
-            pass
+        # Everything on screen belongs to the connection that just ended.
+        # Purge before the backoff, not after: if the user is watching the
+        # countdown, they should not be reading the dead session while they
+        # wait for the next one.
+        self._purge_scrollback("connection lost", announce=False,
+                               wipe_terminal=False)
 
         self.connection_attempts += 1
-        backoff = min(120, 5 * (2 ** min(self.connection_attempts - 1, 4)))
+        backoff = self._reconnect_backoff(self.connection_attempts)
         self.add_message(
-            "system", f"🔄 Reconnecting in {backoff }s (attempt {self .connection_attempts })…"
+            "system", f"🔄 Reconnecting in {backoff}s (attempt {self.connection_attempts})…"
         )
 
         for _ in range(backoff * 10):
@@ -11114,6 +11323,410 @@ class OTRv4IRCClient:
         else:
             self._reconnecting = False
             self.add_message("system", colorize("❌ Max reconnect attempts reached.", "red"))
+
+    #: Nicks already told about a missing session, so a peer cannot fill the
+    #: panel by repeating an undecryptable message.
+    _NO_SESSION_WARNED_MAX = 64
+
+    def _other_session_nicks(self, exclude: str):
+        """Nicks we hold OTR sessions with, other than *exclude*."""
+        try:
+            return sorted(p for p in self.session_manager.sessions
+                          if isinstance(p, str) and p != exclude)
+        except Exception:
+            return []
+
+    def _warn_nick_change_keeps_session(self, old_nick: str, new_nick: str):
+        """The server says old_nick is now new_nick and we hold their session.
+
+        The session is NOT moved, and that is the point rather than a
+        limitation.  A nick is a name the server hands out and takes back; the
+        keys belong to the DAKE that produced them.  Following a rename would
+        mean encrypting to whoever holds a name now, which is the one mistake
+        that turns a preserved session into a leak.  So the keys stay put and
+        the user is told, in the tab where the conversation was.
+        """
+        old = _sanitise(old_nick, 64)
+        new = _sanitise(new_nick, 64)
+        sec = None
+        try:
+            sec = self.session_manager.get_security_level(old_nick)
+        except Exception:
+            pass
+        self.add_message(old_nick, colorize(
+            "🔴 OTR SESSION NOT CARRIED OVER", "red"), sec)
+        self.add_message(old_nick, colorize(
+            "   %s is now %s. The encrypted session stays with %s: keys "
+            "follow the handshake that made them, not a name the server has "
+            "just reassigned." % (old, new, old), "yellow"), sec)
+        self.add_message(old_nick, colorize(
+            "   Run  /otr %s  to start a new session with them, then compare "
+            "the fingerprint against the one pinned for %s before you trust "
+            "it." % (new, old), "cyan"), sec)
+        self.add_message(old_nick, colorize(
+            "   /endotr %s  clears the old session when you no longer want "
+            "it." % old, "dim"), sec)
+
+    def _warn_no_session_for_nick(self, sender: str):
+        """An encrypted message arrived from a nick we have no session with.
+
+        Until v10.24.1 this was a bare `return`: the message was dropped and
+        nothing was said, so a peer who reconnected under a new nick simply
+        went quiet.  With sessions now surviving a reconnect that silence is
+        more likely, not less, and it looks identical to the peer having
+        nothing to say.
+
+        What this must NOT do is claim the new nick is the old peer.  Nothing
+        here proves that -- the message did not decrypt, so there is no
+        evidence of who sent it.  It reports what is true (no session for this
+        nick, sessions held for these others) and leaves the identification
+        to the user and to the fingerprint.
+        """
+        warned = getattr(self, "_no_session_warned", None)
+        if warned is None:
+            warned = self._no_session_warned = set()
+        if sender in warned:
+            return
+        if len(warned) >= self._NO_SESSION_WARNED_MAX:
+            return
+        warned.add(sender)
+
+        nick = _sanitise(sender, 64)
+        self.add_message(sender, colorize(
+            "🔴 OTR SESSION NOT FOUND", "red"))
+        self.add_message(sender, colorize(
+            "   An encrypted message arrived from %s, but there is no "
+            "session with that nick. It cannot be read and was dropped."
+            % nick, "yellow"))
+        others = self._other_session_nicks(sender)
+        if others:
+            self.add_message(sender, colorize(
+                "   You do have encrypted session(s) with: %s."
+                % _sanitise(", ".join(others), 256), "yellow"))
+            self.add_message(sender, colorize(
+                "   If this is one of them on a new nick, their keys stayed "
+                "with the old one — nothing is moved automatically, because "
+                "an IRC nick is not an identity.", "dim"))
+        self.add_message(sender, colorize(
+            "   Run  /otr %s  to start a new session, and check the "
+            "fingerprint against one you already trust." % nick, "cyan"))
+
+    def _dake_stage(self, peer: str, stage: int, outcome: str,
+                    detail: str = "", note: str = "") -> None:
+        """One handshake stage, said once, after it has actually happened.
+
+        The old output was a running commentary -- "DAKE1 -> sent - waiting
+        for response...", "DAKE2 <- received from X", "DAKE3 -> sent to X" --
+        interleaved with fragment progress bars, and on a handset it was hard
+        to tell which step you were on or whether it had worked.
+
+        The header and the verdict are emitted together, from one call, and
+        that is deliberate rather than tidy: there is no way to print
+        `OK` for a stage whose operation has not returned, because there is
+        no code path that prints the header on its own.  A stage that fails
+        prints its own failure against its own number.
+
+        `detail` is for debug mode only -- fragment counts are invaluable
+        when something breaks and noise when it does not, which is the same
+        split the XMPP client makes with `_dbg`.
+
+        Nothing here takes key material, a transcript, or a secret: the
+        arguments are a peer name, a small integer, and fixed strings.
+        """
+        sec = None
+        try:
+            sec = self.session_manager.get_security_level(peer)
+        except Exception:
+            pass
+        self.add_message(peer, colorize("🔐 DAKE %d" % stage, "cyan"), sec)
+        if outcome == "ok":
+            self.add_message(peer, colorize("🟢 OK", "green"), sec)
+            if note:
+                self.add_message(peer, colorize("   %s" % note, "dim"), sec)
+        else:
+            self.add_message(peer, colorize(
+                "🔴 FAILED — %s" % _sanitise(str(outcome), 120), "red"), sec)
+        if detail:
+            self.debug("dake stage", {"stage": stage, "detail": detail})
+
+    def _dake_ready(self, peer: str) -> None:
+        """The line the whole handshake exists to reach."""
+        sec = None
+        try:
+            sec = self.session_manager.get_security_level(peer)
+        except Exception:
+            pass
+        self.add_message(peer, colorize("🟢 OTR SESSION READY", "bold_green"),
+                         sec)
+
+    def _preserve_otr_across_reconnect(self) -> dict:
+        """Carry the cryptographic session across a transport interruption.
+
+        An I2P SAM tunnel dying is not a security boundary.  Until v10.24.0
+        this method's predecessor treated it as one: it called
+        `ratchet.zeroize()` on every session, wiped the root and chain keys,
+        and emptied `session_manager.sessions`.  A tunnel blip therefore
+        destroyed every encrypted conversation on the client, and the only
+        way back was `/quit` and a full restart -- reported from a handset
+        after exactly that.
+
+        The XMPP client has never done this.  `_on_disconnected` there drops
+        trades and presence, rebuilds the tunnel, reconnects the stream, and
+        leaves `self.otr.sessions` untouched; the double ratchet is a
+        property of the two peers, not of the socket that carried it.  This
+        brings IRC to the same behaviour.
+
+        WHAT IS KEPT
+        ------------
+        The session objects, and with them the ratchet, the root and chain
+        keys, the message counters, the pinned fingerprint and the SMP state.
+        The identity key and client profile were never touched here and still
+        are not, so the fingerprint a peer pinned stays the fingerprint they
+        see -- a reconnect must not look like a new person.
+
+        WHAT IS DROPPED, AND WHY EACH ONE HAS TO BE
+        -------------------------------------------
+        *Inbound fragment buffers.*  A half-reassembled OTR message whose
+        remaining fragments were on the socket that just died can never
+        complete, and keeping it means the next connection's fragments get
+        appended to the previous connection's prefix.  That is a corrupt
+        message at best.  They are per-connection by nature.
+
+        *An armed passphrase prompt.*  Leaving `_secret_request` set across a
+        reconnect would make the user's next line a passphrase for a session
+        whose transport just vanished, and leave the input mask on over their
+        ordinary chat.  INV-06 is about who may arm that prompt; this is the
+        other half -- it must not outlive the thing it was armed for.
+
+        *A pending consent question.*  Same reason: the y/n belongs to a
+        request that arrived on the old connection.
+
+        WHAT IS NOT REPLAYED
+        --------------------
+        Nothing.  No data message, no fragment, no SMP message is re-sent.
+        OTRv4 replay protection is not something to work around, and a
+        message the peer already processed must not arrive twice.  Messages
+        lost in the drop are lost; the ratchet's skipped-key handling covers
+        the gap for what follows.
+
+        Returns a summary for `_report_preserved_sessions` to print once the
+        transport is back, so the user is told what survived rather than
+        having to guess from the padlock.
+        """
+        summary = {"sessions": [], "smp_in_flight": [], "disarmed": False}
+
+        try:
+            for peer, sess in list(self.session_manager.sessions.items()):
+                try:
+                    level = self.session_manager.get_security_level(peer)
+                except Exception:
+                    level = UIConstants.SecurityLevel.ENCRYPTED
+                summary["sessions"].append((peer, level))
+                # A verification part-way through: its next message was on
+                # the connection that died, so the run may be stranded.  Say
+                # so rather than leaving the user waiting on a step that will
+                # never arrive.
+                try:
+                    phase = sess.rust_smp.get_phase() if sess.rust_smp else ""
+                except Exception:
+                    phase = ""
+                if phase.startswith("AWAITING_MSG") or phase == "SECRET_REQUIRED":
+                    summary["smp_in_flight"].append(peer)
+        except Exception:
+            self.debug("preserve: could not enumerate sessions")
+
+        # The prompt, before anything else can consume a line.  Looked up
+        # rather than called directly: the guided flow lives on
+        # EnhancedOTRv4IRCClient and this method is on the base, and a base
+        # class that assumes a subclass method exists is the shape of the
+        # v10.23.0 dispatcher bug.  A base-only client has no prompt to
+        # disarm, and that is a correct answer rather than an AttributeError.
+        try:
+            disarm = getattr(self, "_disarm_secret_prompt", None)
+            if (getattr(self, "_secret_request", None) is not None
+                    and callable(disarm)):
+                disarm()
+                summary["disarmed"] = True
+        except Exception:
+            self.debug("preserve: could not disarm the secret prompt")
+        try:
+            self._pending_action = None
+            if hasattr(self, "_smp_consent_shown"):
+                self._smp_consent_shown = None
+        except Exception:
+            pass
+
+        # Partial reassembly belongs to the connection that carried it.
+        try:
+            self.fragment_buffers.clear()
+        except Exception:
+            self.debug("preserve: could not clear fragment buffers")
+
+        # Panels for peers with no session go back to plaintext; a panel whose
+        # session survived keeps its badge, because the session did.
+        try:
+            live = {peer for peer, _ in summary["sessions"]}
+            for panel in self.panel_manager.panels.values():
+                if panel.name in live:
+                    continue
+                panel.security_level = UIConstants.SecurityLevel.PLAINTEXT
+                panel.secure_session = False
+                panel.type = (
+                    "channel"
+                    if panel.name.startswith("#")
+                    else "system" if panel.name == "system" else "private"
+                )
+        except Exception:
+            pass
+
+        return summary
+
+    def _report_preserved_sessions(self) -> None:
+        """Say what came through the reconnect.  Called once, after JOIN.
+
+        The point is that the user can tell the difference between "your
+        encrypted session is still there" and "the padlock is stale".  A
+        badge that survived a transport drop with no explanation is a claim
+        the user has no way to check.
+        """
+        summary = getattr(self, "_preserved", None)
+        if not summary:
+            return
+        self._preserved = None
+
+        def sec(peer):
+            """The panel badge, via the subclass helper when there is one."""
+            helper = getattr(self, "_panel_sec", None)
+            if callable(helper):
+                try:
+                    return helper(peer)
+                except Exception:
+                    pass
+            panel = self.panel_manager.panels.get(peer)
+            return getattr(panel, "security_level", None)
+        peers = summary.get("sessions") or []
+        if not peers:
+            return
+        self.add_message("system", colorize(
+            "🔐 %d OTR session(s) kept through the reconnect — identity keys "
+            "and pinned fingerprints unchanged." % len(peers), "green"))
+        for peer, _level in peers:
+            self.add_message(peer, colorize(
+                "🔐 Transport reconnected. This session continues — same "
+                "keys, same fingerprint, nothing re-negotiated.", "green"),
+                sec(peer))
+            self.add_message(peer, colorize(
+                "🔐 Anything sent while the connection was down did not "
+                "arrive and is not re-sent.", "dim"), sec(peer))
+        for peer in summary.get("smp_in_flight") or []:
+            self.add_message(peer, colorize(
+                "🔐 A verification was part-way through when the connection "
+                "dropped. If it does not finish, run  /smp abort  and then "
+                "/smp  to start again.", "yellow"), sec(peer))
+        if summary.get("disarmed"):
+            self.add_message("system", colorize(
+                "🔐 The passphrase prompt was cancelled by the disconnect. "
+                "Nothing was stored or sent.", "yellow"))
+
+    #: Floor and ceiling for the reconnect backoff, in seconds.
+    #:
+    #: The old schedule started at 5s and doubled.  Five seconds is shorter
+    #: than any server's ping timeout, so the reconnect arrived while our
+    #: previous session was still registered and holding the nick: the server
+    #: answered 433, the client renamed itself, and the user watched
+    #: AngryMouse become BrokenNexus become HollowNexus over three drops --
+    #: with the old session's messages still on screen under each new name.
+    #:
+    #: Thirty seconds is the floor because it clears the common
+    #: ping-timeout window on the networks this client is used on.  It is not
+    #: a guarantee (a server with a 120s timeout will still collide once),
+    #: which is why the nick reclaim below exists as well: the backoff makes
+    #: the collision unlikely, the reclaim makes it survivable.
+    RECONNECT_BACKOFF_MIN = 30
+    RECONNECT_BACKOFF_MAX = 120
+
+    @classmethod
+    def _reconnect_backoff(cls, attempt: int) -> int:
+        """Seconds to wait before reconnect attempt `attempt` (1-based).
+
+        Linear, not exponential: 30, 60, 90, 120, 120, ...  Exponential
+        growth past two minutes is not useful here -- a server that is still
+        refusing after two minutes is down, and the user is better served by
+        a steady retry they can predict than by a wait that doubles into the
+        tens of minutes.
+        """
+        return min(cls.RECONNECT_BACKOFF_MAX,
+                   cls.RECONNECT_BACKOFF_MIN * max(1, attempt))
+
+    #: How long to leave a ghosted session to time out before asking for the
+    #: nick back, and how many times to ask.  Four attempts spans two minutes,
+    #: which covers every ping timeout this client has been run against; past
+    #: that the nick is someone else's and retrying is just noise.
+    NICK_RECLAIM_DELAY = 30
+    NICK_RECLAIM_ATTEMPTS = 4
+
+    def _on_nick_collision(self) -> None:
+        """Handle 433/436 without permanently giving up our nick.
+
+        The old behaviour was to generate a fresh random nick and keep it.
+        That is correct exactly once -- during registration you must present
+        *some* free nick or the server will not let you finish -- and wrong
+        every time after, because the usual cause of a collision here is our
+        own previous session still ghosted on the server.  Renaming
+        permanently meant one dropped connection cost the user their
+        identity, and three dropped connections produced three identities,
+        none of which their peers recognised.
+
+        So: take a temporary nick only if we are not registered yet, and
+        either way schedule a reclaim of the original once the ghost has had
+        time to expire.  If someone else genuinely holds the nick, the
+        reclaim attempts fail quietly and we keep what we have.
+        """
+        original = getattr(self, "_original_nick", None) or self.nick
+        self._original_nick = original
+
+        if self.auth_complete:
+            # Already registered: this is a failed reclaim, not a failed
+            # login.  Keep the nick we have and try again later.
+            self._schedule_nick_reclaim()
+            return
+
+        temporary = TwentySevenClubNick.generate()
+        if temporary == self.nick:
+            temporary = self.nick + str(secrets.randbelow(100))
+        self.nick = temporary
+        self.realname = TwentySevenClubNick.real_name(self.nick)
+        self.send(f"NICK {self.nick}")
+        self.add_message(
+            "system",
+            f"Nick collision → {colorize_username(self.nick)} "
+            f"(will try to reclaim {colorize_username(original)})",
+        )
+        self._schedule_nick_reclaim()
+
+    def _schedule_nick_reclaim(self) -> None:
+        """Ask for `_original_nick` back after the ghost has had time to die."""
+        original = getattr(self, "_original_nick", None)
+        if not original or original == self.nick:
+            self._nick_reclaim_tries = 0
+            return
+        tries = getattr(self, "_nick_reclaim_tries", 0)
+        if tries >= self.NICK_RECLAIM_ATTEMPTS:
+            return
+        self._nick_reclaim_tries = tries + 1
+
+        def _reclaim():
+            if getattr(self, "shutdown_flag", False) or not self.connected:
+                return
+            if self.nick == original:
+                self._nick_reclaim_tries = 0
+                return
+            self.send(f"NICK {original}")
+
+        timer = threading.Timer(self.NICK_RECLAIM_DELAY, _reclaim)
+        timer.daemon = True
+        timer.start()
+        self._nick_reclaim_timer = timer
 
     def send_raw(self, message: str) -> bool:
         """Send a raw IRC line (adds CRLF, enforces 510-byte limit).
@@ -11145,6 +11758,598 @@ class OTRv4IRCClient:
         """Send only if connected."""
         return self.send_raw(message) if self.running else False
 
+    # ── outbound line pacing ────────────────────────────────────────────────
+    #
+    # A 12 KiB SMP2 is 48 IRC lines.  How fast those may go out is set by the
+    # server, not by us, and getting it wrong costs a disconnect mid-handshake
+    # -- which on I2P means several more minutes to rebuild.  So the model
+    # here is the one mainstream ircds actually implement rather than a guess:
+    # a leaky bucket where each line costs a fixed penalty, the allowance
+    # refills at one second per second, and exceeding the cap is what earns
+    # "Excess Flood".
+    #
+    # The clearnet path has always used it (cost 2.0, cap 10.0).  The I2P path
+    # did not: it slept 6s after every second fragment, an average of 3.15s a
+    # line, which is roughly half the rate the same model permits.  Measured
+    # against a real handshake on irc.postman.i2p that pacing accounted for
+    # about ten minutes of a seventeen-minute verification -- pure sleeping,
+    # not latency and not computation.
+    #
+    # The presets below are the tuning surface.  NORMAL is the standard ircd
+    # penalty; SAFE is the old I2P behaviour, kept because it is the one rate
+    # known to survive; FAST is for a server that tolerates more, and is
+    # opt-in because nobody here can prove which servers do.
+    #: name -> (cost per line, starting allowance, cap, minimum gap)
+    PACE_PRESETS = {
+        # allowance 2x cost: the behaviour being reproduced sent two lines
+        # 0.30s apart and then paused 6s, so two lines have to clear before
+        # the penalty bites.  With a one-line allowance a two-fragment message
+        # took 3.15s where the old code took 0.30 -- slower, in the name of
+        # reproducing it.
+        "safe":   (3.15, 6.30, 10.0, 0.30),
+        "normal": (2.00, 4.00, 10.0, 0.05),
+        "fast":   (1.00, 4.00, 10.0, 0.05),
+        "turbo":  (0.50, 4.00, 10.0, 0.05),
+    }
+    #: What `/fragrate` accepts.  "auto" is not a fixed rate so it has no
+    #: entry above; it picks one of the others per message.
+    PACE_CHOICES = ("safe", "normal", "fast", "turbo", "auto")
+    #: Back to "safe" in v10.25.1.  v10.25.0 made "normal" the default on the
+    #: arithmetic -- it is the penalty mainstream ircds implement, and the old
+    #: rate was paying double for no recorded reason.  The first real run at
+    #: it ended with the server closing the connection 55 seconds after a
+    #: 17-fragment DAKE1, and one observed disconnect is enough: a lost
+    #: handshake costs minutes on I2P, and the conservative rate is the one
+    #: the user already had working.
+    #:
+    #: What that run did NOT establish is that the pacing caused it.  No
+    #: ERROR line arrived -- a flood kill on most ircds says "Closing Link:
+    #: ... (Excess Flood)" first -- the disconnected side was idle at the
+    #: time rather than sending, and an I2P tunnel dropping looks identical
+    #: from here.  So this is a retreat to the known-good value, not a
+    #: diagnosis.  `/fragrate` and the disconnect report added alongside it
+    #: are how the question gets answered with evidence instead.
+    DEFAULT_PACE = "safe"
+
+    # ── the fitted model of irc.postman.i2p ─────────────────────────────────
+    #
+    # Three observations, all on 2026-09-05, all at 403-406 byte fragments:
+    #
+    #   24 lines at 0.54 s/line  survived   (a DAKE2 at turbo)
+    #   34 lines at 0.97 s/line  KILLED     (an SMP2 at fast, "Excess Flood")
+    #   24 lines at 2.00 s/line  survived   (a full DAKE at normal)
+    #
+    # Fit a leaky bucket -- the server charges PENALTY seconds per line, the
+    # allowance refills one second per second, and the connection dies when
+    # accumulated debt passes BUDGET.  Debt after n lines at interval i is
+    # n * (PENALTY - i).  The survived case needs BUDGET >= 35 and the killed
+    # case needs BUDGET < 35, which pins both parameters at PENALTY = 2.0 and
+    # BUDGET ~= 35 exactly.  A penalty of 1.5 is inconsistent with the pair;
+    # 2.5 fits too but is less parsimonious and would only make this more
+    # conservative.
+    #
+    # THE USEFUL CONSEQUENCE.  At a cost equal to or above the penalty, debt
+    # never accumulates and the rate is safe at any message length -- which is
+    # why `normal` carried a whole DAKE and `safe` two whole verifications.
+    # Below it, debt grows per line and the safe length is BUDGET divided by
+    # the shortfall.  So the limit is not a rate, it is a rate AND a length,
+    # and a message short enough can go faster than a sustained rate ever
+    # could.
+    #
+    # Fragment counts, measured: DAKE1 16, DAKE2 24, DAKE3 19, SMP1 23,
+    # SMP2 47, SMP3 47, SMP4 20.  Only SMP2 and SMP3 are long enough to
+    # exhaust the budget at `fast`.
+    #
+    # Two data points and a straight line through them is not a proof, so
+    # BUDGET here is 20% under what was measured, and `auto` is opt-in.
+    #: Refitted a second time in v10.26.2, and this is the last time the
+    #: number moves on guesswork.  A fifth observation -- a 47-fragment SMP2
+    #: at `normal`, killed -- makes a penalty of 2.0 arithmetically
+    #: impossible: `normal` costs exactly 2.0, so at that penalty its debt
+    #: after the burst is zero and no length could ever be refused, yet one
+    #: was.  Solving the five observations together needs a penalty of at
+    #: least 2.75, and 3.0 fits with room.
+    #:
+    #: THE CONSEQUENCE IS THE WHOLE ANSWER.  At 3.0, `safe` (3.15 s/line) is
+    #: the ONLY preset whose debt per line is negative, and therefore the only
+    #: one safe at the lengths this protocol sends.  That is not a coincidence
+    #: discovered here -- it is why `safe` has completed two full
+    #: verifications on this server while `normal`, `fast` and `turbo` have
+    #: been killed with "Excess Flood" between them four times.
+    #:
+    #: Three refits now, every one of them correcting in the unsafe
+    #: direction.  The model is a heuristic for an UNKNOWN server, not a
+    #: licence to go faster on this one.
+    FLOOD_LINE_PENALTY = 3.0
+    #: The burst is charged at the FULL penalty, not the shortfall -- see
+    #: `_flood_debt`.  Lines covered by the allowance go out back to back at
+    #: essentially zero interval, so the server bills each of them in full
+    #: while the client waits almost nothing.  Getting that backwards in
+    #: v10.26.0 under-counted every message by (allowance/cost) * cost.
+    #:
+    #: At penalty 3.0 the five observations put the real budget between 38 and
+    #: 42.  This is 15: low enough that `auto` chooses `safe` for every
+    #: message this protocol sends, which is the answer the wire has given
+    #: four times.  It is deliberately not the fitted value -- fitting it
+    #: closely is what produced two releases that got a handset killed.
+    FLOOD_DEBT_BUDGET = 15.0
+    #: Presets `auto` may choose between, fastest first.  `turbo` is excluded
+    #: deliberately: it is the preset for finding a ceiling by hitting it,
+    #: which is not a thing to do automatically.
+    AUTO_CANDIDATES = ("fast", "normal", "safe")
+
+    def _auto_preset_for(self, fragments: int) -> str:
+        """Fastest preset that can carry *fragments* lines within the budget.
+
+        The message length is the input because the server's limit is a debt,
+        not a rate.
+
+        WHAT THIS NOW ANSWERS, AND IT IS NOT WHAT IT WAS BUILT FOR.  With the
+        burst charged correctly and the budget refitted, nothing below the
+        penalty can carry a message of the size this protocol sends: at
+        `fast` the limit is eleven lines and the shortest OTR message is
+        sixteen.  So `auto` returns `normal` for every real message on a
+        server like this one, and the honest reading is that `normal` -- the
+        rate whose debt is exactly zero -- is the floor, not that `auto` is
+        clever.  It is kept because the arithmetic is the useful part: on a
+        more tolerant server the same rule would pick `fast`, and on a
+        stricter one it will pick `safe` without anybody having to notice.
+
+        Assumes the debt has drained between messages.  It refills a second a
+        second and an OTRv4 handshake waits tens of seconds for each reply, so
+        that holds for the protocol as it runs; it would not hold for a client
+        that sent two long messages back to back, and nothing here does.
+        """
+        for name in self.AUTO_CANDIDATES:
+            cost, allowance, _cap, _floor = self.PACE_PRESETS[name]
+            shortfall = self.FLOOD_LINE_PENALTY - cost
+            if shortfall <= 0:
+                return name          # never accumulates: safe at any length
+            if self._flood_debt(fragments, cost, allowance) <= \
+                    self.FLOOD_DEBT_BUDGET:
+                return name
+        return self.AUTO_CANDIDATES[-1]
+
+    def _flood_debt(self, fragments: int, cost: float,
+                    allowance: float) -> float:
+        """Seconds of penalty *fragments* lines would owe the server.
+
+        The burst is the part that was wrong before.  Lines covered by the
+        allowance go out back to back, so the server charges each of them the
+        full penalty while we wait almost no time at all; only the lines after
+        it are paced, and those owe just the shortfall.  Treating the burst
+        like a paced line under-counted the debt by (allowance/cost) * cost --
+        eight seconds at `fast`, against a budget of fifteen.
+        """
+        if cost <= 0:
+            return float("inf")
+        burst = min(max(0, fragments), int(allowance // cost))
+        paced = max(0, fragments - burst)
+        return (burst * self.FLOOD_LINE_PENALTY
+                + paced * max(0.0, self.FLOOD_LINE_PENALTY - cost))
+
+    #: What a server says when it has had enough.  Matching any of these drops
+    #: the session to SAFE for the rest of the run: a disconnect mid-DAKE is
+    #: far more expensive than a slow one, so evidence of throttling is acted
+    #: on immediately and never automatically undone.
+    FLOOD_MARKERS = ("excess flood", "flooding", "flood detected",
+                     "max sendq", "sendq exceeded", "too many lines",
+                     "throttl")
+
+    class _Pacer:
+        """Leaky-bucket line pacer.  One per send, seeded from the client.
+
+        Kept as an object rather than inline arithmetic so the pacing can be
+        tested without a socket -- `wait()` is pure except for the sleep, and
+        the tests substitute a clock.
+        """
+
+        def __init__(self, cost, allowance, cap, floor, sleep=time.sleep,
+                     clock=time.monotonic):
+            self.cost = cost
+            self.bucket = allowance
+            self.cap = cap
+            self.floor = floor
+            self._sleep = sleep
+            self._clock = clock
+            self._prev = clock()
+            self.slept = 0.0
+
+        def wait(self):
+            now = self._clock()
+            self.bucket = min(self.cap, self.bucket + (now - self._prev))
+            self._prev = now
+            delay = 0.0
+            if self.bucket < self.cost:
+                delay = self.cost - self.bucket
+            if self.floor > delay:
+                delay = self.floor
+            if delay > 0:
+                self._sleep(delay)
+                self.slept += delay
+                self.bucket = min(self.cap, self.bucket + delay)
+                self._prev = self._clock()
+            self.bucket -= self.cost
+
+    def _report_disconnect_context(self) -> None:
+        """Say what was happening when the connection went, not just that it did.
+
+        A dropped connection on I2P has several causes that look identical
+        from here -- a flood kill, a ping timeout, the SAM tunnel dying, the
+        server restarting -- and "Server closed the connection" distinguishes
+        none of them.  A session was lost mid-DAKE with the pacing newly
+        changed, and there was no way to tell from the log whether the pacing
+        had anything to do with it.  These four facts separate the cases:
+
+          * an ERROR line, if one arrived.  Most ircds send "Closing Link:
+            ... (Excess Flood)" before a flood kill, so its ABSENCE is
+            evidence too, and worth printing as such.
+          * seconds since the last PING/PONG.  A large number points at a
+            ping timeout, which on this client means the receive thread was
+            blocked -- see _send_worker.
+          * seconds since our last outbound OTR message, and how many
+            fragments it was.  A drop during or just after a burst points at
+            the send rate; a drop while idle does not.
+          * the pacing preset in force, because that is the setting under
+            suspicion and it should not have to be remembered separately.
+
+        Prints nothing sensitive: counts, seconds, a preset name, and a
+        server-supplied string that is sanitised.
+        """
+        now = time.time()
+        lines = []
+        err = getattr(self, "_last_server_error", None)
+        if err and now - err[1] < 120:
+            lines.append("   Server said: %s" % _sanitise(err[0], 200))
+        else:
+            lines.append("   No ERROR line from the server — a flood kill "
+                         "usually sends one first.")
+        try:
+            since_ping = now - float(getattr(self, "last_ping", 0) or 0)
+            if since_ping < 86400:
+                lines.append("   %.0fs since the last message from the server."
+                             % since_ping)
+        except Exception:
+            pass
+        # `_last_otr_sent` records only SUCCESSFUL sends, and the send that
+        # earns a flood kill is by definition the one that failed -- so on a
+        # handset this reported "29s since our last OTR message (23
+        # fragments)" where the 29s came from the DAKE3 that landed and the 23
+        # from the SMP1 that was cut off at fragment 19.  Two different
+        # messages in one sentence, in a report whose whole job is to say what
+        # was happening.  `_last_send_started` is written when a send begins,
+        # so the pair belong to each other.
+        last_sent = float(getattr(self, "_last_send_started", 0.0) or 0.0)
+        if not last_sent:
+            try:
+                for _peer, _ts in getattr(self, "_last_otr_sent", {}).items():
+                    last_sent = max(last_sent, _ts)
+            except Exception:
+                pass
+        if last_sent:
+            lines.append("   %.0fs since our last OTR message (%d fragments)."
+                         % (now - last_sent,
+                            getattr(self, "_last_fragment_count", 0)))
+        else:
+            lines.append("   No OTR message sent on this connection.")
+        # The preset the LAST SEND used, not the live one.  On the path this
+        # report exists for, _note_possible_flood has already dropped the
+        # live value to 'safe' by the time the socket closes, so reading it
+        # here reported the retreat rather than the cause.
+        sent_at = getattr(self, "_last_send_preset", None)
+        now_at = self._pace_name()
+        if sent_at and sent_at != now_at:
+            lines.append("   Fragment pacing was '%s' for that send, and is "
+                         "'%s' now. /fragrate to change it."
+                         % (sent_at, now_at))
+        else:
+            lines.append("   Fragment pacing was '%s'. /fragrate to change it."
+                         % (sent_at or now_at))
+        for line in lines:
+            self.add_message("system", colorize(line, "dim"))
+
+    def _describe_auto(self) -> None:
+        """Show where `auto`'s cut-off falls, in fragments and in messages.
+
+        A rule nobody can see the boundary of is a rule nobody can check, and
+        this one is fitted from two observations rather than derived.
+        """
+        cut = {}
+        for name in self.AUTO_CANDIDATES:
+            shortfall = self.FLOOD_LINE_PENALTY - self.PACE_PRESETS[name][0]
+            if shortfall <= 0:
+                cut[name] = None     # no limit
+            else:
+                cut[name] = int(self.FLOOD_DEBT_BUDGET // shortfall)
+        parts = []
+        for name in self.AUTO_CANDIDATES:
+            limit = cut[name]
+            parts.append("%s up to %d lines" % (name, limit) if limit
+                         else "%s beyond that" % name)
+        self.add_message("system", colorize(
+            "   " + ", ".join(parts) + ".", "dim"))
+        self.add_message("system", colorize(
+            "   A DAKE message is 16-24 fragments and an SMP2/SMP3 is 47, so "
+            "the handshake goes fast and the two big proofs do not.", "dim"))
+        self.add_message("system", colorize(
+            "   Fitted from two disconnects on irc.postman.i2p, with a 20% "
+            "margin. Not proven — if it gets you killed, say so.", "yellow"))
+
+    def _cmd_fragrate(self, arg: str) -> None:
+        """`/fragrate` — show the pacing, or change it.
+
+        The sweet spot for a given server cannot be derived; it has to be
+        found. This shows what the last multi-fragment send actually achieved
+        so a rate can be raised, tried against a real handshake, and kept or
+        reverted on evidence rather than on feel.
+
+        In memory only, like everything else the IRC client holds (INV-10).
+        A new session starts at the default.
+        """
+        arg = (arg or "").strip().lower()
+        if arg and arg not in self.PACE_CHOICES:
+            self.add_message("system", colorize(
+                "Usage: /fragrate [%s]" % " | ".join(self.PACE_CHOICES), "red"))
+            return
+        if arg:
+            self._pace_preset = arg
+            if arg == "auto":
+                self.add_message("system", colorize(
+                    "📶 Fragment pacing: auto — the rate is chosen per "
+                    "message from its length.", "cyan"))
+                self._describe_auto()
+                return
+            cost, _a, _c, floor = self.PACE_PRESETS[arg]
+            self.add_message("system", colorize(
+                "📶 Fragment pacing: %s — about %.2f lines/sec sustained."
+                % (arg, 1.0 / cost), "cyan"))
+            if arg in ("fast", "turbo"):
+                self.add_message("system", colorize(
+                    "   Above the standard ircd penalty. If the server "
+                    "disconnects you mid-handshake, this is why — it drops "
+                    "back to 'safe' on its own if the server says so.",
+                    "yellow"))
+            return
+
+        name = self._pace_name()
+        if name == "auto":
+            self.add_message("system", colorize(
+                "📶 Fragment pacing: auto — chosen per message from its "
+                "length.", "cyan"))
+            self._describe_auto()
+        else:
+            cost, allowance, cap, floor = self.PACE_PRESETS[name]
+            self.add_message("system", colorize(
+                "📶 Fragment pacing: %s — %.2f s/line sustained, burst "
+                "%.0f lines." % (name, cost, allowance / cost), "cyan"))
+        stats = getattr(self, "_last_send_stats", None)
+        if stats:
+            self.add_message("system", colorize(
+                "   Last multi-fragment send: %d fragments in %.1fs "
+                "(%.2f lines/sec)."
+                % (stats["fragments"], stats["elapsed"],
+                   stats["lines_per_sec"]), "dim"))
+        else:
+            self.add_message("system", colorize(
+                "   No multi-fragment send yet this session.", "dim"))
+        size = self._fragment_size(
+            "peer", NetworkConstants.detect(getattr(self, "server", "")))
+        if getattr(self, "_own_prefix", None):
+            self.add_message("system", colorize(
+                "   Fragment size %d bytes (from the server-reported prefix)."
+                % size, "dim"))
+        else:
+            self.add_message("system", colorize(
+                "   Fragment size %d bytes (prefix not seen yet — join a "
+                "channel and it is measured)." % size, "dim"))
+        self.add_message("system", colorize(
+            "   /fragrate %s" % " | ".join(self.PACE_PRESETS), "dim"))
+
+    def _pace_name(self) -> str:
+        return getattr(self, "_pace_preset", None) or self.DEFAULT_PACE
+
+    def _pacer(self, net: str, fragments: Optional[int] = None):
+        """A pacer for one message.
+
+        Clearnet keeps the standard penalty regardless of the preset: the
+        preset exists to tune an overlay network where the round trip already
+        dwarfs the pacing, and letting it loosen a clearnet connection would
+        be tuning the wrong thing.
+
+        `fragments` is how long this particular message is, and only `auto`
+        uses it -- see `_auto_preset_for`.  Optional so every existing caller
+        and test keeps working; without it `auto` falls back to the rate that
+        is safe at any length rather than guessing.
+
+        The chosen preset is recorded on the returned pacer as `.preset`, so
+        the disconnect report and `/fragrate` can name what a send actually
+        used rather than what the setting was called.
+        """
+        name = "normal"
+        if net == NetworkConstants.NET_CLEARNET:
+            cost, allowance, cap, floor = self.PACE_PRESETS["normal"]
+        elif net == NetworkConstants.NET_TOR:
+            cost, allowance, cap, floor = self.PACE_PRESETS["normal"]
+            floor = 0.20
+        else:
+            name = self._pace_name()
+            if name == "auto":
+                name = (self._auto_preset_for(fragments)
+                        if fragments else self.AUTO_CANDIDATES[-1])
+            cost, allowance, cap, floor = self.PACE_PRESETS[name]
+        pacer = self._Pacer(cost, allowance, cap, floor)
+        pacer.preset = name
+        return pacer
+
+    #: How many PACED lines a sample needs on top of the burst before its
+    #: lines/sec means anything.  Three is enough to separate the sustained
+    #: rate from the allowance.
+    RATE_SAMPLE_PACED_LINES = 3
+
+    def _rate_sample_min(self) -> int:
+        """Fewest fragments that make a meaningful rate sample, for the preset
+        currently in force.
+
+        Not a constant, because the burst is not.  `safe` and `normal` clear
+        two lines before the penalty bites, `fast` four and `turbo` eight --
+        so a five-fragment sample is three paced lines on `safe` and pure
+        allowance on `turbo`, where it would report 8 lines/sec for a preset
+        whose sustained rate is 2.  A fixed threshold is right for exactly one
+        of the four presets.
+        """
+        try:
+            cost, allowance, _cap, _floor = self.PACE_PRESETS[self._pace_name()]
+            burst = int(allowance // cost)
+        except Exception:
+            burst = 2
+        return burst + self.RATE_SAMPLE_PACED_LINES
+
+    def _record_send_rate(self, fragments: int, elapsed: float) -> None:
+        """Remember what the last multi-fragment send actually achieved.
+
+        The point of measuring is that the sweet spot cannot be derived, only
+        found: `/fragrate` reports this so a rate can be raised, tried on a
+        real handshake, and kept or reverted on evidence.
+
+        Short sends are ignored, and that is the difference between a useful
+        number and a misleading one.  A heartbeat is two fragments, both of
+        which come out of the burst allowance without waiting, so it measures
+        3.3 lines/sec on a preset whose sustained rate is 0.32.  Seen on a
+        handset: a 60-second heartbeat overwrote the measurement of a
+        23-fragment SMP1 with exactly that, at the moment the number was
+        being used to decide whether to go faster.
+        """
+        if fragments < self._rate_sample_min() or elapsed <= 0:
+            return
+        self._last_send_stats = {
+            "fragments": fragments,
+            "elapsed": elapsed,
+            "lines_per_sec": fragments / elapsed,
+            "preset": self._pace_name(),
+        }
+        self.debug("send rate", {"frags": fragments,
+                                 "secs": round(elapsed, 1),
+                                 "lines_per_sec": round(fragments / elapsed, 2),
+                                 "preset": self._pace_name()})
+
+    def _note_peer_flood(self, peer: str, reason: str) -> bool:
+        """Back off after a PEER is disconnected for flooding.
+
+        Distinct from `_note_possible_flood`, which reads an ERROR addressed
+        to us, because the wording has to be different: nothing has gone wrong
+        here yet, and the user needs to know why their working session just
+        slowed down.
+        """
+        blob = (reason or "").lower()
+        if not any(marker in blob for marker in self.FLOOD_MARKERS):
+            return False
+        already_safe = self._pace_name() == "safe"
+        self._pace_preset = "safe"
+        if already_safe:
+            return True
+        self.add_message("system", colorize(
+            "⚠ %s was disconnected by the server for flooding, at the same "
+            "fragment rate this client is using." % _sanitise(peer, 64),
+            "yellow"))
+        self.add_message("system", colorize(
+            "   Pacing dropped to 'safe' here too — the next long message "
+            "from this end would have been the one to go.", "yellow"))
+        self.add_message("system", colorize(
+            "   /fragrate shows it. It is not raised again automatically.",
+            "dim"))
+        return True
+
+    def _note_possible_flood(self, reason: str) -> bool:
+        """Drop to SAFE if *reason* looks like the server complaining.
+
+        Never raises the rate again on its own.  A server that threw us off
+        once will do it again, and an automatic recovery would rediscover the
+        limit the expensive way, mid-handshake.
+        """
+        blob = (reason or "").lower()
+        if not any(marker in blob for marker in self.FLOOD_MARKERS):
+            return False
+        if self._pace_name() == "safe":
+            return True
+        self._pace_preset = "safe"
+        self.add_message("system", colorize(
+            "⚠ The server complained about the send rate — fragment pacing "
+            "dropped to 'safe' for this session.", "yellow"))
+        self.add_message("system", colorize(
+            "   /fragrate  shows the current setting. It is not raised again "
+            "automatically.", "dim"))
+        return True
+
+    #: Bounds on the derived fragment size.
+    #:
+    #: FRAG_SIZE_MAX is a ceiling, and it is a real one: it leaves room for a
+    #: server that rewrites our prefix after we measured it (a vhost applied
+    #: post-JOIN) without the line overflowing.
+    #:
+    #: FRAG_SIZE_FLOOR is a sanity bound, NOT a "known good" value.  It used
+    #: to be 380 applied with max(), which is a bug rather than a safety net:
+    #: when the computed limit came out BELOW 380 -- a long nick and a long
+    #: target on top of a b32 host cloak -- the floor overrode it and the line
+    #: went out at 520 bytes, to be truncated by the server along with the
+    #: fragment's terminating "." and the message with it.  A floor may only
+    #: ever be a fallback for not knowing, never an override for knowing.
+    FRAG_SIZE_FLOOR = 64
+    FRAG_SIZE_MAX = 440
+    #: Retained under the old name because tests and docs refer to it: the
+    #: value this client used for every I2P fragment before the size was
+    #: derived.  Nothing computes with it any more.
+    FRAG_SIZE_MIN = 380
+    #: Slack kept below the 512-byte line limit.
+    FRAG_SAFETY_MARGIN = 8
+    #: Worst-case user@host to assume before the server has told us ours.
+    #: An IRC host is at most 63 characters and a user at most 10, so this
+    #: over-estimates rather than truncates.
+    FRAG_ASSUMED_USERHOST = 10 + 1 + 63
+
+    def _fragment_size(self, target: str, net: str) -> int:
+        """How many characters of fragment fit in one IRC line to *target*.
+
+        The binding limit is not the line we send, it is the one the
+        RECIPIENT sees: `:nick!user@host PRIVMSG target :<fragment>\r\n` must
+        be at most 512 bytes, and the prefix is added by the server after we
+        hand the line over.
+
+        This was a fixed 380 for every I2P fragment.  Two things were wrong
+        with that.  It was too small in the common case -- on a server that
+        hands out a short host cloak it wasted about a tenth of every line,
+        which is a tenth of the fragments and a tenth of the handshake -- and
+        it was too large in the uncommon one: a thirty-character nick sending
+        to a thirty-character target over a b32 cloak produces a 520-byte
+        line, and the server truncates it.
+
+        So it is computed, from the prefix the server echoed back with our own
+        JOIN when we have it, and from our nick plus a worst-case user@host
+        when we do not.  Both are bounded above by FRAG_SIZE_MAX and below
+        only by a sanity floor.
+        """
+        if net != NetworkConstants.NET_I2P:
+            return UIConstants.OTR_FRAGMENT_SIZE
+        if not target:
+            return self.FRAG_SIZE_MIN
+        try:
+            prefix = getattr(self, "_own_prefix", None)
+            # A bare nick under-counts the overhead by the whole user@host
+            # the server adds, so it is not a prefix for this purpose.
+            if not prefix or "!" not in prefix or "@" not in prefix:
+                nick = getattr(self, "nick", "") or ""
+                prefix_len = len(nick) + 1 + self.FRAG_ASSUMED_USERHOST
+            else:
+                prefix_len = len(prefix)
+            overhead = (1 + prefix_len + len(" PRIVMSG ") + len(target)
+                        + len(" :") + 2 + self.FRAG_SAFETY_MARGIN)
+            size = 512 - overhead
+        except Exception:
+            return self.FRAG_SIZE_MIN
+        # Ceiling, then sanity floor.  The floor is deliberately far below any
+        # plausible computed value: if it ever binds, the arithmetic above is
+        # wrong and a small fragment is the safe way to be wrong.
+        return max(self.FRAG_SIZE_FLOOR, min(self.FRAG_SIZE_MAX, size))
+
     def send_otr_message(self, target: str, otr_message: str) -> bool:
         """Fragment OTR message if needed and send each part.
 
@@ -11163,38 +12368,38 @@ class OTRv4IRCClient:
             pass
 
         _net = NetworkConstants.detect(getattr(self, "server", ""))
-        _is_overlay = _net in (NetworkConstants.NET_I2P, NetworkConstants.NET_TOR)
-        _frag_sz = 380 if _net == NetworkConstants.NET_I2P else UIConstants.OTR_FRAGMENT_SIZE
+        _frag_sz = self._fragment_size(target, _net)
         fragments = self.otr_fragmenter.fragment(
             otr_message,
             sender_tag=sender_tag,
             receiver_tag=receiver_tag,
             max_line=_frag_sz,
         )
-        _bucket = 4.0
-        _prev_ts = time.monotonic()
+        # Recorded for the handshake display: the normal UI says "DAKE 1 / OK"
+        # and debug mode adds the fragment count.  Kept as an attribute rather
+        # than returned so no caller's signature changes.
+        self._last_fragment_count = len(fragments)
+        _pace = self._pacer(_net, len(fragments))
+        # The preset THIS send is going out at, recorded before anything can
+        # change it.  Taken from the pacer rather than from `_pace_name()`, so
+        # that under `auto` it names the rate actually chosen for this message
+        # instead of the word "auto".  _report_disconnect_context used to read the live value,
+        # which meant that on the one path where the answer matters most --
+        # the server sends ERROR, _note_possible_flood drops the rate to
+        # 'safe', the socket then closes -- it reported the rate we had just
+        # retreated to instead of the one that earned the kill.  A handset
+        # sending 46 fragments at 'fast' was told "Fragment pacing was
+        # 'safe'", which is the opposite of the fact the report exists for.
+        self._last_send_preset = getattr(_pace, "preset", self._pace_name())
+        # Wall clock, paired with _last_fragment_count above: the disconnect
+        # report needs the time and the size of the SAME message, including
+        # when that message is the one that never finished.
+        self._last_send_started = time.time()
+        _started = time.monotonic()
         ok = True
         for i, frag in enumerate(fragments):
-            if len(fragments) > 1 and not _is_overlay:
-                _now = time.monotonic()
-                _bucket = min(10.0, _bucket + (_now - _prev_ts) * 1.0)
-                if _bucket < 2.0:
-                    _wait = (2.0 - _bucket) + 0.30
-                    time.sleep(_wait)
-                    _bucket = min(10.0, _bucket + (2.0 - _bucket) + 0.30)
-                _bucket -= 2.0
-                _prev_ts = time.monotonic()
-            elif len(fragments) > 1 and _is_overlay and i > 0:
-                # irc.postman.i2p flood limit: send 2 fragments then pause 6s.
-                # ~0.33 lines/sec average - conservative but reliable.
-                # Tor uses simple 200ms delay.
-                if _net == NetworkConstants.NET_I2P:
-                    if i % 2 == 0:
-                        time.sleep(6.0)
-                    else:
-                        time.sleep(0.30)
-                else:
-                    time.sleep(0.20)
+            if len(fragments) > 1:
+                _pace.wait()
             if len(fragments) > 1:
                 try:
                     _tb = "█" * (i + 1) + "░" * (len(fragments) - i - 1)
@@ -11216,6 +12421,8 @@ class OTRv4IRCClient:
                 break
         if ok:
             self._last_otr_sent[target] = time.time()
+        if len(fragments) > 1:
+            self._record_send_rate(len(fragments), time.monotonic() - _started)
         if len(fragments) > 1:
             try:
                 if self._prompt_refresh_cb:
@@ -11339,6 +12546,18 @@ class OTRv4IRCClient:
                 self.handle_numeric_reply(int(command), params, trailing)
                 return
 
+            if command == "ERROR":
+                # The last thing a server says before closing the link, and
+                # the only place it names the reason.  Read for a flood
+                # complaint before the socket goes: it is the evidence that
+                # the send rate was too high, and it arrives exactly once.
+                _why = trailing or " ".join(params)
+                self._last_server_error = (_why, time.time())
+                self._note_possible_flood(_why)
+                self.add_message("system", colorize(
+                    "⚠ Server: %s" % _sanitise(_why, 256), "red"))
+                return
+
             if command == "PING":
                 target = trailing or (params[0] if params else "server")
                 self.send(f"PONG :{target }")
@@ -11419,6 +12638,14 @@ class OTRv4IRCClient:
                 if not channel or len(channel) > 64 or "\r" in channel or "\n" in channel:
                     return
                 if sender == self.nick:
+                    # The server echoes our JOIN back with our full prefix.
+                    # That is the only place we learn it, and knowing it is
+                    # worth about a tenth of every fragment -- see
+                    # _fragment_size.  "!" and "@" both required: a bare nick
+                    # would under-count the overhead and truncate lines.
+                    if prefix and "!" in prefix and "@" in prefix:
+                        self._own_prefix = prefix
+                        self.debug("own prefix", {"len": len(prefix)})
                     if channel not in self.panel_manager.panels:
                         self.panel_manager.add_panel(channel, "channel")
                     self._switch_panel(channel)
@@ -11479,11 +12706,27 @@ class OTRv4IRCClient:
                 _o = getattr(self, "_otrv4_users", None)
                 if _o is not None and sender in _o:
                     _o[new_nick] = _o.pop(sender)
+                # A peer we are encrypted with just changed name.  The keys do
+                # not follow, and the user has to be told rather than left
+                # wondering why the new nick is a plaintext tab.
+                if sender != self.nick:
+                    try:
+                        if self.session_manager.has_session(sender):
+                            self._warn_nick_change_keeps_session(sender, new_nick)
+                            _w = getattr(self, "_no_session_warned", None)
+                            if _w is not None:
+                                _w.discard(new_nick)
+                    except Exception:
+                        self.debug("nick-change session notice failed")
                 if sender == self.nick:
                     self.nick = new_nick
                     self.add_message(
                         "system", f"Nick → {colorize_username (_sanitise (new_nick ,64 ))}"
                     )
+                    if new_nick == getattr(self, "_original_nick", None):
+                        # Reclaim succeeded: stop asking.
+                        self._nick_reclaim_tries = 0
+                        self.realname = TwentySevenClubNick.real_name(new_nick)
                 return
 
             if command == "KICK":
@@ -11649,13 +12892,7 @@ class OTRv4IRCClient:
                 return
 
             if code in (433, 436):
-                new_nick = TwentySevenClubNick.generate()
-                if new_nick == self.nick:
-                    new_nick = self.nick + str(secrets.randbelow(100))
-                self.nick = new_nick
-                self.realname = TwentySevenClubNick.real_name(self.nick)
-                self.send(f"NICK {self .nick }")
-                self.add_message("system", f"Nick collision → {colorize_username (self .nick )}")
+                self._on_nick_collision()
                 return
 
             if code == 375:
@@ -12103,12 +13340,14 @@ class OTRv4IRCClient:
                     if _should_switch:
                         _cur = self.panel_manager.active_panel
                         _cur_panel = self.panel_manager.panels.get(_cur)
+                        # Already on the peer's tab -> nothing to switch to.
+                        # This used to call _switch_panel anyway, which
+                        # replayed the tab's history mid-handshake.
                         _in_channel = (
                             _cur is None
                             or (_cur_panel is not None and _cur_panel.type in ("channel", "system"))
-                            or _cur == s
                         )
-                        if _in_channel or _cur == s:
+                        if _in_channel and _cur != s:
                             self._switch_panel(s)
 
                     if msg_type == "dake1" or not self.session_manager.has_session(s):
@@ -12189,6 +13428,10 @@ class OTRv4IRCClient:
         client right after SMP verification succeeds.
         """
         if not self.session_manager.has_session(sender):
+            # Was a bare `return`.  Silence here is indistinguishable from the
+            # peer having said nothing, and with sessions now surviving a
+            # reconnect it is the likeliest way to meet a peer on a new nick.
+            self._warn_no_session_for_nick(sender)
             return
 
         self.last_ping = time.time()
@@ -12319,17 +13562,46 @@ class OTRv4IRCClient:
 
             self.auto_joined = True
             self.connection_attempts = 0
+            # After the rejoin, not before: the user should see what survived
+            # once there is somewhere to say it.
+            try:
+                self._report_preserved_sessions()
+            except Exception:
+                self.debug("could not report preserved sessions")
 
-            peers = [
-                name
-                for name, p in self.panel_manager.panels.items()
-                if not name.startswith("#") and name not in ("system", "debug") and p.history
-            ]
+            # Only peers whose session did NOT survive.  This used to list
+            # every peer panel that had any history, which was correct while
+            # _try_reconnect cleared the sessions and became a flat
+            # contradiction when v10.24.0 stopped: a handset printed
+            #
+            #   🔐 1 OTR session(s) kept through the reconnect — identity keys
+            #      and pinned fingerprints unchanged.
+            #   ⚠ OTR sessions lost on reconnect - /otr IvoryDelta
+            #
+            # two lines apart, about the same session.  Of the two the second
+            # was the wrong one, and it is the one that tells the user to
+            # throw away a working session and spend four minutes rebuilding
+            # it.
+            try:
+                peers = [
+                    name
+                    for name, p in self.panel_manager.panels.items()
+                    if not name.startswith("#")
+                    and name not in ("system", "debug")
+                    and p.history
+                    and not self.session_manager.has_session(name)
+                ]
+            except Exception:
+                # Fail quiet rather than fail loud: a wrong "sessions lost"
+                # costs the user a rebuild, a missing one costs a message.
+                peers = []
             if peers:
                 self.add_message(
                     "system",
                     colorize(
-                        "⚠ OTR sessions lost on reconnect - "
+                        "⚠ No OTR session with "
+                        + ", ".join(f"{p }" for p in peers)
+                        + " after the reconnect - "
                         + ", ".join(f"/otr {p }" for p in peers),
                         "yellow",
                     ),
@@ -12454,7 +13726,7 @@ class OTRv4IRCClient:
 
             threading.Timer(0.3, _send_reply).start()
 
-    def _switch_panel(self, name: str) -> bool:
+    def _switch_panel(self, name: str, force: bool = False) -> bool:
         """Switch the active panel and replay its buffered history to stdout.
 
         Single choke-point for all tab switches - /switch, /tab-next,
@@ -12469,9 +13741,34 @@ class OTRv4IRCClient:
         3. Replay up to _REPLAY_LINES messages with their stored timestamps
            (dimmed) so history is distinct from live output.
         4. Print a thin "live" separator to mark where buffered history ends.
+
+        Switching to the tab that is already active is not a switch, and
+        `force` is the only way to make it replay.  Steps 2-4 are what makes
+        a redundant call visible: they reprint the whole buffer under the
+        *original* timestamps, so a user who had just started a handshake saw
+
+            14:52:59 [Iron] Starting OTR session with Iron...
+            14:53:50 [Iron] DAKE1 -> sent - waiting for response...
+            ---- Iron ----
+            14:52:59 [Iron] Starting OTR session with Iron...
+            14:53:50 [Iron] DAKE1 -> sent - waiting for response...
+            ---- live ----
+
+        and reasonably read it as the client having sent DAKE1 twice.  It had
+        sent it once; the inbound DAKE2's first fragment called back into
+        here while the peer tab was already focused.  The identical
+        timestamps are the tell -- a real second send carries a new one.
+
+        The guard lives here rather than at the call site because there are
+        fifteen call sites and only three of them checked.  `force` is for
+        the one case where the redraw *is* the request: `/switch <this tab>`
+        typed by a user who has scrolled away from the bottom.
         """
         if name not in self.panel_manager.panels:
             return False
+
+        if not force and self.panel_manager.active_panel == name:
+            return True
 
         self.panel_manager.switch_to_panel(name)
         # Rebuild scroll history from this panel-s actual messages
@@ -12516,7 +13813,8 @@ class OTRv4IRCClient:
             for entry in history:
                 if not entry.get("message", "").strip():
                     continue
-                ts = colorize(time.strftime("%H:%M:%S", time.localtime(entry["timestamp"])), "dim")
+                ts = colorize(
+                    time.strftime(TIMESTAMP_FORMAT, time.localtime(entry["timestamp"])), "dim")
                 lines_out.append(f"{ts } {tag } {entry ['message']}")
         lines_out.append(colorize("─" * left + " live " + "─" * max(0, right - 1), "dim"))
         # Build tab bar line showing all open panels
@@ -12556,8 +13854,73 @@ class OTRv4IRCClient:
                 pass
         return True
 
+    def _purge_scrollback(self, reason: str, announce: bool = True,
+                          wipe_terminal: bool = True) -> int:
+        """Empty every panel's retained history.  Returns the message count.
+
+        Called at each boundary between one connection and the next --
+        disconnect, reconnect, shutdown -- and by `/clear` on demand.
+
+        The boundary is the point: an I2P session is meant to be unlinkable
+        to the one before it, and replaying the previous session's
+        conversation into the new one links them on the screen no matter what
+        the transport did.  It also stopped the unread badges accumulating
+        across reconnects (system(53) -> system(105) -> system(158)), which
+        was the visible symptom of the same bug.
+
+        `announce` is False on the shutdown path, where adding a message to a
+        panel we have just emptied would leave one line behind.
+
+        `wipe_terminal` is False on the automatic-reconnect path, and that is
+        a deliberate split rather than an oversight.  Blanking the emulator
+        is right when the user is leaving (/quit, process exit) or has asked
+        (/clear); doing it on every dropped connection would destroy the
+        error messages they are reading to find out what just happened, on a
+        transport where a blip is routine.  What the reconnect purge stops is
+        the *replay* -- the reported bug -- not the lines already printed.
+        """
+        purged = 0
+        try:
+            for panel in self.panel_manager.panels.values():
+                try:
+                    purged += panel.clear_history()
+                except Exception:
+                    pass
+        except Exception:
+            return 0
+
+        # Drop the terminal's own scrollback too.  Clearing our buffers while
+        # the emulator still holds the rendered lines would be a half
+        # measure: on Termux the visible history IS the scrollback.  \033[3J
+        # is the one that empties the saved lines rather than just the
+        # viewport.
+        try:
+            if wipe_terminal and sys.stdout.isatty():
+                sys.stdout.write("\033[3J\033[H\033[2J")
+                sys.stdout.flush()
+        except Exception:
+            pass
+
+        # The panel dicts are gone; ask for the collection rather than
+        # waiting for it, so the strings are unreferenced promptly instead of
+        # at whatever point the allocator next feels like it.
+        try:
+            gc.collect()
+        except Exception:
+            pass
+
+        if announce and purged:
+            try:
+                self.add_message(
+                    "system",
+                    colorize(f"\U0001f9f9 scrollback cleared ({purged} messages) - {reason}", "dim"),
+                )
+            except Exception:
+                pass
+        return purged
+
     def get_timestamp(self) -> str:
-        return time.strftime("%H:%M:%S")
+        return time.strftime(TIMESTAMP_FORMAT)
 
     def clear_screen(self):
         if IS_TERMUX:
@@ -12905,10 +14268,12 @@ class OTRv4IRCClient:
         elif cmd in ("switch", "tab") and len(parts) > 1:
             _sw_name = parts[1]
 
-            if not self._switch_panel(_sw_name):
+            if not self._switch_panel(_sw_name, force=True):
                 _sw_hashed = "#" + _sw_name if not _sw_name.startswith("#") else _sw_name
-                if not self._switch_panel(_sw_hashed):
+                if not self._switch_panel(_sw_hashed, force=True):
                     self.add_message("system", colorize(f"❌ No panel: {_sw_name }", "red"))
+        elif cmd == "fragrate":
+            self._cmd_fragrate(parts[1] if len(parts) > 1 else "")
         elif cmd == "tabs":
             self.show_tabs()
         elif cmd == "tab-next":
@@ -12930,9 +14295,23 @@ class OTRv4IRCClient:
                     self.panel_manager.panel_order.remove(p)
                 self.panel_manager._render_ui()
         elif cmd == "clear":
-            active = self.panel_manager.get_active_panel()
-            if active:
-                self.panel_manager.clear_panel_history(active.name)
+            # Bare /clear now empties EVERY panel and the terminal's own
+            # scrollback, not just the active tab.  Clearing one tab while
+            # the others still hold the conversation -- and while the
+            # emulator still has every line of it scrolled off the top -- is
+            # not what anyone typing /clear wants; on a handset the threat
+            # is someone picking the phone up, and a per-tab clear does
+            # nothing about that.  `/clear <panel>` keeps the old behaviour
+            # for when you really do mean one tab.
+            if len(parts) > 1:
+                target = parts[1]
+                if target in self.panel_manager.panels:
+                    self.panel_manager.clear_panel_history(target)
+                else:
+                    self.add_message(
+                        "system", colorize(f"No such panel: {_sanitise(target, 64)}", "yellow"))
+            else:
+                self._purge_scrollback("/clear")
         elif cmd == "clear-screen":
             self.clear_screen()
         elif cmd == "otr" and len(parts) > 1:
@@ -12947,71 +14326,15 @@ class OTRv4IRCClient:
         elif cmd == "trust" and len(parts) > 2:
             self.session_manager.trust_db.add_trust(parts[1], parts[2])
             self.add_message("system", f"✅ Trusted {parts [1 ]}: {parts [2 ][:16 ]}…")
-        elif cmd == "smp" and len(parts) == 1:
-            # Bare /smp.  IRC has no hidden prompt of its own -- see
-            # SMP_UX_AUDIT.md; the guided flow is the XMPP client's -- so this
-            # says what to type rather than arming anything.
-            active = self.panel_manager.get_active_panel()
-            peer = active.name if active and active.type not in ("system", "debug") else None
-            if not peer:
-                self.add_message("system", colorize("⚠ Switch to a peer panel first", "yellow"))
-            else:
-                stored = ""
-                if hasattr(self.session_manager, "smp_storage"):
-                    stored = self.session_manager.smp_storage.get_secret(peer) or ""
-                if stored:
-                    self.add_message(
-                        "system",
-                        colorize(f"🔐 Stored passphrase found for {peer } — verifying…", "cyan"),
-                    )
-                    self._start_smp(peer, stored)
-                else:
-                    self.add_message(
-                        "system",
-                        colorize("🔐 Verification needs the passphrase you agreed with "
-                                 "them. Type  /smp <passphrase>  (it will be visible "
-                                 "on this terminal).", "yellow"),
-                    )
-        elif cmd == "smp" and len(parts) > 1:
-            active = self.panel_manager.get_active_panel()
-            peer = active.name if active and active.type not in ("system", "debug") else None
-            sub = parts[1].lower()
-            if not peer:
-                self.add_message("system", colorize("⚠ Switch to a peer panel first", "yellow"))
-            elif sub == "start":
-                stored = ""
-                if hasattr(self.session_manager, "smp_storage"):
-                    stored = self.session_manager.smp_storage.get_secret(peer) or ""
-                if not stored:
-                    self.add_message(
-                        "system",
-                        colorize("⚠ No SMP secret stored - use /smp <secret> first", "yellow"),
-                    )
-                else:
-                    self._start_smp(peer, stored)
-            elif sub == "abort":
-                self.clear_pending_smp(peer)
-                self.add_message("system", f"🛑 SMP aborted for {peer }")
-            elif sub == "status":
-                status = (
-                    self.session_manager.get_smp_status(peer)
-                    if hasattr(self.session_manager, "get_smp_status")
-                    else {}
-                )
-                self.add_message("system", f"SMP {peer }: {status }")
-            else:
-                secret = " ".join(parts[1:])
-                if len(secret) < 8:
-                    self.add_message(
-                        "system",
-                        colorize(
-                            f"⚠ SMP secret rejected - only {len (secret )} chars. "
-                            "Minimum 8 required to resist brute-force attacks.",
-                            "red",
-                        ),
-                    )
-                    return
-                self._start_smp(peer, secret)
+        # `/smp` is NOT handled here.  It was, from v10.23.0 until v10.23.2,
+        # and it never once ran: EnhancedOTRv4IRCClient -- the only class this
+        # program instantiates -- overrides handle_command and claims "smp"
+        # before the branch that delegates here, so a user typing /smp got
+        # "Usage: /smp <command> [args]" from the override while the guided
+        # prompt sat in this method unreachable.  Two dispatchers for one
+        # command is how that happened; there is now one, in the subclass.
+        # `self._smp_verify` is defined there too, so a branch here would
+        # raise AttributeError on this class in any case.
         elif cmd == "smp-secret" and len(parts) > 2:
             peer = parts[1]
             secret = " ".join(parts[2:])
@@ -13168,8 +14491,11 @@ class OTRv4IRCClient:
                 "  /endotr <nick>       End session",
                 "  /fingerprint         Show your Ed448 fingerprint",
                 "  /trust <nick> <fp>   Trust a fingerprint",
-                "  /smp <secret>        Verify identity (shared secret)",
-                "  /smp start           Start SMP",
+                "  /smp                 Verify identity - asks for the",
+                "                       passphrase, hidden, and starts",
+                "  /smp start           Same as /smp",
+                "  /smp <secret>        Same, but typed in the clear (ECHOED)",
+                "  /fragrate [preset]   Fragment pacing (safe/normal/fast/turbo/auto)",
                 "  /smp abort           Abort SMP",
                 "  /smp status          SMP status",
                 "  /secure              Show session security levels",
@@ -13227,7 +14553,8 @@ class OTRv4IRCClient:
                 "  /tab-next            Next tab",
                 "  /tab-prev            Previous tab",
                 "  /tab-close <panel>   Close tab",
-                "  /clear               Clear current panel history",
+                "  /clear               Clear all scrollback (local only)",
+                "  /clear <panel>       Clear just that tab",
                 "  /ignore <nick>       Ignore user",
                 "  /unignore <nick>     Unignore",
                 "  /status              Connection status",
@@ -13241,7 +14568,7 @@ class OTRv4IRCClient:
                 colorize("  Quick start:", "yellow"),
                 "    /join #channel     Join a channel",
                 "    /otr <nick>        Start encrypted chat",
-                "    /smp <secret>      Verify identity",
+                "    /smp               Verify identity - prompts, hidden",
                 "    /names             List users - \U0001F535 = OTRv4+ (identification only)",
                 "    /list              List all channels - pager",
                 "    /quit              Exit",
@@ -13303,7 +14630,17 @@ class OTRv4IRCClient:
             self._smp_executor.shutdown(wait=False)
         except Exception:
             pass
-        self.add_message("system", colorize("✅ Clean shutdown complete", "green"))
+
+        # Last thing before the process goes: the conversation must not be
+        # left in the terminal for whoever picks the handset up next, and it
+        # must not be sitting in the heap for whatever reads a core dump.
+        # announce=False -- there is no panel left worth writing to.
+        try:
+            self._purge_scrollback("shutdown", announce=False)
+        except Exception:
+            pass
+
+        safe_print(colorize("✅ Clean shutdown complete", "green"))
 
     def send_privmsg(self, target: str, message: str) -> bool:
         return self.send(f"PRIVMSG {target } :{message }")
@@ -13328,6 +14665,29 @@ class EnhancedOTRv4IRCClient(OTRv4IRCClient):
 
         self._pending_action: Optional[dict] = None
         self._pending_lock = threading.Lock()
+
+        # v10.23.0: the guided SMP flow the XMPP client has had since
+        # v10.15.  The registry decides which question the user is being
+        # asked and, crucially, whether the answer may be a passphrase.
+        self._smp_flows = _smpflow.SmpFlowRegistry()
+        #: Peer whose passphrase we are reading right now, or None.  Set ONLY
+        #: from a local path -- a bare /smp, or a local `y` answering a
+        #: consent prompt.  Nothing a peer sends may set it (INV-06).
+        self._secret_request: Optional[str] = None
+        #: "start" (we go first) or "resume" (answer the SMP1 already held).
+        self._secret_purpose: Optional[str] = None
+        #: Peer whose consent prompt is on screen, so a resent SMP1 cannot
+        #: print it twice.
+        self._smp_consent_shown: Optional[str] = None
+
+        # Tell the engine to PARK an inbound SMP1 when no passphrase is set,
+        # rather than aborting it.  Without this the responder's SMP1 dies
+        # before the user can be asked, and answering means a second round
+        # trip over I2P.  The XMPP client sets the same flag.
+        try:
+            self.session_manager.smp_guided_prompt = True
+        except Exception:
+            pass
 
     def _set_pending(self, action_type: str, peer: str, **kwargs):
         """Register a pending action waiting for user input in chat."""
@@ -13359,6 +14719,21 @@ class EnhancedOTRv4IRCClient(OTRv4IRCClient):
             self._handle_trust_response(peer, text.strip().lower(), action)
             return True
 
+        if atype == "smp_consent":
+            # A REMOTE SMP1 armed this prompt, and that is allowed: it asks a
+            # y/n question and consumes one keystroke's worth of answer. What
+            # it must never do is consume the line as a passphrase -- only
+            # `y` reaches `_arm_secret_prompt`, and an ordinary message here
+            # is refused rather than swallowed.
+            answer = text.strip().lower()
+            if answer in ("y", "yes", "n", "no"):
+                self._handle_smp_consent(peer, answer)
+                return True
+            # Not an answer. Re-arm the question and let the line through as
+            # the ordinary message it is.
+            self._set_pending("smp_consent", peer)
+            return False
+
         # There is deliberately no "smp_secret" branch.  It existed, it was
         # armed from a remote-reachable path, and it turned the user's next
         # line into a shared secret.  Removing the branch as well as the
@@ -13376,47 +14751,73 @@ class EnhancedOTRv4IRCClient(OTRv4IRCClient):
             self.panel_manager.add_panel(sender, "secure")
         if self.panel_manager.active_panel != sender:
             self._switch_panel(sender)
+        # Stage 1 for the responder is "their request arrived and parsed".
+        # _route_otr_to_session_manager reports stage 2 when it sends the
+        # answer, so the verdict for each stage comes from the code that
+        # performed it.
+        self._dake_stage(sender, 1, "ok", note="their request — answering")
         self._route_otr_to_session_manager(sender, payload, "DAKE1", is_initiator=False)
 
     def process_dake2(self, sender: str, payload: str):
         """DAKE2 received → send DAKE3 → session ENCRYPTED (initiator)."""
         if sender not in self.panel_manager.panels:
             self.panel_manager.add_panel(sender, "private")
-        self.add_message(
-            sender, colorize(f"🔑 DAKE2 ← received from {colorize_username (sender )}", "cyan")
-        )
         self._route_otr_to_session_manager(sender, payload, "DAKE2", is_initiator=True)
         sec = self.session_manager.get_security_level(sender)
         if sec == UIConstants.SecurityLevel.ENCRYPTED:
-            self.add_message(
-                sender, colorize(f"🔑 DAKE3 → sent to {colorize_username (sender )}", "cyan")
-            )
+            # Both verdicts are reported here, after the fact: routing DAKE2
+            # is what produces DAKE3, so neither is OK until this returned an
+            # encrypted session.
+            self._dake_stage(sender, 2, "ok")
+            self._dake_stage(sender, 3, "ok",
+                             detail="sent — %d fragments"
+                                    % getattr(self, "_last_fragment_count", 0))
             self._handle_session_established(sender, is_initiator=True)
         else:
-            self.add_message(
-                sender, colorize("⚠ DAKE2 processed but session not yet encrypted", "yellow")
-            )
+            self._dake_stage(sender, 2, "processed, but the session is not "
+                                        "encrypted")
 
     def process_dake3(self, sender: str, payload: str):
         """DAKE3 received → session ENCRYPTED (responder)."""
         if sender not in self.panel_manager.panels:
             self.panel_manager.add_panel(sender, "secure")
-        self.add_message(
-            sender, colorize(f"🔑 DAKE3 ← received from {colorize_username (sender )}", "cyan")
-        )
         self._route_otr_to_session_manager(sender, payload, "DAKE3", is_initiator=False)
         sec = self.session_manager.get_security_level(sender)
         if sec == UIConstants.SecurityLevel.ENCRYPTED:
+            self._dake_stage(sender, 3, "ok")
             self._handle_session_established(sender, is_initiator=False)
         else:
-            self.add_message(
-                sender, colorize("⚠ DAKE3 processed but session not encrypted", "yellow")
-            )
+            self._dake_stage(sender, 3, "processed, but the session is not "
+                                        "encrypted")
 
     def _route_otr_to_session_manager(
         self, sender: str, payload: str, label: str, is_initiator: bool
     ):
-        """Feed a raw OTRv4 payload to the session manager and handle the response."""
+        """Feed a raw OTRv4 payload to the session manager and handle the response.
+
+        KNOWN HAZARD, not fixed here.  This runs on the receive thread --
+        `_recv_loop` calls `handle_message` directly -- and the answer it
+        sends is a multi-fragment message.  A responder's DAKE2 is 24
+        fragments, which at the default pacing is about 72 seconds during
+        which the receive thread is inside `time.sleep()` and therefore
+        cannot read the socket or answer a server PING.  Most ircds ping
+        every 120s and kill after another 120s, so one send does not do it,
+        but they stack.
+
+        The same disease was fixed for the SMP path -- `_handle_data_message`
+        offloads to `_smp_executor` with a comment saying exactly this -- and
+        the DAKE path never was.
+
+        It is left alone deliberately for now.  Fixing it means sending on a
+        worker, which means the stage report ("DAKE 2 / OK") has to move to a
+        completion callback so it still fires only after the send succeeded,
+        and that is a restructure of the handshake display on the same day it
+        first worked end to end.  The disconnect this was investigated for
+        happened on the INITIATOR, whose sends run on the main thread and
+        whose receive thread was not blocked, so this is not the cause of it.
+        `_report_disconnect_context` prints seconds-since-last-server-message
+        precisely so the next occurrence says whether it is.
+        """
         try:
             result = self.session_manager.handle_incoming_message(sender, payload)
             if result and isinstance(result, (bytes, str)):
@@ -13424,22 +14825,45 @@ class EnhancedOTRv4IRCClient(OTRv4IRCClient):
                     result if isinstance(result, str) else result.decode("utf-8", errors="replace")
                 )
                 if resp.startswith("?OTRv4 "):
-                    self.send_otr_message(sender, resp)
+                    sent = self.send_otr_message(sender, resp)
                     if label == "DAKE1":
                         if sender not in self.panel_manager.panels:
                             self.panel_manager.add_panel(sender, "secure")
-                        self.add_message(
-                            sender,
-                            colorize(f"🔑 DAKE2 → sent to {colorize_username (sender )}", "cyan"),
-                        )
+                        self._dake_stage(
+                            sender, 2, "ok" if sent else "could not send the "
+                                                        "answer",
+                            detail="sent — %d fragments"
+                                   % getattr(self, "_last_fragment_count", 0))
                     return
             self.debug(f"{label } processed")
         except Exception as exc:
             self.debug("operation error")
-            self.add_message(
-                "system",
-                f"{colorize (f'❌ {label } error from','red')} {sender }: {str (exc )[:60 ]}",
-            )
+            # Against the stage it happened in, in the peer's own tab, rather
+            # than as an undifferentiated error in the system tab.  The
+            # message is the exception's class and a sanitised prefix -- a
+            # handshake failure reason must not carry transcript bytes.
+            stage = {"DAKE1": 1, "DAKE2": 2, "DAKE3": 3}.get(label)
+            if stage is not None:
+                self._dake_stage(sender, stage,
+                                 "%s: %s" % (type(exc).__name__,
+                                             _sanitise(str(exc), 60)))
+            else:
+                self.add_message(
+                    "system",
+                    f"{colorize (f'❌ {label } error from','red')} {sender }: "
+                    f"{_sanitise (str (exc ),60 )}",
+                )
+
+    def _clear_no_session_warning(self, peer: str) -> None:
+        """Forget that we warned about *peer*, now that a session exists.
+
+        Without this the warning is once per process: a peer who starts a
+        session, loses it and sends again would be dropped silently the second
+        time, which is the behaviour this replaced.
+        """
+        warned = getattr(self, "_no_session_warned", None)
+        if warned is not None:
+            warned.discard(peer)
 
     def _otr_panel(self, peer: str) -> str:
         """Return the panel name for OTR private conversation (always the peer's private panel)."""
@@ -13515,22 +14939,480 @@ class EnhancedOTRv4IRCClient(OTRv4IRCClient):
                 except Exception:
                     already_trusted = False
 
+            # v10.23.0: TOFU, matching the XMPP client.  A y/n prompt here
+            # asked the user to make a decision they had no way to make --
+            # nobody compares a 57-byte fingerprint against nothing on first
+            # contact -- and it was armed by a remote DAKE, which is the
+            # shape INV-06 exists to keep out of the client.  First contact
+            # now pins silently; a CHANGE is reported and never auto-accepted.
+            #
+            # Nothing is written to disk: INV-10 says an IRC run persists no
+            # trust state, and TrustDatabase._save already returns early when
+            # not persistent.  This pin lives for the session, which is what
+            # an ephemeral IRC identity should have.
             if already_trusted:
                 self.add_message(peer, colorize("✅ Fingerprint already trusted", "green"), sec)
                 self._finish_trust(
                     peer, trusted=True, remote_fp=remote_fp, is_initiator=is_initiator
                 )
-            else:
-                self.add_message(
-                    peer, colorize("❓ Trust this fingerprint? Type  y  or  n", "yellow"), sec
+            elif self._fingerprint_changed(peer, remote_fp):
+                # The one case that must stop and ask.  A different key for a
+                # nick we have seen before is either a new person on that nick
+                # -- routine on IRC -- or someone in the middle, and the
+                # client cannot tell which.  Never auto-accept it (INV-11).
+                self.add_message(peer, colorize(
+                    "⚠️  FINGERPRINT CHANGED for this nick. This is either a "
+                    "different person using the nick, or someone in the "
+                    "middle.", "red"), sec)
+                self.add_message(peer, colorize(
+                    "Encrypted, but NOT verified. Use  /trust-reset " + peer +
+                    "  if you are sure, then verify with  /smp.", "yellow"), sec)
+                self._finish_trust(
+                    peer, trusted=False, remote_fp=remote_fp,
+                    is_initiator=is_initiator
                 )
-                self._set_pending("trust", peer, remote_fp=remote_fp, is_initiator=is_initiator)
+            else:
+                self.add_message(peer, colorize(
+                    "🔑 First contact — fingerprint pinned for this nick.",
+                    "cyan"), sec)
+                self.add_message(peer, colorize(
+                    "A change will be reported. Pinning is not verification: "
+                    "run  /smp  to prove who they are.", "dim"), sec)
+                try:
+                    if hasattr(self.session_manager, "trust_fingerprint"):
+                        self.session_manager.trust_fingerprint(peer, remote_fp)
+                except Exception:
+                    self.debug("first-contact pin failed")
+                self._finish_trust(
+                    peer, trusted=True, remote_fp=remote_fp, is_initiator=is_initiator
+                )
 
         except Exception as exc:
             self.debug("_handle_session_established error")
             self.add_message(
                 "system", f"{colorize ('❌ Session setup error:','red')} {str (exc )[:100 ]}"
             )
+
+    def _fingerprint_changed(self, peer: str, remote_fp: str) -> bool:
+        """True if we have a DIFFERENT fingerprint stored for this nick.
+
+        First contact (nothing stored) is not a change; that is the case
+        TOFU pins silently. Compared with `hmac.compare_digest` rather than
+        `!=` for the same reason the trust database does: a fingerprint
+        comparison is a security decision and should not leak its result
+        through timing, cheap as that leak is here.
+        """
+        if not remote_fp:
+            return False
+        try:
+            db = getattr(self.session_manager, "trust_db", None)
+            if db is None:
+                return False
+            entry = db._db.get(peer)
+            if not entry:
+                return False
+            stored = entry.get("fingerprint", "")
+            if not stored:
+                return False
+            return not hmac.compare_digest(stored.encode("utf-8"),
+                                           remote_fp.encode("utf-8"))
+        except Exception:
+            # Cannot tell -> treat as unchanged rather than crying wolf on
+            # every session. The pin below is a no-op if one already exists.
+            return False
+
+    # -- the guided SMP flow, shared with the XMPP client -----------------
+    #
+    # The rule, and the whole reason this goes through SmpFlow rather than
+    # the old _set_pending("smp_secret"): a remote message may move the local
+    # state to AWAITING_LOCAL_CONSENT and no further. Only local input --
+    # a bare /smp, or a `y` the user pressed -- reaches AWAITING_SECRET,
+    # which is the state in which the next line is read as a passphrase.
+    # SmpFlow has no edge that skips the consent step (INV-06).
+
+    def _arm_secret_prompt(self, peer: str, purpose: str) -> None:
+        """Arm the hidden read. `purpose` is "start" or "resume"."""
+        self._secret_request = peer
+        self._secret_purpose = purpose
+        set_input_mask(True)
+        sec = self._panel_sec(peer)
+        self.add_message(peer, colorize(
+            "🔐 Passphrase (hidden), or Enter to cancel:", "cyan"), sec)
+        if self._prompt_refresh_cb is not None:
+            try:
+                self._prompt_refresh_cb()
+            except Exception:
+                pass
+
+    def _disarm_secret_prompt(self) -> None:
+        """Stop reading a passphrase, whatever the outcome.
+
+        Always paired with arming, including on every error path: leaving the
+        mask on would hide the user's ordinary chat, and leaving
+        `_secret_request` set would make their next line a passphrase.
+        """
+        self._secret_request = None
+        self._secret_purpose = None
+        set_input_mask(False)
+        if self._prompt_refresh_cb is not None:
+            try:
+                self._prompt_refresh_cb()
+            except Exception:
+                pass
+
+    def _panel_sec(self, peer: str):
+        try:
+            return self.session_manager.get_security_level(peer)
+        except Exception:
+            return UIConstants.SecurityLevel.ENCRYPTED
+
+    def _consume_secret_line(self, text: str) -> bool:
+        """Take one line as the passphrase, if one was asked for locally.
+
+        Returns True if the line was consumed. `_secret_request` is set only
+        by `_smp_verify` (a typed /smp) and `_handle_smp_consent` (a typed
+        y) -- never by anything a peer sends.
+        """
+        peer = self._secret_request
+        if peer is None:
+            return False
+        purpose = self._secret_purpose
+        self._disarm_secret_prompt()
+        flow = self._smp_flows.get(peer)
+
+        secret = text  # NOT stripped: leading/trailing spaces are the user's
+        if not secret:
+            try:
+                flow.secret_cancelled()
+            except _smpflow.SmpFlowError:
+                pass
+            self.add_message(peer, colorize(
+                "🔐 Cancelled — nothing was stored or sent.", "yellow"),
+                self._panel_sec(peer))
+            if purpose == "resume":
+                self._decline_smp_request(peer, "declined")
+            return True
+
+        if not (SMP_MIN_LEN <= len(secret) <= SMP_MAX_LEN):
+            try:
+                flow.secret_cancelled()
+            except _smpflow.SmpFlowError:
+                pass
+            # The LENGTH is named, never the value.
+            self.add_message(peer, colorize(
+                "🔐 Passphrase must be %d-%d characters. Nothing stored; "
+                "run /smp again." % (SMP_MIN_LEN, SMP_MAX_LEN), "yellow"),
+                self._panel_sec(peer))
+            return True
+
+        try:
+            # set_smp_secret, NOT smp_storage.set_secret.  The storage call
+            # writes the file and stops there; only this one also binds the
+            # passphrase into the session's Rust SMP engine.  The responder
+            # path needs the engine copy: resume_held_smp1_generate_smp2()
+            # fails closed with "secret still not set: cannot answer the held
+            # SMP1" when the engine has nothing, which surfaced on a handset
+            # as "Could not answer the held request: ValueError" immediately
+            # after the passphrase was accepted.  The initiator path did not
+            # show it because _start_smp binds the secret itself on the way
+            # past; that asymmetry was the whole defect.  The XMPP client has
+            # always called set_smp_secret here.
+            #
+            # Binding twice (here and again in _start_smp on the initiator
+            # path) is deliberate and safe: session.set_smp_secret permits a
+            # rebind in IDLE and in SECRET_REQUIRED, and rebinding the same
+            # passphrase is idempotent.  It costs one extra SHAKE-256 stretch
+            # rather than an asymmetry between the two paths.
+            if hasattr(self.session_manager, "set_smp_secret"):
+                self.session_manager.set_smp_secret(peer, secret)
+            else:
+                self.session_manager.smp_storage.set_secret(peer, secret)
+            flow.secret_supplied()
+        except Exception as exc:
+            # The passphrase is in scope here, so the reason is redacted
+            # before it is shown.  _redact_secret is belt-and-braces: no
+            # exception on this path is known to quote its argument, and the
+            # test that proves it uses a raiser that deliberately does.
+            self.add_message(peer, colorize(
+                "🔐 Could not store the passphrase: %s"
+                % _redact_secret(type(exc).__name__, secret), "red"),
+                self._panel_sec(peer))
+            try:
+                flow.reset()
+            except _smpflow.SmpFlowError:
+                pass
+            return True
+        finally:
+            # The local copy goes now. It is a Python str so this drops the
+            # reference rather than wiping the characters -- the engine has
+            # already copied it into Rust-owned zeroizing memory, which is
+            # the copy that matters (INV-02 records the same limit).
+            secret = None
+
+        self.add_message(peer, colorize(
+            "🔐 Passphrase stored — verifying…", "cyan"), self._panel_sec(peer))
+        if purpose == "resume":
+            self._resume_smp(peer)
+        else:
+            try:
+                flow.running()
+            except _smpflow.SmpFlowError:
+                pass
+            stored = self.session_manager.smp_storage.get_secret(peer)
+            self._start_smp(peer, stored)
+        return True
+
+    def _smp_verify(self, peer: str) -> None:
+        """Bare `/smp` — verify, asking for whatever is missing.
+
+        Replaces "type /smp <passphrase> (it will be visible on this
+        terminal)", which asked the user to put a shared secret into their
+        scrollback. `_finish_trust` had been promising this prompt existed
+        since v10.15; on this client it did not.
+        """
+        flow = self._smp_flows.get(peer)
+        if flow.state in (_smpflow.AWAITING_LOCAL_CONSENT,
+                          _smpflow.AWAITING_SECRET):
+            self.add_message(peer, colorize(
+                "🔐 Already asking you for the passphrase — answer that "
+                "prompt.", "yellow"), self._panel_sec(peer))
+            return
+
+        stored = ""
+        try:
+            stored = self.session_manager.smp_storage.get_secret(peer) or ""
+        except Exception:
+            stored = ""
+        if stored:
+            self.add_message(peer, colorize(
+                "🔐 Stored passphrase found for %s — verifying…" % peer,
+                "cyan"), self._panel_sec(peer))
+            try:
+                flow.running()
+            except _smpflow.SmpFlowError:
+                pass
+            self._start_smp(peer, stored)
+            return
+
+        try:
+            flow.local_secret_needed()
+        except _smpflow.SmpFlowError as e:
+            self.add_message(peer, colorize("🔐 %s" % e, "yellow"),
+                             self._panel_sec(peer))
+            return
+        sec = self._panel_sec(peer)
+        self.add_message(peer, colorize(
+            "🔐 Verification needs the passphrase you agreed with this "
+            "contact, out of band.", "cyan"), sec)
+        self.add_message(peer, colorize(
+            "🔐 Both sides must enter the SAME text (%d-%d characters)."
+            % (SMP_MIN_LEN, SMP_MAX_LEN), "dim"), sec)
+        self._arm_secret_prompt(peer, purpose="start")
+
+    def _announce_secret_required(self, peer: str) -> None:
+        """A peer asked to verify and we hold no passphrase for them.
+
+        Prints and moves to AWAITING_LOCAL_CONSENT. It arms NOTHING that
+        could consume a line as a secret: if the user types an ordinary
+        message here it is sent as an ordinary message.
+        """
+        flow = self._smp_flows.get(peer)
+        try:
+            state = flow.remote_smp1_arrived()
+        except _smpflow.SmpFlowError:
+            return
+        if state != _smpflow.AWAITING_LOCAL_CONSENT:
+            return
+        if self._smp_consent_shown == peer:
+            return          # a resent SMP1 must not print a second prompt
+        self._smp_consent_shown = peer
+        sec = self._panel_sec(peer)
+        self.add_message(peer, colorize("─" * 50, "dim"), sec)
+        self.add_message(peer, colorize(
+            "🔐 SMP VERIFICATION REQUEST", "blue"), sec)
+        self.add_message(peer, colorize(
+            "%s wants to verify this session using a passphrase you agreed "
+            "in advance." % _sanitise(peer, 64), "cyan"), sec)
+        self.add_message(peer, colorize(
+            "Press  y  to enter that passphrase, or  n  to decline.",
+            "yellow"), sec)
+        self.add_message(peer, colorize(
+            "Nothing you type now is sent to them, and an ordinary message "
+            "here is just an ordinary message.", "dim"), sec)
+        self.add_message(peer, colorize("─" * 50, "dim"), sec)
+        self._set_pending("smp_consent", peer)
+
+    def _handle_smp_consent(self, peer: str, answer: str) -> None:
+        """The local y/n. The only door into the passphrase prompt for a
+        request a peer made."""
+        flow = self._smp_flows.get(peer)
+        agreed = answer.strip().lower() in ("y", "yes")
+        try:
+            flow.local_consent(agreed)
+        except _smpflow.SmpFlowError as e:
+            self.add_message(peer, colorize("🔐 %s" % e, "yellow"),
+                             self._panel_sec(peer))
+            return
+        self._smp_consent_shown = None
+        if not agreed:
+            self._decline_smp_request(peer, "declined")
+            return
+        self.add_message(peer, colorize(
+            "🔐 Enter the passphrase you agreed with this contact.", "cyan"),
+            self._panel_sec(peer))
+        self._arm_secret_prompt(peer, purpose="resume")
+
+    def _decline_smp_request(self, peer: str, why: str) -> None:
+        """Tell the peer, drop the held SMP1, keep nothing."""
+        flow = self._smp_flows.get(peer)
+        try:
+            flow.reset()
+        except _smpflow.SmpFlowError:
+            pass
+        self._smp_consent_shown = None
+        abort = None
+        try:
+            abort = self.session_manager.decline_held_smp1(peer)
+        except Exception:
+            self.debug("decline_held_smp1 failed")
+        if abort:
+            try:
+                self.send_otr_message(peer, abort)
+            except Exception:
+                self.debug("could not send SMP abort")
+        self.add_message(peer, colorize(
+            "🔐 Verification declined." if why == "declined"
+            else "🔐 Verification request expired.", "yellow"),
+            self._panel_sec(peer))
+
+    def _resume_smp(self, peer: str) -> None:
+        """Answer the SMP1 the engine parked, without a second round trip.
+
+        Called once, from the hidden read, after the user consented.  The
+        held message is the engine's to consume: this asks for the SMP2 and
+        sends it, and does not itself decide whether the passphrase matched
+        -- that is four messages away.
+
+        The failure report names the engine's reason.  It used to print only
+        `type(exc).__name__`, which turned "secret still not set: cannot
+        answer the held SMP1" into the word "ValueError" and cost a
+        two-handset session to diagnose.  Every string the engine raises on
+        this path is a fixed literal in Rust/src/smp.rs; the passphrase is
+        not an argument to any call made here, so there is nothing of the
+        user's in it.  It is sanitised and length-capped regardless, because
+        "there is nothing sensitive in this string" is a claim that rots.
+        """
+        flow = self._smp_flows.get(peer)
+        if not flow.has_held_smp1:
+            # A second `y`, or a resume after the request was declined or
+            # expired.  The engine would refuse anyway; saying so here keeps
+            # the reason accurate rather than reporting an engine error for
+            # something the front end already knew.
+            self.add_message(peer, colorize(
+                "🔐 There is no verification request waiting — ask them to "
+                "run /smp again.", "yellow"), self._panel_sec(peer))
+            return
+        try:
+            smp2 = self.session_manager.resume_held_smp1(peer)
+        except Exception as exc:
+            self.add_message(peer, colorize(
+                "🔐 Could not answer the held request: %s"
+                % _sanitise(str(exc), 160), "red"), self._panel_sec(peer))
+            self.add_message(peer, colorize(
+                "🔐 Nothing was sent and nothing is verified. Run  /smp  to "
+                "try again.", "yellow"), self._panel_sec(peer))
+            # Back to IDLE, not FAILED: no proof was attempted, so this is
+            # not an SMP failure and must not be shown as one.  IDLE is also
+            # what lets the user retry without a stale half-state.
+            try:
+                flow.reset()
+            except _smpflow.SmpFlowError:
+                pass
+            return
+        if not smp2:
+            self.add_message(peer, colorize(
+                "🔐 The held request is gone — ask them to run /smp again.",
+                "yellow"), self._panel_sec(peer))
+            try:
+                flow.reset()
+            except _smpflow.SmpFlowError:
+                pass
+            return
+        # The engine has consumed the held message and produced the answer;
+        # the flow stops being the holder of a request at this point and not
+        # before, so a failure above leaves it answerable.
+        flow.has_held_smp1 = False
+        try:
+            flow.running()
+        except _smpflow.SmpFlowError:
+            pass
+        self.send_otr_message(peer, smp2)
+
+    def _active_peer(self) -> Optional[str]:
+        """The peer whose tab is in front, or None if it is not a peer tab.
+
+        Five call sites spelled this out inline, identically.  Once is
+        enough, and a shared helper means the "system and debug are not
+        peers" rule cannot drift between them -- typing /smp on the system
+        tab must not resolve to a peer named "system".
+        """
+        try:
+            active = self.panel_manager.get_active_panel()
+        except Exception:
+            return None
+        if active is None or active.type in ("system", "debug"):
+            return None
+        return active.name
+
+    def _smp_session_ready(self, peer: str) -> bool:
+        """Refuse to ask for a passphrase there is nothing to verify with.
+
+        Fail-closed: a session_manager that raises counts as not ready.  The
+        cost of getting this wrong is a user typing a shared secret at a
+        prompt whose session does not exist.
+        """
+        try:
+            if not self.session_manager.has_session(peer):
+                self.add_message("system",
+                                 f"{colorize ('❌ No session with','red')} {peer }")
+                return False
+            if (self.session_manager.get_security_level(peer)
+                    == UIConstants.SecurityLevel.PLAINTEXT):
+                self.add_message(
+                    "system",
+                    f"{colorize ('❌ No encrypted session with','red')} {peer }")
+                return False
+        except Exception:
+            self.add_message("system", colorize(
+                "❌ Could not check the session state — not asking for a "
+                "passphrase.", "red"))
+            return False
+        return True
+
+    def _warn_inline_secret(self, peer: str) -> None:
+        """Say that an inline passphrase was echoed, because it was.
+
+        The input line is cleared on Enter so it leaves the screen, but a
+        `script` capture or a scrollback buffer recorded the keystrokes as
+        they were echoed.  Better to say so than to let it look like it was
+        never shown.  Same wording as the XMPP client's.
+        """
+        sec = self._panel_sec(peer)
+        self.add_message(peer, colorize(
+            "🔐 NOTE: that passphrase was typed in the clear, so it is in "
+            "this terminal's scrollback and in any session capture.", "yellow"),
+            sec)
+        self.add_message(peer, colorize(
+            "🔐 Bare  /smp  asks for it hidden instead.", "dim"), sec)
+
+    def _check_smp_secret_required(self, peer: str) -> None:
+        """Show the consent prompt if the engine is holding a peer's SMP1."""
+        try:
+            if not self.session_manager.smp_secret_required(peer):
+                return
+        except Exception:
+            return
+        self._announce_secret_required(peer)
 
     def _handle_trust_response(self, peer: str, response: str, action: dict):
         """Process y/n trust response from user."""
@@ -13615,20 +15497,43 @@ class EnhancedOTRv4IRCClient(OTRv4IRCClient):
         _dake_engine = getattr(_session, "dake_engine", None)
         _dake_tag = "🦀 Rust"
         _smp_tag = "🦀 Rust" if (getattr(_session, "rust_smp", None) is not None) else "🐍 Python"
+        self._clear_no_session_warning(peer)
         self.add_message(peer, colorize("─" * 50, "dim"), sec)
+        self._dake_ready(peer)
+        # Which engine did the work stays on screen -- it is the difference
+        # between the Rust ratchet and the Python fallback, and a user who
+        # cares about that cares about it at exactly this moment -- but dim
+        # and on one line rather than competing with the verdict above it.
         self.add_message(
             peer,
             colorize(
-                f"✅ Session ready! - DAKE {_dake_tag } | Ratchet {_ratchet_tag } | SMP {_smp_tag }",
-                "green",
+                f"   DAKE {_dake_tag } | Ratchet {_ratchet_tag } | SMP {_smp_tag }",
+                "dim",
             ),
             sec,
         )
         self.add_message(
             "system",
             f"{colorize ('Commands:','cyan')} "
-            f"/fingerprint  /smp <secret>  /smp start  /trust <nick>  /secure",
+            f"/smp  (asks for the passphrase, hidden)  /fingerprint  "
+            f"/trust <nick>  /secure",
         )
+
+    def _handle_data_message(self, sender: str, payload: str):
+        """Inbound OTR data message, plus the held-SMP1 check.
+
+        The engine parks a peer's SMP1 when no passphrase is stored; nothing
+        was asking it whether it had. Checked here, after the message has
+        been processed, because that is the point at which the park has
+        happened. Idempotent -- `_announce_secret_required` refuses to print
+        a second prompt for the same peer.
+        """
+        result = OTRv4IRCClient._handle_data_message(self, sender, payload)
+        try:
+            self._check_smp_secret_required(sender)
+        except Exception:
+            self.debug("held-SMP1 check failed")
+        return result
 
     def process_smp_message(self, sender: str, data: bytes):
         """DEAD CODE - disabled to prevent duplicate SMP dispatch.
@@ -13804,10 +15709,24 @@ class EnhancedOTRv4IRCClient(OTRv4IRCClient):
         self._disconnected_peers.add(peer)
 
         sec = UIConstants.SecurityLevel.PLAINTEXT
-        reason_str = f": {reason }" if reason else ""
+        reason_str = f": {_sanitise (reason ,160 )}" if reason else ""
         self.add_message(
             peer, colorize(f"⚠ {peer } disconnected{reason_str } - OTR session ended", "red"), sec
         )
+        # A peer killed for flooding is evidence about OUR send rate, not just
+        # theirs.  Both ends of an OTRv4+ conversation run this client, at
+        # whatever preset the pair agreed, and the messages are symmetrical:
+        # if their 47-fragment SMP2 was too fast for this server, our SMP3 is
+        # about to be too.  Seen on irc.postman.i2p -- the peer was killed
+        # with "Excess Flood" while answering an SMP challenge, and this
+        # client carried on at the same rate having learned nothing, because
+        # only an ERROR addressed to us was being read as evidence.
+        #
+        # The reason string is attacker-controlled: a peer can /quit with any
+        # text, including this one.  The worst that buys them is making us
+        # slower, which is why acting on it is safe and why the rate is never
+        # raised automatically in response to anything.
+        self._note_peer_flood(peer, reason)
 
         self.panel_manager.update_panel_security(peer, sec)
         self.panel_manager.update_smp_progress(peer, 0, 0)
@@ -13966,6 +15885,14 @@ class EnhancedOTRv4IRCClient(OTRv4IRCClient):
         If a pending action is waiting, consume it.
         Otherwise encrypt+send normally.
         """
+        # FIRST, and before any command parsing: a passphrase the user was
+        # asked for locally. It goes first because the passphrase is
+        # arbitrary text -- one that happens to begin with `/` is still the
+        # passphrase, not a command. `_secret_request` is set only from a
+        # typed /smp or a typed y, never by anything a peer sends (INV-06).
+        if self._consume_secret_line(msg):
+            return
+
         if self._dispatch_pending_response(msg):
             return
 
@@ -13995,12 +15922,20 @@ class EnhancedOTRv4IRCClient(OTRv4IRCClient):
         try:
             otr_msg, should_send = self.session_manager.handle_outgoing_message(peer, "")
             if otr_msg and should_send:
-                self.send_otr_message(peer, otr_msg)
-                self.add_message(peer, colorize(f"🔑 DAKE1 → sent - waiting for response…", "cyan"))
+                # OK is reported from the result of the send, not from having
+                # attempted it: a DAKE1 that never left the socket is not a
+                # completed stage.
+                sent = self.send_otr_message(peer, otr_msg)
+                self._dake_stage(
+                    peer, 1, "ok" if sent else "could not send the request",
+                    detail="sent — %d fragments"
+                           % getattr(self, "_last_fragment_count", 0),
+                    note="waiting for their answer…" if sent else "")
             else:
                 self.send(f"PRIVMSG {peer } :?OTRv4 ")
         except Exception as exc:
             self.debug("start_guided_otr_session error")
+            self._dake_stage(peer, 1, "%s" % type(exc).__name__)
 
     def handle_command(self, command: str):
         parts = command.strip().split()
@@ -14038,20 +15973,29 @@ class EnhancedOTRv4IRCClient(OTRv4IRCClient):
                 self.add_message("system", colorize("No active session to trust", "red"))
 
         elif cmd in ("smp", "verify"):
+            # Bare /smp is the normal verb, and it has to be handled HERE.
+            # v10.23.0 added it to OTRv4IRCClient.handle_command, but this
+            # override claims "smp" before the `else` that delegates to the
+            # base class, so what a user actually got on a handset was
+            # "Usage: /smp <command> [args]" -- the guided flow existed and
+            # was unreachable.  The tests that shipped with it bound the flow
+            # methods onto a stub and never drove the dispatcher, so nothing
+            # failed.  tests/test_irc_smp_command_routing.py drives it.
             if len(parts) < 2:
-                self.add_message("system", colorize("Usage: /smp <command> [args]", "red"))
+                peer = self._active_peer()
+                if not peer:
+                    self.add_message("system", colorize(
+                        "⚠ Switch to a peer panel first, then type /smp", "yellow"))
+                    return
+                if not self._smp_session_ready(peer):
+                    return
+                self._smp_verify(peer)
                 return
 
             subcmd = parts[1].lower()
 
             if subcmd == "start":
-                peer = None
-                if len(parts) > 2:
-                    peer = parts[2]
-                else:
-                    active = self.panel_manager.get_active_panel()
-                    if active and active.type not in ("system", "debug"):
-                        peer = active.name
+                peer = parts[2] if len(parts) > 2 else self._active_peer()
 
                 if not peer:
                     self.add_message(
@@ -14073,33 +16017,18 @@ class EnhancedOTRv4IRCClient(OTRv4IRCClient):
                     )
                     return
 
-                secret = None
-
-                if hasattr(self.session_manager, "smp_storage"):
-                    secret = self.session_manager.smp_storage.get_secret(peer)
-                    self.debug("SMP secret loaded")
-
-                if not secret:
-                    self.add_message(
-                        "system",
-                        colorize(
-                            f"No SMP secret stored for {peer } - use /smp <peer> <secret> first",
-                            "yellow",
-                        ),
-                    )
-                    return
-
+                # Same as bare /smp.  This used to refuse with "use
+                # /smp <peer> <secret> first" when nothing was stored, which
+                # sent the user to the one form that puts a shared secret in
+                # their own scrollback.  _smp_verify starts immediately when
+                # a passphrase is stored and asks for it, hidden, when it is
+                # not -- so the two spellings do the same thing, as they do
+                # in the XMPP client.
                 self.debug("Starting SMP")
-                self._start_smp(peer, secret)
+                self._smp_verify(peer)
 
             elif subcmd == "abort":
-                peer = None
-                if len(parts) > 2:
-                    peer = parts[2]
-                else:
-                    active = self.panel_manager.get_active_panel()
-                    if active and active.type not in ("system", "debug"):
-                        peer = active.name
+                peer = parts[2] if len(parts) > 2 else self._active_peer()
 
                 if not peer:
                     self.add_message("system", colorize("Usage: /smp abort [peer]", "red"))
@@ -14111,13 +16040,7 @@ class EnhancedOTRv4IRCClient(OTRv4IRCClient):
                 self.add_message("system", f"🛑 SMP aborted for {colorize_username (peer )}")
 
             elif subcmd == "status":
-                peer = None
-                if len(parts) > 2:
-                    peer = parts[2]
-                else:
-                    active = self.panel_manager.get_active_panel()
-                    if active and active.type not in ("system", "debug"):
-                        peer = active.name
+                peer = parts[2] if len(parts) > 2 else self._active_peer()
 
                 if not peer:
                     self.add_message("system", colorize("Usage: /smp status [peer]", "red"))
@@ -14126,8 +16049,7 @@ class EnhancedOTRv4IRCClient(OTRv4IRCClient):
                 self._show_smp_status(peer)
 
             else:
-                active = self.panel_manager.get_active_panel()
-                peer = active.name if active and active.type not in ("system", "debug") else None
+                peer = self._active_peer()
 
                 if not peer and len(parts) > 2:
                     peer = parts[1]
@@ -14166,13 +16088,23 @@ class EnhancedOTRv4IRCClient(OTRv4IRCClient):
                             colorize("✅ SMP secret stored (🦀 Rust vault)", "green"),
                             sec_level,
                         )
-                        self.add_message(
-                            self._otr_panel(peer),
-                            colorize("🔐 Type  /smp start  to begin verification.", "cyan"),
-                            sec_level,
-                        )
+                        self._warn_inline_secret(peer)
+                        # Verify now.  Storing and then telling the user to
+                        # type a second command was a step with no decision
+                        # in it: nobody types /smp <secret> meaning "store
+                        # this but do not verify" -- that is /smp-secret.
+                        #
+                        # Through _smp_verify rather than straight into
+                        # _start_smp, so this spelling cannot start a second
+                        # run while the engine is holding a peer's SMP1: it
+                        # reads the passphrase just stored, and in every
+                        # other flow state it says what is already pending
+                        # instead of talking over it.
+                        self._smp_verify(peer)
                     except Exception as exc:
                         self.add_message("system", f"{colorize ('❌','red')} {exc }")
+                    finally:
+                        secret = None
                 else:
                     self.add_message(
                         "system", colorize("Usage: /smp <secret>  or  /smp start [peer]", "red")
@@ -15137,6 +17069,24 @@ if __name__ == "__main__":
             )
         )
 
-    atexit.register(lambda: safe_print(colorize("\nClean shutdown", "green")))
+    def _purge_on_exit():
+        """Last-chance scrollback purge.
+
+        `shutdown()` already does this on the /quit path, but /quit is not
+        the only way out: SIGINT during a blocking read, an unhandled
+        exception, `sys.exit` from an argument error.  Whichever way the
+        process leaves, the conversation should not be left rendered in the
+        terminal for the next person to hold the handset.  Idempotent -- a
+        second purge over empty panels does nothing.
+        """
+        client = getattr(__import__("builtins"), "_active_client", None)
+        if client is not None:
+            try:
+                client._purge_scrollback("process exit", announce=False)
+            except Exception:
+                pass
+        safe_print(colorize("\nClean shutdown", "green"))
+
+    atexit.register(_purge_on_exit)
 
     main()

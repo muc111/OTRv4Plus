@@ -199,19 +199,47 @@ def _env_ms(name: str, default_ms: int, lo: int, hi: int) -> int:
 # it is checked more often than anything else in the telemetry. Colouring it
 # turns a reading into a verdict at a glance.
 #
-# The thresholds come from ITU-T G.114, which puts one-way delay under 400 ms
-# in the range "acceptable for most user applications". That is applied here
-# to the full mouth-to-ear figure, because that is what a person actually
-# experiences -- network transit plus our own buffering and playout.
+# These are calibrated for I2P, NOT for a telephone network, and the
+# difference is the whole point.
 #
-# 400 ms is optimistic over three I2P hops in each direction, so a healthy
-# call on this transport usually reads yellow. That is the honest signal:
-# workable, not good. A scale calibrated so everything came out green would
-# say nothing at all. Both bands are overridable for retuning after a soak
-# test without touching code.
-M2E_GOOD_MS = _env_ms("OTRV4PLUS_M2E_GOOD_MS", 400, 50, 10000)
+# ITU-T G.114 puts one-way delay under 400 ms in the range "acceptable for
+# most user applications", and until v10.28.1 those were the numbers used
+# here: green under 400, amber to 800, red beyond. G.114 is a standard about
+# TERRESTRIAL telephony, where propagation is nearly free and 400 ms means
+# something has gone wrong. It says so itself: it carves out links with
+# unavoidable long propagation -- a geostationary satellite hop is about
+# 250-280 ms each way -- as outside its range and in daily use anyway.
+#
+# A call here crosses three I2P hops in each direction through garlic-routed
+# tunnels, plus the jitter buffer that has to absorb the variance of each
+# one. This project's own soak measured a median mouth-to-ear of 917 ms, and
+# a live two-handset call measured 914 ms with 96.5% of its audio delivered:
+# a conversation both people completed. On the old scale that call was
+# reported RED, "quality was poor".
+#
+# That is a broken instrument, not a bad call. A scale whose own transport
+# cannot reach the top band says only "this is I2P", which the user already
+# knows, and it says it in the colour reserved for "something is wrong" --
+# so the day something IS wrong it has no way left to tell them.
+#
+# So the bands are set against what this transport can actually deliver:
+#
+#   green  <= 1000 ms  at or near the floor of the path -- as good as I2P gets
+#   amber  <= 1500 ms  noticeably worse than the floor; still a conversation,
+#                      with the pauses of a satellite call
+#   red     > 1500 ms  turn-taking breaks down; people start talking over
+#                      each other and repeating themselves
+#
+# Both remain overridable, which is how a clearnet or LAN deployment gets the
+# strict G.114 scale back: OTRV4PLUS_M2E_GOOD_MS=400 OTRV4PLUS_M2E_WARN_MS=800.
+M2E_GOOD_MS = _env_ms("OTRV4PLUS_M2E_GOOD_MS", 1000, 50, 10000)
 M2E_WARN_MS = max(M2E_GOOD_MS,
-                  _env_ms("OTRV4PLUS_M2E_WARN_MS", 800, 50, 20000))
+                  _env_ms("OTRV4PLUS_M2E_WARN_MS", 1500, 50, 20000))
+
+#: The strict terrestrial scale, for anyone who wants it back.
+#: Named rather than written into a comment so the docs and the tests refer
+#: to one pair of numbers instead of three copies that can drift.
+G114_GOOD_MS, G114_WARN_MS = 400, 800
 
 _ANSI_GREEN = "\033[92m"
 _ANSI_YELLOW = "\033[93m"
@@ -281,12 +309,21 @@ def colour_latency(ms, text=None) -> str:
 
 
 def latency_legend() -> str:
+    """The scale, and what it is a scale OF.
+
+    Saying the numbers without saying they are I2P numbers invites the
+    reading these bands exist to prevent: that 900 ms is fine in general.
+    It is fine HERE, on a path with three garlic-routed hops each way, and
+    it would be a fault on a LAN.
+    """
     enabled, reason = _colour_state()
     return ("mouth-to-ear colour: %s good (<=%dms) %s workable (<=%dms) "
-            "%s poor (>%dms) [colour %s: %s]"
+            "%s poor (>%dms) — calibrated for I2P, not for a telephone "
+            "network (G.114's terrestrial scale is %d/%d) [colour %s: %s]"
             % (colour_latency(0, "green"), M2E_GOOD_MS,
                colour_latency(M2E_WARN_MS, "yellow"), M2E_WARN_MS,
                colour_latency(M2E_WARN_MS + 1, "red"), M2E_WARN_MS,
+               G114_GOOD_MS, G114_WARN_MS,
                "on" if enabled else "OFF", reason))
 
 
@@ -336,6 +373,40 @@ def bind_host(**kwargs) -> None:
 
 def _print(*args):
     _HOST["print"](*args)
+
+
+#: What protects a call, in the words a user needs rather than the words the
+#: code uses.  Named once so the terminal, the README and the tests cannot
+#: drift apart, and derived from what this module actually does: the media
+#: root is hybrid X448 + ML-KEM-1024 (both mandatory, neither alone
+#: sufficient) and each frame is sealed with AES-256-GCM by a Rust-held key.
+VOICE_SUITE_NAME = "X448 + ML-KEM-1024 → AES-256-GCM"
+
+#: Whether the per-call setup detail is printed.
+#:
+#: Bringing a call up used to emit fourteen lines: codec, mic and speaker
+#: gains, transport, shaping, audio backend, playout geometry, three loudness
+#: lines and two about which Android stream the volume keys control.  All of
+#: it is true and almost none of it is what a person wants at the moment they
+#: start talking, and on a phone it pushed the one line that matters -- that
+#: the call is up -- off the top of the screen.
+#:
+#: It is not deleted, because every one of those lines was added to answer a
+#: real question during a real failure.  It is behind a flag: `--debug`, or
+#: OTRV4PLUS_VOICE_VERBOSE=1 without one.
+VOICE_VERBOSE = bool(os.environ.get("OTRV4PLUS_VOICE_VERBOSE"))
+
+
+def set_voice_verbose(on: bool) -> None:
+    """Turn the setup detail on, from the host's --debug flag."""
+    global VOICE_VERBOSE
+    VOICE_VERBOSE = bool(on) or bool(os.environ.get("OTRV4PLUS_VOICE_VERBOSE"))
+
+
+def _vprint(*args):
+    """Print only when the setup detail was asked for."""
+    if VOICE_VERBOSE:
+        _print(*args)
 
 
 def _san(text, max_len=1024):
@@ -714,7 +785,20 @@ DIR_RESPONDER = 0x02        # callee -> caller
 # Every one of these is a LOCAL playout decision. Unlike VOICE_OPUS_SLOT they
 # are not wire format, so two peers may run different values safely and a
 # device on a worse path can buy itself more cushion without breaking calls.
-VOICE_JITTER_PREFILL_MS = _env_ms("OTRV4PLUS_JITTER_MIN_MS", 180, 60, 1000)
+#: The depth the target can never fall below.
+#:
+#: 180 ms until v10.29.0, and on the measured path it WAS the target: the
+#: mean-deviation estimator asked for about 1.7 frames on a p50 lateness of
+#: 9 ms, so the floor decided the buffer's depth for the whole call and the
+#: adaptive machinery above it never once bound.
+#:
+#: A hand-set floor is a guess about the worst path the client will ever run
+#: on, paid on every frame of every call including the good ones. It is now
+#: 120 ms, two frames, because the buffer earns depth back from evidence --
+#: the lateness tail below, and a frame per underrun -- rather than being
+#: insured by a constant. If that mechanism is wrong the floor is one
+#: variable away from where it was: OTRV4PLUS_JITTER_MIN_MS=180.
+VOICE_JITTER_PREFILL_MS = _env_ms("OTRV4PLUS_JITTER_MIN_MS", 120, 60, 1000)
 VOICE_JITTER_DRIFT_HIGH_MS = _env_ms("OTRV4PLUS_JITTER_TARGET_MS", 480,
                                      120, 2000)
 #: Hard cap on queued audio. Not a target -- the adaptive target and the shed
@@ -743,7 +827,14 @@ VOICE_JITTER_DRAIN_MS = _env_ms("OTRV4PLUS_JITTER_DRAIN_MS", 400, 100, 2000)
 #: the same rate, so nothing else pulls the buffer down -- which made the
 #: observed 840 ms floor (target pinned at 10, plus 4) the design rather than
 #: an accident.
-VOICE_JITTER_SHED_MARGIN_MS = _env_ms("OTRV4PLUS_JITTER_MARGIN_MS", 180,
+#:
+#: 180 ms until v10.29.0, now 120 ms. This is the cheapest 60 ms in the
+#: budget, because the shed margin does NOT protect against underruns -- the
+#: target does. The margin is hysteresis above the target, and its only job
+#: is to stop the shedder firing on every pop; lowering it lowers the band
+#: the buffer settles in without moving the depth that guards against a
+#: dropout by a single frame.
+VOICE_JITTER_SHED_MARGIN_MS = _env_ms("OTRV4PLUS_JITTER_MARGIN_MS", 120,
                                       60, 1000)
 
 #: Multiplier on the smoothed arrival deviation when sizing the target.
@@ -754,6 +845,62 @@ VOICE_JITTER_SHED_MARGIN_MS = _env_ms("OTRV4PLUS_JITTER_MARGIN_MS", 180,
 #: for a third less delay on every single frame. For conversation that is the
 #: better side of the trade, and it is a trade rather than a free win.
 VOICE_JITTER_SAFETY_FACTOR = 2.0
+
+#: Which percentile of arrival lateness the target is sized to cover.
+#:
+#: RFC 3550's J -- the smoothed estimate above -- is a MEAN absolute
+#: deviation, and this path is not remotely symmetric.  The v10.15.1 soak
+#: measured inter-arrival spacing of p50 69 ms, p95 128 ms, p99 211 ms and
+#: max 281 ms against a 60 ms expected spacing: the median frame is 9 ms
+#: late, the p99 frame is 151 ms late.  The tail is sixteen times the median.
+#:
+#: 2xJ on that distribution asks for about two frames, so the target pinned
+#: at the hand-set floor and never moved, while the frames that actually
+#: empty the buffer are two and a half frames late.  The result is in the
+#: soak's own counters: `underrun=27 shed=313`.  Both at once is not a buffer
+#: that is too big or too small, it is a buffer that never settles.
+#:
+#: The distribution was already being collected -- `self.spacing` exists for
+#: exactly this reason and its comment says a mean deviation "cannot
+#: distinguish a steadily late path from a punctual one with a long tail,
+#: and only the second is worth buffering for" -- and then only ever printed.
+#: This closes that loop.
+#:
+#: p95 rather than p99: p99 on this path is 2.5 frames and buying it costs
+#: 150 ms on every frame for the whole call, to save one dropout in a
+#: hundred. p95 costs about one frame and the underrun feedback below picks
+#: up whatever it misses.
+VOICE_JITTER_TAIL_PCT = _env_int("OTRV4PLUS_JITTER_TAIL_PCT", 95, 50, 100)
+
+#: How many recent arrivals the tail is measured over.
+#:
+#: A lifetime percentile cannot recover: one bad tunnel minute would hold the
+#: buffer deep for the rest of the call, which is the failure the adaptive
+#: target exists to avoid. 200 frames is about 12 s at 60 ms -- long enough
+#: to contain the tail, short enough to forget a tunnel that has been
+#: replaced.
+VOICE_JITTER_TAIL_WINDOW = _env_int("OTRV4PLUS_JITTER_TAIL_WINDOW",
+                                    200, 20, 2000)
+
+#: Frames added to the target each time the buffer runs dry.
+#:
+#: An underrun is the only DIRECT evidence that the buffer was too shallow --
+#: everything else is inference from arrival times. Nothing in the previous
+#: design used it: the soak underran 27 times and the target was the same
+#: after the 27th as before the first. A buffer that cannot learn from the
+#: one measurement that matters is not adaptive, whatever it computes.
+VOICE_JITTER_UNDERRUN_STEP = _env_int("OTRV4PLUS_JITTER_UNDERRUN_STEP",
+                                      1, 0, 8)
+
+#: Consecutive clean pops before one learned frame is given back.
+#:
+#: Asymmetric on purpose: rise fast, fall slowly. A dropout is immediate and
+#: audible; the latency it costs to avoid the next one is paid quietly. 300
+#: pops is about 18 s at 60 ms, so a path that has genuinely improved gets
+#: its latency back within a minute, and one that is merely between hiccups
+#: does not.
+VOICE_JITTER_UNDERRUN_DECAY = _env_int("OTRV4PLUS_JITTER_UNDERRUN_DECAY",
+                                       300, 10, 10000)
 
 
 VOICE_JITTER_PREFILL = max(2, VOICE_JITTER_PREFILL_MS // VOICE_FRAME_MS)
@@ -2212,6 +2359,16 @@ class JitterBuffer:
         self._jitter_est = 0.0          # seconds, RFC 3550 style smoothing
         self._last_arrival = None
         self._last_seq = None
+        # Rolling window of how LATE each frame was against its expected
+        # arrival, in seconds. The smoothed estimate above is a mean and this
+        # path's tail is sixteen times its median, so the mean alone sizes
+        # the buffer for a distribution the path does not have.
+        import collections as _c
+        self._late = _c.deque(maxlen=VOICE_JITTER_TAIL_WINDOW)
+        # Frames of depth bought with evidence rather than arithmetic: one
+        # per underrun, given back after a long clean run.
+        self._learned = 0
+        self._clean_pops = 0
         # depth_min/depth_max are held across a reporting window, like the
         # level meters: an instantaneous depth says nothing about whether the
         # buffer is stable or swinging between empty and full.
@@ -2264,8 +2421,17 @@ class JitterBuffer:
                 d = abs(observed - expected)
                 self.spacing.add(observed * 1000.0)
                 self._jitter_est += (d - self._jitter_est) / 16.0
-                frames = ((self._safety_factor * self._jitter_est)
-                          / FRAME_INTERVAL_S)
+                # Only LATE counts. A frame that arrives early costs the
+                # buffer nothing -- it simply waits -- while `d` above is
+                # symmetric and so charges earliness as if it were a risk.
+                self._late.append(max(0.0, observed - expected))
+                mean_frames = ((self._safety_factor * self._jitter_est)
+                               / FRAME_INTERVAL_S)
+                # The larger of the two estimators wins. The mean responds
+                # within a frame or two and is what catches a path that has
+                # just got worse; the tail is slower but is the only one that
+                # sees the arrivals that actually empty the buffer.
+                frames = max(mean_frames, self._tail_frames())
                 self._target = max(
                     float(self._prefill),
                     min(float(self._drift_high), frames + 1.0))
@@ -2276,9 +2442,59 @@ class JitterBuffer:
             self._last_arrival = now
             self._last_seq = seq
 
+    def _tail_frames(self) -> float:
+        """Frames of depth needed to cover the measured lateness tail.
+
+        Nearest-rank over the rolling window, so the figure is always an
+        arrival that really happened rather than one interpolated between
+        two that did.
+        """
+        if len(self._late) < 8:
+            # Too few samples for a percentile to mean anything. Returning 0
+            # leaves the mean estimator and the floor in charge, which is
+            # what governed the whole call before this existed.
+            return 0.0
+        ordered = sorted(self._late)
+        idx = int(round((VOICE_JITTER_TAIL_PCT / 100.0) * len(ordered) + 0.5)) - 1
+        idx = max(0, min(len(ordered) - 1, idx))
+        return ordered[idx] / FRAME_INTERVAL_S
+
+    def note_underrun(self) -> None:
+        """The buffer ran dry: buy a frame of depth, up to the ceiling.
+
+        This is the ONLY direct evidence that the target was too shallow.
+        Everything else here is inference from arrival times, and the v10.15.1
+        soak shows what inference alone achieved: 27 underruns, and a target
+        that was identical after the 27th to what it had been before the
+        first. Rise on evidence, fall on time.
+        """
+        headroom = int(self._drift_high) - int(self._prefill)
+        if headroom > 0:
+            self._learned = min(self._learned + VOICE_JITTER_UNDERRUN_STEP,
+                                headroom)
+        self._clean_pops = 0
+
+    def _note_clean_pop(self) -> None:
+        if self._learned <= 0:
+            return
+        self._clean_pops += 1
+        if self._clean_pops >= VOICE_JITTER_UNDERRUN_DECAY:
+            self._clean_pops = 0
+            self._learned -= 1
+
     @property
     def target_depth(self) -> int:
-        return int(self._target + 0.5)
+        # The learned frames are added to the computed target and the CEILING
+        # applies to the sum: a path bad enough to underrun repeatedly must
+        # not be able to walk the buffer past the latency cap one dropout at
+        # a time. OTRV4PLUS_JITTER_MAX_MS is still the last word on depth.
+        return int(min(self._target + self._learned,
+                       float(self._drift_high)) + 0.5)
+
+    @property
+    def learned_frames(self) -> int:
+        """Frames of depth currently held because of past underruns."""
+        return int(self._learned)
 
     @property
     def jitter_ms(self) -> float:
@@ -2336,6 +2552,7 @@ class JitterBuffer:
                 # the next burst choppy.
                 self._primed = False
                 self.stats["underrun"] += 1
+                self.note_underrun()
                 return None
 
             # Shed the oldest while we are above the latency ceiling. One
@@ -2400,6 +2617,7 @@ class JitterBuffer:
                 if gap:
                     self.stats["gaps"] += gap
             self._last_played = seq
+            self._note_clean_pop()
             return pcm, gap
 
     def depth(self) -> int:
@@ -3558,38 +3776,42 @@ class VoiceCallSession:
         # protection they do not have.
         self.constant_rate = ("vbr" in applied) and ("dtx" in applied)
 
-        _print("[voice] codec: Opus %d Hz mono, %d ms frames, %d kbit/s %s"
-               % (VOICE_SAMPLE_RATE, VOICE_FRAME_MS, VOICE_BITRATE // 1000,
+        _vprint("[voice] codec: Opus %d Hz mono, %d ms frames, %d kbit/s %s"
+                % (VOICE_SAMPLE_RATE, VOICE_FRAME_MS, VOICE_BITRATE // 1000,
                   "CBR" if self.constant_rate else "VBR"))
-        _print("[voice] levels: mic gain %.2f%s, speaker gain %.2f, "
-               "playback compressor %s (%.0f dB makeup) — output is limited "
-               "so nothing here can clip"
-               % (self._mic_gain.gain,
+        _vprint("[voice] levels: mic gain %.2f%s, speaker gain %.2f, "
+                "playback compressor %s (%.0f dB makeup) — output is limited "
+                "so nothing here can clip"
+                % (self._mic_gain.gain,
                   " + auto" if self._mic_gain.auto else "",
                   self._speaker_gain.gain,
                   "on" if self._speaker_comp.enabled else "off",
                   self._speaker_comp.makeup_db))
         if self._playback_usage_is_voice():
-            _print("[voice] playback is declared as VOICE_COMMUNICATION, "
-                   "which some phones route to the EARPIECE rather than the "
-                   "speaker. If the level readings below look healthy but "
-                   "the call is still faint, that is routing, not gain: set "
-                   "OTRV4PLUS_AUDIO_USAGE=media.")
+            _vprint("[voice] playback is declared as VOICE_COMMUNICATION, "
+                    "which some phones route to the EARPIECE rather than the "
+                    "speaker. If the level readings below look healthy but "
+                    "the call is still faint, that is routing, not gain: set "
+                    "OTRV4PLUS_AUDIO_USAGE=media.")
         if self._transport_mode == VOICE_TRANSPORT_DATAGRAM:
-            _print("[voice] transport: I2P datagrams — no retransmission, so "
-                   "congestion arrives as loss (concealed) rather than as "
-                   "delay that accumulates.")
+            _vprint("[voice] transport: I2P datagrams — no retransmission, so "
+                    "congestion arrives as loss (concealed) rather than as "
+                    "delay that accumulates.")
         else:
-            _print("[voice] transport: I2P streams — reliable and ordered, so "
-                   "a lost segment stalls everything behind it for one 9 s "
-                   "retransmit timeout. Unset OTRV4PLUS_VOICE_TRANSPORT for "
-                   "datagrams.")
+            _vprint("[voice] transport: I2P streams — reliable and ordered, so "
+                    "a lost segment stalls everything behind it for one 9 s "
+                    "retransmit timeout. Unset OTRV4PLUS_VOICE_TRANSPORT for "
+                    "datagrams.")
+        # The shaping line stays at normal volume when it is BAD news.  A
+        # user who has been told the call is constant-rate is entitled to be
+        # told when it is not, and burying that with the codec settings would
+        # hide the one setup line that changes what the call protects.
         if self.constant_rate:
-            _print("[voice] application-layer constant-rate shaping active — "
-                   "packet size and timing carry no speech information. Call "
-                   "timing, duration and tunnel behaviour remain observable.")
+            _vprint("[voice] application-layer constant-rate shaping active — "
+                    "packet size and timing carry no speech information. Call "
+                    "timing, duration and tunnel behaviour remain observable.")
         else:
-            _print("[voice] WARNING: could not disable VBR/DTX (%s); packet "
+            _print("[voice] ⚠ WARNING: could not disable VBR/DTX (%s); packet "
                    "size and timing may leak conversation rhythm"
                    % ", ".join(failed))
 
@@ -3598,6 +3820,29 @@ class VoiceCallSession:
                 b"\x00" * VOICE_FRAME_BYTES, VOICE_FRAME_SAMPLES))
         except Exception:
             self._silence_frame = None
+
+    def security_line(self) -> str:
+        """One line naming what actually protects the call.
+
+        Asked for from a handset: the setup output said a great deal about
+        gains and buffers and nothing about the cryptography, so a user had
+        no way to know what the call was protected by.  Every value here is
+        read from the session rather than written down twice -- a hard-coded
+        cipher name is a lie waiting for the day somebody changes one.
+
+        The shaping claim is the reason this is built rather than printed as
+        a constant: if VBR or DTX could not be disabled the call is NOT
+        constant-rate, and a fixed string would tell the user it was.
+        """
+        shaped = ("constant-rate" if self.constant_rate
+                  else "NOT constant-rate")
+        return ("[voice] 🔒 %s over %s, %s — keys are per call, held in Rust, "
+                "and zeroized on hangup"
+                % (VOICE_SUITE_NAME,
+                   "I2P datagrams"
+                   if self._transport_mode == VOICE_TRANSPORT_DATAGRAM
+                   else "I2P streams",
+                   shaped))
 
     def _open_audio_devices(self) -> None:
         """Open the microphone and speaker through otrv4plus_audio.
@@ -3642,9 +3887,9 @@ class VoiceCallSession:
 
         self.audio_backend = self._capture.name
         cap = self._capture.diagnostics()
-        _print("[voice] audio: %s capture %s Hz / %s ch, playback %s — "
-               "PCM_16BIT%s"
-               % (self.audio_backend, cap.get("device_rate"),
+        _vprint("[voice] audio: %s capture %s Hz / %s ch, playback %s — "
+                "PCM_16BIT%s"
+                % (self.audio_backend, cap.get("device_rate"),
                   cap.get("device_channels"), self._playback.name,
                   ", resampling to %d Hz" % VOICE_SAMPLE_RATE
                   if cap.get("resampling") else ""))
@@ -3659,15 +3904,27 @@ class VoiceCallSession:
             cap_frames = play.get("buffer_capacity_frames") or 0
             rate = play.get("device_rate") or VOICE_SAMPLE_RATE
             held_ms = (1000.0 * cap_frames / float(rate)) if cap_frames and rate else 0.0
-            _print("[voice] playout: %s Hz / %s ch%s, burst %s frames, "
-                   "capacity %s frames (%.0f ms) vs %d ms per packet"
-                   % (play.get("device_rate"), play.get("device_channels"),
+            _vprint("[voice] playout: %s Hz / %s ch%s, burst %s frames, "
+                    "capacity %s frames (%.0f ms) vs %d ms per packet"
+                    % (play.get("device_rate"), play.get("device_channels"),
                       " (resampling)" if play.get("resampling") else "",
                       play.get("frames_per_burst"), cap_frames or "?",
                       held_ms, VOICE_FRAME_MS))
+            # The CONCLUSION stays at normal volume; the parameters above do
+            # not.  This is the one playout condition that ruins a call while
+            # every counter reads healthy: the write blocks, the pop rate
+            # falls below the arrival rate, and the jitter buffer sheds the
+            # difference -- deliberately, so it is not counted as loss.  A
+            # 1960 s call destroyed a third of its own audio this way and
+            # nothing in the frame counters said so.  Four numbers of device
+            # geometry are a diagnostic; "every write waits on the device" is
+            # a finding, and findings are not put behind a flag.
             if held_ms and held_ms < VOICE_FRAME_MS:
-                _print("[voice] playout: the device buffer holds less than one "
-                       "packet, so every write waits on the device")
+                _print("[voice] ⚠ playout: the device buffer holds less than "
+                       "one packet (%.0f ms vs %d ms), so every write waits "
+                       "on the device — audio will be dropped locally to keep "
+                       "up. --voice-debug for the device parameters."
+                       % (held_ms, VOICE_FRAME_MS))
         except Exception:
             pass
 
@@ -3683,26 +3940,26 @@ class VoiceCallSession:
             on_call_stream = (usage == getattr(
                 _audio, "AAUDIO_USAGE_VOICE_COMMUNICATION", None))
             clarity = self._speech_clarity
-            _print("[voice] loudness: clarity %s (high-pass %.0f Hz, "
-                   "presence +%.1f dB at %.0f Hz)"
-                   % ("on" if getattr(clarity, "enabled", False) else "OFF",
+            _vprint("[voice] loudness: clarity %s (high-pass %.0f Hz, "
+                    "presence +%.1f dB at %.0f Hz)"
+                    % ("on" if getattr(clarity, "enabled", False) else "OFF",
                       getattr(clarity, "hpf_hz", 0.0),
                       getattr(clarity, "presence_db", 0.0),
                       getattr(clarity, "presence_hz", 0.0)))
-            _print("[voice] loudness: compressor %s (makeup %.1f dB, %.0f:1 "
-                   "above %.0f dBFS), speaker gain x%.2f"
-                   % ("on" if getattr(comp, "enabled", False) else "OFF",
+            _vprint("[voice] loudness: compressor %s (makeup %.1f dB, %.0f:1 "
+                    "above %.0f dBFS), speaker gain x%.2f"
+                    % ("on" if getattr(comp, "enabled", False) else "OFF",
                       getattr(comp, "makeup_db", 0.0),
                       getattr(comp, "ratio", 1.0),
                       getattr(comp, "threshold", 0.0),
                       getattr(gain, "gain", 1.0)))
             if on_call_stream:
-                _print("[voice] loudness: routed to the CALL stream — the "
-                       "volume keys during a call")
-                _print("[voice]   change this, not the media volume. For the "
-                       "louder media route:")
-                _print("[voice]   OTRV4PLUS_AUDIO_USAGE=media  (costs the "
-                       "platform echo canceller)")
+                _vprint("[voice] loudness: routed to the CALL stream — the "
+                        "volume keys during a call")
+                _vprint("[voice]   change this, not the media volume. For the "
+                        "louder media route:")
+                _vprint("[voice]   OTRV4PLUS_AUDIO_USAGE=media  (costs the "
+                        "platform echo canceller)")
         except Exception:
             pass
 
@@ -5317,6 +5574,24 @@ class VoiceCallManager:
 
     # -- helpers ----------------------------------------------------------
 
+    #: Diagnostics and the setup detail are ONE switch.
+    #:
+    #: The call-setup lines moved behind `_vprint` when the terminal output
+    #: was tidied, and a second, separate flag for them would have been a
+    #: trap: the person who types /voicedebug because a call sounds wrong is
+    #: asking for exactly those lines, and would have got telemetry without
+    #: the codec, transport and playout geometry that explain it.  Wiring the
+    #: two together means --voice-debug and /voicedebug restore the whole of
+    #: the old output, and nothing new has to be discovered to get it back.
+    @property
+    def debug(self) -> bool:
+        return self._debug
+
+    @debug.setter
+    def debug(self, on) -> None:
+        self._debug = bool(on)
+        set_voice_verbose(self._debug)
+
     @staticmethod
     def _bare(jid: str) -> str:
         return (jid or "").split("/", 1)[0]
@@ -5651,6 +5926,7 @@ class VoiceCallManager:
         self._start_rekey(peer)
         _print("[voice] call active with %s — /hangup to end, /mute to toggle mic"
                % _san(peer, 64))
+        self._announce_security(session)
 
     async def answer_call(self, peer: str) -> None:
         """Responder role: derive keys, then create our session and connect."""
@@ -5727,6 +6003,7 @@ class VoiceCallManager:
         self._start_rekey(peer)
         _print("[voice] call active with %s — /hangup to end, /mute to toggle mic"
                % _san(peer, 64))
+        self._announce_security(session)
 
     # -- inbound ----------------------------------------------------------
 
@@ -6643,11 +6920,261 @@ class VoiceCallManager:
                 self._signal(peer, "END", (session.call_id.hex(),))
             except Exception:
                 pass
+        # Gathered BEFORE end(), which tears down the jitter buffer and the
+        # latency tracker the figures come from. Printed after, so the two
+        # lines are not split by whatever teardown has to say.
+        summary = self._call_summary(session)
         stats = await session.end()
-        _print("[voice] call ended — sent %d, received %d, dropped %d, "
-               "auth-failed %d, replayed %d; every media key zeroized"
-               % (stats["sent"], stats["recv"], stats["dropped"],
-                  stats["auth_fail"], stats["replay"]))
+        for line in summary:
+            _print(line)
+        self._report_teardown(stats)
+
+    def _report_teardown(self, stats) -> None:
+        """The second hangup line: keys gone, and anything that smelled wrong.
+
+        The full packet tally used to print on every call.  Five counters is
+        a diagnostic, and it is the wrong thing to hand somebody who has just
+        put the phone down -- but two of those counters are NOT diagnostics.
+        A non-zero auth-failure or replay count means frames arrived that did
+        not authenticate under our key, and burying that behind a debug flag
+        would hide the one number a user of an encrypted call is entitled to
+        see.  So they are printed whenever they are non-zero, and only then.
+
+        The wipe confirmation is printed LAST and outside every try, because
+        it is the one statement here that is not a reading: the keys were
+        zeroized by `session.end()` before this was called, and a counter
+        that could not be formatted must not be able to withhold the fact.
+        """
+        def _n(key):
+            try:
+                return int(stats.get(key, 0))
+            except Exception:
+                return 0
+
+        try:
+            bad = _n("auth_fail") + _n("replay")
+            if bad:
+                _print("[voice] ⚠ %d frame(s) failed authentication or "
+                       "replayed and were DISCARDED — sent %d, received %d, "
+                       "auth-failed %d, replayed %d"
+                       % (bad, _n("sent"), _n("recv"),
+                          _n("auth_fail"), _n("replay")))
+            else:
+                _vprint("[voice] sent %d, received %d, dropped %d"
+                        % (_n("sent"), _n("recv"), _n("dropped")))
+        except Exception:
+            pass
+        _print("[voice] 🔒 every media key for this call has been zeroized")
+
+    def _announce_security(self, session) -> None:
+        """Say what protects the call, once, as it goes live.
+
+        The setup output described gains, buffers and Android stream types
+        and never once named the cryptography, so a user had no way to tell a
+        post-quantum call from a classical one.  This is the line that
+        answers "what am I protected by", and it prints at normal volume
+        because it is the only setup line that changes what the call means.
+
+        Never raises: a report that fails must not take the call with it.
+        """
+        try:
+            _print(session.security_line())
+        except Exception as exc:
+            self._vdbg(getattr(session, "peer", "?"),
+                       "security line failed: %s" % type(exc).__name__)
+
+    #: A call is reported bad below this delivery ratio, whatever the delay.
+    #: Concealment hides a few per cent; a fifth of the audio missing is a
+    #: call the other person struggled through.
+    CALL_GOOD_DELIVERY = 0.95
+
+    #: How much audio the buffer may shed before the call is reported bad.
+    #:
+    #: Shedding is a healthy mechanism in small amounts -- it is how a call
+    #: that started on a congested path gets its latency back.  Above this it
+    #: is the symptom of a playout device that cannot keep up, which is what
+    #: destroyed a third of a 1960 s call while every counter read healthy.
+    CALL_MAX_SHED = 0.05
+
+    def _call_summary(self, session) -> list:
+        """The lines that say whether the call was any good.
+
+        Asked for from a handset: the only thing printed at hangup was a
+        packet tally, which says whether the software worked and nothing
+        about whether the CALL worked.  Mouth-to-ear delay and delivery are
+        what a person actually experienced, and they were computed already --
+        for the debug stream, where nobody watching a call would see them.
+
+        Read BEFORE `session.end()`, because end() tears down the jitter
+        buffer and the latency tracker that these come from.  A summary
+        gathered afterwards reports zeros, which is worse than no summary at
+        all: it looks like a measurement.
+
+        Never raises.  A hangup that fails because the report failed would be
+        a call you cannot leave.
+        """
+        try:
+            return self._call_summary_inner(session)
+        except Exception as exc:
+            self._vdbg(getattr(session, "peer", "?"),
+                       "summary failed: %s" % type(exc).__name__)
+            return ["[voice] call ended"]
+
+    def _call_summary_inner(self, session) -> list:
+        # Wall-clock length of the call. NOT LatencyTracker.call_ms(), which
+        # despite the name is a masked frame timestamp with a random per-call
+        # origin -- using it here would print a duration of several weeks.
+        secs = 0.0
+        timed = False
+        try:
+            secs = max(0.0, time.monotonic() - session._call_t0)
+            timed = True
+        except Exception:
+            pass
+        duration = ("%dm%02ds" % (int(secs) // 60, int(secs) % 60)
+                    if secs >= 60 else "%ds" % int(secs))
+
+        # Mouth-to-ear: the same decomposition the debug stream reports --
+        # network one-way, plus how long a frame waited in our jitter buffer,
+        # plus decode and playout.  Not the round trip, and not the network
+        # alone: what the far end says takes this long to reach an ear.
+        m2e = None
+        try:
+            oneway = session.latency.oneway_ms
+            if oneway:
+                m2e = (oneway
+                       + session.jitter.dwell.percentile(0.50)
+                       + session.stages.t["decode"].percentile(0.50)
+                       + session.stages.t["play"].percentile(0.50))
+        except Exception:
+            m2e = None
+
+        sent = 0
+        try:
+            sent = int(session.stats.get("sent", 0))
+        except Exception:
+            pass
+
+        # How much of the far end's speech an ear actually received.
+        #
+        # NOT recv/(recv+dropped): `dropped` mixes send-side drops into a
+        # receive-side ratio, so a call that could not transmit would report
+        # as one that could not listen.  The jitter buffer already knows the
+        # answer -- `queued` is every frame accepted for playout and `gaps`
+        # is every frame missing from the sequence when its turn came, which
+        # is exactly the audio that had to be concealed.
+        delivery = None
+        try:
+            played = int(session.jitter.stats.get("queued", 0))
+            gaps = int(session.jitter.stats.get("gaps", 0))
+            if played + gaps:
+                delivery = float(played) / float(played + gaps)
+        except Exception:
+            delivery = None
+
+        # Audio we threw away ourselves.
+        #
+        # `drift` is the jitter buffer shedding frames to pull latency back
+        # down.  It is deliberately NOT counted as loss above -- a shed frame
+        # advances the playout marker, so it leaves no gap and conceals
+        # nothing -- which is right for the mechanism and wrong for the user:
+        # a 1960 s call whose playout device blocked on every write shed a
+        # THIRD of its audio, eight times more than the network lost, and
+        # every counter read healthy.  It is reported here because this is
+        # the only place a person would see it.
+        shed = None
+        try:
+            dropped_locally = int(session.jitter.stats.get("drift", 0))
+            if played + gaps and dropped_locally:
+                shed = float(dropped_locally) / float(played + gaps)
+        except Exception:
+            shed = None
+
+        # If NOTHING could be read, say nothing.
+        #
+        # Every field above degrades on its own, which is right for one
+        # missing counter and wrong for a session that has been torn down or
+        # was never a session: those produce "0s, mouth-to-ear not measured
+        # (call too short)", which is a sentence full of figures that were
+        # never measured.  The docstring's own warning applies to this
+        # function as much as to a caller who reads it too late.
+        if not timed and m2e is None and delivery is None and not sent:
+            return ["[voice] call ended"]
+
+        # The verdict. Delay and loss both have to be acceptable: a call with
+        # no delay that lost a fifth of its audio was not a good call, and
+        # neither was a perfectly delivered one two seconds behind.
+        bands = []
+        if m2e is not None:
+            bands.append(latency_band(m2e))
+        if delivery is not None:
+            bands.append("good" if delivery >= self.CALL_GOOD_DELIVERY
+                         else "bad")
+        if shed is not None:
+            bands.append("good" if shed <= self.CALL_MAX_SHED else "bad")
+        if not bands:
+            mark, verdict = "•", "call ended"
+        elif "bad" in bands:
+            mark, verdict = "🔴", "call ended — quality was poor"
+        elif "warn" in bands:
+            mark, verdict = "🟡", "call ended — workable"
+        else:
+            mark, verdict = "🟢", "call ended — good"
+
+        parts = [duration]
+        if m2e is not None:
+            parts.append("mouth-to-ear ~%s" % colour_latency(m2e))
+        else:
+            # Say why rather than printing a dash. On a short call the probes
+            # have not completed and that is not a fault.
+            parts.append("mouth-to-ear not measured"
+                         + (" (call too short)" if secs < 10 else ""))
+        if delivery is not None:
+            parts.append("%.1f%% of audio delivered" % (100.0 * delivery))
+        if shed:
+            parts.append("%.1f%% shed locally to hold latency down"
+                         % (100.0 * shed))
+        if sent:
+            parts.append("%d frames sent" % sent)
+
+        lines = ["[voice] %s %s — %s" % (mark, verdict, ", ".join(parts))]
+        budget = self._budget_line(session, m2e)
+        if budget:
+            lines.append(budget)
+        return lines
+
+    def _budget_line(self, session, m2e):
+        """Where the mouth-to-ear delay went: network, buffer, playout.
+
+        The single most useful line in a latency investigation, and until now
+        it existed only inside `--voice-debug`.  Without it "914 ms" invites
+        the assumption that the cryptography is expensive; with it, the
+        v10.15.1 soak's answer is visible on every call -- sealing and
+        opening together cost half a millisecond of an 855 ms budget, and
+        the network is two thirds of it.
+
+        Only the two parts this client can do anything about are separated
+        out.  The network figure is six I2P hops each way and is not ours;
+        the buffer and the playout path are.
+        """
+        try:
+            if m2e is None:
+                return None
+            oneway = float(session.latency.oneway_ms or 0.0)
+            dwell = float(session.jitter.dwell.percentile(0.50))
+            playout = (float(session.stages.t["decode"].percentile(0.50))
+                       + float(session.stages.t["play"].percentile(0.50)))
+            if oneway <= 0:
+                return None
+            line = ("[voice]   %.0fms network (6 I2P hops) + %.0fms jitter "
+                    "buffer + %.0fms playout" % (oneway, dwell, playout))
+            learned = getattr(session.jitter, "learned_frames", 0)
+            if learned:
+                line += ("; buffer holding %d extra frame(s) after "
+                         "underruns" % learned)
+            return line
+        except Exception:
+            return None
 
     async def reject_call(self, peer: str) -> None:
         peer = self._bare(peer)

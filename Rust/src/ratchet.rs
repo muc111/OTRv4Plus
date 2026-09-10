@@ -713,9 +713,13 @@ impl RustDoubleRatchet {
         use crate::dake::Dakeresult;
 
         // §7 - defensive precondition: refuse already-consumed.
-        // PyO3 0.21+ idiom: downcast directly to `Bound<Dakeresult>`, then
+        // PyO3 0.21+ idiom: cast directly to `Bound<Dakeresult>`, then
         // `borrow_mut()` returns a `PyRefMut<Dakeresult>` (PyCell is deprecated).
-        let cell: &pyo3::Bound<'_, Dakeresult> = result.downcast::<Dakeresult>()
+        // v10.19.0: `Bound::downcast` was renamed `Bound::cast` in PyO3 0.29
+        // (same signature, `CastError` in place of `DowncastError`); the crate
+        // is pinned to ^0.29 for GHSA-36hh-v3qg-5jq4, so the new name is the
+        // only one that exists here.
+        let cell: &pyo3::Bound<'_, Dakeresult> = result.cast::<Dakeresult>()
             .map_err(|_| PyValueError::new_err(
                 "from_dakeresult: argument must be a Dakeresult instance",
             ))?;
@@ -1157,10 +1161,10 @@ mod tests {
         let (mut a, mut b) = pair();
         for _ in 0..5 {
             let m = a.encrypt(b"x").unwrap();
-            assert!(!m.reveal_mac_keys.iter().any(|k| *k == m.mac_key));
+            assert!(!m.reveal_mac_keys.contains(&m.mac_key));
             deliver(&mut b, &m).unwrap();
             let r = b.encrypt(b"y").unwrap();
-            assert!(!r.reveal_mac_keys.iter().any(|k| *k == r.mac_key));
+            assert!(!r.reveal_mac_keys.contains(&r.mac_key));
         }
     }
 

@@ -131,7 +131,7 @@ class TestJitterConfiguration:
     def test_an_out_of_range_value_is_ignored_not_clamped(self):
         # A typo must not stop a call, and a silently clamped value is harder
         # to notice than an ignored one.
-        assert config(OTRV4PLUS_JITTER_MIN_MS=999999)["jitter_min_ms"] == 180
+        assert config(OTRV4PLUS_JITTER_MIN_MS=999999)["jitter_min_ms"] == 120
 
 
 class TestOpusTuning:

@@ -4,6 +4,1880 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## v10.30.0 — server administration, driven by the server's own forms
+
+*2026-09-10.  `VERSION → 10.30.0`.  `otrv4_core` unchanged at 0.10.28.*
+
+Asked for a while ago and left open on one question — *which* admin commands to
+implement. The question turns out not to need answering.
+
+XEP-0133 defines thirty-two commands, slixmpp implements all of them, and no
+server implements all of them: Prosody's subset is not ejabberd's. Hand-coding
+"the useful six" would have been wrong twice — offering commands a given server
+refuses, and hiding ones it supports.
+
+So nothing in `otrv4plus_admin.py` knows a command's name. The server
+advertises its commands over service discovery and each command answers with a
+XEP-0004 data form describing its own fields; this turns that form into a
+sequence of questions and the answers back into a form. A server that adds a
+command gets it for free.
+
+```
+/admin                    ask the server what it supports
+/admin <command>          run one; it prompts for whatever the form asks for
+/cancel                   abandon a form; nothing is sent
+```
+
+The state machine is a separate module with **no network I/O at all**, so
+required fields, hidden fields, multi-stage forms and passwords-that-must-not-
+echo are testable without a server, a socket or an event loop.
+
+### The three properties that are not incidental
+
+**A password never escapes.** `add-user` and `change-user-password` carry one.
+`text-private` values are excluded from every rendering path — the submission
+summary, `shown_value()`, the field's own `repr` — and the coercion errors name
+the *field* and never the value, because that path is shared with the password
+field and an echoed answer would put it in a traceback. It still reaches the
+wire: hiding it from the screen must not hide it from the server, which is the
+one place it is meant to go.
+
+**A form is armed only by the local user.** `take_admin_field()` is the same
+one-shot mechanism as the SMP passphrase and the same rule as INV-06: it is set
+in exactly one place, `_admin_ask_next`, and nothing reachable from an inbound
+stanza can get there. The server describes the QUESTIONS; it cannot decide that
+the next line typed is an answer. A test asserts the flag has exactly one
+`True` setter.
+
+**`[admin]` is not a loggable tag.** Its output carries user lists, JIDs and
+occasionally a password, so it is deliberately absent from `_LOG_SAFE_TAGS` and
+reaches the transcript as `<unlogged line: N chars>`. The tag-colour test that
+pins the coloured-but-unlogged list was updated deliberately rather than
+"fixed" by adding `admin` to the allowlist.
+
+### Said out loud, once
+
+Admin is the one surface in this client that is deliberately **not**
+end-to-end encrypted, and the client says so before the first command rather
+than leaving it in the docs:
+
+```
+[admin] NOTE: admin commands are ordinary XMPP to your own server.
+[admin] They are protected by the transport (I2P or TLS) and NOT by OTR —
+[admin] the server is the intended recipient, so there is nobody to be end-to-end with.
+```
+
+That is not a limitation to be fixed. The server *is* the recipient; there is
+nobody to be end-to-end with.
+
+`xep_0004` and `xep_0050` are registered; `xep_0133` deliberately is not — its
+plugin is thirty-two thin session-starters this client does not call, and
+registering it would be config nothing reads.
+
+60 tests, 21 mutations killed.  Full suite: 3360 passed, 44 skipped, 1 xfailed.
+Not yet exercised against a real Prosody server — `/admin` on xmpp-elite.i2p is
+the test.
+
+---
+
+## v10.29.0 — the buffer was sized from an average, on a path that has a tail
+
+*2026-09-05.  `VERSION → 10.29.0`.  `otrv4_core` unchanged at 0.10.28.*
+
+Asked to find whatever latency could be found without touching the three-hop
+tunnel configuration, which is not negotiable and is the reason the project
+exists.  Full analysis in **[VOICE_LATENCY_BUDGET.md](VOICE_LATENCY_BUDGET.md)**.
+
+The measured budget, from the v10.15.1 soak:
+
+```
+mouth-to-ear ~855 ms  =  network 576 ms  +  jitter buffer 229 ms  +  playout 51 ms
+```
+
+Two thirds of it is six I2P hops at about 96 ms each and is not ours.  The
+cryptography is 0.5 ms of it — sealing and opening together — so no amount of
+work on the cipher suite moves this number.  The jitter buffer is the only
+quarter this client controls.
+
+### What was wrong with it
+
+The target depth was `2 x J`, RFC 3550's smoothed **mean absolute deviation**
+of inter-arrival time.  The measured spacing against a 60 ms expected: p50
+69 ms, p95 128 ms, p99 211 ms, max 281 ms.  The median frame is 9 ms late and
+the p99 frame is 151 ms late — **the tail is sixteen times the median**.
+
+On that distribution `2 x J` asks for under two frames, so the target sat on
+the hand-set floor of three for the whole call and the adaptive machinery
+never once bound, while the frames that actually empty a buffer are two and a
+half frames late.  The soak's own counters say what happened: `underrun=27
+shed=313`.  Both at once is not a buffer that is too deep or too shallow, it
+is a buffer that never settles.
+
+Two things had been sitting in the code waiting to be noticed.
+
+`JitterBuffer.spacing` already collected the distribution, and its own comment
+already said why it mattered — a mean deviation "cannot distinguish a steadily
+late path from a punctual one with a long tail, and only the second is worth
+buffering for" — and it was then only ever printed into the debug stream.  The
+same shape as v10.28.0's bug: the right figure computed for a log nobody
+watching a call would read.
+
+And nothing learned from an underrun, which is the only DIRECT evidence that
+the buffer was too shallow.  The target after the soak's twenty-seventh
+underrun was identical to what it had been before the first.
+
+### What it does now
+
+- Sized from the measured **lateness tail** (p95 over a rolling 200-frame
+  window) as well as from J, whichever asks for more.  Only lateness counts: a
+  frame that arrives early costs the buffer nothing, while J is symmetric and
+  charges earliness as though it were a risk.
+- **An underrun buys a frame of depth**, to the latency ceiling, given back
+  after ~300 clean frames.  Rise on evidence, fall on time.
+- Because depth is now earned rather than insured by a constant, the static
+  floor came down: prefill 180 → 120 ms, shed margin 180 → 120 ms.  The shed
+  margin is the cheapest 60 ms in the budget — it is hysteresis above the
+  target, and it is the TARGET that guards against a dropout.
+
+Replaying the soak's distribution through the new estimator moves the
+steady-state band from 180–360 ms to 120–240 ms, predicting **mouth-to-ear
+~855 → ~779 ms**.  That is a prediction from a replayed distribution and not a
+measurement, it is about 9%, and it is roughly the whole of what was available
+locally.
+
+Every call now prints the decomposition at hangup, so checking it no longer
+needs `--voice-debug`:
+
+```
+[voice]   560ms network (6 I2P hops) + 170ms jitter buffer + 50ms playout
+```
+
+Nothing here is wire format — these are local playout decisions, so the two
+handsets can run different values.  `OTRV4PLUS_JITTER_MIN_MS=180
+OTRV4PLUS_JITTER_MARGIN_MS=180` restores v10.28.1's depth exactly.
+
+### Deliberately not attempted
+
+Tunnel options, a SAM write pacer and `TCP_NODELAY` were the reverted pass at
+`8683be3`, which "broke a working system twice on a real I2P path".  40 ms
+frames would save 20 ms of packetisation and raise the packet rate to 25/s, at
+which a live call has already starved.  Neither is worth spending a test
+window on.
+
+### The message you typed appeared twice
+
+```
+i shiuld not seewgat i type twice
+🔒 [otr] alice@xmpp-elite.i2p: i shiuld not seewgat i type twice
+```
+
+v10.27.0 added an attributed echo of outgoing messages, because without it the
+session log recorded only one side of the conversation.  In the TUI that is
+right — it owns the screen in raw mode and echoes input itself.  In plain
+mode, which is the default, the input loop sits in `sys.stdin.readline()` with
+the tty in canonical mode, so the terminal has already drawn the line before
+our echo runs.
+
+The echo now erases the terminal's copy and prints the attributed line in its
+place.  Moving the cursor up is destructive, so it happens only when all three
+of these hold: the line is the one the terminal just echoed, **nothing has
+been printed since** (an inbound message arriving in between means the rows
+above the cursor are no longer the user's input), and stdout is a terminal
+whose width can be read.  Wrapped input is counted properly, a pasted wall of
+text over twelve rows is left alone, and any failure falls back to the
+v10.28.1 behaviour — printing twice is ugly, deleting a line of somebody's
+conversation is not recoverable.
+
+51 tests, 25 mutations killed.  Full suite: 3299 passed, 44 skipped, 1 xfailed.
+The buffer change is predicted, not measured; the two-handset run in the
+morning is what settles it, and VOICE_LATENCY_BUDGET.md says what to look at.
+
+---
+
+## v10.28.1 — the latency scale was calibrated for a phone network
+
+*2026-09-05.  `VERSION → 10.28.1`.  `otrv4_core` unchanged at 0.10.28.*
+
+The first real call under v10.28.0's new summary:
+
+```
+[voice] 🔴 call ended — quality was poor — 1m51s, mouth-to-ear ~914ms, 96.5% of audio delivered, 2.6% shed locally to hold latency down, 1068 frames sent
+```
+
+Two people had that conversation start to finish.  96.5% of the audio arrived,
+2.6% was shed to hold latency down, nothing failed to authenticate.  It was
+reported as a poor call because of one number, and that number was being judged
+against the wrong scale.
+
+The bands were ITU-T G.114's: green under 400 ms, amber to 800 ms.  G.114 is a
+standard about **terrestrial** telephony, where propagation is nearly free and
+400 ms means something has gone wrong.  It says so itself — it carves out links
+with unavoidable long propagation, a geostationary satellite hop being about
+250–280 ms each way, as outside its range and in daily use anyway.
+
+A call here crosses three garlic-routed I2P hops in each direction, plus the
+jitter buffer that has to absorb each hop's variance.  This repository has
+recorded the consequence for some time without acting on it: `README.md`,
+`FEATURES.md` and `ROADMAP.md` all state a measured median mouth-to-ear of
+**917 ms** on this path.  The scale was calling its own transport's median a
+fault.
+
+That is a broken instrument, not a bad call.  A scale that cannot reach its top
+band on the only transport the project supports is not strict, it is stuck —
+and it spends the colour reserved for *something is wrong* on the ordinary
+case, so the day something is genuinely wrong it has nothing left to say.
+
+The bands are now set against what this path can actually deliver:
+
+| Colour | Mouth-to-ear | Meaning |
+|---|---|---|
+| green | ≤ 1000 ms | at or near the floor of the path — as good as I2P gets |
+| yellow | ≤ 1500 ms | noticeably worse than the floor; still a conversation, with the pauses of a satellite call |
+| red | > 1500 ms | turn-taking breaks down |
+
+The 914 ms call now reads `🟢 call ended — good`.
+
+**The measurement has not moved and is not being flattered.**  917 ms is still
+917 ms, it is still the price of the anonymity configuration, and reducing it is
+still open work — `ROADMAP.md` keeps it as a target.  What changed is the
+sentence printed next to it.  G.114's numbers are kept as named constants,
+`G114_GOOD_MS` / `G114_WARN_MS`, cited by the legend, and one environment
+variable away for a LAN or clearnet deployment:
+`OTRV4PLUS_M2E_GOOD_MS=400 OTRV4PLUS_M2E_WARN_MS=800`.
+
+### The test that argued the other way
+
+`test_latency_colour.py` carried this, and it deserved an answer rather than a
+deletion:
+
+> Measured medians on this transport were 494–688 ms one-way and ~1050 ms
+> mouth-to-ear. If a change ever makes those read green, the scale has stopped
+> meaning anything.
+
+The instinct is right — a scale where everything is green says nothing — but it
+anchored on the wrong property.  Requiring a *typical* reading to be non-green
+pins the median into a warning band permanently, whatever the transport does.
+What the guard actually wants is that the scale **discriminates**, so that is
+what is now asserted: every band has a realistic I2P reading in it, a call at
+twice the floor is still red, and the live 914 ms call is replayed through
+`_call_summary` as a regression case.
+
+The legend also now names what it is a scale of — "calibrated for I2P, not for
+a telephone network" — because printing the numbers without that invites the
+reading these bands exist to prevent: that 900 ms is fine in general.  It is
+fine *here*, and it would be a fault on a LAN.
+
+Delivery and shedding thresholds are unchanged (95% and 5%); the 914 ms call
+passed both on its own merits.
+
+7 tests changed or added.  Full suite: 3243 passed, 44 skipped, 1 xfailed.
+
+---
+
+## v10.28.0 — the call told you about buffers, not about the call
+
+*2026-09-05.  `VERSION → 10.28.0`.  `otrv4_core` unchanged at 0.10.28.*
+
+Two complaints from the handsets, and both are about a person watching a call
+rather than a developer reading a log.
+
+Bringing a call up printed fourteen lines — codec settings, mic and speaker
+gains, transport, shaping, audio backend, playout geometry, three about
+loudness and two about which Android stream the volume keys control — and not
+one word about the cryptography.  A user could not tell a post-quantum call
+from a classical one, and on a phone the one line that mattered, that the call
+was live, had already scrolled off the top.
+
+Hanging up printed a packet tally.  That says whether the software worked.  It
+does not say whether the *call* worked, and the two figures that answer that —
+how long speech took to reach an ear, and how much of it arrived — were being
+computed already, for the debug stream, where nobody on a call would ever see
+them.
+
+Call setup is now three lines, one of which is new:
+
+```
+[voice] call active with alice@example.i2p — /hangup to end, /mute to toggle mic
+[voice] 🔒 X448 + ML-KEM-1024 → AES-256-GCM over I2P datagrams, constant-rate — keys are per call, held in Rust, and zeroized on hangup
+```
+
+and hangup is two:
+
+```
+[voice] 🟢 call ended — good — 2m14s, mouth-to-ear ~340ms, 99.8% of audio delivered, 1244 frames sent
+[voice] 🔒 every media key for this call has been zeroized
+```
+
+Nothing was deleted.  Every one of those fourteen lines was added to answer a
+real question during a real failure, so they moved behind `_vprint` and come
+back with `--voice-debug`, `/voicedebug` or `OTRV4PLUS_VOICE_VERBOSE=1`.  That
+is deliberately the *same* switch as the telemetry, not a second one: somebody
+who types `/voicedebug` because a call sounds wrong wants the codec, transport
+and playout lines, not telemetry with the explanation missing.
+
+Four things stayed at normal volume because a flag would hide the wrong
+thing.  The shaping line, when it is bad news: a user told the call is
+constant-rate is entitled to be told when VBR or DTX could not be disabled and
+it is not.  The authentication-failure and replay counters, when either is
+non-zero: frames arrived that did not authenticate under our key.  The
+confirmation that the media keys were wiped, which is printed outside every
+`try`, because a counter that could not be formatted must not be able to
+withhold it.  And the playout finding, for a reason a pre-existing test made
+on better evidence than this change had.
+
+`test_playout_instrumentation.py` required the playout line on *every* call,
+from a 1960 s diagnosis in which the playback device buffer held less than one
+packet, every write blocked, the pop rate fell below the arrival rate and the
+jitter buffer shed a third of the audio — eight times more than the network
+lost, with every counter reading healthy, because a shed frame advances the
+playout marker rather than leaving a gap.  That reasoning survives the tidy,
+but what it actually demands is that the *finding* be unmissable, not that
+four numbers of device geometry print on every healthy call.  So
+"every write waits on the device" stays at normal volume, names the flag that
+produces the numbers, and the numbers moved.
+
+Better still, the shedding itself is now reported at hangup — `33.4% shed
+locally to hold latency down` — and counts against the verdict above 5%.  That
+is the figure the 1960 s diagnosis needed and never had: the setup line can
+only say the device buffer is small, while this says how much audio the call
+actually destroyed.
+
+### What the verdict actually measures
+
+Mouth-to-ear is the full path a listener waits through — network one-way, plus
+dwell in our jitter buffer, plus decode, plus playout — banded green/amber/red
+on ITU-T G.114 (400 ms / 800 ms), the same thresholds the debug stream already
+used.  Delivery is `queued / (queued + gaps)` from the jitter buffer: the
+fraction of the far end's audio that arrived in time to be played.  Not
+`recv / (recv + dropped)`, because `dropped` counts send-side failures too, so
+a call that could not transmit would have been reported as one that could not
+listen.  Local shedding is reported separately and deliberately not folded
+into that ratio: those frames arrived, and calling them loss would blame the
+network for something this device did.
+
+Delay, loss and shedding are judged independently and the worst one wins.  A
+call two seconds behind was not good however completely it arrived; a call
+that lost a fifth of its audio was not good however fast the rest of it was;
+and a call that threw away a third of its own audio was not good at all.
+
+The summary is gathered *before* `session.end()`, which tears down the jitter
+buffer and the latency tracker it reads.  Taken afterwards it reports zeros,
+which is worse than no summary: it looks like a measurement.  And a session
+from which nothing could be read at all now says `call ended` and stops,
+rather than `0s, mouth-to-ear not measured (call too short)` — a sentence full
+of figures that were never taken.
+
+### XMPP status tags are colour-coded
+
+Nearly every line the XMPP client prints is `[tag] free text`, and every one of
+those tags used to be the same grey as the sentence after it.  Tags are now
+coloured by what the line *means* — red for a failure, yellow for attention,
+cyan for things the user asked for, magenta for the call subsystem, grey for
+plumbing that is working.
+
+Two things that colour must not disturb, and does not.  The session log takes
+the line before any colour is applied, so INV-03's redaction still reasons
+about shapes rather than escape sequences.  And the TUI is handed the plain
+line, because `_tui_route_output` picks a panel with
+`startswith("[keepalive]")` — a coloured tag would have failed every one of
+those tests silently and put keepalive ticks in the peer's chat panel.
+
+`[otr]` and `[smp]` are deliberately absent: they already carry their own
+padlock-and-colour prefixes, and a second scheme on the same line would fight
+them.  So are ten tags that colour *would* suit but the log allowlist
+deliberately excludes — `[file]` prints filenames, `[roster]` prints contacts,
+`[tip]` prints a Monero address — because making the two tables symmetrical
+would put all of that on disk to tidy up a colour table.  A test pins the
+asymmetry so the "obvious" fix has to be a deliberate edit.
+
+77 tests, 34 mutations killed.  Not yet exercised on the handsets: everything
+in this entry is terminal output, and the call figures in particular need a
+real I2P call to confirm the bands read sensibly.
+
+---
+
+## v10.27.0 — the XMPP transcript was missing one side of the conversation
+
+*2026-09-05.  `VERSION → 10.27.0`.  `otrv4_core` unchanged at 0.10.28.*
+
+From a handset, the IRC client:
+
+```
+20:50:55 [EchoingNexus] 🔵EchoingNexus: ey
+20:50:57 [EchoingNexus] 🔵ScarletEmber: lol
+```
+
+Two people, two names, one readable conversation — and a request to make XMPP
+do the same.  Looking at why it could not turned up something worse than a
+formatting difference.
+
+### Outgoing messages were never printed at all
+
+`send_user_text` encrypted the line, sent it, and returned.  Nothing was
+echoed.  The typed line scrolled away behind the next arriving message, and
+the session read as a monologue by the peer with the user's own half missing
+entirely.  On a handset there was no way to read back who had said what.
+
+That is the defect; the shape was the cosmetic part.
+
+```
+🔐 [otr] bob@example.i2p: ey
+🔐 [otr] alice@example.i2p: lol
+```
+
+Same padlock on both sides, same `[otr]` tag, our own JID rather than "me" —
+two names in two formats is how a transcript stops being quotable.  A
+different colour separates the two sides at a glance.  The echo goes out
+**after** the send and only when the engine produced ciphertext: a padlock on
+a message that never left would be a false claim about the one thing this
+client exists to be right about.
+
+Incoming lines moved from `[otr] <bob@host> text` to `[otr] bob@host: text`,
+and the plaintext path with them — a transcript that changes shape between
+encrypted and plain lines is harder to read than either shape alone.
+
+### The part that needed care
+
+`_LOG_CONTENT_RE` is the INV-03 allowlist that keeps message bodies off disk,
+and it matched the old shape by hand:
+
+```
+^(\[(?:otr|plain)\] <[^>]*>)\s(.*)$
+```
+
+Changing the display without it would **not** have leaked — `_log_line_for_file`
+falls through to `<unlogged line: N chars>` for anything it cannot classify,
+which is the right way round — but every chat line would have become an
+anonymous byte count.  A transcript that cannot say who spoke is most of the
+way to useless, so the pattern moved with the display and still accepts the
+old shape for any path that has not.
+
+23 tests in `test_xmpp_transcript_shape.py`, 6 mutants killed — including the
+echo going out before the send, the echo always claiming verified, the name
+pattern loosened enough to swallow a colon in the body, and a peer forging
+`[otr]` from inside their own message text.
+
+Full suite 3161 passed / 44 skipped / 1 xfailed.
+
+**Not hardware-tested.**  The two-device check is simply whether a conversation
+reads back correctly on both handsets afterwards.
+
+---
+
+## v10.26.2 — `safe` is the answer, and the model now says so
+
+*2026-09-05.  `VERSION → 10.26.2`.  `otrv4_core` unchanged at 0.10.28.*
+
+A fifth observation, from the peer this time: a **47-fragment SMP2 at
+`normal`, killed with `Excess Flood`**.
+
+The v10.26.1 peer-flood backoff caught it and dropped this end to `safe`
+before its own SMP3 — also 47 fragments — went out.  That is the mechanism
+working exactly as intended on its first real firing, and it probably saved
+the session.
+
+### A penalty of 2.0 is now arithmetically impossible
+
+`normal` costs exactly 2.0 s/line.  At a penalty of 2.0 its debt after the
+burst is **zero**, so no length could ever be refused — and one was.  Solving
+all five observations together needs a penalty of at least 2.75; 3.0 fits with
+room:
+
+| lines | rate | debt at 3.0 | outcome |
+|---|---|---|---|
+| 17 | `fast` | 38 | survived |
+| 19 | `fast` | 42 | killed |
+| 34 | `fast` | 72 | killed |
+| 24 | `normal` | 28 | survived |
+| **47** | **`normal`** | **51** | **killed** |
+
+### The consequence is the whole answer
+
+At a penalty of 3.0, **`safe` (3.15 s/line) is the only preset whose debt per
+line is negative** — the only one that never accumulates, and therefore the
+only one safe at the lengths this protocol sends.
+
+That is not a coincidence discovered here.  It is why `safe` has completed two
+full verifications on this server while `normal`, `fast` and `turbo` have been
+killed four times between them.  `auto` now returns `safe` for every OTR
+message, which is the answer the wire has given repeatedly.
+
+### On the model itself
+
+Three refits, **every one correcting in the unsafe direction**: 2.0 with a
+budget of 28, then 2.0 with the burst charged properly, now 3.0.  Twice that
+produced a release which got a handset killed.
+
+So the budget is deliberately **not** the fitted value.  It stays at 15 against
+a fitted 38–42, which is low enough that `auto` picks `safe` for everything
+here while the arithmetic still picks a faster rate on a genuinely tolerant
+server.  The model is a heuristic for an unknown server, not a licence to go
+faster on this one.
+
+**The tuning is finished.**  `safe` is the setting for irc.postman.i2p.  A
+verification costs about seven minutes of pacing plus I2P transit, and that is
+what this server allows.
+
+**Confirmed on hardware the same evening:** a full responder-side verification
+on `safe`, 12m12s end to end, no disconnect — the third on this setting.  The
+DAKE2 send took 48s where the model predicts 47.9s for 17 fragments, so the
+pacing is doing exactly what it is told and the remaining time is I2P transit
+and two 47-fragment proofs in each direction.
+
+138 tests, 3 further mutants killed.
+
+Full suite 3138 passed / 44 skipped / 1 xfailed.
+
+---
+
+## v10.26.1 — the burst was the expensive part
+
+*2026-09-05.  `VERSION → 10.26.1`.  `otrv4_core` unchanged at 0.10.28.*
+
+`auto` was killed on its first real run — an SMP1, 19 of 23 fragments, at
+`fast`:
+
+```
+19:22:08 Server: Closing Link: FierceRidge[...] (Excess Flood)
+19:22:08    Fragment pacing was 'fast' for that send, and is 'safe' now.
+```
+
+That second line is the v10.25.3 fix earning its keep: without it the report
+would have said `safe`, which is what the rate had already been changed to.
+
+### Two errors in the v10.26.0 model
+
+**The burst was charged as a paced line.**  Debt was `n × (PENALTY − cost)`
+for every line — but the lines covered by the allowance go out back to back
+at essentially zero interval, so the server charges each of them the **full**
+penalty while the client waits almost nothing.  At `fast` that is four lines
+and eight seconds of debt spent before the message has properly started,
+against a budget of fifteen.  **A burst is nearly free in seconds and
+expensive in debt**, and the first model had that exactly backwards.
+
+**The budget was too high.**  With the debt corrected, the four real
+observations bracket it tightly:
+
+| lines | rate | debt | outcome |
+|---|---|---|---|
+| 17 | `fast` | 21 | survived |
+| **19** | **`fast`** | **23** | **killed** |
+| 34 | `fast` | 38 | killed |
+| 24 | `normal` | 4 | survived |
+
+Survived at 21, killed at 23.  The real budget is about 22; this uses **15**.
+
+### The answer is not the one `auto` was built for
+
+At `fast` the corrected limit is **eleven lines**, and the shortest OTR
+message is sixteen.  So `auto` now returns `normal` for every real message,
+and the honest reading is that **`normal` — whose debt per line is exactly
+zero — is the floor on this server**, not that `auto` found something clever.
+
+It is kept because the arithmetic is the useful part: on a more tolerant
+server the same rule picks `fast`, and on a stricter one it picks `safe`,
+without anybody rewriting it.  `normal` is still 35% faster than `safe`, which
+is the whole of the speed-up that was ever available here.
+
+### A third defect from the same log
+
+```
+29s since our last OTR message (23 fragments).
+```
+
+The 29s came from the DAKE3 that landed and the 23 from the SMP1 that was cut
+off at fragment 19 — because `_last_otr_sent` records only *successful* sends,
+and the send that earns a flood kill is by definition the one that failed.
+Two different messages in one sentence, in the report whose whole job is to
+say what was happening.  The start time is now recorded beside the fragment
+count, so the pair belong to each other.
+
+137 tests, 7 further mutants killed.
+
+Full suite 3137 passed / 44 skipped / 1 xfailed.
+
+---
+
+## v10.26.0 — `auto`: the limit is a rate AND a length
+
+*2026-09-05.  `VERSION → 10.26.0`.  `otrv4_core` unchanged at 0.10.28.*
+
+Suggested from the handsets: *"maybe do the DAKE fast and then normal for SMP
+as SMP is huge hybrid encryption plus PQC"*.  The data supports it, and says
+the cut-off sits slightly further out than that.
+
+### Fitting the server
+
+Three observations on irc.postman.i2p, all 2026-09-05, all at 403–406 byte
+fragments:
+
+| lines | interval | outcome |
+|---|---|---|
+| 24 | 0.54 s/line | survived (a DAKE2 at `turbo`) |
+| 34 | 0.97 s/line | **killed** — `Excess Flood` (an SMP2 at `fast`) |
+| 24 | 2.00 s/line | survived (a full DAKE at `normal`) |
+
+Fit a leaky bucket: the server charges `PENALTY` seconds a line, the allowance
+refills a second a second, and the connection dies when debt passes `BUDGET`.
+Debt after *n* lines at interval *i* is `n × (PENALTY − i)`.  The killed case
+needs `BUDGET < 35`; the survived case needs `BUDGET ≥ 35`.  That pins
+**`PENALTY = 2.0`, `BUDGET ≈ 35`**.  A penalty of 1.5 is inconsistent with the
+pair.
+
+### The consequence
+
+**At or above the penalty, debt never accumulates and any length is safe** —
+which is why `normal` carried a whole DAKE and `safe` two whole verifications.
+Below it, the safe length is the budget over the shortfall.  So the limit is
+not a rate, it is a rate *and* a length, and a short enough message can go
+faster than any sustained rate could.
+
+Fragment counts, measured: DAKE1 16, DAKE2 24, DAKE3 19, SMP1 23, **SMP2 47,
+SMP3 47**, SMP4 20.  Only the two big proofs are long enough to exhaust the
+budget at `fast` — which is exactly the message that got a handset killed.
+
+`/fragrate auto` picks per message:
+
+```
+DAKE1  16 → fast     SMP1  23 → fast
+DAKE2  24 → fast     SMP2  47 → normal
+DAKE3  19 → fast     SMP3  47 → normal
+                     SMP4  20 → fast
+```
+
+That is the suggestion, plus SMP1 and SMP4 which are also short enough.  On
+the fitted model it should take a verification from about 6.8 minutes of
+pacing to about 3.9, with the two messages that actually earned a kill still
+at a rate whose debt is zero.
+
+### What it is not
+
+`BUDGET` here is **28**, 20% under what was measured, and `auto` is **opt-in**
+— the default stays `safe`.  Two data points and a straight line through them
+is not a proof.  The rule assumes the debt drains between messages, which
+holds because an OTRv4 handshake waits tens of seconds for each reply and
+nothing here sends two long messages back to back.
+
+`turbo` is excluded from `auto` deliberately: it is the preset for finding a
+ceiling by hitting it, which is not a thing to do automatically.
+
+`/fragrate auto` prints where the cut-off falls and says the rule is fitted
+rather than proven, because a boundary nobody can see is one nobody can check.
+
+126 tests, 6 further mutants killed.
+
+Full suite 3126 passed / 44 skipped / 1 xfailed.
+
+---
+
+## v10.25.3 — the server answered: Excess Flood
+
+*2026-09-05.  `VERSION → 10.25.3`.  `otrv4_core` unchanged at 0.10.28.*
+
+The question left open since v10.25.0 has an answer.  Both handsets at a fast
+preset, mid-verification:
+
+```
+18:46:57 [LucidDusk] 🔐 DAKE 2
+18:46:57 [LucidDusk] 🟢 OK                      <- 24 fragments in 13s
+...
+18:52:58 [LucidDusk] ⚠ LucidDusk disconnected: Excess Flood - OTR session ended
+```
+
+**irc.postman.i2p enforces a flood limit, and it is below `fast`.**  The peer
+was killed while sending a 47-fragment SMP2.  `safe` — the default since
+v10.25.1 — has now completed two full verifications; `fast` and `turbo` have
+not survived one.
+
+That also settles the 17:42 disconnect from v10.25.0 by contrast rather than
+by proof: a real flood kill on this server produces a named reason, and that
+one produced none.  Two different events.
+
+### The gap it exposed
+
+The peer was killed.  **This client carried on at the same rate having learned
+nothing**, because only an `ERROR` addressed to us counted as evidence.
+
+Both ends of an OTRv4+ conversation run this client at whatever preset the
+pair agreed, and the messages are symmetrical — SMP2 and SMP3 are 47
+fragments each.  If their SMP2 was too fast for this server, our SMP3 was
+about to be.  The peer's kill is the cheapest warning available, because it
+arrives before ours.
+
+A flood-shaped QUIT reason from a peer we hold a session with now drops this
+end to `safe` as well, and says why:
+
+```
+⚠ LucidDusk was disconnected by the server for flooding, at the same
+  fragment rate this client is using.
+   Pacing dropped to 'safe' here too — the next long message from this end
+   would have been the one to go.
+```
+
+The reason string is attacker-controlled: a peer can `/quit` with any text,
+including that one.  The worst it buys them is making us slower, which is why
+acting on it is safe — and why nothing ever raises the rate automatically.
+The quit reason was also reaching the terminal unsanitised, which is fixed
+here.
+
+### Two defects the killed handset's own log exposed
+
+The other side of that event was the useful one. Four new mechanisms fired
+correctly — the automatic backoff, the ERROR handler, the four-line disconnect
+report, and the v10.24.0 session preservation — and two things were wrong.
+
+**The report named the retreat, not the cause.**
+
+```
+18:52:57 [sys] The server complained about the send rate - pacing dropped to 'safe'
+18:52:57 [sys] Server: Closing Link: LucidDusk[...] (Excess Flood)
+18:52:58 [sys]    43s since our last OTR message (46 fragments).
+18:52:58 [sys]    Fragment pacing was 'safe'.
+```
+
+It was not `safe`.  34 of those 46 fragments went out in 33 seconds, which is
+`fast`.  `_note_possible_flood` had already dropped the live value one second
+earlier and the report read it — so on the single path the report exists for,
+it named what we had retreated to rather than what earned the kill.  The
+preset in force is now recorded when a send starts, before anything can
+change it, and both values are shown when they differ.
+
+**The reconnect contradicted itself.**  Two lines apart, about one session:
+
+```
+🔐 1 OTR session(s) kept through the reconnect — identity keys and pinned
+   fingerprints unchanged.
+⚠ OTR sessions lost on reconnect - /otr IvoryDelta
+```
+
+The second was left over from when `_try_reconnect` really did clear the
+sessions.  Of the two it was the wrong one, and it is the one that tells the
+user to throw away a working session and spend four minutes rebuilding it.  It
+now lists only peers with no live session, and says so in those terms.
+
+101 tests, 8 further mutants killed.
+
+Full suite 3101 passed / 44 skipped / 1 xfailed.
+
+### Where this leaves the speed question
+
+`safe` is the answer for this server until someone measures otherwise, and a
+verification costs about seven minutes of pacing on top of I2P transit.  The
+remaining levers are structural rather than tunable — the fragment count is
+set by ML-KEM-1024 and ML-DSA-87 message sizes and by base64 — and none of
+them is worth touching for the 8% they would return.
+
+---
+
+## v10.25.2 — the tuning number was measuring the burst
+
+*2026-09-05.  `VERSION → 10.25.2`.  `otrv4_core` unchanged at 0.10.28.*
+
+Second full two-handset run, both sides on v10.25.1 at `safe`.  **The
+responder path worked again** — `Passphrase stored — verifying…` →
+`SMP step 2/4 · Passphrase accepted - answering the challenge…`, no
+`ValueError`.  Second hardware confirmation of the v10.24.0 fix.
+
+Both sides also matched the pacing model exactly:
+
+| leg | observed | predicted at `safe` |
+|---|---|---|
+| DAKE1 send, 16 fragments | 47s | 45s |
+| SMP1 send, 23 fragments | 66s | 67s |
+| SMP2 send, 47 fragments | 141.8s | 142.3s |
+
+### The defect
+
+`/fragrate` on the initiator reported:
+
+```
+Last multi-fragment send: 2 fragments in 0.6s (3.32 lines/sec).
+```
+
+3.32 lines/sec, on a preset whose sustained rate is 0.32.  A 60-second
+heartbeat is two fragments, both of which come out of the burst allowance
+without waiting — so it measured the burst and called it the rate, overwriting
+the 23-fragment SMP1 sample at the moment the number was being read to decide
+whether to go faster.
+
+Sends shorter than the burst plus three paced lines are no longer recorded.
+
+**And the threshold has to follow the preset**, which is the part a fixed
+number would have got wrong: `safe` and `normal` clear two lines before the
+penalty bites, `fast` four and `turbo` eight.  A flat threshold of five is
+three paced lines on `safe` and *pure allowance* on `turbo`, where it would
+have reported 8 lines/sec for a preset whose sustained rate is 2 — the same
+defect, one preset along.  Caught by a parametrised test rather than by
+review.
+
+79 tests, 4 further mutants killed.
+
+Full suite 3079 passed / 44 skipped / 1 xfailed.
+
+**Still open:** whether irc.postman.i2p tolerates anything faster than `safe`.
+`normal` completed a full DAKE cleanly at 18:26 including a 24-fragment send,
+and separately coincided with a disconnect at 17:42 while idle and with no
+ERROR line.  One success and one ambiguous failure is not an answer.
+`TWO_DEVICE_TEST.md` section 6 is the ladder for getting one.
+
+---
+
+## v10.25.1 — back to the rate that was working, and say why next time
+
+*2026-09-05.  `VERSION → 10.25.1`.  `otrv4_core` unchanged at 0.10.28.*
+
+v10.25.0 made the ircd penalty (`normal`, 2.0s a line) the default on the
+arithmetic.  The first real run at it ended like this:
+
+```
+17:40:38 [LoneStyx] 🔑 Starting OTR session with LoneStyx…
+17:41:08 [LoneStyx] 🔐 DAKE 1
+17:41:08 [LoneStyx] 🟢 OK
+17:41:08 [LoneStyx]    waiting for their answer…
+17:42:03 [sys]   ⚠ Server closed the connection. Reconnecting automatically…
+```
+
+**The default is `safe` again.** One observed disconnect is enough: a lost
+handshake costs minutes on I2P, and the conservative rate is the one that was
+already working.  `normal`, `fast` and `turbo` remain, opt-in, through
+`/fragrate`.
+
+### What that log does not establish
+
+It is worth being precise, because the obvious reading is not supported:
+
+- **No ERROR line arrived.**  Most ircds send `Closing Link: … (Excess
+  Flood)` before a flood kill.  The client would have printed it — v10.25.0
+  added that handler — and did not.
+- **The disconnected side was idle.**  It finished sending DAKE1 at 17:41:08
+  and the connection went 55 seconds later, while it was waiting.  A flood
+  kill lands during or just after the burst.
+- **The 30 seconds to send DAKE1 is exactly what `normal` predicts** for 17
+  fragments, so the pacing was doing what it was told.
+- **An I2P SAM tunnel dropping looks identical from here.**
+
+So this is a retreat to a known-good value, not a diagnosis.  Calling it a
+flood kill would be a guess presented as a finding.
+
+### Making the next one answerable
+
+`_report_disconnect_context` prints, on every unexpected close:
+
+```
+   No ERROR line from the server — a flood kill usually sends one first.
+   240s since the last message from the server.
+   55s since our last OTR message (17 fragments).
+   Fragment pacing was 'safe'. /fragrate to change it.
+```
+
+Four facts, and between them they separate a flood kill from a ping timeout
+from a dead tunnel.  Nothing sensitive: counts, seconds, a preset name, and a
+sanitised server string.
+
+### A hazard found while looking, and deliberately not fixed
+
+`handle_message` runs on the receive thread, so a responder's DAKE2 — 24
+fragments, about 72 seconds at the default pacing — is sent from inside
+`_recv_loop`, which spends that time in `time.sleep()` and cannot read the
+socket or answer a `PING`.  The same disease was fixed for the SMP path
+(`_handle_data_message` offloads to `_smp_executor`, with a comment saying
+exactly this); the DAKE path never was.
+
+It is **not** fixed here, for two reasons.  It does not explain the disconnect
+above — that was the initiator, whose sends run on the main thread.  And
+fixing it means sending on a worker, which means the `DAKE 2 / OK` report has
+to move onto a completion callback to keep firing only after the send actually
+succeeded — a restructure of the handshake display on the same day it first
+worked end to end.  Recorded in the docstring, and a test asserts the record
+is still there.
+
+### Also
+
+`safe` gets its two-line burst back.  Reproducing the old schedule with a
+one-line allowance made a two-fragment message take 3.15s where the old code
+took 0.30 — slower, in the name of reproducing it.  It now tracks the old
+schedule to within one line's cost at every count from 2 to 60.
+
+69 tests in `test_irc_fragment_pacing.py`, 8 further mutants killed.
+
+### And a test that was passing by the clock
+
+Chasing the disconnect turned up three failures in
+`test_xmpp_keepalive.py::TestFailureCountIsPerSession` that had nothing to do
+with any of this — **and that a full-suite run had reported green a few hours
+earlier on identical code.**
+
+`_FakeClient.__init__` measures `_last_inbound` against the real
+`time.monotonic()` (`now - 10_000` for a silent stream).  The driver then
+replaces that clock with a simulated one starting at 0.0, so
+`_stream_quiet_for` was computing `0.0 - (real_uptime - 10_000)`.  On a host
+up for less than about 2.8 hours that is positive and the stream reads as
+silent, which is what the test needs.  Past that it goes negative, the stream
+reads as busy, the probe is skipped and the counter never climbs.
+
+So those tests passed or failed **according to the machine's uptime**.  The
+v10.25.0 release note in this file claimed "3053 passed" and that was luck,
+not evidence: the same commit checked out clean and re-run reports 3050 passed
+and 3 failed.  Corrected here rather than quietly.
+
+`_run_loop` in the same file had always rebased `_last_inbound` onto the
+collapsed clock and said why.  The other two drivers never did.  They do now,
+and the fix is verified against simulated uptimes of 500 000 and 5 000 000
+seconds as well as the real one — a fourth test, in the second driver, was
+failing at the higher values.
+
+Full suite 3069 passed / 44 skipped / 1 xfailed.
+
+---
+
+## v10.25.0 — the handshake was mostly this client sleeping
+
+*2026-09-05.  `VERSION → 10.25.0`.  `otrv4_core` unchanged at 0.10.28.*
+
+First full two-handset run of v10.24.1 on irc.postman.i2p reached **SMP
+VERIFIED** — the responder bug is fixed and the staged DAKE output works. It
+took seventeen minutes, and about **ten of those were this client sleeping
+between IRC lines.** Not I2P latency, not the PQC computation.
+
+### Where the time went
+
+A 12 KiB SMP2 is 48 IRC lines. The I2P path slept 6s after every second
+fragment — an average of 3.15s a line — while the clearnet path in the same
+function had always used the model mainstream ircds actually implement: a
+leaky bucket, each line costing a fixed penalty, the allowance refilling one
+second per second, at 2.0s a line with a burst. The overlay path was paying
+roughly double, with no reason recorded.
+
+The model predicts the observed log closely: SMP1 at 23 fragments predicts
+69s, and the handset shows 75s between "Challenge sent" and the send
+finishing. That agreement is why the rest of this is arithmetic rather than
+hope.
+
+| | fragments | pacing |
+|---|---|---|
+| before (fixed 380, 6s/2 lines) | 198 | 9.8 min |
+| `safe` (the old rate, kept) | 185 | 9.3 min |
+| **`normal` (default, ircd penalty)** | **185** | **5.7 min** |
+| `fast` | 185 | 2.6 min |
+| `turbo` | 185 | 1.1 min |
+
+### `/fragrate`
+
+The sweet spot for a given server cannot be derived, only found. `/fragrate`
+reports what the last multi-fragment send actually achieved, so a rate can be
+raised, tried on a real handshake, and kept or reverted **on evidence**. In
+memory only, like everything else this client holds.
+
+`fast` and `turbo` are above the standard ircd penalty and say so when
+selected. If the server complains — `Excess Flood`, `Max SendQ exceeded`,
+`throttl`, and the rest — the client drops to `safe` immediately, says why,
+and **never raises it again on its own**: a server that threw us off once will
+do it again, and an automatic recovery would rediscover the limit the
+expensive way, mid-handshake.
+
+### A latent bug found on the way
+
+The fragment size was a fixed 380 for every I2P line. The binding limit is not
+the line we send, it is the one the **recipient** sees —
+`:nick!user@host PRIVMSG target :<fragment>` — and the prefix is added by the
+server after we hand the line over.
+
+380 was sized for a worst case that it did not actually cover. With a
+thirty-character nick sending to a thirty-character target over a b32 host
+cloak the line comes to **520 bytes**, and the server truncates it — taking
+the fragment's terminating `.` with it and corrupting the message. It has not
+bitten because the nicks in use are short (the tested session had 31 bytes of
+headroom), but it was there.
+
+The size is now computed: from the prefix the server echoes back with our own
+JOIN when we have it, and from our nick plus a worst-case `user@host` when we
+do not. For the tested session that is 403 rather than 380 — 13 fewer
+fragments across the handshake.
+
+The first attempt at this had the same bug in a new place: `max(380,
+computed)` still returned 380 when the real limit was 364. A floor may be a
+fallback for not knowing; it may never override knowing. Caught by a test,
+not by review.
+
+### And a docstring that claimed a protection that does not exist
+
+`OTRMessageFragmenter.fragment` said every multi-fragment message was padded
+to a uniform fragment count so an observer could not tell DAKE1 from DAKE3 by
+counting IRC lines. No such padding is implemented and no `MIN_FRAGMENTS`
+constant exists anywhere in the file. The claim described an intention, and a
+reader checking whether the traffic pattern was protected would have found the
+answer and been wrong.
+
+The claim is removed rather than the padding added: padding every message to
+48 fragments costs more than this whole release saves. It is now recorded as a
+known limitation. On I2P the fragment count is visible to the IRC server and
+to nobody else.
+
+### Tests
+
+`test_irc_fragment_pacing.py`, 53 tests, 12 mutants killed. Three of those
+mutants survived the first attempt — the ceiling masked the bare-nick check,
+the inter-line floor masked the bucket cap, and nothing pinned the safety
+margin at all — and the notes on those tests say so, because a test that
+cannot fail is worse than no test.
+
+Full suite 3053 passed / 44 skipped / 1 xfailed — **and that figure was
+wrong**: three tests in `test_xmpp_keepalive.py` pass or fail according to the
+host's uptime, and that run happened to be inside the window where they pass.
+Re-run on a clean checkout the same commit reports 3050 passed and 3 failed.
+See v10.25.1.
+
+**Not hardware-tested.** The arithmetic matches the observed handshake, but
+whether irc.postman.i2p tolerates the new default is exactly the thing only a
+real run can answer. `TWO_DEVICE_TEST.md` section 7 says how to find out
+without losing a session to it.
+
+---
+
+## v10.24.1 — a nick is not an identity, and the client now says so
+
+*2026-09-05.  `VERSION → 10.24.1`.  `otrv4_core` unchanged at 0.10.28.*
+
+Follow-up to v10.24.0, raised in review of it.  Sessions now survive a
+transport reconnect, which makes one confusion **likelier, not rarer**: a peer
+comes back under a different IRC nick, the preserved session is keyed by the
+old one, and nothing matches.  Both ways that showed up were silent.
+
+**An encrypted message from a nick with no session.**
+`_handle_data_message` opened with a bare `return`.  The message was dropped
+and nothing was printed — indistinguishable from the peer having said nothing.
+
+**A live nick change.**  The server says `OldNick` is now `NewNick`; the
+client updated the channel user list and the OTRv4+ marker and said nothing
+about the encrypted session it holds under the old name.
+
+Now:
+
+```
+🔴 OTR SESSION NOT CARRIED OVER
+   IronFenrir is now SwiftOmega. The encrypted session stays with
+   IronFenrir: keys follow the handshake that made them, not a name the
+   server has just reassigned.
+   Run  /otr SwiftOmega  to start a new session with them, then compare the
+   fingerprint against the one pinned for IronFenrir before you trust it.
+   /endotr IronFenrir  clears the old session when you no longer want it.
+```
+
+**The session is not moved, and that is the feature.**  Following a rename
+would mean encrypting to whoever holds a name now, and the server hands names
+out and takes them back — the one mistake that turns a preserved session into
+a leak.  A new DAKE is required.  A test asserts the re-key does not happen,
+and a mutant that adds it is caught.
+
+**The two messages differ in what they claim, on purpose.**  On the live-NICK
+path the server told us authoritatively that one connection changed name, so
+that message names both nicks.  On the undecryptable-message path there is no
+evidence at all about the sender — the message did not decrypt — so it reports
+only what is true: no session for this nick, sessions held for these others,
+and *if* this is one of them, their keys stayed behind.  A guess printed as a
+fact, next to a fingerprint the user is about to rely on, is worse than
+silence.
+
+The trigger is a message from an unauthenticated stranger, so the warning is
+once per nick and the set of warned nicks is bounded at 64.  Establishing a
+session clears that nick's entry, so a peer who later loses a session is
+reported again rather than going quiet for the rest of the process.
+
+24 tests in `test_irc_nick_session_diagnostic.py`, 8 mutants killed —
+including the silent drop returning, the session being re-keyed onto the new
+nick, and a hostile nick's terminal escapes reaching the panel.
+
+Still not hardware-tested; this is step 7 of `TWO_DEVICE_TEST.md`.
+
+---
+
+## v10.24.0 — the responder could not answer, and a tunnel blip killed the session
+
+*2026-09-05.  `VERSION → 10.24.0`.  `otrv4_core` unchanged at 0.10.28.*
+
+Two real-device failures and a handshake that was hard to read.
+
+### 1. "Could not answer the held request: ValueError"
+
+Two handsets. The receiving side got all the way through the guided flow —
+consent prompt, `y`, hidden passphrase entry — and then:
+
+```
+🔐 Passphrase stored – verifying...
+🔐 Could not answer the held request: ValueError
+```
+
+**Root cause.** `_consume_secret_line` stored the passphrase with
+`session_manager.smp_storage.set_secret(...)`.  That call writes the file and
+stops there.  The engine copy — the one
+`resume_held_smp1_generate_smp2()` reads — was never bound, so Rust failed
+closed with
+
+```
+SMP protocol: secret still not set: cannot answer the held SMP1
+```
+
+which the PyO3 wrapper raises as `ValueError`.  Reproduced exactly against the
+real engine in `tests/test_irc_smp_responder_resume.py`.
+
+The initiator never showed it because `_start_smp` binds the secret itself on
+the way past.  One path bound and the other did not; the asymmetry was the
+whole defect.  `set_smp_secret` is the two-layer write — storage **and**
+engine — and is what the XMPP client has always called here.  Binding twice on
+the initiator path is deliberate: `session.set_smp_secret` permits a rebind in
+`IDLE` and `SECRET_REQUIRED`, and one extra SHAKE-256 stretch is a better
+trade than two paths that differ.
+
+**The diagnostic was the second defect.** The handler printed
+`type(exc).__name__`, turning a sentence that says exactly what is wrong into
+the word "ValueError" — and cost a two-handset session to work out.  It now
+prints the engine's own reason, sanitised and length-capped.  Every string
+raised on that path is a fixed literal in `Rust/src/smp.rs` and the passphrase
+is not an argument to any call made there.
+
+Three smaller repairs alongside it:
+
+- `_resume_smp` refuses when the flow holds no request, so a second `y` or a
+  post-decline resume says so rather than surfacing an engine error.
+- A failed resume returns the flow to `IDLE`, not `FAILED`: nothing was
+  compared, so nothing failed, and the user can retry cleanly.
+- `Session.resume_held_smp1` asks `has_held_smp1()` before consuming and
+  clears `_smp_secret_required` **after** the engine has produced the answer.
+  Clearing it first left the session claiming no request was outstanding while
+  the engine still held one.
+
+`_redact_secret` is new: on the one path where an error is reported while the
+passphrase is still in scope, the message is scrubbed first.  Nothing there is
+known to quote its argument — "known" being a property of today's code.
+
+### 2. A SAM tunnel blip destroyed every encrypted session
+
+The I2P tunnel dropped, IRC went with it, and the OTR session became unusable;
+the only way back was `/quit` and a full restart.
+
+`_try_reconnect` was doing it on purpose: `ratchet.zeroize()` on every session,
+the root and chain keys wiped by hand, then `session_manager.sessions.clear()`.
+
+**A transport interruption is not a security boundary.** The XMPP client has
+never treated it as one — `_on_disconnected` drops trades and presence,
+rebuilds the tunnel, reconnects the stream and leaves `self.otr.sessions`
+untouched.  The double ratchet is a property of the two peers, not of the
+socket that carried the bytes.  IRC now matches.
+
+**Kept:** the session objects, and with them the ratchet, root and chain keys,
+message counters, the pinned fingerprint and the SMP state.  The identity key
+was never touched here and still is not, so a reconnect does not look like a
+new person.
+
+**Dropped, each for its own reason:** half-reassembled inbound messages (their
+remaining fragments died with the socket, and keeping the prefix means the
+next connection's fragments get appended to it); an armed passphrase prompt
+(it must not outlive the thing it was armed for — the other half of INV-06);
+a pending consent question.
+
+**Replayed: nothing.**  Not a data message, not a fragment, not an SMP
+message.  OTRv4 replay protection is not something to work around.
+
+After the rejoin the client says what survived, because a padlock that came
+through a transport drop with no explanation is a claim the user cannot check.
+A verification that was part-way through is named, with what to do about it.
+`/quit` still tears everything down — preserving across a blip must not become
+preserving across a deliberate exit, and a test asserts it.
+
+### 3. The handshake says which stage it is on
+
+```
+🔐 DAKE 1
+🟢 OK
+   waiting for their answer…
+🔐 DAKE 2
+🟢 OK
+🔐 DAKE 3
+🟢 OK
+🟢 OTR SESSION READY
+   DAKE 🦀 Rust | Ratchet 🦀 Rust | SMP 🐍 Python
+```
+
+The header and the verdict come from one call, made after the operation
+returned.  That is structural rather than tidy: there is no code path that
+prints a header on its own, so there is none that can print `OK` for a stage
+that has not succeeded.  The initiator's stage 1 reports from the *result* of
+the send — a DAKE1 that never left the socket is not a completed stage.  A
+failure prints against its own number: `🔴 FAILED — reason`, sanitised.
+
+Fragment counts are not deleted, they are moved: `detail` goes to
+`self.debug`, which reaches the debug panel only under `DEBUG_MODE`.  The TOFU
+wording is untouched and pinned by a test — *pinned* and *SMP verified* remain
+different states.
+
+### Tests
+
+`test_irc_smp_responder_resume.py` (38), `test_irc_reconnect_preserves_otr.py`
+(36), `test_irc_dake_stages.py` (33).  The responder file drives the real
+`otrv4_core.RustSMP` rather than a stubbed manager — a stub cannot express
+this bug, which is why the c3070e7 suite was green throughout — and enters at
+`handle_chat_message`, where the user enters.  13 of its tests fail against
+v10.23.2.  16 mutants killed across the three areas, including the storage-only
+write, the resume guard, the fail-open session check, `OK` printed regardless
+of outcome, and the initiator reporting `OK` without checking the send.
+
+Two-handset re-test of all three is still outstanding, and `TWO_DEVICE_TEST.md` is new: it says what the suite proves, what it cannot (the Termux hidden read, a real SAM tunnel dropping, a resumed ratchet actually carrying messages), and the order to check them in.
+
+---
+
+## v10.23.2 — the guided /smp existed and was unreachable
+
+*2026-09-05.  `VERSION → 10.23.2`.  `otrv4_core` unchanged at 0.10.28.*
+
+v10.23.0 shipped the guided SMP flow for the IRC client.  On a handset it did
+nothing:
+
+```
+14:56:49 [sys]   Usage: /smp <command> [args]
+14:57:07 [IronFenrir] ✅ SMP secret stored (🦀 Rust vault)
+14:57:07 [IronFenrir] 🔐 Type  /smp start  to begin verification.
+```
+
+The masked prompt, the auto-start, the responder consent — all present, all
+correct, none of it reachable.  `otrv4+.py` had **two** `/smp` dispatchers:
+one in `OTRv4IRCClient.handle_command` and one in the
+`EnhancedOTRv4IRCClient` override.  v10.23.0's branch went into the base
+class.  The subclass claims `smp` before the `else` that delegates down, and
+the subclass is the only class the program instantiates.
+
+### What changed
+
+**Bare `/smp` is handled in the class that runs.** Masked prompt, passphrase
+stored in the Rust vault, verification started — one command, no second step.
+
+**`/smp start` is the same thing.** It used to refuse with *"No SMP secret
+stored — use `/smp <peer> <secret>` first"*, sending the user to the one
+spelling that puts a shared passphrase in their own scrollback.  It now asks
+for the passphrase when none is stored and starts when one is, exactly as the
+XMPP client does.
+
+**`/smp <secret>` verifies immediately** instead of storing and demanding
+`/smp start`.  Nobody types that meaning "store but do not verify" — that is
+`/smp-secret`.  It now also says the passphrase was echoed: the input line is
+cleared on Enter, but a `script` capture recorded the keystrokes before the
+erase, and saying nothing implies it was hidden.
+
+**The dead dispatcher is gone.** 54 lines removed from
+`OTRv4IRCClient.handle_command`, which also called `self._smp_verify` — a
+method defined only on the subclass, so it would have raised `AttributeError`
+had anything reached it.
+
+**A passphrase is never asked for when there is nothing to verify.**
+`_smp_session_ready` gates every spelling, fail-closed: a `session_manager`
+that raises counts as not ready.  A prompt for a session that does not exist
+is a shared secret typed for nothing, and the user cannot tell the difference.
+
+### Why the tests passed on code nobody could run
+
+`test_irc_guided_smp.py` binds the flow methods onto a stub and calls
+`_smp_verify` directly.  Every assertion in it was true.  Not one went through
+`handle_command`, so *"can a user get here by typing /smp"* was never asked.
+
+`test_irc_smp_command_routing.py` (27 tests) starts at the typing: every case
+enters through the real `handle_command` on the real class.  13 of them fail
+against v10.23.1 and 12 more error on the helpers that did not exist.  8
+mutants killed, including the guard failing open on an exception, the inline
+form storing without starting, and the inline form going straight to
+`_start_smp` — which would start a second SMP run while the engine is holding
+a peer's SMP1, leaving the peer waiting on a message that never comes.  Two
+structural tests assert that the base class does not claim `smp` again and
+that the subclass routes to `_smp_verify` — because two dispatchers for one
+command is the defect, not the branch that was wrong.
+
+Not yet re-run on the two handsets.
+
+---
+
+## v10.23.1 — DAKE1 was not sent twice, it was printed twice
+
+*2026-09-05.  `VERSION → 10.23.1`.  `otrv4_core` unchanged at 0.10.28.*
+
+From a handset, mid-handshake:
+
+```
+2026-09-05 14:52:59 [IronFenrir] 🔑 Starting OTR session with IronFenrir…
+2026-09-05 14:53:50 [IronFenrir] 🔑 DAKE1 → sent - waiting for response…
+──────────────── 🔴IronFenrir ─────────────────
+2026-09-05 14:52:59 [IronFenrir] 🔑 Starting OTR session with IronFenrir…
+2026-09-05 14:53:50 [IronFenrir] 🔑 DAKE1 → sent - waiting for response…
+──────────────── live ────────────────
+```
+
+*"strange to be sending DAKE 1 twice"*.  It was sent once.  The timestamps are
+identical, and a real second send carries a new one; the panel header and the
+`live` separator bracketing the second copy are what `_switch_panel` prints
+when you enter a tab.
+
+`_switch_panel` replays a tab's whole buffer, and its only guard was *does this
+panel exist*.  So being asked to switch to the tab already focused reprinted
+it.  The inbound DAKE2's first fragment did exactly that: `_on_first_fragment`
+computed `if _in_channel or _cur == s` — a condition that asks, in as many
+words, to switch to the tab it is already on — while the initiator sat on the
+peer's tab watching the handshake.
+
+**The guard is in `_switch_panel`, not at the call site.** Fifteen call sites;
+three of them checked `active_panel != peer` first and twelve did not, which is
+the ratio that says the check belongs in the callee.  Switching to the active
+tab is now a no-op returning `True` — `True` because `/switch` reads `False` as
+*no such panel* and retries with a `#` prefix.  The one caller that should
+still redraw the current tab is `/switch` itself, typed by a user who has
+scrolled away, and it passes the new `force=True`.  The redundant clause in
+`_on_first_fragment` is gone as well: leaving it would be a trap for whoever
+removes `force` later.
+
+Why a display bug is in the changelog at all: the panel is the only account the
+user has of what the protocol did.  A client that shows a handshake step twice
+when it happened once teaches the reader to discount duplicates — and a real
+duplicate (a glare, a replay, a second initiator) is something they need to
+see.
+
+16 tests in `test_irc_panel_replay.py`, 5 mutants killed: guard deleted, guard
+returning `False`, `force` defaulting to `True`, `force` ignored, and the old
+`or _cur == s` restored.  Not yet re-run on the two handsets.
+
+---
+
+## v10.23.0 — the IRC client finally has the guided SMP flow
+
+*2026-09-05.  `VERSION → 10.23.0`.  `otrv4_core` unchanged at 0.10.28.*
+
+From a handset screenshot of an IRC session with `GlacialWolf`: a y/n trust
+prompt on first contact, then *"Type `/smp` when you are ready to verify. It
+will ask for the passphrase"* — followed, when you actually type `/smp`, by
+*"Type `/smp <passphrase>` (it will be visible on this terminal)"*.
+
+The client was promising a prompt it did not have. `set_input_mask()` had
+existed since v10.15 with **no caller anywhere in the file**.
+
+### Three gaps, all closed by reusing the XMPP machinery
+
+**First contact pins instead of asking.** `Trust this fingerprint? Type y or n`
+asked a question nobody can answer — there is nothing to compare against on
+first contact — and it was *armed by a remote DAKE*, which is the shape INV-06
+exists to keep out of the client. A **changed** fingerprint is now reported
+loudly, left untrusted and never auto-accepted (INV-11); clearing it stays a
+deliberate `/trust-reset`. INV-10 is untouched: nothing is written to disk, so
+the pin lives for the session.
+
+**Bare `/smp` asks, hidden.** Masked read, and the mask is lifted on every
+exit — accepted, cancelled, too short, too long, storage failure. Four
+parametrised cases plus a monkeypatched failure, because a mask left on hides
+the user's ordinary chat and `_secret_request` left set makes their next line a
+passphrase.
+
+**The responder gets asked.** A peer's SMP1 with no stored passphrase was
+parked by the engine and nothing surfaced it, so verification could only ever
+be driven from one side. The consent prompt now appears, `y` opens the
+passphrase read, and the answer **resumes the held SMP1** rather than
+restarting — no second round trip over I2P.
+
+### Why it imports `SmpFlow` instead of reimplementing it
+
+INV-06 is the property that a remote peer may make the client ASK for the
+passphrase but never make the next typed line BECOME one. In `SmpFlow` that is
+structural — there is no edge from a remote transition into `AWAITING_SECRET`.
+A second copy of the logic in the IRC client would have been a second chance to
+get it wrong.
+
+### The coverage that was asked for in the audit and never shipped
+
+`SMP_UX_AUDIT.md` §7 item 4: *"IRC. Remove the remotely-armed generic capture
+and extend INV-06's test to cover `otrv4+.py`."* The removal shipped in v10.15.
+The coverage did not — `test_no_remote_input_capture.py` walks
+`otrv4plus_xmpp.py` only, which is how this client could grow a masked read
+with nobody checking what could reach it.
+
+`tests/test_irc_guided_smp.py` now walks `otrv4+.py`'s inbound call graph from
+eight entry points and asserts none reaches `_arm_secret_prompt` — and that the
+two local paths do, because a reachability check that passes because nothing
+reaches the armer at all is worthless. INV-06 lists both clients.
+
+### Also
+
+The passphrase length bounds lived in `otrv4plus_xmpp.py` only, so the IRC
+client enforced **none** and took whatever was typed. `SMP_MIN_LEN` and
+`SMP_MAX_LEN` are now defined in the engine and re-exported by the XMPP client,
+because two clients disagreeing about how long a shared secret may be is a way
+for one side to store something the other refuses.
+
+### Verification
+
+Python suite **2817 passed, 0 failed**. 53 new tests. Seven mutations — consent
+prompt arming the read directly, mask never lifted, no length bounds, a changed
+fingerprint auto-accepted, the old visible-typing advice returning, an ordinary
+message at the consent prompt swallowed as consent, and the prompt not re-armed
+after a non-answer — all seven killed. The sixth survived the first pass: I had
+no test that an ordinary message at the consent prompt stays ordinary, which is
+precisely what that prompt promises.
+
+**Not tested between two handsets.** The flow was driven end to end against a
+stub — initiator, responder, decline, cancel — but a real two-device run is
+what would show whether the masked read behaves in Termux's raw mode.
+
+---
+
+## v10.22.0 — the chat prefix now says what protected the message
+
+*2026-09-05.  `VERSION → 10.22.0`.  Display only; no protocol or wire change.*
+
+From a handset screenshot: an SMP-verified session showed
+
+```
+[otr] <bob@xmpp-elite.i2p> ohhh lala
+```
+
+with `[otr]` in green, and nothing else on the line said the message was
+encrypted or that the peer's identity had been proved. The reassurance was a
+colour, and only a colour.
+
+| | |
+|---|---|
+| 🔐 `[otr]` blue | encrypted **and** SMP-verified |
+| 🔒 `[otr]` yellow | encrypted, identity **not** verified |
+
+**Two padlocks, not one.** An unverified session really is encrypted, so a
+padlock there is not a lie — but if it were the *same* padlock, a reader who
+never ran SMP would get exactly the reassurance of one who did, which is worse
+than no padlock at all. The glyph differs and the colour differs, because
+either alone is weak: emoji are small on a handset, and colour is invisible to
+some readers. Tests assert the two differ under ANSI-stripping *and* under
+glyph-stripping, so a change that collapses one signal fails even while the
+other still distinguishes them.
+
+**The colours are the project's own, and the old one was wrong.**
+`UIConstants.SECURITY_ICONS` says 🟡 yellow is `ENCRYPTED`, 🟢 green is
+`FINGERPRINT` — pinned but *not* SMP-verified — and 🔵 blue is `SMP_VERIFIED`.
+The prefix was using green for the strongest state, so the tab bar and the
+message prefix were making different claims with the same colour. It is blue
+now, which is also the colour of the existing `🔐 [smp]` marker.
+
+**The half that would have been a security regression.** `_log_line_for_file`
+is an allowlist (INV-03) that redacts message bodies by matching
+`[otr] <peer> body`. A prefix glyph not listed in `_LOG_MARKERS` stops
+`_strip_log_markers` removing it, the pattern then fails to match, and every
+received message goes to the session log in plaintext. Both padlocks were
+already in that tuple — checked before the change, not after — and a test now
+derives the glyphs from the prefixes themselves and asserts each is registered,
+so a third state with a new glyph fails here rather than in production.
+
+Also: the message body is `_sanitise`'d in both states. It always was, but the
+old branch structure made that easy to miss on a read, and a test now pins it —
+a padlock must not arrive alongside a relaxation somewhere else.
+
+### Verification
+
+Python suite **2761 passed, 0 failed**. 18 new tests. Six mutations — same
+padlock for both, differ by colour only, differ by glyph only, an unregistered
+glyph, green for verified, and a prefix that ignores the SMP state — all six
+killed.
+
+**Not seen on a handset yet.** Whether 🔐 and 🔒 are actually distinguishable
+in Termux's font at that size is the one thing only the device can answer; the
+colour difference is the backstop if they are not.
+
+---
+
+## v10.21.1 — the payment URI was encoded in the QR and shown nowhere
+
+*2026-09-05.  `VERSION → 10.21.1`.  Display only; no protocol or wire change.*
+
+Reported on review of the v10.21.0 notes, and correct: the release said the QR
+was generated from the `monero:` URI and sized for scanning, but it did not say
+the URI itself was displayed — **because it was not**.
+
+A reader whose wallet could not scan fell back to the bare address and
+**silently lost the amount**. They would have had to be told it separately and
+type it in, which is the sort of gap that produces a payment for the wrong
+number without anyone noticing it went wrong.
+
+There are three ways a wallet might take a payment, and the client cannot know
+which one the reader has, so all three are now on screen:
+
+1. **scan the QR** — easiest, and it carries the amount;
+2. **copy the address** — works when the wallet cannot scan;
+3. **copy the payment URI** — keeps the amount when the wallet understands
+   `monero:` URIs but you cannot scan.
+
+```
+🔐 [tip] bob@example.i2p's Monero address:
+📸 scan this, or copy the text below:
+   [QR]
+
+📬 address:
+   8B…
+🔗 payment URI (keeps the amount):
+   monero:8B…?tx_amount=0.01
+💰 amount: 0.01 XMR
+📝 note: thanks for the call test
+[tip] this client sends nothing — pay from your own wallet, and check the
+      address before you do
+```
+
+**The order is reversed from v10.21.0, and that is the other half of the fix.**
+The copyable text now comes *after* the QR. A 95-character address makes a
+symbol about 22 rows tall; with the address above it, the address scrolled off
+the top of a handset terminal and the last thing on screen was a caveat. What
+you want to select should still be visible.
+
+The amount is also a labelled field now rather than a clause inside the header
+sentence. An amount that is not a plain decimal is still displayed — it is what
+the peer claimed — but it is kept out of both the QR and the URI, and the line
+says why.
+
+Rendering moved out of `_on_response` into `format_address_block`, a pure
+function, so it is tested on its output rather than through a manager's notify
+strings.
+
+### Verification
+
+Python suite **2743 passed, 0 failed**. 10 new tests. Five mutations run
+against the new display guarantees — drop the URI line, put the text back above
+the QR, silently drop a hostile amount, let a hostile amount into the URI, move
+the caveat off the end — all five killed. The ordering mutant survived the
+first attempt: the test looked for the last line *containing* the address, and
+the URI line contains it too, so moving the bare address above the QR still
+passed. It now looks for the line that holds the address on its own.
+
+---
+
+## v10.21.0 — `/tip`: relay a Monero address, and only an address
+
+*2026-09-05.  `VERSION → 10.21.0`.  `otrv4_core` unchanged at 0.10.28 — again
+no Rust in this release.  One optional new dependency, `segno`, for QR codes.*
+
+`otrv4plus_tip.py` asks a verified peer for their Monero address and shows it
+as text and as a scannable QR. **It sends no money.** `/tip` is short for "ask
+where to tip you"; the transfer is something you do afterwards in your own
+wallet, looking at the address. Same courier posture as v10.20.0's trade
+module, in a much smaller shape — one string instead of a state machine.
+
+```
+/setxmr <address>     store your own, persisted 0600
+/setxmr clear         stop answering
+/tip                  status
+/tip <amount> [note]  ask a verified peer
+/tipreply             answer a request that arrived before you configured one
+```
+
+### The interactive prompt in the specification is not implemented
+
+The brief asked that an inbound request from a peer with no address configured
+prompt the local user to type one, reading their next line.
+
+That is the mechanism INV-06 forbids. `_apply_tofu` once ended by setting
+`_pending[peer] = "smp_secret"`, so a peer who completed a DAKE could make the
+user's next keystrokes mean something they had not chosen;
+`tests/test_no_remote_input_capture.py` exists because of it. The address is
+public and not worth protecting — **the mechanism is the problem, not the
+payload**, and here the captured line would be *transmitted* rather than merely
+stored. It might be a passphrase, or a message meant for someone else.
+
+So an unanswerable request is reported and nothing is sent. The user answers
+with `/setxmr <address>` then `/tipreply`: two deliberate keystrokes, both
+locally initiated, neither of which a peer can cause. A test asserts the module
+contains no reference to `input`, `getpass` or `stdin` at all.
+
+### A real bug the tests caught
+
+`_AMOUNT_RE` was `^\d{1,20}(\.\d{1,12})?$`. **Python's `\d` is Unicode-aware
+for `str` patterns**, so it accepts Arabic-Indic `١٢٣` and every other decimal
+digit range — and the amount is concatenated into a `monero:` URI that a wallet
+scanner parses. Now `[0-9]`, explicitly. Found by a parametrised test, not by
+review, and the comment in the source says so.
+
+### A new engine hook, deliberately narrow
+
+TLV type `0x0020` (above OTRv4's allocated `0x0000`–`0x0009`), routed to a
+registered handler. `register_tlv_handler` refuses every type outside a
+one-element allowlist, because a forwarding hook that accepts anything is how
+an unreviewed second protocol gets bolted onto a session. `send_tlv` is
+fail-closed to match: it will not open a session, will not queue, and will not
+fall back to plaintext — a feature TLV that started a DAKE would hand a peer a
+handshake they never asked for.
+
+### The rest
+
+- **INV-26 gates both branches**, and the response direction matters most: a
+  response is a string the client is about to show the user as somewhere to
+  send money.
+- **No validation of the address.** Carried verbatim, any shape. An opinion
+  about Monero's address format is one that starts rejecting valid addresses at
+  a hard fork. The one rejected shape is an address containing a space, and not
+  as validation — a space means two things were pasted, and sending half an
+  address is worse than refusing.
+- **Your address persists 0600; a peer's never touches disk** and goes on
+  disconnect and `/quit`.
+- **Nothing reaches the session log.** `tip` is absent from `_LOG_SAFE_TAGS`:
+  an address is public, but a log of who asked whom for which address is a
+  record of who paid whom.
+- **`segno` is optional.** Missing library, or any exception from it, falls
+  back to the plain address plus a one-line install hint — a QR is a nicety and
+  a missing nicety must not withhold what the user actually needs. `error="l"`
+  and `compact=True` bring a 95-character address down to 22×43, which fits a
+  handset; a QR you have to scroll is not scannable.
+
+### Verification
+
+Python suite **2733 passed, 0 failed** on 3.12. 103 new tests. Six mutations
+run against the security properties; four were killed on the first pass and two
+survived — both because the tests I had written for them could not fail (the
+URI is encoded into the QR image and never printed, so grepping the output for
+`monero:` proved nothing; and the receiving party in the persistence test had no
+store file to write to). Both tests were rewritten and both mutants then died.
+
+**Not tested between two devices yet.** The QR has not been scanned by a real
+wallet.
+
+---
+
+## v10.20.0 — a courier for multisig coordination, and no Monero code at all
+
+*2026-09-05.  `VERSION → 10.20.0`.  `otrv4_core` stays at 0.10.28: there is no
+Rust change in this release, and that is the headline rather than an omission.*
+
+`MONERO_ESCROW_AUDIT.md` looked at putting Monero's multisig cryptography in
+the Rust core and recommended against it. `monero-serai` is `0.1.4-alpha` from
+May 2023 with every version yanked; its successor `monero-oxide` implements
+multisig as **FROST** (`modular-frost 0.11`), which produces wallets
+`monero-wallet-cli` cannot create, join or spend from; native Monero multisig
+is experimental, off by default, and its enabling flag cannot be set over RPC;
+and FCMP++ removes CLSAG, with the stressnet not supporting multisig at all.
+
+So the client became a **courier** instead. It relays opaque base64 between two
+Monero wallets the users run themselves, and holds no Monero code. No
+Ed25519, no curve25519-dalek, no FROST, no consensus-coupled transaction
+format, no MSRV bump, and nothing new that can panic inside a `panic = "abort"`
+process while funds sit in a half-built multisig.
+
+### What shipped
+
+`otrv4plus_trade.py`, plus routing and six subcommands in the XMPP client:
+
+```
+/trade                    list open trades
+/trade init <terms>       propose to the verified peer
+/trade accept | decline   answer a proposal
+/trade blob <base64>      relay one blob from your wallet
+/trade confirm | cancel
+```
+
+Framing is `?OTRv4-TRADE:VERB:version|trade_id|seq|fields`, dispatched exactly
+like `?OTRv4-FILE:` and travelling inside the established session — if the OTR
+channel is unavailable the message is dropped, never downgraded. XMPP only,
+same as file transfer; IRC's 510-byte lines make it pointless there.
+
+### The two invariants this rests on
+
+**INV-25 — it is not a wallet.** No wallet file is opened, no seed or spend or
+view key read, no address derived, nothing signed. A blob is checked for
+base64 alphabet and length and passed through verbatim; it is never parsed,
+because parsing is the first step toward interpreting. The module's import
+list is asserted *exactly* — `base64`, `hashlib`, `re`, `secrets`, `time`,
+`typing` — so it cannot reach a daemon or a wallet at all, and its identifiers
+are walked for anything key-, network- or wallet-shaped. This is INV-08 in its
+strongest form: the keys do not cross the PyO3 boundary because they never
+enter the process.
+
+**INV-26 — no trade on an unverified or changed peer.** `is_smp_verified` is
+checked on **every** message in both directions, not once when the trade
+opens: a trade agreed at 09:00 and still running at 14:00 would otherwise span
+five hours in which a session teardown goes unnoticed while blobs keep
+flowing. Fail-closed like INV-12 — a predicate that raises counts as
+unverified. The peer's fingerprint is bound at trade creation and re-checked
+with it; a change cancels the trade and never re-pins (INV-11). Binding is to
+the fingerprint and never to the I2P destination, which is `TRANSIENT` and
+changes every session by design.
+
+### Other properties, each because of a specific failure mode
+
+- **Terms-hash echo.** The responder echoes a hash of the terms it read. A
+  mismatch stops the trade rather than reconciling silently — the terms are
+  the trade.
+- **Strictly increasing sequence numbers** per direction. The concrete case:
+  an ACCEPT captured and replayed after a CANCEL would otherwise put the
+  proposer back into ACTIVE with no counterparty.
+- **Trade id checked before the sequence advances.** The other order would let
+  an unrelated id burn the replay window and wedge the trade.
+- **24 KiB blob cap**, refused up front rather than sent and throttled halfway.
+  This is a rate-limit constraint and a test derives it from the XMPP client's
+  own `_RATE_MAX` so the two files cannot drift apart. Bigger blobs
+  (`export_multisig_info` on a busy wallet, a large signed tx set) do not fit;
+  the fix is to route them through the file-transfer engine, which already
+  solved this, and that is deliberately not in this version.
+- **Nothing reaches the session log.** `trade` is deliberately absent from
+  `_LOG_SAFE_TAGS`, so every `[trade]` line is redacted by the INV-03
+  allowlist rather than by a rule someone remembered. A blob is sensitive —
+  the 2021 Monero disclosure included view-secret-key recovery by an
+  eavesdropper on the setup exchange — and a test pins the tag's absence,
+  because the obvious "improvement" is to add it so the transcript reads
+  better.
+- **State is in memory only**, cleared on disconnect, `/quit` and process
+  exit. No resume: a trade restored from a file would mean trusting that file
+  about who the counterparty was and how far it had got.
+- **Terminal escapes stripped** from peer-supplied terms and reasons before
+  anything prints them.
+
+### No arbitration service
+
+The project does not act as an arbitrator and ships no arbitrator key. 2-of-3
+works — the third party runs a trade session like anyone else — but this
+client holds none of the three keys, and a test asserts there is no code path
+that could. That is a deliberate decision on legal grounds: holding one of
+three keys is the part of an escrow design most likely to be read as a
+financial activity.
+
+### What it does not do, stated plainly
+
+It cannot tell you a multisig address was formed from the right keys, that a
+payment landed, or that a signature is valid. Your wallet does. Comparing the
+multisig address with your counterparty out of band is the one check nothing
+here can do for you, and [TRADE.md](TRADE.md) says so at the step where it
+matters. This is a real limitation, and it is the price of the client not
+becoming a wallet.
+
+### Verification
+
+Python suite **2627 passed, 0 failed, 43 skipped, 1 xfailed** on 3.12. 86 new
+tests in `tests/test_trade_courier.py`. Six mutations run against the security
+properties — SMP gate per-message, fingerprint re-pin, replay window, terms
+hash, check ordering, blob cap — all six killed; the blob-cap mutant survived
+the first attempt because the test tracked the constant instead of pinning it,
+which is why the cap now derives from `_RATE_MAX`.
+
+Two test stubs (`test_xmpp_keepalive.py`, `test_xmpp_session_lifecycle.py`)
+gained `_clear_trades`, since the disconnect path now calls it.
+
+**Not live-tested between wallets.** Nothing here has carried a real
+`prepare_multisig` blob between two `monero-wallet-cli` instances yet. The
+next step is [TRADE.md](TRADE.md)'s runbook on stagenet, by hand, on the two
+handsets — which is also what will tell us whether 24 KiB is the right cap.
+
+---
+
+## v10.19.0 — PyO3 0.29 for GHSA-36hh-v3qg-5jq4, and IRC scrollback stops outliving the connection
+
+*2026-09-05.  `VERSION → 10.19.0`, `otrv4_core 0.10.28`, `pyo3 0.24.2 → 0.29.2`.*
+
+Two unrelated pieces of work that both landed on the same boundary between
+"what the code says" and "what actually ships".
+
+### PyO3 GHSA-36hh-v3qg-5jq4 — audited first, then upgraded
+
+`BoundListIterator` and `BoundTupleIterator` computed `index + n` in
+`Iterator::nth` / `DoubleEndedIterator::nth_back` before bounds-checking it and
+then read the element with `get_item_unchecked`: `nth` can wrap and re-yield
+from the front, `nth_back` can underflow and read past the storage. CVSS 8.7,
+CWE-125, fixed in pyo3 0.29.0.
+
+**Not reachable from OTRv4+.** The entire Python→Rust surface of `otrv4_core` is
+`&[u8]`, `&str`, `u32`/`u64`, `bool`, `&Bound<PyByteArray>`, `&Bound<PyAny>` and
+opaque pyclass handles. `PyList` and `PyTuple` appear nowhere in the crate;
+`nth`, `nth_back` and `step_by` are called on nothing. There is no Python
+sequence for the vulnerable iterators to walk. Severity for this project:
+informational.
+
+**Upgraded anyway**, to 0.29.2, because an unreachable bug in the boundary layer
+is one refactor from reachable and the upgrade was clean: MSRV 1.83 against our
+declared 1.85, `abi3-py39` still offered, and four transitive dependencies
+*removed* (`indoc`, `unindent`, `memoffset`, `rustversion`) with none added.
+
+**One API change, two call sites.** `Bound::downcast` was renamed `Bound::cast`
+(same signature, `CastError` for `DowncastError`) — `ratchet.rs:718`,
+`voice.rs:458`. Nothing about ownership, lifetimes, conversions or exception
+propagation changed, and no secret material moved.
+
+**Rebuilt, not just re-locked.** The `.so` was rebuilt with
+`--features extension-module` and installed before anything was tested against
+it, `NOTICE` was regenerated from the new graph, and the boundary tests drive
+the installed module rather than the source tree.
+
+Also fixed while in there: `cargo clippy --all-targets` reported 88 pre-existing
+`unwrap_used` errors and 3 warnings, all in `#[cfg(test)]` code, which had been
+hiding real findings. `deny(clippy::unwrap_used)` is now
+`cfg_attr(not(test), deny(...))` — the shipped crate keeps the ban, where a
+panic aborts the whole Python process; test code is where an unwrap *should*
+panic. Clippy is clean under `--all-targets` for the first time.
+
+### IRC history stopped outliving the connection
+
+Reported from a real session: the client dropped, reconnected in five seconds,
+found its own previous session still holding the nick, renamed itself, and
+replayed the entire previous conversation into the new one — three times, with
+the unread badge climbing `system(53)` → `system(105)` → `system(158)` and the
+nick going `AngryMouse` → `BrokenNexus` → `HollowNexus`.
+
+Three separate causes, three fixes:
+
+- **Unbounded, never-cleared history.** `ChatPanel.history` had no ceiling and
+  nothing emptied it, so a tab switch replayed to the start of the process. Now
+  capped at 1000 messages, and `_purge_scrollback()` empties every panel — plus
+  the unread counters and the recent-user sets — at every boundary between one
+  connection and the next: disconnect, reconnect, `/quit`, and process exit via
+  `atexit`, so SIGINT and unhandled exceptions are covered too. The terminal's
+  own saved scrollback is cleared as well (`\033[3J`, because on Termux the
+  visible history *is* the scrollback) on `/quit`, process exit and `/clear` —
+  but **not** on an automatic reconnect, where blanking the emulator would
+  destroy the error messages the user is reading to find out what just
+  happened.
+- **A reconnect that raced the server.** The backoff started at 5s and doubled;
+  five seconds is shorter than any server's ping timeout, so the reconnect
+  arrived while the ghost still held the nick. Now a flat 30/60/90/120s.
+- **A permanent rename on 433.** The client took a fresh random nick and kept
+  it, so one dropped connection cost the user their identity. Now a temporary
+  nick is taken only if registration has not completed, and up to four attempts
+  are scheduled to reclaim the original once the ghost has timed out.
+
+`/clear` now clears everything rather than just the active tab, without touching
+the connection; `/clear <panel>` keeps the old single-tab behaviour.
+
+Timestamps carry the date: `TIMESTAMP_FORMAT = "%Y-%m-%d %H:%M:%S"`, one
+constant replacing four copies of `"%H:%M:%S"`. A debug-log line that read
+`12:34:56.` with nothing after the dot was fixed at the same time — `%f` is a
+`datetime` directive, not a `time.strftime` one, so `[:-3]` had been trimming
+the literal `%f`.
+
+**Honest about what this is not.** A Python `str` cannot be scrubbed from
+memory; it is immutable and may be interned. The purge drops the last reference
+the client holds, which is what stops the conversation coming back on screen —
+the bytes stay in freed heap until the allocator reuses them. INV-24 is recorded
+as `PARTIAL` for that reason. Anything that must genuinely be destroyed is not
+kept in a chat panel at all.
+
+### Also
+
+`No module named 'socks'` now says what to install. The engine's import guard
+blamed file placement for every failure — "ensure `otrv4+.py`, the
+`otrv4plus.py` symlink and `otrv4_core.so` are in this directory" — which sent a
+tester chasing three files that were all present and correct. The module comes
+from **PySocks**, and the PyPI project literally named `socks` is an empty
+placeholder (version 0, "should be deleted soon") that installs nothing, so
+`pip install socks` succeeded and changed nothing. The guard now names the
+missing module and its actual distribution, and `import socks` in `otrv4+.py`
+carries the same explanation plus a check that what it imported really is
+PySocks.
+
+### Verification
+
+`cargo test` 111 passed. `cargo clippy --all-targets` clean, 0 errors, 0
+warnings. Release `.so` rebuilt and installed. Python suite **2538 passed, 0
+failed, 43 skipped, 1 xfailed** on Python 3.12. 117 new tests across four files:
+`test_dependency_advisories.py` (25), `test_pyo3_boundary.py` (44 — hostile
+input against the installed module), `test_irc_history_privacy.py` (35), `test_import_diagnostics.py` (13). Eight
+mutations run against the new assertions, seven killed, one confirmed
+semantically equivalent (`>` vs `>=` in the prune, where `overflow` is 0 at the
+boundary either way).
+
+**Not live-tested on the two handsets yet.** The IRC reconnect and nick-reclaim
+paths need a real dropped connection against a real server to exercise; nothing
+here claims transport verification that has not happened.
+
+---
+
 ## v10.18.6 — building a Python extension with no `.so` is now an error
 
 *2026-09-05.  `VERSION → 10.18.6`.  Build configuration only; no code change.*

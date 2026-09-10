@@ -149,7 +149,7 @@ New environment switches, all optional:
 | `OTRV4PLUS_RX_SESSION_HOLD_MS` | `30000` | how long a still-live SAM session delays an endpoint rebuild; `0` disables the hold |
 | `OTRV4PLUS_RX_START_GRACE_MS` | `120000` | how long a call that has never carried audio is given before its path is judged |
 | `OTRV4PLUS_RECOVER_ATTEMPTS` | `2` | endpoint rebuild attempts; `0` disables recovery and restores the plain fail-safe |
-| `OTRV4PLUS_M2E_GOOD_MS` / `_WARN_MS` | `400` / `800` | latency colour bands; `NO_COLOR` disables banding |
+| `OTRV4PLUS_M2E_GOOD_MS` / `_WARN_MS` | `1000` / `1500` | latency colour bands, calibrated for I2P since v10.28.1 (was `400`/`800`, ITU-T G.114's terrestrial scale — set those to restore it on a LAN); `NO_COLOR` disables banding |
 
 If you are building voice for the first time, note that it needs the Python
 `cryptography` package and `libopus`, which chat does not. See
