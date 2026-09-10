@@ -140,10 +140,40 @@ val syncPythonSources by tasks.registering(Copy::class) {
     from(repoRoot) {
         include(
             "otrv4+.py",
-            "otrv4plus_log.py",
-            "otrv4plus_voice.py",
-            "otrv4plus_audio.py",
             "otrv4plus_xmpp.py",
+            // The rest is the module-scope import closure of otrv4+.py and
+            // otrv4plus_xmpp.py, computed rather than remembered.
+            //
+            // It had drifted badly: seven of these were missing, including
+            // otrv4plus_coreapi and otrv4plus_smpflow, which the XMPP client
+            // imports on its first two lines. Every one of them is an
+            // ImportError at launch rather than a missing feature, and no
+            // test could catch it because nothing here has ever built an APK.
+            // Re-derive with:
+            //   python3 - <<'EOF'
+            //   import ast, os
+            //   seen, q = set(), ["otrv4plus_xmpp.py", "otrv4+.py"]
+            //   while q:
+            //       f = q.pop()
+            //       if f in seen or not os.path.exists(f): continue
+            //       seen.add(f)
+            //       for n in ast.walk(ast.parse(open(f).read())):
+            //           ms = ([a.name for a in n.names] if isinstance(n, ast.Import)
+            //                 else [n.module] if isinstance(n, ast.ImportFrom) and n.module
+            //                 else [])
+            //           q += [m + ".py" for m in ms if m.startswith("otrv4plus_")]
+            //   print(sorted(seen))
+            //   EOF
+            "otrv4plus_admin.py",
+            "otrv4plus_audio.py",
+            "otrv4plus_coreapi.py",
+            "otrv4plus_filetransfer.py",
+            "otrv4plus_identity.py",
+            "otrv4plus_log.py",
+            "otrv4plus_smpflow.py",
+            "otrv4plus_tip.py",
+            "otrv4plus_trade.py",
+            "otrv4plus_voice.py",
         )
     }
     from(repoRoot.resolve("android_bridge")) {

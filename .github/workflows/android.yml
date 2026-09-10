@@ -1,0 +1,220 @@
+# Android build — on GitHub's runners, because ours cannot reach Google
+#
+# WHY THIS EXISTS
+# ---------------
+# The Android SDK, the NDK, the Android Gradle Plugin and AndroidX are all
+# served from `dl.google.com`, and `maven.google.com` 301-redirects there.  The
+# development environment this project is written in returns 403 at the CONNECT
+# tunnel for that host — an egress policy, not a credential or a TLS problem —
+# so six of Phase 2's exit gates have never been testable.  See
+# ANDROID_PHASE2_REPORT.md §2.
+#
+# GitHub-hosted runners ship the SDK and NDK preinstalled and have no such
+# restriction.  So the build moves here.  Nothing about the project changes to
+# accommodate it: no dependency is swapped out, no repository is mirrored, and
+# `settings.gradle.kts` still asks for `google()` exactly as before.
+#
+# HOW TO READ A RUN
+# -----------------
+# The jobs are deliberately independent and ordered by how much they prove, so
+# a first red run still answers something.  `configure` failing means the build
+# files are wrong; `configure` green and `rust` red means the cross-compile
+# needs work, not the Gradle setup.  Each job says in its own name what its
+# success would establish.
+
+name: Android
+
+on:
+  push:
+    branches: [main, "claude/**"]
+    paths:
+      - "android/**"
+      - "android_bridge/**"
+      - "Rust/**"
+      - ".github/workflows/android.yml"
+  pull_request:
+    paths:
+      - "android/**"
+      - "android_bridge/**"
+      - "Rust/**"
+      - ".github/workflows/android.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  # Chaquopy needs this exact version: otrv4+.py uses PEP 701 f-string syntax
+  # that does not parse on 3.11 or earlier.
+  PYTHON_VERSION: "3.12"
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Proves: the Gradle build files are valid and every dependency resolves.
+  # This is the gate that has never been reachable from the dev environment.
+  # ---------------------------------------------------------------------------
+  configure:
+    name: Resolve AGP, AndroidX and Chaquopy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Show what the runner already has
+        run: |
+          echo "ANDROID_HOME=$ANDROID_HOME"
+          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT"
+          echo "NDK=$ANDROID_NDK_LATEST_HOME"
+          ls "$ANDROID_HOME/platforms" || true
+          # The whole point of this workflow, stated as a check.
+          curl -sS -o /dev/null -w 'dl.google.com -> %{http_code}\n' \
+            https://dl.google.com/android/repository/repository2-3.xml
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Accept SDK licences
+        run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
+
+      - name: Configure the project
+        working-directory: android
+        # `tasks` forces full configuration -- plugin resolution, the Chaquopy
+        # plugin, the Compose compiler extension -- without compiling anything.
+        # If dl.google.com were the only problem, this alone would go green.
+        run: ./gradlew tasks --stacktrace
+
+      - name: Resolve the app's dependency graph
+        working-directory: android
+        run: ./gradlew :app:dependencies --configuration debugRuntimeClasspath --stacktrace
+
+  # ---------------------------------------------------------------------------
+  # Proves: otrv4_core cross-compiles for the two shipped ABIs.
+  # pqcrypto-mlkem/mldsa compile C reference code, so this needs the NDK.
+  # ---------------------------------------------------------------------------
+  rust:
+    name: Cross-compile otrv4_core (${{ matrix.abi }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - abi: arm64-v8a
+            target: aarch64-linux-android
+            cc: aarch64-linux-android26-clang
+          - abi: x86_64
+            target: x86_64-linux-android
+            cc: x86_64-linux-android26-clang
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Point cargo at the NDK toolchain
+        run: |
+          NDK_BIN="$ANDROID_NDK_LATEST_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          echo "$NDK_BIN" >> "$GITHUB_PATH"
+          UPPER=$(echo "${{ matrix.target }}" | tr 'a-z-' 'A-Z_')
+          echo "CARGO_TARGET_${UPPER}_LINKER=$NDK_BIN/${{ matrix.cc }}" >> "$GITHUB_ENV"
+          echo "CC_${{ matrix.target }}=$NDK_BIN/${{ matrix.cc }}" >> "$GITHUB_ENV"
+          echo "AR_${{ matrix.target }}=$NDK_BIN/llvm-ar" >> "$GITHUB_ENV"
+
+      - name: Build the wheel
+        working-directory: Rust
+        run: |
+          pip install maturin
+          maturin build --release \
+            --target ${{ matrix.target }} \
+            --features pyo3/extension-module \
+            --interpreter python${{ env.PYTHON_VERSION }} \
+            --out dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: otrv4_core-${{ matrix.abi }}
+          path: Rust/dist/*.whl
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------------------
+  # Proves: an APK exists. The Phase 2 exit gate.
+  # Debug only -- release signing needs keys that do not belong in CI.
+  # ---------------------------------------------------------------------------
+  apk:
+    name: Assemble a debug APK
+    runs-on: ubuntu-latest
+    needs: [configure, rust]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: otrv4_core-*
+          path: android/app/wheels
+          merge-multiple: true
+
+      - name: Show the wheels the APK will embed
+        run: ls -l android/app/wheels
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Accept SDK licences
+        run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
+
+      - name: assembleDebug
+        working-directory: android
+        run: ./gradlew :app:assembleDebug --stacktrace
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: apk-debug
+          path: android/app/build/outputs/apk/**/*.apk
+          if-no-files-found: warn
+
+  # ---------------------------------------------------------------------------
+  # Proves: the Kotlin security layer still passes. Pure JVM, no SDK needed,
+  # so this is the one job that could always have run here.
+  # ---------------------------------------------------------------------------
+  kotlin-tests:
+    name: Kotlin security-layer tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Accept SDK licences
+        run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
+
+      - name: Unit tests
+        working-directory: android
+        run: ./gradlew :app:testDebugUnitTest --stacktrace
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: kotlin-test-report
+          path: android/app/build/reports/tests/**
+          if-no-files-found: ignore
