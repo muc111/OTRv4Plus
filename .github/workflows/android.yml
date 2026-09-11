@@ -301,6 +301,45 @@ jobs:
         # not the "What went wrong" summary at the end.
         run: ../.github/scripts/gradle.sh ./gradlew :app:assembleDebug --no-daemon --console=plain
 
+      - name: The APK must actually contain the Rust core
+        # An assembleDebug that goes green proves an APK exists, not that the
+        # app is in it. Until the commit that added `install("otrv4_core")`,
+        # every green APK job here produced a package with no crypto core at
+        # all: the wheels were downloaded, printed, and never installed. That
+        # is a silent failure -- the build is perfect and the app dies at
+        # `import otrv4_core` on the handset -- so it gets the same treatment
+        # as the SONAME check in the `rust` job: inspect the artifact, and
+        # fail loudly here rather than quietly there.
+        run: |
+          set -euo pipefail
+          APK=$(find android/app/build/outputs/apk -name '*.apk' | head -1)
+          test -n "$APK" || { echo "::error::assembleDebug produced no APK"; exit 1; }
+          echo "inspecting $APK ($(stat -c%s "$APK") bytes)"
+
+          # Chaquopy puts native requirements in lib/<abi>/ so the system
+          # linker can load them, and pure-Python ones inside the
+          # assets/chaquopy/*.imy zips. Check both rather than assuming which.
+          if unzip -l "$APK" | grep -i otrv4_core; then
+            echo "otrv4_core is packaged as a native library"
+            exit 0
+          fi
+          rm -rf /tmp/apk-check && mkdir -p /tmp/apk-check
+          unzip -q -o "$APK" 'assets/chaquopy/*' -d /tmp/apk-check || true
+          found=0
+          for imy in /tmp/apk-check/assets/chaquopy/*.imy; do
+            [ -e "$imy" ] || continue
+            if unzip -l "$imy" 2>/dev/null | grep -i otrv4_core; then
+              echo "  ^ found in $(basename "$imy")"
+              found=1
+            fi
+          done
+          if [ "$found" -eq 0 ]; then
+            echo "::error::the APK contains no otrv4_core -- it has no cryptographic core and would fail at import on a device"
+            echo "--- what the APK does contain:"
+            unzip -l "$APK" | grep -E 'lib/|assets/chaquopy/' | head -40
+            exit 1
+          fi
+
       - uses: actions/upload-artifact@v4
         if: always()
         with:
