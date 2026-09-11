@@ -78,6 +78,62 @@ registering it would be config nothing reads.
 Not yet exercised against a real Prosody server — `/admin` on xmpp-elite.i2p is
 the test.
 
+### Addendum, 2026-09-10 — the APK exists
+
+*Build infrastructure only. No `VERSION` bump, no client behaviour changed, no
+cryptographic code touched.*
+
+`dl.google.com` returns 403 at this environment's CONNECT tunnel, which has
+meant since Phase 2 that the Android project had never once been configured,
+let alone compiled. The block was not defeated — it was routed around. The
+build now runs on GitHub-hosted runners, which ship the SDK and NDK
+(`.github/workflows/android.yml`). Nothing was swapped out to dodge it:
+`settings.gradle.kts` still asks for `google()`.
+
+Nine runs. Seven distinct defects, none findable without actually building:
+
+1. The Compose compiler plugin — Kotlin 2.0 moved it out of AGP.
+2. `ld.lld: unable to find library -lpython3`. Android's linker permits no
+   undefined symbols, so `pyo3/extension-module` is not enough; the link is
+   against Chaquopy's own libpython from Maven Central.
+3. `abiFilters` and `splits` naming the same two ABIs — AGP takes one or the
+   other. Kept `abiFilters`, because it is the guard holding armeabi-v7a out
+   and splits is only an install-size win.
+4. `PYO3_CROSS_LIB_DIR` pointed at a jniLibs folder. My error: abi3 needs no
+   `_sysconfigdata`.
+5. **Chaquopy's `libpython3.12.so` carries no SONAME.** The linker then
+   records the filename it opened, so the wheel asked the device for
+   `libpython3.so` — which the APK does not contain. A clean build and a
+   dlopen failure on first launch. Found by inspecting the artifact, not by a
+   failure; fixed with `patchelf --set-soname`, and now asserted.
+6. **slixmpp requires `aiodns`, which requires `pycares`, which builds c-ares
+   with cmake** — `Chaquopy_cannot_compile_native_code`. Not our dependency to
+   drop: it comes from slixmpp's own metadata, and pip cannot remove a single
+   edge. So `--no-deps`, and the full closure named by hand. Costless at
+   runtime: slixmpp guards aiodns behind `AIODNS_AVAILABLE`, and this client
+   only ever connects to 127.0.0.1 through the SAM bridge, so there is no SRV
+   lookup to lose.
+7. `mergeDebugPythonSources` read `syncPythonSources`' output with no declared
+   edge. Not pedantry — the losing order packages an empty source set.
+
+Two latent bugs surfaced on the way, both of which would have shipped:
+
+* `syncPythonSources` had drifted by **seven** modules, including
+  `otrv4plus_coreapi` and `otrv4plus_smpflow` — imported on the XMPP client's
+  first two lines. An `ImportError` before the first window.
+* **The APK had never contained the Rust core.** The wheels were built,
+  downloaded, and printed by a step named "Show the wheels the APK will
+  embed"; nothing installed them. `assembleDebug` went green regardless.
+
+Each is now a check rather than a memory: the wheel's `DT_NEEDED`, the APK's
+actual contents, the packaged-module closure (`tests/test_apk_python_sources.py`),
+and the pip closure re-resolved on every run
+(`.github/scripts/verify_python_closure.py`, `tests/test_apk_python_deps.py`).
+
+**What this does not prove:** the APK has never been installed or launched.
+Green means it builds and packages. `ANDROID_PHASE2_REPORT.md` §14 keeps the
+three device gates open.
+
 ---
 
 ## v10.29.0 — the buffer was sized from an average, on a path that has a tail

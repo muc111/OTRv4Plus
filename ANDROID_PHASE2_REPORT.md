@@ -8,15 +8,29 @@
 > report should be read as evidence that voice works in the Android application.
 
 
-**Status: INCOMPLETE — blocked on environment, not on design.**
+> **Update (v10.30.0) — the toolchain block is worked around, and the APK
+> exists.** The `dl.google.com` refusal described in §2 is still in force in
+> this environment and was never defeated. Instead the build moved to
+> GitHub-hosted runners, which ship the SDK and NDK: see
+> `.github/workflows/android.yml`. Nothing in the project changed to
+> accommodate it — no dependency swapped, no repository mirrored,
+> `settings.gradle.kts` still asks for `google()`.
+>
+> As of that workflow's run #8 all six jobs are green and a 31.9 MB debug APK
+> is produced, containing the Rust core cross-compiled for arm64-v8a and
+> x86_64. §14 is updated accordingly. **Three gates that need a physical
+> device are still not met, and are not claimed** — building an APK proves it
+> packages, not that it runs.
+
+**Status: PARTIAL — the build gate is met; the device gates are not.**
 
 Phase 2 asked for a production-viable Android foundation. Everything that could
-be built and verified without an Android toolchain has been, and is green.
-Everything requiring the Android SDK, the NDK, Chaquopy or a physical device is
-blocked by this environment's egress policy and is **not** claimed as done.
+be built and verified without an Android toolchain was, and is green. The
+toolchain half is now verified too, on CI rather than here. What remains is
+everything that requires a physical handset: no emulator or device has ever run
+this APK.
 
-The exit-gate table in §11 marks each item honestly. Six gates cannot be met
-here. Section §2 says exactly why and what unblocks them.
+The exit-gate table in §14 marks each item honestly.
 
 No cryptographic primitive, protocol or orchestration path was modified.
 
@@ -597,11 +611,11 @@ Full report: `ANDROID_I2P_FEASIBILITY.md`. Headlines:
 
 | Gate | Status |
 |---|---|
-| Android project builds | **BLOCKED** — no AGP/SDK |
-| Python 3.12+ runs inside the Android application | **BLOCKED** — no Chaquopy |
-| Rust extension loads on a real device | **BLOCKED** — no NDK, no device |
+| Android project builds | **DONE** — CI run #8, all six jobs green, debug APK produced |
+| Python 3.12+ runs inside the Android application | **PARTIAL** — Chaquopy 3.12 resolves, installs the full requirement closure and packages; never executed on a device |
+| Rust extension loads on a real device | **PARTIAL** — cross-compiles for both ABIs, `DT_NEEDED` verified as `libpython3.12.so`, present in the APK; no device has loaded it |
 | OTRv4+ initializes on-device | **BLOCKED** — no device |
-| Kotlin ↔ Python ↔ Rust path works | **PARTIAL** — Python↔Rust verified; Kotlin leg blocked |
+| Kotlin ↔ Python ↔ Rust path works | **PARTIAL** — Python↔Rust verified; Kotlin leg compiles and its JVM tests pass, but the three-way path has never run |
 | Typed bridge exists | **DONE** |
 | No dependency on terminal scraping | **DONE** — enforced by test |
 | Persistent identity implemented/tested | **DONE**, with decision B1-seed open |
@@ -619,8 +633,15 @@ Full report: `ANDROID_I2P_FEASIBILITY.md`. Headlines:
 | L1 tracked, not falsely claimed resolved | **DONE** |
 | `ANDROID_PHASE2_REPORT.md` complete | **DONE** |
 
-**Phase 2 is not complete.** Six gates are blocked by the environment. The design
-work behind each is finished and waiting.
+**Phase 2 is not complete, but the reason has changed.** Of the six gates that
+were blocked by this environment's egress policy, three are now met or
+substantially met on CI. The remaining shortfall is a physical handset, not a
+toolchain: nothing has installed or launched this APK.
+
+What CI does NOT prove, stated plainly so it is not read into the table above:
+that the app starts; that Chaquopy's interpreter initialises; that
+`import otrv4_core` succeeds on a real ABI; that AAudio opens a stream; that
+any OTR session is established. Those need a device.
 
 ---
 
@@ -632,8 +653,13 @@ work behind each is finished and waiting.
    feature?
 3. **I2P** — approve the separate-process bundled-router shape, and accept the
    foreground-service notification versus the calculator disguise?
-4. **Unblocking** — allowlist `dl.google.com` + `chaquo.com`, or provide a
-   machine with the Android SDK/NDK and a device?
+4. **Unblocking** — RESOLVED at v10.30.0, by routing around rather than
+   through. `dl.google.com` is still 403 here; the build runs on GitHub-hosted
+   runners instead (`.github/workflows/android.yml`), which have the SDK and
+   NDK preinstalled. An allowlist entry would still be worth having for local
+   iteration — each CI round trip costs about four minutes — but it no longer
+   blocks anything. **A device is still required** for the three gates in §14
+   that need one.
 5. **Licensing** — RESOLVED at v10.17.0: dual AGPL-3.0 + commercial. Originally raised as "GPL-3.0 core versus commercial distribution".
 6. **G1** — implement the DAKE handshake timeout (behaviour change), or leave
    tracked?
