@@ -16,6 +16,13 @@ import org.otrv4plus.android.BuildConfig
 import org.otrv4plus.android.bridge.ChaquopyOtrCore
 import org.otrv4plus.android.bridge.InitResult
 import androidx.compose.ui.platform.LocalContext
+import android.content.Context
+import android.content.Intent
+import androidx.core.content.FileProvider
+import java.io.File
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 /**
  * The Phase 2 development shell.
@@ -88,12 +95,29 @@ fun DevShellScreen() {
 
             val clipboard = LocalClipboardManager.current
             var copied by remember { mutableStateOf(false) }
+            var exportError by remember { mutableStateOf<String?>(null) }
+
             Spacer(Modifier.height(8.dp))
-            Button(onClick = {
-                clipboard.setText(AnnotatedString(reportText(r)))
-                copied = true
-            }) {
-                Text(if (copied) "Copied — paste it into the bug report" else "Copy report")
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                // Export to a file and hand it to whatever app the user picks.
+                // A 50-line report does not survive being retyped from a photo,
+                // and this screen sets FLAG_SECURE so there is no photo to take.
+                Button(onClick = {
+                    exportError = try {
+                        shareReport(context, fullReport(r)); null
+                    } catch (t: Throwable) {
+                        t.javaClass.simpleName
+                    }
+                }) { Text("Export report") }
+
+                OutlinedButton(onClick = {
+                    clipboard.setText(AnnotatedString(fullReport(r)))
+                    copied = true
+                }) { Text(if (copied) "Copied" else "Copy") }
+            }
+            exportError?.let {
+                Text("Export failed ($it) — use Copy instead.",
+                    style = MaterialTheme.typography.bodySmall)
             }
         }
 
@@ -114,7 +138,7 @@ fun DevShellScreen() {
  * Built from [InitResult] only, so it carries exactly what the screen shows
  * and cannot acquire a field that was never rendered.
  */
-private fun reportText(r: InitResult): String = buildString {
+private fun fullReport(r: InitResult): String = buildString {
     appendLine("OTRv4+ Android start-up report")
     appendLine("overall: ${if (r.ok) "OK" else "FAILED"}")
     appendLine("python: ${r.pythonVersion.ifBlank { "unknown" }}")
@@ -124,6 +148,34 @@ private fun reportText(r: InitResult): String = buildString {
     r.failureCode?.let { appendLine("failure: $it") }
     r.failureDetail?.let { appendLine("detail: $it") }
     r.failureFrames?.let { appendLine("where:"); appendLine(it) }
+    // The full diagnostic report, rendered by android_bridge.diagnostics,
+    // which is where the redaction rule lives. Appended rather than
+    // reformatted: this file must not become a second place that decides what
+    // a diagnostic may contain.
+    r.diagnosticsText?.let { appendLine(); appendLine(it) }
+}
+
+/**
+ * Write the report to the cache and offer it to another app.
+ *
+ * Via FileProvider, so what leaves is a one-shot read grant for exactly this
+ * file. The app holds no storage permission and this adds none.
+ */
+private fun shareReport(context: Context, text: String) {
+    val dir = File(context.cacheDir, "diagnostics").apply { mkdirs() }
+    val stamp = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date())
+    val file = File(dir, "otrv4plus-report-$stamp.txt")
+    file.writeText(text)
+
+    val uri = FileProvider.getUriForFile(
+        context, "${context.packageName}.diagnostics", file)
+    val send = Intent(Intent.ACTION_SEND).apply {
+        type = "text/plain"
+        putExtra(Intent.EXTRA_STREAM, uri)
+        putExtra(Intent.EXTRA_SUBJECT, "OTRv4+ Android diagnostic report")
+        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+    }
+    context.startActivity(Intent.createChooser(send, "Export diagnostic report"))
 }
 
 @Composable

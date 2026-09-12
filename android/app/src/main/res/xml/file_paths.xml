@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The one directory the diagnostic export may be shared from.
+
+  cache-path, not files-path and certainly not external storage: a report is
+  transient, and the cache is the one place Android will reclaim on its own if
+  the user never gets round to deleting it.
+
+  The subdirectory is named so that the grant covers "diagnostics/" alone
+  rather than the whole cache. A FileProvider path is a capability, so it
+  should be the narrowest one that does the job.
+-->
+<paths>
+    <cache-path name="diagnostics" path="diagnostics/" />
+</paths>

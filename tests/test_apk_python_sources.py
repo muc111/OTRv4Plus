@@ -161,3 +161,41 @@ class TestTheListIsHonest:
         """
         assert "otrv4plus_admin.py" in import_closure()
         assert "otrv4plus_admin.py" in synced_files()
+
+
+class TestTheOrchestrationLayerIsImportable:
+    """The APK needs it under a name Python can import.
+
+    `otrv4+.py` cannot be imported by name -- `+` is not legal in an
+    identifier -- so the bridge located it by probing the filesystem with
+    os.path.isfile(). That cannot work inside an APK: Chaquopy packages
+    Python sources into a zip under assets/ and serves them through its own
+    importer, so no file exists to find.
+
+    The build therefore copies the same file in again as `otrv4_.py`, which
+    Chaquopy's importer serves like any other module. Deleting that rename
+    puts the loader back on a path that cannot succeed on a device, and no
+    other test would notice.
+    """
+
+    def test_the_importable_alias_is_produced(self):
+        task = _task_source()
+        assert "rename" in task, (
+            "syncPythonSources no longer renames otrv4+.py to an importable "
+            "name; bootstrap.load_orchestration would fall back to the "
+            "filesystem probe, which cannot work inside an APK")
+
+    def test_the_alias_is_one_bootstrap_actually_asks_for(self):
+        import ast
+        tree = ast.parse(open("android_bridge/bootstrap.py").read())
+        aliases = None
+        for node in tree.body:
+            if isinstance(node, ast.Assign) and any(
+                    getattr(t, "id", None) == "_ORCHESTRATION_ALIASES"
+                    for t in node.targets):
+                aliases = ast.literal_eval(node.value)
+        assert aliases, "_ORCHESTRATION_ALIASES is no longer a literal"
+        task = _task_source()
+        assert any('"%s.py"' % a in task for a in aliases), (
+            "the build produces an alias bootstrap does not import: %s"
+            % (aliases,))

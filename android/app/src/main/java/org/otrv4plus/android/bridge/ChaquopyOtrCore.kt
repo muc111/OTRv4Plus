@@ -57,6 +57,7 @@ class ChaquopyOtrCore(private val appContext: Context) : OtrCore {
                 abi = section(report, "abi", "android_abi"),
                 rustCoreLoaded = section(report, "rust_core", "loaded").toBoolean(),
                 engineInitialized = section(report, "otrv4plus", "initialized").toBoolean(),
+                diagnosticsText = renderReport(diagnostics, report),
             )
         } catch (t: Throwable) {
             // Still deliberately no `t.message` -- Python exception text can
@@ -110,12 +111,17 @@ class ChaquopyOtrCore(private val appContext: Context) : OtrCore {
             // a half report beats an exception thrown while explaining one.
         }
 
+        var diagnosticsText: String? = null
         try {
-            val report = Python.getInstance()
-                .getModule("android_bridge.diagnostics")
-                .callAttr("collect", false, androidBuildInfo(Python.getInstance()))
+            val py = Python.getInstance()
+            val diagnostics = py.getModule("android_bridge.diagnostics")
+            // include_selftest = false: the self-test exercises the Rust core,
+            // and this is the path where the core may be the thing that is
+            // broken. A diagnostic that crashes while diagnosing is worthless.
+            val report = diagnostics.callAttr("collect", false, androidBuildInfo(py))
             rustLoaded = section(report, "rust_core", "loaded").toBoolean()
             pyVersion = section(report, "python", "version")
+            diagnosticsText = renderReport(diagnostics, report)
         } catch (_: Throwable) {
             // Diagnostics are a bonus on this path, never a second failure.
         }
@@ -129,8 +135,24 @@ class ChaquopyOtrCore(private val appContext: Context) : OtrCore {
             failureCode = code,
             failureDetail = detail.ifBlank { null },
             failureFrames = frames.ifBlank { null },
+            diagnosticsText = diagnosticsText,
         )
     }
+
+    /**
+     * The report as text, rendered in Python.
+     *
+     * Not formatted here on purpose. `diagnostics.as_text` applies
+     * SENSITIVE_KEY_HINTS to the finished string, and a Kotlin renderer would
+     * be a second place deciding what a diagnostic may say -- which is the
+     * place that would forget the rule the first time a field was added.
+     */
+    private fun renderReport(diagnostics: PyObject, report: PyObject): String? =
+        try {
+            diagnostics.callAttr("as_text", report)?.toString()
+        } catch (_: Throwable) {
+            null
+        }
 
     /** Values only Kotlin can read; Python is told them rather than guessing. */
     private fun androidBuildInfo(py: Python): PyObject {

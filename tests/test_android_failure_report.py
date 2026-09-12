@@ -225,3 +225,55 @@ class TestSyntaxErrorIsTheInterestingCase:
         d = failure.describe(exc)
         assert "/data/data" not in d["detail"]
         assert "otrv4+.py:5195" in d["detail"]
+
+
+class TestTheExportedReport:
+    """`as_text` is what leaves the device, so the rule is applied to it.
+
+    Everything upstream is already supposed to be safe. This is the
+    belt-and-braces pass: the cost of checking the finished string is nothing,
+    and the cost of being wrong is a secret in a file the user is about to
+    upload to a bug tracker.
+    """
+
+    def _report(self, **extra):
+        from android_bridge import diagnostics
+        base = {"python": {"version": "3.12.12"},
+                "rust_core": {"loaded": True, "missing_symbols": []}}
+        base.update(extra)
+        return diagnostics.as_text(base)
+
+    def test_it_renders_nested_structure(self):
+        text = self._report()
+        assert "python:" in text
+        assert "version: 3.12.12" in text
+
+    def test_an_empty_list_says_so_rather_than_vanishing(self):
+        # "missing_symbols:" followed by nothing reads as truncation.
+        assert "(none)" in self._report()
+
+    def test_a_key_matching_a_sensitive_hint_is_redacted(self):
+        """Nothing should produce such a key. If something does, it is caught."""
+        text = self._report(identity={"seed": "DEADBEEF-the-actual-seed"})
+        assert "DEADBEEF" not in text
+        assert "<redacted>" in text
+
+    def test_every_sensitive_hint_is_actually_enforced(self):
+        """Not just the one the author happened to test."""
+        from android_bridge import diagnostics
+        for hint in diagnostics.SENSITIVE_KEY_HINTS:
+            text = diagnostics.as_text({"x": {hint: "SHOULD-NOT-APPEAR"}})
+            assert "SHOULD-NOT-APPEAR" not in text, hint
+            assert "<redacted>" in text, hint
+
+    def test_the_hint_matches_a_substring_not_just_a_whole_key(self):
+        # "root_key" must catch "current_root_key_hex".
+        text = self._report(x={"current_root_key_hex": "NOPE"})
+        assert "NOPE" not in text
+
+    def test_a_real_collected_report_carries_no_hint(self):
+        from android_bridge import diagnostics
+        text = diagnostics.as_text(include_selftest=False)
+        assert "<redacted>" not in text, (
+            "a genuine report tripped the redaction pass, which means "
+            "something upstream is producing a key it should not")

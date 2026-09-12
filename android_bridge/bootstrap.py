@@ -106,11 +106,42 @@ def load_orchestration(search_paths: Optional[List[str]] = None) -> Any:
 
     ensure_runtime()
 
+    # Try a plain import first, and prefer it.
+    #
+    # Everything below this point reaches the filesystem: _find_source() calls
+    # os.path.isfile() and spec_from_file_location() opens a path. Inside an
+    # APK that is a losing proposition -- Chaquopy packages Python sources into
+    # a zip under assets/ and serves them through its own importer, so the
+    # files it is looking for have no filesystem existence to find. The probe
+    # cannot succeed there no matter which directories it is given.
+    #
+    # So the build also copies the orchestration layer in under the importable
+    # name `otrv4_.py` (see syncPythonSources in android/app/build.gradle.kts),
+    # and this asks the ordinary import system for it. That works with whatever
+    # loader is in play -- zip, filesystem, or anything else -- because it does
+    # not care where the bytes live.
+    #
+    # Deliberately additive: any failure falls through to the path-based
+    # loader, which is still the route on desktop and under Termux, where
+    # `otrv4_.py` is a symlink to `otrv4+.py` rather than a packaged copy.
+    for alias in _ORCHESTRATION_ALIASES:
+        try:
+            module = importlib.import_module(alias)
+        except Exception:
+            continue
+        if getattr(module, "EnhancedSessionManager", None) is not None:
+            for other in _ORCHESTRATION_ALIASES:
+                sys.modules.setdefault(other, module)
+            return module
+
     source = _find_source(search_paths)
     if source is None:
         raise RuntimeUnsupported(
             f"could not locate the orchestration source; looked for "
-            f"{list(_CANDIDATE_FILENAMES)}"
+            f"{list(_CANDIDATE_FILENAMES)} on the filesystem, and no module "
+            f"named {list(_ORCHESTRATION_ALIASES)} was importable. Inside an "
+            f"APK the importable name is the one that matters: check that "
+            f"syncPythonSources copied otrv4_.py."
         )
 
     directory = os.path.dirname(source)

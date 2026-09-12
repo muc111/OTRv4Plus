@@ -247,3 +247,59 @@ def collect(include_selftest: bool = True,
         and (not include_selftest or report.get("rust_selftest", {}).get("all_passed"))
     )
     return report
+
+
+def as_text(report: Optional[Dict[str, Any]] = None, **collect_kwargs) -> str:
+    """Render the report as flat text, for export off the device.
+
+    WHY THIS IS HERE AND NOT IN KOTLIN
+    ----------------------------------
+    The rule this module enforces is about CONTENT, and content is decided
+    here. A renderer on the Kotlin side would be a second place that decides
+    what a diagnostic says, and the first time someone adds a field it would
+    be the place that forgot the rule. So the text is built next to the data,
+    and `SENSITIVE_KEY_HINTS` is applied to the finished string rather than
+    trusted to have been applied upstream.
+
+    That last part is the real point: this is a belt-and-braces pass over
+    output that is already supposed to be safe. A key whose name trips a hint
+    is redacted here even though nothing should have produced it, because the
+    cost of the check is nothing and the cost of being wrong is a secret in a
+    file the user is about to upload to a bug tracker.
+    """
+    if report is None:
+        report = collect(**collect_kwargs)
+
+    lines: List[str] = ["OTRv4+ Android diagnostic report", ""]
+
+    def render(value: Any, indent: int, key: str = "") -> None:
+        pad = "  " * indent
+        if isinstance(value, dict):
+            for k in value:
+                if _is_sensitive(str(k)):
+                    lines.append("%s%s: <redacted>" % (pad, k))
+                    continue
+                v = value[k]
+                if isinstance(v, (dict, list)):
+                    lines.append("%s%s:" % (pad, k))
+                    render(v, indent + 1, str(k))
+                else:
+                    lines.append("%s%s: %s" % (pad, k, v))
+        elif isinstance(value, list):
+            if not value:
+                lines.append("%s(none)" % pad)
+            for item in value:
+                if isinstance(item, (dict, list)):
+                    render(item, indent + 1, key)
+                else:
+                    lines.append("%s- %s" % (pad, item))
+        else:
+            lines.append("%s%s" % (pad, value))
+
+    render(report, 0)
+    return "\n".join(lines) + "\n"
+
+
+def _is_sensitive(name: str) -> bool:
+    lowered = name.lower()
+    return any(hint in lowered for hint in SENSITIVE_KEY_HINTS)

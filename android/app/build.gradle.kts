@@ -274,6 +274,26 @@ val syncPythonSources by tasks.registering(Copy::class) {
             "otrv4plus_voice.py",
         )
     }
+    // The SAME file again, under a name Python can import.
+    //
+    // `otrv4+.py` cannot be imported by name -- `+` is not legal in an
+    // identifier -- so the bridge used to locate it by probing the filesystem.
+    // That cannot work inside an APK: Chaquopy packages Python sources into a
+    // zip under assets/ and serves them through its own importer, so there is
+    // no file for os.path.isfile() to find.
+    //
+    // Copying it in as `otrv4_.py` makes it an ordinary module, which
+    // Chaquopy's importer serves like any other. bootstrap.load_orchestration
+    // asks for it by name first and only falls back to the path probe, which
+    // remains the route on desktop and under Termux where `otrv4_.py` is a
+    // symlink rather than a copy.
+    //
+    // The repository keeps exactly one copy; the second exists only inside the
+    // build output, which is why this is a rename here rather than a file.
+    from(repoRoot) {
+        include("otrv4+.py")
+        rename { "otrv4_.py" }
+    }
     from(repoRoot.resolve("android_bridge")) {
         into("android_bridge")
         include("*.py")

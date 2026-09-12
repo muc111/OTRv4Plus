@@ -42,5 +42,24 @@
             </intent-filter>
         </activity>
 
+        <!--
+          Lets the user hand a diagnostic report to an app of their choosing.
+
+          exported=false and grantUriPermissions=true is the pair that matters:
+          no other app may ask this provider for anything, and access is only
+          ever the one-shot, read-only grant that rides along with the share
+          Intent for the single file the user picked. The APK has no storage
+          permission and gains none from this.
+        -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.diagnostics"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
+
     </application>
 </manifest>

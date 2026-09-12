@@ -83,6 +83,15 @@ data class InitResult(
     val failureDetail: String? = null,
     /** `basename:lineno in function`, innermost last. Carries no values. */
     val failureFrames: String? = null,
+    /**
+     * The full diagnostic report as text, or null if it could not be built.
+     *
+     * Rendered by `android_bridge.diagnostics.as_text`, which applies
+     * SENSITIVE_KEY_HINTS to the finished string. Kotlin never formats this:
+     * one place decides what a diagnostic may contain, and it is the place
+     * next to the data.
+     */
+    val diagnosticsText: String? = null,
 )
 
 /** Mirrors `UIConstants.SecurityLevel`; values are numerically identical. */
