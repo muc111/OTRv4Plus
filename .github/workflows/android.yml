@@ -407,3 +407,44 @@ jobs:
           name: kotlin-test-report
           path: android/app/build/reports/tests/**
           if-no-files-found: ignore
+
+  # ---------------------------------------------------------------------------
+  # Publishes: the debug APK, as a rolling EXPERIMENTAL prerelease.
+  #
+  # Why a release rather than leaving it as a build artifact: artifacts expire
+  # after 90 days, download as a .zip wrapper, and require a signed-in GitHub
+  # session even on a public repo. A release asset has none of those problems —
+  # stable URL, direct .apk, no expiry, no sign-in.
+  #
+  # Why it runs here rather than someone uploading by hand: the runner already
+  # has the APK and a scoped token, so the binary never travels. It also means
+  # the published build and the green run are the same build, by construction.
+  #
+  # `gh` is preinstalled on the runner and is used deliberately in place of a
+  # third-party release action: publishing a binary under this project's name
+  # is not somewhere to add a supply-chain dependency.
+  # ---------------------------------------------------------------------------
+  release:
+    name: Publish the experimental APK
+    runs-on: ubuntu-latest
+    # EVERY job, not just `apk`. A build whose tests failed must not be
+    # published, and `apk` alone would not notice: it does not depend on
+    # kotlin-tests or python-deps.
+    needs: [configure, python-deps, rust, apk, kotlin-tests]
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/claude/otrv4plus-android-spec-a3oq4d'
+    permissions:
+      # Narrower than it looks: this replaces the workflow-level `contents:
+      # read` for this job only. Nothing else in the run can write.
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: apk-debug
+          path: apk
+
+      - name: Publish the rolling experimental prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: .github/scripts/publish-experimental-apk.sh
