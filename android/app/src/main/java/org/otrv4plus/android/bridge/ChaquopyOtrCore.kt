@@ -59,17 +59,77 @@ class ChaquopyOtrCore(private val appContext: Context) : OtrCore {
                 engineInitialized = section(report, "otrv4plus", "initialized").toBoolean(),
             )
         } catch (t: Throwable) {
-            // Deliberately no `t.message`: Python exception text can embed data
-            // the engine was handling.
-            InitResult(
-                ok = false,
-                pythonVersion = "",
-                abi = Build.SUPPORTED_ABIS.firstOrNull() ?: "unknown",
-                rustCoreLoaded = false,
-                engineInitialized = false,
-                failureCode = t.javaClass.simpleName,
-            )
+            // Still deliberately no `t.message` -- Python exception text can
+            // embed data the engine was handling, and that has not changed.
+            //
+            // What HAS changed is that `t.javaClass.simpleName` alone was the
+            // entire failure report on the first handset this ever ran on:
+            //
+            //     Failure    PyException
+            //
+            // which says only "a Python exception happened". With FLAG_SECURE
+            // set, that could not even be photographed. The app announced that
+            // it had failed and structurally prevented anyone learning why.
+            //
+            // android_bridge.failure.describe() is the answer: it classifies
+            // the exception and returns a safe detail plus `file:line in func`
+            // frames. It is safe in every build -- see its module docstring --
+            // so there is no debug gate here. A diagnostic that is only safe
+            // in debug is a diagnostic waiting to be promoted.
+            describeFailure(t)
         }
+    }
+
+    /**
+     * Build a failure report, and collect diagnostics WHILE FAILING.
+     *
+     * The original flow only ran `diagnostics.collect()` on the success path,
+     * so the one report that could explain a failed start was the one thing a
+     * failed start never produced. collect() needs no orchestration layer and
+     * guards every probe individually, which is exactly what makes it usable
+     * here.
+     */
+    private fun describeFailure(t: Throwable): InitResult {
+        var code = t.javaClass.simpleName
+        var detail = ""
+        var frames = ""
+        var rustLoaded = false
+        var pyVersion = ""
+
+        try {
+            val py = Python.getInstance()
+            val f = py.getModule("android_bridge.failure").callAttr("describe", t)
+            code = f.callAttr("get", "code")?.toString() ?: code
+            detail = f.callAttr("get", "detail")?.toString() ?: ""
+            val causedBy = f.callAttr("get", "caused_by")?.toString() ?: ""
+            if (causedBy.isNotBlank()) detail = "$detail\ncaused by $causedBy"
+            frames = f.callAttr("get", "frames")?.asList()
+                ?.joinToString("\n") { it.toString() } ?: ""
+        } catch (_: Throwable) {
+            // The reporter itself failed. Keep the class name and carry on --
+            // a half report beats an exception thrown while explaining one.
+        }
+
+        try {
+            val report = Python.getInstance()
+                .getModule("android_bridge.diagnostics")
+                .callAttr("collect", false, androidBuildInfo(Python.getInstance()))
+            rustLoaded = section(report, "rust_core", "loaded").toBoolean()
+            pyVersion = section(report, "python", "version")
+        } catch (_: Throwable) {
+            // Diagnostics are a bonus on this path, never a second failure.
+        }
+
+        return InitResult(
+            ok = false,
+            pythonVersion = pyVersion,
+            abi = Build.SUPPORTED_ABIS.firstOrNull() ?: "unknown",
+            rustCoreLoaded = rustLoaded,
+            engineInitialized = false,
+            failureCode = code,
+            failureDetail = detail.ifBlank { null },
+            failureFrames = frames.ifBlank { null },
+        )
     }
 
     /** Values only Kotlin can read; Python is told them rather than guessing. */

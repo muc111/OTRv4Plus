@@ -166,8 +166,18 @@ def _otrv4plus_info() -> Dict[str, Any]:
     try:
         import otrv4_ as otr
     except Exception as exc:
-        info["error"] = type(exc).__name__
-        info["detail"] = "orchestration layer did not import"
+        # `type(exc).__name__` alone used to be the whole story here, and on
+        # the first handset that ran this app it reported "SyntaxError" with
+        # no hint of which file or line -- true, and useless. failure.describe
+        # adds a classified detail and `file:line in func` frames while still
+        # refusing to print an arbitrary exception message.
+        from . import failure
+        described = failure.describe(exc)
+        info["error"] = described["code"]
+        info["detail"] = described["detail"] or "orchestration layer did not import"
+        info["where"] = described["frames"]
+        if described["caused_by"]:
+            info["caused_by"] = described["caused_by"]
         return info
 
     info["imported"] = True
