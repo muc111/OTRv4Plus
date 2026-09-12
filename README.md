@@ -109,6 +109,13 @@ Signal is faster, asynchronous, and the right choice for almost everyone. OTRv4+
 
 For someone who wants to try it in about ten minutes on Termux (Android, aarch64).
 
+> **There is an Android APK, and it is not this.** A native app is under
+> construction, and CI publishes each green build as an
+> [experimental prerelease](https://github.com/muc111/OTRv4Plus/releases/tag/android-experimental).
+> **No device has ever launched it** — it is published so it can be tested, not
+> so it can be used. Termux is the supported environment and the rest of this
+> section is the real instructions.
+
 ### 1. Install dependencies
 
 ```bash
