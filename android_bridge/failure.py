@@ -116,9 +116,17 @@ def _detail(exc: BaseException) -> str:
         return "an ImportError with neither a module name nor a message"
 
     if isinstance(exc, SystemExit):
-        # otrv4plus_xmpp.py and otrv4+.py exit(1) when a dependency is absent.
-        # Inside an APK there is no terminal for the message they printed, so
-        # the code is all that survives -- worth saying plainly.
+        # This used to be the common case: otrv4plus_xmpp.py called sys.exit(1)
+        # at import when a dependency was absent, and inside an APK there is no
+        # terminal for the message it printed, so the code was all that
+        # survived. It now raises DependencyUnavailable (an ImportError) and is
+        # handled by the branch above, which carries the reason instead of a
+        # bare number.
+        #
+        # The branch stays. A module ending the process during import is a
+        # thing that can happen again -- to a third-party dependency if not to
+        # us -- and "the exit code, and that it was an exit" beats the generic
+        # fallback below reporting only the type name.
         return "the module called sys.exit(%r) during import" % (exc.code,)
 
     # The parser's own message, plus where. Safe, and on this project the most

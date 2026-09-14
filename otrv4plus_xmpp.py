@@ -319,6 +319,97 @@ def _xmpp_otr_config():
 
 OTR_MODULE = "otrv4plus"  # symlink -> otrv4+.py
 
+
+class DependencyUnavailable(ImportError):
+    """A dependency this module cannot work without could not be loaded.
+
+    An ImportError subclass on purpose. This file is two things at once: a
+    program you run, and a module that the test suite, the Android bridge and
+    the tooling import. Those two want opposite things from a missing
+    dependency.
+
+    The program wants what it has always had -- the advice on stderr and exit
+    status 1 -- and `_fatal_dependency` below still gives it exactly that.
+
+    An importer wants an exception. It used to get `sys.exit(1)`, which raises
+    SystemExit, and SystemExit is not an Exception: it inherits from
+    BaseException so that `except Exception` around a shutdown does not swallow
+    it. Nothing that catches import failures catches it, so importing this
+    module without the Rust core did not fail -- it terminated the interpreter
+    that imported it. Under pytest that meant an INTERNALERROR during
+    collection rather than a skip, and the rest of the suite did not run at
+    all; `pytest.importorskip` could do nothing about it.
+
+    The requirement itself is untouched. Without the engine this module still
+    does not work, and it still says so at import. It now says so by raising,
+    which is how Python says it.
+
+    This class is the *broken* case: the dependency is installed and failed to
+    load anyway. See DependencyMissing for the merely-absent one.
+    """
+
+    def __init__(self, message, advice=(), name=None):
+        super().__init__(message)
+        #: The lines `_fatal_dependency` would have printed, kept so a caller
+        #: that wants to show them (a GUI, the Android diagnostics) can,
+        #: without this module deciding that stderr is where they go.
+        self.advice = tuple(advice)
+        # ImportError.name, so anything that reads it -- android_bridge's
+        # failure classifier does -- gets the module that was actually missing
+        # rather than a bare "unnamed module".
+        self.name = name
+
+
+class DependencyMissing(DependencyUnavailable, ModuleNotFoundError):
+    """The dependency is simply not installed.
+
+    Separate from DependencyUnavailable because the two deserve opposite
+    treatment, and because collapsing them is how a real defect gets skipped.
+
+    A host without the Rust core built is an ordinary, expected state -- a
+    fresh clone, a CI runner that only lints, a laptop. Tests that need the
+    core should skip there, and since pytest 9.1 `pytest.importorskip` skips on
+    ModuleNotFoundError and nothing else, so this is the class that produces
+    that skip with no argument passed at the call site and no suite-wide
+    configuration.
+
+    A core that is installed but raises -- a SyntaxError from an interpreter
+    older than 3.12, an ABI mismatch, a half-built .so -- is not that. It is a
+    defect, and it must fail loudly rather than quietly skipping the tests that
+    would have caught it. Those keep the plain-ImportError base, which pytest
+    does not skip on.
+    """
+
+
+def _fatal_dependency(message, advice=(), name=None, cause=None):
+    """Report a missing dependency the way the caller needs it reported.
+
+    Run as a program: print and exit 1, byte for byte what it did before.
+    Imported as a module: raise, so the importer can decide.
+
+    `__name__` is the boundary, and in a single-file program it is the only
+    honest one -- everything below here, `main()` included, is unreachable once
+    the engine import has failed, so the choice has to be made at the failure.
+    """
+    # Absent, or present and broken? See DependencyMissing. An ImportError from
+    # the dependency means the import system could not produce it; anything
+    # else means it was found and went wrong on its own terms.
+    cls = DependencyMissing if isinstance(cause, ImportError) \
+        else DependencyUnavailable
+    exc = cls(message, advice=advice, name=name)
+    if __name__ == "__main__":
+        # builtins.print, never the module-scope `print` defined further down.
+        # That one routes through the TUI and the session log, neither of which
+        # exists yet -- and one of the two callers below sits after its
+        # definition, so a bare `print` here would mean two different functions
+        # depending on which dependency went missing.
+        builtins.print(message, file=sys.stderr)
+        for line in advice:
+            builtins.print(line, file=sys.stderr)
+        raise SystemExit(1)
+    raise exc from cause
+
+
 # Module name -> the pip distribution that supplies it.  These differ often
 # enough to send people the wrong way: `socks` comes from PySocks, and the
 # PyPI project literally named `socks` is an empty placeholder that installs
@@ -381,10 +472,15 @@ try:
     OTRTracer = getattr(_otr, "OTRTracer", None)
     I2PSAMConnection = getattr(_otr, "I2PSAMConnection", None)
 except Exception as e:
-    print(f"Could not import OTR engine from '{OTR_MODULE}': {e}", file=sys.stderr)
-    for _line in _import_failure_advice(e):
-        print(_line, file=sys.stderr)
-    sys.exit(1)
+    _fatal_dependency(
+        f"Could not import OTR engine from '{OTR_MODULE}': {e}",
+        advice=_import_failure_advice(e),
+        # The module that is actually absent, when the engine told us. Falls
+        # back to the engine itself: if `otrv4plus` raised an AttributeError
+        # rather than an ImportError, the engine is what is broken.
+        name=(getattr(e, "name", None) if isinstance(e, ImportError)
+              else None) or OTR_MODULE,
+        cause=e)
 
 
 # ---------------------------------------------------------------------------
@@ -769,9 +865,13 @@ def print(*args, **kwargs):  # noqa: A001 (intentional module-scope shadow)
 try:
     from slixmpp import ClientXMPP
     from slixmpp.exceptions import IqError, IqTimeout
-except ImportError:
-    builtins.print("slixmpp not installed.  Run:  pip install slixmpp aiodns", file=sys.stderr)
-    sys.exit(1)
+except ImportError as _e:
+    # Same reasoning as the engine import above: fatal to the program, an
+    # ImportError to anything that imports this file.
+    _fatal_dependency(
+        "slixmpp not installed.  Run:  pip install slixmpp aiodns",
+        name=getattr(_e, "name", None) or "slixmpp",
+        cause=_e)
 
 try:
     import otrv4plus_admin as _admin

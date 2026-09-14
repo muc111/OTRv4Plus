@@ -93,15 +93,17 @@ class TestTheClientUnderTestIsTheSameShape:
         describing what the doubles actually do at collection time, and this
         file has to be rewritten against the real class.
         """
-        # Not pytest.importorskip: otrv4plus_xmpp calls sys.exit(1) at import
-        # time when the OTR engine is missing, and SystemExit is not an
-        # Exception, so importorskip lets it through and pytest reports an
-        # INTERNALERROR instead of a skip. On a host with the Rust core built
-        # -- Termux, and CI once it builds one -- this import just succeeds.
+        # A plain try/except rather than pytest.importorskip, because both
+        # outcomes are wanted here. otrv4plus_xmpp raises DependencyMissing
+        # (a ModuleNotFoundError) when the core is absent, which importorskip
+        # would skip on, but DependencyUnavailable (a plain ImportError) when
+        # the core is present and broken, which it would not -- and this test
+        # has nothing to say about either case. On a host with the core built
+        # the import simply succeeds.
         try:
             import otrv4plus_xmpp as xmpp
-        except SystemExit:
-            pytest.skip("otrv4plus_xmpp needs the built OTR engine")
+        except ImportError as exc:
+            pytest.skip("otrv4plus_xmpp needs the OTR engine: %s" % exc)
         cls = xmpp.OTRv4PlusXMPP
         assert "__del__" not in vars(cls)
         owner = next(k for k in cls.__mro__ if "__del__" in vars(k))

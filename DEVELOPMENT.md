@@ -174,6 +174,34 @@ bridge), not failures. The root-level suites — `test_voice_security.py`,
 `test_mac_key_revelation.py` — contribute 239 of those tests and are *not*
 under `tests/`.
 
+### A module must not end the process when imported
+
+`otrv4plus_xmpp.py` is a program you run *and* a module the tests, the Android
+bridge and the packaging tooling import. When the OTR engine or slixmpp was
+missing it used to call `sys.exit(1)` at module level. `SystemExit` derives
+from `BaseException`, not `Exception`, so nothing that handles import failures
+handles it — importing the module on a host without the Rust core terminated
+the interpreter that imported it. Under pytest that was an `INTERNALERROR`
+during collection, and the whole suite stopped, not just the tests needing the
+core.
+
+Both guards now go through `_fatal_dependency`, which branches on `__name__`:
+
+- **Run as a program** — the same advice on stderr, the same exit status 1.
+- **Imported** — raises, so the importer decides.
+
+Two exception classes, and the difference matters: `DependencyMissing` (a
+`ModuleNotFoundError`) when the dependency is simply not installed, so
+`pytest.importorskip` skips with nothing passed at the call site; and
+`DependencyUnavailable` (a plain `ImportError`) when it is installed and
+raising — a broken core, an interpreter older than 3.12, a half-built `.so`.
+pytest does not skip on that one, and must not: a broken core reported as an
+absent one would silently skip every test that exists to catch it.
+
+`tests/test_import_does_not_exit.py` covers both guards, and scans every
+project module for the same pattern. One file is allow-listed there —
+`weechat_otrv4plus.py`, which nothing imports and nothing can.
+
 ### Warnings are findings, not noise
 
 The suite carries **no warning filters**, and none may be added. A warning that
