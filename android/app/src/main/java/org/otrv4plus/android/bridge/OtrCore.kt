@@ -170,6 +170,25 @@ data class ConnectionStatus(
     val code: String = "",
     /** A sentence for a person, naming the remedy where one is knowable. */
     val detail: String = "",
+    /**
+     * What actually crossed from Kotlin into the transport, minus the
+     * password — which appears only as present/absent, never as a length.
+     *
+     * "Did the call fail, or did it get the wrong arguments" are two
+     * questions, and from a handset they are indistinguishable without this.
+     * Rendered in Python so there is one place deciding what a report may
+     * contain.
+     */
+    val inputs: String = "",
+    /**
+     * Whether the transport's event-loop thread is still running.
+     *
+     * The transport works off the calling thread deliberately, so "nothing
+     * happened" has two causes: the work failed, or the thread that should
+     * have done it is gone. A dead loop under a connected-looking status is a
+     * lifecycle bug, invisible unless something asks.
+     */
+    val workerAlive: Boolean = false,
 )
 
 /**

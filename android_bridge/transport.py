@@ -174,13 +174,27 @@ class XmppTransport(Transport):
             return future.result(timeout=timeout)
         except TransportError:
             raise
-        except asyncio.TimeoutError:
+        except TimeoutError:
+            # Builtin TimeoutError, which since 3.11 is what both
+            # concurrent.futures.TimeoutError and asyncio.TimeoutError alias.
+            # This is the "no underlying exception" case: nothing raised, the
+            # work simply never finished, and saying so is different from
+            # saying it failed.
             future.cancel()
-            raise TransportError("timeout", "the operation did not complete")
+            raise TransportError(
+                "timeout",
+                "the operation did not finish within %gs and nothing raised. "
+                "The connection was still in progress when the wait expired."
+                % timeout)
         except Exception as exc:
             # The type, not the message. An exception raised inside slixmpp's
             # SASL path can quote what it was given.
-            raise TransportError("failed", type(exc).__name__)
+            #
+            # "unexpected_error" rather than "failed": anything reaching here
+            # is a bug rather than a diagnosable condition, and it must not be
+            # confusable with the `failed` STAGE, which is where every other
+            # error also ends up.
+            raise TransportError("unexpected_error", type(exc).__name__)
 
     # -- Transport ------------------------------------------------------------
 
@@ -189,7 +203,17 @@ class XmppTransport(Transport):
 
     async def _connect(self) -> None:
         host, port = await self._endpoint()
-        client = self._make_client()
+        # Separately coded for the same reason as the forwarder above: a
+        # slixmpp that will not import is a packaging fault, and reporting it
+        # as a generic connect failure sends someone to look at their router.
+        try:
+            client = self._make_client()
+        except Exception as exc:
+            self._emit_state("failed")
+            raise TransportError(
+                "client_build_failed",
+                "the XMPP client could not be built (%s)."
+                % type(exc).__name__)
         self._wire(client)
         self._client = client
         started = asyncio.get_event_loop().create_future()
@@ -207,11 +231,21 @@ class XmppTransport(Transport):
         client.add_event_handler("session_start", on_session)
         client.add_event_handler("failed_auth", on_failed)
 
-        # address= points slixmpp at the local end of the SAM tunnel rather
-        # than at a DNS lookup of the JID's domain. getaddrinfo is never called
-        # on a .i2p name -- TRANSPORT_POLICY.md is emphatic about that, and
-        # this is the line that keeps it true.
-        client.connect(address=(host, port))
+        # host= and port= point slixmpp at the local end of the SAM tunnel
+        # rather than at a DNS lookup of the JID's domain. getaddrinfo is never
+        # called on a .i2p name -- TRANSPORT_POLICY.md is emphatic about that,
+        # and this is the line that keeps it true. slixmpp only skips its SRV
+        # lookup when BOTH are given, so they must stay together.
+        #
+        # This said `address=(host, port)` until the first handset test, which
+        # is an older slixmpp API that no longer exists: 1.17's signature is
+        # connect(host, port). It raised TypeError before a socket was opened,
+        # and the unit tests passed anyway because the fake client accepted
+        # `address=` -- the fake encoded the same wrong assumption as the code
+        # it was standing in for. tests/test_android_transport.py now binds
+        # this call against the real slixmpp signature so a fake cannot agree
+        # with a mistake again.
+        client.connect(host=host, port=port)
         await started
         self._connected.set()
         self._emit_state("connected")
@@ -222,7 +256,24 @@ class XmppTransport(Transport):
             # A clearnet server, which the profile allows and the UI does not
             # advertise. No tunnel to build, so no forwarder.
             return self._profile.effective_server, DEFAULT_C2S_PORT
-        forward = self._forwarder or _default_forwarder()
+
+        # Inside its own try, and separately coded. This import pulls in
+        # otrv4plus_xmpp and therefore the whole engine, and it sat outside the
+        # try below -- so a failure here escaped as a bare exception and was
+        # reported as "failed: ModuleNotFoundError", which names neither the
+        # stage nor the module. "The forwarder would not import" and "the
+        # router would not answer" are different problems with different
+        # remedies and they must not share a code.
+        try:
+            forward = self._forwarder or _default_forwarder()
+        except Exception as exc:
+            self._emit_state("failed")
+            raise TransportError(
+                "forwarder_import_failed",
+                "the I2P forwarder could not be loaded (%s). This is a "
+                "packaging fault, not a router problem."
+                % type(exc).__name__)
+
         self._emit_state("building_tunnels")
         try:
             return await forward(

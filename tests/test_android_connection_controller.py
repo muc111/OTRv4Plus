@@ -265,3 +265,127 @@ class TestNothingIsSimulated:
         from android_bridge.connection import _default_transport_factory
         from android_bridge.transport import XmppTransport
         assert _default_transport_factory() is XmppTransport
+
+
+# ── Added after the first handset Connect failure ────────────────────────────
+
+class TestEveryFailureClassIsDistinguishable:
+    """The eight cases a handset report has to tell apart.
+
+    Before this, a slixmpp that would not import, a forwarder that would not
+    import, and a genuine bug all arrived as code "failed" carrying an
+    exception class name. That sends someone to look at their router when the
+    fault is in packaging.
+    """
+
+    def test_a_forwarder_that_will_not_import_is_not_a_router_problem(self):
+        from android_bridge.transport import TransportError
+        ctl, _ = build(fail=TransportError(
+            "forwarder_import_failed", "packaging fault, not a router"))
+        got = ctl.connect("pw")
+        assert got["code"] == "forwarder_import_failed"
+        assert "router" not in got["detail"].split("not a router")[0]
+
+    def test_a_client_that_will_not_build_has_its_own_code(self):
+        from android_bridge.transport import TransportError
+        ctl, _ = build(fail=TransportError("client_build_failed", "no slixmpp"))
+        assert ctl.connect("pw")["code"] == "client_build_failed"
+
+    def test_a_timeout_is_not_reported_as_a_failure(self):
+        """Case 8: nothing raised, the work simply never finished."""
+        from android_bridge.transport import TransportError
+        ctl, _ = build(fail=TransportError("timeout", "still in progress"))
+        got = ctl.connect("pw")
+        assert got["code"] == "timeout"
+
+    def test_a_genuine_bug_is_labelled_as_unexpected(self):
+        ctl, _ = build(fail=RuntimeError("boom"))
+        got = ctl.connect("pw")
+        assert got["code"] == "connect_failed"
+        assert got["detail"] == "RuntimeError"
+
+
+class TestWhatCrossedTheBoundary:
+    """"Did the call fail, or did it get the wrong arguments" are two
+    questions, and from a handset they are indistinguishable without this."""
+
+    def test_it_reports_the_jid_and_its_parts(self):
+        ctl, _ = build()
+        got = ctl.inputs()
+        assert got["jid"] == JID
+        assert got["jid_localpart_present"] is True
+        assert got["jid_domain"] == "xmpp-elite.i2p"
+
+    def test_the_tunnel_target_is_the_server_not_the_jid_domain(self):
+        """These differ on purpose: the SAM stream goes to the c2s
+        destination, the JID domain is the XMPP virtual host."""
+        ctl, _ = build()
+        got = ctl.inputs()
+        assert got["tunnel_target"] == SERVER
+        assert got["jid_domain"] != got["tunnel_target"]
+
+    def test_it_reports_ports_and_tls_mode(self):
+        ctl, _ = build()
+        got = ctl.inputs()
+        assert got["sam_port"] == 7656
+        assert got["c2s_port"] == 5222
+        assert got["tls_mode"] == "starttls"
+
+    def test_password_presence_is_a_boolean_and_nothing_more(self):
+        ctl, _ = build()
+        assert ctl.inputs()["password_present"] is False
+        ctl.connect("hunter2")
+        got = ctl.inputs()
+        assert got["password_present"] is True
+        blob = repr(ctl.status())
+        assert "hunter2" not in blob
+
+    def test_no_length_is_reported(self):
+        """A length is a real clue to anyone who gets the report, and answers
+        no question a boolean does not."""
+        ctl, _ = build()
+        ctl.connect("hunter2")
+        for key in ctl.inputs():
+            assert "len" not in key.lower()
+
+    def test_profile_errors_travel_with_the_inputs(self):
+        ctl, _ = build(profile=ConnectionProfile(jid=JID, server=SERVER))
+        assert ctl.inputs()["profile_errors"] == []
+
+    def test_the_whole_snapshot_is_plain_data(self):
+        ctl, _ = build()
+        for value in ctl.inputs().values():
+            assert isinstance(value, (str, bool, int, list)), value
+
+
+class TestTheWorkerThreadIsObservable:
+    """The transport works off the calling thread on purpose, so "nothing
+    happened" has two causes: the work failed, or the thread that should have
+    done it is gone. A dead loop under a connected-looking status is a
+    lifecycle bug and is invisible unless something asks."""
+
+    def test_no_transport_means_no_worker(self):
+        ctl, _ = build()
+        assert ctl.status()["worker_alive"] is False
+
+    def test_a_live_transport_reports_its_thread(self):
+        ctl, made = build()
+        ctl.connect("pw")
+
+        class Alive:
+            def is_alive(self):
+                return True
+
+        made["transport"]._thread = Alive()
+        assert ctl.status()["worker_alive"] is True
+
+    def test_a_dead_thread_is_reported_as_dead(self):
+        ctl, made = build()
+        ctl.connect("pw")
+
+        class Dead:
+            def is_alive(self):
+                return False
+
+        made["transport"]._thread = Dead()
+        assert ctl.status()["worker_alive"] is False

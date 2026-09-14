@@ -73,8 +73,18 @@ class FakeClient:
         for fn in list(self.handlers.get(name, [])):
             fn(arg)
 
-    def connect(self, address=None, **_kw):
-        self.connected_to = address
+    # Signature copied from slixmpp.ClientXMPP.connect, and checked against it
+    # by TestTheFakeCannotAgreeWithAMistake below.
+    #
+    # This used to be `connect(self, address=None, **_kw)`, which accepted the
+    # transport's `client.connect(address=(host, port))` happily. No such
+    # parameter exists in slixmpp: the real signature is connect(host, port).
+    # Every test in this file passed while the app raised TypeError on a
+    # handset before it opened a socket, because the fake had been written
+    # from the same wrong assumption as the code it stood in for. A fake is
+    # only evidence if it is wrong in the same places the real thing is.
+    def connect(self, host=None, port=None):
+        self.connected_to = (host, port) if (host and port) else None
         # A real client reaches these asynchronously; firing inline is enough
         # because the transport awaits a future either of them resolves.
         self.fire("failed_auth" if self.fail_auth else "session_start", None)
@@ -171,6 +181,87 @@ class TestItConnectsThroughTheTunnel:
         """SAM_CONNECT_TIMEOUT is 240s; a smaller budget here would report a
         working router as a failure while it was still building."""
         assert CONNECT_TIMEOUT > 240
+
+
+class TestTheFakeCannotAgreeWithAMistake:
+    """The bug the rest of this file failed to catch, and why.
+
+    The transport called `client.connect(address=(host, port))`. slixmpp has no
+    such parameter -- the real signature is `connect(host, port)` -- so on a
+    handset it raised TypeError before a socket was opened, and the connect
+    screen reported "failed: TypeError". Every test here passed, because
+    FakeClient.connect had been written from the same wrong assumption as the
+    code it stood in for.
+
+    A fake is only evidence if it is wrong in the same places the real thing
+    is. These bind the actual call against the installed slixmpp, so agreement
+    between the transport and the fake stops being self-certifying.
+    """
+
+    def test_the_transports_call_binds_against_real_slixmpp(self):
+        slixmpp = pytest.importorskip("slixmpp")
+        import inspect
+        sig = inspect.signature(slixmpp.ClientXMPP.connect)
+        # Exactly what android_bridge/transport.py calls.
+        sig.bind(object(), host="127.0.0.1", port=41234)
+
+    def test_address_is_not_a_parameter_slixmpp_has(self):
+        slixmpp = pytest.importorskip("slixmpp")
+        import inspect
+        sig = inspect.signature(slixmpp.ClientXMPP.connect)
+        assert "address" not in sig.parameters, (
+            "slixmpp grew an `address` parameter again; check which form this "
+            "project should be using rather than assuming")
+        with pytest.raises(TypeError):
+            sig.bind(object(), address=("127.0.0.1", 41234))
+
+    def test_the_fake_matches_the_real_signature(self):
+        slixmpp = pytest.importorskip("slixmpp")
+        import inspect
+        real = inspect.signature(slixmpp.ClientXMPP.connect)
+        fake = inspect.signature(FakeClient.connect)
+        assert list(fake.parameters) == list(real.parameters), (
+            "the fake client's connect() has drifted from slixmpp's: %s vs %s"
+            % (list(fake.parameters), list(real.parameters)))
+
+    def test_no_connect_call_in_the_transport_passes_address(self):
+        """Checked against the parsed code, not the prose.
+
+        A substring search matches the comment that explains the bug, which is
+        how this test failed the first time it ran.
+        """
+        import ast
+        import inspect
+        import android_bridge.transport as mod
+
+        offenders = []
+        for node in ast.walk(ast.parse(inspect.getsource(mod))):
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            if isinstance(func, ast.Attribute) and func.attr == "connect":
+                for kw in node.keywords:
+                    if kw.arg == "address":
+                        offenders.append(node.lineno)
+        assert not offenders, (
+            "a .connect(address=...) call is back, at line(s) %r; slixmpp "
+            "takes host and port" % (offenders,))
+
+    def test_the_tls_settings_reach_a_real_client(self):
+        """enable_direct_tls and enable_starttls are INSTANCE attributes, not
+        class ones -- hasattr on the class says False. The factory guards on
+        the instance, so they do apply; this pins that, because a guard that
+        silently skips is indistinguishable from one that works."""
+        slixmpp = pytest.importorskip("slixmpp")
+        import asyncio
+        from android_bridge.transport import _default_client_factory
+
+        async def build():
+            return _default_client_factory()("alice@example.invalid", "pw")
+
+        client = asyncio.run(build())
+        assert client.enable_direct_tls is False
+        assert client.enable_starttls is True
 
 
 class TestItCarriesPayloadsBothWays:

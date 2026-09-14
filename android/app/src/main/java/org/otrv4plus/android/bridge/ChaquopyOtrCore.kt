@@ -261,6 +261,9 @@ class ChaquopyOtrCore(private val appContext: Context) : OtrCore {
             sam = str("sam"),
             code = last?.callAttr("get", "code")?.toString() ?: "",
             detail = last?.callAttr("get", "detail")?.toString() ?: "",
+            inputs = runCatching { ctl.callAttr("inputs_text").toString() }
+                .getOrDefault(""),
+            workerAlive = bool("worker_alive"),
         )
     }
 

@@ -43,7 +43,18 @@ from __future__ import annotations
 import socket
 from typing import Any, Callable, Dict, Optional
 
+import otrv4plus_address as _address
+
 from .settings import ConnectionProfile
+
+
+def _c2s_port() -> int:
+    """The far-side XMPP port, read from the transport rather than repeated."""
+    try:
+        from .transport import DEFAULT_C2S_PORT
+        return DEFAULT_C2S_PORT
+    except Exception:
+        return 5222
 
 __all__ = [
     "probe_sam", "SamProbe",
@@ -208,6 +219,10 @@ class ConnectionController:
         self._transport: Any = None
         self._stage = "idle"
         self._last: Dict[str, Any] = {}
+        #: Whether a password was supplied, and nothing else about it. A bool,
+        #: never the value: this object is rendered into a status map that
+        #: crosses into Kotlin and ends up in an exported report.
+        self._password_present = False
 
     @property
     def stage(self) -> str:
@@ -241,6 +256,7 @@ class ConnectionController:
         the only thing that survives -- which is exactly the failure mode that
         made the first handset report say nothing but "PyException".
         """
+        self._password_present = bool(password)
         self._enter("checking_router")
         probe = self._prober(self._profile)
         if not probe.reachable:
@@ -303,6 +319,58 @@ class ConnectionController:
         """
         return self._prober(self._profile).as_dict()
 
+    def inputs(self, password: Optional[str] = None) -> Dict[str, Any]:
+        """What actually arrived from Kotlin, minus the password itself.
+
+        A value that crosses a language boundary and then fails is two
+        questions -- did the call fail, or did it get the wrong arguments --
+        and without this they are indistinguishable from a handset. Every
+        field here is one the connection depends on and none of them is
+        secret.
+
+        The password is reported as present or absent and nothing else. Not
+        its length: a length is a real clue to an attacker who gets the
+        report, and it answers no question a boolean does not.
+        """
+        return {
+            "jid": self._profile.jid,
+            "jid_localpart_present": bool(
+                self._profile.jid and self._profile.jid.partition("@")[0]),
+            "jid_domain": _address.jid_domain(self._profile.jid),
+            "password_present": (self._password_present if password is None
+                                 else password != ""),
+            "server_configured": self._profile.server,
+            "tunnel_target": self._profile.effective_server,
+            "is_default_server": self._profile.is_default_server,
+            "sam_host": self._profile.sam_host,
+            "sam_port": self._profile.sam_port,
+            "c2s_port": _c2s_port(),
+            "use_i2p": self._profile.use_i2p,
+            # What the client factory asks slixmpp for. STARTTLS on a normal
+            # c2s port at the far end of the tunnel; direct TLS would be wrong
+            # and is explicitly turned off.
+            "tls_mode": "starttls" if self._profile.use_i2p else "starttls",
+            "profile_errors": self._profile.errors(),
+        }
+
+    def inputs_text(self) -> str:
+        """The propagation snapshot as one pasteable block.
+
+        Rendered here rather than in Kotlin, for the same reason
+        `diagnostics.as_text` is: a second renderer is a second place deciding
+        what a report may contain, and it is the one that forgets the rule
+        when a field is added.
+        """
+        got = self.inputs()
+        lines = ["what reached the transport:"]
+        for key in sorted(got):
+            value = got[key]
+            if isinstance(value, list):
+                value = "; ".join(str(v) for v in value) or "(none)"
+            lines.append("  %-22s %s" % (key, value))
+        lines.append("  %-22s %s" % ("worker_alive", self._worker_alive()))
+        return "\n".join(lines)
+
     def status(self) -> Dict[str, Any]:
         """Everything the screen renders, in one crossing of the boundary."""
         return {
@@ -315,7 +383,24 @@ class ConnectionController:
             "is_default_server": self._profile.is_default_server,
             "sam": "%s:%d" % (self._profile.sam_host, self._profile.sam_port),
             "last": dict(self._last),
+            "inputs": self.inputs(),
+            "worker_alive": self._worker_alive(),
         }
+
+    def _worker_alive(self) -> bool:
+        """Whether the transport's event loop thread is still running.
+
+        The transport deliberately does its work off the calling thread, so
+        "nothing happened" has two very different causes: the work failed, or
+        the thread that was supposed to do it is gone. A dead loop with a
+        connected-looking status is the shape of a lifecycle bug, and it is
+        invisible unless something asks.
+        """
+        transport = self._transport
+        if transport is None:
+            return False
+        thread = getattr(transport, "_thread", None)
+        return bool(thread is not None and thread.is_alive())
 
 
 def _default_transport_factory():

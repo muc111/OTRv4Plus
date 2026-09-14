@@ -256,6 +256,20 @@ fun ConnectScreen(onOpenDiagnostics: () -> Unit = {}) {
             }
         }
 
+        // Shown only after a failure. On the happy path it is noise; on a
+        // failure it is the difference between "the call failed" and "the call
+        // got the wrong arguments", which from a handset are otherwise the
+        // same observation. The password appears here as present/absent only.
+        if (status.stage == "failed" && status.inputs.isNotBlank()) {
+            Spacer(Modifier.height(4.dp))
+            Text("What reached the transport",
+                style = MaterialTheme.typography.titleSmall)
+            StatusRow("Worker thread", if (status.workerAlive) "alive" else "not running")
+            SelectionContainer {
+                Text(status.inputs, style = MaterialTheme.typography.bodySmall)
+            }
+        }
+
         error?.let {
             // A Kotlin-side throw, as opposed to a reported Python failure.
             // The class name only: an exception's message can carry what the
