@@ -51,7 +51,10 @@ import org.otrv4plus.android.bridge.RouterProbe
  * thread is an ANR, not a slow connection.
  */
 @Composable
-fun ConnectScreen(onOpenDiagnostics: () -> Unit = {}) {
+fun ConnectScreen(
+    onOpenDiagnostics: () -> Unit = {},
+    onConnected: (ChaquopyOtrCore) -> Unit = {},
+) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
 
@@ -59,6 +62,7 @@ fun ConnectScreen(onOpenDiagnostics: () -> Unit = {}) {
     // the engine and the transport; rebuilding it on recomposition would start
     // a second interpreter and lose the connection.
     val core = remember { ChaquopyOtrCore(context) }
+
 
     var init by remember { mutableStateOf<InitResult?>(null) }
     var status by remember { mutableStateOf(ConnectionStatus()) }
@@ -279,6 +283,15 @@ fun ConnectScreen(onOpenDiagnostics: () -> Unit = {}) {
                 color = MaterialTheme.colorScheme.error,
                 style = MaterialTheme.typography.bodySmall,
             )
+        }
+
+        if (status.connected) {
+            Spacer(Modifier.height(8.dp))
+            // Hands the SAME core to the chat screen. A second
+            // ChaquopyOtrCore would build a second engine against the same
+            // identity and trust files, and the chat would be talking down a
+            // socket nothing had connected.
+            Button(onClick = { onConnected(core) }) { Text("Open chat") }
         }
 
         Spacer(Modifier.height(8.dp))

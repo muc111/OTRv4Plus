@@ -11,6 +11,8 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.activity.compose.BackHandler
+import org.otrv4plus.android.bridge.ChaquopyOtrCore
+import org.otrv4plus.android.ui.ChatScreen
 import org.otrv4plus.android.ui.ConnectScreen
 import org.otrv4plus.android.ui.DevShellScreen
 
@@ -45,16 +47,37 @@ class MainActivity : ComponentActivity() {
         setContent {
             MaterialTheme {
                 Surface {
-                    // Two destinations, no navigation library yet: there are
-                    // two screens and a Boolean says which. navigation-compose
-                    // earns its place when there are contacts and
-                    // conversations to move between, not before.
+                    // Three destinations, still no navigation library. The
+                    // chat screen manages contacts-versus-conversation
+                    // internally, so this is a small enum rather than a graph;
+                    // navigation-compose earns its place when a deep link or a
+                    // back stack that outlives the process does.
                     var showDiagnostics by remember { mutableStateOf(false) }
-                    if (showDiagnostics) {
-                        BackHandler { showDiagnostics = false }
-                        DevShellScreen()
-                    } else {
-                        ConnectScreen(onOpenDiagnostics = { showDiagnostics = true })
+                    var chatCore by remember {
+                        mutableStateOf<ChaquopyOtrCore?>(null)
+                    }
+
+                    when {
+                        showDiagnostics -> {
+                            BackHandler { showDiagnostics = false }
+                            DevShellScreen()
+                        }
+
+                        chatCore != null -> {
+                            // Back returns to the connection screen without
+                            // disconnecting: the core, and the socket it owns,
+                            // outlive this composition.
+                            BackHandler { chatCore = null }
+                            ChatScreen(
+                                core = chatCore!!,
+                                onOpenDiagnostics = { showDiagnostics = true },
+                            )
+                        }
+
+                        else -> ConnectScreen(
+                            onOpenDiagnostics = { showDiagnostics = true },
+                            onConnected = { chatCore = it },
+                        )
                     }
                 }
             }

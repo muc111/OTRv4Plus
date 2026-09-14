@@ -224,6 +224,18 @@ class ConnectionController:
         #: crosses into Kotlin and ends up in an exported report.
         self._password_present = False
 
+        # Installed here rather than at connect time: a DAKE frame can arrive
+        # in the same breath as session_start, and an event emitted before the
+        # sink exists is an event nobody ever sees.
+        from .eventlog import EventQueue
+        self._events = EventQueue()
+        try:
+            self._app.set_event_sink(self._events)
+        except Exception:
+            # A facade that cannot take a sink still connects; the UI polls
+            # the typed getters instead and loses live updates, not function.
+            pass
+
     @property
     def stage(self) -> str:
         return self._stage
@@ -309,6 +321,49 @@ class ConnectionController:
         self._last = {"ok": True, "stage": "idle", "code": "ok",
                       "detail": "Disconnected."}
         return dict(self._last)
+
+    def drain_events(self, limit: int = 0) -> List[Dict[str, Any]]:
+        """Hand the UI everything that has happened since it last asked.
+
+        Pull rather than push: these are emitted on the transport's loop
+        thread, and a callback into Kotlin from there would put a
+        thread-marshalling obligation on every screen that ever handles one.
+        """
+        return self._events.drain(limit)
+
+    def add_contact(self, jid: str, name: str = "") -> Dict[str, Any]:
+        """Roster operations, forwarded to the transport.
+
+        On the controller rather than reached through it, so Kotlin keeps
+        talking to one object. A result dict rather than an exception, for the
+        same reason `connect` returns one: a PyException crossing Chaquopy
+        arrives with its message as the only survivor.
+        """
+        return self._roster_call("add_contact", jid, name)
+
+    def remove_contact(self, jid: str) -> Dict[str, Any]:
+        return self._roster_call("remove_contact", jid)
+
+    def answer_subscription(self, jid: str, approve: bool) -> Dict[str, Any]:
+        return self._roster_call("answer_subscription", jid, approve)
+
+    def _roster_call(self, name: str, *args) -> Dict[str, Any]:
+        transport = self._transport
+        if transport is None:
+            return {"ok": False, "code": "not_connected",
+                    "detail": "Connect before changing the contact list."}
+        try:
+            getattr(transport, name)(*args)
+        except Exception as exc:
+            return {"ok": False,
+                    "code": getattr(exc, "code", "roster_failed"),
+                    "detail": getattr(exc, "detail", "")
+                              or type(exc).__name__}
+        return {"ok": True, "code": "ok", "detail": ""}
+
+    def events_dropped(self) -> int:
+        """How many events the bound discarded. A gap is worth saying."""
+        return self._events.dropped()
 
     def probe(self) -> Dict[str, Any]:
         """Just the router check, as a plain dict.

@@ -344,10 +344,122 @@ class ChaquopyOtrCore(private val appContext: Context) : OtrCore {
 
     override fun setEventSink(sink: OtrEventSink?) {
         this.sink = sink
-        // Wiring the Python event sink through to Kotlin needs a Chaquopy
-        // static proxy, which is Phase 3 work alongside the first real screens.
-        // Until then the UI polls the typed getters above; no code path scrapes
-        // terminal output either way.
+        // Events are PULLED, not pushed -- see [drainEvents]. This setter is
+        // kept because OtrCore declares it and a caller may want the callback
+        // shape; drainEvents feeds it.
+    }
+
+    /**
+     * Take everything the engine has emitted since the last call.
+     *
+     * Pull rather than push, and the reason is threading. These events are
+     * emitted on the transport's asyncio loop thread. A Python callback into
+     * Kotlin from there would arrive on a thread Compose must not be updated
+     * from, so every handler any future screen writes would carry a
+     * marshalling obligation, and one that forgot would crash only under load
+     * and only sometimes. Pulling puts the UI in charge of its own thread.
+     *
+     * Delivered once and in order: the Python queue removes what it returns,
+     * because an event handed over twice puts a message on screen twice and
+     * nothing downstream can tell that from a peer who sent the same text
+     * again.
+     *
+     * Also feeds [setEventSink]'s sink, if one was set.
+     */
+    fun drainEvents(limit: Int = 0): List<OtrEvent> {
+        val ctl = controller ?: return emptyList()
+        val raw = runCatching { ctl.callAttr("drain_events", limit) }
+            .getOrNull() ?: return emptyList()
+        val out = mutableListOf<OtrEvent>()
+        for (item in raw.asList()) {
+            val event = runCatching { eventFrom(item) }.getOrNull() ?: continue
+            out.add(event)
+            sink?.let { s -> runCatching { s.onEvent(event) } }
+        }
+        return out
+    }
+
+    /**
+     * Ask [jid] to let us see their presence, and add them to the roster.
+     *
+     * Goes to the transport rather than the engine: a roster is an XMPP
+     * concept and the OTR engine has no opinion about who is on it. Adding
+     * someone establishes nothing cryptographic — the conversation is
+     * plaintext until a DAKE runs, and the conversation screen says so.
+     */
+    fun addContact(jid: String, name: String = "") {
+        val ctl = controller ?: throw OtrBridgeException("not_prepared")
+        wrap { ctl.callAttr("add_contact", jid, name) }
+    }
+
+    fun removeContact(jid: String) {
+        val ctl = controller ?: throw OtrBridgeException("not_prepared")
+        wrap { ctl.callAttr("remove_contact", jid) }
+    }
+
+    /** How many events the bounded queue discarded. A gap is worth saying. */
+    fun eventsDropped(): Int =
+        controller?.let {
+            runCatching { it.callAttr("events_dropped").toInt() }.getOrDefault(0)
+        } ?: 0
+
+    private fun eventFrom(item: PyObject): OtrEvent? {
+        fun str(k: String) = item.callAttr("get", k)?.toString() ?: ""
+        fun num(k: String) = item.callAttr("get", k)?.toDouble() ?: 0.0
+        fun int(k: String) = item.callAttr("get", k)?.toInt() ?: 0
+        return when (str("type")) {
+            "ConnectionStateChanged" ->
+                OtrEvent.ConnectionChanged(
+                    ConnectionState.entries.firstOrNull {
+                        it.name == str("state")
+                    } ?: ConnectionState.DISCONNECTED)
+
+            "SessionStateChanged" ->
+                OtrEvent.SessionChanged(
+                    str("peer"), SecurityState.fromLevel(int("security_level")))
+
+            "MessageReceived" ->
+                OtrEvent.MessageReceived(
+                    str("peer"), str("body"), num("timestamp"))
+
+            // The Python class is SmpProgress, the Kotlin event is
+            // SmpProgressed. The names differ and that is a trap: these
+            // branches are checked against android_bridge.events by
+            // tests/test_android_event_mapping.py, because three of them were
+            // wrong when first written and nothing would have noticed.
+            "SmpProgress" ->
+                OtrEvent.SmpProgressed(
+                    str("peer"),
+                    SmpProgress(int("step"), int("total"),
+                        SmpState.fromName(str("state"))))
+
+            "SmpResult" ->
+                OtrEvent.SmpFinished(str("peer"), SmpState.fromName(str("state")))
+
+            "FingerprintChanged" ->
+                OtrEvent.FingerprintChanged(
+                    str("peer"), str("stored_fingerprint"),
+                    str("received_fingerprint"))
+
+            // Carries no body -- a receipt for something already on screen.
+            // Mapped to Failed(code) would be a lie; there is no Kotlin event
+            // for it yet, so it is skipped deliberately rather than by
+            // omission, and the drift test knows that.
+            "MessageDelivered" -> null
+
+            "CallStateChanged" ->
+                OtrEvent.CallChanged(
+                    str("peer"), CallState.fromName(str("state")),
+                    int("duration_seconds"))
+
+            "ErrorOccurred" ->
+                OtrEvent.Failed(str("peer").ifBlank { null }, str("code"))
+
+            // An event type this build does not know about is skipped rather
+            // than guessed at. A wrong mapping is worse than a missing one:
+            // the screen would show something confident and untrue.
+            else -> null
+        }
     }
 
     /**
