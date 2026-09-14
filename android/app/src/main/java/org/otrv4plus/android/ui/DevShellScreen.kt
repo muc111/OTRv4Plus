@@ -74,52 +74,56 @@ fun DevShellScreen() {
         StatusRow("Engine initialized", r.engineInitialized.toString())
         r.failureCode?.let { StatusRow("Failure", it) }
 
-        // The detail, and the way to get it off the device.
+        // Failure detail, when there is one. Null on a healthy start, so these
+        // simply do not render rather than needing a guard.
+        r.failureDetail?.let {
+            Spacer(Modifier.height(4.dp))
+            Text("Detail", style = MaterialTheme.typography.titleSmall)
+            SelectionContainer { Text(it, style = MaterialTheme.typography.bodySmall) }
+        }
+        r.failureFrames?.let {
+            Spacer(Modifier.height(4.dp))
+            Text("Where", style = MaterialTheme.typography.titleSmall)
+            SelectionContainer { Text(it, style = MaterialTheme.typography.bodySmall) }
+        }
+
+        // ALWAYS offered, success or failure.
         //
-        // This screen sets FLAG_SECURE, so it cannot be screenshotted -- which
-        // is correct for a messenger and stays. The first person to run this
-        // app therefore had a failure they could see and could not report.
-        // Copying the report to the clipboard solves that without weakening
-        // the screenshot protection at all, and text pastes better than a
-        // photograph anyway.
-        if (!r.ok) {
-            r.failureDetail?.let {
-                Spacer(Modifier.height(4.dp))
-                Text("Detail", style = MaterialTheme.typography.titleSmall)
-                SelectionContainer { Text(it, style = MaterialTheme.typography.bodySmall) }
-            }
-            r.failureFrames?.let {
-                Spacer(Modifier.height(4.dp))
-                Text("Where", style = MaterialTheme.typography.titleSmall)
-                SelectionContainer { Text(it, style = MaterialTheme.typography.bodySmall) }
-            }
+        // These used to sit inside `if (!r.ok)`, on the assumption that a
+        // report is something you need when things break. That was wrong in
+        // the way that matters: the first time the stack came up green, the
+        // buttons vanished, FLAG_SECURE blocked a screenshot, and there was no
+        // way to get the good news off the device at all.
+        //
+        // A working run is evidence too -- the Python version, the ABI, the
+        // Rust core's symbol count and the self-test results are exactly what
+        // closes the device gates in ANDROID_PHASE2_REPORT.md §14, and they
+        // are only worth collecting if they can be sent.
+        val clipboard = LocalClipboardManager.current
+        var copied by remember { mutableStateOf(false) }
+        var exportError by remember { mutableStateOf<String?>(null) }
 
-            val clipboard = LocalClipboardManager.current
-            var copied by remember { mutableStateOf(false) }
-            var exportError by remember { mutableStateOf<String?>(null) }
+        Spacer(Modifier.height(8.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            // Export to a file and hand it to whatever app the user picks.
+            // A 50-line report does not survive being retyped from a photo,
+            // and this screen sets FLAG_SECURE so there is no photo to take.
+            Button(onClick = {
+                exportError = try {
+                    shareReport(context, fullReport(r)); null
+                } catch (t: Throwable) {
+                    t.javaClass.simpleName
+                }
+            }) { Text("Export report") }
 
-            Spacer(Modifier.height(8.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                // Export to a file and hand it to whatever app the user picks.
-                // A 50-line report does not survive being retyped from a photo,
-                // and this screen sets FLAG_SECURE so there is no photo to take.
-                Button(onClick = {
-                    exportError = try {
-                        shareReport(context, fullReport(r)); null
-                    } catch (t: Throwable) {
-                        t.javaClass.simpleName
-                    }
-                }) { Text("Export report") }
-
-                OutlinedButton(onClick = {
-                    clipboard.setText(AnnotatedString(fullReport(r)))
-                    copied = true
-                }) { Text(if (copied) "Copied" else "Copy") }
-            }
-            exportError?.let {
-                Text("Export failed ($it) — use Copy instead.",
-                    style = MaterialTheme.typography.bodySmall)
-            }
+            OutlinedButton(onClick = {
+                clipboard.setText(AnnotatedString(fullReport(r)))
+                copied = true
+            }) { Text(if (copied) "Copied" else "Copy") }
+        }
+        exportError?.let {
+            Text("Export failed ($it) — use Copy instead.",
+                style = MaterialTheme.typography.bodySmall)
         }
 
         if (BuildConfig.DEV_DIAGNOSTICS) {
