@@ -152,6 +152,7 @@ import time
 import threading
 from concurrent.futures import ThreadPoolExecutor
 
+import otrv4plus_address as _address
 import otrv4plus_coreapi as _coreapi
 import otrv4plus_smpflow as _smpflow
 
@@ -7097,26 +7098,12 @@ def main():
               "will arrive.\n")
 
     def _check_jid(value, label):
-        if not value:
-            return
-        if "@" not in value or value.count("@") != 1:
-            sys.exit("Invalid %s: %r\n"
-                     "  Expected  user@server.b32.i2p" % (label, value))
-        local, _, domain = value.partition("@")
-        if not local or not domain:
-            sys.exit("Invalid %s: %r\n"
-                     "  Both a username and a server are required." 
-                     % (label, value))
-        if "..." in value or ".." in domain:
-            sys.exit("Invalid %s: %r\n"
-                     "  This looks like an abbreviated address. Use the full "
-                     "server name, not one shortened with '...'." 
-                     % (label, value))
-        for part in domain.split("."):
-            if not part:
-                sys.exit("Invalid %s: %r\n"
-                         "  The server name has an empty part — check for a "
-                         "stray or doubled dot." % (label, value))
+        # The rules live in otrv4plus_address so the Android settings screen
+        # can apply the same ones without exiting a process it does not own.
+        # The wording is unchanged; only who chooses to call sys.exit is.
+        err = _address.jid_error(value, label)
+        if err is not None:
+            sys.exit(err)
 
     _check_jid(args.jid, "--jid")
     _check_jid(args.peer, "--peer")

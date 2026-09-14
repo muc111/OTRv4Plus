@@ -284,6 +284,7 @@ val syncPythonSources by tasks.registering(Copy::class) {
             //           q += [m + ".py" for m in ms if m.startswith("otrv4plus_")]
             //   print(sorted(seen))
             //   EOF
+            "otrv4plus_address.py",
             "otrv4plus_admin.py",
             "otrv4plus_audio.py",
             "otrv4plus_coreapi.py",
