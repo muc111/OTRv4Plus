@@ -208,11 +208,85 @@ def _otrv4plus_info() -> Dict[str, Any]:
     return info
 
 
+def _at_rest_kdf() -> Dict[str, Any]:
+    """Which KDF actually protects data at rest on this device.
+
+    The engine falls back from Argon2id to scrypt when argon2-cffi is absent
+    or when a 64 MiB allocation fails, which on a memory-pressured handset it
+    genuinely can. That fallback is deliberate -- losing access to your own
+    SMP secrets is worse than a weaker KDF -- and `_warn_kdf_downgrade` does
+    say so. To stderr. Which on Android is logcat, where nobody will see it.
+
+    So it is reported here instead. `ANDROID_PHASE2_REPORT.md` §16 named
+    argon2-cffi as the dependency that matters most for exactly this reason,
+    and until now the device report could not answer the question: the
+    native_libraries list below only walks flat .so files on sys.path, which
+    is why otrv4_core.so does not appear in it either despite being loaded.
+
+    Note what this is NOT. The SMP wire stretch under version 0x03 is
+    Argon2id in the Rust core, always present, and has nothing to do with
+    this. A scrypt fallback here weakens stored identity material; it does
+    not change anything on the wire or break interoperability.
+    """
+    info: Dict[str, Any] = {"available": False, "last_used": "unknown"}
+    try:
+        import otrv4_ as otr
+    except Exception:
+        info["error"] = "orchestration layer not importable"
+        return info
+    try:
+        info["available"] = bool(getattr(otr, "ARGON2_AVAILABLE", False))
+        backend = getattr(otr, "kdf_backend", None)
+        if callable(backend):
+            # "unused" until something has actually derived a key, which is
+            # honest: on a fresh start nothing has.
+            info["last_used"] = str(backend())
+        info["expected"] = "argon2id" if info["available"] else "scrypt"
+        info["memory_hard"] = bool(info["available"])
+    except Exception as exc:
+        info["error"] = type(exc).__name__
+    return info
+
+
+def _transport_deps() -> Dict[str, Any]:
+    """Whether the XMPP transport's imports resolve on this device.
+
+    slixmpp has never been imported on a handset. If it cannot be, Connect
+    fails at the transport stage carrying nothing but an exception class name,
+    and finding out costs a rebuild, a reinstall and a round trip. One line in
+    a report the user already exports costs nothing.
+
+    aiodns is checked and is deliberately NOT required: slixmpp's resolver
+    imports it inside a try/except and degrades to the standard library, and
+    the transport connects by address rather than by name, so no DNS lookup
+    happens at all. It is reported because "absent" is the expected answer and
+    someone will otherwise spend time on it.
+    """
+    info: Dict[str, Any] = {}
+    for name, required in (("slixmpp", True), ("aiodns", False),
+                           ("argon2", False)):
+        try:
+            __import__(name)
+            info[name] = "present"
+        except Exception as exc:
+            info[name] = "%s (%s)" % (
+                "MISSING -- the transport cannot work" if required
+                else "absent, not required", type(exc).__name__)
+    return info
+
+
 def _native_libraries(search_paths: Optional[List[str]] = None) -> Dict[str, Any]:
     """List loadable native libraries the app ships.
 
     Names only -- never paths outside the app's own directories, so this cannot
     be used to map the device.
+
+    Incomplete by construction, and worth knowing why: it walks flat `.so`
+    files on `sys.path`, so anything inside a package directory or served from
+    Chaquopy's asset zip is invisible to it. `otrv4_core.so` is loaded on every
+    working device and has never appeared here. Absence from this list is not
+    evidence of absence -- see `_at_rest_kdf` and `_transport_deps`, which ask
+    the questions this list cannot answer.
     """
     paths = search_paths if search_paths is not None else [
         p for p in sys.path if isinstance(p, str) and p
@@ -244,6 +318,8 @@ def collect(include_selftest: bool = True,
         "abi": _abi_info(),
         "rust_core": _rust_core_info(),
         "otrv4plus": _otrv4plus_info(),
+        "at_rest_kdf": _at_rest_kdf(),
+        "transport_deps": _transport_deps(),
         "native_libraries": _native_libraries(),
     }
     if include_selftest:
