@@ -1,8 +1,14 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- Phase 2 is a development shell. The calculator disguise, its label and
-         its icon are Phase 3; nothing here is final user-facing branding.
+    <!-- This said "Calculator" until 2026-09-14, the last live remnant of the
+         launcher disguise that was withdrawn on Play-policy grounds (see
+         ANDROID_PHASE2_REPORT.md §15.7). The docs had been corrected; the
+         string had not, so the app still installed under a name that
+         misrepresented it. tests/test_app_identity.py now fails if it comes
+         back.
+
          No credential, key, or seed may ever be added to this file. -->
-    <string name="app_name">Calculator</string>
+    <string name="app_name">OTRv4+</string>
+
     <string name="dev_diagnostics_title">Integration diagnostics</string>
 </resources>
