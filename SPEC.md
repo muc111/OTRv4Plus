@@ -1,6 +1,6 @@
 # OTRv4+ Protocol Specification
 
-**Version:** 10.14.0
+**Version:** 10.30.0
 **Status:** Draft / Research Prototype
 **Repository:** github.com/muc111/OTRv4Plus
 
@@ -127,6 +127,7 @@ underlying OTRv4 KDF construction. The OTRv4+ extensions are distinguished by
 | EXTRA_SYM_KEY | 0x1F | Extra symmetric key (TLV 7) |
 | PQ_BRACE_KEY | 0x20 | SMP post-quantum binding key |
 | NONCE_DERIVE | 0x21 | Nonce derivation (reserved; see §5.4) |
+| FILE_TRANSFER_WRAP | 0x22 | File-transfer wrapping key (§9A.2) |
 
 Two usage IDs are defined for OTRv4 compatibility but are not load-bearing in the
 data-message path of this implementation. `MAC_KEY` (0x14) is reserved: data
@@ -552,6 +553,92 @@ evicted.
 pairs and MUST reject any message whose pair is already present. Every stored
 skipped key, like every chain, root, and brace key, MUST be zeroized as soon as it
 is consumed or evicted.
+
+---
+
+### 5.6 TLV Records
+
+The plaintext of a data message (§5.4) is a sequence of TLV records. This
+registry was absent from earlier revisions of this document; it is normative.
+
+```
+TLV = uint16 type || uint16 length || byte[length] value
+```
+
+All multi-byte fields are big-endian. A message MAY carry any number of TLVs,
+including none; the human-readable message body, when present, precedes them
+and is terminated by a single `0x00` byte.
+
+| TLV type | Name | Value | Reference |
+|----------|------|-------|-----------|
+| 0x0000 | PADDING | arbitrary, ignored | §5.6.1 |
+| 0x0001 | DISCONNECTED | empty | OTRv4 |
+| 0x0002 | SMP_MSG_1 | SMP message 1 | §6 |
+| 0x0003 | SMP_MSG_2 | SMP message 2 | §6 |
+| 0x0004 | SMP_MSG_3 | SMP message 3 | §6 |
+| 0x0005 | SMP_MSG_4 | SMP message 4 | §6 |
+| 0x0006 | SMP_ABORT | optional reason code | §6 |
+| 0x0007 | SMP_MSG_1Q | SMP message 1 with question | §6 |
+| 0x0009 | EXTRA_SYMMETRIC_KEY | key request context | §4.4 |
+| 0x0020 | TIP | address relay payload | §5.6.2 |
+
+`0x0008` is **not allocated** by this specification. OTRv4 assigns it to a
+client-profile TLV; OTRv4+ carries the client profile in the DAKE (§3) and
+never as a TLV, so a receiver MUST treat 0x0008 as unknown.
+
+Types `0x000A`–`0x001F` are reserved for future OTRv4 allocation and MUST NOT
+be used by OTRv4+ extensions. OTRv4+ extension types begin at `0x0020`.
+
+#### 5.6.1 Unknown and padding types
+
+A receiver MUST silently discard TLV type `0x0000`, and MUST silently ignore
+any type it does not recognise. Neither is an error and neither aborts the
+session: this is what allows a peer that predates an extension to interoperate
+with one that implements it.
+
+An implementation MUST NOT let an unknown TLV influence session state. In
+particular it MUST NOT be counted toward SMP progress, MUST NOT reset a
+timeout, and MUST NOT be echoed back.
+
+#### 5.6.2 TIP (0x0020)
+
+Relays a payment address between two peers. The value is UTF-8 JSON:
+
+```
+{"cmd": "address_request" | "address_response",
+ "address": <string, <= 256 bytes>,      // response only
+ "amount":  <string, <= 32 bytes>,       // optional
+ "note":    <string, <= 100 bytes>}      // optional
+```
+
+The whole value MUST be at most 2048 bytes. A receiver MUST drop a TLV that
+exceeds any of these bounds, and MUST drop one whose `cmd` it does not know
+rather than inferring intent from the other fields.
+
+This TLV carries no key material and is protected by the data message's AEAD
+like any other TLV. It is an application-layer courtesy, not part of the
+security construction: an implementation MAY omit it entirely and remain
+conformant.
+
+---
+
+### 5.7 Application-Layer Message Prefixes
+
+One OTRv4+ feature travels as a marked message body rather than as a TLV, and
+is recorded here so that an implementer reading a transcript is not surprised
+by it.
+
+| Prefix | Feature | Carried in |
+|--------|---------|------------|
+| `?OTRv4-TRADE:` | trade courier | data message body |
+
+The prefix is inside the encrypted body and is therefore invisible on the
+network; it is a convention between the two endpoints, not a wire marker. A
+receiver that does not implement the feature MUST display or discard the
+message as ordinary text and MUST NOT treat the prefix as protocol.
+
+Like the TIP TLV (§5.6.2), this is application-layer and carries no key
+material. An implementation MAY omit it and remain conformant.
 
 ---
 
