@@ -228,6 +228,21 @@ jobs:
             --interpreter python${{ env.PYTHON_VERSION }} \
             --out dist
 
+      - name: Name the extension plainly, as Chaquopy's importer expects
+        # maturin emits `otrv4_core/otrv4_core.abi3.so`. On a handset that gave
+        #   ModuleNotFoundError: cannot import otrv4_core.otrv4_core
+        # with the package's own __init__.py executing one frame above -- the
+        # package found, the extension beside it not. Every extension that does
+        # load in that process is named plainly (_bz2.so, math.so, zlib.so),
+        # because Chaquopy ships them as _bz2.cpython-312.so and they arrive
+        # as _bz2.so.
+        #
+        # `.so` is unconditionally in CPython's suffix table on POSIX, so this
+        # cannot cost anything and removes one way to fail. The binary is
+        # untouched: a zip entry name and its RECORD row.
+        working-directory: Rust
+        run: python ../.github/scripts/plain_so_name.py dist/*.whl
+
       - name: The wheel must ask for the libpython the APK ships
         # The check that would otherwise be a crash on first launch. A wheel
         # naming `libpython3.so` links and packages perfectly and then cannot
