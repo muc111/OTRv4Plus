@@ -163,8 +163,23 @@ class TestImportorskipActuallySkips:
             "%r. Every test module that needs the core becomes a collection "
             "error instead of a skip." % (r.stdout.strip(),))
 
-    def test_a_broken_core_does_not_produce_a_skip(self):
-        """The other half. A defect must not be quietly skipped past."""
+    def test_what_this_pytest_does_with_a_broken_core(self):
+        """Records the behaviour rather than demanding one, because it varies.
+
+        This test was written asserting that a broken core is NOT skipped, on
+        the strength of pytest 9.1 defaulting importorskip's exc_type to
+        ModuleNotFoundError. It then failed on Termux, which carries an older
+        pytest -- and older pytest skips on any ImportError, so the
+        absent/broken distinction is simply not available through importorskip
+        there. The assertion was about pytest's version, not about this
+        project, and no exception class chosen here can change it.
+
+        So this records what the installed pytest does, and names the version,
+        which is the part that was missing when the failure first appeared.
+        The property itself -- a broken core must not go unnoticed -- is
+        enforced by TestTheEngineIsNotSilentlyBroken below, which does not go
+        through importorskip at all and therefore holds on every version.
+        """
         prog = (
             "import sys, types, pytest\n"
             "sys.path.insert(0, %r)\n" % ROOT +
@@ -182,9 +197,52 @@ class TestImportorskipActuallySkips:
         r = subprocess.run([sys.executable, "-c", prog],
                            capture_output=True, text=True, timeout=180)
         assert r.returncode == 0, r.stderr[-2000:]
-        assert "RAISED Skipped" not in r.stdout, (
-            "a broken engine was skipped past rather than reported")
-        assert "RAISED DependencyUnavailable" in r.stdout, r.stdout
+        # Either is legitimate; what must not happen is the module ending the
+        # process, which is what this whole file exists to prevent.
+        assert ("RAISED Skipped" in r.stdout
+                or "RAISED DependencyUnavailable" in r.stdout), (
+            "pytest %s gave %r for a broken core -- expected either a Skipped "
+            "(pytest < 9.1, which skips on any ImportError) or "
+            "DependencyUnavailable (pytest >= 9.1, whose importorskip skips "
+            "only on ModuleNotFoundError)"
+            % (pytest.__version__, r.stdout.strip()))
+        assert "SystemExit" not in r.stdout, r.stdout
+
+
+class TestTheEngineIsNotSilentlyBroken:
+    """A core that is installed and raising must not pass unnoticed.
+
+    This is the property the importorskip test above was reaching for, put
+    somewhere it actually holds.
+
+    On pytest < 9.1 importorskip skips on any ImportError, so an engine that is
+    present and broken makes every module that needs it skip. The suite then
+    reports thousands of skips and no failures, which reads as success at a
+    glance -- and that is the one outcome worth engineering against, because
+    the mass skip is the only symptom.
+
+    This test goes nowhere near importorskip. It imports the engine, and if it
+    is there and raising it says so, once, loudly, on every pytest version.
+    """
+
+    def test_the_engine_imports_or_is_genuinely_absent(self):
+        if sys.version_info < (3, 12):
+            pytest.skip(
+                "below the project's Python floor: otrv4+.py uses PEP 701 "
+                "f-strings, so a SyntaxError here says the interpreter is too "
+                "old, not that the engine is broken")
+        try:
+            import otrv4plus_xmpp  # noqa: F401
+        except ModuleNotFoundError as exc:
+            # Absent. An ordinary state -- a fresh clone, a runner that has not
+            # built the core. The tests that need it skip, correctly.
+            pytest.skip("the OTR engine is not installed: %s" % exc)
+        except BaseException as exc:
+            pytest.fail(
+                "the OTR engine is installed and does not load: %r. Every "
+                "test that needs it will have skipped rather than failed, so "
+                "a green-looking run with a large skip count is what this "
+                "failure is here to contradict." % (exc,))
 
 
 def _engine_is_importable():
@@ -381,27 +439,53 @@ class TestNoOtherModuleEndsTheProcessOnImport:
 
 
 class TestRunningItAsAProgramIsUnchanged:
-    """The behaviour a person at a terminal sees must not have moved."""
+    """The behaviour a person at a terminal sees must not have moved.
+
+    Run through runpy with run_name="__main__" and the blocker in place, rather
+    than by launching the file and hoping the host happens to lack the engine.
+    The first version of these did the latter: it pointed PYTHONPATH at a
+    directory that does not exist and expected the import to fail. On a handset
+    with the core built it did not fail -- sys.path[0] is the script's own
+    directory regardless of PYTHONPATH -- so the program ran on to argparse and
+    exited 2 for a missing --jid, and the test read that as "exit status is
+    wrong". It was measuring the host, not the code.
+
+    runpy sets __name__ to "__main__" for real, which is the whole condition
+    _fatal_dependency branches on, so this exercises the program path on every
+    host: one with the core, one without, this one.
+    """
+
+    @staticmethod
+    def _run_as_main(blocked=("otrv4plus", "otrv4_core")):
+        return _run(
+            "import runpy\n"
+            "try:\n"
+            "    runpy.run_path(%r, run_name='__main__')\n"
+            % os.path.join(ROOT, MODULE + ".py") +
+            "except SystemExit as e:\n"
+            '    print("EXIT", e.code)\n'
+            "except BaseException as e:\n"
+            '    print("EXIT-RAISED", type(e).__name__)\n'
+            "else:\n"
+            '    print("EXIT none")\n',
+            blocked=blocked)
 
     def test_it_still_exits_one(self):
-        r = subprocess.run(
-            [sys.executable, os.path.join(ROOT, MODULE + ".py")],
-            capture_output=True, text=True, timeout=180,
-            env={**os.environ, "PYTHONPATH": os.path.join(ROOT, "no-such-dir")},
-            cwd=os.path.join(ROOT, "tests"))
-        if r.returncode == 0:
-            pytest.skip("the engine imported, so there is no failure to check")
-        assert r.returncode == 1, (
-            "a missing dependency must still be exit status 1, got %s: %s"
-            % (r.returncode, r.stderr[-2000:]))
+        r = self._run_as_main()
+        assert "EXIT 1" in r.stdout, (
+            "a missing dependency must still leave the program at exit status "
+            "1. Got %r (stderr: %r)"
+            % (r.stdout.strip(), r.stderr[-1500:]))
 
     def test_it_still_prints_the_advice_to_stderr(self):
-        r = subprocess.run(
-            [sys.executable, os.path.join(ROOT, MODULE + ".py")],
-            capture_output=True, text=True, timeout=180,
-            cwd=os.path.join(ROOT, "tests"))
-        if r.returncode == 0:
-            pytest.skip("the engine imported, so there is no failure to check")
+        r = self._run_as_main()
         assert r.stderr.strip(), "the program failed silently"
-        assert "otrv4" in r.stderr.lower() or "slixmpp" in r.stderr.lower(), (
-            "the message no longer says what was missing: %r" % r.stderr[:500])
+        assert "otrv4" in r.stderr.lower(), (
+            "the message no longer says what was missing: %r" % r.stderr[:800])
+
+    def test_the_advice_is_more_than_the_bare_failure(self):
+        """The guidance, not just the exception text -- that is the point."""
+        r = self._run_as_main()
+        assert len(r.stderr.strip().splitlines()) >= 2, (
+            "only one line reached stderr, so the advice lines that tell the "
+            "user what to build were lost: %r" % r.stderr[:800])

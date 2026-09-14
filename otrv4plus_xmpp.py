@@ -368,16 +368,26 @@ class DependencyMissing(DependencyUnavailable, ModuleNotFoundError):
 
     A host without the Rust core built is an ordinary, expected state -- a
     fresh clone, a CI runner that only lints, a laptop. Tests that need the
-    core should skip there, and since pytest 9.1 `pytest.importorskip` skips on
-    ModuleNotFoundError and nothing else, so this is the class that produces
+    core should skip there, and `pytest.importorskip` skips on
+    ModuleNotFoundError on every version, so this is the class that produces
     that skip with no argument passed at the call site and no suite-wide
     configuration.
 
-    A core that is installed but raises -- a SyntaxError from an interpreter
-    older than 3.12, an ABI mismatch, a half-built .so -- is not that. It is a
-    defect, and it must fail loudly rather than quietly skipping the tests that
-    would have caught it. Those keep the plain-ImportError base, which pytest
-    does not skip on.
+    A core that is installed but raises -- an ABI mismatch, a half-built .so,
+    an interpreter older than 3.12 meeting otrv4+.py's PEP 701 f-strings -- is
+    not that. It is a defect, and it should not be mistaken for absence. Those
+    keep the plain-ImportError base.
+
+    How far that carries depends on the pytest in front of it, and the
+    difference is worth knowing rather than assuming. Since 9.1 importorskip
+    skips on ModuleNotFoundError alone, so a broken core reaches the test run
+    as an error. Older versions skip on any ImportError, and there the
+    distinction does not survive the call: a broken core makes every module
+    that needs it skip, and the suite reports a large skip count and no
+    failures. No exception class chosen here changes that, which is why
+    tests/test_import_does_not_exit.py carries a check that imports the engine
+    directly and fails on a broken one, rather than relying on this split to
+    do it.
     """
 
 

@@ -195,12 +195,24 @@ Two exception classes, and the difference matters: `DependencyMissing` (a
 `pytest.importorskip` skips with nothing passed at the call site; and
 `DependencyUnavailable` (a plain `ImportError`) when it is installed and
 raising — a broken core, an interpreter older than 3.12, a half-built `.so`.
-pytest does not skip on that one, and must not: a broken core reported as an
-absent one would silently skip every test that exists to catch it.
 
-`tests/test_import_does_not_exit.py` covers both guards, and scans every
-project module for the same pattern. One file is allow-listed there —
+**How far that distinction carries depends on the pytest in front of it.**
+Since 9.1 `importorskip` skips on `ModuleNotFoundError` alone, so a broken core
+reaches the run as an error. Older pytest — including the one in Termux —
+skips on *any* `ImportError`, and there a broken core makes every module that
+needs it skip: a large skip count and no failures, which reads as success. No
+exception class can change that, so the property is enforced separately, by a
+test that imports the engine directly and fails when it is present and
+raising. Do not make that test go through `importorskip`.
+
+`tests/test_import_does_not_exit.py` covers both guards, that check, and a scan
+of every project module for the same pattern. One file is allow-listed there —
 `weechat_otrv4plus.py`, which nothing imports and nothing can.
+
+Its subprocess tests drive the program path through
+`runpy.run_path(..., run_name="__main__")` with an import blocker, not by
+launching the file and hoping the host lacks the engine. A test that depends on
+the host's state measures the host.
 
 ### Warnings are findings, not noise
 
