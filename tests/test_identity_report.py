@@ -18,6 +18,8 @@ from pathlib import Path as _P
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from xmpp_double import bare_client
+
 otr = pytest.importorskip("otrv4_")
 xmpp = pytest.importorskip("otrv4plus_xmpp")
 
@@ -42,18 +44,13 @@ def _make_client(d):
                 identity_path=str(tmp_path / "identity.sealed"))
         def get_session(self, peer): return None
 
-    c = xmpp.OTRv4PlusXMPP.__new__(xmpp.OTRv4PlusXMPP)
+    c = bare_client(xmpp.OTRv4PlusXMPP)
     c.otr = FakeOtr()
     c._encrypted = set()
     c._fingerprint_changed = {}
     c.identity_persistent = True
-    # slixmpp's XMLStream.__del__ touches these. The object here is built with
-    # __new__ so no slixmpp constructor ran, and without them every collection
-    # raises inside __del__ and pytest reports an unraisable exception.
-    class _NoTask:
-        def cancel(self): pass
-    c._run_out_filters = _NoTask()
-    c._run_filters = None
+    # The slixmpp-destructor workaround that used to sit here is now in
+    # xmpp_double.bare_client, where every other test double gets it too.
     return c
 
 

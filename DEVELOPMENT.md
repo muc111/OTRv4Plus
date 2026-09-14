@@ -174,6 +174,40 @@ bridge), not failures. The root-level suites — `test_voice_security.py`,
 `test_mac_key_revelation.py` — contribute 239 of those tests and are *not*
 under `tests/`.
 
+### Warnings are findings, not noise
+
+The suite carries **no warning filters**, and none may be added. A warning that
+is filtered is a warning nobody reads, and two of the ones this project has
+actually hit were pointing at real defects in the tests that raised them. Where
+a warning is genuinely somebody else's, the workaround is written down at the
+place it is applied and guarded by a test that fails when it stops being
+needed — so it can be deleted rather than inherited.
+
+Two are worth knowing about, because both will look mysterious if met cold:
+
+**`PytestUnraisableExceptionWarning` from `XMLStream.__del__`.** Many tests
+exercise a single `OTRv4PlusXMPP` method without an event loop or a socket, so
+they build the object with `__new__` and skip slixmpp's constructor. That
+constructor is also what assigns `_run_out_filters`, which the inherited
+`__del__` reads — so the object raised `AttributeError` when the garbage
+collector reached it. Nothing failed (an exception in `__del__` cannot
+propagate), and the warning was attributed to whichever test happened to be
+running at collection time rather than the one that built the object; on one
+run it was blamed on `test_final_boss.py`, which does not import the XMPP
+module at all. **This was a test-double defect, not a lifecycle bug**:
+production reaches `XMLStream.__init__` through `ClientXMPP` and has the
+attribute from its first line. Every such double now goes through
+`tests/xmpp_double.py`; `tests/test_xmpp_double.py` checks both that the
+workaround works and that slixmpp still needs it.
+
+**`HypothesisDeprecationWarning` for `assume` outside a property-based test.**
+Two mutation tests in `tests/test_attacks.py` called `assume()` on a
+deterministic value. There was no generated example to discard, and the
+failure mode was backwards: an empty ciphertext should make a mutation test
+fail loudly, not skip quietly. They are plain `assert`s now. Genuine
+property-based `assume()` calls inside `@given` — `tests/test_property.py` has
+six — are correct and stay.
+
 Python syntax gate:
 
 ```bash

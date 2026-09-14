@@ -57,7 +57,7 @@ class _OsslShim:
 _ossl = _OsslShim()
 
 import pytest
-from hypothesis import given, settings, assume, HealthCheck
+from hypothesis import given, settings, HealthCheck
 from hypothesis import strategies as st
 
 from cryptography.hazmat.primitives.asymmetric import ed448, x448
@@ -176,14 +176,23 @@ class TestCiphertextMutation:
 
     def test_bit_flip_in_ciphertext(self):
         bob, hdr, ct, nonce, tag = self._valid_ct()
-        assume(len(ct) > 0)
+        # assert, not hypothesis's assume(). Nothing here is generated --
+        # _valid_ct encrypts one fixed plaintext -- so there is no example to
+        # discard, and assume() outside a @given test is deprecated for
+        # exactly that reason. It also fails the wrong way round: an empty
+        # ciphertext would make this test vacuous, and vacuous is the one
+        # outcome a mutation test must never report as a pass.
+        assert len(ct) > 0, "nothing to flip a bit in"
         bad = bytes([ct[0] ^ 0xFF]) + ct[1:]
         with pytest.raises(Exception):
             bob.decrypt_message(hdr, bad, nonce, tag)
 
     def test_truncated_ciphertext(self):
         bob, hdr, ct, nonce, tag = self._valid_ct()
-        assume(len(ct) > 1)
+        # See test_bit_flip_in_ciphertext: an assert, for the same reasons.
+        # Truncation needs two bytes, or ct[:-1] is the empty string and the
+        # test stops being about truncation.
+        assert len(ct) > 1, "nothing to truncate"
         with pytest.raises(Exception):
             bob.decrypt_message(hdr, ct[:-1], nonce, tag)
 
@@ -288,7 +297,8 @@ class TestTranscriptBinding:
         """Different KDF inputs always produce different outputs."""
         v1 = secrets.token_bytes(32)
         v2 = secrets.token_bytes(32)
-        assume = lambda x: None  # avoid hypothesis import conflict
+        # There was a `assume = lambda x: None` here, assigned and never
+        # called. The `if` below is what actually guards the 2**-256 case.
         if v1 == v2:
             return
         out1 = otr.kdf_1(otr.KDFUsage.ROOT_KEY, v1, 32)

@@ -21,6 +21,7 @@ part worth testing hard:
 
 import asyncio
 import os
+import re
 import stat
 import tempfile
 import unittest
@@ -170,33 +171,64 @@ class TestControlChannel(_ControlBase):
         mode = stat.S_IMODE(os.stat(self.path).st_mode)
         self.assertEqual(mode & 0o077, 0, "FIFO is readable by others")
 
-    def test_the_command_carries_no_peer_text(self):
-        """A hostile JID must not reach the shell command at all.
+    #: The only shape `_command` is allowed to produce. Everything variable
+    #: in it is ours: the FIFO path (validated against _PATH_ALLOWED at arm
+    #: time), a fixed verb, and a hex token from secrets.token_hex.
+    COMMAND_RE = re.compile(
+        r"^test -p '(?P<path1>[^']*)' && "
+        r"printf '(?P<verb>answer|decline) (?P<token>[0-9a-f]+)\\n' "
+        r"> '(?P<path2>[^']*)'$")
 
-        The needle is the PEER STRING, not fragments of it. An earlier version
-        also asserted `"rm" not in command`, meaning to catch the `-rm -rf`
-        in the fixture. On Termux the FIFO lives under
-        /data/data/com.te**rm**ux/..., so the assertion fired on the platform's
-        own package name -- and only there, which is to say only on the
-        primary supported platform. A substring that short says nothing about
-        where it came from.
+    def test_the_command_is_exactly_the_template(self):
+        """The structural property, which is what actually holds.
+
+        The peer never reaches `_command` at all -- `arm` files it under
+        `self._tokens[token]` and builds the command from the path, a literal
+        verb and a hex token. Matching the whole command against its template
+        proves that for ANY peer string, which no amount of substring
+        checking can.
+
+        The previous version asserted `"rm" not in command`, meaning to catch
+        the `-rm -rf` in the hostile fixture. On Termux the FIFO lives under
+        /data/data/com.te**rm**ux/..., so it matched the platform's own
+        package name -- failing only on the primary supported platform, and
+        saying nothing about provenance when it passed.
         """
-        hostile = "-rm -rf ~@evil.org"
+        hostile = "-rm -rf ~@evil.org; rm -rf /; $(id)`whoami`\n@x.org"
         actions = self.chan.arm(hostile, CALL_ID)
         self.assertTrue(actions, "arm produced no actions to check")
         for _label, command in actions:
-            # Nothing peer-derived, whole or in part.
+            m = self.COMMAND_RE.match(command)
+            self.assertIsNotNone(
+                m, "command is not the expected template: %r" % command)
+            # The only path in it is the one the channel was constructed with,
+            # twice, and never anything derived from the peer.
+            self.assertEqual(m.group("path1"), self.chan.path)
+            self.assertEqual(m.group("path2"), self.chan.path)
+            # The token is ours, not the peer's.
+            self.assertIn(m.group("token"), self.chan._tokens)
+
+    def test_no_peer_text_reaches_the_command(self):
+        """Stated directly as well, because the template match is indirect."""
+        hostile = "-rm -rf ~@evil.org; rm -rf /; $(id)`whoami`\n@x.org"
+        for _label, command in self.chan.arm(hostile, CALL_ID):
             self.assertNotIn(hostile, command)
-            self.assertNotIn("evil", command)
-            self.assertNotIn("-rf", command)
-            self.assertNotIn("~@", command)
-            # And nothing that could turn one command into two, wherever it
-            # came from. This is the property the fixture is probing for.
-            #
-            # `&&` is deliberately NOT in this list: the generated command
-            # legitimately uses one to guard on the FIFO existing. chr(10) is
-            # a real newline -- not the two-character backslash-n that printf
-            # carries inside its format string, which is ours and is fine.
+            # Distinctive fragments, chosen so none of them can occur in a
+            # filesystem path: an unqualified "rm" can and does.
+            for fragment in ("evil", "-rf", "~@", "whoami", "$(id)", "x.org"):
+                self.assertNotIn(fragment, command,
+                                 "peer-derived %r in %r" % (fragment, command))
+
+    def test_no_peer_supplied_shell_metacharacter_survives(self):
+        """A peer must not be able to turn one command into two.
+
+        `&&` is excluded from the list on purpose: the generated command
+        legitimately uses one to guard on the FIFO existing (see `_command`).
+        chr(10) is a real newline -- not the two-character backslash-n that
+        printf carries in its format string, which is ours.
+        """
+        hostile = "a;b|c&&d$(e)`f`" + chr(10) + "g@evil.org"
+        for _label, command in self.chan.arm(hostile, CALL_ID):
             for metachar in (";", "|", "$(", "`", chr(10)):
                 self.assertNotIn(metachar, command,
                                  "shell metacharacter %r in %r"

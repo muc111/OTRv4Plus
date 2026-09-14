@@ -21,6 +21,8 @@ import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from xmpp_double import bare_client
+
 otr = pytest.importorskip("otrv4_")
 xmpp = pytest.importorskip("otrv4plus_xmpp")
 
@@ -140,14 +142,20 @@ class TestTheTerminalItselfStopsEchoing:
         """
         import subprocess, textwrap
         root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        here = os.path.dirname(os.path.abspath(__file__))
+        # This runs as a *separate interpreter*, not a fork of pytest, so it
+        # inherits nothing: both directories have to be named, the project root
+        # for otrv4plus_xmpp and tests/ for xmpp_double.
         prog = textwrap.dedent("""
             import os, pty, select, sys, termios, time
             sys.path.insert(0, __ROOT__)
+            sys.path.insert(0, __HERE__)
+            from xmpp_double import bare_client
             pid, fd = pty.fork()
             if pid == 0:
                 try:
                     import otrv4plus_xmpp as XX
-                    c = XX.OTRv4PlusXMPP.__new__(XX.OTRv4PlusXMPP)
+                    c = bare_client(XX.OTRv4PlusXMPP)
                     c._tui_enabled = False
                     c._mask_input = False
                     before = bool(termios.tcgetattr(0)[3] & termios.ECHO)
@@ -177,7 +185,7 @@ class TestTheTerminalItselfStopsEchoing:
                     break
                 out += chunk
             sys.stderr.write(out.decode("utf-8", "replace"))
-        """).replace("__ROOT__", repr(root))
+        """).replace("__ROOT__", repr(root)).replace("__HERE__", repr(here))
         r = subprocess.run([sys.executable, "-c", prog],
                            capture_output=True, text=True, timeout=120)
         text = r.stderr
@@ -196,7 +204,7 @@ class TestItNeverPromisesWhatItCannotDo:
 
     def test_a_non_tty_reports_masking_as_ineffective(self):
         """Piped stdin cannot hide anything, and must say so."""
-        c = xmpp.OTRv4PlusXMPP.__new__(xmpp.OTRv4PlusXMPP)
+        c = bare_client(xmpp.OTRv4PlusXMPP)
         c._tui_enabled = False
         c._mask_input = False
         # pytest replaces stdin with a non-tty object.
