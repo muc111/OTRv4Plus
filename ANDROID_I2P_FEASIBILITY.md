@@ -175,13 +175,15 @@ address space with the key material.
 
 ## 5. Consequences the product owner must accept
 
-- **The disguise leaks.** A foreground service posts a persistent, user-visible
-  notification. A calculator with a permanent "running" notification and an I2P
-  router in its process list is not disguised from anyone who looks. The
-  calculator front (spec §3) and a bundled always-on anonymity router are in
-  direct tension. Options: run the router only while a conversation or call is
-  active, accept the notification, or reconsider the disguise. **This needs a
-  product decision and it is not a small one.**
+- **The disguise leaks — and has since been withdrawn (2026-09-14).** A foreground
+  service posts a persistent, user-visible notification. A calculator with a
+  permanent "running" notification and an I2P router in its process list is not
+  disguised from anyone who looks. Of the three options this paragraph
+  offered — run the router only while a conversation or call is active, accept
+  the notification, or reconsider the disguise — the third was taken, on Play
+  policy grounds rather than these technical ones
+  (`ANDROID_PHASE2_REPORT.md` §15.7). The analysis stands; it just stopped being
+  a dilemma. The notification is accepted.
 - **Battery.** Maintaining tunnels costs power continuously. **[requires
   measurement]**
 - **First-use latency.** The first message after a cold start will not be

@@ -9,6 +9,18 @@
 > `cryptography` library for the media AEAD, the HKDF-SHA512 voice key schedule
 > and the voice X448 (see [SECURITY.md](SECURITY.md) caveat 11).
 
+> **Status note (2026-09-14) — the calculator disguise is withdrawn.** This
+> document proposes it in several places: a `feature-calculator` module, a
+> `CalculatorScreen` as the launcher destination, a hidden `1337` sequence, and
+> a phase 3 built around all three. None of that is being built. Play's
+> Deceptive Behavior policy forbids an app that misrepresents its identity, and
+> an app listed and iconed as a calculator while it is a messenger is the case
+> that policy describes — see `ANDROID_PHASE2_REPORT.md` §15.7. The protection
+> the disguise was reaching for is unchanged and lives at rest, under
+> AES-256-GCM behind a password or keyfile. Read the module sketches below as
+> one proposal among several; the security analysis around them is unaffected,
+> and §13.3 and §14 have been corrected in place.
+
 
 **Status:** Phase 1 deliverable. No cryptographic code was modified. Awaiting approval before
 any architectural change.
@@ -759,7 +771,7 @@ asking `_smp_verified()` rather than any UI state (§5.3).
 
 | Threat | Mitigation |
 |---|---|
-| Casual device inspection | Calculator disguise; no messaging/vault/OTRv4Plus branding pre-auth; launcher icon and label are a calculator. |
+| Casual device inspection | **No disguise** (withdrawn 2026-09-14, see the status note). No message content, contact, fingerprint or vault state is readable before unlock — everything at rest is AES-256-GCM sealed and the DEK is not derivable without the password or keyfile. What an inspector learns is that the app is installed, which a store listing makes public anyway. |
 | Brute-forcing the unlock sequence | Attempt counter + exponential backoff, persisted encrypted so an app restart does not reset it. **No data destruction** without an explicit product decision (§8). |
 | Shoulder-surfing / recents screen | `FLAG_SECURE` on every post-unlock screen; recents thumbnail suppressed; sensitive state cleared on `ON_STOP`. |
 | App left unlocked | `BACKGROUND_LOCK_PENDING` with configurable timeout; DEK handle dropped and the Rust `SecretBytes` zeroized on relock. |
@@ -945,7 +957,7 @@ failing gate without being reported first.**
 |---|---|---|
 | **1. Audit** ✅ | This document. Rust built, 45/45 pass; wheel builds; Python baseline established. | **Complete — awaiting approval + B1/B2/B3 decisions.** |
 | **2. Shell** | Gradle project, module skeleton, Chaquopy integration, `slixmpp`/`aiodns`/`otrv4_core` building for arm64-v8a + armeabi-v7a + x86_64. Land the §14.4 `compile_error!`. | App launches on device; `import otrv4_core` succeeds **on-device**; `cargo test` still 45/45. |
-| **3. Calculator + unlock prototype** | Real working calculator; hidden sequence; `AppLockManager` states; Argon2id; throttle. No real data yet. | Calculator arithmetic tests pass; unlock succeeds/fails correctly; throttle backoff verified; no credential in logs. |
+| **3. ~~Calculator + unlock prototype~~ → XMPP messenger over I2P** | Superseded 2026-09-14. No calculator. Connection profile with a default server and user override; XMPP-over-SAM transport; contact list, conversation, composer, security banner, guided SMP; foreground service; bundled i2pd with SAM. | Two handsets exchange an OTRv4+ encrypted message over I2P; SMP completes; no secret in Logcat. |
 | **4. Keystore + AES-GCM storage** | `KeystoreManager` (StrongBox probe, graceful degradation), new Rust `storage.rs`, versioned records, nonce counter, key rotation, diagnostics. | Round-trip; corrupted-ciphertext rejection; AAD-mismatch rejection; nonce uniqueness across 10⁶ records; rotation; Keystore-failure paths; survives reboot. |
 | **5. OTRv4+ integration** | `otrv4plus_app.py` facade; strip TUI; remove `print()` shadow; event sink; foreground Service; migrate the three stores onto Keystore-backed storage. **Depends on B1.** | Live DAKE between two devices; existing `tests/` suite still passes unchanged; zero plaintext in Logcat. |
 | **6. Contacts + messaging UI** | Compose contact list, conversation, bubbles, delivery state (XEP-0184), typing (XEP-0085), encrypted message store. | Send/receive over XMPP; message DB encrypted at rest; `FLAG_SECURE` verified; relock clears UI state. |

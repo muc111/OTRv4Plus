@@ -100,11 +100,17 @@ data class Argon2idParams(
 /**
  * Where the credential comes from.
  *
- * Phase 3 implements the calculator entry path. This exists now so the
- * development credential has an injection point that is structurally incapable
- * of reaching a release build: the only implementations live in test source
- * sets, and [DEVELOPMENT_ONLY_MARKER] makes any accidental production
- * implementation obvious to a reviewer and to the build-time credential scan.
+ * The production entry path is a password or a keyfile, on a screen that says
+ * what the app is. It is the last stage of the build, not the next one, and the
+ * calculator disguise this comment used to promise is withdrawn -- see
+ * ANDROID_PHASE2_REPORT.md §15.7.
+ *
+ * This exists now so the development credential has an injection point that is
+ * structurally incapable of reaching a release build: the only implementations
+ * live in test source sets, and [DEVELOPMENT_ONLY_MARKER] makes any accidental
+ * production implementation obvious to a reviewer and to the build-time
+ * credential scan. None of that depended on the disguise, and none of it
+ * changes.
  *
  * The development sequence ("1337") appears in NO production Kotlin constant,
  * resource, asset, manifest entry or Python/Rust source. A build-time test

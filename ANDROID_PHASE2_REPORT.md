@@ -407,10 +407,17 @@ return value, so the software path cannot be more permissive than the hardware
 one. `rewrapDataKey` is how the credential changes without re-encrypting user
 data.
 
-### Calculator unlock architecture (architecture only)
+### Unlock architecture (architecture only)
+
+> **Superseded in part, 2026-09-14.** This was written as a *calculator* unlock:
+> a launcher icon and first screen that pretend to be a calculator, with a
+> hidden sequence as the credential. **That disguise is withdrawn** — see §15.7.
+> The mechanism below is unchanged and still stands; only its front door does.
+> The credential is now an ordinary password or a keyfile, entered on a screen
+> that says what the app is.
 
 ```
-Calculator -> credential -> AttemptThrottle.check() -> Argon2id -> KEK
+credential (password or keyfile) -> AttemptThrottle.check() -> Argon2id -> KEK
            -> unwrap Keystore-held DEK -> AEAD tag verifies -> UNLOCKED
 ```
 
@@ -419,9 +426,12 @@ plaintext to compare against: verification *is* the AEAD tag on the wrapped key,
 so a wrong credential and a corrupt record fail identically. `"1337"` appears in
 no production Kotlin constant, resource, asset, manifest entry, or Python/Rust
 source — `tests/test_release_guard.py` enforces that, and was confirmed to fail
-when a credential is deliberately introduced.
+when a credential is deliberately introduced. That guard keeps its value with
+the disguise gone: it forbids *any* development credential in a shipped
+artifact, and `"1337"` was only ever one instance of the thing it looks for.
 
-No calculator UI was built. That is Phase 3.
+No unlock UI was built. It is no longer the next piece of work either — see
+§15.7 and §16.
 
 ## 7. Storage architecture
 
@@ -597,8 +607,9 @@ Full report: `ANDROID_I2P_FEASIBILITY.md`. Headlines:
   (`android:process=":i2p"`), reached over a socket we control — not in-process
   (a C++ router sharing an address space with the key material) and not another
   app.
-- **A foreground service is unavoidable**, and its persistent notification is in
-  direct tension with the calculator disguise. **That needs a product decision.**
+- **A foreground service is unavoidable**, and its persistent notification was
+  in direct tension with the calculator disguise. **Decided on 2026-09-14**: the
+  disguise goes, the notification stays. §15.7.
 - No performance, memory or battery numbers are given: none could be measured
   here, and inventing them for a transport decision would be worse than omitting
   them. §4 of that report lists exactly what to measure.
@@ -651,8 +662,10 @@ any OTR session is established. Those need a device.
    recommended)? Blocks Phase 4.
 2. **M3** — approve gating the legacy DAKE entry points behind a test-only
    feature?
-3. **I2P** — approve the separate-process bundled-router shape, and accept the
-   foreground-service notification versus the calculator disguise?
+3. **I2P** — RESOLVED on 2026-09-14. The separate-process bundled-router shape is
+   approved, and the notification question is moot because the disguise is
+   withdrawn (§15.7). The router ships in the app with SAM enabled, and the
+   server is configurable so a user can point at their own.
 4. **Unblocking** — RESOLVED at v10.30.0, by routing around rather than
    through. `dl.google.com` is still 403 here; the build runs on GitHub-hosted
    runners instead (`.github/workflows/android.yml`), which have the SDK and
@@ -664,16 +677,54 @@ any OTR session is established. Those need a device.
 6. **G1** — implement the DAKE handshake timeout (behaviour change), or leave
    tracked?
 
+7. **Launcher disguise** — RESOLVED on 2026-09-14: **withdrawn.**
+
+   The specification called for a working calculator as the launcher icon and
+   first screen, with a hidden sequence as the unlock credential. It is not
+   being built, for a reason that is not about engineering: Google Play's
+   Deceptive Behavior policy forbids an app that misrepresents its purpose or
+   its identity, and an app whose store listing, icon and first screen say
+   "calculator" while it is a messenger is the example that policy is written
+   about. An app removed from the store protects nobody.
+
+   What replaces it is the ordinary version of the same protection: the app is
+   openly a secure messenger, and everything at rest stays sealed under
+   AES-256-GCM until a password or a keyfile opens it. The unlock mechanism in
+   §6 is unchanged — only the front door is, and the front door was never the
+   part doing the work. `SecureStore`'s record format and `DekProvider` hole are
+   untouched by this.
+
+   Three consequences, written down so they are not rediscovered:
+
+   - The foreground-service notification is no longer in tension with anything,
+     so decision 3 above is unblocked.
+   - The unlock UI is deferred to the **final** stage of the app build, at the
+     user's direction. It is not a prerequisite for the work below.
+   - `tests/test_release_guard.py` stays exactly as it is. It forbids any
+     development credential in a shipped artifact; `"1337"` was one instance of
+     that class, not the point of the test.
+
 ## 16. Phase 3 prerequisites
 
-Before the calculator/unlock UX work begins:
+Phase 3 is no longer the unlock UX. It is a working XMPP messenger over I2P:
+the chat UI, the SAM transport, and a bundled router — with the unlock screen
+moved to the end.
 
-- Decisions 1–4 above.
+Status of the original prerequisites:
+
+- Decisions 1–4 above. **3 and 4 resolved; 1 (B1-seed) and 2 (M3) remain open,
+  and neither blocks Phase 3** — B1-seed blocks Phase 4, which is now last.
 - A working Android build environment, and the first real-device run of the
-  diagnostics screen.
+  diagnostics screen. **DONE** — CI builds and publishes the APK, and the
+  diagnostics screen has been run on a handset, reporting the interpreter, the
+  ABI, the loaded Rust core and a successful engine initialisation.
 - `libi2pd` built for arm64-v8a as the cheapest decisive I2P experiment.
+  **Still open.** It gates bundling the router, and nothing else: until it
+  lands, the transport reaches a SAM bridge at a configured address, which is a
+  setting rather than a code path.
 - Confirmation that `slixmpp`, `aiodns` and `argon2-cffi` resolve for every
-  enabled ABI. `argon2-cffi` matters most — without it the engine silently falls
-  back to scrypt for the at-rest KDF.
-- The Phase 4 `DekProvider` (Android Keystore/StrongBox) design reviewed, since
-  the unlock UX and the vault are two halves of one mechanism.
+  enabled ABI. **DONE** — the pip closure is explicit in
+  `android/app/build.gradle.kts` and verified by
+  `.github/scripts/verify_python_closure.py` plus `tests/test_apk_python_deps.py`.
+- The Phase 4 `DekProvider` design reviewed. **Deferred with Phase 4**, which is
+  now the last stage rather than the next one.

@@ -12,9 +12,16 @@ import org.otrv4plus.android.ui.DevShellScreen
  * Single Activity, Compose, unidirectional data flow.
  *
  * Phase 2 scope only: this hosts a development shell that proves the
- * Kotlin -> Chaquopy -> Python -> Rust path works on a real device. The
- * calculator disguise, the unlock flow and every real screen are later phases
- * and are deliberately absent.
+ * Kotlin -> Chaquopy -> Python -> Rust path works on a real device -- which it
+ * now has, on a handset. The real screens are Phase 3 and are being built.
+ *
+ * There is no launcher disguise. One was specified (a working calculator as the
+ * icon and first screen) and withdrawn on 2026-09-14: Play's Deceptive Behavior
+ * policy forbids an app that misrepresents its identity, and a store listing
+ * that says "calculator" over a messenger is what that policy describes. The
+ * protection it was reaching for is unchanged and lives where it belongs -- at
+ * rest, under AES-256-GCM, behind a password or keyfile. See
+ * ANDROID_PHASE2_REPORT.md §15.7.
  */
 class MainActivity : ComponentActivity() {
 
