@@ -346,10 +346,14 @@ class ConnectionController:
             "sam_port": self._profile.sam_port,
             "c2s_port": _c2s_port(),
             "use_i2p": self._profile.use_i2p,
-            # What the client factory asks slixmpp for. STARTTLS on a normal
-            # c2s port at the far end of the tunnel; direct TLS would be wrong
-            # and is explicitly turned off.
-            "tls_mode": "starttls" if self._profile.use_i2p else "starttls",
+            # STARTTLS on a normal c2s port at the far end of the tunnel;
+            # direct TLS would be wrong and is explicitly turned off. Whether
+            # the certificate is checked depends on whether the ADDRESS
+            # already authenticates the endpoint -- see
+            # transport.endpoint_authenticated_by. Reported from the transport
+            # once it exists, so this states what was decided rather than what
+            # was intended; the two differed, and that difference was the bug.
+            "tls_mode": self._tls_mode(),
             "profile_errors": self._profile.errors(),
         }
 
@@ -386,6 +390,26 @@ class ConnectionController:
             "inputs": self.inputs(),
             "worker_alive": self._worker_alive(),
         }
+
+    def _tls_mode(self) -> str:
+        """What the transport actually settled on, or what it would settle on.
+
+        Asks the live transport when there is one. Before that, it computes
+        the same rule, so the screen can say what is about to happen without
+        pretending a decision has been taken.
+        """
+        transport = self._transport
+        policy = getattr(transport, "tls_policy", None) if transport else None
+        if policy and policy != "not yet decided":
+            return "starttls, %s" % policy
+        try:
+            from .transport import endpoint_authenticated_by
+            by = endpoint_authenticated_by(self._profile)
+        except Exception:
+            return "starttls"
+        return ("starttls, certificate required" if by is None
+                else "starttls, certificate checks off (endpoint "
+                     "authenticated by %s)" % by)
 
     def _worker_alive(self) -> bool:
         """Whether the transport's event loop thread is still running.

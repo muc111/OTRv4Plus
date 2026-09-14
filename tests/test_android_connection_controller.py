@@ -329,7 +329,17 @@ class TestWhatCrossedTheBoundary:
         got = ctl.inputs()
         assert got["sam_port"] == 7656
         assert got["c2s_port"] == 5222
-        assert got["tls_mode"] == "starttls"
+        # Says what was decided, not what was intended. Those differed once:
+        # the transport never set an SSL context, so slixmpp verified against
+        # a CA over I2P, STARTTLS failed, and its retry loop hung the connect.
+        assert got["tls_mode"].startswith("starttls")
+        assert "certificate checks off" in got["tls_mode"]
+        assert "authenticated by I2P" in got["tls_mode"]
+
+    def test_a_clearnet_profile_still_reports_a_required_certificate(self):
+        ctl, _ = build(profile=ConnectionProfile(
+            jid=JID, server="example.test", use_i2p=False))
+        assert "certificate required" in ctl.inputs()["tls_mode"]
 
     def test_password_presence_is_a_boolean_and_nothing_more(self):
         ctl, _ = build()

@@ -228,8 +228,24 @@ class XmppTransport(Transport):
                     TransportError("auth_failed",
                                    "the server rejected the account or password"))
 
+        def on_connection_failed(event):
+            # slixmpp reschedules a failed connection rather than giving up
+            # ("If everything fails, the connection is rescheduled for
+            # later" -- XMLStream._connect_loop), so without this the retry
+            # loop spins silently and the only thing that ever ends the wait
+            # is the 300s timeout. An interactive Connect should say what
+            # happened at the first failure, not five minutes later.
+            if not started.done():
+                started.set_exception(TransportError(
+                    "stream_failed",
+                    "the XMPP stream could not be established (%s). The SAM "
+                    "tunnel was open, so this is the server or the TLS "
+                    "handshake rather than I2P."
+                    % type(event).__name__))
+
         client.add_event_handler("session_start", on_session)
         client.add_event_handler("failed_auth", on_failed)
+        client.add_event_handler("connection_failed", on_connection_failed)
 
         # host= and port= point slixmpp at the local end of the SAM tunnel
         # rather than at a DNS lookup of the JID's domain. getaddrinfo is never
@@ -354,7 +370,50 @@ class XmppTransport(Transport):
 
     def _make_client(self):
         factory = self._client_factory or _default_client_factory()
-        return factory(self._profile.jid, self._password)
+        client = factory(self._profile.jid, self._password)
+        self._apply_tls_policy(client)
+        return client
+
+    def _apply_tls_policy(self, client) -> None:
+        """Relax certificate checking where the address is already the key.
+
+        Without this the app hung. slixmpp's default context is
+        `check_hostname=True, verify_mode=CERT_REQUIRED` with the system trust
+        store, and it validates against `default_domain` -- the JID's domain.
+        Over I2P nothing in that path is CA-signed, so STARTTLS failed; and
+        `XMLStream._connect_loop` reschedules a failed connection rather than
+        giving up, so neither `session_start` nor `failed_auth` ever fired and
+        the connect sat until its 300s timeout with nothing to report.
+
+        The terminal client has always done this -- see
+        `endpoint_authenticated_by` -- and it does it automatically, precisely
+        so nobody has to type a flag with "insecure" in its name for a link
+        that is not insecure. The transport reimplemented everything around
+        this and quietly omitted it.
+
+        This is NOT a weakening. The `.b32.i2p` address is the hash of the
+        server's key; the SAM stream reaches that key-holder or it fails, and
+        I2P encrypts it end to end. On clearnet this does nothing at all and
+        the certificate is still required.
+        """
+        by = endpoint_authenticated_by(self._profile)
+        self._tls_policy = ("certificate required"
+                            if by is None
+                            else "certificate checks off, endpoint "
+                                 "authenticated by %s" % by)
+        if by is None:
+            return
+        import ssl
+
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        client.ssl_context = ctx
+
+    @property
+    def tls_policy(self) -> str:
+        """What was actually decided, for the report to state rather than claim."""
+        return getattr(self, "_tls_policy", "not yet decided")
 
     def _wire(self, client) -> None:
         client.add_event_handler("message", self._on_message)
@@ -414,6 +473,29 @@ class XmppTransport(Transport):
             self._on_state(state, self._profile.effective_server)
         except Exception:
             _log.warning("the state handler raised")
+
+
+def endpoint_authenticated_by(profile) -> Optional[str]:
+    """Whether the ADDRESS already authenticates the endpoint, and by what.
+
+    "I2P", "Tor", or None for clearnet.
+
+    This is the rule `otrv4plus_xmpp.main()` applies around line 7170, and the
+    reasoning there is worth repeating rather than re-deriving: a `.b32.i2p`
+    label is the hash of the destination's key, and a v3 onion name is the key
+    itself. Reaching that address means reaching that key-holder, with the
+    transport's own end-to-end encryption in between. There is no certificate
+    authority in the path and no MITM position for one to defend against, so
+    demanding a CA-valid certificate there is asking for a weaker second name
+    for a server already named by its key.
+
+    None means clearnet, and clearnet still demands a real certificate.
+    """
+    if getattr(profile, "use_i2p", False):
+        return "I2P"
+    if str(getattr(profile, "effective_server", "")).endswith(".onion"):
+        return "Tor"
+    return None
 
 
 def _default_client_factory():

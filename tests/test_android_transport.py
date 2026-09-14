@@ -567,3 +567,151 @@ class TestItIsTheTransportOtrAppExpects:
         for banned in ("otrv4plus_xmpp", "slixmpp", "otrv4_", "otrv4plus"):
             assert not any((n or "").startswith(banned) for n in top), (
                 "%r is imported at module scope: %r" % (banned, top))
+
+
+class TestTheCertificateRuleMatchesTheTerminalClient:
+    """The bug that made the app hang where the CLI connected.
+
+    slixmpp's default context is check_hostname=True, CERT_REQUIRED, validated
+    against the JID's domain. Over I2P nothing in that path is CA-signed, so
+    STARTTLS failed -- and XMLStream._connect_loop reschedules a failed
+    connection rather than giving up, so neither session_start nor failed_auth
+    ever fired and Connect sat until its 300s timeout with nothing to report.
+
+    otrv4plus_xmpp.main() has always relaxed this when the address is itself
+    the key, automatically, so nobody types a flag with "insecure" in its name
+    for a link that is not insecure. The transport reimplemented everything
+    around that and omitted it.
+    """
+
+    def test_i2p_is_recognised_as_authenticating_the_endpoint(self):
+        from android_bridge.transport import endpoint_authenticated_by
+        assert endpoint_authenticated_by(profile()) == "I2P"
+
+    def test_an_onion_server_is_recognised(self):
+        from android_bridge.transport import endpoint_authenticated_by
+        p = ConnectionProfile(jid=JID, server="abc.onion", use_i2p=False)
+        assert endpoint_authenticated_by(p) == "Tor"
+
+    def test_clearnet_is_not(self):
+        from android_bridge.transport import endpoint_authenticated_by
+        p = ConnectionProfile(jid=JID, server="example.test", use_i2p=False)
+        assert endpoint_authenticated_by(p) is None
+
+    def test_over_i2p_the_certificate_is_not_checked(self):
+        import ssl
+        t, made = build()
+        try:
+            t.connect()
+            ctx = made["client"].ssl_context
+            assert ctx.check_hostname is False
+            assert ctx.verify_mode == ssl.CERT_NONE
+        finally:
+            t.close()
+
+    def test_on_clearnet_the_certificate_is_still_required(self):
+        """The rule must not become "never check". A clearnet server has no
+        key in its address and an active attacker has a MITM position."""
+        t, made = build(profile=profile(server="example.test", use_i2p=False))
+        try:
+            t.connect()
+            assert not hasattr(made["client"], "ssl_context"), (
+                "a relaxed context was installed for a clearnet server")
+            assert t.tls_policy == "certificate required"
+        finally:
+            t.close()
+
+    def test_the_policy_is_reported_rather_than_claimed(self):
+        t, _ = build()
+        try:
+            assert t.tls_policy == "not yet decided"
+            t.connect()
+            assert "authenticated by I2P" in t.tls_policy
+        finally:
+            t.close()
+
+    def test_slixmpps_default_really_would_have_required_a_certificate(self):
+        """Pins the upstream behaviour this works around. If slixmpp ever
+        stops verifying by default, this relaxation is dead weight and should
+        be deleted rather than carried."""
+        slixmpp = pytest.importorskip("slixmpp")
+        import asyncio
+        import ssl
+
+        async def build_one():
+            return slixmpp.ClientXMPP("alice@example.invalid", "pw")
+
+        client = asyncio.run(build_one())
+        assert client.ssl_context.check_hostname is True
+        assert client.ssl_context.verify_mode == ssl.CERT_REQUIRED
+
+
+class TestItDoesNotHangOnAStreamThatWillNotOpen:
+
+    def test_a_stream_that_never_opens_fails_instead_of_hanging(self):
+        """slixmpp reschedules rather than giving up, so without a handler the
+        only thing that ever ends the wait is the 300s timeout. This is the
+        shape of the handset hang: SAM fine, stream never completes."""
+        made = {}
+
+        class NeverOpens(FakeClient):
+            def connect(self, host=None, port=None):
+                self.connected_to = (host, port)
+                # What slixmpp does when the TLS handshake fails: report the
+                # attempt and schedule another. session_start never arrives.
+                self.fire("connection_failed", OSError("certificate rejected"))
+
+        def factory(jid, password):
+            made["client"] = NeverOpens(jid, password)
+            return made["client"]
+
+        async def forwarder(*_a):
+            return ("127.0.0.1", 41234)
+
+        t = XmppTransport(profile(), PASSWORD, on_payload=lambda *a: None,
+                          client_factory=factory, forwarder=forwarder)
+        try:
+            with pytest.raises(TransportError) as caught:
+                t.connect()
+            assert caught.value.code == "stream_failed"
+            # Names the leg, so nobody goes back to looking at their router.
+            assert "SAM tunnel was open" in caught.value.detail
+            assert not t.is_connected
+        finally:
+            t.close()
+
+    def test_the_failure_detail_carries_no_exception_message(self):
+        """An OSError from a TLS path can quote a hostname or a file."""
+        made = {}
+
+        class Leaky(FakeClient):
+            def connect(self, host=None, port=None):
+                self.fire("connection_failed",
+                          OSError("/data/data/secret/path and %s" % PASSWORD))
+
+        def factory(jid, password):
+            made["client"] = Leaky(jid, password)
+            return made["client"]
+
+        async def forwarder(*_a):
+            return ("127.0.0.1", 41234)
+
+        t = XmppTransport(profile(), PASSWORD, on_payload=lambda *a: None,
+                          client_factory=factory, forwarder=forwarder)
+        try:
+            with pytest.raises(TransportError) as caught:
+                t.connect()
+            assert PASSWORD not in caught.value.detail
+            assert "secret/path" not in caught.value.detail
+        finally:
+            t.close()
+
+    def test_connection_failed_is_wired(self):
+        t, made = build()
+        try:
+            t.connect()
+            assert "connection_failed" in made["client"].handlers, (
+                "nothing listens for a failed stream, so a server that never "
+                "completes the handshake hangs for the full timeout")
+        finally:
+            t.close()
