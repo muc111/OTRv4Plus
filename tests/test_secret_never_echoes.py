@@ -146,11 +146,25 @@ class TestTheTerminalItselfStopsEchoing:
         # This runs as a *separate interpreter*, not a fork of pytest, so it
         # inherits nothing: both directories have to be named, the project root
         # for otrv4plus_xmpp and tests/ for xmpp_double.
+        #
+        # tests/ is APPENDED, not inserted at the front. Ahead of everything it
+        # would sit in front of the stdlib and site-packages for the thousands
+        # of imports the engine and slixmpp perform between them, and a
+        # directory of two hundred test modules is not something to put on that
+        # path for the sake of one helper.
+        #
+        # The child catches BaseException, not Exception. SystemExit and
+        # KeyboardInterrupt are not Exceptions, and `finally: os._exit(0)`
+        # swallows them -- so an exit during import produced a child that
+        # printed nothing at all and a failure that said only "child produced
+        # no result". A test that can fail with no information is a test you
+        # cannot fix from a handset 22 minutes into a suite run.
         prog = textwrap.dedent("""
-            import os, pty, select, sys, termios, time
+            import os, pty, select, sys, termios, time, traceback
             sys.path.insert(0, __ROOT__)
-            sys.path.insert(0, __HERE__)
+            sys.path.append(__HERE__)
             from xmpp_double import bare_client
+            started = time.time()
             pid, fd = pty.fork()
             if pid == 0:
                 try:
@@ -164,17 +178,24 @@ class TestTheTerminalItselfStopsEchoing:
                     XX.OTRv4PlusXMPP._mask_next_input(c, False)
                     after = bool(termios.tcgetattr(0)[3] & termios.ECHO)
                     print("RESULT %d %d %d %d" % (before, ok, during, after))
-                except Exception as exc:
+                except BaseException as exc:
                     print("RESULT-ERROR %r" % (exc,))
+                    traceback.print_exc(file=sys.stdout)
                 finally:
                     sys.stdout.flush()
                     os._exit(0)
             out = b""
-            deadline = time.time() + 25
+            reaped = None
+            # Generous, because this is a cold interpreter importing the whole
+            # engine plus slixmpp on whatever hardware the suite is running on,
+            # and a handset is slower than a laptop by more than a little.
+            deadline = time.time() + 90
             while time.time() < deadline:
                 r, _w, _x = select.select([fd], [], [], 0.3)
                 if not r:
-                    if os.waitpid(pid, os.WNOHANG)[0]:
+                    got, status = os.waitpid(pid, os.WNOHANG)
+                    if got:
+                        reaped = status
                         break
                     continue
                 try:
@@ -185,11 +206,19 @@ class TestTheTerminalItselfStopsEchoing:
                     break
                 out += chunk
             sys.stderr.write(out.decode("utf-8", "replace"))
+            # Said unconditionally, so "no result" always comes with the two
+            # facts that distinguish a crash from a child still importing.
+            sys.stderr.write(
+                "\\nCHILD elapsed=%.1fs reaped=%r\\n"
+                % (time.time() - started, reaped))
         """).replace("__ROOT__", repr(root)).replace("__HERE__", repr(here))
         r = subprocess.run([sys.executable, "-c", prog],
-                           capture_output=True, text=True, timeout=120)
+                           capture_output=True, text=True, timeout=240)
         text = r.stderr
-        assert "RESULT " in text, "child produced no result: %r" % text[-2000:]
+        assert "RESULT " in text, (
+            "child produced no result. Its output and exit status follow; an "
+            "elapsed time at the 90s deadline with reaped=None means it was "
+            "still importing, not that it crashed: %r" % text[-3000:])
         before, ok, during, after = [
             int(v) for v in text.split("RESULT ")[1].split()[:4]]
         assert before == 1, "the pty started with echo already off"
