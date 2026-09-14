@@ -23,8 +23,15 @@ from values that are safe BY CONSTRUCTION rather than by inspection:
 
   * `RuntimeUnsupported` -- our own message, written in bootstrap.py, naming
     Python versions and module names. Safe because we wrote every character.
-  * `ImportError` -- the `name` attribute only. A module name, never the
-    message, which on some platforms quotes a filesystem path.
+  * `ImportError` raised BY THE IMPORTER -- the `name` attribute only, never
+    the message, which for a failed extension load quotes the full .so path.
+    The importer always sets `.name`, so its errors are identifiable.
+  * `ImportError` raised BY CODE (no `.name`) -- the message. In this project
+    those come from otrv4+.py's fail-closed `_check_rust_requirements`, and
+    they are the sentence that says which Rust entry point is missing.
+    Bounded by MAX_DETAIL; this is the one branch that surfaces a message we
+    did not necessarily write, and it is deliberate, because suppressing it
+    reduced a real handset failure to "cannot import an unnamed module".
   * `SystemExit` -- the exit code, an integer.
   * anything else -- the type name and NOTHING else.
 
@@ -84,12 +91,29 @@ def _detail(exc: BaseException) -> str:
     if name == "RuntimeUnsupported":
         return str(exc)
 
-    # The module name only. NOT str(exc): CPython's ImportError message for a
-    # failed extension load quotes the full .so path, and on Android that path
-    # contains the package's private data directory.
+    # Two different things wear the ImportError name, and conflating them cost
+    # a diagnosis on the first handset that got this far.
+    #
+    # CPython's import machinery ALWAYS sets `.name` (and `.path`) on the
+    # errors it raises, including the dlopen failure for a bad extension --
+    # whose message quotes the full .so path, which on Android sits inside the
+    # package's private data directory. For those, the module name is the part
+    # worth having and the message is the part to drop.
+    #
+    # An ImportError with NO `.name` was therefore raised by code rather than
+    # by the importer -- in this project, by otrv4+.py's fail-closed
+    # `_check_rust_requirements`, whose messages are written in this
+    # repository and name Rust entry points. Those are the sentence that says
+    # what is actually wrong, and suppressing them reported only "cannot
+    # import an unnamed module".
     if isinstance(exc, ImportError):
         missing = getattr(exc, "name", None)
-        return "cannot import %s" % (missing or "an unnamed module")
+        if missing:
+            return "cannot import %s" % missing
+        raised_by_code = str(exc).strip()
+        if raised_by_code:
+            return raised_by_code
+        return "an ImportError with neither a module name nor a message"
 
     if isinstance(exc, SystemExit):
         # otrv4plus_xmpp.py and otrv4+.py exit(1) when a dependency is absent.

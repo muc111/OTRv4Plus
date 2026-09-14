@@ -88,7 +88,17 @@ def _rust_core_info() -> Dict[str, Any]:
     try:
         import otrv4_core
     except Exception as exc:
-        info["error"] = f"{type(exc).__name__}"
+        # `type(exc).__name__` alone said "ModuleNotFoundError" and stopped
+        # there, which does not say WHICH module -- and for a package whose
+        # __init__ imports a sibling extension, the missing one is usually the
+        # sibling rather than the name that was asked for.
+        from . import failure
+        described = failure.describe(exc)
+        info["error"] = described["code"]
+        info["detail"] = described["detail"]
+        info["where"] = described["frames"]
+        if described["caused_by"]:
+            info["caused_by"] = described["caused_by"]
         return info
 
     info["loaded"] = True

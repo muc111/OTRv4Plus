@@ -277,3 +277,47 @@ class TestTheExportedReport:
         assert "<redacted>" not in text, (
             "a genuine report tripped the redaction pass, which means "
             "something upstream is producing a key it should not")
+
+
+class TestTheTwoKindsOfImportError:
+    """The distinction that cost a diagnosis on a real handset.
+
+    otrv4+.py's `_check_rust_requirements` raises a bare ImportError whose
+    message names the missing Rust entry point. Treating every ImportError as
+    the importer's -- and so showing only `.name` -- turned that into "cannot
+    import an unnamed module" on the one report that mattered.
+    """
+
+    def test_the_importers_error_shows_the_name_not_the_path(self):
+        exc = ImportError(
+            "dlopen failed: /data/data/org.otrv4plus.android/files/x.so")
+        exc.name = "otrv4_core"
+        d = failure.describe(exc)
+        assert d["detail"] == "cannot import otrv4_core"
+        assert "/data/data" not in repr(d)
+
+    def test_a_module_not_found_names_the_module(self):
+        """ModuleNotFoundError sets .name, and WHICH module is the whole point.
+
+        For a package whose __init__ imports a sibling extension, the missing
+        module is usually the sibling rather than the name that was asked for.
+        """
+        exc = ModuleNotFoundError("No module named 'otrv4_core.otrv4_core'")
+        exc.name = "otrv4_core.otrv4_core"
+        assert "otrv4_core.otrv4_core" in failure.describe(exc)["detail"]
+
+    def test_our_own_message_survives_when_the_importer_did_not_raise_it(self):
+        exc = ImportError(
+            "OTRv4+ v10.6.11+ requires otrv4_core.RustDAKE.  The .so was not "
+            "built with the dake module.")
+        assert getattr(exc, "name", None) is None
+        d = failure.describe(exc)
+        assert "RustDAKE" in d["detail"]
+        assert "unnamed module" not in d["detail"]
+
+    def test_that_message_is_still_bounded(self):
+        exc = ImportError("x" * 5000)
+        assert len(failure.describe(exc)["detail"]) <= failure.MAX_DETAIL
+
+    def test_an_empty_import_error_says_so_rather_than_nothing(self):
+        assert failure.describe(ImportError())["detail"]
