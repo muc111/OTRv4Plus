@@ -1,6 +1,6 @@
 # Features
 
-What's implemented as of v10.14.0.
+What's implemented as of v10.30.0.
 
 ## Cryptography
 
@@ -36,7 +36,7 @@ As of **v10.7.5 (Phase 5.3k)** the **chat** path is Rust-core-only, and as of **
 | OTRv4 DAKE | Rust (`src/dake.rs`) | Three-message handshake. Pure Rust state machine. The pure-Python `OTRv4DAKE` fallback was deleted in v10.7. |
 | OTRv4 double ratchet | Rust (`src/ratchet.rs`) | DH ratchet at 100-message or 24-hour boundary. X448 DH and ML-KEM-1024 rekey at every DH step, both in Rust. |
 | OTRv4 ring signature | Rust (`src/ring_sig.rs`) | Schnorr ring sig over three Ed448 keys. Pure Rust port of the C reference. |
-| OTRv4 SMP (hybrid PQC) | Rust (`src/smp.rs`, `src/smp_vault.rs`) | Four-step Schnorr ZKP over the 3072-bit MODP group (OTRv4 §5.3) wrapped in an ML-KEM-1024 + ML-DSA-87 binding layer as of v10.9.0. Wire-versioned 0x01/0x02, no silent downgrade. ZeroizeOnDrop on every exponent and PQ key. Constant-time modular exponentiation via `crypto-bigint` `DynResidue` (v10.7.6). Forging "verified" requires breaking the discrete log, ML-KEM-1024, and ML-DSA-87 simultaneously. |
+| OTRv4 SMP (hybrid PQC) | Rust (`src/smp.rs`, `src/smp_vault.rs`) | Four-step Schnorr ZKP over the 3072-bit MODP group (OTRv4 §5.3) wrapped in an ML-KEM-1024 + ML-DSA-87 binding layer as of v10.9.0. Wire-versioned 0x01/0x02/0x03, no silent downgrade. Version 0x03 stretches the passphrase with Argon2id (64 MiB, t=3, p=4) under a salt bound to the session id and both fingerprints, replacing the iterated SHAKE-256 of 0x01/0x02; see [SPEC.md §6.4](SPEC.md). ZeroizeOnDrop on every exponent and PQ key. Constant-time modular exponentiation via `crypto-bigint` `DynResidue` (v10.7.6). Forging "verified" requires breaking the discrete log, ML-KEM-1024, and ML-DSA-87 simultaneously. |
 | Ed448 / X448 long-term keys | Rust (`src/key_handles.rs`) | Opaque PyO3 handles. Private bytes never leave Rust. Includes `verify_ed448_sig` for ClientProfile verification. |
 | Encrypted voice | Python (`otrv4plus_voice.py`) | Hybrid X448 + ML-KEM-1024 key exchange negotiated inside the OTR channel, AES-256-GCM media with derived nonces, symmetric ratchet every 500 frames, two-phase hybrid rekey every 120 s, replay window, authenticated `MEDIAPATH` endpoint announcements. Specified in [SPEC.md §9](SPEC.md). |
 
@@ -75,6 +75,9 @@ established fails closed rather than falling back to a less private one. See
 | Session resume after disconnect | No (each connect produces fresh DAKE) |
 | Stable identity across launches | **XMPP: yes** (sealed Ed448, reloaded each run). **IRC: no**, deliberate — see ROADMAP Phase 5.3g |
 | Pinned peer fingerprints (TOFU) | **XMPP: yes** — pinned on first contact; a change refuses voice and needs `/trust-reset`. **IRC: no**, nothing written to disk |
+| `/tip` Monero address relay | **XMPP only.** Relays a payment address between two SMP-verified peers as TLV `0x0020` inside the encrypted channel ([SPEC.md §5.6.2](SPEC.md)). Renders a QR locally. Carries an address and nothing else: no wallet code, no balance, no transaction |
+| `/trade` multisig courier | **XMPP only.** Carries multisig coordination messages between peers as a `?OTRv4-TRADE:` body prefix ([SPEC.md §5.7](SPEC.md)). It is a courier only — the project contains no Monero code and performs no signing, and third-party arbitration is left for users to arrange |
+| `/admin` XEP-0133 server administration | **XMPP only.** Lists and runs whatever admin commands the server advertises, driven by the server's own XEP-0050 ad-hoc commands and XEP-0004 data forms rather than a hard-coded command list. Admin traffic is **not** end-to-end encrypted — the server is the intended recipient — and the client says so before the first command |
 | Separate state per protocol | Yes — XMPP owns `~/.otrv4plus/xmpp/`; IRC persists no trust at all |
 
 ## Encrypted voice

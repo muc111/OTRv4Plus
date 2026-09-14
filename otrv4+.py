@@ -249,16 +249,12 @@ class OTRConstants:
     MESSAGE_TYPE_DAKE3 = 0x37
     MESSAGE_TYPE_DATA = 0x03
 
-    TLV_TYPE_PADDING = 0x00
-    TLV_TYPE_DISCONNECTED = 0x01
-    TLV_TYPE_SMP_MESSAGE_1 = 0x02
-    TLV_TYPE_SMP_MESSAGE_2 = 0x03
-    TLV_TYPE_SMP_MESSAGE_3 = 0x04
-    TLV_TYPE_SMP_MESSAGE_4 = 0x05
-    TLV_TYPE_SMP_ABORT = 0x06
-    TLV_TYPE_SMP_MESSAGE_1Q = 0x07
-    TLV_TYPE_CLIENT_PROFILE = 0x08
-    TLV_TYPE_EXTRA_SYMMETRIC_KEY = 0x09
+    # TLV types are NOT here. They live in OTRv4TLV, which is the class the
+    # engine constructs and dispatches on; this block was a second table with
+    # no call sites, and it disagreed -- it allocated 0x08 for a client-profile
+    # TLV that OTRv4+ does not use, because the client profile travels in the
+    # DAKE. Two tables where one is dead and wrong is a trap for anyone reading
+    # the engine alongside SPEC.md §5.6.
 
     RATCHET_SENDING = 0
     RATCHET_RECEIVING = 1

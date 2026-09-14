@@ -117,7 +117,7 @@ class TestTheUsageIdRegistry:
 def code_tlv_types():
     """The table actually used on the wire.
 
-    otrv4+.py carries a second, older table (OTRv4Constants.TLV_TYPE_*) which
+    otrv4+.py carries a second, older table (OTRConstants.TLV_TYPE_*) which
     has no call sites and which disagrees -- it allocates 0x08. OTRv4TLV is the
     one the engine constructs and dispatches on, so it is the one the spec must
     match.
@@ -178,9 +178,6 @@ class TestTheTlvRegistry:
 class TestTheApplicationLayerExtensions:
 
     def test_the_tip_tlv_bounds_match_the_implementation(self):
-        import importlib.util
-        spec_mod = importlib.util.spec_from_file_location(
-            "tipmod", "otrv4plus_tip.py")
         # Read the constants without importing: the module pulls in the engine.
         src = open("otrv4plus_tip.py").read()
         bounds = {m.group(1): int(m.group(2))
