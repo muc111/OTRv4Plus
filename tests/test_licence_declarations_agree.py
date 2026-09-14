@@ -196,8 +196,14 @@ class TestTheNoticeCoversWhatShips:
         spec.loader.exec_module(module)
         return module
 
+    # staticmethod: pytest 9 deprecates class-scoped fixtures written as
+    # instance methods, because the `self` they get belongs to a throwaway
+    # instance and anything stored on it is invisible to the tests. This one
+    # only returns a value, so nothing was ever wrong -- the shape is what
+    # pytest warns about, and correcting it is free.
+    @staticmethod
     @pytest.fixture(scope="class")
-    def notice(self):
+    def notice():
         return _read("NOTICE")
 
     def test_it_exists_and_says_it_is_generated(self, notice):
