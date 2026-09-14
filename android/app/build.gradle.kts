@@ -5,6 +5,13 @@ plugins {
     id("com.chaquo.python")
 }
 
+// The Rust core's version, read rather than restated. versionName carried
+// "core.10.14.0" while Rust/Cargo.toml said 0.10.28.
+val rustCoreVersion: String = rootProject.projectDir.parentFile
+    .resolve("Rust/Cargo.toml").readLines()
+    .first { it.trimStart().startsWith("version") }
+    .substringAfter('"').substringBefore('"')
+
 android {
     namespace = "org.otrv4plus.android"
     compileSdk = 35
@@ -23,7 +30,22 @@ android {
         minSdk = 26
         targetSdk = 35
         versionCode = 7
-        versionName = "0.3.0-phase2+core.10.14.0"
+        // core.10.14.0 was wrong for sixteen releases; the Rust core is read
+        // from Rust/Cargo.toml so it cannot drift again.
+        versionName = "0.3.0-phase2+core.$rustCoreVersion"
+
+        // Which build this is, surfaced in the diagnostic report.
+        //
+        // Three reports in a row arrived byte-identical and there was no way
+        // to tell whether the fix under test had actually been installed or
+        // whether the previous APK had been re-run. A report that cannot
+        // identify its own build wastes a round trip every time, and the
+        // round trip is a person reinstalling an app by hand.
+        //
+        // CI sets OTRV4PLUS_BUILD_ID to the short commit; a local build says
+        // so rather than inventing a number.
+        buildConfigField("String", "BUILD_ID",
+            "\"" + (System.getenv("OTRV4PLUS_BUILD_ID") ?: "local") + "\"")
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 

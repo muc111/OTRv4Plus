@@ -49,6 +49,9 @@ permissions:
   contents: read
 
 env:
+  # Stamped into BuildConfig.BUILD_ID and printed at the top of every
+  # diagnostic report, so a report always says which build produced it.
+  OTRV4PLUS_BUILD_ID: ${{ github.sha }}
   # Chaquopy needs this exact version: otrv4+.py uses PEP 701 f-string syntax
   # that does not parse on 3.11 or earlier.
   PYTHON_VERSION: "3.12"

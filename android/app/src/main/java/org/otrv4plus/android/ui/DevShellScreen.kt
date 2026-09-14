@@ -66,6 +66,7 @@ fun DevShellScreen() {
             return@Column
         }
 
+        StatusRow("Build", BuildConfig.BUILD_ID)
         StatusRow("Overall", if (r.ok) "OK" else "FAILED")
         StatusRow("Python", r.pythonVersion.ifBlank { "unknown" })
         StatusRow("ABI", r.abi)
@@ -140,6 +141,9 @@ fun DevShellScreen() {
  */
 private fun fullReport(r: InitResult): String = buildString {
     appendLine("OTRv4+ Android start-up report")
+    // First line after the title, because it is the first question asked of
+    // any report: is this the build that was meant to be under test?
+    appendLine("build: ${BuildConfig.BUILD_ID} (${BuildConfig.VERSION_NAME})")
     appendLine("overall: ${if (r.ok) "OK" else "FAILED"}")
     appendLine("python: ${r.pythonVersion.ifBlank { "unknown" }}")
     appendLine("abi: ${r.abi}")
