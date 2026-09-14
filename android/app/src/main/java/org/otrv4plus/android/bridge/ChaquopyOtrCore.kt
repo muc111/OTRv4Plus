@@ -57,20 +57,102 @@ class ChaquopyOtrCore(private val appContext: Context) : OtrCore {
                 abi = section(report, "abi", "android_abi"),
                 rustCoreLoaded = section(report, "rust_core", "loaded").toBoolean(),
                 engineInitialized = section(report, "otrv4plus", "initialized").toBoolean(),
+                diagnosticsText = renderReport(diagnostics, report),
             )
         } catch (t: Throwable) {
-            // Deliberately no `t.message`: Python exception text can embed data
-            // the engine was handling.
-            InitResult(
-                ok = false,
-                pythonVersion = "",
-                abi = Build.SUPPORTED_ABIS.firstOrNull() ?: "unknown",
-                rustCoreLoaded = false,
-                engineInitialized = false,
-                failureCode = t.javaClass.simpleName,
-            )
+            // Still deliberately no `t.message` -- Python exception text can
+            // embed data the engine was handling, and that has not changed.
+            //
+            // What HAS changed is that `t.javaClass.simpleName` alone was the
+            // entire failure report on the first handset this ever ran on:
+            //
+            //     Failure    PyException
+            //
+            // which says only "a Python exception happened". With FLAG_SECURE
+            // set, that could not even be photographed. The app announced that
+            // it had failed and structurally prevented anyone learning why.
+            //
+            // android_bridge.failure.describe() is the answer: it classifies
+            // the exception and returns a safe detail plus `file:line in func`
+            // frames. It is safe in every build -- see its module docstring --
+            // so there is no debug gate here. A diagnostic that is only safe
+            // in debug is a diagnostic waiting to be promoted.
+            describeFailure(t)
         }
     }
+
+    /**
+     * Build a failure report, and collect diagnostics WHILE FAILING.
+     *
+     * The original flow only ran `diagnostics.collect()` on the success path,
+     * so the one report that could explain a failed start was the one thing a
+     * failed start never produced. collect() needs no orchestration layer and
+     * guards every probe individually, which is exactly what makes it usable
+     * here.
+     */
+    private fun describeFailure(t: Throwable): InitResult {
+        var code = t.javaClass.simpleName
+        var detail = ""
+        var frames = ""
+        var rustLoaded = false
+        var pyVersion = ""
+
+        try {
+            val py = Python.getInstance()
+            val f = py.getModule("android_bridge.failure").callAttr("describe", t)
+            code = f.callAttr("get", "code")?.toString() ?: code
+            detail = f.callAttr("get", "detail")?.toString() ?: ""
+            val causedBy = f.callAttr("get", "caused_by")?.toString() ?: ""
+            if (causedBy.isNotBlank()) detail = "$detail\ncaused by $causedBy"
+            frames = f.callAttr("get", "frames")?.asList()
+                ?.joinToString("\n") { it.toString() } ?: ""
+        } catch (_: Throwable) {
+            // The reporter itself failed. Keep the class name and carry on --
+            // a half report beats an exception thrown while explaining one.
+        }
+
+        var diagnosticsText: String? = null
+        try {
+            val py = Python.getInstance()
+            val diagnostics = py.getModule("android_bridge.diagnostics")
+            // include_selftest = false: the self-test exercises the Rust core,
+            // and this is the path where the core may be the thing that is
+            // broken. A diagnostic that crashes while diagnosing is worthless.
+            val report = diagnostics.callAttr("collect", false, androidBuildInfo(py))
+            rustLoaded = section(report, "rust_core", "loaded").toBoolean()
+            pyVersion = section(report, "python", "version")
+            diagnosticsText = renderReport(diagnostics, report)
+        } catch (_: Throwable) {
+            // Diagnostics are a bonus on this path, never a second failure.
+        }
+
+        return InitResult(
+            ok = false,
+            pythonVersion = pyVersion,
+            abi = Build.SUPPORTED_ABIS.firstOrNull() ?: "unknown",
+            rustCoreLoaded = rustLoaded,
+            engineInitialized = false,
+            failureCode = code,
+            failureDetail = detail.ifBlank { null },
+            failureFrames = frames.ifBlank { null },
+            diagnosticsText = diagnosticsText,
+        )
+    }
+
+    /**
+     * The report as text, rendered in Python.
+     *
+     * Not formatted here on purpose. `diagnostics.as_text` applies
+     * SENSITIVE_KEY_HINTS to the finished string, and a Kotlin renderer would
+     * be a second place deciding what a diagnostic may say -- which is the
+     * place that would forget the rule the first time a field was added.
+     */
+    private fun renderReport(diagnostics: PyObject, report: PyObject): String? =
+        try {
+            diagnostics.callAttr("as_text", report)?.toString()
+        } catch (_: Throwable) {
+            null
+        }
 
     /** Values only Kotlin can read; Python is told them rather than guessing. */
     private fun androidBuildInfo(py: Python): PyObject {

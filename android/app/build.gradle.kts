@@ -1,8 +1,16 @@
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
+    id("org.jetbrains.kotlin.plugin.compose")
     id("com.chaquo.python")
 }
+
+// The Rust core's version, read rather than restated. versionName carried
+// "core.10.14.0" while Rust/Cargo.toml said 0.10.28.
+val rustCoreVersion: String = rootProject.projectDir.parentFile
+    .resolve("Rust/Cargo.toml").readLines()
+    .first { it.trimStart().startsWith("version") }
+    .substringAfter('"').substringBefore('"')
 
 android {
     namespace = "org.otrv4plus.android"
@@ -22,7 +30,22 @@ android {
         minSdk = 26
         targetSdk = 35
         versionCode = 7
-        versionName = "0.3.0-phase2+core.10.14.0"
+        // core.10.14.0 was wrong for sixteen releases; the Rust core is read
+        // from Rust/Cargo.toml so it cannot drift again.
+        versionName = "0.3.0-phase2+core.$rustCoreVersion"
+
+        // Which build this is, surfaced in the diagnostic report.
+        //
+        // Three reports in a row arrived byte-identical and there was no way
+        // to tell whether the fix under test had actually been installed or
+        // whether the previous APK had been re-run. A report that cannot
+        // identify its own build wastes a round trip every time, and the
+        // round trip is a person reinstalling an app by hand.
+        //
+        // CI sets OTRV4PLUS_BUILD_ID to the short commit; a local build says
+        // so rather than inventing a number.
+        buildConfigField("String", "BUILD_ID",
+            "\"" + (System.getenv("OTRV4PLUS_BUILD_ID") ?: "local") + "\"")
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
@@ -36,17 +59,30 @@ android {
         }
     }
 
-    // Ship per-ABI APKs rather than one fat artifact carrying every CPython and
-    // every otrv4_core .so. With an embedded interpreter the difference is tens
-    // of megabytes per install.
-    splits {
-        abi {
-            isEnable = true
-            reset()
-            include("arm64-v8a", "x86_64")
-            isUniversalApk = false
-        }
-    }
+    // Per-ABI APK splits are OFF, and this is a forced choice rather than a
+    // preference.
+    //
+    // AGP refuses both at once:
+    //
+    //   Conflicting configuration : 'arm64-v8a,x86_64' in ndk abiFilters
+    //   cannot be present when splits abi filters are set : x86_64,arm64-v8a
+    //
+    // Found by the first CI run that ever configured this project. The two
+    // blocks named the same two ABIs, so nothing was ambiguous about the
+    // INTENT -- AGP simply will not take both.
+    //
+    // abiFilters wins because the two are not equally important. Splitting is
+    // a download-size optimisation: with an embedded interpreter it saves
+    // tens of megabytes per install, which matters and is recoverable later.
+    // abiFilters is the guard that keeps armeabi-v7a out of a build, and the
+    // reason for that guard is in the block below: the 32-bit build has never
+    // been exercised and the pqcrypto pin exists to avoid SIGILL. Trading a
+    // safety property for an install-size win is the wrong way round.
+    //
+    // Revisit in Phase 3, when armeabi-v7a is decided either way: at that
+    // point the ABI set is settled and splits can express it alone.
+    //
+    // splits { abi { ... } }  -- see above
 
     buildTypes {
         debug {
@@ -72,9 +108,10 @@ android {
         buildConfig = true
     }
 
-    composeOptions {
-        kotlinCompilerExtensionVersion = "1.5.15"
-    }
+    // No composeOptions block. `kotlinCompilerExtensionVersion` selected the
+    // old standalone Compose compiler and is ignored from Kotlin 2.0 -- the
+    // version now comes from the Compose plugin applied above. Leaving the
+    // old 1.5.15 pin here would be a number nothing reads.
 
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
@@ -98,18 +135,101 @@ chaquopy {
         version = "3.12"
 
         pip {
+            // WHY --no-deps, AND WHY EVERY DISTRIBUTION IS NAMED BELOW
+            // --------------------------------------------------------
+            // slixmpp declares `aiodns>=3.2.0` as a hard requirement -- not an
+            // extra, in every release from 1.9.0 onwards -- and aiodns pulls
+            // pycares, which compiles c-ares from source with cmake. Chaquopy
+            // has no wheel for it and cannot compile native code, so the build
+            // dies during requirement resolution:
+            //
+            //   ERROR: Failed to install pycares<6,>=5.0.0 (from aiodns>=3.2.0
+            //          ->slixmpp)
+            //   CMake Error: Chaquopy_cannot_compile_native_code.
+            //
+            // Removing an `install("aiodns")` line does not help: the request
+            // comes from slixmpp's own metadata. pip has no way to drop a
+            // single dependency, and `install()` takes one requirement, so
+            // --no-deps is the only lever and it is necessarily global.
+            //
+            // The cost of --no-deps is that a dependency we fail to name is no
+            // longer a build error -- it is an ImportError on a handset. So
+            // the list below is the FULL closure, and `verify-python-closure`
+            // in .github/workflows/android.yml re-resolves it on every CI run
+            // and fails if anything is missing.
+            //
+            // The compensation is that this is now an exact manifest: nothing
+            // reaches the APK without being written down here, which for this
+            // app is worth more than the convenience it costs.
+            options("--no-deps")
+
+            // Where the Rust core comes from. It is not on any index: it is
+            // built from Rust/ for each ABI by the `rust` job in
+            // .github/workflows/android.yml, or locally with
+            //
+            //     maturin build --release --target aarch64-linux-android \
+            //       --features pyo3/extension-module --interpreter python3.12
+            //
+            // and the resulting wheels dropped in android/app/wheels/.
+            //
+            // The tags line up without any retagging, which is worth writing
+            // down because it looks like it should not: maturin emits
+            // `otrv4_core-0.10.28-cp39-abi3-android_26_arm64_v8a.whl`, and
+            // Chaquopy asks pip for `--platform android_26_arm64_v8a` because
+            // minSdk is 26. abi3 covers the cp39-vs-3.12 half.
+            //
+            // If the directory is empty, pip fails with "Could not find a
+            // version that satisfies the requirement otrv4_core". That is the
+            // correct outcome -- an APK without the crypto core is not this
+            // app -- but it is an unhelpful sentence, so: build the wheels.
+            options("--find-links", project.file("wheels").absolutePath)
+
+            // -- asked for directly ------------------------------------------
+            //
+            // otrv4_core: the Rust core. Every cryptographic operation in the
+            // app is behind it; there is no Python fallback and has not been
+            // since v10.13.2.
+            install("otrv4_core")
             // PySocks: imported at module scope by otrv4+.py. Pure Python.
             install("PySocks")
-            // slixmpp + aiodns: the XMPP transport. Verify these resolve for
-            // every enabled ABI early -- this is the dependency most likely to
-            // need a native build.
+            // slixmpp: the XMPP transport. Pure Python, built from an sdist.
             install("slixmpp")
-            install("aiodns")
-            // argon2-cffi: optional. Without it the engine falls back to
-            // scrypt and warns. Wanted on Android for the at-rest KDF; needs a
-            // native build, so treat a resolution failure here as a real
-            // finding rather than dropping the dependency.
+            // argon2-cffi: the at-rest KDF. Without it the engine falls back
+            // to scrypt and warns. Chaquopy has prebuilt android wheels for
+            // the whole cffi chain, so a resolution failure here is a real
+            // finding rather than a reason to drop it.
             install("argon2-cffi")
+
+            // -- required by the above, and now named because of --no-deps ---
+            //
+            // slixmpp -> pyasn1, pyasn1-modules (both pure Python).
+            install("pyasn1")
+            install("pyasn1-modules")
+            // argon2-cffi -> argon2-cffi-bindings -> cffi -> pycparser, and
+            // cffi's android wheel -> chaquopy-libffi. The last of those is
+            // Chaquopy's own packaging of libffi; it is named here only
+            // because --no-deps stops cffi asking for it. If Chaquopy ever
+            // renames it the build fails loudly at this line, which is the
+            // failure mode to want.
+            install("argon2-cffi-bindings")
+            install("cffi")
+            install("pycparser")
+            install("chaquopy-libffi")
+
+            // -- deliberately absent -----------------------------------------
+            //
+            // aiodns / pycares. Dropping them costs nothing HERE:
+            //   * slixmpp treats aiodns as optional at RUNTIME. resolver.py
+            //     sets AIODNS_AVAILABLE = False and logs "Could not find
+            //     aiodns package" before falling back to getaddrinfo without
+            //     SRV support.
+            //   * this client never resolves a name anyway. An .i2p address is
+            //     reached through the local SAM bridge -- the connection is to
+            //     127.0.0.1 on a port the bridge picked -- so there is no SRV
+            //     lookup to lose.
+            //
+            // If a clearnet XMPP transport is ever added, SRV resolution
+            // becomes real and this decision needs revisiting.
         }
 
         // otrv4_core is NOT installed from an index. It is the Rust wheel built
@@ -140,11 +260,61 @@ val syncPythonSources by tasks.registering(Copy::class) {
     from(repoRoot) {
         include(
             "otrv4+.py",
-            "otrv4plus_log.py",
-            "otrv4plus_voice.py",
-            "otrv4plus_audio.py",
             "otrv4plus_xmpp.py",
+            // The rest is the module-scope import closure of otrv4+.py and
+            // otrv4plus_xmpp.py, computed rather than remembered.
+            //
+            // It had drifted badly: seven of these were missing, including
+            // otrv4plus_coreapi and otrv4plus_smpflow, which the XMPP client
+            // imports on its first two lines. Every one of them is an
+            // ImportError at launch rather than a missing feature, and no
+            // test could catch it because nothing here has ever built an APK.
+            // Re-derive with:
+            //   python3 - <<'EOF'
+            //   import ast, os
+            //   seen, q = set(), ["otrv4plus_xmpp.py", "otrv4+.py"]
+            //   while q:
+            //       f = q.pop()
+            //       if f in seen or not os.path.exists(f): continue
+            //       seen.add(f)
+            //       for n in ast.walk(ast.parse(open(f).read())):
+            //           ms = ([a.name for a in n.names] if isinstance(n, ast.Import)
+            //                 else [n.module] if isinstance(n, ast.ImportFrom) and n.module
+            //                 else [])
+            //           q += [m + ".py" for m in ms if m.startswith("otrv4plus_")]
+            //   print(sorted(seen))
+            //   EOF
+            "otrv4plus_admin.py",
+            "otrv4plus_audio.py",
+            "otrv4plus_coreapi.py",
+            "otrv4plus_filetransfer.py",
+            "otrv4plus_identity.py",
+            "otrv4plus_log.py",
+            "otrv4plus_smpflow.py",
+            "otrv4plus_tip.py",
+            "otrv4plus_trade.py",
+            "otrv4plus_voice.py",
         )
+    }
+    // The SAME file again, under a name Python can import.
+    //
+    // `otrv4+.py` cannot be imported by name -- `+` is not legal in an
+    // identifier -- so the bridge used to locate it by probing the filesystem.
+    // That cannot work inside an APK: Chaquopy packages Python sources into a
+    // zip under assets/ and serves them through its own importer, so there is
+    // no file for os.path.isfile() to find.
+    //
+    // Copying it in as `otrv4_.py` makes it an ordinary module, which
+    // Chaquopy's importer serves like any other. bootstrap.load_orchestration
+    // asks for it by name first and only falls back to the path probe, which
+    // remains the route on desktop and under Termux where `otrv4_.py` is a
+    // symlink rather than a copy.
+    //
+    // The repository keeps exactly one copy; the second exists only inside the
+    // build output, which is why this is a rename here rather than a file.
+    from(repoRoot) {
+        include("otrv4+.py")
+        rename { "otrv4_.py" }
     }
     from(repoRoot.resolve("android_bridge")) {
         into("android_bridge")
@@ -160,6 +330,28 @@ val syncPythonSources by tasks.registering(Copy::class) {
 }
 
 tasks.named("preBuild") { dependsOn(syncPythonSources) }
+
+// preBuild is not enough, and the reason is worth writing down because the
+// symptom appears nowhere near the cause:
+//
+//   Task ':app:mergeDebugPythonSources' uses this output of task
+//   ':app:syncPythonSources' without declaring an explicit or implicit
+//   dependency.
+//
+// syncPythonSources WRITES src/main/python; Chaquopy's merge*PythonSources
+// READS it as a source directory. Gradle 8 requires an edge between those two
+// tasks specifically -- ordering them both after preBuild says nothing about
+// their order relative to each other, so Gradle refuses to guess and fails the
+// build. Without the edge the tasks could legitimately run in either order,
+// and the losing order packages an empty source set: an APK that builds
+// cleanly and has no Python in it.
+//
+// Matched by name rather than by variant because there is one per build type
+// (mergeDebugPythonSources, mergeReleasePythonSources), and Chaquopy registers
+// them from the variant API after this script is evaluated -- tasks.matching
+// is a live view, so configureEach still reaches them.
+tasks.matching { it.name.matches(Regex("merge[A-Z]\\w*PythonSources")) }
+    .configureEach { dependsOn(syncPythonSources) }
 
 dependencies {
     val composeBom = platform("androidx.compose:compose-bom:2024.10.01")

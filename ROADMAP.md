@@ -194,14 +194,23 @@ Out of OTRv4 scope. OMEMO or MLS would be a separate project.
 
 ### Native Android APK
 
-**Partly done, not finished.** A Gradle project, a Chaquopy configuration, a typed
+**Builds, never run.** A Gradle project, a Chaquopy configuration, a typed
 Kotlin↔Python bridge and a Kotlin application security layer exist under
 `android/` and `android_bridge/`, and the storage and architecture questions have
 been audited (`ANDROID_ARCHITECTURE_AUDIT.md`, `ANDROID_STORAGE_AUDIT.md`,
-`ANDROID_PHASE2_REPORT.md`). What does not exist is a shipped signed APK, an
-in-APK I2P router, or any voice testing inside the APK — voice is verified under
-Termux, which is a different process model. Termux remains the supported
-environment. Do not read "voice works" as "voice works in the APK".
+`ANDROID_PHASE2_REPORT.md`).
+
+Since v10.30.0 a **debug APK actually assembles**, on GitHub-hosted runners
+(`.github/workflows/android.yml`) because `dl.google.com` is 403 from the
+development environment. It contains the Rust core cross-compiled for
+arm64-v8a and x86_64, and CI asserts that rather than assuming it. That
+retires the toolchain question and nothing else.
+
+What does not exist is a signed release APK, an in-APK I2P router, or any
+voice testing inside the APK — voice is verified under Termux, which is a
+different process model. **No device or emulator has ever launched this APK**,
+so "it builds" is not "it runs". Termux remains the supported environment. Do
+not read "voice works" as "voice works in the APK".
 
 ### Tor onion service transport
 

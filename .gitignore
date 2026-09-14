@@ -17,6 +17,15 @@ build/
 # ── Rust ─────────────────────────────────────────────────────────────────────
 Rust/target/
 
+# ── Android ──────────────────────────────────────────────────────────────────
+# Written by :app:syncPythonSources, which copies the orchestration layer into
+# the APK's source set. It exists so there is exactly ONE copy of otrv4+.py in
+# the repository -- committing the copies would create precisely the second
+# copy the task exists to prevent, and it would silently go stale.
+/android/app/src/main/python/
+# Built per ABI from Rust/ by maturin, or downloaded from the `rust` CI job.
+/android/app/wheels/
+
 # ── Test / tooling cache ──────────────────────────────────────────────────────
 .pytest_cache/
 .hypothesis/

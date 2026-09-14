@@ -1,6 +1,6 @@
 # DEVELOPMENT.md
 
-Build environment, architecture, and test plan for OTRv4+ as of v10.14.0.
+Build environment, architecture, and test plan for OTRv4+ as of v10.30.0.
 
 There are no C extensions to compile and no prebuilt binaries in the repository.
 Everything is built from source with `cargo`. (Earlier versions used three C
@@ -135,7 +135,9 @@ reference path is selected instead.
 ```bash
 cd Rust
 cargo test --release --no-default-features --features pq-rust
-# expected: 101 passed; 0 failed  (as of v10.14.0)
+# The pass count for each release is recorded in CHANGELOG.md; a
+# figure pinned here rots every time a test is added, and a stale one
+# reads as a failure. What matters is: 0 failed.
 ```
 
 Expected: **65 tests pass, 0 failures.** The suite includes:
@@ -161,7 +163,9 @@ voice and audio suites are silently skipped:
 
 ```bash
 python3.12 -m pytest -q
-# expected: 2293 passed, 43 skipped, 1 xfailed   (as of v10.14.0)
+# As above: CHANGELOG.md records the count per release (3360 passed,
+# 44 skipped, 1 xfailed at v10.30.0). Skips are environment-gated,
+# never failures.
 ```
 
 The skips are environment-gated (no audio device, no Termux:API, no live SAM
@@ -169,6 +173,80 @@ bridge), not failures. The root-level suites — `test_voice_security.py`,
 `test_audio_backend.py`, `test_voice_audio_integration.py`,
 `test_mac_key_revelation.py` — contribute 239 of those tests and are *not*
 under `tests/`.
+
+### A module must not end the process when imported
+
+`otrv4plus_xmpp.py` is a program you run *and* a module the tests, the Android
+bridge and the packaging tooling import. When the OTR engine or slixmpp was
+missing it used to call `sys.exit(1)` at module level. `SystemExit` derives
+from `BaseException`, not `Exception`, so nothing that handles import failures
+handles it — importing the module on a host without the Rust core terminated
+the interpreter that imported it. Under pytest that was an `INTERNALERROR`
+during collection, and the whole suite stopped, not just the tests needing the
+core.
+
+Both guards now go through `_fatal_dependency`, which branches on `__name__`:
+
+- **Run as a program** — the same advice on stderr, the same exit status 1.
+- **Imported** — raises, so the importer decides.
+
+Two exception classes, and the difference matters: `DependencyMissing` (a
+`ModuleNotFoundError`) when the dependency is simply not installed, so
+`pytest.importorskip` skips with nothing passed at the call site; and
+`DependencyUnavailable` (a plain `ImportError`) when it is installed and
+raising — a broken core, an interpreter older than 3.12, a half-built `.so`.
+
+**How far that distinction carries depends on the pytest in front of it.**
+Since 9.1 `importorskip` skips on `ModuleNotFoundError` alone, so a broken core
+reaches the run as an error. Older pytest — including the one in Termux —
+skips on *any* `ImportError`, and there a broken core makes every module that
+needs it skip: a large skip count and no failures, which reads as success. No
+exception class can change that, so the property is enforced separately, by a
+test that imports the engine directly and fails when it is present and
+raising. Do not make that test go through `importorskip`.
+
+`tests/test_import_does_not_exit.py` covers both guards, that check, and a scan
+of every project module for the same pattern. One file is allow-listed there —
+`weechat_otrv4plus.py`, which nothing imports and nothing can.
+
+Its subprocess tests drive the program path through
+`runpy.run_path(..., run_name="__main__")` with an import blocker, not by
+launching the file and hoping the host lacks the engine. A test that depends on
+the host's state measures the host.
+
+### Warnings are findings, not noise
+
+The suite carries **no warning filters**, and none may be added. A warning that
+is filtered is a warning nobody reads, and two of the ones this project has
+actually hit were pointing at real defects in the tests that raised them. Where
+a warning is genuinely somebody else's, the workaround is written down at the
+place it is applied and guarded by a test that fails when it stops being
+needed — so it can be deleted rather than inherited.
+
+Two are worth knowing about, because both will look mysterious if met cold:
+
+**`PytestUnraisableExceptionWarning` from `XMLStream.__del__`.** Many tests
+exercise a single `OTRv4PlusXMPP` method without an event loop or a socket, so
+they build the object with `__new__` and skip slixmpp's constructor. That
+constructor is also what assigns `_run_out_filters`, which the inherited
+`__del__` reads — so the object raised `AttributeError` when the garbage
+collector reached it. Nothing failed (an exception in `__del__` cannot
+propagate), and the warning was attributed to whichever test happened to be
+running at collection time rather than the one that built the object; on one
+run it was blamed on `test_final_boss.py`, which does not import the XMPP
+module at all. **This was a test-double defect, not a lifecycle bug**:
+production reaches `XMLStream.__init__` through `ClientXMPP` and has the
+attribute from its first line. Every such double now goes through
+`tests/xmpp_double.py`; `tests/test_xmpp_double.py` checks both that the
+workaround works and that slixmpp still needs it.
+
+**`HypothesisDeprecationWarning` for `assume` outside a property-based test.**
+Two mutation tests in `tests/test_attacks.py` called `assume()` on a
+deterministic value. There was no generated example to discard, and the
+failure mode was backwards: an empty ciphertext should make a mutation test
+fail loudly, not skip quietly. They are plain `assert`s now. Genuine
+property-based `assume()` calls inside `@given` — `tests/test_property.py` has
+six — are correct and stay.
 
 Python syntax gate:
 

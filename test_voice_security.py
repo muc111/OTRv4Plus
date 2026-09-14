@@ -1212,7 +1212,30 @@ class TestJitterBuffer(unittest.TestCase):
         self.assertIsNotNone(jb.pop())
 
     def test_reordering_is_corrected(self):
-        jb = V.JitterBuffer(prefill=1, maxlen=10)
+        """Frames that arrive out of order are played in order, none lost.
+
+        Uses the PRODUCTION configuration deliberately. This test used to
+        construct JitterBuffer(prefill=1, maxlen=10) and began failing at
+        v10.29.0, which lowered VOICE_JITTER_SHED_MARGIN_MS from 180 to 120 --
+        two frames at 60 ms instead of three. With prefill=1 that put the shed
+        threshold at 1+2=3, so the fourth queued frame made the buffer "too
+        deep", the oldest was discarded to cut latency, and the result was
+        [1, 2, 3].
+
+        prefill=1 cannot occur in the product: VOICE_JITTER_PREFILL is
+        max(2, VOICE_JITTER_PREFILL_MS // VOICE_FRAME_MS), so the floor is 2.
+        The test was exercising a configuration the app never runs, and
+        measuring the shedder while claiming to measure ordering.
+
+        Under the real defaults -- prefill 2, shed margin 2, so shedding
+        starts above depth 4 -- four reordered frames are within budget and
+        every one is played. The assertion is therefore unchanged and the
+        shed threshold is asserted on its own terms in
+        test_the_shed_threshold_is_the_documented_one below.
+        """
+        jb = V.JitterBuffer(prefill=V.VOICE_JITTER_PREFILL,
+                            shed_margin=V.VOICE_JITTER_SHED_MARGIN,
+                            maxlen=10)
         for c in (3, 1, 2, 0):
             jb.push(0, c, bytearray([c]))
         out = []
@@ -1222,6 +1245,48 @@ class TestJitterBuffer(unittest.TestCase):
                 break
             out.append(item[0][0])
         self.assertEqual(out, [0, 1, 2, 3])
+        self.assertEqual(jb.stats["drift"], 0,
+                         "a frame was shed; this test is about ordering")
+
+    def test_prefill_cannot_be_below_two_in_production(self):
+        """The floor the test above depends on, asserted rather than assumed."""
+        self.assertGreaterEqual(
+            V.VOICE_JITTER_PREFILL, 2,
+            "VOICE_JITTER_PREFILL lost its max(2, ...) floor; "
+            "test_reordering_is_corrected reasons from it")
+
+    def test_the_shed_threshold_is_the_documented_one(self):
+        """v10.29.0's latency decision, tested on purpose this time.
+
+        The buffer sheds its oldest frame once depth exceeds
+        target_depth + shed_margin. With the production defaults that is
+        2 + 2 = 4 frames, i.e. 240 ms of buffered audio -- down from 300 ms
+        before v10.29.0. That number IS the call's steady-state latency, so
+        it is a product decision and belongs in an assertion rather than
+        being discovered by an unrelated test.
+        """
+        jb = V.JitterBuffer(prefill=V.VOICE_JITTER_PREFILL,
+                            shed_margin=V.VOICE_JITTER_SHED_MARGIN,
+                            maxlen=32)
+        threshold = V.VOICE_JITTER_PREFILL + V.VOICE_JITTER_SHED_MARGIN
+
+        # Exactly at the threshold: nothing is shed.
+        for c in range(threshold):
+            jb.push(0, c, bytearray([c & 0xFF]))
+        self.assertIsNotNone(jb.pop())
+        self.assertEqual(jb.stats["drift"], 0,
+                         "shed at or below the threshold")
+
+        # One frame past it: the oldest goes.
+        jb2 = V.JitterBuffer(prefill=V.VOICE_JITTER_PREFILL,
+                             shed_margin=V.VOICE_JITTER_SHED_MARGIN,
+                             maxlen=32)
+        for c in range(threshold + 1):
+            jb2.push(0, c, bytearray([c & 0xFF]))
+        self.assertIsNotNone(jb2.pop())
+        self.assertGreater(jb2.stats["drift"], 0,
+                           "did not shed above the threshold; the latency "
+                           "ceiling is not being enforced")
 
     def test_duplicates_rejected(self):
         jb = self._filled()

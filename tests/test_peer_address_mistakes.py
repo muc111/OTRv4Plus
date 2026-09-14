@@ -30,11 +30,13 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
+from xmpp_double import bare_client
+
 xmpp = pytest.importorskip("otrv4plus_xmpp")
 
 
 def _client(encrypted=()):
-    client = xmpp.OTRv4PlusXMPP.__new__(xmpp.OTRv4PlusXMPP)
+    client = bare_client(xmpp.OTRv4PlusXMPP)
     client._encrypted = set(encrypted)
     client.boundjid = None
     return client

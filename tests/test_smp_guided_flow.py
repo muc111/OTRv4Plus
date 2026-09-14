@@ -29,6 +29,8 @@ import pytest
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
+from xmpp_double import bare_client
+
 core = pytest.importorskip("otrv4_core")
 smpflow = pytest.importorskip("otrv4plus_smpflow")
 xmpp = pytest.importorskip("otrv4plus_xmpp")
@@ -1001,7 +1003,7 @@ class TestAnAbortIsNotAMismatch:
         them -- which is precisely the weakness that let the shipped bug
         through in the first place.
         """
-        client = xmpp.OTRv4PlusXMPP.__new__(xmpp.OTRv4PlusXMPP)
+        client = bare_client(xmpp.OTRv4PlusXMPP)
         client._smp_reported = set()
         client._smp_display_hints = set()
 

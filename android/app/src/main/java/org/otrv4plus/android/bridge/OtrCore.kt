@@ -71,6 +71,27 @@ data class InitResult(
     val engineInitialized: Boolean,
     /** Non-sensitive failure reason, or null. Never engine exception text. */
     val failureCode: String? = null,
+    /**
+     * A safe, classified description of the failure, or null.
+     *
+     * Built by `android_bridge.failure.describe()`, which selects the detail
+     * by exception TYPE rather than printing the message: our own
+     * RuntimeUnsupported text, an ImportError's module name, a SystemExit's
+     * code -- and for anything else, the type alone. So this is displayable
+     * without a build-type gate.
+     */
+    val failureDetail: String? = null,
+    /** `basename:lineno in function`, innermost last. Carries no values. */
+    val failureFrames: String? = null,
+    /**
+     * The full diagnostic report as text, or null if it could not be built.
+     *
+     * Rendered by `android_bridge.diagnostics.as_text`, which applies
+     * SENSITIVE_KEY_HINTS to the finished string. Kotlin never formats this:
+     * one place decides what a diagnostic may contain, and it is the place
+     * next to the data.
+     */
+    val diagnosticsText: String? = null,
 )
 
 /** Mirrors `UIConstants.SecurityLevel`; values are numerically identical. */

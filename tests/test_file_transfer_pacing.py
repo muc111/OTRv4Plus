@@ -28,6 +28,8 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
+from xmpp_double import bare_client
+
 ft = pytest.importorskip("otrv4plus_filetransfer")
 xmpp = pytest.importorskip("otrv4plus_xmpp")
 
@@ -171,7 +173,7 @@ class TestAcceptDoesNotSendInline:
 class TestTheRateLimiterKnowsAboutTransfers:
 
     def _client(self):
-        client = xmpp.OTRv4PlusXMPP.__new__(xmpp.OTRv4PlusXMPP)
+        client = bare_client(xmpp.OTRv4PlusXMPP)
         client._rate_limit = {}
         client._file_manager = None
         return client
@@ -284,7 +286,7 @@ class TestThePacingIsReal:
     """The pump must actually wait between chunks, not just claim to."""
 
     def test_it_sleeps_between_chunks(self):
-        client = xmpp.OTRv4PlusXMPP.__new__(xmpp.OTRv4PlusXMPP)
+        client = bare_client(xmpp.OTRv4PlusXMPP)
         t = _Transport()
         client._file_manager = _manager(t)
         client._file_fragments_sent = 0
@@ -323,7 +325,7 @@ class TestThePacingIsReal:
     def test_the_pause_follows_what_was_actually_sent(self):
         """A chunk that fitted in one frame costs one stanza of budget, not
         five.  Pacing on a fixed guess is wrong at both ends of a file."""
-        client = xmpp.OTRv4PlusXMPP.__new__(xmpp.OTRv4PlusXMPP)
+        client = bare_client(xmpp.OTRv4PlusXMPP)
         t = _Transport()
         client._file_manager = _manager(t)
         client._file_fragments_sent = 0
@@ -414,7 +416,7 @@ class TestAnAcceptedTransferIsNotRateLimitedAtAll:
     def test_the_limiter_asks_before_it_throttles(self):
         """The wiring. Reading the allowance and throttling anyway is the
         bug with extra steps."""
-        client = xmpp.OTRv4PlusXMPP.__new__(xmpp.OTRv4PlusXMPP)
+        client = bare_client(xmpp.OTRv4PlusXMPP)
         client._rate_limit = {}
         client._rate_drop_report = {}
         mgr, _t = self._accepted(chunks=119)
@@ -511,7 +513,7 @@ class TestAbandoningTellsTheSender:
 class TestTheDropLogDoesNotDrownTheSession:
 
     def test_repeats_inside_one_window_are_summarised(self, capsys):
-        client = xmpp.OTRv4PlusXMPP.__new__(xmpp.OTRv4PlusXMPP)
+        client = bare_client(xmpp.OTRv4PlusXMPP)
         client._rate_drop_report = {}
         for _ in range(200):
             client._note_rate_drop("bob@example.i2p")
@@ -521,7 +523,7 @@ class TestTheDropLogDoesNotDrownTheSession:
             "200 drops produced %d lines" % len(printed))
 
     def test_the_count_is_reported_not_swallowed(self, capsys):
-        client = xmpp.OTRv4PlusXMPP.__new__(xmpp.OTRv4PlusXMPP)
+        client = bare_client(xmpp.OTRv4PlusXMPP)
         client._rate_drop_report = {"bob@example.i2p":
                                     (time.monotonic() - 99, 41)}
         client._note_rate_drop("bob@example.i2p")

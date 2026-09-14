@@ -1,0 +1,468 @@
+# Android build — on GitHub's runners, because ours cannot reach Google
+#
+# WHY THIS EXISTS
+# ---------------
+# The Android SDK, the NDK, the Android Gradle Plugin and AndroidX are all
+# served from `dl.google.com`, and `maven.google.com` 301-redirects there.  The
+# development environment this project is written in returns 403 at the CONNECT
+# tunnel for that host — an egress policy, not a credential or a TLS problem —
+# so six of Phase 2's exit gates have never been testable.  See
+# ANDROID_PHASE2_REPORT.md §2.
+#
+# GitHub-hosted runners ship the SDK and NDK preinstalled and have no such
+# restriction.  So the build moves here.  Nothing about the project changes to
+# accommodate it: no dependency is swapped out, no repository is mirrored, and
+# `settings.gradle.kts` still asks for `google()` exactly as before.
+#
+# HOW TO READ A RUN
+# -----------------
+# The jobs are ordered by how much they prove, and kept independent wherever
+# they genuinely are, so a first red run still answers something.  `configure`
+# failing means the build files are wrong; `configure` green and `rust` red
+# means the cross-compile needs work, not the Gradle setup.  Each job says in
+# its own name what its success would establish.
+#
+# `configure` and `python-deps` depend on nothing.  `apk` and `kotlin-tests`
+# both wait on `rust`, because both build the debug variant and the debug
+# variant installs otrv4_core — the wheels have to exist first.  That is a real
+# dependency rather than a scheduling choice.
+
+name: Android
+
+on:
+  push:
+    branches: [main, "claude/**"]
+    paths:
+      - "android/**"
+      - "android_bridge/**"
+      - "Rust/**"
+      - ".github/workflows/android.yml"
+  pull_request:
+    paths:
+      - "android/**"
+      - "android_bridge/**"
+      - "Rust/**"
+      - ".github/workflows/android.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  # Stamped into BuildConfig.BUILD_ID and printed at the top of every
+  # diagnostic report, so a report always says which build produced it.
+  OTRV4PLUS_BUILD_ID: ${{ github.sha }}
+  # Chaquopy needs this exact version: otrv4+.py uses PEP 701 f-string syntax
+  # that does not parse on 3.11 or earlier.
+  PYTHON_VERSION: "3.12"
+  # Chaquopy's prebuilt CPython for Android, from Maven Central. Needed at
+  # LINK time, not just at runtime -- see the "Android libpython" step below.
+  # Must stay on the same 3.12 line as PYTHON_VERSION.
+  CHAQUOPY_TARGET: "3.12.12-0"
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Proves: the Gradle build files are valid and every dependency resolves.
+  # This is the gate that has never been reachable from the dev environment.
+  # ---------------------------------------------------------------------------
+  configure:
+    name: Resolve AGP, AndroidX and Chaquopy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Show what the runner already has
+        run: |
+          echo "ANDROID_HOME=$ANDROID_HOME"
+          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT"
+          echo "NDK=$ANDROID_NDK_LATEST_HOME"
+          ls "$ANDROID_HOME/platforms" || true
+          # The whole point of this workflow, stated as a check.
+          curl -sS -o /dev/null -w 'dl.google.com -> %{http_code}\n' \
+            https://dl.google.com/android/repository/repository2-3.xml
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Accept SDK licences
+        run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
+
+      - name: Configure the project
+        working-directory: android
+        # `tasks` forces full configuration -- plugin resolution, the Chaquopy
+        # plugin, the Compose compiler extension -- without compiling anything.
+        # If dl.google.com were the only problem, this alone would go green.
+        # ../.github/scripts/gradle.sh prints the region of the log that
+        # carries the diagnosis, which for a Chaquopy or kotlinc failure is
+        # not the "What went wrong" summary at the end.
+        run: ../.github/scripts/gradle.sh ./gradlew tasks --no-daemon --console=plain
+
+      - name: Resolve the app's dependency graph
+        working-directory: android
+        # ../.github/scripts/gradle.sh prints the region of the log that
+        # carries the diagnosis, which for a Chaquopy or kotlinc failure is
+        # not the "What went wrong" summary at the end.
+        run: ../.github/scripts/gradle.sh ./gradlew :app:dependencies --configuration debugRuntimeClasspath --no-daemon --console=plain
+
+  # ---------------------------------------------------------------------------
+  # Proves: the APK's hand-written pip list is the full dependency closure.
+  #
+  # The build sets `--no-deps`, because slixmpp requires aiodns, aiodns
+  # requires pycares, and pycares compiles c-ares with cmake -- which Chaquopy
+  # cannot do, and pip cannot be told to drop a single dependency.  The cost is
+  # that a dependency nobody names is no longer a build failure but an
+  # ImportError on a handset.  This is that check, moved somewhere it can run.
+  # ---------------------------------------------------------------------------
+  python-deps:
+    name: The APK's pip list is the whole closure
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Re-resolve the declared roots with dependencies on
+        run: python .github/scripts/verify_python_closure.py
+
+  # ---------------------------------------------------------------------------
+  # Proves: otrv4_core cross-compiles for the two shipped ABIs.
+  # pqcrypto-mlkem/mldsa compile C reference code, so this needs the NDK.
+  # ---------------------------------------------------------------------------
+  rust:
+    name: Cross-compile otrv4_core (${{ matrix.abi }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - abi: arm64-v8a
+            target: aarch64-linux-android
+            cc: aarch64-linux-android26-clang
+          - abi: x86_64
+            target: x86_64-linux-android
+            cc: x86_64-linux-android26-clang
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Point cargo at the NDK toolchain
+        run: |
+          NDK_BIN="$ANDROID_NDK_LATEST_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          echo "$NDK_BIN" >> "$GITHUB_PATH"
+          UPPER=$(echo "${{ matrix.target }}" | tr 'a-z-' 'A-Z_')
+          echo "CARGO_TARGET_${UPPER}_LINKER=$NDK_BIN/${{ matrix.cc }}" >> "$GITHUB_ENV"
+          echo "CC_${{ matrix.target }}=$NDK_BIN/${{ matrix.cc }}" >> "$GITHUB_ENV"
+          echo "AR_${{ matrix.target }}=$NDK_BIN/llvm-ar" >> "$GITHUB_ENV"
+
+      - name: Android libpython, because the linker demands one
+        # `ld.lld: error: unable to find library -lpython3`, run #1.
+        #
+        # On desktop Linux a Python extension leaves the Py* symbols undefined
+        # and the interpreter resolves them at dlopen, which is what
+        # `pyo3/extension-module` arranges. Android's linker does not permit
+        # that: every symbol must resolve at link time, so PyO3 emits
+        # `-lpython3` and something has to satisfy it.
+        #
+        # Chaquopy already ships exactly the right object -- it is the CPython
+        # the APK will run -- and publishes it on Maven Central. So the link
+        # is against the same libpython that will be present on the device,
+        # rather than a stub that merely silences the linker.
+        #
+        # The name differs: PyO3 is building abi3 (see the generated
+        # pyo3-config-*-abi3.txt) so it asks for `python3`, while Chaquopy
+        # ships `libpython3.12.so`. abi3 is the stable ABI, so a symlink is
+        # accurate rather than a fudge.
+        run: |
+          set -euo pipefail
+          BASE=https://repo.maven.apache.org/maven2/com/chaquo/python/target
+          V="${{ env.CHAQUOPY_TARGET }}"
+          curl -sSfLo target.zip "$BASE/$V/target-$V-${{ matrix.abi }}.zip"
+          unzip -q -o target.zip -d chaquopy
+          mkdir -p "$PWD/pylib"
+          SO="libpython${{ env.PYTHON_VERSION }}.so"
+          cp "chaquopy/jniLibs/${{ matrix.abi }}/$SO" pylib/
+
+          # Chaquopy's libpython carries NO SONAME -- checked with readelf, it
+          # has NEEDED entries for libm/libdl/libc and nothing else. That
+          # matters here and would not have failed until the app started:
+          # with no SONAME, the linker records whatever FILENAME it opened as
+          # our DT_NEEDED. `-lpython3` opens `libpython3.so`, so the wheel
+          # would ask the device for a file the APK does not contain -- it
+          # ships libpython3.12.so. A clean build, then dlopen fails.
+          #
+          # Setting the SONAME on our copy fixes it at the root: the linker
+          # prefers the SONAME over the filename, so DT_NEEDED comes out as
+          # libpython3.12.so, which is exactly what Chaquopy installs.
+          sudo apt-get -qq update && sudo apt-get -qq install -y patchelf
+          patchelf --set-soname "$SO" "pylib/$SO"
+          ln -sf "$SO" "pylib/libpython3.so"
+          readelf -d "pylib/$SO" | grep -i soname
+          ls -l pylib
+          # NOT PYO3_CROSS_LIB_DIR. That names a complete Python lib/
+          # directory and PyO3 looks in it for _sysconfigdata*.py, which a
+          # jniLibs folder does not have:
+          #   Could not find _sysconfigdata*.py in .../pylib
+          # An abi3 build does not need sysconfigdata at all -- the stable
+          # ABI is what makes it unnecessary -- so it only wants the target
+          # version, and the linker only wants -L.
+          echo "PYO3_CROSS_PYTHON_VERSION=${{ env.PYTHON_VERSION }}" >> "$GITHUB_ENV"
+          echo "RUSTFLAGS=-L native=$PWD/pylib" >> "$GITHUB_ENV"
+
+      - name: Build the wheel
+        working-directory: Rust
+        run: |
+          pip install maturin
+          maturin build --release \
+            --target ${{ matrix.target }} \
+            --features pyo3/extension-module \
+            --interpreter python${{ env.PYTHON_VERSION }} \
+            --out dist
+
+      - name: Name the extension plainly, as Chaquopy's importer expects
+        # maturin emits `otrv4_core/otrv4_core.abi3.so`. On a handset that gave
+        #   ModuleNotFoundError: cannot import otrv4_core.otrv4_core
+        # with the package's own __init__.py executing one frame above -- the
+        # package found, the extension beside it not. Every extension that does
+        # load in that process is named plainly (_bz2.so, math.so, zlib.so),
+        # because Chaquopy ships them as _bz2.cpython-312.so and they arrive
+        # as _bz2.so.
+        #
+        # `.so` is unconditionally in CPython's suffix table on POSIX, so this
+        # cannot cost anything and removes one way to fail. The binary is
+        # untouched: a zip entry name and its RECORD row.
+        working-directory: Rust
+        run: python ../.github/scripts/plain_so_name.py dist/*.whl
+
+      - name: The wheel must ask for the libpython the APK ships
+        # The check that would otherwise be a crash on first launch. A wheel
+        # naming `libpython3.so` links and packages perfectly and then cannot
+        # be loaded, because Chaquopy installs `libpython3.12.so`.
+        working-directory: Rust
+        run: |
+          set -euo pipefail
+          WHEEL=$(ls dist/*.whl)
+          unzip -q -o "$WHEEL" -d wheel-check
+          SO=$(find wheel-check -name '*.so' | head -1)
+          echo "inspecting $SO"
+          readelf -d "$SO" | grep NEEDED
+          if ! readelf -d "$SO" | grep -q "libpython${{ env.PYTHON_VERSION }}.so"; then
+            echo "::error::the wheel does not depend on libpython${{ env.PYTHON_VERSION }}.so, so it will not load under Chaquopy"
+            exit 1
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: otrv4_core-${{ matrix.abi }}
+          path: Rust/dist/*.whl
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------------------
+  # Proves: an APK exists. The Phase 2 exit gate.
+  # Debug only -- release signing needs keys that do not belong in CI.
+  # ---------------------------------------------------------------------------
+  apk:
+    name: Assemble a debug APK
+    runs-on: ubuntu-latest
+    needs: [configure, rust]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: otrv4_core-*
+          path: android/app/wheels
+          merge-multiple: true
+
+      - name: The wheels must be here, or pip says something unhelpful
+        # Without them the failure is "Could not find a version that satisfies
+        # the requirement otrv4_core", several hundred lines into a Chaquopy
+        # log, which does not point at a missing artifact download.
+        run: |
+          set -euo pipefail
+          ls -l android/app/wheels || true
+          if ! ls android/app/wheels/*.whl >/dev/null 2>&1; then
+            echo "::error::no otrv4_core wheels were downloaded from the rust job; the app cannot be built without the Rust core"
+            exit 1
+          fi
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Accept SDK licences
+        run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
+
+      - name: assembleDebug
+        working-directory: android
+        # ../.github/scripts/gradle.sh prints the region of the log that
+        # carries the diagnosis, which for a Chaquopy or kotlinc failure is
+        # not the "What went wrong" summary at the end.
+        run: ../.github/scripts/gradle.sh ./gradlew :app:assembleDebug --no-daemon --console=plain
+
+      - name: The APK must actually contain the Rust core
+        # An assembleDebug that goes green proves an APK exists, not that the
+        # app is in it. Until the commit that added `install("otrv4_core")`,
+        # every green APK job here produced a package with no crypto core at
+        # all: the wheels were downloaded, printed, and never installed. That
+        # is a silent failure -- the build is perfect and the app dies at
+        # `import otrv4_core` on the handset -- so it gets the same treatment
+        # as the SONAME check in the `rust` job: inspect the artifact, and
+        # fail loudly here rather than quietly there.
+        run: |
+          set -euo pipefail
+          APK=$(find android/app/build/outputs/apk -name '*.apk' | head -1)
+          test -n "$APK" || { echo "::error::assembleDebug produced no APK"; exit 1; }
+          echo "inspecting $APK ($(stat -c%s "$APK") bytes)"
+
+          # Chaquopy puts native requirements in lib/<abi>/ so the system
+          # linker can load them, and pure-Python ones inside the
+          # assets/chaquopy/*.imy zips. Check both rather than assuming which.
+          if unzip -l "$APK" | grep -i otrv4_core; then
+            echo "otrv4_core is packaged as a native library"
+            exit 0
+          fi
+          rm -rf /tmp/apk-check && mkdir -p /tmp/apk-check
+          unzip -q -o "$APK" 'assets/chaquopy/*' -d /tmp/apk-check || true
+          found=0
+          for imy in /tmp/apk-check/assets/chaquopy/*.imy; do
+            [ -e "$imy" ] || continue
+            if unzip -l "$imy" 2>/dev/null | grep -i otrv4_core; then
+              echo "  ^ found in $(basename "$imy")"
+              found=1
+            fi
+          done
+          if [ "$found" -eq 0 ]; then
+            echo "::error::the APK contains no otrv4_core -- it has no cryptographic core and would fail at import on a device"
+            echo "--- what the APK does contain:"
+            unzip -l "$APK" | grep -E 'lib/|assets/chaquopy/' | head -40
+            exit 1
+          fi
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: apk-debug
+          path: android/app/build/outputs/apk/**/*.apk
+          if-no-files-found: warn
+
+  # ---------------------------------------------------------------------------
+  # Proves: the Kotlin security layer still passes. The tests themselves are
+  # pure JVM -- AppLockManager, AttemptThrottle and LockState import nothing
+  # from Android -- but running them builds the debug variant, and the debug
+  # variant now installs otrv4_core. So this job needs the Rust wheels, and is
+  # no longer independent of `rust`. That is the honest wiring: the test task
+  # really does depend on the app building, and pretending otherwise only
+  # worked while the APK had no core in it.
+  # ---------------------------------------------------------------------------
+  kotlin-tests:
+    name: Kotlin security-layer tests
+    runs-on: ubuntu-latest
+    needs: [rust]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: otrv4_core-*
+          path: android/app/wheels
+          merge-multiple: true
+
+      - name: The wheels must be here, or pip says something unhelpful
+        # Without them the failure is "Could not find a version that satisfies
+        # the requirement otrv4_core", several hundred lines into a Chaquopy
+        # log, which does not point at a missing artifact download.
+        run: |
+          set -euo pipefail
+          ls -l android/app/wheels || true
+          if ! ls android/app/wheels/*.whl >/dev/null 2>&1; then
+            echo "::error::no otrv4_core wheels were downloaded from the rust job; the app cannot be built without the Rust core"
+            exit 1
+          fi
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Accept SDK licences
+        run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
+
+      - name: Unit tests
+        working-directory: android
+        # ../.github/scripts/gradle.sh prints the region of the log that
+        # carries the diagnosis, which for a Chaquopy or kotlinc failure is
+        # not the "What went wrong" summary at the end.
+        run: ../.github/scripts/gradle.sh ./gradlew :app:testDebugUnitTest --no-daemon --console=plain
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: kotlin-test-report
+          path: android/app/build/reports/tests/**
+          if-no-files-found: ignore
+
+  # ---------------------------------------------------------------------------
+  # Publishes: the debug APK, as a rolling EXPERIMENTAL prerelease.
+  #
+  # Why a release rather than leaving it as a build artifact: artifacts expire
+  # after 90 days, download as a .zip wrapper, and require a signed-in GitHub
+  # session even on a public repo. A release asset has none of those problems —
+  # stable URL, direct .apk, no expiry, no sign-in.
+  #
+  # Why it runs here rather than someone uploading by hand: the runner already
+  # has the APK and a scoped token, so the binary never travels. It also means
+  # the published build and the green run are the same build, by construction.
+  #
+  # `gh` is preinstalled on the runner and is used deliberately in place of a
+  # third-party release action: publishing a binary under this project's name
+  # is not somewhere to add a supply-chain dependency.
+  # ---------------------------------------------------------------------------
+  release:
+    name: Publish the experimental APK
+    runs-on: ubuntu-latest
+    # EVERY job, not just `apk`. A build whose tests failed must not be
+    # published, and `apk` alone would not notice: it does not depend on
+    # kotlin-tests or python-deps.
+    needs: [configure, python-deps, rust, apk, kotlin-tests]
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/claude/otrv4plus-android-spec-a3oq4d'
+    permissions:
+      # Narrower than it looks: this replaces the workflow-level `contents:
+      # read` for this job only. Nothing else in the run can write.
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: apk-debug
+          path: apk
+
+      - name: Publish the rolling experimental prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: .github/scripts/publish-experimental-apk.sh
