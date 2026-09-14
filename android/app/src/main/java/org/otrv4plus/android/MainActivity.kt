@@ -6,6 +6,12 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.activity.compose.BackHandler
+import org.otrv4plus.android.ui.ConnectScreen
 import org.otrv4plus.android.ui.DevShellScreen
 
 /**
@@ -38,7 +44,19 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             MaterialTheme {
-                Surface { DevShellScreen() }
+                Surface {
+                    // Two destinations, no navigation library yet: there are
+                    // two screens and a Boolean says which. navigation-compose
+                    // earns its place when there are contacts and
+                    // conversations to move between, not before.
+                    var showDiagnostics by remember { mutableStateOf(false) }
+                    if (showDiagnostics) {
+                        BackHandler { showDiagnostics = false }
+                        DevShellScreen()
+                    } else {
+                        ConnectScreen(onOpenDiagnostics = { showDiagnostics = true })
+                    }
+                }
             }
         }
     }

@@ -186,8 +186,9 @@ private fun shareReport(context: Context, text: String) {
     context.startActivity(Intent.createChooser(send, "Export diagnostic report"))
 }
 
+/** Shared with [ConnectScreen]; `private` here would be file-private. */
 @Composable
-private fun StatusRow(label: String, value: String) {
+internal fun StatusRow(label: String, value: String) {
     Row(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.SpaceBetween,

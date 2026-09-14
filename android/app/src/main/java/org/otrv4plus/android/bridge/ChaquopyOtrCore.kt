@@ -173,6 +173,97 @@ class ChaquopyOtrCore(private val appContext: Context) : OtrCore {
     private fun requireApp(): PyObject =
         app ?: throw OtrBridgeException("not_initialized")
 
+    // ── Connection control ────────────────────────────────────────────────
+    //
+    // Deliberately NOT on the OtrCore interface. OtrCore is about an
+    // established session -- fingerprints, SMP, security state -- and those
+    // are questions for the engine. Bringing a transport up is a different
+    // concern with a different failure vocabulary, and folding it in would
+    // mean every future OtrCore implementation had to own a socket too.
+    //
+    // Every method here calls into Python and must therefore run off the main
+    // thread. A tunnel build can take minutes; on the main thread that is an
+    // ANR, not a slow connection.
+
+    private var controller: PyObject? = null
+
+    /**
+     * Prepare a controller for [jid], using the compiled-in default server.
+     *
+     * Blank [server], [samHost] and [samPort] mean "use the default", which is
+     * the common case: the app ships pointing somewhere and the user overrides
+     * only if they run their own.
+     */
+    fun prepareConnection(
+        jid: String,
+        server: String = "",
+        samHost: String = "",
+        samPort: Int = 0,
+    ): ConnectionStatus {
+        val module = python.getModule("android_bridge.connection")
+        controller = module.callAttr(
+            "controller_for", requireApp(), jid, server, samHost, samPort)
+        return connectionStatus()
+    }
+
+    /**
+     * Bring the connection up. Never throws for an ordinary failure.
+     *
+     * The Python side returns a result map rather than raising, because an
+     * exception crossing Chaquopy arrives as a PyException whose message is
+     * all that survives -- which is exactly how the first handset report came
+     * back saying nothing but "PyException".
+     *
+     * [password] is passed straight through and is not retained here, not
+     * logged, and not put in any status field.
+     */
+    fun connect(password: String): ConnectionStatus {
+        val ctl = controller ?: throw OtrBridgeException("not_prepared")
+        val result = ctl.callAttr("connect", password)
+        return statusFrom(ctl, result)
+    }
+
+    fun disconnect(): ConnectionStatus {
+        val ctl = controller ?: return connectionStatus()
+        val result = ctl.callAttr("disconnect")
+        return statusFrom(ctl, result)
+    }
+
+    /** Probe the SAM bridge alone: milliseconds, and it answers the question
+     * "is a router running" without a four-minute tunnel attempt. */
+    fun probeRouter(): RouterProbe {
+        val ctl = controller ?: throw OtrBridgeException("not_prepared")
+        val probe = ctl.callAttr("probe")
+        return RouterProbe(
+            reachable = probe.callAttr("get", "reachable")?.toBoolean() ?: false,
+            code = probe.callAttr("get", "code")?.toString() ?: "unknown",
+            detail = probe.callAttr("get", "detail")?.toString() ?: "",
+            version = probe.callAttr("get", "version")?.toString() ?: "",
+        )
+    }
+
+    fun connectionStatus(): ConnectionStatus {
+        val ctl = controller ?: return ConnectionStatus()
+        return statusFrom(ctl, null)
+    }
+
+    private fun statusFrom(ctl: PyObject, result: PyObject?): ConnectionStatus {
+        val s = ctl.callAttr("status")
+        fun str(k: String) = s.callAttr("get", k)?.toString() ?: ""
+        fun bool(k: String) = s.callAttr("get", k)?.toBoolean() ?: false
+        val last = result ?: s.callAttr("get", "last")
+        return ConnectionStatus(
+            stage = str("stage"),
+            connected = bool("connected"),
+            jid = str("jid"),
+            server = str("server"),
+            isDefaultServer = bool("is_default_server"),
+            sam = str("sam"),
+            code = last?.callAttr("get", "code")?.toString() ?: "",
+            detail = last?.callAttr("get", "detail")?.toString() ?: "",
+        )
+    }
+
     override fun shutdown() {
         try {
             app?.callAttr("shutdown")

@@ -144,6 +144,48 @@ data class Contact(
     val callAvailable: Boolean,
 )
 
+/**
+ * Where the transport has got to, and what it last said.
+ *
+ * Note what is NOT here: no security state, no fingerprint, no "encrypted"
+ * flag. A connection is a socket to a server; being connected says nothing
+ * about whether a session with a peer is encrypted, and a screen that blurred
+ * the two would be claiming a property nobody had established. Security state
+ * comes from [OtrCore.securityState], which asks the engine.
+ *
+ * [stage] is one of the Python controller's stages, in order: idle,
+ * checking_router, building_tunnels, connecting, authenticating, connected,
+ * failed. They are distinct because their remedies are, and because they are
+ * three orders of magnitude apart in duration -- a refused SAM port answers in
+ * milliseconds, a cold I2P tunnel can take four minutes.
+ */
+data class ConnectionStatus(
+    val stage: String = "idle",
+    val connected: Boolean = false,
+    val jid: String = "",
+    val server: String = "",
+    val isDefaultServer: Boolean = false,
+    val sam: String = "",
+    /** A stable code to branch on: ok, refused, timeout, not_sam, auth_failed... */
+    val code: String = "",
+    /** A sentence for a person, naming the remedy where one is knowable. */
+    val detail: String = "",
+)
+
+/**
+ * Whether a SAM bridge is listening, answered in milliseconds.
+ *
+ * Run before any tunnel attempt. Without it, "no router running" and "tunnel
+ * still building" look identical for four minutes, and the user restarts the
+ * app during the one case where waiting was the right thing to do.
+ */
+data class RouterProbe(
+    val reachable: Boolean,
+    val code: String,
+    val detail: String,
+    val version: String,
+)
+
 data class SecurityDetails(
     val peer: String,
     val security: SecurityState,
