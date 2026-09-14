@@ -1212,7 +1212,23 @@ class TestJitterBuffer(unittest.TestCase):
         self.assertIsNotNone(jb.pop())
 
     def test_reordering_is_corrected(self):
-        jb = V.JitterBuffer(prefill=1, maxlen=10)
+        # shed_margin is deliberately large: this test is about ORDERING, and
+        # nothing else should be allowed to remove a frame from it.
+        #
+        # It used to construct JitterBuffer(prefill=1, maxlen=10) and broke at
+        # v10.29.0, which lowered VOICE_JITTER_SHED_MARGIN_MS from 180 to 120
+        # -- two frames at 60 ms instead of three. With prefill=1 that put the
+        # shed threshold at 1+2=3, so the fourth queued frame made the buffer
+        # "too deep" and the oldest (seq 0) was discarded to cut latency. The
+        # reordering itself was never wrong; the assertion was measuring the
+        # shedder by accident.
+        #
+        # prefill=1 is below the production floor anyway (VOICE_JITTER_PREFILL
+        # is max(2, ...)), so the configuration this tripped on is one the app
+        # never runs. The shed threshold itself is pinned by
+        # tests/test_shed_does_not_manufacture_gaps.py, where it is the
+        # subject rather than an accident.
+        jb = V.JitterBuffer(prefill=1, maxlen=10, shed_margin=64)
         for c in (3, 1, 2, 0):
             jb.push(0, c, bytearray([c]))
         out = []

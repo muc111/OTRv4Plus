@@ -171,10 +171,36 @@ class TestControlChannel(_ControlBase):
         self.assertEqual(mode & 0o077, 0, "FIFO is readable by others")
 
     def test_the_command_carries_no_peer_text(self):
-        actions = self.chan.arm("-rm -rf ~@evil.org", CALL_ID)
+        """A hostile JID must not reach the shell command at all.
+
+        The needle is the PEER STRING, not fragments of it. An earlier version
+        also asserted `"rm" not in command`, meaning to catch the `-rm -rf`
+        in the fixture. On Termux the FIFO lives under
+        /data/data/com.te**rm**ux/..., so the assertion fired on the platform's
+        own package name -- and only there, which is to say only on the
+        primary supported platform. A substring that short says nothing about
+        where it came from.
+        """
+        hostile = "-rm -rf ~@evil.org"
+        actions = self.chan.arm(hostile, CALL_ID)
+        self.assertTrue(actions, "arm produced no actions to check")
         for _label, command in actions:
+            # Nothing peer-derived, whole or in part.
+            self.assertNotIn(hostile, command)
             self.assertNotIn("evil", command)
-            self.assertNotIn("rm", command)
+            self.assertNotIn("-rf", command)
+            self.assertNotIn("~@", command)
+            # And nothing that could turn one command into two, wherever it
+            # came from. This is the property the fixture is probing for.
+            #
+            # `&&` is deliberately NOT in this list: the generated command
+            # legitimately uses one to guard on the FIFO existing. chr(10) is
+            # a real newline -- not the two-character backslash-n that printf
+            # carries inside its format string, which is ours and is fine.
+            for metachar in (";", "|", "$(", "`", chr(10)):
+                self.assertNotIn(metachar, command,
+                                 "shell metacharacter %r in %r"
+                                 % (metachar, command))
 
     def test_the_command_passes_the_ringer_action_filter(self):
         for _label, command in self.chan.arm(PEER, CALL_ID):

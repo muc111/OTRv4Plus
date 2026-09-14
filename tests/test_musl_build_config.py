@@ -92,6 +92,30 @@ class TestTheDefinitionIsCorrect:
             pytest.skip("no C compiler")
         return cc
 
+    def _is_glibc(self):
+        """Does this libc define __GNUC_PREREQ in <features.h>?
+
+        That shape is what the musl simulation depends on: shadowing
+        <features.h> with an empty one only removes something if the real one
+        was providing it. Asked by compiling rather than by inspecting
+        platform strings, because the question is about the header, and Bionic
+        and musl would both otherwise have to be recognised by name.
+        """
+        import subprocess
+        import tempfile as _tf
+        cc = self._cc()
+        with _tf.TemporaryDirectory() as work:
+            probe = os.path.join(work, "p.c")
+            with open(probe, "w", encoding="utf-8") as fh:
+                fh.write("#include <features.h>\n"
+                         "#ifndef __GNUC_PREREQ\n"
+                         "#error no __GNUC_PREREQ\n"
+                         "#endif\n"
+                         "int main(void){return 0;}\n")
+            return subprocess.run(
+                [cc, "-c", probe, "-o", os.devnull],
+                capture_output=True).returncode == 0
+
     def test_it_agrees_with_glibcs_own_definition(self, env_table):
         """Compiled and run, against glibc's
         `((__GNUC__ << 16) + __GNUC_MINOR__ >= ((maj) << 16) + (min))`,
@@ -155,9 +179,30 @@ class TestTheDefinitionIsCorrect:
                       "-c", probe, "-o", os.devnull]
 
             without = subprocess.run(common, capture_output=True)
-            assert without.returncode != 0, (
-                "the musl failure no longer reproduces -- upstream may have "
-                "fixed it, in which case this workaround can go")
+            if without.returncode == 0:
+                # Two very different things look identical here, and the
+                # earlier message assumed the wrong one.
+                #
+                # The simulation only reproduces musl's behaviour on a libc
+                # whose compat.h reaches __GNUC_PREREQ through <features.h>.
+                # Bionic does not: on Termux/Android this compiles cleanly
+                # with or without the flag, and the test reported "upstream
+                # may have fixed it, in which case this workaround can go" --
+                # which, acted on, would have deleted a workaround that musl
+                # still needs. It failed only on the project's primary
+                # platform, and told the reader to remove working code.
+                #
+                # A premise that does not hold is a skip, not a pass and
+                # certainly not a finding.
+                if not self._is_glibc():
+                    pytest.skip(
+                        "the __GNUC_PREREQ-via-features.h shape this "
+                        "simulates is glibc's; this libc does not have it, so "
+                        "the musl failure cannot be reproduced here")
+                pytest.fail(
+                    "the musl failure no longer reproduces on a glibc host -- "
+                    "upstream may have fixed it, in which case this "
+                    "workaround can go")
             assert b"missing binary operator" in without.stderr
 
             flag = env_table["CFLAGS_%s" % MUSL_TRIPLES[0]]
