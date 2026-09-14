@@ -123,6 +123,91 @@ class TestThePortField:
         assert address.sam_port_error(True) is not None
 
 
+class TestTheB32ShapeIsChecked:
+    """Fifty-two random characters, and no second chance to notice a typo.
+
+    Every other kind of wrong address fails fast and says something: a bad
+    hostname gets a NAMING LOOKUP failure, a bad JID is rejected by the server.
+    A `.b32.i2p` label IS the destination hash -- nothing resolves it
+    (TRANSPORT_POLICY.md) -- so one changed character is a well-formed address
+    for a destination that does not exist, and the only symptom is
+    SAM_CONNECT_TIMEOUT: 240 seconds of spinner before anything is said.
+    """
+
+    GOOD_B32 = "hq4t24b7vkllfbk55e5xfocqhfi7hxprwc47zyuilbg6wgzikidq.b32.i2p"
+
+    def test_a_real_address_passes(self):
+        assert address.b32_error(self.GOOD_B32) is None
+        assert address.server_error(self.GOOD_B32) is None
+
+    def test_a_truncated_paste_is_named_as_truncated(self):
+        """The failure mode: a chat client wrapped the line."""
+        err = address.b32_error(self.GOOD_B32[:-12] + ".b32.i2p")
+        assert err is not None
+        assert "truncated" in err and "line break" in err
+
+    def test_something_appended_is_named_differently(self):
+        err = address.b32_error("x" + self.GOOD_B32)
+        assert err is not None and "appended" in err
+
+    def test_a_character_outside_the_alphabet_is_pointed_at(self):
+        """0/1/8/9 look like O/l/B/g and are not in base32."""
+        err = address.b32_error(self.GOOD_B32.replace("q4t", "q0t", 1))
+        assert err is not None
+        assert "'0'" in err, err
+        assert "a-z and 2-7" in err
+
+    def test_case_is_accepted_either_way(self):
+        """Base32 is case-insensitive and a router takes both."""
+        assert address.b32_error(self.GOOD_B32.upper()) is None
+
+    def test_the_address_is_not_silently_rewritten(self):
+        """Normalising what someone typed is how a mismatch becomes invisible."""
+        upper = self.GOOD_B32.upper()
+        assert ConnectionProfile(jid=GOOD, server=upper).server == upper
+
+    def test_a_short_i2p_name_has_no_shape_to_check(self):
+        """Resolved by the hosts file or a NAMING LOOKUP, not by its spelling."""
+        assert address.b32_error("xmpp-elite.i2p") is None
+        assert address.b32_error("anything-at-all.i2p") is None
+
+    def test_extra_labels_before_the_suffix_are_rejected(self):
+        assert address.b32_error("a.b.b32.i2p") is not None
+
+    def test_a_simpler_problem_is_reported_before_the_b32_rules(self):
+        """An account pasted into the server field should say so, not talk
+        about base32 alphabets."""
+        err = address.server_error("alice@" + self.GOOD_B32)
+        assert err is not None and "not an account" in err
+
+
+class TestTheShippedDefault:
+
+    def test_it_is_the_address_it_is_supposed_to_be(self):
+        """Pinned. A transposed character here reaches every install."""
+        assert DEFAULT_SERVER == (
+            "hq4t24b7vkllfbk55e5xfocqhfi7hxprwc47zyuilbg6wgzikidq.b32.i2p")
+
+    def test_a_fresh_install_gets_a_usable_profile(self):
+        p = default_profile("alice@xmpp-elite.i2p")
+        assert p is not None
+        assert p.is_default_server is True
+        assert p.is_complete is True
+        p.validate()
+
+    def test_the_default_is_not_a_trust_anchor(self):
+        """Recorded because compiling a server in invites the assumption.
+
+        The DAKE authenticates the peer end to end and TOFU pins their
+        identity key, so a hostile server at this address costs availability
+        and metadata and cannot read a message. Nothing in the profile grants
+        it anything -- this test exists so that stays true by inspection.
+        """
+        names = {f.name for f in ConnectionProfile.__dataclass_fields__.values()}
+        for anchor in ("trust", "pin", "fingerprint", "verify", "ca", "cert"):
+            assert not any(anchor in n.lower() for n in names), names
+
+
 class TestTheUserCanLeaveTheDefaultServer:
 
     def test_a_custom_server_is_not_reported_as_the_default(self):

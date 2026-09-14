@@ -55,8 +55,17 @@ __all__ = [
 #: Set it to the c2s destination of the server the app should use, for example
 #: "xmpp-elite.i2p" or a full "<52 chars>.b32.i2p". The JID domain a user types
 #: does not have to match it: `server` is the host the SAM stream is opened to,
-#: `jid`'s domain is the XMPP virtual host, and a server can front several.
-DEFAULT_SERVER = ""
+#: `jid`'s domain is the XMPP virtual host, and a server can front several --
+#: which is why a profile carries both and why `effective_server` exists.
+#:
+#: This is a destination hash, not a name: nothing resolves it, the label *is*
+#: the address (`TRANSPORT_POLICY.md`). It is therefore not a trust anchor
+#: either, and does not become one by being compiled in. The server is a relay
+#: the DAKE authenticates *through*: the peer's identity key is pinned by TOFU
+#: end to end, so a substituted or hostile server at this address costs
+#: availability and metadata, and cannot read a message or impersonate a
+#: contact.
+DEFAULT_SERVER = "hq4t24b7vkllfbk55e5xfocqhfi7hxprwc47zyuilbg6wgzikidq.b32.i2p"
 
 
 class ProfileError(ValueError):
