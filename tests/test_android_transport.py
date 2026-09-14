@@ -715,3 +715,154 @@ class TestItDoesNotHangOnAStreamThatWillNotOpen:
                 "completes the handshake hangs for the full timeout")
         finally:
             t.close()
+
+
+class TestSubscriptionsAreADecisionNotADefault:
+    """slixmpp defaults auto_authorize and auto_subscribe to True, so
+    "we accept everyone" would otherwise be true by accident and would change
+    silently if upstream changed its mind."""
+
+    def test_the_shipped_default_accepts_and_reciprocates(self):
+        from android_bridge.transport import SubscriptionPolicy
+        t, made = build()
+        try:
+            t.connect()
+            assert made["client"].auto_authorize is True
+            assert made["client"].auto_subscribe is True
+            assert t.subscription_policy == SubscriptionPolicy.ACCEPT
+        finally:
+            t.close()
+
+    def test_ask_hands_the_decision_to_the_ui(self):
+        """None, not False: None disables automatic handling, False refuses."""
+        from android_bridge.transport import SubscriptionPolicy
+        t, made = build(subscription_policy=SubscriptionPolicy.ASK)
+        try:
+            t.connect()
+            assert made["client"].auto_authorize is None
+            assert made["client"].auto_subscribe is False
+        finally:
+            t.close()
+
+    def test_reject_refuses_rather_than_ignoring(self):
+        from android_bridge.transport import SubscriptionPolicy
+        t, made = build(subscription_policy=SubscriptionPolicy.REJECT)
+        try:
+            t.connect()
+            assert made["client"].auto_authorize is False
+        finally:
+            t.close()
+
+    def test_one_way_accepts_without_asking_for_theirs(self):
+        from android_bridge.transport import SubscriptionPolicy
+        t, made = build(subscription_policy=SubscriptionPolicy.ACCEPT_ONE_WAY)
+        try:
+            t.connect()
+            assert made["client"].auto_authorize is True
+            assert made["client"].auto_subscribe is False
+        finally:
+            t.close()
+
+    def test_an_unknown_policy_falls_back_to_the_documented_default(self):
+        from android_bridge.transport import SubscriptionPolicy
+        t, made = build(subscription_policy="whatever")
+        try:
+            t.connect()
+            assert t.subscription_policy == SubscriptionPolicy.ACCEPT
+        finally:
+            t.close()
+
+    def test_a_request_is_reported_even_when_auto_accepted(self):
+        """The user is entitled to know a stranger is now watching their
+        presence. Finding out because a name appeared in a list is not the
+        same as being told."""
+        seen = []
+        t, made = build(on_subscription_request=seen.append)
+        try:
+            t.connect()
+            made["client"].fire("presence_subscribe",
+                                {"from": "mallory@elsewhere.i2p/phone"})
+            assert seen == ["mallory@elsewhere.i2p"]
+        finally:
+            t.close()
+
+    def test_a_handler_that_raises_does_not_drop_the_session(self):
+        def boom(_jid):
+            raise RuntimeError("bug")
+
+        t, made = build(on_subscription_request=boom)
+        try:
+            t.connect()
+            made["client"].fire("presence_subscribe", {"from": "x@y.i2p"})
+            assert t.is_connected
+        finally:
+            t.close()
+
+
+class TestAddingAndRemovingContacts:
+
+    def test_adding_updates_the_roster_and_asks_for_presence(self):
+        t, made = build()
+        calls = []
+        try:
+            t.connect()
+            made["client"].update_roster = lambda j, **kw: calls.append(
+                ("roster", str(j), kw))
+            made["client"].send_presence_subscription = lambda **kw: calls.append(
+                ("sub", kw.get("pto"), kw.get("ptype")))
+            t.add_contact("bob@xmpp-elite.i2p", "Bob")
+            assert ("roster", "bob@xmpp-elite.i2p", {"name": "Bob"}) in calls
+            assert ("sub", "bob@xmpp-elite.i2p", "subscribe") in calls
+        finally:
+            t.close()
+
+    def test_removing_unsubscribes_and_drops_the_entry(self):
+        t, made = build()
+        calls = []
+        try:
+            t.connect()
+            made["client"].update_roster = lambda j, **kw: calls.append(kw)
+            made["client"].send_presence_subscription = lambda **kw: calls.append(
+                kw.get("ptype"))
+            t.remove_contact("bob@xmpp-elite.i2p")
+            assert "unsubscribe" in calls
+            assert {"subscription": "remove"} in calls
+        finally:
+            t.close()
+
+    def test_answering_a_request_sends_the_right_presence(self):
+        t, made = build()
+        calls = []
+        try:
+            t.connect()
+            made["client"].send_presence_subscription = lambda **kw: calls.append(
+                kw.get("ptype"))
+            t.answer_subscription("bob@xmpp-elite.i2p", True)
+            t.answer_subscription("mallory@elsewhere.i2p", False)
+            assert calls == ["subscribed", "unsubscribed"]
+        finally:
+            t.close()
+
+    def test_roster_changes_need_a_connection(self):
+        t, _ = build()
+        try:
+            for call in (lambda: t.add_contact("a@b.i2p"),
+                         lambda: t.remove_contact("a@b.i2p"),
+                         lambda: t.answer_subscription("a@b.i2p", True)):
+                with pytest.raises(TransportError) as caught:
+                    call()
+                assert caught.value.code == "not_connected"
+        finally:
+            t.close()
+
+    def test_the_slixmpp_calls_bind_against_the_real_signatures(self):
+        """The lesson from connect(address=...): a fake that agrees with a
+        mistake proves nothing."""
+        slixmpp = pytest.importorskip("slixmpp")
+        import inspect
+        upd = inspect.signature(slixmpp.ClientXMPP.update_roster)
+        upd.bind(object(), "bob@x.i2p", name="Bob")
+        upd.bind(object(), "bob@x.i2p", subscription="remove")
+        sub = inspect.signature(slixmpp.ClientXMPP.send_presence_subscription)
+        sub.bind(object(), pto="bob@x.i2p", ptype="subscribe")
+        sub.bind(object(), pto="bob@x.i2p", ptype="subscribed")

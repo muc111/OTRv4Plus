@@ -48,7 +48,61 @@ from typing import Any, Callable, Dict, List, Optional
 from .app import Transport
 from .settings import ConnectionProfile
 
-__all__ = ["XmppTransport", "TransportError", "DEFAULT_C2S_PORT"]
+__all__ = ["XmppTransport", "TransportError", "DEFAULT_C2S_PORT",
+           "SubscriptionPolicy"]
+
+
+class SubscriptionPolicy:
+    """What happens when someone asks to see your presence.
+
+    Presence is metadata. Approving a subscription tells that account when you
+    are online, from which device, and how idle you are -- for as long as they
+    keep it. On an anonymity-oriented messenger that is worth a deliberate
+    choice rather than an inherited default, which is what slixmpp's
+    `auto_authorize = True` would otherwise be.
+
+    ACCEPT is the shipped default because it is what was asked for and because
+    on a server you control it is the difference between a contact list that
+    works and one that needs a second out-of-band step per person. It is a
+    setting, and ASK is one line away for anyone who wants it.
+
+    None of this is an OTR question. A subscription grants presence, not the
+    ability to read anything: a message from an approved contact is still
+    plaintext until a DAKE has run, and the conversation screen says so.
+    """
+
+    #: Approve, and ask for theirs back. slixmpp: auto_authorize=True,
+    #: auto_subscribe=True.
+    ACCEPT = "accept"
+    #: Approve, but do not ask for theirs. auto_authorize=True,
+    #: auto_subscribe=False.
+    ACCEPT_ONE_WAY = "accept_one_way"
+    #: Neither approve nor refuse -- hand it to the UI. auto_authorize=None.
+    ASK = "ask"
+    #: Refuse. auto_authorize=False.
+    REJECT = "reject"
+
+    ALL = (ACCEPT, ACCEPT_ONE_WAY, ASK, REJECT)
+
+    #: (auto_authorize, auto_subscribe) for each, mapped onto the two
+    #: properties slixmpp actually has. Verified against basexmpp.py: True
+    #: approves, None disables automatic handling, False refuses.
+    _SLIXMPP = {
+        ACCEPT: (True, True),
+        ACCEPT_ONE_WAY: (True, False),
+        ASK: (None, False),
+        REJECT: (False, False),
+    }
+
+    @classmethod
+    def apply(cls, client, policy: str) -> str:
+        """Set the policy on *client*. Returns the policy actually applied."""
+        if policy not in cls._SLIXMPP:
+            policy = cls.ACCEPT
+        authorize, subscribe = cls._SLIXMPP[policy]
+        client.auto_authorize = authorize
+        client.auto_subscribe = subscribe
+        return policy
 
 _log = logging.getLogger("otrv4plus.bridge.transport")
 
@@ -91,6 +145,8 @@ class XmppTransport(Transport):
         on_payload: Callable[[str, str], None],
         on_presence: Optional[Callable[[str, bool], None]] = None,
         on_state: Optional[Callable[[str, str], None]] = None,
+        on_subscription_request: Optional[Callable[[str], None]] = None,
+        subscription_policy: str = SubscriptionPolicy.ACCEPT,
         client_factory: Optional[Callable[..., Any]] = None,
         forwarder: Optional[Callable[..., Any]] = None,
     ):
@@ -104,6 +160,8 @@ class XmppTransport(Transport):
         self._on_payload = on_payload
         self._on_presence = on_presence
         self._on_state = on_state
+        self._on_subscription_request = on_subscription_request
+        self._subscription_policy = subscription_policy
         # Injected so the tests can drive the whole state machine without
         # slixmpp, a SAM bridge, or a network. Defaulted lazily rather than
         # here, because importing the real ones costs the engine.
@@ -415,7 +473,60 @@ class XmppTransport(Transport):
         """What was actually decided, for the report to state rather than claim."""
         return getattr(self, "_tls_policy", "not yet decided")
 
+    # -- roster ---------------------------------------------------------------
+
+    def add_contact(self, jid: str, name: str = "") -> None:
+        """Ask *jid* to let us see their presence, and put them on the roster.
+
+        Two separate things in XMPP and worth keeping separate here: the roster
+        entry is local bookkeeping, the subscription is a request the other
+        side answers. `add_contact` does both because a contact you cannot see
+        is not what anyone means by adding one.
+        """
+        if not self.is_connected:
+            raise TransportError("not_connected", "not connected")
+        self._run(self._add_contact(jid, name), CALL_TIMEOUT)
+
+    async def _add_contact(self, jid: str, name: str) -> None:
+        self._client.update_roster(jid, name=name or None)
+        self._client.send_presence_subscription(pto=jid, ptype="subscribe")
+
+    def remove_contact(self, jid: str) -> None:
+        """Drop the roster entry and both directions of subscription."""
+        if not self.is_connected:
+            raise TransportError("not_connected", "not connected")
+        self._run(self._remove_contact(jid), CALL_TIMEOUT)
+
+    async def _remove_contact(self, jid: str) -> None:
+        self._client.send_presence_subscription(pto=jid, ptype="unsubscribe")
+        self._client.update_roster(jid, subscription="remove")
+
+    def answer_subscription(self, jid: str, approve: bool) -> None:
+        """Answer a request that `SubscriptionPolicy.ASK` handed to the UI.
+
+        Only meaningful under ASK. Under ACCEPT slixmpp has already answered
+        before the UI sees anything, which is the point of that policy.
+        """
+        if not self.is_connected:
+            raise TransportError("not_connected", "not connected")
+        self._run(self._answer_subscription(jid, approve), CALL_TIMEOUT)
+
+    async def _answer_subscription(self, jid: str, approve: bool) -> None:
+        self._client.send_presence_subscription(
+            pto=jid, ptype="subscribed" if approve else "unsubscribed")
+
+    @property
+    def subscription_policy(self) -> str:
+        return self._subscription_policy
+
     def _wire(self, client) -> None:
+        # Applied explicitly rather than inherited. slixmpp defaults both
+        # auto_authorize and auto_subscribe to True, so "we accept everyone"
+        # would otherwise be true by accident rather than by decision, and
+        # would silently change if upstream changed its mind.
+        self._subscription_policy = SubscriptionPolicy.apply(
+            client, self._subscription_policy)
+        client.add_event_handler("presence_subscribe", self._on_subscribe)
         client.add_event_handler("message", self._on_message)
         client.add_event_handler("presence_available",
                                  lambda p: self._presence(p, True))
@@ -449,6 +560,26 @@ class XmppTransport(Transport):
             # UI code across a language boundary, and a screen bug is not a
             # reason to drop a session. Same rule as OtrApp._emit.
             _log.warning("the inbound payload handler raised")
+
+    def _on_subscribe(self, stanza) -> None:
+        """Someone asked to see our presence.
+
+        Reported even under ACCEPT, where slixmpp has already said yes. The
+        user is entitled to know a stranger is now watching their presence,
+        and finding out only because a name appeared in a list is not the
+        same as being told.
+        """
+        if self._on_subscription_request is None:
+            return
+        try:
+            jid = str(stanza["from"]).split("/", 1)[0]
+        except Exception:
+            _log.warning("could not read a subscription request")
+            return
+        try:
+            self._on_subscription_request(jid)
+        except Exception:
+            _log.warning("the subscription handler raised")
 
     def _presence(self, stanza, online: bool) -> None:
         if self._on_presence is None:

@@ -20,15 +20,41 @@
 > is produced, containing the Rust core cross-compiled for arm64-v8a and
 > x86_64. §14 is updated accordingly. **Three gates that need a physical
 > device are still not met, and are not claimed** — building an APK proves it
-> packages, not that it runs.
+> packages, not that it runs. *(Superseded 2026-09-14: a handset has since run
+> it. See the update above.)*
 
-**Status: PARTIAL — the build gate is met; the device gates are not.**
+> **Update (2026-09-14) — the device gates are met. Phase 2 is complete.**
+>
+> A handset has now run this APK end to end. CPython 3.12.7 on Android 15 /
+> arm64-v8a; the Rust core loaded with 19/19 required symbols and its Ed448,
+> ML-KEM-1024 and AES-256-GCM self-tests passing *on the device*; the engine
+> constructed with a persistent identity; and the at-rest KDF confirmed as
+> Argon2id rather than the scrypt fallback.
+>
+> Then the whole path carried a real connection: Compose → Chaquopy →
+> `android_bridge` → engine → SAM → an external i2pd → I2P → the configured
+> `.b32.i2p` server → XMPP with SASL. §14 is updated; the four gates that
+> needed a device are DONE.
+>
+> Two findings from getting there are recorded where they belong rather than
+> here: `ANDROID_I2P_FEASIBILITY.md` §2's claim that an app cannot reach
+> another app's SAM bridge on loopback is **wrong on this device** — the probe
+> reached i2pd at 127.0.0.1:7656 across the UID boundary, which makes bundling
+> a router a convenience rather than a precondition. And the transport had
+> omitted the terminal client's rule that an address which *is* a key needs no
+> certificate check; slixmpp's default verification failed over I2P and its
+> retry loop hung the connect with nothing to report.
+>
+> What is still NOT proven: that any message has been sent, that a DAKE has
+> run, or that the connection survives backgrounding. A transport is not a
+> session.
+
+**Status: Phase 2 complete. The build gate and the device gates are met.**
 
 Phase 2 asked for a production-viable Android foundation. Everything that could
-be built and verified without an Android toolchain was, and is green. The
-toolchain half is now verified too, on CI rather than here. What remains is
-everything that requires a physical handset: no emulator or device has ever run
-this APK.
+be built and verified without an Android toolchain was, and is green; the
+toolchain half was then verified on CI; and the device half is now verified on
+a handset.
 
 The exit-gate table in §14 marks each item honestly.
 
@@ -623,10 +649,10 @@ Full report: `ANDROID_I2P_FEASIBILITY.md`. Headlines:
 | Gate | Status |
 |---|---|
 | Android project builds | **DONE** — CI run #8, all six jobs green, debug APK produced |
-| Python 3.12+ runs inside the Android application | **PARTIAL** — Chaquopy 3.12 resolves, installs the full requirement closure and packages; never executed on a device |
-| Rust extension loads on a real device | **PARTIAL** — cross-compiles for both ABIs, `DT_NEEDED` verified as `libpython3.12.so`, present in the APK; no device has loaded it |
-| OTRv4+ initializes on-device | **BLOCKED** — no device |
-| Kotlin ↔ Python ↔ Rust path works | **PARTIAL** — Python↔Rust verified; Kotlin leg compiles and its JVM tests pass, but the three-way path has never run |
+| Python 3.12+ runs inside the Android application | **DONE** — CPython 3.12.7 running on a handset (Android 15, arm64-v8a), reported by the app's own diagnostics |
+| Rust extension loads on a real device | **DONE** — loaded on arm64-v8a with 19/19 required symbols; Ed448 sign/verify, ML-KEM-1024 round-trip and AES-256-GCM round-trip all pass on the device |
+| OTRv4+ initializes on-device | **DONE** — `EnhancedSessionManager` constructed with a persistent identity fingerprint, and at-rest KDF confirmed as Argon2id rather than the scrypt fallback |
+| Kotlin ↔ Python ↔ Rust path works | **DONE** — the connect screen drives it end to end: Compose → Chaquopy → `android_bridge` → engine → Rust, and out through SAM to a real XMPP server |
 | Typed bridge exists | **DONE** |
 | No dependency on terminal scraping | **DONE** — enforced by test |
 | Persistent identity implemented/tested | **DONE**, with decision B1-seed open |
