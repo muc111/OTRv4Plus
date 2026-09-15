@@ -137,6 +137,27 @@ class OtrConnectionService : Service() {
     var phase: LinkPhase = LinkPhase.STOPPED
         private set
 
+    /**
+     * Change [phase] and say why, in the same log as Python's own events.
+     *
+     * An unexplained DISCONNECTING on a handset was a real report, and the
+     * answer needed two things nobody had: which component moved the state,
+     * and what happened immediately before. Every transition goes through
+     * here so the first is always recorded.
+     */
+    private fun enter(next: LinkPhase, why: String) {
+        val previous = phase
+        phase = next
+        if (previous != next) {
+            runCatching {
+                core.note("service", "phase_change",
+                          if (next == LinkPhase.FAILED) "error" else "info",
+                          "$previous -> $next ($why)")
+            }
+        }
+        updateNotification()
+    }
+
     /** The last status the transport reported. */
     @Volatile
     var status: ConnectionStatus = ConnectionStatus()
@@ -176,11 +197,17 @@ class OtrConnectionService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
             ACTION_STOP -> {
+                // Recorded because this is one of only three ways the app can
+                // reach DISCONNECTING, and telling them apart afterwards is
+                // the whole question.
+                runCatching { core.note("service", "stop_requested", "info",
+                                        "the user asked to disconnect") }
                 stopConnection(explicit = true)
                 stopSelf()
                 return START_NOT_STICKY
             }
             ACTION_LOGOUT -> {
+                runCatching { core.note("service", "logout_requested") }
                 // Explicit logout: stop, and forget. The history goes with the
                 // credentials -- leaving a conversation behind for the next
                 // person to sign in on this phone would be worse than useless.
@@ -233,6 +260,11 @@ class OtrConnectionService : Service() {
     }
 
     override fun onDestroy() {
+        // The third route to DISCONNECTING, and the one that is never a
+        // deliberate user action -- Android reclaiming the service, or the
+        // last client unbinding from one that was never started.
+        runCatching { core.note("service", "destroyed", "warning",
+                                "the service is being torn down") }
         stopConnection(explicit = true)
         drainer?.cancel()
         drainer = null
@@ -258,29 +290,34 @@ class OtrConnectionService : Service() {
      * should stop the app coming back.
      */
     fun stopConnection(explicit: Boolean) {
+        runCatching {
+            core.note("service", "stop_connection",
+                      if (explicit) "info" else "warning",
+                      if (explicit) "explicit" else "not user-requested")
+        }
         if (explicit) reconnect.onUserDisconnect()
         worker?.cancel()
         worker = null
         watcher?.cancel()
         watcher = null
-        phase = LinkPhase.DISCONNECTING
+        enter(LinkPhase.DISCONNECTING,
+              if (explicit) "the user asked to stop" else "teardown")
         // Off the main thread: this crosses into Python and blocks.
         scope.launch {
             withContext(Dispatchers.IO) {
                 runCatching { core.cancelConnect() }
                 runCatching { core.disconnect() }
             }
-            phase = LinkPhase.STOPPED
-            updateNotification()
+            enter(LinkPhase.STOPPED, "teardown finished")
         }
     }
 
     private suspend fun connectLoop() {
         while (scope.isActive) {
             if (!reconnect.beginAttempt()) return
-            phase = if (reconnect.attempts == 0) LinkPhase.CONNECTING
-                    else LinkPhase.RECONNECTING
-            updateNotification()
+            enter(if (reconnect.attempts == 0) LinkPhase.CONNECTING
+                  else LinkPhase.RECONNECTING,
+                  "attempt ${reconnect.attempts + 1}")
 
             // initialize -> prepareConnection -> connect, in that order and
             // all on the IO dispatcher: every one of them is a blocking call
@@ -308,8 +345,7 @@ class OtrConnectionService : Service() {
                 reconnect.onConnected()
                 status = result.getOrNull() ?: ConnectionStatus()
                 failure = null
-                phase = LinkPhase.CONNECTED
-                updateNotification()
+                enter(LinkPhase.CONNECTED, "the transport reported connected")
                 watchUntilDropped()
                 // watchUntilDropped returns when the stream is gone. Fall
                 // through to the backoff rather than returning: a drop we did
@@ -322,8 +358,7 @@ class OtrConnectionService : Service() {
             }
 
             val wait = reconnect.nextDelayMs() ?: return
-            phase = LinkPhase.RECONNECTING
-            updateNotification()
+            enter(LinkPhase.RECONNECTING, "backing off ${wait}ms")
             delay(wait)
         }
     }
@@ -381,8 +416,11 @@ class OtrConnectionService : Service() {
             } ?: continue
             status = current
             if (!current.connected) {
-                phase = LinkPhase.RECONNECTING
-                updateNotification()
+                // The transport's own flag went false. Python has already
+                // recorded WHY -- keepalive, or slixmpp closing the stream --
+                // so this line is where the two halves meet.
+                enter(LinkPhase.RECONNECTING,
+                      "the transport is no longer connected")
                 return
             }
         }

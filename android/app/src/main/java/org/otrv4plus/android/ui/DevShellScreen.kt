@@ -16,13 +16,6 @@ import org.otrv4plus.android.BuildConfig
 import org.otrv4plus.android.bridge.ChaquopyOtrCore
 import org.otrv4plus.android.bridge.InitResult
 import androidx.compose.ui.platform.LocalContext
-import android.content.Context
-import android.content.Intent
-import androidx.core.content.FileProvider
-import java.io.File
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
 
 /**
  * The Phase 2 development shell.
@@ -118,26 +111,89 @@ fun DevShellScreen(core: ChaquopyOtrCore? = null) {
         var exportError by remember { mutableStateOf<String?>(null) }
 
         Spacer(Modifier.height(8.dp))
+
+        // THE ERROR LOG, which is the one that diagnoses a live fault.
+        //
+        // The start-up report below is a snapshot taken at launch: versions,
+        // ABI, whether the Rust core loaded. Useful, and useless for "it was
+        // connected and then it said DISCONNECTING", because by then the
+        // snapshot is minutes old and contains none of what happened since.
+        //
+        // This one is the event trace: every state change, presence event,
+        // roster call, keepalive probe and exception, in order, with the
+        // connection's current state on top. The run-up to a failure is
+        // usually the whole answer.
+        Text("Error log", style = MaterialTheme.typography.titleSmall)
+        Text(
+            "Everything the connection did, in order. No passwords, keys or "
+            + "message contents — see the top of the file.",
+            style = MaterialTheme.typography.bodySmall,
+        )
+        Spacer(Modifier.height(4.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            // Export to a file and hand it to whatever app the user picks.
-            // A 50-line report does not survive being retyped from a photo,
-            // and this screen sets FLAG_SECURE so there is no photo to take.
             Button(onClick = {
                 exportError = try {
-                    shareReport(context, fullReport(r)); null
+                    // Rendered in Python, where the redaction rule lives.
+                    // Off the main thread would be tidier, but this is a
+                    // string build over an in-memory ring and the alternative
+                    // is a button that does nothing for a frame.
+                    DiagnosticsExport.share(
+                        context,
+                        core?.diagnosticReport() ?: NO_CORE,
+                        prefix = "otrv4plus-log",
+                        subject = "OTRv4+ error log",
+                        chooserTitle = "Share error log",
+                    )
+                    null
                 } catch (t: Throwable) {
                     t.javaClass.simpleName
                 }
-            }) { Text("Export report") }
+            }) { Text("Share error log") }
 
+            OutlinedButton(onClick = {
+                clipboard.setText(
+                    AnnotatedString(core?.diagnosticSummary() ?: NO_CORE))
+                copied = true
+            }) { Text(if (copied) "Copied" else "Copy error details") }
+        }
+        exportError?.let {
+            Text("Share failed ($it) — use Copy instead.",
+                style = MaterialTheme.typography.bodySmall)
+        }
+
+        Spacer(Modifier.height(16.dp))
+
+        // The start-up snapshot, kept: it is what closes the environment
+        // gates in ANDROID_PHASE2_REPORT.md §14, and a working run is
+        // evidence too. FLAG_SECURE blocks a screenshot, so if it cannot be
+        // exported it cannot leave the device at all.
+        Text("Start-up report", style = MaterialTheme.typography.titleSmall)
+        Spacer(Modifier.height(4.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedButton(onClick = {
+                exportError = try {
+                    DiagnosticsExport.share(
+                        context, fullReport(r),
+                        prefix = "otrv4plus-startup",
+                        subject = "OTRv4+ start-up report",
+                        chooserTitle = "Export start-up report",
+                    )
+                    null
+                } catch (t: Throwable) {
+                    t.javaClass.simpleName
+                }
+            }) { Text("Export start-up report") }
+
+            // Copy, still offered, and not a duplicate of the one above:
+            // this is the fallback for when no app answers the share intent.
+            // Dropping it in favour of the error-log pair was a regression --
+            // a device with no mail or notes app installed would have had no
+            // way to produce a start-up report at all, and FLAG_SECURE means
+            // there is no screenshot either.
             OutlinedButton(onClick = {
                 clipboard.setText(AnnotatedString(fullReport(r)))
                 copied = true
             }) { Text(if (copied) "Copied" else "Copy") }
-        }
-        exportError?.let {
-            Text("Export failed ($it) — use Copy instead.",
-                style = MaterialTheme.typography.bodySmall)
         }
 
         if (BuildConfig.DEV_DIAGNOSTICS) {
@@ -177,28 +233,10 @@ private fun fullReport(r: InitResult): String = buildString {
     r.diagnosticsText?.let { appendLine(); appendLine(it) }
 }
 
-/**
- * Write the report to the cache and offer it to another app.
- *
- * Via FileProvider, so what leaves is a one-shot read grant for exactly this
- * file. The app holds no storage permission and this adds none.
- */
-private fun shareReport(context: Context, text: String) {
-    val dir = File(context.cacheDir, "diagnostics").apply { mkdirs() }
-    val stamp = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date())
-    val file = File(dir, "otrv4plus-report-$stamp.txt")
-    file.writeText(text)
-
-    val uri = FileProvider.getUriForFile(
-        context, "${context.packageName}.diagnostics", file)
-    val send = Intent(Intent.ACTION_SEND).apply {
-        type = "text/plain"
-        putExtra(Intent.EXTRA_STREAM, uri)
-        putExtra(Intent.EXTRA_SUBJECT, "OTRv4+ Android diagnostic report")
-        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-    }
-    context.startActivity(Intent.createChooser(send, "Export diagnostic report"))
-}
+/** Shown when the screen is reached before the service has a core. */
+private const val NO_CORE =
+    "No connection has been prepared in this session, so there is no " +
+        "connection state or event history to report.\n"
 
 /** Shared with [ConnectScreen]; `private` here would be file-private. */
 @Composable

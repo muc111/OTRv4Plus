@@ -50,6 +50,7 @@ _log = logging.getLogger("otrv4plus.bridge.connection")
 import otrv4plus_address as _address
 
 from .settings import ConnectionProfile
+from .trace import TRACE as _TRACE
 
 
 def _c2s_port() -> int:
@@ -307,6 +308,12 @@ class ConnectionController:
         self._enter(stage)
 
     def _enter(self, stage: str) -> None:
+        # Recorded BEFORE the callback, and before anything can fail. The
+        # sequence of stages is the single most useful thing in a diagnostic
+        # export: "it reached authenticating and stopped" and "it never got
+        # past building_tunnels" have completely different remedies.
+        _TRACE.transition("controller", self._stage, stage,
+                          server=self._profile.effective_server)
         self._stage = stage
         if self._on_state is None:
             return
@@ -316,6 +323,11 @@ class ConnectionController:
             pass
 
     def _fail(self, code: str, detail: str) -> Dict[str, Any]:
+        # `detail` is written by this controller for a person to read -- never
+        # engine exception text -- so it is safe to record as-is. `code` is
+        # the stable machine-readable half.
+        _TRACE.record("controller", "connect_failed", "error",
+                      code=code, detail=detail, failed_at=self._stage)
         failed_at, self._stage = self._stage, "failed"
         self._enter("failed")
         self._last = {"ok": False, "stage": failed_at,
@@ -483,22 +495,83 @@ class ConnectionController:
         return self._roster_call("answer_subscription", jid, approve)
 
     def _roster_call(self, name: str, *args) -> Dict[str, Any]:
+        # Every roster operation is traced, because "Add Contact did nothing"
+        # was a real report and the answer was three layers down: the call was
+        # refused with `not_connected` and nobody ever saw the refusal.
+        target = args[0] if args else ""
         transport = self._transport
         if transport is None:
+            _TRACE.record("roster", name, "warning", jid=target,
+                          result="not_connected")
             return {"ok": False, "code": "not_connected",
                     "detail": "Connect before changing the contact list."}
         try:
             getattr(transport, name)(*args)
         except Exception as exc:
+            _TRACE.record_exception("roster", name, exc, jid=target)
             return {"ok": False,
                     "code": getattr(exc, "code", "roster_failed"),
                     "detail": getattr(exc, "detail", "")
                               or type(exc).__name__}
+        _TRACE.record("roster", name, "info", jid=target, result="ok")
         return {"ok": True, "code": "ok", "detail": ""}
 
     def events_dropped(self) -> int:
         """How many events the bound discarded. A gap is worth saying."""
         return self._events.dropped()
+
+    # -- the shareable error log ---------------------------------------------
+
+    def note(self, component: str, event: str, severity: str = "info",
+             detail: str = "", at: float = 0.0) -> None:
+        """Record something Kotlin observed.
+
+        Service lifecycle, Activity bind/unbind and recreation, phase changes:
+        facts only the Android half knows, which belong in the same timeline
+        as the connection's own. One log, one ordering -- two would have to be
+        merged by eye, and the whole value here is the sequence.
+
+        `detail` goes through the same per-field redaction as everything else,
+        so a caller cannot widen what a report may contain by passing a string.
+
+        `at` is the moment the event HAPPENED, as a Unix timestamp. Kotlin
+        supplies it because these are written from a worker thread -- a
+        blocking Chaquopy call on Android's main thread is an ANR -- and a
+        timeline whose entries are stamped with the flush time rather than the
+        event time is not a timeline.
+        """
+        _TRACE.record_at(at or None, str(component), str(event),
+                         str(severity), detail=detail)
+
+    def diagnostic_report(self, device=None, limit: int = 0) -> str:
+        """The whole error log, as text, ready to be written to a file.
+
+        `device` is what only Kotlin can read -- model, Android release, app
+        version. Python is told them rather than guessing.
+
+        Never raises: this is pressed precisely when things are broken.
+        """
+        from . import report as _report
+        try:
+            status = self.status()
+        except Exception:
+            status = {}
+        try:
+            from .diagnostics import collect
+            environment = collect(include_selftest=False)
+        except Exception:
+            environment = None
+        return _report.build(status=status, device=_as_dict(device),
+                             environment=environment, limit=limit)
+
+    def diagnostic_summary(self, device=None) -> str:
+        """A short version for the clipboard. The file stays authoritative."""
+        from . import report as _report
+        try:
+            status = self.status()
+        except Exception:
+            status = {}
+        return _report.summary(status=status, device=_as_dict(device))
 
     def probe(self) -> Dict[str, Any]:
         """Just the router check, as a plain dict.
@@ -656,3 +729,18 @@ def probe_profile(profile: ConnectionProfile, **kw) -> SamProbe:
     if not profile.use_i2p:
         return SamProbe(True, "ok", "Not using I2P; no SAM bridge needed.")
     return probe_sam(profile.sam_host, profile.sam_port, **kw)
+
+
+def _as_dict(value):
+    """Kotlin hands over a java.util.Map or a dict; both must work.
+
+    Chaquopy converts a Kotlin map to something dict-like but not always a
+    `dict`, and `report` indexes it. Copying is cheap and removes the
+    question.
+    """
+    if value is None:
+        return None
+    try:
+        return {str(k): value[k] for k in value}
+    except Exception:
+        return None

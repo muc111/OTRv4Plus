@@ -111,10 +111,72 @@ class TestItOwnsTheConnection:
 
     def test_every_call_into_python_is_off_the_main_thread(self, service):
         """Chaquopy's JNI calls block and are not interruptible. One on the
-        main thread is an ANR, not a slow connect."""
+        main thread is an ANR, not a slow connect.
+
+        `core.note` is the one exception, and it is not really one: it only
+        enqueues onto a single-thread executor and returns, so no JNI crossing
+        happens on the caller's thread. The next test pins that, because the
+        exception is only safe for as long as it stays true.
+        """
         assert "Dispatchers.IO" in service
-        stray = re.findall(r"^\s{0,12}core\.\w+\(", _code_only(service), re.M)
+        code = _code_only(service)
+        stray = [call for call in
+                 re.findall(r"^\s{0,12}core\.\w+\(", code, re.M)
+                 if "core.note(" not in call]
         assert not stray, stray
+
+    def test_note_is_the_only_exception_and_it_does_not_block(self):
+        """It is called from onStartCommand, onDestroy and the phase machine
+        -- all main thread. If it ever crosses into Python inline, every one
+        of those becomes an ANR risk."""
+        import io as _io
+        import os as _os
+        root = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
+        with _io.open(_os.path.join(
+                root, "android", "app", "src", "main", "java", "org",
+                "otrv4plus", "android", "bridge", "ChaquopyOtrCore.kt"),
+                encoding="utf-8") as fh:
+            core = fh.read()
+        body = core[core.index("fun note(component: String"):]
+        body = body[:body.index("\n    /**")]
+        assert "notes.execute {" in body, (
+            "note() crosses into Python on the calling thread")
+        assert body.index("notes.execute {") < body.index('callAttr("note"')
+
+    def test_the_note_worker_keeps_events_in_order(self):
+        """A trace out of order is worse than no trace: the sequence IS the
+        diagnosis."""
+        import io as _io
+        import os as _os
+        root = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
+        with _io.open(_os.path.join(
+                root, "android", "app", "src", "main", "java", "org",
+                "otrv4plus", "android", "bridge", "ChaquopyOtrCore.kt"),
+                encoding="utf-8") as fh:
+            core = fh.read()
+        block = core[core.index("private val notes:"):]
+        block = block[:block.index("\n    }")]
+        assert "ThreadPoolExecutor(\n            1, 1," in block, (
+            "more than one note thread, so the order is whatever the "
+            "scheduler felt like")
+        assert "isDaemon = true" in block, (
+            "a non-daemon logging thread holds the process open at shutdown")
+
+    def test_the_event_time_is_taken_before_the_hand_off(self):
+        """Otherwise every Kotlin-side entry is stamped with the moment the
+        worker got round to it, and the timeline is fiction."""
+        import io as _io
+        import os as _os
+        root = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
+        with _io.open(_os.path.join(
+                root, "android", "app", "src", "main", "java", "org",
+                "otrv4plus", "android", "bridge", "ChaquopyOtrCore.kt"),
+                encoding="utf-8") as fh:
+            core = fh.read()
+        body = core[core.index("fun note(component: String"):]
+        body = body[:body.index("\n    /**")]
+        assert "val at = System.currentTimeMillis()" in body
+        assert body.index("val at =") < body.index("notes.execute {")
 
     def test_stopping_releases_the_transport_and_the_tunnel(self, service):
         block = service[service.index("fun stopConnection("):]

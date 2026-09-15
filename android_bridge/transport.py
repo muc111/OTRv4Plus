@@ -52,6 +52,7 @@ import otrv4plus_ping as _ping
 
 from .app import Transport
 from .settings import ConnectionProfile
+from .trace import TRACE as _TRACE
 
 __all__ = ["XmppTransport", "TransportError", "DEFAULT_C2S_PORT",
            "SubscriptionPolicy"]
@@ -538,6 +539,9 @@ class XmppTransport(Transport):
         # This is the same three, in the same order.
         self._announce()
 
+        _TRACE.record("transport", "session_started", "info",
+                      jid=self._profile.jid,
+                      server=self._profile.effective_server)
         self._emit_state("connected")
 
     def _announce(self) -> None:
@@ -558,8 +562,13 @@ class XmppTransport(Transport):
             return
         try:
             client.send_presence()
-        except Exception:
+            _TRACE.record("presence", "initial_sent", "info")
+        except Exception as exc:
             _log.warning("could not send initial presence")
+            # RFC 6121 4.2: without this the account is logged in and
+            # INVISIBLE -- the server broadcasts nothing and delivers no
+            # contact presence. "Everyone shows offline" starts here.
+            _TRACE.record_exception("presence", "initial_send_failed", exc)
         try:
             # Returns a Future rather than a coroutine in slixmpp 1.17, so
             # this schedules the IQ without awaiting its reply. The reply
@@ -567,8 +576,10 @@ class XmppTransport(Transport):
             # so it picks the contacts up on the next tick rather than
             # blocking the connect on a round trip.
             client.get_roster()
-        except Exception:
+            _TRACE.record("roster", "requested", "info")
+        except Exception as exc:
             _log.warning("could not request the roster")
+            _TRACE.record_exception("roster", "request_failed", exc)
         self._start_keepalive()
 
     # -- keepalive ------------------------------------------------------------
@@ -689,6 +700,10 @@ class XmppTransport(Transport):
                 failures += 1
                 _log.info("keepalive: no answer (%d/%d)",
                           failures, KEEPALIVE_PING_FAILS)
+                _TRACE.record("keepalive", "probe_unanswered", "warning",
+                              failures=failures,
+                              threshold=KEEPALIVE_PING_FAILS,
+                              quiet_for=round(self._stream_quiet_for()))
                 if failures >= KEEPALIVE_PING_FAILS:
                     self._declare_stream_dead()
                     return
@@ -743,6 +758,13 @@ class XmppTransport(Transport):
         carry a message and the user retries into silence.
         """
         _log.info("keepalive: the stream is dead; disconnecting")
+        # The single most important line in an export. An unexplained
+        # DISCONNECTING on a handset is either this or an explicit user
+        # action, and until now nothing on the device could tell them apart.
+        _TRACE.record("keepalive", "stream_declared_dead", "error",
+                      quiet_for=round(self._stream_quiet_for()),
+                      consecutive_failures=KEEPALIVE_PING_FAILS,
+                      server=self._profile.effective_server)
         self._connected.clear()
         client = self._client
         if client is not None:
@@ -925,9 +947,12 @@ class XmppTransport(Transport):
         # iterating it from a Kotlin thread is a data race that would show up
         # as an occasional empty contact list rather than as a crash.
         try:
-            return self._run(self._roster(), CALL_TIMEOUT)
-        except TransportError:
+            entries = self._run(self._roster(), CALL_TIMEOUT)
+            _TRACE.record("roster", "read", "info", entries=len(entries))
+            return entries
+        except TransportError as exc:
             _log.warning("could not read the roster")
+            _TRACE.record_exception("roster", "read_failed", exc)
             return []
 
     async def _roster(self) -> List[Dict[str, Any]]:
@@ -940,8 +965,9 @@ class XmppTransport(Transport):
                     "name": entry.get("name") or "",
                     "subscription": entry.get("subscription") or "",
                 })
-        except Exception:
+        except Exception as exc:
             _log.warning("could not read the roster")
+            _TRACE.record_exception("roster", "iterate_failed", exc)
             return []
         return out
 
@@ -1204,12 +1230,22 @@ class XmppTransport(Transport):
             peer = str(stanza["from"]).split("/", 1)[0]
         except Exception:
             return
+        _TRACE.record("presence", "available" if online else "unavailable",
+                      "info", jid=peer)
         try:
             self._on_presence(peer, online)
-        except Exception:
+        except Exception as exc:
             _log.warning("the presence handler raised")
+            _TRACE.record_exception("presence", "handler_raised", exc,
+                                    jid=peer)
 
     def _on_disconnected(self, _event) -> None:
+        # Distinct from `stream_declared_dead`: this is slixmpp telling us the
+        # stream ended, rather than us deciding it had. Which of the two fired
+        # first is exactly what separates "the network went" from "we killed
+        # a healthy session".
+        _TRACE.record("transport", "stream_closed_by_slixmpp", "warning",
+                      quiet_for=round(self._stream_quiet_for()))
         self._connected.clear()
         self._emit_state("disconnected")
 

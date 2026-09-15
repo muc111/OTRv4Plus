@@ -5,6 +5,7 @@ import android.os.Build
 import com.chaquo.python.PyObject
 import com.chaquo.python.Python
 import com.chaquo.python.android.AndroidPlatform
+import org.otrv4plus.android.BuildConfig
 
 /**
  * [OtrCore] backed by CPython via Chaquopy.
@@ -164,6 +165,11 @@ class ChaquopyOtrCore(private val appContext: Context) : OtrCore {
         // Model is useful for a bug report and is not sensitive, but it is
         // device-identifying, so it must not be written into repository logs.
         dict.callAttr("__setitem__", "model", Build.MODEL ?: "")
+        // The first question asked of any report: is this the build that was
+        // meant to be under test? A report against the wrong APK wastes the
+        // round trip it took to get it.
+        dict.callAttr("__setitem__", "app_version", BuildConfig.VERSION_NAME)
+        dict.callAttr("__setitem__", "build_id", BuildConfig.BUILD_ID)
         return dict
     }
 
@@ -261,6 +267,96 @@ class ChaquopyOtrCore(private val appContext: Context) : OtrCore {
     fun connectionStatus(): ConnectionStatus {
         val ctl = controller ?: return ConnectionStatus()
         return statusFrom(ctl, null)
+    }
+
+    // ── the shareable error log ───────────────────────────────────────────
+
+    /**
+     * Record something only the Android half can see.
+     *
+     * Service lifecycle, Activity bind/unbind and recreation, connection
+     * phase changes. It goes into the SAME log as the transport's own events,
+     * because the whole value of the thing is one ordering: two logs would
+     * have to be merged by eye, and by then the moment is lost.
+     *
+     * Silent on failure and never throws. This is called from lifecycle
+     * callbacks; a diagnostic that can crash the thing it is diagnosing is
+     * worse than no diagnostic.
+     */
+    fun note(component: String, event: String, severity: String = "info",
+             detail: String = "") {
+        // The TIME IS TAKEN NOW, on the calling thread, and the WRITE happens
+        // on the notes worker. Both halves matter:
+        //
+        //  - crossing into Python blocks, and Chaquopy's JNI calls are not
+        //    interruptible; one of those on Android's main thread is an ANR,
+        //    not a slow log line. Most callers here are lifecycle callbacks,
+        //    which ARE the main thread.
+        //  - a timeline whose entries carry the moment they were flushed
+        //    rather than the moment they happened is not a timeline, and the
+        //    ordering of the run-up to a failure is the entire point.
+        //
+        // One single-threaded executor, so notes keep their order relative to
+        // each other.
+        val at = System.currentTimeMillis() / 1000.0
+        runCatching {
+            notes.execute {
+                runCatching {
+                    controller?.callAttr("note", component, event, severity,
+                                         detail, at)
+                }
+            }
+        }
+    }
+
+    /**
+     * Where notes are written. One thread, so they stay in order.
+     *
+     * Daemon, and discards silently when saturated: a diagnostic must never
+     * hold the process open at shutdown, and must never block a caller.
+     */
+    private val notes: java.util.concurrent.ExecutorService by lazy {
+        java.util.concurrent.ThreadPoolExecutor(
+            1, 1, 0L, java.util.concurrent.TimeUnit.MILLISECONDS,
+            java.util.concurrent.ArrayBlockingQueue(256),
+            { runnable ->
+                Thread(runnable, "otrv4plus-notes").apply { isDaemon = true }
+            },
+            java.util.concurrent.ThreadPoolExecutor.DiscardPolicy(),
+        )
+    }
+
+    /**
+     * The whole error log, as text, ready to be written to a file.
+     *
+     * Rendered in Python by `android_bridge.report`, which is the one place
+     * that decides what a diagnostic may contain. Kotlin supplies the device
+     * facts it alone knows and writes the bytes; it does not format, filter
+     * or add anything, because a second renderer would be a second place to
+     * forget the redaction rule.
+     */
+    fun diagnosticReport(): String {
+        val ctl = controller
+            ?: return "OTRv4+ diagnostic report\n\n" +
+                "No connection has been prepared in this session, so there " +
+                "is no connection state or event history to report.\n"
+        return runCatching {
+            ctl.callAttr("diagnostic_report", androidBuildInfo(python))
+                .toString()
+        }.getOrElse {
+            // Not `it.message`: a PyException carries Python's own text.
+            "OTRv4+ diagnostic report\n\nThe report could not be built " +
+                "(${it.javaClass.simpleName}).\n"
+        }
+    }
+
+    /** A short version for the clipboard. The file stays authoritative. */
+    fun diagnosticSummary(): String {
+        val ctl = controller ?: return "No connection in this session."
+        return runCatching {
+            ctl.callAttr("diagnostic_summary", androidBuildInfo(python))
+                .toString()
+        }.getOrElse { "Summary unavailable (${it.javaClass.simpleName})." }
     }
 
     private fun statusFrom(ctl: PyObject, result: PyObject?): ConnectionStatus {

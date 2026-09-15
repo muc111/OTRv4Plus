@@ -34,6 +34,12 @@ __all__ = ["collect", "SENSITIVE_KEY_HINTS"]
 SENSITIVE_KEY_HINTS = (
     "seed", "private", "secret", "password", "passphrase", "credential",
     "session_key", "chain_key", "root_key", "brace_key", "mac_key", "ratchet",
+    # Added when the shareable error log landed: that export leaves the device
+    # and goes wherever the user sends it, so the list has to cover the rest of
+    # what an authenticator can look like. NOT bare "auth" -- `authenticating`
+    # and `auth_failed` are STATES, and they are among the most useful things
+    # a connection report can say.
+    "token", "cookie", "apikey", "api_key", "privkey",
 )
 
 
