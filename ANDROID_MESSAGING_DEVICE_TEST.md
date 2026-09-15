@@ -39,10 +39,21 @@ is. Encryption starts at step 17.
 
 A second thing this document used to exclude is now **in** scope: survival in
 the background. There is a foreground service (task #61) and history is sealed
-at rest, so steps 22 and 26–31 assert that the connection, the credentials and
-the conversation all outlive the UI — they no longer merely measure how bad it
-is. Every one of those paths is **compiled and unit-tested but has never run on
-a handset**, which is exactly why they are steps here.
+at rest, so steps 22, 22a and 27–32 assert that the connection, the credentials
+and the conversation all outlive the UI — they no longer merely measure how bad
+it is. Every one of those paths is **compiled and unit-tested but has never run
+on a handset**, which is exactly why they are steps here.
+
+**Step 22a is the reported bug.** The keepalive called `async_ping`, a method
+slixmpp 1.17 does not have; every probe raised AttributeError, was read as
+silence, and after two of them a healthy stream was torn down — roughly two
+minutes after connecting. That single defect also produced the "presence
+unknown" and the inert Add Contact, because both key off `is_connected`. If the
+app now survives ten idle minutes, the fix holds.
+
+**Steps 26a–26i are new capabilities**: the sign-in dropdown, the shareable
+error log, and the pending-subscription wording. 26f and 26g are the two that
+must be checked before sending anyone a log.
 
 ---
 
@@ -127,9 +138,24 @@ Everything above is plaintext. This is where that changes.
 |---|---|---|---|
 | 21 | With a conversation open and text half-typed, rotate the screen | The conversation, the history and the half-typed draft all survive | Losing any of the three means state is in the composition rather than the ViewModel |
 | 22 | Background the app for two minutes, return | Still connected. The connection notification was in the shade the whole time, saying only "Connected" | A disconnection here means the foreground service is not holding the process; check whether the notification was present at all, because on Android 13+ a refused notification permission hides it |
+| 22a | **Stay connected and idle for ten minutes.** Do not send anything | Still connected the whole time. This is the reported bug: the keepalive called a slixmpp method that does not exist, read every probe as silence, and tore a healthy stream down about two minutes in | A drop here with i2pd still running means the keepalive is still killing good sessions. The error log will name it: `keepalive stream_declared_dead` |
 | 23 | Stop i2pd, watch the app for ~2 minutes | The app notices the stream is dead and says "Not connected"; the composer says nothing will be sent | Continuing to look connected for longer than about two minutes means the keepalive is not failing the stream |
 | 24 | While disconnected, check a conversation | Presence reads `presence unknown` for everyone, not `offline`, and history is still there | — |
 | 25 | Restart i2pd, reconnect | Connects again; history is still there | History lost on reconnect means it is being tied to the connection's lifetime |
+
+### Diagnostics, sign-in and contacts
+
+| # | Do | Expect | If it differs |
+|---|---|---|---|
+| 26a | On the sign-in screen, look at the Server dropdown | It reads **xmpp-elite.i2p** and there is no b32 address anywhere on the screen | A b32 on the sign-in screen is the bug this replaced |
+| 26b | Type just `bob` in Username | The field shows `bob@xmpp-elite.i2p` underneath as you type | — |
+| 26c | Connect with that | Connects normally | If it fails, the internal b32 mapping did not apply — send the error log |
+| 26d | Open Diagnostics, press **Share error log** | The Android Sharesheet appears; pick any app; you get a `.txt` | If nothing happens, note whether the Share failed message appeared and use **Copy error details** instead |
+| 26e | Open the file you shared | Timestamps, `state_change` lines with `state_before`/`state_after`, the stages the connection went through, and any exception with a stack trace | Missing events means the trace is not being fed — say which component is absent |
+| 26f | Search the file for your password | **Not present.** Anything password-shaped reads `[REDACTED]` | **Finding a password here is a security defect.** Report it as one and do not send the file |
+| 26g | Search it for a message you sent | **Not present** | Same: a security defect |
+| 26h | Check the connection after exporting | Still connected; the service was not restarted | Exporting must not disturb what it is reporting on |
+| 26i | Add a contact who has not added you back | They appear, and read **"waiting for them to accept"** — not "presence unknown" | "presence unknown" here means the subscription state is not reaching the UI |
 
 ### Background delivery, durability and credentials
 
@@ -141,12 +167,12 @@ information, not as a surprise.
 
 | # | Do | Expect | If it differs |
 |---|---|---|---|
-| 26 | Background the app. From Termux, send one message. Wait 30 seconds | A notification appears reading exactly **"New message"** — with **no** sender, no JID and no preview | **A JID or a message body in the notification is a security defect.** Report it as one, with a screenshot cropped to the notification |
-| 27 | Send two more from Termux without opening the app | The notification becomes "3 new messages" and does **not** ring again for each | A second and third sound means `setOnlyAlertOnce` is not doing its job |
-| 28 | Open the app | The notification disappears; all three messages are in the conversation, in order, with the right sender | A message missing here is the serious one: it means the drain loop is not running while the UI is gone. Say which of the three |
-| 29 | Lock the phone, have Termux send one more, look at the lock screen | **Nothing appears on the lock screen at all** — not even the app's name | Anything visible means the notification is not `VISIBILITY_SECRET`. Security defect |
-| 30 | Force-stop the app from Android settings, then reopen it | It comes back **without asking for the password**, reconnects on its own, and the whole conversation history is still there | No history: the sealed store did not round-trip on this device — send `adb logcat` around the launch. Asked for the password: the credential did not round-trip. These are two different failures; say which |
-| 31 | Sign out from the app, then reopen it | It asks for the password again, the conversation history is **gone**, and no arrival notification is left in the shade | History surviving a sign-out is a defect: it leaves one person's conversation on a phone the next person signs in on |
+| 27 | Background the app. From Termux, send one message. Wait 30 seconds | A notification appears reading exactly **"New message"** — with **no** sender, no JID and no preview | **A JID or a message body in the notification is a security defect.** Report it as one, with a screenshot cropped to the notification |
+| 28 | Send two more from Termux without opening the app | The notification becomes "3 new messages" and does **not** ring again for each | A second and third sound means `setOnlyAlertOnce` is not doing its job |
+| 29 | Open the app | The notification disappears; all three messages are in the conversation, in order, with the right sender | A message missing here is the serious one: it means the drain loop is not running while the UI is gone. Say which of the three |
+| 30 | Lock the phone, have Termux send one more, look at the lock screen | **Nothing appears on the lock screen at all** — not even the app's name | Anything visible means the notification is not `VISIBILITY_SECRET`. Security defect |
+| 31 | Force-stop the app from Android settings, then reopen it | It comes back **without asking for the password**, reconnects on its own, and the whole conversation history is still there | No history: the sealed store did not round-trip on this device — send `adb logcat` around the launch. Asked for the password: the credential did not round-trip. These are two different failures; say which |
+| 32 | Sign out from the app, then reopen it | It asks for the password again, the conversation history is **gone**, and no arrival notification is left in the shade | History surviving a sign-out is a defect: it leaves one person's conversation on a phone the next person signs in on |
 
 ---
 
