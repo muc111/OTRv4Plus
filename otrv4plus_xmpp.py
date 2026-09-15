@@ -155,6 +155,7 @@ from concurrent.futures import ThreadPoolExecutor
 import otrv4plus_address as _address
 import otrv4plus_coreapi as _coreapi
 import otrv4plus_fragment as _frag
+import otrv4plus_ping as _ping
 from otrv4plus_mode import OtrMode as _OtrMode
 import otrv4plus_smpflow as _smpflow
 
@@ -2044,17 +2045,37 @@ class OTRv4PlusXMPP(ClientXMPP):
         alive: a server replying `service-unavailable` to a ping has proven
         the stream works, which is the only thing being asked here. Treating
         it as death would reconnect against a perfectly good session.
+
+        The round trip moved into `otrv4plus_ping`, shared with the Android
+        transport, because this line was calling `async_ping` -- a method
+        **slixmpp 1.17 does not have.** It was removed upstream in favour of
+        `ping`, so on a current slixmpp this raised AttributeError, the bare
+        `except Exception` read that as "no answer", and every probe reported
+        a dead stream.
+
+        Here the damage was hidden: the keepalive loop skips the probe
+        entirely while the stream is delivering traffic, so an active
+        conversation never pinged at all. A QUIET session -- one waiting on a
+        reply, or holding a call open -- would still have been reconnected
+        every couple of minutes for no reason. On Android, which had no such
+        gate, it killed working sessions outright.
+
+        A missing or unusable ping API is now `PingUnsupported` and counts as
+        ALIVE. A client that cannot ask the question has learned nothing, and
+        manufacturing a disconnect out of that is precisely the bug.
         """
         try:
-            await self["xep_0199"].async_ping(
-                self.boundjid.host, timeout=self.KEEPALIVE_PING_TIMEOUT_S)
+            return await _ping.round_trip(
+                self["xep_0199"], self.boundjid.host,
+                self.KEEPALIVE_PING_TIMEOUT_S)
+        except _ping.PingUnsupported:
             return True
-        except IqError:
-            return True
-        except (IqTimeout, asyncio.TimeoutError):
-            return False
+        except asyncio.CancelledError:
+            raise
         except Exception:
-            return False
+            # Reaching the plugin at all failed -- not an answer about the
+            # server. Fail safe rather than reconnecting on our own confusion.
+            return True
 
     def _declare_stream_dead(self, why: str) -> None:
         """Give up on the stream and let the reconnect logic take over.

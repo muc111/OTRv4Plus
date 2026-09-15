@@ -325,6 +325,12 @@ val syncPythonSources by tasks.registering(Copy::class) {
             // scope, so the same rule applies: missing here is an ImportError
             // at launch, not a missing feature.
             "otrv4plus_mode.py",
+            // The XEP-0199 round trip, shared with the terminal client, and
+            // imported by android_bridge.transport at module scope. Missing
+            // here is an ImportError at launch. Its absence as a shared module
+            // is also what let the two clients drift apart in the first place:
+            // both called `async_ping`, which slixmpp 1.17 does not have.
+            "otrv4plus_ping.py",
             "otrv4plus_audio.py",
             "otrv4plus_coreapi.py",
             "otrv4plus_filetransfer.py",

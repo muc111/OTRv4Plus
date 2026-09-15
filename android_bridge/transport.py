@@ -44,9 +44,11 @@ import asyncio
 import concurrent.futures as _futures
 import logging
 import threading
+import time
 from typing import Any, Callable, Dict, List, Optional
 
 import otrv4plus_fragment as _fragment
+import otrv4plus_ping as _ping
 
 from .app import Transport
 from .settings import ConnectionProfile
@@ -142,6 +144,19 @@ KEEPALIVE_PING_TIMEOUT_S = 60
 #: Consecutive unanswered pings before the stream is declared dead. Two, not
 #: one: a single missed round trip over I2P is ordinary.
 KEEPALIVE_PING_FAILS = 2
+#: How recently the stream must have DELIVERED something for that to count as
+#: proof of life on its own.
+#:
+#: Traffic is better evidence than a ping: it proves the whole path end to
+#: end without asking the server for anything. While it is arriving there is
+#: nothing worth probing, and a probe whose reply is merely slow -- ordinary
+#: over three I2P hops -- must not be read as silence.
+#:
+#: This gate is the terminal client's `KEEPALIVE_QUIET_S` and was missing
+#: here. Its absence is why the broken ping (see `otrv4plus_ping`) killed
+#: Android sessions and not Termux ones: Termux in an active conversation
+#: never reached the probe at all.
+KEEPALIVE_QUIET_S = 180
 
 #: The two unrelated CancelledError classes, as a tuple to catch on. They are
 #: genuinely different types -- `asyncio.CancelledError is
@@ -240,6 +255,14 @@ class XmppTransport(Transport):
         self._thread: Optional[threading.Thread] = None
         self._client: Any = None
         self._connected = threading.Event()
+        #: When the stream last DELIVERED something, on the monotonic clock.
+        #:
+        #: The keepalive's primary liveness evidence. Traffic proves the whole
+        #: path without asking the server anything, so while it is arriving
+        #: there is nothing worth probing -- and a probe whose reply is merely
+        #: slow must not be read as silence. Initialised at construction so a
+        #: session that has just started is not instantly "quiet".
+        self._last_inbound = time.monotonic()
         self._lock = threading.RLock()
         #: Set by close(). After this the object is finished and no call may
         #: start a loop again -- see _ensure_loop.
@@ -635,6 +658,18 @@ class XmppTransport(Transport):
                     # own `disconnected` event clears `_connected`.
                     _log.info("keepalive whitespace write failed")
 
+                # TRAFFIC OUTRANKS A PING. Anything the stream delivered
+                # proves the whole path end to end without asking the server
+                # for something, so while it is arriving there is nothing
+                # worth probing. This gate is the terminal client's and was
+                # missing here -- which is why the broken ping killed Android
+                # sessions and never Termux ones.
+                if self._stream_quiet_for() < KEEPALIVE_QUIET_S:
+                    if failures:
+                        _log.info("keepalive: the stream is delivering again")
+                    failures = 0
+                    continue
+
                 now = asyncio.get_event_loop().time()
                 if now < next_probe:
                     continue
@@ -643,6 +678,12 @@ class XmppTransport(Transport):
                 if await self._probe_stream():
                     if failures:
                         _log.info("keepalive: the stream answered again")
+                    failures = 0
+                    continue
+                if self._stream_quiet_for() < KEEPALIVE_QUIET_S:
+                    # The reply never came, but something else arrived while
+                    # we waited. The path works and the ping was merely slow,
+                    # which over three I2P hops is ordinary, not a fault.
                     failures = 0
                     continue
                 failures += 1
@@ -657,7 +698,23 @@ class XmppTransport(Transport):
             _log.warning("the keepalive loop stopped unexpectedly")
 
     async def _probe_stream(self) -> bool:
-        """Round-trip liveness against our own server. True if it answered."""
+        """Round-trip liveness against our own server. True if it answered.
+
+        The round trip itself is `otrv4plus_ping.round_trip`, shared with the
+        terminal client, because this is where the handset bug lived: the call
+        was `async_ping`, which **slixmpp 1.17 does not have**. The
+        AttributeError was classified as "no answer", so every probe failed and
+        the keepalive tore down a healthy session about two minutes after it
+        connected. See the module docstring there for the full chain.
+
+        The three outcomes are kept distinct on purpose:
+
+          * answered (including an IqError) -> alive;
+          * nothing came back within the timeout -> dead;
+          * we could not ask at all -> **alive**, because a client that cannot
+            pose the question has learned nothing, and inventing a disconnect
+            out of its own ignorance is the bug being fixed.
+        """
         client = self._client
         if client is None:
             return False
@@ -669,15 +726,14 @@ class XmppTransport(Transport):
             # disconnect out of a missing plugin.
             return True
         try:
-            await ping.async_ping(
-                client.boundjid.host, timeout=KEEPALIVE_PING_TIMEOUT_S)
+            return await _ping.round_trip(
+                ping, client.boundjid.host, KEEPALIVE_PING_TIMEOUT_S)
+        except _ping.PingUnsupported:
+            _log.warning("no usable XEP-0199 ping; "
+                         "treating the stream as alive")
             return True
-        except Exception as exc:
-            # An IqError means the server answered, which is the whole
-            # question. Only a timeout is death.
-            if type(exc).__name__ == "IqError":
-                return True
-            return False
+        except _CANCELLED:
+            raise
 
     def _declare_stream_dead(self) -> None:
         """Take the stream down so the app stops believing it is connected.
@@ -1046,6 +1102,16 @@ class XmppTransport(Transport):
         # would silently change if upstream changed its mind.
         self._subscription_policy = SubscriptionPolicy.apply(
             client, self._subscription_policy)
+        # Before any handler, and for EVERY stanza -- presence, message, IQ,
+        # the roster result. This is the keepalive's primary evidence, and it
+        # has to see everything: a session where only presence arrives is just
+        # as alive as one carrying messages.
+        try:
+            client.add_filter("in", self._note_inbound)
+        except Exception:
+            # An older slixmpp without stream filters still works; the probe
+            # is then the only liveness signal, which is what this used to be.
+            _log.warning("could not install the inbound filter")
         client.add_event_handler("presence_subscribe", self._on_subscribe)
         client.add_event_handler("message", self._on_message)
         client.add_event_handler("presence_available",
@@ -1053,6 +1119,21 @@ class XmppTransport(Transport):
         client.add_event_handler("presence_unavailable",
                                  lambda p: self._presence(p, False))
         client.add_event_handler("disconnected", self._on_disconnected)
+
+    def _note_inbound(self, stanza):
+        """Record that the stream delivered something. Returns it unchanged.
+
+        A slixmpp inbound filter, so it sees presence, messages, IQs and
+        everything else before any handler runs. It must never drop or alter a
+        stanza -- returning it unchanged is the contract, and a filter that
+        returns None discards the stanza.
+        """
+        self._last_inbound = time.monotonic()
+        return stanza
+
+    def _stream_quiet_for(self) -> float:
+        """Seconds since the stream last delivered anything."""
+        return max(0.0, time.monotonic() - self._last_inbound)
 
     def _on_message(self, stanza) -> None:
         """Hand the body up, whatever it is.

@@ -56,13 +56,22 @@ PEER = "bob@xmpp-elite.i2p"
 
 
 class FakePing:
-    """slixmpp's xep_0199 plugin, as much of it as the probe uses."""
+    """slixmpp's xep_0199 plugin, as much of it as the probe uses.
+
+    The method is `ping`, which is what slixmpp 1.17 has. It used to be
+    `async_ping`, and THAT IS WHY THE BUG SURVIVED THIS FILE: the production
+    code called `async_ping`, the real plugin had no such method, and the fake
+    obligingly provided one. Every test here passed against an API that does
+    not exist.
+
+    `test_the_fake_matches_the_real_plugin` now pins the two together.
+    """
 
     def __init__(self, answer=True):
         self.answer = answer
         self.calls = []
 
-    async def async_ping(self, target, timeout=None):
+    async def ping(self, target, timeout=None):
         self.calls.append((target, timeout))
         if self.answer is True:
             return 0.01
@@ -92,6 +101,10 @@ class FakeBoundJid:
 class FakeClient:
     def __init__(self, jid, password, *, ping=None):
         self.handlers = {}
+        #: (direction, fn) pairs, as slixmpp's add_filter records them. The
+        #: transport installs an "in" filter to note that the stream
+        #: delivered something, which is the keepalive's primary evidence.
+        self.filters = []
         self.presence_sent = 0
         self.roster_requested = 0
         self.raw = []
@@ -105,6 +118,9 @@ class FakeClient:
 
     def add_event_handler(self, name, fn):
         self.handlers.setdefault(name, []).append(fn)
+
+    def add_filter(self, direction, fn, order=None):
+        self.filters.append((direction, fn))
 
     def fire(self, name, arg=None):
         for fn in list(self.handlers.get(name, [])):
@@ -294,6 +310,7 @@ class TestTheKeepalive:
     def test_a_round_trip_is_made(self, monkeypatch):
         monkeypatch.setattr(transport_module, "KEEPALIVE_WHITESPACE_S", 0.01)
         monkeypatch.setattr(transport_module, "KEEPALIVE_PING_S", 0.0)
+        monkeypatch.setattr(transport_module, "KEEPALIVE_QUIET_S", 0.0)
         ping = FakePing(answer=True)
         transport, _made = build(ping=ping)
         assert _settle(lambda: ping.calls), (
@@ -307,6 +324,7 @@ class TestTheKeepalive:
         thing being asked. Treating it as death reconnects a good session."""
         monkeypatch.setattr(transport_module, "KEEPALIVE_WHITESPACE_S", 0.01)
         monkeypatch.setattr(transport_module, "KEEPALIVE_PING_S", 0.0)
+        monkeypatch.setattr(transport_module, "KEEPALIVE_QUIET_S", 0.0)
         ping = FakePing(answer="error")
         transport, made = build(ping=ping)
         assert _settle(lambda: len(ping.calls) >= 3)
@@ -320,6 +338,7 @@ class TestTheKeepalive:
         message and the user retries into silence."""
         monkeypatch.setattr(transport_module, "KEEPALIVE_WHITESPACE_S", 0.01)
         monkeypatch.setattr(transport_module, "KEEPALIVE_PING_S", 0.0)
+        monkeypatch.setattr(transport_module, "KEEPALIVE_QUIET_S", 0.0)
         ping = FakePing(answer="timeout")
         transport, made = build(ping=ping)
         assert _settle(lambda: made["client"].disconnects >= 1), (
@@ -335,6 +354,7 @@ class TestTheKeepalive:
             self, monkeypatch):
         monkeypatch.setattr(transport_module, "KEEPALIVE_WHITESPACE_S", 0.01)
         monkeypatch.setattr(transport_module, "KEEPALIVE_PING_S", 0.0)
+        monkeypatch.setattr(transport_module, "KEEPALIVE_QUIET_S", 0.0)
         transport, made = build()
         made["client"]._plugins.clear()
         time.sleep(0.2)
@@ -383,6 +403,7 @@ class TestTheKeepaliveIsQuiet:
     def test_nothing_is_printed(self, monkeypatch, capsys):
         monkeypatch.setattr(transport_module, "KEEPALIVE_WHITESPACE_S", 0.01)
         monkeypatch.setattr(transport_module, "KEEPALIVE_PING_S", 0.0)
+        monkeypatch.setattr(transport_module, "KEEPALIVE_QUIET_S", 0.0)
         transport, _made = build()
         time.sleep(0.2)
         transport.close()
@@ -399,6 +420,104 @@ class TestTheKeepaliveIsQuiet:
         ConnectionController._on_subscription_request(
             object(), "mallory@elsewhere.i2p")
         assert "mallory" not in caplog.text
+
+
+class TestTheFakeCannotDriftFromSlixmppAgain:
+    """The reason the handset bug reached a user.
+
+    `FakePing` exposed `async_ping`. The real `XEP_0199` does not have it --
+    it was removed upstream in favour of `ping`. Production called the absent
+    method, the fake supplied it, and every keepalive test in this file passed
+    while the shipped code could not ping at all.
+
+    A fake that offers an API the real thing lacks does not test anything; it
+    tests itself.
+    """
+
+    def test_the_fake_only_offers_methods_the_real_plugin_has(self):
+        slixmpp = pytest.importorskip("slixmpp")
+        from slixmpp.plugins.xep_0199.ping import XEP_0199
+
+        offered = {name for name in dir(FakePing)
+                   if not name.startswith("_") and name != "answer"
+                   and callable(getattr(FakePing, name, None))}
+        missing = {name for name in offered if not hasattr(XEP_0199, name)}
+        assert not missing, (
+            "FakePing offers %s, which slixmpp's XEP_0199 does not have. "
+            "A probe written against it would fail on a real handset."
+            % ", ".join(sorted(missing)))
+
+    def test_the_probe_reaches_the_real_plugin_api(self):
+        """Executed, not asserted about: the shared helper must find a method
+        on the REAL class and it must be awaitable."""
+        import inspect
+
+        import otrv4plus_ping as _ping
+        pytest.importorskip("slixmpp")
+        from slixmpp.plugins.xep_0199.ping import XEP_0199
+
+        name, fn = _ping.ping_method(XEP_0199)
+        assert name is not None
+        assert inspect.iscoroutinefunction(fn)
+
+
+class TestTrafficOutranksAPing:
+    """The gate the terminal client had and this transport did not.
+
+    Anything the stream delivers proves the whole path end to end, without
+    asking the server for something. While it is arriving there is nothing
+    worth probing -- and a probe whose reply is merely slow, ordinary over
+    three I2P hops, must not be read as silence.
+
+    Its absence is why the broken ping killed Android sessions and never
+    Termux ones: an active Termux conversation never reached the probe.
+    """
+
+    def test_a_delivering_stream_is_not_probed_at_all(self, monkeypatch):
+        monkeypatch.setattr(transport_module, "KEEPALIVE_WHITESPACE_S", 0.01)
+        monkeypatch.setattr(transport_module, "KEEPALIVE_PING_S", 0.0)
+        # The gate left at its real value, so recent traffic suppresses it.
+        ping = FakePing(answer="timeout")
+        transport, made = build(ping=ping)
+        time.sleep(0.3)
+        assert not ping.calls, (
+            "the stream was delivering and got probed anyway")
+        assert made["client"].disconnects == 0
+        transport.close()
+
+    def test_a_quiet_stream_is_probed(self, monkeypatch):
+        monkeypatch.setattr(transport_module, "KEEPALIVE_WHITESPACE_S", 0.01)
+        monkeypatch.setattr(transport_module, "KEEPALIVE_PING_S", 0.0)
+        monkeypatch.setattr(transport_module, "KEEPALIVE_QUIET_S", 0.0)
+        ping = FakePing(answer=True)
+        transport, _made = build(ping=ping)
+        assert _settle(lambda: ping.calls), (
+            "silence is the one case the round trip exists for")
+        transport.close()
+
+    def test_an_inbound_stanza_resets_the_quiet_clock(self):
+        transport, _made = build()
+        transport._last_inbound -= 500
+        assert transport._stream_quiet_for() > 400
+        transport._note_inbound(object())
+        assert transport._stream_quiet_for() < 1
+        transport.close()
+
+    def test_the_filter_returns_the_stanza_unchanged(self):
+        """A slixmpp inbound filter that returns None DISCARDS the stanza.
+        Getting this wrong would drop every message on the floor."""
+        transport, _made = build()
+        stanza = object()
+        assert transport._note_inbound(stanza) is stanza
+        transport.close()
+
+    def test_the_filter_is_installed_on_the_client(self):
+        transport, made = build()
+        assert any(direction == "in"
+                   for direction, _fn in made["client"].filters), (
+            "nothing records inbound traffic, so the keepalive is back to "
+            "probing a busy stream")
+        transport.close()
 
 
 def _settle(predicate, timeout=5.0):
