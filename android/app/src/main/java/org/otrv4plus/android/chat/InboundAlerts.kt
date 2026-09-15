@@ -24,10 +24,20 @@ package org.otrv4plus.android.chat
  * import, so the rules are tested by running them. `OtrConnectionService` does
  * the platform half -- build a Notification, post it, cancel it -- and makes no
  * decisions at all.
+ *
+ * THREADING
+ * ---------
+ * Two threads reach this: [note] from the service's drain loop on
+ * `Dispatchers.IO`, and [setUiVisible] from the Activity's `onStart`/`onStop`
+ * on the main thread. Both mutate [unseen], so both are synchronized -- without
+ * it a reset racing an increment is silently lost and the user is told about
+ * five messages when one arrived. The critical sections are two field writes
+ * and call nothing, so there is nothing here to deadlock on.
  */
 class InboundAlerts {
 
     /** Whether a screen of this app is in front of the user right now. */
+    @Volatile
     var uiVisible: Boolean = false
         private set
 
@@ -38,6 +48,7 @@ class InboundAlerts {
      * unread for a week without that being worth a notification. This counts
      * arrivals the user has not had the chance to see.
      */
+    @Volatile
     var unseen: Int = 0
         private set
 
@@ -50,6 +61,7 @@ class InboundAlerts {
      * nothing to take down, so the caller does not post-and-cancel on every
      * lifecycle event.
      */
+    @Synchronized
     fun setUiVisible(visible: Boolean): Boolean {
         uiVisible = visible
         if (!visible) return false
@@ -71,6 +83,7 @@ class InboundAlerts {
      * the store rejected is not an arrival, and notifying on one would let a
      * peer who resends buzz the phone repeatedly.
      */
+    @Synchronized
     fun note(): Alert? {
         if (uiVisible) return null
         unseen += 1
@@ -78,6 +91,7 @@ class InboundAlerts {
     }
 
     /** The user dismissed the notification, or read everything. */
+    @Synchronized
     fun clear() {
         unseen = 0
     }
