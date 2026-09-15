@@ -93,8 +93,15 @@ class MainActivity : ComponentActivity() {
                     // a window before the binding lands. Re-keyed on it, so
                     // the chat attaches the moment it arrives and re-attaches
                     // if the service is ever rebound.
-                    LaunchedEffect(connection.core) {
-                        connection.core?.let { chat.attach(it) }
+                    // A user who has signed in before should not be shown a
+                    // login screen again just because the process restarted.
+                    // Does nothing when nothing is remembered.
+                    LaunchedEffect(Unit) { connection.resumeIfRemembered() }
+
+                    LaunchedEffect(connection.core, connection.chat) {
+                        val core = connection.core
+                        val state = connection.chat
+                        if (core != null && state != null) chat.attach(core, state)
                     }
 
                     when (screen) {

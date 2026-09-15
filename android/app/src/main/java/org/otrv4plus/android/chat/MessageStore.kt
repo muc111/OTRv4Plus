@@ -147,6 +147,24 @@ class InMemoryMessageStore(
         }
     }
 
+    /**
+     * Put back an unread count that was persisted.
+     *
+     * NOT on [MessageStore], and not for general use: it exists so
+     * [PersistentMessageStore] can restore what it wrote, and nothing above
+     * the storage layer should be able to set this number directly.
+     *
+     * Rehydrating replays every message through `append`, which counts each
+     * inbound one as unread -- so without this, a conversation the user had
+     * already read came back with a badge on it after every restart, and one
+     * they had half-read came back fully unread.
+     */
+    internal fun restoreUnread(conversationId: String, count: Int) {
+        synchronized(lock) {
+            unreadCounts[conversationId] = count.coerceAtLeast(0)
+        }
+    }
+
     companion object {
         /**
          * Messages kept per conversation.

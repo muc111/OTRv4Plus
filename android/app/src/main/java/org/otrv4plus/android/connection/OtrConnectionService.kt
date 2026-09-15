@@ -29,6 +29,13 @@ import org.otrv4plus.android.MainActivity
 import org.otrv4plus.android.R
 import org.otrv4plus.android.bridge.ChaquopyOtrCore
 import org.otrv4plus.android.bridge.ConnectionStatus
+import org.otrv4plus.android.chat.ChatState
+import org.otrv4plus.android.chat.PersistentMessageStore
+import org.otrv4plus.android.security.Credentials
+import org.otrv4plus.android.security.CredentialStore
+import org.otrv4plus.android.security.KeystoreVault
+import org.otrv4plus.android.security.Vault
+import org.otrv4plus.android.security.VaultCredentialStore
 
 /**
  * The one owner of the connection, and it outlives every screen.
@@ -54,13 +61,18 @@ import org.otrv4plus.android.bridge.ConnectionStatus
  * construct a core -- two would be two engines over one identity file and one
  * set of trust records.
  *
- * WHAT IT DOES NOT DO
- * -------------------
- * It holds no chat state. Messages are drained from the core by
- * `ChatViewModel` exactly as before; the service's job is to make sure there
- * is still a core to drain from. A service that also owned the conversation
- * would be a second place for history to live and a second thing to keep in
- * step.
+ * IT ALSO OWNS THE CONVERSATION, AND THAT IS NOT SCOPE CREEP
+ * ----------------------------------------------------------
+ * `ChatViewModel` used to drain the engine's event queue. The queue is
+ * DESTRUCTIVE -- a drain removes what it returns -- so whoever drains it is the
+ * only one who will ever see those events, and a ViewModel does not exist
+ * while the UI is gone. A message arriving with the app backgrounded was
+ * therefore either dropped from the bounded queue or sitting in it unread, and
+ * "background delivery" could not work however the persistence was written.
+ *
+ * So the drain loop is here, feeding a [ChatState] that the service owns and
+ * the UI merely renders. One state object, one store, one drainer, all living
+ * as long as the connection does.
  */
 class OtrConnectionService : Service() {
 
@@ -82,6 +94,36 @@ class OtrConnectionService : Service() {
     /** The one core. Built on first use, never rebuilt. */
     val core: ChaquopyOtrCore by lazy { ChaquopyOtrCore(applicationContext) }
 
+    /**
+     * Sealed storage, opened once and shared.
+     *
+     * One vault for credentials and history alike: they are protected by the
+     * same key and separated by the entry name, which is bound into each
+     * record's authenticated data so one cannot be replayed as the other.
+     */
+    val vault: Vault by lazy { KeystoreVault.open(applicationContext) }
+
+    /** The remembered account, so a dropped tunnel is not a password prompt. */
+    val credentials: CredentialStore by lazy { VaultCredentialStore(vault) }
+
+    /**
+     * Conversation history, owned by the SERVICE and not by a screen.
+     *
+     * Here rather than in `ChatViewModel` because a message that arrives while
+     * the UI is gone still has to be written down. A store owned by a
+     * ViewModel is a store that does not exist when it matters most.
+     */
+    val messages: PersistentMessageStore by lazy { PersistentMessageStore(vault) }
+
+    /**
+     * The conversation, owned here so it outlives every screen.
+     *
+     * The UI reads it and never replaces it. Rotating the phone, navigating
+     * away, or Android destroying the Activity changes nothing about this
+     * object or the loop that feeds it.
+     */
+    val chat: ChatState by lazy { ChatState(messages) }
+
     @Volatile
     var phase: LinkPhase = LinkPhase.STOPPED
         private set
@@ -98,6 +140,7 @@ class OtrConnectionService : Service() {
 
     private var worker: Job? = null
     private var watcher: Job? = null
+    private var drainer: Job? = null
 
     /** Python and the engine start once, not once per reconnect. */
     @Volatile
@@ -128,6 +171,18 @@ class OtrConnectionService : Service() {
                 stopSelf()
                 return START_NOT_STICKY
             }
+            ACTION_LOGOUT -> {
+                // Explicit logout: stop, and forget. The history goes with the
+                // credentials -- leaving a conversation behind for the next
+                // person to sign in on this phone would be worse than useless.
+                stopConnection(explicit = true)
+                runCatching { credentials.clear() }
+                runCatching { messages.clear() }
+                jid = ""
+                password = ""
+                stopSelf()
+                return START_NOT_STICKY
+            }
             ACTION_START -> {
                 goForeground()
                 val account = intent.getStringExtra(EXTRA_JID).orEmpty()
@@ -135,6 +190,18 @@ class OtrConnectionService : Service() {
                 if (account.isNotBlank()) {
                     jid = account
                     password = secret
+                    // Remembered so a reconnect -- or a restart of this
+                    // service -- does not have to stop and ask.
+                    runCatching {
+                        credentials.save(Credentials(account, secret))
+                    }
+                } else {
+                    // Started with no credentials: a restart, or the UI asking
+                    // us to resume. Use what was stored.
+                    credentials.load()?.let {
+                        jid = it.jid
+                        password = it.password
+                    }
                 }
                 // The Intent is done with the password the moment it is read.
                 // Intents can be logged by the system, so it does not sit in
@@ -153,6 +220,8 @@ class OtrConnectionService : Service() {
 
     override fun onDestroy() {
         stopConnection(explicit = true)
+        drainer?.cancel()
+        drainer = null
         scope.cancel()
         super.onDestroy()
     }
@@ -162,6 +231,7 @@ class OtrConnectionService : Service() {
     /** Begin, or do nothing if an attempt is already running. */
     fun startConnection() {
         reconnect.onUserConnect()
+        startDraining()
         if (worker?.isActive == true) return
         worker = scope.launch { connectLoop() }
     }
@@ -251,6 +321,38 @@ class OtrConnectionService : Service() {
      * round trip stops being answered, which over I2P is the only reliable
      * evidence that a stream that still accepts writes is actually dead.
      */
+    /**
+     * Drain the engine's queue and feed the conversation, forever.
+     *
+     * Started once and never restarted: it must keep running across a
+     * reconnect, because the queue is where a message that arrived during the
+     * gap is waiting. Tied to the service's scope, so it ends when the service
+     * does and not before.
+     *
+     * Every read is guarded separately for the reason the poll loop is: one
+     * failing call must not discard the others, and a roster that will not
+     * load must not stop messages being delivered.
+     */
+    private fun startDraining() {
+        if (drainer?.isActive == true) return
+        drainer = scope.launch {
+            while (isActive) {
+                withContext(Dispatchers.IO) {
+                    runCatching { core.connectionStatus() }.getOrNull()
+                        ?.let { chat.applyConnection(it) }
+                        ?: chat.noteLinkFailure("status")
+                    runCatching { core.contacts() }.getOrNull()
+                        ?.let { chat.applyRoster(it) }
+                    runCatching { core.eventsDropped() }.getOrNull()
+                        ?.let { chat.applyDropped(it) }
+                    runCatching { core.drainEvents() }.getOrDefault(emptyList())
+                        .forEach { chat.handle(it) }
+                }
+                delay(DRAIN_INTERVAL_MS)
+            }
+        }
+    }
+
     private suspend fun watchUntilDropped() {
         while (scope.isActive) {
             delay(WATCH_INTERVAL_MS)
@@ -353,11 +455,21 @@ class OtrConnectionService : Service() {
 
         const val ACTION_START = "org.otrv4plus.android.START"
         const val ACTION_STOP = "org.otrv4plus.android.STOP"
+        const val ACTION_LOGOUT = "org.otrv4plus.android.LOGOUT"
         const val EXTRA_JID = "jid"
         const val EXTRA_PASSWORD = "password"
 
         /** How often to ask the transport whether it is still up. */
         const val WATCH_INTERVAL_MS = 5_000L
+
+        /**
+         * How often to drain the engine's queue.
+         *
+         * The same 500ms the UI used, and for the same reason: events are
+         * emitted on the transport's asyncio loop thread and pulled from here,
+         * so this is what decides how quickly a message appears.
+         */
+        const val DRAIN_INTERVAL_MS = 500L
 
         /** Start the service and ask it to connect. */
         fun start(context: Context, jid: String, password: String) {
@@ -372,6 +484,26 @@ class OtrConnectionService : Service() {
         fun stop(context: Context) {
             val intent = Intent(context, OtrConnectionService::class.java)
                 .setAction(ACTION_STOP)
+            ContextCompat.startForegroundService(context, intent)
+        }
+
+        /** Stop, and forget the account and its history. */
+        fun logout(context: Context) {
+            val intent = Intent(context, OtrConnectionService::class.java)
+                .setAction(ACTION_LOGOUT)
+            ContextCompat.startForegroundService(context, intent)
+        }
+
+        /**
+         * Resume with stored credentials, if there are any.
+         *
+         * No password in the Intent: the service reads it from the vault. This
+         * is what the UI calls on launch so a user who has signed in before
+         * does not see a login screen again.
+         */
+        fun resume(context: Context) {
+            val intent = Intent(context, OtrConnectionService::class.java)
+                .setAction(ACTION_START)
             ContextCompat.startForegroundService(context, intent)
         }
     }

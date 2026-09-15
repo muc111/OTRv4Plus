@@ -429,8 +429,9 @@ class TestTheAndroidLifecycleIsWiredForRecreation:
         assert "model = connection" in activity
         # The chat is handed the core from that one ViewModel, never its own,
         # and only once it exists -- the service binding is asynchronous.
-        assert "chat.attach(it)" in activity
-        assert "connection.core?.let" in activity
+        assert "chat.attach(core, state)" in activity
+        assert "connection.chat" in activity, (
+            "the chat renders state it owns rather than the service's")
         assert "ChaquopyOtrCore(" not in activity
 
     def test_which_screen_you_are_on_survives_recreation(self):

@@ -222,6 +222,20 @@ class TestSeedIsNotExposed:
         import re
         assert not re.search(r"[0-9a-fA-F]{60,}", text)
 
+    #: The ONE file allowed to name `javax.crypto.SecretKey`.
+    #:
+    #: `KeystoreVault` seals data at rest under a key that is GENERATED IN and
+    #: NEVER LEAVES the AndroidKeyStore -- `SecretKey` there is an opaque
+    #: handle, not key material, and `getEncoded()` on it returns null by
+    #: construction. That is a different object from an OTR identity seed and
+    #: banning the type name would only push the same code somewhere less
+    #: obvious.
+    #:
+    #: The carve-out is narrow on purpose, and
+    #: `test_4c_no_kotlin_extracts_key_bytes` is what stops it being a hole:
+    #: naming the type is allowed, turning one into bytes is not.
+    KEYSTORE_HANDLE_FILE = "KeystoreVault.kt"
+
     def test_4_seed_does_not_reach_the_kotlin_boundary(self):
         """The Kotlin bridge must expose no identity-secret accessor.
 
@@ -240,9 +254,40 @@ class TestSeedIsNotExposed:
                 stripped = line.strip()
                 if stripped.startswith(("//", "*", "/*")):
                     continue           # prose explaining the rule is fine
+                if (path.name == self.KEYSTORE_HANDLE_FILE
+                        and re.search(r"\bsecretKey\b", stripped, re.IGNORECASE)
+                        and not re.search(r"\b(seed|privateKey|privKey)\b",
+                                          stripped, re.IGNORECASE)):
+                    continue           # the Keystore handle; see above
                 if banned.search(line):
                     offenders.append(f"{path.name}:{lineno}: {stripped[:70]}")
         assert not offenders, "Kotlin references identity secret material:\n  " + "\n  ".join(offenders)
+
+    def test_4c_no_kotlin_extracts_key_bytes(self):
+        """The invariant the type-name ban was standing in for.
+
+        A Keystore handle is safe because the key cannot be read out of it.
+        `getEncoded()` is the call that would try, and on a non-exportable key
+        it returns null -- so code that calls it is either dead or is reaching
+        for material it must not have. Either way it does not belong here, and
+        this is a stronger statement than "do not write the word".
+        """
+        import pathlib, re
+        root = pathlib.Path(__file__).resolve().parent.parent / "android"
+        if not root.is_dir():
+            pytest.skip("android project not present")
+
+        extraction = re.compile(r"\.encoded\b|getEncoded\s*\(")
+        offenders = []
+        for path in root.rglob("*.kt"):
+            for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+                stripped = line.strip()
+                if stripped.startswith(("//", "*", "/*")):
+                    continue
+                if extraction.search(stripped):
+                    offenders.append(f"{path.name}:{lineno}: {stripped[:70]}")
+        assert not offenders, (
+            "Kotlin tries to extract raw key bytes:\n  " + "\n  ".join(offenders))
 
     def test_4b_sealed_blob_is_the_only_thing_python_holds(self):
         provider, disk = _Provider(), _Disk()

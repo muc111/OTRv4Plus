@@ -216,30 +216,32 @@ class TestThePollDoesNotGambleEverythingOnOneCall:
 
     @staticmethod
     @pytest.fixture(scope="class")
-    def view_model():
-        return _code_only(_read(ANDROID, "chat", "ChatViewModel.kt"))
+    def service():
+        # The reads moved here with the drain loop: whoever drains the
+        # engine's destructive queue has to be something that exists while the
+        # UI does not, which a ViewModel is not.
+        return _code_only(_read(ANDROID, "connection", "OtrConnectionService.kt"))
 
-    def test_each_read_is_attempted_separately(self, view_model):
-        block = view_model[view_model.index("fun gather("):]
-        block = block[:block.index("\n    private fun codeOf")]
+    def test_each_read_is_attempted_separately(self, service):
+        block = service[service.index("private fun startDraining("):]
+        block = block[:block.index("private suspend fun watchUntilDropped")]
         for call in ("connectionStatus()", "contacts()", "drainEvents()",
                      "eventsDropped()"):
             assert "runCatching { core.%s }" % call in block, (
                 "%s shares a try with the other reads, so its failure "
                 "discards them too" % call)
 
-    def test_a_failed_status_read_is_not_reported_as_disconnected(self, view_model):
-        assert "noteLinkFailure" in view_model, (
+    def test_a_failed_status_read_is_not_reported_as_disconnected(self, service):
+        assert "noteLinkFailure" in service, (
             "a status read that failed falls back to a default "
             "ConnectionStatus, which renders as a disconnection that was "
             "never observed")
 
-    def test_no_exception_text_reaches_the_ui(self, view_model):
+    def test_no_exception_text_reaches_the_ui(self, service):
         """A PyException carries the engine's own message."""
-        # `Throwable.message` is a PROPERTY, so no parens. `result.message()`
-        # is RosterResult's own sentence, written by us, and is allowed.
-        assert re.search(r"\.message\b(?!\()", view_model) is None
-        assert "simpleName" in view_model, "the code should be the TYPE only"
+        # `Throwable.message` is a PROPERTY, so no parens.
+        assert re.search(r"\.message\b(?!\()", service) is None
+        assert "simpleName" in service, "the code should be the TYPE only"
 
 
 class TestTheUiDistinguishesUnknownFromDisconnected:
@@ -282,7 +284,7 @@ class TestAddingAContactReportsWhatHappened:
     def test_the_view_model_shows_the_answer(self):
         vm = _code_only(_read(ANDROID, "chat", "ChatViewModel.kt"))
         block = vm[vm.index("fun addContact("):]
-        block = block[:block.index("fun dismissNotice")]
+        block = block[:block.index("fun send(jid: String)")]
         assert "state.note(result.message())" in block, (
             "the outcome is computed and thrown away, which is what made the "
             "button look inert")

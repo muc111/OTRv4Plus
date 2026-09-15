@@ -23,6 +23,7 @@ import org.otrv4plus.android.bridge.ChaquopyOtrCore
 import org.otrv4plus.android.bridge.ConnectionStatus
 import org.otrv4plus.android.bridge.InitResult
 import org.otrv4plus.android.bridge.RouterProbe
+import org.otrv4plus.android.chat.ChatState
 import org.otrv4plus.android.connection.LinkPhase
 import org.otrv4plus.android.connection.OtrConnectionService
 
@@ -50,6 +51,16 @@ class ConnectionViewModel(app: Application) : AndroidViewModel(app) {
 
     /** The service's core, once bound. Never constructed here. */
     var core by mutableStateOf<ChaquopyOtrCore?>(null)
+        private set
+
+    /**
+     * The service's conversation, once bound.
+     *
+     * Handed straight to `ChatViewModel`. This object does not read it, does
+     * not copy it and does not replace it -- it exists here only because the
+     * Activity binds once and both ViewModels need what the binding produced.
+     */
+    var chat by mutableStateOf<ChatState?>(null)
         private set
 
     var init by mutableStateOf<InitResult?>(null)
@@ -85,6 +96,7 @@ class ConnectionViewModel(app: Application) : AndroidViewModel(app) {
             val bound = (binder as? OtrConnectionService.LocalBinder)?.service
             service = bound
             core = bound?.core
+            chat = bound?.chat
             startPolling()
             viewModelScope.launch {
                 // The engine starts once, in the service. Asking here is what
@@ -101,6 +113,7 @@ class ConnectionViewModel(app: Application) : AndroidViewModel(app) {
             // stale handle that will throw on the next call.
             service = null
             core = null
+            chat = null
             phase = LinkPhase.STOPPED
         }
     }
@@ -170,6 +183,21 @@ class ConnectionViewModel(app: Application) : AndroidViewModel(app) {
     /** The user asked to disconnect, which also stops reconnecting. */
     fun disconnect() {
         OtrConnectionService.stop(getApplication())
+    }
+
+    /** Sign out: stop, and forget the account and its history. */
+    fun logout() {
+        OtrConnectionService.logout(getApplication())
+    }
+
+    /**
+     * Resume with stored credentials, if there are any.
+     *
+     * Called once on launch. A user who has signed in before should not be
+     * shown a login screen again just because the process restarted.
+     */
+    fun resumeIfRemembered() {
+        OtrConnectionService.resume(getApplication())
     }
 
     /**

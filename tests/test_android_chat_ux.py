@@ -311,10 +311,26 @@ class TestStateLivesInAViewModel:
         files. The connection's ViewModel owns the only one."""
         assert "ChaquopyOtrCore(" not in _code_only(chat_vm)
 
-    def test_attaching_twice_does_not_start_a_second_poll(self, chat_vm):
-        """A recomposition can call attach, and a recreated Activity will.
-        Two loops draining one event queue lose every other message."""
-        assert "if (this.core === core" in chat_vm
+    def test_attaching_twice_does_not_start_a_second_redraw_loop(self, chat_vm):
+        """A recomposition can call attach, and a recreated Activity will."""
+        assert "this.core === core && this.state === state" in chat_vm
+
+    def test_the_view_model_does_not_drain_the_event_queue(self, chat_vm):
+        """THE REASON BACKGROUND DELIVERY COULD NOT WORK.
+
+        The queue is destructive -- a drain removes what it returns -- so
+        whoever drains it is the only one who will ever see those events. A
+        ViewModel does not exist while the UI is gone, so a message arriving
+        with the app backgrounded was dropped or left unread, and no amount of
+        persistence further down would have helped.
+
+        The service drains now. Two drainers would lose every other message."""
+        code = _code_only(chat_vm)
+        for pulled in ("drainEvents", "contacts()", "eventsDropped",
+                       "connectionStatus"):
+            assert pulled not in code, (
+                "ChatViewModel reads %s itself; the service does that, and "
+                "two readers of a destructive queue lose messages" % pulled)
 
     def test_the_screens_hold_no_history(self):
         for name in ("ConversationScreen.kt", "ConversationsScreen.kt"):
@@ -328,10 +344,12 @@ class TestStateLivesInAViewModel:
         would mean two chat implementations and one of them unreachable."""
         assert not os.path.exists(os.path.join(ANDROID, "ui", "ChatScreen.kt"))
 
-    def test_drafts_live_in_the_view_model(self, chat_vm):
-        """So a draft survives a recomposition, a presence update redrawing
-        the screen, and Activity recreation."""
-        assert "drafts" in chat_vm
+    def test_drafts_survive_the_screen(self, chat_vm):
+        """They live in ChatState, which the SERVICE owns -- so a draft now
+        survives not just a recomposition and a recreation but the Activity
+        being destroyed entirely."""
+        assert "state?.setDraft" in chat_vm
+        assert "state?.draft" in chat_vm
         composer = _code_only(_read(ANDROID, "ui", "ConversationScreen.kt"))
         assert "remember { mutableStateOf" not in composer, (
             "the composer keeps its own draft, which a recomposition loses")

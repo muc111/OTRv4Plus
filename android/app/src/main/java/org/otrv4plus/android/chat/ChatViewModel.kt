@@ -15,52 +15,46 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.otrv4plus.android.bridge.ChaquopyOtrCore
 import org.otrv4plus.android.bridge.ConnectionStatus
-import org.otrv4plus.android.bridge.Contact
-import org.otrv4plus.android.bridge.OtrBridgeException
 import org.otrv4plus.android.bridge.OtrEvent
 import org.otrv4plus.android.bridge.SendOutcome
 
 /**
- * The Android half of the chat: the poll loop, the coroutine scope, and
- * telling Compose when to look again.
+ * The UI's window onto the conversation. It owns none of it.
  *
- * Every actual decision -- routing, presence, history, drafts, what a send
- * outcome means -- lives in [ChatState], which is plain Kotlin and has real
- * unit tests. This class deliberately holds no rules of its own; when a method
- * here does anything other than scheduling or state mirroring, it belongs
- * below.
- *
- * WHY IT IS A VIEWMODEL
+ * WHAT CHANGED, AND WHY
  * ---------------------
- * The contact list, the message history, the drafts and the polling loop all
- * lived inside `ChatScreen`'s composable body. That works right up until the
- * composition goes away, which on Android happens for a rotation, a theme
- * change, a locale change or simply navigating -- and then the conversation is
- * gone. A Composable is a description of what to draw, not a place to keep what
- * was said.
+ * This class used to hold the [ChatState] and drain the engine's event queue.
+ * The queue is DESTRUCTIVE -- a drain removes what it returns -- so whoever
+ * drains it is the only one who will ever see those events. A ViewModel does
+ * not exist while the UI is gone, so a message arriving with the app
+ * backgrounded was dropped or left unread, and no amount of persistence
+ * further down would have helped: the message never reached the code that
+ * would have written it.
  *
- * WHAT IT DELIBERATELY DOES NOT OWN
- * ---------------------------------
- * The connection. `ConnectionViewModel` owns [ChaquopyOtrCore] and therefore
- * the Python interpreter, the engine and the transport. This one is handed the
- * core and never constructs one, because two cores means two engines over the
- * same identity and trust files.
+ * `OtrConnectionService` owns the state and the drain loop now. This class
+ * holds a reference, re-reads it on a timer so Compose recomposes, and sends
+ * what the user types. When it is cleared, nothing happens to the
+ * conversation.
+ *
+ * SO WHAT IS LEFT HERE
+ * --------------------
+ * A redraw ticket and the outbound half of the composer. No routing, no
+ * presence, no history, no rules -- those are in [ChatState], which is plain
+ * Kotlin with real tests, and the structural suite fails if any of them
+ * reappear above this line.
  */
-class ChatViewModel(
-    private val state: ChatState = ChatState(),
-) : ViewModel() {
+class ChatViewModel : ViewModel() {
 
-    /** The core, once a connection screen has one. Never built here. */
     private var core: ChaquopyOtrCore? = null
+    private var state: ChatState? = null
     private var pollJob: Job? = null
 
     /**
-     * Redraw ticket, bumped whenever [state] changes underneath us.
+     * Redraw ticket.
      *
      * [ChatState] is deliberately not a Compose-observable type -- it must work
-     * without Compose, and a future sealed [MessageStore] will be doing I/O. So
-     * the ViewModel tells Compose when to look again, and every read below goes
-     * through [observe] so that the ticket is actually read during composition.
+     * without Compose, in a service, and be unit-testable -- so the ViewModel
+     * tells Compose when to look again.
      */
     private var revision by mutableStateOf(0)
 
@@ -68,143 +62,107 @@ class ChatViewModel(
         @Suppress("UNUSED_EXPRESSION") revision
     }
 
+    /** Whether the service has handed its state over yet. */
+    val attached: Boolean get() { observe(); return state != null }
+
     // -- what the UI reads ----------------------------------------------------
 
-    val connection: ConnectionStatus get() { observe(); return state.connection }
-    val droppedEvents: Int get() { observe(); return state.droppedEvents }
+    val connection: ConnectionStatus
+        get() { observe(); return state?.connection ?: ConnectionStatus() }
 
-    /** Whether the bridge can be read at all. Not the connection state. */
-    val link: ChatState.Link get() { observe(); return state.link }
+    val droppedEvents: Int get() { observe(); return state?.droppedEvents ?: 0 }
 
-    /** A stable code for the last failing read, for diagnosis. Never text. */
-    val readFailure: String? get() { observe(); return state.readFailure }
+    val link: ChatState.Link
+        get() { observe(); return state?.link ?: ChatState.Link.UNKNOWN }
 
-    /** A sentence from the last roster change, or null. */
-    val notice: String? get() { observe(); return state.notice }
+    val readFailure: String? get() { observe(); return state?.readFailure }
 
-    val openConversation: String? get() { observe(); return state.openConversation }
+    val notice: String? get() { observe(); return state?.notice }
+
+    val openConversation: String? get() { observe(); return state?.openConversation }
+
     val fingerprintAlert: OtrEvent.FingerprintChanged?
-        get() { observe(); return state.fingerprintAlert }
+        get() { observe(); return state?.fingerprintAlert }
 
-    fun conversations(): List<Conversation> { observe(); return state.conversations() }
-    fun conversation(jid: String): Conversation { observe(); return state.conversation(jid) }
-    fun messages(jid: String): List<Message> { observe(); return state.messages(jid) }
-    fun draft(jid: String): String { observe(); return state.draft(jid) }
-    fun canSend(): Boolean { observe(); return state.canSend() }
+    fun conversations(): List<Conversation> {
+        observe()
+        return state?.conversations() ?: emptyList()
+    }
+
+    fun conversation(jid: String): Conversation {
+        observe()
+        return state?.conversation(jid) ?: Conversation(
+            jid = jid, displayName = jid, presence = Presence.UNKNOWN,
+            security = org.otrv4plus.android.bridge.SecurityState.PLAINTEXT,
+            lastMessage = null, unread = 0,
+        )
+    }
+
+    fun messages(jid: String): List<Message> {
+        observe()
+        return state?.messages(jid) ?: emptyList()
+    }
+
+    fun draft(jid: String): String { observe(); return state?.draft(jid) ?: "" }
+
+    fun canSend(): Boolean { observe(); return state?.canSend() == true }
 
     // -- wiring ---------------------------------------------------------------
 
     /**
-     * Attach the connection's core and start following it.
+     * Take the service's core and its conversation.
      *
-     * Idempotent: calling it again with the same core does nothing, which
-     * matters because a recomposition can call it and a recreated Activity
-     * will. A second poll loop would drain the same event queue twice and every
-     * other message would go missing -- each drain removes what it returns.
+     * Idempotent, and NOT a handover of ownership: the service keeps both. A
+     * recomposition can call this and a recreated Activity will, so calling it
+     * again with the same pair must do nothing beyond ensuring the redraw
+     * timer is running.
      */
-    fun attach(core: ChaquopyOtrCore) {
-        if (this.core === core && pollJob?.isActive == true) return
-        pollJob?.cancel()
+    fun attach(core: ChaquopyOtrCore, state: ChatState) {
+        val same = this.core === core && this.state === state
         this.core = core
-        pollJob = viewModelScope.launch { pollLoop(core) }
-    }
-
-    private suspend fun pollLoop(core: ChaquopyOtrCore) {
-        while (viewModelScope.isActive) {
-            val batch = withContext(Dispatchers.IO) { gather(core) }
-            apply(batch)
-            delay(POLL_INTERVAL_MS)
+        this.state = state
+        if (same && pollJob?.isActive == true) return
+        pollJob?.cancel()
+        pollJob = viewModelScope.launch {
+            while (isActive) {
+                // No work, just a redraw: the SERVICE reads Python. Doing it
+                // here as well would be two drainers on one destructive queue.
+                revision++
+                delay(REDRAW_INTERVAL_MS)
+            }
         }
-    }
-
-    /**
-     * Read the four things, INDEPENDENTLY.
-     *
-     * This used to be one `runCatching` around all four, and that single line
-     * produced the worst bug this screen has had. `OtrApp.contacts()` raised --
-     * it calls `security_state` for every roster entry, which was unguarded --
-     * and the whole batch became null. So the connection status was discarded
-     * along with it, the screen fell back to a default `ConnectionStatus()`
-     * whose `connected` is false, and the app announced "Not connected.
-     * Messages cannot be sent or received." about a stream that was up, for as
-     * long as that peer stayed on the roster.
-     *
-     * One failing call must cost only what that call was going to provide. A
-     * roster that cannot be read is an empty list; a connection status that
-     * cannot be read is [ChatState.Link.FAILING], which is not the same claim
-     * as "disconnected" and must never render as one.
-     */
-    private fun gather(core: ChaquopyOtrCore): Batch {
-        val status = runCatching { core.connectionStatus() }
-        val roster = runCatching { core.contacts() }
-        val events = runCatching { core.drainEvents() }
-        val dropped = runCatching { core.eventsDropped() }
-        return Batch(
-            events = events.getOrDefault(emptyList()),
-            roster = roster.getOrNull(),
-            dropped = dropped.getOrNull(),
-            connection = status.getOrNull(),
-            failure = listOf(
-                "status" to status, "contacts" to roster,
-                "events" to events, "dropped" to dropped,
-            ).firstNotNullOfOrNull { (name, r) ->
-                r.exceptionOrNull()?.let { "$name:${codeOf(it)}" }
-            },
-        )
-    }
-
-    /**
-     * A stable code for a throwable, never its message.
-     *
-     * A `PyException` crossing Chaquopy carries the engine's own text, which
-     * can quote what it was handling. The type is enough to say which call is
-     * failing, and carries nothing.
-     */
-    private fun codeOf(t: Throwable): String =
-        (t as? OtrBridgeException)?.code ?: (t::class.simpleName ?: "error")
-
-    private fun apply(batch: Batch) {
-        if (batch.connection != null) state.applyConnection(batch.connection)
-        // Only the status read decides the link: a roster that failed tells us
-        // nothing about whether the stream is up.
-        else state.noteLinkFailure(batch.failure ?: "status:unknown")
-
-        batch.dropped?.let { state.applyDropped(it) }
-        batch.roster?.let { state.applyRoster(it) }
-        for (event in batch.events) state.handle(event)
-        state.noteReadFailure(batch.failure)
-        revision++
     }
 
     // -- actions --------------------------------------------------------------
 
     fun setDraft(jid: String, text: String) {
-        state.setDraft(jid, text)
+        state?.setDraft(jid, text)
         revision++
     }
 
     fun open(jid: String) {
-        state.open(jid)
+        state?.open(jid)
         revision++
     }
 
     fun closeConversation() {
-        state.closeConversation()
+        state?.closeConversation()
         revision++
     }
 
     fun dismissFingerprintAlert() {
-        state.dismissFingerprintAlert()
+        state?.dismissFingerprintAlert()
         revision++
     }
 
-    /**
-     * Add a contact to the roster and ask to see their presence.
-     *
-     * The engine call is off the main thread because it crosses into Python,
-     * which blocks.
-     */
+    fun dismissNotice() {
+        state?.dismissNotice()
+        revision++
+    }
+
+    /** Add a contact to the roster, and say what happened. */
     fun addContact(jid: String) {
+        val state = this.state ?: return
         if (!state.validContact(jid)) {
             state.note("That does not look like an address (name@server).")
             revision++
@@ -217,18 +175,10 @@ class ChatViewModel(
         }
         val bare = ChatState.bare(jid.trim())
         viewModelScope.launch {
-            // The RESULT, not just the attempt. Discarding it is what made
-            // this button look inert while Python was declining and saying
-            // why.
             val result = withContext(Dispatchers.IO) { core.addContact(bare) }
             state.note(result.message())
             revision++
         }
-    }
-
-    fun dismissNotice() {
-        state.dismissNotice()
-        revision++
     }
 
     /**
@@ -240,6 +190,7 @@ class ChatViewModel(
      */
     fun send(jid: String) {
         val core = this.core ?: return
+        val state = this.state ?: return
         val message = state.beginSend(jid) ?: return
         revision++
 
@@ -266,27 +217,18 @@ class ChatViewModel(
 
     override fun onCleared() {
         super.onCleared()
+        // The redraw timer, and nothing else. The conversation and the
+        // connection belong to the service and outlive this.
         pollJob?.cancel()
     }
 
-    /** Nullable where a read may have failed; null means "not this time". */
-    private data class Batch(
-        val events: List<OtrEvent>,
-        val roster: List<Contact>?,
-        val dropped: Int?,
-        val connection: ConnectionStatus?,
-        val failure: String?,
-    )
-
     companion object {
         /**
-         * How often to ask Python for news.
+         * How often to redraw.
          *
-         * Events are pulled rather than pushed because they are emitted on the
-         * transport's asyncio loop thread; see `ChaquopyOtrCore.drainEvents`.
-         * 500ms is fast enough to feel immediate and slow enough not to hold
-         * the interpreter lock.
+         * Not a poll of Python -- the service does that. This only decides how
+         * quickly a message the service has already received appears on screen.
          */
-        const val POLL_INTERVAL_MS = 500L
+        const val REDRAW_INTERVAL_MS = 400L
     }
 }
