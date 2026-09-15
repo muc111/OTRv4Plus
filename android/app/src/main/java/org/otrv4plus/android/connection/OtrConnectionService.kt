@@ -401,6 +401,11 @@ class OtrConnectionService : Service() {
      * app is backgrounded, which is precisely the state a notification is for.
      */
     fun setUiVisible(visible: Boolean) {
+        // The conversation state needs it too, and for a different reason:
+        // `openConversation` outlives the UI now, so without this a message
+        // arriving with the phone in a pocket is marked read because a
+        // conversation the user cannot see happens to be the open one.
+        chat.setUiVisible(visible)
         if (alerts.setUiVisible(visible)) cancelArrivalNotification()
     }
 

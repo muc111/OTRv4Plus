@@ -56,6 +56,20 @@ class ChatState(
     var openConversation: String? = null
         private set
 
+    /**
+     * Whether the user can actually see the screen.
+     *
+     * Needed because [openConversation] now outlives the UI. This state is
+     * owned by the service, so "alice's conversation is open" stays true after
+     * the user puts the phone in their pocket -- and a message arriving then
+     * was being marked READ, because the only question asked was whether that
+     * conversation was open. The unread badge was gone before they ever
+     * looked, which is worse than a missing notification: nothing afterwards
+     * says a message was there.
+     */
+    var uiVisible: Boolean = false
+        private set
+
     /** The transport's own view. Only meaningful when [link] is [Link.OK]. */
     var connection: ConnectionStatus = ConnectionStatus()
         private set
@@ -214,7 +228,10 @@ class ChatState(
             )
         )
         // Read as it arrives only if the user is actually looking at it.
-        if (added && openConversation == jid) store.markRead(jid)
+        // Read as it arrives only if the user is actually looking at it --
+        // BOTH that this conversation is the open one and that the screen is
+        // in front of them. Either alone is not "they saw it".
+        if (added && uiVisible && openConversation == jid) store.markRead(jid)
         return added
     }
 
@@ -288,7 +305,24 @@ class ChatState(
 
     fun open(jid: String) {
         openConversation = jid
+        // Opening a conversation is looking at it. The service's own signal
+        // can lag a frame behind the Activity's onStart, and a badge that
+        // lingers on the screen you are reading is its own small bug.
+        uiVisible = true
         store.markRead(jid)
+    }
+
+    /**
+     * The user can, or can no longer, see the screen.
+     *
+     * Coming back reads whatever landed in the conversation that was left
+     * open: it is still on screen, so the composition will not call [open]
+     * again, and without this the badge would sit there while the user reads
+     * the very messages it counts.
+     */
+    fun setUiVisible(visible: Boolean) {
+        uiVisible = visible
+        if (visible) openConversation?.let { store.markRead(it) }
     }
 
     fun closeConversation() {

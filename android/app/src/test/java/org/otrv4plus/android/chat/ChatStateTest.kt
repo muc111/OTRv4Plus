@@ -570,6 +570,82 @@ class ChatStateTest {
         assertNull(s.fingerprintAlert)
     }
 
+    // `openConversation` outlives the UI now, because the service owns this
+    // object. So "is it open" stopped being the same question as "is the user
+    // looking at it", and the unread badge depends on the difference.
+
+    @Test
+    fun `a message to the open conversation is read only if the user is there`() {
+        val s = state(contact(alice))
+        s.setUiVisible(true)
+        s.open(alice)
+        s.handle(inbound(alice, "hello"))
+        assertEquals(0, s.conversation(alice).unread)
+    }
+
+    @Test
+    fun `a message arriving while the app is away stays unread`() {
+        val s = state(contact(alice))
+        s.setUiVisible(true)
+        s.open(alice)
+        s.setUiVisible(false)                 // pocket
+        s.handle(inbound(alice, "hello"))
+        assertEquals(1, s.conversation(alice).unread,
+            "the badge was cleared before the user had a chance to look, so " +
+            "nothing afterwards says the message was there")
+    }
+
+    @Test
+    fun `coming back reads what landed in the conversation left open`() {
+        val s = state(contact(alice))
+        s.setUiVisible(true)
+        s.open(alice)
+        s.setUiVisible(false)
+        s.handle(inbound(alice, "hello"))
+        s.setUiVisible(true)                  // still on that screen
+        assertEquals(0, s.conversation(alice).unread,
+            "the badge sat there while the user read the messages it counted")
+    }
+
+    @Test
+    fun `coming back does not read a conversation that is not open`() {
+        val s = state(contact(alice), contact(bob))
+        s.setUiVisible(true)
+        s.open(alice)
+        s.setUiVisible(false)
+        s.handle(inbound(bob, "hello"))
+        s.setUiVisible(true)
+        assertEquals(1, s.conversation(bob).unread)
+    }
+
+    @Test
+    fun `coming back to the list reads nothing`() {
+        val s = state(contact(alice))
+        s.setUiVisible(true)
+        s.open(alice)
+        s.closeConversation()
+        s.setUiVisible(false)
+        s.handle(inbound(alice, "hello"))
+        s.setUiVisible(true)
+        assertEquals(1, s.conversation(alice).unread)
+    }
+
+    @Test
+    fun `opening a conversation counts as looking at it`() {
+        // The service's visibility signal can lag the Activity's onStart by a
+        // frame; a badge on the screen you are reading is its own small bug.
+        val s = state(contact(alice))
+        s.handle(inbound(alice, "hello"))
+        s.open(alice)
+        assertEquals(0, s.conversation(alice).unread)
+        assertTrue(s.uiVisible)
+    }
+
+    @Test
+    fun `nothing is visible until something says so`() {
+        assertFalse(state().uiVisible)
+    }
+
     // What `handle` RETURNS is what decides whether the phone buzzes. It is
     // not a detail of the return type: a `true` for a duplicate lets a peer
     // who resends the same message ring the phone as often as they like.
