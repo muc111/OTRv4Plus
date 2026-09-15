@@ -550,23 +550,71 @@ class TestItIsTheTransportOtrAppExpects:
         from android_bridge.app import Transport
         assert issubclass(XmppTransport, Transport)
 
-    def test_it_does_not_import_the_terminal_client_at_module_scope(self):
-        """Importing otrv4plus_xmpp pulls in the whole engine, and a settings
-        screen has no business loading it."""
+    @staticmethod
+    def _module_scope_imports(mod):
         import ast
         import inspect
-        import android_bridge.transport as mod
         tree = ast.parse(inspect.getsource(mod))
         top = []
         for node in tree.body:
             if isinstance(node, (ast.Import, ast.ImportFrom)):
+                top += ([a.name for a in node.names]
+                        if isinstance(node, ast.Import)
+                        else [node.module or ""])
+        return [n or "" for n in top]
+
+    def test_it_does_not_import_the_terminal_client_at_module_scope(self):
+        """Importing otrv4plus_xmpp pulls in the whole engine, and a settings
+        screen has no business loading it."""
+        import android_bridge.transport as mod
+        top = self._module_scope_imports(mod)
+        for banned in ("otrv4plus_xmpp", "otrv4plus_tui", "otrv4_",
+                       "slixmpp", "weechat"):
+            assert not any(n.startswith(banned) for n in top), (
+                "%r is imported at module scope: %r" % (banned, top))
+
+    def test_any_shared_module_it_imports_is_a_leaf(self):
+        """The rule the name-prefix ban was standing in for.
+
+        The boundary from 22fc255 is about COST and coupling, not about a
+        naming convention: the objection to `otrv4plus_xmpp` is that importing
+        it drags in the engine, argparse, getpass and a terminal. A module
+        that shares a prefix but imports nothing outside the standard library
+        drags in nothing, and refusing it would push the Android side into
+        keeping its own copy of shared code -- which is exactly how the
+        `?OTRv4F|` fragmentation ended up implemented on one side only and
+        broke Android-to-Termux interoperability.
+
+        So the check is the property, tested directly: anything from the
+        project that this module imports at module scope must itself be a
+        leaf. If `otrv4plus_fragment` ever grows a dependency on the engine,
+        this fails and the import has to move back inside a function.
+        """
+        import ast
+        import importlib
+        import inspect
+        import sys
+
+        import android_bridge.transport as mod
+
+        shared = [n for n in self._module_scope_imports(mod)
+                  if n.startswith("otrv4plus")]
+        assert shared, "expected at least otrv4plus_fragment"
+        for name in shared:
+            module = importlib.import_module(name)
+            tree = ast.parse(inspect.getsource(module))
+            for node in ast.walk(tree):
+                if not isinstance(node, (ast.Import, ast.ImportFrom)):
+                    continue
                 names = ([a.name for a in node.names]
                          if isinstance(node, ast.Import)
                          else [node.module or ""])
-                top += names
-        for banned in ("otrv4plus_xmpp", "slixmpp", "otrv4_", "otrv4plus"):
-            assert not any((n or "").startswith(banned) for n in top), (
-                "%r is imported at module scope: %r" % (banned, top))
+                for dep in names:
+                    root = (dep or "").split(".")[0]
+                    assert root in sys.stdlib_module_names or root == "", (
+                        "%s imports %r, so it is no longer a leaf and must "
+                        "not be imported at module scope by the transport"
+                        % (name, dep))
 
 
 class TestTheCertificateRuleMatchesTheTerminalClient:

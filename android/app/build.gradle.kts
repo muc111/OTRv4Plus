@@ -314,6 +314,12 @@ val syncPythonSources by tasks.registering(Copy::class) {
             //   EOF
             "otrv4plus_address.py",
             "otrv4plus_admin.py",
+            // The `?OTRv4F|` wire format, shared with the terminal client.
+            // android_bridge.transport imports it at module scope, so a
+            // missing entry here is an ImportError at launch rather than a
+            // missing feature -- and without it an Android peer and a Termux
+            // peer cannot complete a DAKE with each other at all.
+            "otrv4plus_fragment.py",
             "otrv4plus_audio.py",
             "otrv4plus_coreapi.py",
             "otrv4plus_filetransfer.py",

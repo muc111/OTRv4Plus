@@ -154,6 +154,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 import otrv4plus_address as _address
 import otrv4plus_coreapi as _coreapi
+import otrv4plus_fragment as _frag
 import otrv4plus_smpflow as _smpflow
 
 # ---------------------------------------------------------------------------
@@ -4271,9 +4272,16 @@ class OTRv4PlusXMPP(ClientXMPP):
         `_file_fragments_sent`. The file pump paces on that: what costs the
         receiver's rate-limit budget is stanzas, not chunks.
         """
-        MAX_FRAGMENT = 6000  # bytes per fragment (safely under I2P cliff)
+        # The format itself lives in otrv4plus_fragment, because the Android
+        # transport has to produce exactly these bytes and a second
+        # implementation of a wire format is a second implementation to keep
+        # in step. What stays here is everything that is this client's own
+        # voice: its debug lines and its stanza counter.
+        parts, self._frag_seq = _frag.fragment(
+            payload, getattr(self, "_frag_seq", 0))
+        total = len(parts)
 
-        if len(payload) <= MAX_FRAGMENT:
+        if total == 1:
             self.send_message(mto=peer, mbody=payload, mtype="chat")
             self._dbg(f"[otr-send] 1 frame ({len(payload)} bytes) -> {peer}")
             # getattr rather than a plain +=, and inline rather than a
@@ -4284,20 +4292,14 @@ class OTRv4PlusXMPP(ClientXMPP):
                 getattr(self, "_file_fragments_sent", 0) + 1
             return 1
 
-        chunks = [
-            payload[i : i + MAX_FRAGMENT]
-            for i in range(0, len(payload), MAX_FRAGMENT)
-        ]
-        total = len(chunks)
-        self._frag_seq = (self._frag_seq + 1) & 0xFFFFFFFF
-        msg_id = "%08x" % self._frag_seq
-
+        # Recovered from the first fragment rather than tracked separately, so
+        # there is exactly one place that decides what a msg_id is.
+        msg_id = parts[0].split("|", 2)[1]
         self._dbg(
             f"[otr-send] fragmenting {len(payload)} bytes into {total} "
             f"fragments (id {msg_id}) -> {peer}"
         )
-        for i, chunk in enumerate(chunks, 1):
-            frag = f"?OTRv4F|{msg_id}|{i}|{total}|{chunk}"
+        for i, frag in enumerate(parts, 1):
             self.send_message(mto=peer, mbody=frag, mtype="chat")
             self._dbg(f"[otr-send]   sent fragment {i}/{total} (id {msg_id})")
         self._dbg(f"[otr-send] all {total} fragments sent (id {msg_id}) -> {peer}")
@@ -4319,77 +4321,49 @@ class OTRv4PlusXMPP(ClientXMPP):
     def _reassemble_fragment(self, peer, body):
         """Feed one inbound fragment to the buffer. Returns the fully
         reassembled '?OTRv4 ...' string when the last fragment arrives,
-        otherwise None."""
-        try:
-            _, msg_id, n_s, total_s, chunk = body.split("|", 4)
-            n = int(n_s)
-            total = int(total_s)
-        except Exception:
-            self._dbg(f"[otr-recv] malformed fragment from {peer}; dropping")
-            return None
+        otherwise None.
 
-        # Reject nonsensical indices before they can corrupt a buffer.
-        MAX_FRAGMENTS = 4096
-        if total < 1 or total > MAX_FRAGMENTS or n < 1 or n > total:
-            self._dbg(f"[otr-recv] fragment index out of range from {peer}; dropping")
-            return None
+        The buffering, the bounds and the stitching moved to
+        otrv4plus_fragment so the Android transport reassembles with the same
+        code rather than a second copy of it. What stays here is this client's
+        own output: `_dbg`, and the progress line that is suppressed in probe
+        mode and passes the peer through `_sanitise`.
 
-        if not hasattr(self, "_frag_buffers"):
-            self._frag_buffers = {}
+        `_frag_buffers` is still created lazily and still lives on the
+        instance, because the fragmentation tests drive this method against a
+        bare stub that never ran `__init__`.
+        """
+        reassembler = getattr(self, "_frag_reassembler", None)
+        if reassembler is None:
+            def on_progress(peer_, have, total):
+                """The "receiving n/total" line, with this client's rules.
 
-        MAX_INFLIGHT      = 64
-        MAX_BUFFER_BYTES  = 8 * 1024 * 1024   # one reassembly set
-        MAX_TOTAL_BYTES   = 32 * 1024 * 1024  # all in-flight sets combined
+                Suppressed in probe mode and for a single-fragment set,
+                exactly as before. This is why reassembly takes a callback
+                instead of printing for itself: `print` is shadowed at module
+                scope here to route through the session log, and `_sanitise`
+                is this client's policy on what a peer address may look like
+                in output. Neither belongs in a module Android imports.
 
-        # Evict oldest entries when inflight set count is exceeded.
-        while len(self._frag_buffers) > MAX_INFLIGHT:
-            del self._frag_buffers[next(iter(self._frag_buffers))]
+                A closure over `self` rather than a method, and that is not a
+                style choice: the fragmentation tests drive
+                `_reassemble_fragment` as an unbound method against a stub
+                that never ran `__init__`, so this may only touch what the
+                original touched -- `_dbg` and `_probe`. Naming a new method
+                here broke seven of them.
+                """
+                if not self._probe and total > 1:
+                    print("[otr] receiving %d/%d fragments from %s"
+                          % (have, total, _sanitise(peer_, 48)))
 
-        key = (peer, msg_id, total)
-        buf = self._frag_buffers.setdefault(
-            key, {"parts": {}, "total": total, "bytes": 0}
-        )
-        # Adjust byte tally for a resent fragment so a peer cannot inflate it.
-        prev = buf["parts"].get(n)
-        if prev is not None:
-            buf["bytes"] -= len(prev)
-        buf["parts"][n] = chunk
-        buf["bytes"] += len(chunk)
-
-        if buf["bytes"] > MAX_BUFFER_BYTES:
-            self._frag_buffers.pop(key, None)
-            self._dbg(
-                f"[otr-recv] reassembly from {peer} exceeded "
-                f"{MAX_BUFFER_BYTES} bytes; dropping"
-            )
-            return None
-        agg = sum(b["bytes"] for b in self._frag_buffers.values())
-        while agg > MAX_TOTAL_BYTES and self._frag_buffers:
-            k = next(iter(self._frag_buffers))
-            agg -= self._frag_buffers[k]["bytes"]
-            del self._frag_buffers[k]
-
-        have = len(buf["parts"])
-        self._dbg(
-            f"[otr-recv]   fragment {n}/{total} from {peer} "
-            f"(id {msg_id}; have {have}/{total})"
-        )
-
-        if have < total:
-            if not self._probe and total > 1:
-                print("[otr] receiving %d/%d fragments from %s"
-                      % (have, total, _sanitise(peer, 48)))
-            return None
-        # Verify every index present before stitching.
-        if any(i not in buf["parts"] for i in range(1, total + 1)):
-            return None
-        ordered = "".join(buf["parts"][i] for i in range(1, total + 1))
-        self._frag_buffers.pop(key, None)
-        self._dbg(
-            f"[otr-recv] reassembled {total} fragments "
-            f"({len(ordered)} bytes, id {msg_id}) from {peer}"
-        )
-        return ordered
+            reassembler = _frag.Reassembler(
+                on_debug=self._dbg, on_progress=on_progress)
+            self._frag_reassembler = reassembler
+            # Kept as an alias rather than a copy: anything that inspected
+            # `_frag_buffers` -- a diagnostic, a test -- still sees the live
+            # dict, because it IS the live dict.
+            self._frag_buffers = reassembler.buffers
+        return reassembler.feed(peer, body)
 
     # -------------------------------------------------------------------------
     # OTR session control

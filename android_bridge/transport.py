@@ -46,6 +46,8 @@ import logging
 import threading
 from typing import Any, Callable, Dict, List, Optional
 
+import otrv4plus_fragment as _fragment
+
 from .app import Transport
 from .settings import ConnectionProfile
 
@@ -235,6 +237,18 @@ class XmppTransport(Transport):
         #: this the sockets live on `loop._i2p_keep`, which is a keep-alive
         #: with no release.
         self._i2p_resources: List[Any] = []
+        #: Outbound fragment-set counter, and the inbound partial sets. Both
+        #: use otrv4plus_fragment -- the same code the terminal client calls,
+        #: not a second implementation of the same wire format. That is the
+        #: whole point: a phone and a laptop have to produce identical bytes
+        #: or they cannot complete a DAKE with each other.
+        #:
+        #: No logging hooks. The terminal client passes its `_dbg` and a
+        #: progress printer; here the equivalent would be logcat, and a
+        #: fragment count is a statement about a specific message from a
+        #: specific peer.
+        self._frag_seq = 0
+        self._reassembler = _fragment.Reassembler()
 
     # -- what this object says about itself -----------------------------------
 
@@ -486,6 +500,10 @@ class XmppTransport(Transport):
            half-dead one and believe it is usable.
         """
         self._connected.clear()
+        # Partial sets belong to a session that is ending. They are fragments
+        # of decrypted-to-be plaintext and there is nothing left to complete
+        # them with, so they go rather than sitting in memory.
+        self._reassembler.clear()
         client, self._client = self._client, None
         if client is not None:
             for method in ("abort", "disconnect"):
@@ -584,7 +602,21 @@ class XmppTransport(Transport):
         self._run(self._send(peer, payload), CALL_TIMEOUT)
 
     async def _send(self, peer: str, payload: str) -> None:
-        self._client.send_message(mto=peer, mbody=payload, mtype="chat")
+        """One stanza per fragment, through the shared wire format.
+
+        This used to send the payload whole, which is why an Android peer and
+        a Termux peer could not complete a DAKE. A DAKE2 is about 11.7 KB
+        after base64 -- 1568 bytes of ML-KEM ciphertext, a 2592-byte ML-DSA-87
+        public key and a 4627-byte signature -- and that goes straight at the
+        ~8 KB I2P cliff that `otrv4plus_fragment.MAX_FRAGMENT` exists to stay
+        under.
+
+        `fragment` returns `[payload]` unchanged for anything at or below the
+        threshold, so an ordinary message still goes out exactly as it did.
+        """
+        parts, self._frag_seq = _fragment.fragment(payload, self._frag_seq)
+        for part in parts:
+            self._client.send_message(mto=peer, mbody=part, mtype="chat")
 
     def disconnect(self) -> None:
         if self._client is None or self._closed:
@@ -824,6 +856,21 @@ class XmppTransport(Transport):
         except Exception:
             _log.warning("could not read an inbound stanza")
             return
+        # Reassembly BEFORE the engine, and before any decision about what the
+        # body is. A Termux peer fragments anything over 6000 bytes, which
+        # includes every DAKE2 and every SMP frame; handing those to the
+        # engine one at a time is handing it gibberish, which is why the two
+        # clients could not complete a handshake with each other.
+        #
+        # `feed` returns None for an incomplete set, so nothing reaches the
+        # engine until the last fragment lands. Malformed and out-of-range
+        # fragments also return None and are dropped, which is the same
+        # fail-closed behaviour the terminal client has.
+        if _fragment.is_fragment(body):
+            body = self._reassembler.feed(peer, body)
+            if body is None:
+                return
+
         try:
             self._on_payload(peer, body)
         except Exception:
