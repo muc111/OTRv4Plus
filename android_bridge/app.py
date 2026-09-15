@@ -28,6 +28,14 @@ import time
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional
 
+# The shared wire format. A dependency-free leaf, which is why importing it at
+# module scope does not breach the transport boundary from 22fc255 -- see
+# tests/test_android_transport.py::test_any_shared_module_it_imports_is_a_leaf.
+# Both clients classify and fragment
+# with this module and nothing has a second copy.
+import otrv4plus_fragment as _fragment
+from otrv4plus_mode import OtrMode
+
 from .events import (
     CallState, CallStateChanged, ConnectionState, ConnectionStateChanged,
     ErrorOccurred, Event, EventSink, FingerprintChanged, MessageReceived,
@@ -165,6 +173,9 @@ class OtrApp:
         self._connection = ConnectionState.DISCONNECTED
         self._presence: Dict[str, bool] = {}
         self._last_activity: Dict[str, float] = {}
+        # Which conversations have had OTR asked for. Never a security state;
+        # see otrv4plus_mode.OtrMode.
+        self._mode = OtrMode()
         self._call_states: Dict[str, CallState] = {}
 
     # -- event plumbing --------------------------------------------------------
@@ -340,7 +351,14 @@ class OtrApp:
     # -- messaging -------------------------------------------------------------
 
     def start_session(self, peer: str) -> None:
-        """Begin the DAKE.  Completes in roughly 20s over XMPP/I2P."""
+        """Begin the DAKE.  Completes in roughly 20s over XMPP/I2P.
+
+        This is the EXPLICIT request, and from here on nothing in this
+        conversation goes out in the clear -- including if the handshake
+        fails, because a failed handshake is not consent to continue without
+        one.
+        """
+        self._mode.request(peer)
         payload = self._safe(lambda: self._engine.handle_outgoing_message(peer, ""))
         try:
             self._engine.get_or_create_session(peer, is_initiator=True)
@@ -372,11 +390,13 @@ class OtrApp:
         self._last_activity[peer] = self._clock()
         return True
 
-    #: What `send_user_text` did. Three outcomes, because the middle one is
-    #: neither success nor failure and calling it either is a lie to the user.
+    #: What `send_user_text` did. Four outcomes, and each is a different thing
+    #: to tell the user. QUEUED is neither success nor failure; PLAINTEXT is a
+    #: success that must never be described as a secure one.
     SEND_ENCRYPTED = "encrypted"
     SEND_QUEUED = "queued"
     SEND_FAILED = "failed"
+    SEND_PLAINTEXT = "plaintext"
 
     def send_user_text(self, peer: str, body: str) -> str:
         """Send one typed line the way the terminal client does.
@@ -398,12 +418,32 @@ class OtrApp:
         as a send failure. A user typing before a session exists would be told
         their message failed, when in fact it is waiting and will go.
 
-        This method reports the truth and changes no security property. There
-        is still no plaintext path: the engine decides, and when it says
-        `should_send=False` nothing goes on the wire.
+        PLAINTEXT BEFORE OTR
+        --------------------
+        An ordinary XMPP message, to a conversation where nobody has asked for
+        OTR, goes out as typed. It does NOT go through
+        `handle_outgoing_message`, because that call is opportunistic: it would
+        create a session, start a DAKE, queue the text and hand back DAKE1 --
+        so typing "hello" would emit an 11 KB handshake and deliver nothing.
+
+        `OtrMode` decides, and it fails closed: an established or requested
+        session is never downgraded, and a peer's own protocol frame marks the
+        conversation before the handshake finishes. The result is reported as
+        SEND_PLAINTEXT, distinct from SEND_ENCRYPTED, so nothing downstream can
+        mistake one for the other.
         """
         if self._transport is None:
             raise BridgeError("no_transport")
+
+        if self._mode.may_send_plaintext(
+                peer, self.security_state(peer) is not SecurityState.PLAINTEXT):
+            try:
+                self._transport.send(peer, body)
+            except Exception:
+                return self.SEND_FAILED
+            self._last_activity[peer] = self._clock()
+            return self.SEND_PLAINTEXT
+
         try:
             payload, should_send = self._engine.handle_outgoing_message(
                 peer, body)
@@ -433,6 +473,12 @@ class OtrApp:
         Returns the plaintext for the caller that wants it inline; the same value
         is delivered as an event.  Nothing here is logged.
         """
+        # The PEER asking counts as asking. Marked before the engine runs, so
+        # a message typed while a DAKE is arriving cannot slip out in the clear
+        # in the gap between their first frame and a completed session.
+        if _fragment.is_otr_protocol(payload):
+            self._mode.request(peer)
+
         # Sample BEFORE the engine runs: a DAKE or SMP frame changes the
         # security level as a side effect of this call, and comparing against a
         # post-call reading would always find them equal.
@@ -450,10 +496,56 @@ class OtrApp:
                 self._emit(SessionStateChanged(peer=peer, security=after))
             return None
 
+        # THE ENGINE'S OUTPUT IS NOT NECESSARILY SOMETHING TO DISPLAY.
+        #
+        # `handle_incoming_message` returns either decrypted user text OR a
+        # protocol frame that the CALLER is expected to put back on the wire.
+        # `otrv4plus_xmpp._on_otr_message` has always made that distinction --
+        # `if out_b.startswith(OTR_PREFIX_B): send_otr_fragmented(...)` -- and
+        # this facade did not.
+        #
+        # The consequence was physical and was reported from a handset: a
+        # `?OTRv4 NvM3G22w...` DAKE frame appeared in the conversation as a
+        # wall of base64 from the user's contact, AND the reply it represented
+        # was never sent, so the handshake could not complete in either
+        # direction. One missing branch produced both symptoms.
+        if _fragment.is_otr_protocol(result):
+            self._send_protocol(peer, result)
+            after = self.security_state(peer)
+            if after != before:
+                self._emit(SessionStateChanged(peer=peer, security=after))
+            return None
+
         body = result.decode("utf-8", errors="replace") if isinstance(result, (bytes, bytearray)) else str(result)
         self._last_activity[peer] = self._clock()
         self._emit(MessageReceived(peer=peer, body=body, timestamp=self._clock()))
+        # A decrypted message means a session exists; the level may have moved
+        # on this very frame (a DATA message completing a rekey, say).
+        after = self.security_state(peer)
+        if after != before:
+            self._emit(SessionStateChanged(peer=peer, security=after))
         return body
+
+    def _send_protocol(self, peer: str, payload) -> None:
+        """Put the engine's protocol response back on the wire.
+
+        Fragmented by the transport, which is what makes an 11.7 KB DAKE2
+        survive the I2P size cliff. Failures are reported as an error event
+        rather than raised: this runs on the transport's own inbound path, and
+        an exception there would take down the callback that delivers every
+        other message.
+        """
+        if self._transport is None:
+            self._emit(ErrorOccurred(peer=peer, code="no_transport"))
+            return
+        text = (payload.decode("utf-8", errors="replace")
+                if isinstance(payload, (bytes, bytearray)) else str(payload))
+        try:
+            self._transport.send(peer, text)
+        except Exception:
+            # The handshake cannot continue, and saying nothing would leave
+            # the UI showing a session that is quietly stuck.
+            self._emit(ErrorOccurred(peer=peer, code="protocol_send_failed"))
 
     # -- verification ----------------------------------------------------------
 

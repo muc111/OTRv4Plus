@@ -35,20 +35,38 @@ SIZE=$(du -h "$OUT" | cut -f1)
 CORE=$(grep -m1 '^version' Rust/Cargo.toml | cut -d'"' -f2)
 
 cat > notes.md <<EOF
-# ⚠️ EXPERIMENTAL — this APK has never been run
+# ⚠️ EXPERIMENTAL — a development build, not a release
 
-This is an automated build, published so it can be tested. **No device or
-emulator has ever installed or launched it.** It is not a release, it is not
-supported, and it should not be used to protect anything real.
+This is an automated build, published so it can be tested. It is not a
+release, it is not supported, and it should not be used to protect anything
+real.
 
-If you are looking for OTRv4+ as something to actually use: **the supported
-environment is Termux**, not this APK. See the README.
+Earlier builds carried the line "this APK has never been run". That is no
+longer true and has been corrected rather than quietly dropped: the APK has
+been installed and launched on a handset, and a substantial part of the
+runtime is now verified there. What has NOT been verified is listed below, and
+that list is the reason this is still marked experimental.
+
+For a client that is known to work end to end today, **Termux remains the
+reference implementation**. See the README.
 
 ---
 
-## What is actually verified
+## Verified on a real device
 
-CI proves this much, and asserts each one rather than assuming it:
+Reported from a handset (Android 15, arm64-v8a):
+
+- the APK installs and launches;
+- Chaquopy starts CPython 3.12 and \`import otrv4_core\` succeeds on the real
+  ABI;
+- \`EnhancedSessionManager\` constructs with a persistent identity;
+- the SAM probe, the I2P tunnel, the XMPP connection and SASL authentication
+  complete against the live server;
+- a message sent from a Termux peer reached the handset over I2P.
+
+## Verified by CI
+
+Asserted on every run rather than assumed:
 
 - The project configures and \`assembleDebug\` completes.
 - The Rust core (\`otrv4_core\` ${CORE}) is cross-compiled for \`arm64-v8a\` and
@@ -59,24 +77,24 @@ CI proves this much, and asserts each one rather than assuming it:
   perfectly green with no Rust core in it at all.
 - The bundled Python requirement list is the complete dependency closure,
   re-resolved on every run.
-- The Kotlin security-layer unit tests pass.
+- The Kotlin unit tests pass.
 
-## What is NOT verified
+## NOT verified, and the reason this is still experimental
 
-Everything that needs hardware:
+- **Plaintext messaging in both directions.** Implemented and unit-tested; the
+  device gate is open.
+- **Roster and presence** on the handset.
+- **Background survival, and reconnect** after a transient failure.
+- **OTR end to end.** No DAKE has been observed completing between a handset
+  and a Termux peer. Do not read "the runtime starts" as "OTR works".
+- **Voice.** Verified under Termux, which is a different process model. Do not
+  read "voice works" as "voice works in the APK".
 
-- that the app starts;
-- that the embedded CPython interpreter initialises;
-- that \`import otrv4_core\` succeeds on a real ABI;
-- that AAudio opens a stream;
-- that any OTR session is ever established.
+Also absent by design at this stage: **no in-APK I2P router** and no signed
+release build.
 
-Also absent by design at this stage: **no in-APK I2P router**, no signed
-release build, and **no voice testing inside the APK** — voice is verified
-under Termux, which is a different process model. Do not read "voice works"
-as "voice works in the APK".
-
-\`ANDROID_PHASE2_REPORT.md\` §14 tracks these as open gates.
+\`ANDROID_MESSAGING_DEVICE_TEST.md\` is the procedure for the open gates;
+\`ANDROID_CHAT_ARCHITECTURE.md\` §7 records what is and is not covered by tests.
 
 ## Install
 
@@ -120,7 +138,7 @@ if gh release view "$TAG" >/dev/null 2>&1; then
 fi
 
 gh release create "$TAG" "$OUT" \
-    --title "Experimental Android APK — never run on a device" \
+    --title "Experimental Android APK — development build" \
     --notes-file notes.md \
     --prerelease \
     --target "$GITHUB_SHA"

@@ -11,4 +11,21 @@
     <string name="app_name">OTRv4+</string>
 
     <string name="dev_diagnostics_title">Integration diagnostics</string>
+
+    <!-- The foreground-service notification.
+
+         Every one of these says only what the CONNECTION is doing. No JID, no
+         server, no contact, no message body: this text appears on a locked
+         screen and over the user's shoulder, and who someone talks to is the
+         thing an anonymity-oriented client exists to protect. -->
+    <string name="connection_channel_name">Connection</string>
+    <string name="connection_channel_description">Shows that the encrypted connection is running, so Android does not stop it.</string>
+    <string name="connection_stop">Disconnect</string>
+    <string name="connection_stopped">Not connected</string>
+    <string name="connection_starting">Starting…</string>
+    <string name="connection_connecting">Connecting…</string>
+    <string name="connection_connected">Connected</string>
+    <string name="connection_reconnecting">Reconnecting…</string>
+    <string name="connection_disconnecting">Disconnecting…</string>
+    <string name="connection_failed">Connection failed</string>
 </resources>

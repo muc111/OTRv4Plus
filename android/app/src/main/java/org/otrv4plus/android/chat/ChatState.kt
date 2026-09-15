@@ -345,6 +345,7 @@ class ChatState(
             message.copy(
                 sendState = when (outcome) {
                     SendOutcome.ENCRYPTED -> SendState.SENT
+                    SendOutcome.PLAINTEXT -> SendState.SENT
                     SendOutcome.QUEUED -> SendState.QUEUED
                     SendOutcome.FAILED -> SendState.FAILED
                 },
@@ -352,6 +353,10 @@ class ChatState(
                     // The engine reported ciphertext. Nothing else here may
                     // set this label.
                     SendOutcome.ENCRYPTED -> SecurityLabel.ENCRYPTED
+                    // It went, and it went in the clear. Distinct from
+                    // UNKNOWN: we know exactly what happened to this one, and
+                    // the user is entitled to be told.
+                    SendOutcome.PLAINTEXT -> SecurityLabel.PLAINTEXT
                     else -> SecurityLabel.UNKNOWN
                 },
             )

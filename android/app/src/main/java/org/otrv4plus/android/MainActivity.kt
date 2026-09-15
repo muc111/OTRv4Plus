@@ -42,11 +42,16 @@ import org.otrv4plus.android.ui.FingerprintAlertDialog
  * WHAT IS NOT IN NAVIGATION STATE
  * -------------------------------
  * The core, the connection and the transport. Those belong to
- * [ConnectionViewModel], which is scoped to the Activity's retained instance
- * and therefore survives the recreation that discards this composition. An
- * earlier version put the `ChaquopyOtrCore` itself into a `remember`, so a
- * rotation during a tunnel build produced a second Python engine over the same
- * identity and trust files while the first kept its worker thread.
+ * `OtrConnectionService`, which outlives this Activity AND the process being
+ * backgrounded; [ConnectionViewModel] merely binds to it and reads its state.
+ *
+ * Two earlier versions got this wrong in the same direction. The first put the
+ * `ChaquopyOtrCore` in a `remember`, so a rotation during a tunnel build
+ * produced a second Python engine over the same identity and trust files. The
+ * second moved it to the ViewModel, which fixed rotation and not the real
+ * problem: Android kills a backgrounded process with nothing holding it up, so
+ * the connection died whenever the user looked at something else and every
+ * message sent to them in between was lost.
  *
  * There is no launcher disguise. One was specified and withdrawn on
  * 2026-09-14: Play's Deceptive Behavior policy forbids an app that
@@ -84,7 +89,13 @@ class MainActivity : ComponentActivity() {
                     // a second attach with the same core is a no-op, so a
                     // recomposition cannot start a second polling loop draining
                     // the same event queue.
-                    LaunchedEffect(connection.core) { chat.attach(connection.core) }
+                    // Nullable now: the core lives in the service and there is
+                    // a window before the binding lands. Re-keyed on it, so
+                    // the chat attaches the moment it arrives and re-attaches
+                    // if the service is ever rebound.
+                    LaunchedEffect(connection.core) {
+                        connection.core?.let { chat.attach(it) }
+                    }
 
                     when (screen) {
                         Screen.ABOUT -> {
@@ -94,7 +105,7 @@ class MainActivity : ComponentActivity() {
 
                         Screen.DIAGNOSTICS -> {
                             BackHandler { screen = Screen.CONVERSATIONS }
-                            DevShellScreen()
+                            DevShellScreen(core = connection.core)
                         }
 
                         Screen.CONVERSATION -> {

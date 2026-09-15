@@ -33,15 +33,29 @@ import java.util.Locale
  * src/debug/).
  */
 @Composable
-fun DevShellScreen() {
+fun DevShellScreen(core: ChaquopyOtrCore? = null) {
     val context = LocalContext.current
     var result by remember { mutableStateOf<InitResult?>(null) }
     var running by remember { mutableStateOf(true) }
 
-    LaunchedEffect(Unit) {
+    // THE SERVICE'S CORE, never a new one.
+    //
+    // This used to do `ChaquopyOtrCore(context).initialize()`, which built a
+    // SECOND Python interpreter and a second engine over the same identity and
+    // trust files -- from the diagnostics screen, whose whole job is to tell
+    // you whether the first one is healthy. Opening it while connected was
+    // enough to have two engines writing the same records.
+    LaunchedEffect(core) {
+        if (core == null) {
+            running = false
+            return@LaunchedEffect
+        }
         // Never on the main thread: interpreter start plus engine construction
-        // is far too slow, and the engine expects a worker thread.
-        result = withContext(Dispatchers.IO) { ChaquopyOtrCore(context).initialize() }
+        // is far too slow, and the engine expects a worker thread. Idempotent
+        // on an already-started core.
+        result = withContext(Dispatchers.IO) {
+            runCatching { core.initialize() }.getOrNull()
+        }
         running = false
     }
 

@@ -194,23 +194,40 @@ Out of OTRv4 scope. OMEMO or MLS would be a separate project.
 
 ### Native Android APK
 
-**Builds, never run.** A Gradle project, a Chaquopy configuration, a typed
-Kotlin↔Python bridge and a Kotlin application security layer exist under
-`android/` and `android_bridge/`, and the storage and architecture questions have
-been audited (`ANDROID_ARCHITECTURE_AUDIT.md`, `ANDROID_STORAGE_AUDIT.md`,
-`ANDROID_PHASE2_REPORT.md`).
+**Runs on a handset; not yet a finished chat client.** A Gradle project, a
+Chaquopy configuration, a typed Kotlin↔Python bridge and a Kotlin application
+security layer exist under `android/` and `android_bridge/`, and the storage and
+architecture questions have been audited (`ANDROID_ARCHITECTURE_AUDIT.md`,
+`ANDROID_STORAGE_AUDIT.md`, `ANDROID_PHASE2_REPORT.md`,
+`ANDROID_CHAT_ARCHITECTURE.md`).
 
-Since v10.30.0 a **debug APK actually assembles**, on GitHub-hosted runners
-(`.github/workflows/android.yml`) because `dl.google.com` is 403 from the
-development environment. It contains the Rust core cross-compiled for
-arm64-v8a and x86_64, and CI asserts that rather than assuming it. That
-retires the toolchain question and nothing else.
+Since v10.30.0 a **debug APK assembles** on GitHub-hosted runners
+(`.github/workflows/android.yml`), because `dl.google.com` is 403 from the
+development environment. It contains the Rust core cross-compiled for arm64-v8a
+and x86_64, and CI asserts that rather than assuming it.
 
-What does not exist is a signed release APK, an in-APK I2P router, or any
-voice testing inside the APK — voice is verified under Termux, which is a
-different process model. **No device or emulator has ever launched this APK**,
-so "it builds" is not "it runs". Termux remains the supported environment. Do
-not read "voice works" as "voice works in the APK".
+**What has now been verified on a real device**, which the previous wording
+("no device or emulator has ever launched this APK") no longer describes:
+
+- the APK installs and launches;
+- Chaquopy starts CPython and the Rust core loads and initialises;
+- the SAM probe, the I2P tunnel, the XMPP connection and SASL authentication
+  complete against the live server;
+- a message sent from a Termux peer **arrived at the handset over I2P** — it
+  was mishandled once there, but the transport carried it.
+
+**What is still NOT verified on a device**: plaintext messaging in both
+directions (the code for it landed after the last device run), roster and
+presence, background survival, reconnect, and OTR end to end. The fixes for the
+first of those are recent and their device gate is open —
+`ANDROID_MESSAGING_DEVICE_TEST.md` is the procedure.
+
+What does not exist is a signed release APK, an in-APK I2P router, or any voice
+testing inside the APK — voice is verified under Termux, which is a different
+process model. **Do not read "voice works" as "voice works in the APK"**, and do
+not read "the runtime starts" as "the app is ready". Android is a development
+client until the acceptance criteria in `ANDROID_CHAT_ARCHITECTURE.md` §7 are
+met on a handset; Termux remains the reference implementation.
 
 ### Tor onion service transport
 

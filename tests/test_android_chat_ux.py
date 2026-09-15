@@ -73,13 +73,20 @@ def _code_only(text):
 # ── the outbound path ────────────────────────────────────────────────────────
 
 class FakeEngine:
-    """Enough EnhancedSessionManager for the facade's outbound path."""
+    """Enough EnhancedSessionManager for the facade's outbound path.
 
-    def __init__(self, payload="?OTRv4:ciphertext", should_send=True,
-                 raises=False):
+    `level` is what `get_security_level` answers -- 0 is PLAINTEXT. The real
+    engine is opportunistic (`handle_outgoing_message` starts a DAKE on the
+    first message), which is exactly why the facade must not reach it for an
+    ordinary plaintext send.
+    """
+
+    def __init__(self, payload="?OTRv4 ciphertext", should_send=True,
+                 raises=False, level=0):
         self.payload = payload
         self.should_send = should_send
         self.raises = raises
+        self.level = level
         self.calls = []
 
     def handle_outgoing_message(self, peer, body):
@@ -88,8 +95,16 @@ class FakeEngine:
             raise RuntimeError("engine said no")
         return self.payload, self.should_send
 
-    def security_state(self, peer):
-        return 0
+    def get_security_level(self, peer):
+        return self.level
+
+    def get_or_create_session(self, peer, is_initiator=False):
+        return object()
+
+    def handle_incoming_message(self, peer, payload):
+        return self.incoming
+
+    incoming = None
 
 
 class FakeTransport:
@@ -120,63 +135,126 @@ def build(**kw):
 
 
 class TestSendUserText:
-    """The terminal client's semantics, on Android.
+    """What happens to a typed line, and when it may go in the clear.
 
-    `send_message` raises `not_encrypted` when there is no session. That is the
-    right GUARANTEE -- it never downgrades to plaintext -- but the wrong
-    REPORT: the engine does not discard the text, it holds it and flushes it
-    after the DAKE, which the terminal client shows as
-    `[queued] will send once OTR with <peer> is ready`.
+    Four outcomes now, because there are four things that can happen and
+    describing any of them with another's word is a lie to the user:
 
-    So the Android side was calling a normal, recoverable, expected state a
-    send failure, and telling the user to retype something already waiting.
+      ENCRYPTED  the engine produced ciphertext and it went
+      PLAINTEXT  nobody has asked for OTR here, so it went as typed
+      QUEUED     the engine is holding it until a session exists
+      FAILED     it did not go and nothing is holding it
     """
 
-    def test_an_encrypted_send_reports_encrypted(self):
-        app, _engine, transport = build(should_send=True)
-        assert app.send_user_text(PEER, "hello") == OtrApp.SEND_ENCRYPTED
-        assert transport.sent == [(PEER, "?OTRv4:ciphertext")]
+    # -- plaintext before OTR (the interoperability requirement) -------------
 
-    def test_no_session_reports_queued_rather_than_failed(self):
-        app, _engine, transport = build(should_send=False)
-        assert app.send_user_text(PEER, "hello") == OtrApp.SEND_QUEUED
-        assert transport.sent == [], (
-            "something went on the wire without a session")
+    def test_an_ordinary_message_goes_out_as_typed(self):
+        """A conversation nobody has asked to encrypt is ordinary XMPP."""
+        app, _engine, transport = build()
+        assert app.send_user_text(PEER, "hello") == OtrApp.SEND_PLAINTEXT
+        assert transport.sent == [(PEER, "hello")]
 
-    def test_queued_is_not_an_error(self):
-        """It must not raise: the caller has nothing to recover from and the
-        message is not lost."""
-        app, _engine, _transport = build(should_send=False)
-        app.send_user_text(PEER, "hello")     # must not raise
+    def test_a_plaintext_send_does_not_start_a_dake(self):
+        """`handle_outgoing_message` is opportunistic: reaching it at all
+        would create a session, start a handshake and queue the text, so
+        typing "hello" would emit an 11 KB DAKE1 and deliver nothing."""
+        app, engine, transport = build()
+        app.send_user_text(PEER, "hello")
+        assert engine.calls == [], "the engine was asked, and it starts a DAKE"
+        assert transport.sent == [(PEER, "hello")]
 
-    def test_an_engine_that_raises_reports_failed(self):
-        app, _engine, transport = build(raises=True)
-        assert app.send_user_text(PEER, "hello") == OtrApp.SEND_FAILED
-        assert transport.sent == []
+    def test_several_plaintext_messages_all_go(self):
+        app, _engine, transport = build()
+        for word in ("one", "two", "three"):
+            assert app.send_user_text(PEER, word) == OtrApp.SEND_PLAINTEXT
+        assert [body for _p, body in transport.sent] == ["one", "two", "three"]
 
-    def test_a_transport_that_raises_reports_failed(self):
-        """Encrypted but did not leave. Distinct from queued: nothing is
-        holding it and nothing will retry."""
+    def test_a_transport_failure_on_a_plaintext_send_reports_failed(self):
         app, _engine, transport = build()
         transport.raises = True
         assert app.send_user_text(PEER, "hello") == OtrApp.SEND_FAILED
 
-    def test_an_empty_payload_reports_failed(self):
-        app, _engine, transport = build(payload=None, should_send=True)
+    # -- and never once OTR is in the picture --------------------------------
+
+    def test_starting_otr_stops_anything_going_in_the_clear(self):
+        app, _engine, transport = build(should_send=False)
+        app.start_session(PEER)
+        assert app.send_user_text(PEER, "the secret") == OtrApp.SEND_QUEUED
+        assert all("the secret" not in body for _p, body in transport.sent)
+
+    def test_a_failed_handshake_does_not_fall_back_to_plaintext(self):
+        """The downgrade this policy exists to prevent. "The session broke"
+        is not consent to carry on without one."""
+        app, engine, transport = build(should_send=False)
+        app.start_session(PEER)
+        engine.raises = True
+        assert app.send_user_text(PEER, "the secret") == OtrApp.SEND_FAILED
+        assert all("the secret" not in body for _p, body in transport.sent)
+
+    def test_the_peer_starting_otr_also_stops_plaintext(self):
+        """A responder must not answer a handshake with a cleartext line.
+        Marked from the peer's first protocol frame, before the session
+        exists -- the gap between their DAKE1 and a completed session is
+        exactly where a downgrade would fit."""
+        app, engine, transport = build(should_send=False)
+        engine.incoming = None
+        app.receive_message(PEER, "?OTRv4 NvM3G22wZ5AUSVebh8ZenAA")
+        assert app.send_user_text(PEER, "the secret") == OtrApp.SEND_QUEUED
+        assert all("the secret" not in body for _p, body in transport.sent)
+
+    def test_an_established_session_is_never_downgraded(self):
+        """Even with nobody having called start_session: the ENGINE says
+        there is a session, and that alone forbids the clear."""
+        app, _engine, transport = build(should_send=True, level=3)
+        assert app.send_user_text(PEER, "the secret") == OtrApp.SEND_ENCRYPTED
+        assert all("the secret" not in body for _p, body in transport.sent)
+
+    def test_an_ordinary_body_that_looks_like_protocol_is_still_plaintext(self):
+        """A user may type anything. It is where the conversation is, not what
+        the body looks like, that decides."""
+        app, _engine, transport = build()
+        assert app.send_user_text(PEER, "?OTRv4 is a protocol") == \
+            OtrApp.SEND_PLAINTEXT
+        assert transport.sent == [(PEER, "?OTRv4 is a protocol")]
+
+    # -- the encrypted path, unchanged ---------------------------------------
+
+    def test_an_encrypted_send_reports_encrypted(self):
+        app, _engine, transport = build(should_send=True, level=1)
+        assert app.send_user_text(PEER, "hello") == OtrApp.SEND_ENCRYPTED
+        assert transport.sent == [(PEER, "?OTRv4 ciphertext")]
+
+    def test_no_session_yet_reports_queued_rather_than_failed(self):
+        """Mid-handshake: the engine holds the text and will flush it."""
+        app, _engine, transport = build(should_send=False)
+        app.start_session(PEER)
+        assert app.send_user_text(PEER, "hello") == OtrApp.SEND_QUEUED
+        assert transport.sent == []
+
+    def test_queued_is_not_an_error(self):
+        app, _engine, _transport = build(should_send=False)
+        app.start_session(PEER)
+        app.send_user_text(PEER, "hello")     # must not raise
+
+    def test_an_engine_that_raises_reports_failed(self):
+        app, _engine, transport = build(raises=True, level=1)
         assert app.send_user_text(PEER, "hello") == OtrApp.SEND_FAILED
         assert transport.sent == []
 
-    def test_it_never_sends_plaintext(self):
-        """The whole point. Whatever the engine says, the body itself must not
-        reach the transport unless the engine produced it."""
-        app, _engine, transport = build(should_send=False)
-        app.send_user_text(PEER, "the secret")
-        assert all("the secret" not in payload for _peer, payload in transport.sent)
+    def test_a_transport_that_raises_reports_failed(self):
+        app, _engine, transport = build(level=1)
+        transport.raises = True
+        assert app.send_user_text(PEER, "hello") == OtrApp.SEND_FAILED
+
+    def test_an_empty_payload_reports_failed(self):
+        app, _engine, transport = build(payload=None, should_send=True, level=1)
+        assert app.send_user_text(PEER, "hello") == OtrApp.SEND_FAILED
+        assert transport.sent == []
 
     def test_bytes_from_the_engine_are_decoded(self):
-        app, _engine, transport = build(payload=b"?OTRv4:bytes")
+        app, _engine, transport = build(payload=b"?OTRv4 bytes", level=1)
         app.send_user_text(PEER, "hello")
-        assert transport.sent == [(PEER, "?OTRv4:bytes")]
+        assert transport.sent == [(PEER, "?OTRv4 bytes")]
 
     def test_without_a_transport_it_raises(self):
         app = OtrApp(FakeEngine())
@@ -184,16 +262,16 @@ class TestSendUserText:
             app.send_user_text(PEER, "hello")
 
     def test_send_message_still_refuses_plaintext(self):
-        """The existing guarantee is untouched. `send_user_text` reports
-        better; it does not relax anything."""
+        """The old guarantee is untouched. `send_message` is the method that
+        promises ciphertext or nothing, and it still does."""
         app, _engine, _transport = build(should_send=False)
         with pytest.raises(Exception) as caught:
             app.send_message(PEER, "hello")
         assert getattr(caught.value, "code", "") == "not_encrypted"
 
-    def test_the_three_outcomes_are_distinct(self):
+    def test_the_four_outcomes_are_distinct(self):
         assert len({OtrApp.SEND_ENCRYPTED, OtrApp.SEND_QUEUED,
-                    OtrApp.SEND_FAILED}) == 3
+                    OtrApp.SEND_FAILED, OtrApp.SEND_PLAINTEXT}) == 4
 
 
 class TestTheKotlinSeamAgrees:

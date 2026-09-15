@@ -227,6 +227,11 @@ private fun statusWord(message: Message): String? = when {
     message.sendState == SendState.FAILED -> "not sent"
     message.sendState == SendState.SENT &&
         message.security == SecurityLabel.ENCRYPTED -> "sent, encrypted"
+    // Said outright rather than left to the absence of the word "encrypted".
+    // This message was readable by the server, and a bare "sent" next to a
+    // "sent, encrypted" three lines up invites exactly the wrong reading.
+    message.sendState == SendState.SENT &&
+        message.security == SecurityLabel.PLAINTEXT -> "sent, not encrypted"
     message.sendState == SendState.SENT -> "sent"
     !message.outgoing && message.security == SecurityLabel.PLAINTEXT ->
         "not encrypted"

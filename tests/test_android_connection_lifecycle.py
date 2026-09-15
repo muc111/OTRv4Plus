@@ -326,9 +326,29 @@ class TestTheAndroidLifecycleIsWiredForRecreation:
         assert "remember { ChaquopyOtrCore" not in connect_screen
         assert "ChaquopyOtrCore(context)" not in connect_screen
 
-    def test_the_core_lives_in_a_view_model(self, view_model):
-        assert "ViewModel" in view_model
-        assert "val core: ChaquopyOtrCore" in view_model
+    def test_the_core_lives_in_the_service(self, view_model):
+        """It used to live here, which fixed rotation and not the real
+        problem: a ViewModel does not survive the process, and Android kills a
+        backgrounded process with nothing holding it up. The ViewModel now
+        BINDS to the service and its core is nullable, because there is a
+        window before the binding lands."""
+        service = _read(UI, "connection", "OtrConnectionService.kt")
+        assert "val core: ChaquopyOtrCore by lazy" in service
+        assert "ChaquopyOtrCore(" not in _code_only(view_model), (
+            "the ViewModel constructs a core again")
+        assert "var core by mutableStateOf<ChaquopyOtrCore?>" in view_model
+
+    def test_only_the_service_constructs_a_core(self):
+        """One authoritative owner. Two would be two engines over the same
+        identity and trust files -- which the diagnostics screen was doing,
+        from the screen whose job is to report on the first one."""
+        import glob
+        built = []
+        for path in glob.glob(os.path.join(UI, "**", "*.kt"), recursive=True):
+            source = _code_only(_read(path))
+            if "ChaquopyOtrCore(" in source and "class ChaquopyOtrCore" not in source:
+                built.append(os.path.basename(path))
+        assert built == ["OtrConnectionService.kt"], built
 
     def test_the_screen_takes_the_view_model(self, connect_screen):
         assert "model: ConnectionViewModel = viewModel()" in connect_screen
@@ -357,22 +377,34 @@ class TestTheAndroidLifecycleIsWiredForRecreation:
         sure is that there are at least as many IO hops as there are call
         sites that need one.
         """
-        core_calls = len(re.findall(r"\bcore\.\w+\(", view_model))
-        io_hops = view_model.count("Dispatchers.IO")
+        source = view_model + _read(UI, "connection", "OtrConnectionService.kt")
+        core_calls = len(re.findall(r"\bcore[?]?\.\w+\(", source))
+        io_hops = source.count("Dispatchers.IO")
         assert io_hops >= 1
         assert core_calls > 0
-        outside = re.findall(r"^\s{0,8}core\.\w+\(", view_model, re.M)
+        outside = re.findall(r"^\s{0,8}core[?]?\.\w+\(", source, re.M)
         assert not outside, (
             "these look like calls into Python at method level rather than "
             "inside a dispatcher: %s" % outside)
 
-    def test_teardown_releases_the_connection_before_the_engine(
-            self, view_model):
-        assert "onCleared" in view_model
+    def test_clearing_the_view_model_does_not_hang_up(self, view_model):
+        """The inversion the service exists for. This used to disconnect and
+        shut the engine down in `onCleared`; doing that now would hang up
+        because a screen went away, which is the bug, not the fix."""
         cleared = view_model[view_model.index("override fun onCleared"):]
-        assert cleared.index("disconnect") < cleared.index("shutdown"), (
-            "shutting the engine down first leaves the transport's worker "
-            "thread and its I2P tunnel with nobody holding a reference")
+        assert "unbindService" in cleared
+        for teardown in ("disconnect()", "shutdown()", "cancelConnect()"):
+            assert teardown not in cleared, (
+                "onCleared still tears the connection down: %s" % teardown)
+
+    def test_the_service_releases_everything_when_it_stops(self):
+        service = _read(UI, "connection", "OtrConnectionService.kt")
+        destroy = service[service.index("override fun onDestroy"):]
+        destroy = destroy[:destroy.index("\n    //")]
+        assert "stopConnection" in destroy
+        stop = service[service.index("fun stopConnection"):]
+        stop = stop[:stop.index("private suspend fun connectLoop")]
+        assert "cancelConnect" in stop and "disconnect" in stop
 
     def test_shutdown_releases_the_controller(self):
         """The bridge's own shutdown, which is what onCleared calls."""
@@ -395,8 +427,10 @@ class TestTheAndroidLifecycleIsWiredForRecreation:
         assert activity.count("ConnectionViewModel = viewModel()") == 1, (
             "the Activity obtains the connection ViewModel more than once")
         assert "model = connection" in activity
-        # The chat is handed the core from that one ViewModel, never its own.
-        assert "chat.attach(connection.core)" in activity
+        # The chat is handed the core from that one ViewModel, never its own,
+        # and only once it exists -- the service binding is asynchronous.
+        assert "chat.attach(it)" in activity
+        assert "connection.core?.let" in activity
         assert "ChaquopyOtrCore(" not in activity
 
     def test_which_screen_you_are_on_survives_recreation(self):

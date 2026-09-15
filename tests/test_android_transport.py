@@ -595,12 +595,21 @@ class TestItIsTheTransportOtrAppExpects:
         import inspect
         import sys
 
-        import android_bridge.transport as mod
+        import android_bridge.app
+        import android_bridge.transport
 
-        shared = [n for n in self._module_scope_imports(mod)
-                  if n.startswith("otrv4plus")]
-        assert shared, "expected at least otrv4plus_fragment"
-        for name in shared:
+        # BOTH modules, not just the transport. `android_bridge.app` gained
+        # module-scope imports of `otrv4plus_fragment` (to classify protocol
+        # traffic) and `otrv4plus_mode` (to decide whether a body may go in
+        # the clear), and the same rule has to hold for them or the boundary
+        # is only enforced where somebody remembered to look.
+        shared = []
+        for mod in (android_bridge.transport, android_bridge.app):
+            shared += [n for n in self._module_scope_imports(mod)
+                       if n.startswith("otrv4plus")]
+        assert "otrv4plus_fragment" in shared
+        assert "otrv4plus_mode" in shared
+        for name in sorted(set(shared)):
             module = importlib.import_module(name)
             tree = ast.parse(inspect.getsource(module))
             for node in ast.walk(tree):

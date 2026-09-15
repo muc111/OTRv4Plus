@@ -155,6 +155,7 @@ from concurrent.futures import ThreadPoolExecutor
 import otrv4plus_address as _address
 import otrv4plus_coreapi as _coreapi
 import otrv4plus_fragment as _frag
+from otrv4plus_mode import OtrMode as _OtrMode
 import otrv4plus_smpflow as _smpflow
 
 # ---------------------------------------------------------------------------
@@ -894,8 +895,13 @@ except ImportError:
     _LOG_AVAILABLE = False
 
 
-OTR_PREFIX = "?OTRv4 "
-OTR_PREFIX_B = b"?OTRv4 "
+# One definition, shared with android_bridge. Re-exported under the names this
+# module and its tests have always used, so nothing here changes shape -- but
+# the two clients can no longer drift apart on what counts as protocol
+# traffic, which is precisely how the Android side ended up with no notion of
+# it at all.
+OTR_PREFIX = _frag.OTR_PREFIX
+OTR_PREFIX_B = OTR_PREFIX.encode("utf-8")
 
 # SMP passphrase length bounds enforced before passing to the Rust engine.
 # Defined in the engine (otrv4+.py) since v10.23.0 so both clients agree;
@@ -1564,6 +1570,10 @@ class OTRv4PlusXMPP(ClientXMPP):
         # unresolved. Presence in this map refuses voice for that peer.
         self._fingerprint_changed = {}
         self._encrypted = set()    # peers whose DAKE has completed
+        # Which conversations have had OTR asked for -- by us with /otr,
+        # or by the peer sending a protocol frame. NOT a security state:
+        # it says whether OTR is wanted here, not whether it is working.
+        self._otr_mode = _OtrMode()
         self._smp_reported = set() # (peer, state) already announced
         # Display only.  Populated by _tui_route_output matching
         # substrings such as "SMP VERIFIED" in printed lines, which
@@ -2769,6 +2779,14 @@ class OTRv4PlusXMPP(ClientXMPP):
             body = full
 
         if body.startswith(OTR_PREFIX):
+            # The peer has asked for OTR, so nothing more goes to them in the
+            # clear -- including while this handshake is still in flight.
+            # Marked here rather than on completion: the gap between their
+            # DAKE1 and an established session is exactly where a downgrade
+            # would fit.
+            _m = getattr(self, "_otr_mode", None)
+            if _m is not None:
+                _m.request(peer)
             # OTR processing (especially SMP) can run multi-minute 3072-bit DH
             # computations that BLOCK. Offload to a thread to keep the asyncio
             # event loop free so keepalive and network stay responsive.
@@ -4373,6 +4391,12 @@ class OTRv4PlusXMPP(ClientXMPP):
         self.send_message(mto=peer, mbody=text, mtype="chat")
 
     def start_otr(self, peer):
+        # Recorded BEFORE anything can fail. From here on this conversation
+        # does not send in the clear, and a handshake that goes wrong must not
+        # quietly restore that possibility.
+        _m = getattr(self, "_otr_mode", None)
+        if _m is not None:
+            _m.request(peer)
         try:
             msg, should_send = self.otr.handle_outgoing_message(peer, "")
         except Exception as e:
@@ -4439,6 +4463,34 @@ class OTRv4PlusXMPP(ClientXMPP):
         path uses, and a padlock on a message that never left would be a
         false claim about the one thing this client exists to be right about.
         """
+        # PLAINTEXT BEFORE OTR.
+        #
+        # `handle_outgoing_message` is opportunistic: for a peer with no
+        # session it creates one, starts a DAKE, queues the text and returns
+        # DAKE1. So reaching it at all would turn "hello" into an 11 KB
+        # handshake frame and deliver nothing -- which is what happened, and
+        # is why an ordinary XMPP conversation was impossible in either
+        # direction.
+        #
+        # `OtrMode` fails closed: an established session, or one either side
+        # has asked for, never comes down this branch.
+        # `getattr`, and the default is None on purpose. Test stubs drive this
+        # method unbound against objects that never ran `__init__`, and so
+        # would a partially constructed client. The safe answer for "I do not
+        # know whether OTR was asked for here" is to NOT take the plaintext
+        # branch: fall through to the engine, which is the old behaviour and
+        # cannot leak. An `_OtrMode()` default would have done the opposite.
+        _mode = getattr(self, "_otr_mode", None)
+        if _mode is not None and _mode.may_send_plaintext(
+                peer, peer in getattr(self, "_encrypted", ())):
+            try:
+                self.send_otr_fragmented(peer, text)
+            except Exception as e:
+                print(f"[send error] to {peer}: {e}")
+                return
+            self._echo_plain_sent(peer, text)
+            return
+
         try:
             msg, should_send = self.otr.handle_outgoing_message(peer, text)
         except Exception as e:
@@ -4451,6 +4503,28 @@ class OTRv4PlusXMPP(ClientXMPP):
             self._echo_sent(peer, text)
         elif not should_send:
             print(f"[queued] will send once OTR with {peer} is ready")
+
+    def _echo_plain_sent(self, peer, text):
+        """Echo a message that went in the CLEAR.
+
+        Deliberately not `_echo_sent`, and deliberately without a padlock:
+        this one was readable by the server and by anything between it and the
+        peer, and it appears under the same `[plain]` tag the inbound side
+        uses so both halves of an unencrypted conversation look alike.
+
+        The body is `_sanitise`d exactly as an inbound body is. Being our own
+        words is not a reason to print them differently, and the redaction
+        allowlist has to treat both directions the same or a session log keeps
+        half a conversation.
+        """
+        try:
+            mine = self.boundjid.bare
+        except Exception:
+            mine = ""
+        self._erase_plain_echo(text)
+        print("[plain] %s: %s"
+              % (_colorize(_sanitise(mine or "me", 128), "cyan"),
+                 _sanitise(text)))
 
     def _echo_sent(self, peer, text):
         """Print our own message in the same shape as an incoming one.

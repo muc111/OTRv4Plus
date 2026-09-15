@@ -320,6 +320,11 @@ val syncPythonSources by tasks.registering(Copy::class) {
             // missing feature -- and without it an Android peer and a Termux
             // peer cannot complete a DAKE with each other at all.
             "otrv4plus_fragment.py",
+            // Whether a conversation may send in the clear. Shared with the
+            // terminal client and imported by android_bridge.app at module
+            // scope, so the same rule applies: missing here is an ImportError
+            // at launch, not a missing feature.
+            "otrv4plus_mode.py",
             "otrv4plus_audio.py",
             "otrv4plus_coreapi.py",
             "otrv4plus_filetransfer.py",

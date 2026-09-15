@@ -188,12 +188,32 @@ enum class SendOutcome {
 
     /** It will not be sent, and nothing is retrying. */
     FAILED,
+
+    /**
+     * It went, AS TYPED, readable by the server and by anything between it
+     * and the peer.
+     *
+     * A success, and one that must never be reported in the same words as
+     * [ENCRYPTED]. Nobody had asked for OTR on this conversation, so this is
+     * ordinary XMPP behaving as ordinary XMPP -- which is what makes talking
+     * to a plain client possible at all -- but the user is entitled to know
+     * which of the two just happened.
+     */
+    PLAINTEXT,
     ;
 
     companion object {
+        /**
+         * Map Python's answer, failing to [FAILED].
+         *
+         * FAILED is the right unknown: it never claims a message went, and it
+         * never claims one went encrypted. A new outcome name arriving from a
+         * newer bridge shows as "not sent" rather than as a false padlock.
+         */
         fun fromName(name: String): SendOutcome = when (name.lowercase()) {
             "encrypted" -> ENCRYPTED
             "queued" -> QUEUED
+            "plaintext" -> PLAINTEXT
             else -> FAILED
         }
     }

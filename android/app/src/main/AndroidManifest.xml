@@ -11,6 +11,24 @@
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
 
     <!--
+      The connection outlives the screen, which on Android means a foreground
+      service and therefore a notification the user can see and stop. Without
+      it the process is killed when backgrounded, the I2P tunnel goes with it,
+      and every message sent in the meantime is simply lost.
+
+      dataSync is the honest type: this is a long-lived network session the
+      user asked for. It is not a media, location, or call service and must not
+      claim to be one.
+
+      POST_NOTIFICATIONS is API 33+. Denying it does not stop the service; it
+      only hides the notification, so the app asks for it but does not depend
+      on it.
+    -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <!--
       Security-relevant application attributes, explained here because comments
       cannot live between attributes:
 
@@ -46,6 +64,21 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!--
+          The one owner of the connection.
+
+          exported=false: nothing outside this app may start, stop or bind to
+          it. The Intent that starts it carries the account password, and an
+          exported service would be an invitation to send one.
+
+          No intent-filter, for the same reason: it is started by explicit
+          Intent from this app and by nothing else.
+        -->
+        <service
+            android:name=".connection.OtrConnectionService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
 
         <!--
           Lets the user hand a diagnostic report to an app of their choosing.

@@ -268,8 +268,22 @@ class ChatStateTest {
     }
 
     @Test
+    fun `a plaintext send is recorded as sent and as not encrypted`() {
+        // Both halves matter. It DID go -- calling it failed would be wrong --
+        // and it went in the clear, which the user is entitled to be told.
+        val s = state(contact(alice))
+        s.setDraft(alice, "hello")
+        val message = s.beginSend(alice)!!
+        s.completeSend(message, SendOutcome.PLAINTEXT)
+        val stored = s.messages(alice).single()
+        assertEquals(SendState.SENT, stored.sendState)
+        assertEquals(SecurityLabel.PLAINTEXT, stored.security)
+    }
+
+    @Test
     fun `only an encrypted outcome labels an outgoing message encrypted`() {
-        for (outcome in listOf(SendOutcome.QUEUED, SendOutcome.FAILED)) {
+        for (outcome in listOf(SendOutcome.QUEUED, SendOutcome.FAILED,
+                               SendOutcome.PLAINTEXT)) {
             val s = state(contact(alice))
             s.setDraft(alice, "hi")
             val message = s.beginSend(alice)!!

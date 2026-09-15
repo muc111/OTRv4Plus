@@ -3,6 +3,7 @@
 package org.otrv4plus.android.chat
 
 import org.otrv4plus.android.bridge.SecurityState
+import org.otrv4plus.android.bridge.SendOutcome
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotEquals
@@ -104,6 +105,22 @@ class ChatModelsTest {
         )) {
             assertEquals(SecurityLabel.ENCRYPTED, SecurityLabel.forInbound(state))
         }
+    }
+
+    @Test
+    fun `an unknown outcome name is not read as a success`() {
+        // A newer bridge returning a word this build does not know must show
+        // as "not sent", never as a padlock and never as delivered.
+        assertEquals(SendOutcome.FAILED, SendOutcome.fromName("something-new"))
+        assertEquals(SendOutcome.FAILED, SendOutcome.fromName(""))
+    }
+
+    @Test
+    fun `every send outcome maps from its python name`() {
+        assertEquals(SendOutcome.ENCRYPTED, SendOutcome.fromName("encrypted"))
+        assertEquals(SendOutcome.QUEUED, SendOutcome.fromName("queued"))
+        assertEquals(SendOutcome.PLAINTEXT, SendOutcome.fromName("plaintext"))
+        assertEquals(SendOutcome.FAILED, SendOutcome.fromName("failed"))
     }
 
     @Test

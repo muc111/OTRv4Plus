@@ -92,9 +92,48 @@ MAX_BUFFER_BYTES = 8 * 1024 * 1024
 MAX_TOTAL_BYTES = 32 * 1024 * 1024
 
 
+#: What an OTRv4+ PROTOCOL frame starts with -- DAKE, SMP, and DATA alike.
+#:
+#: The trailing space is part of it and is load-bearing: it is what stops
+#: `?OTRv4F|` (a fragment) matching, and what stops a user typing "?OTRv4" from
+#: being mistaken for protocol traffic.
+#:
+#: Lives here rather than in either client because BOTH have to agree about it,
+#: and because getting it wrong is not a cosmetic bug. `otrv4plus_xmpp.py` had
+#: the only copy; `android_bridge` had none, so the Android side rendered DAKE
+#: frames into the chat window as text and never answered them -- which is a
+#: handshake that cannot complete, presented to the user as gibberish from
+#: their contact.
+OTR_PREFIX = "?OTRv4 "
+
+
 def is_fragment(body: str) -> bool:
     """Whether *body* is a fragment rather than a whole payload."""
     return body.startswith(FRAGMENT_PREFIX)
+
+
+def is_otr_protocol(body) -> bool:
+    """Whether *body* is OTR protocol traffic rather than something to show.
+
+    THE CLASSIFICATION THE UI MUST NOT MAKE FOR ITSELF.
+
+    Used on both ends of the engine:
+
+      * INBOUND, before handing a payload up -- though the engine is the real
+        arbiter there, since only it can tell ciphertext from a plaintext
+        message that merely looks odd;
+      * on the engine's OUTPUT, which is the case that matters, because
+        `handle_incoming_message` returns EITHER decrypted text to display OR a
+        protocol response to send, and telling them apart is the caller's job.
+
+    Accepts `str` or `bytes` so a caller need not normalise first; anything
+    else is not protocol traffic.
+    """
+    if isinstance(body, (bytes, bytearray)):
+        return bytes(body).startswith(OTR_PREFIX.encode("utf-8"))
+    if isinstance(body, str):
+        return body.startswith(OTR_PREFIX)
+    return False
 
 
 def fragment(payload: str, seq: int) -> Tuple[List[str], int]:
