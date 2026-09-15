@@ -15,7 +15,6 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import org.otrv4plus.android.ConnectionViewModel
-import org.otrv4plus.android.bridge.ChaquopyOtrCore
 
 /**
  * The first screen that does something real.
@@ -58,7 +57,7 @@ fun ConnectScreen(
     model: ConnectionViewModel = viewModel(),
     onOpenDiagnostics: () -> Unit = {},
     onOpenAbout: () -> Unit = {},
-    onConnected: (ChaquopyOtrCore) -> Unit = {},
+    onConnected: () -> Unit = {},
 ) {
     // Everything long-lived belongs to the ViewModel, which survives Activity
     // recreation -- a rotation, a theme change, a font-size change. This
@@ -66,7 +65,6 @@ fun ConnectScreen(
     // of those: rotating during a tunnel build built a SECOND core, with a
     // second engine over the same identity and trust files, while the first
     // kept its worker thread and its half-open tunnel.
-    val core = model.core
     val init = model.init
     val status = model.status
     val probe = model.probe
@@ -268,11 +266,10 @@ fun ConnectScreen(
 
         if (status.connected) {
             Spacer(Modifier.height(8.dp))
-            // Hands the SAME core to the chat screen. A second
-            // ChaquopyOtrCore would build a second engine against the same
-            // identity and trust files, and the chat would be talking down a
-            // socket nothing had connected.
-            Button(onClick = { onConnected(core) }) { Text("Open chat") }
+            // No object is handed over. The chat screens read the core from
+            // the ViewModel that owns it, so navigation carries nothing that
+            // could go stale or be duplicated.
+            Button(onClick = onConnected) { Text("Open conversations") }
         }
 
         Spacer(Modifier.height(8.dp))

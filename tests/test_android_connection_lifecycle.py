@@ -385,23 +385,32 @@ class TestTheAndroidLifecycleIsWiredForRecreation:
         assert body.index("controller") < body.index("app?.callAttr"), (
             "the connection must be released before the engine")
 
-    def test_the_activity_shares_one_view_model_with_both_screens(self):
+    def test_the_activity_shares_one_view_model_with_every_screen(self):
         """Two `viewModel()` calls for the same type in one Activity return
-        the same instance, but passing it explicitly says so. A second core
-        would be a second engine over the same identity and trust files."""
+        the same instance, but obtaining it once and passing it says so. A
+        second core would be a second engine over the same identity and trust
+        files."""
         activity = _code_only(_read(UI, "MainActivity.kt"))
-        assert "val model: ConnectionViewModel = viewModel()" in activity
-        assert "model = model" in activity
-        assert "core = model.core" in activity
+        assert "val connection: ConnectionViewModel = viewModel()" in activity
+        assert activity.count("ConnectionViewModel = viewModel()") == 1, (
+            "the Activity obtains the connection ViewModel more than once")
+        assert "model = connection" in activity
+        # The chat is handed the core from that one ViewModel, never its own.
+        assert "chat.attach(connection.core)" in activity
+        assert "ChaquopyOtrCore(" not in activity
 
     def test_which_screen_you_are_on_survives_recreation(self):
         """Losing this throws a connected user back to the connect screen on
         a rotation. The connection is fine -- the ViewModel holds it -- but
-        being bounced out of a conversation reads as a crash."""
+        being bounced out of a conversation reads as a crash.
+
+        Navigation is an enum plus a JID since the chat screens landed, so
+        both have to be saveable, and neither may be an object."""
         activity = _code_only(_read(UI, "MainActivity.kt"))
-        assert "var inChat by rememberSaveable" in activity
-        assert "var showAbout by rememberSaveable" in activity
-        assert "var showDiagnostics by rememberSaveable" in activity
+        assert "var screen by rememberSaveable" in activity
+        assert "var openJid by rememberSaveable" in activity
+        assert "mutableStateOf<String?>" in activity, (
+            "the open conversation is held as something other than a JID")
 
     def test_the_activity_does_not_hold_the_core_in_navigation_state(self):
         """It is not Saveable -- it owns a Python interpreter -- and it does
@@ -442,7 +451,8 @@ class TestTheAndroidLifecycleIsWiredForRecreation:
         for name in ("ConnectionViewModel.kt",):
             text = _read(UI, name)
             _assert_balanced(text, name)
-        for name in ("ConnectScreen.kt", "ChatScreen.kt", "AboutScreen.kt"):
+        for name in ("ConnectScreen.kt", "ConversationsScreen.kt",
+                     "ConversationScreen.kt", "AboutScreen.kt"):
             _assert_balanced(_read(UI, "ui", name), name)
 
 

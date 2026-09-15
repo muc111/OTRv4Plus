@@ -358,6 +358,11 @@ class ChaquopyOtrCore(private val appContext: Context) : OtrCore {
         wrap { requireApp().callAttr("start_session", peer) }
     }
 
+    override fun sendUserText(peer: String, body: String): SendOutcome = wrap {
+        SendOutcome.fromName(
+            requireApp().callAttr("send_user_text", peer, body).toString())
+    }
+
     override fun sendMessage(peer: String, body: String) {
         wrap { requireApp().callAttr("send_message", peer, body) }
     }

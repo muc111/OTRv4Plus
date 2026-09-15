@@ -1,45 +1,69 @@
+// SPDX-License-Identifier: AGPL-3.0-only OR LicenseRef-OTRv4Plus-Commercial
+// Copyright (C) 2025-2026 muc111
 package org.otrv4plus.android
 
 import android.os.Bundle
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.setValue
-import androidx.activity.compose.BackHandler
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.lifecycle.viewmodel.compose.viewModel
+import org.otrv4plus.android.chat.ChatViewModel
 import org.otrv4plus.android.ui.AboutScreen
-import org.otrv4plus.android.ui.ChatScreen
 import org.otrv4plus.android.ui.ConnectScreen
+import org.otrv4plus.android.ui.ConversationScreen
+import org.otrv4plus.android.ui.ConversationsScreen
 import org.otrv4plus.android.ui.DevShellScreen
+import org.otrv4plus.android.ui.FingerprintAlertDialog
 
 /**
  * Single Activity, Compose, unidirectional data flow.
  *
- * Phase 2 scope only: this hosts a development shell that proves the
- * Kotlin -> Chaquopy -> Python -> Rust path works on a real device -- which it
- * now has, on a handset. The real screens are Phase 3 and are being built.
+ * NAVIGATION
+ * ----------
+ * A saveable enum plus a saveable JID. Not a navigation library, and not an
+ * object graph: everything in navigation state survives Activity recreation
+ * because everything in it is a String.
  *
- * There is no launcher disguise. One was specified (a working calculator as the
- * icon and first screen) and withdrawn on 2026-09-14: Play's Deceptive Behavior
- * policy forbids an app that misrepresents its identity, and a store listing
- * that says "calculator" over a messenger is what that policy describes. The
- * protection it was reaching for is unchanged and lives where it belongs -- at
- * rest, under AES-256-GCM, behind a password or keyfile. See
- * ANDROID_PHASE2_REPORT.md §15.7.
+ *     Connect ──► Conversations ──► Conversation(jid)
+ *                      │
+ *                      ├──► About & licences
+ *                      └──► Diagnostics
+ *
+ * Back unwinds that, which is what the system back button already means.
+ *
+ * WHAT IS NOT IN NAVIGATION STATE
+ * -------------------------------
+ * The core, the connection and the transport. Those belong to
+ * [ConnectionViewModel], which is scoped to the Activity's retained instance
+ * and therefore survives the recreation that discards this composition. An
+ * earlier version put the `ChaquopyOtrCore` itself into a `remember`, so a
+ * rotation during a tunnel build produced a second Python engine over the same
+ * identity and trust files while the first kept its worker thread.
+ *
+ * There is no launcher disguise. One was specified and withdrawn on
+ * 2026-09-14: Play's Deceptive Behavior policy forbids an app that
+ * misrepresents its identity. The protection it was reaching for is unchanged
+ * and lives where it belongs -- at rest, under AES-256-GCM, behind a password
+ * or keyfile. See ANDROID_PHASE2_REPORT.md §15.7.
  */
 class MainActivity : ComponentActivity() {
+
+    private enum class Screen { CONNECT, CONVERSATIONS, CONVERSATION, ABOUT, DIAGNOSTICS }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        // FLAG_SECURE from the start. The finished app must not appear in the
-        // recents thumbnail or accept screenshots once past the unlock screen;
-        // setting it now means no later screen can forget to.
+        // FLAG_SECURE from the start. The app must not appear in the recents
+        // thumbnail or accept screenshots; setting it here means no later
+        // screen can forget to.
         window.setFlags(
             WindowManager.LayoutParams.FLAG_SECURE,
             WindowManager.LayoutParams.FLAG_SECURE,
@@ -48,66 +72,87 @@ class MainActivity : ComponentActivity() {
         setContent {
             MaterialTheme {
                 Surface {
-                    // Four destinations, still no navigation library. The
-                    // chat screen manages contacts-versus-conversation
-                    // internally, so this is a small enum rather than a graph;
-                    // navigation-compose earns its place when a deep link or a
-                    // back stack that outlives the process does.
-                    //
-                    // rememberSaveable, not remember: these decide which
-                    // screen you are looking at, and losing them on a rotation
-                    // throws a connected user back to the connect screen. The
-                    // connection itself is unaffected -- the ViewModel holds
-                    // it -- but being bounced out of a conversation because
-                    // the phone turned is the kind of thing that reads as the
-                    // app having crashed.
-                    val model: ConnectionViewModel = viewModel()
-                    var showDiagnostics by rememberSaveable { mutableStateOf(false) }
-                    var showAbout by rememberSaveable { mutableStateOf(false) }
-                    // A Boolean rather than the core itself. The core is not
-                    // Saveable -- it owns a Python interpreter -- and it does
-                    // not need to be: the ViewModel already survives
-                    // recreation, so this only has to remember WHICH screen,
-                    // not which object.
-                    var inChat by rememberSaveable { mutableStateOf(false) }
+                    val connection: ConnectionViewModel = viewModel()
+                    val chat: ChatViewModel = viewModel()
 
-                    when {
-                        // Checked before the others so it is reachable from
-                        // every screen: the third-party notices are a
-                        // distribution obligation, not a feature that may be
-                        // unreachable in some state.
-                        showAbout -> {
-                            BackHandler { showAbout = false }
-                            AboutScreen(onBack = { showAbout = false })
+                    var screen by rememberSaveable { mutableStateOf(Screen.CONNECT) }
+                    // A JID, never a Conversation object. Stable, saveable, and
+                    // still correct after the roster is refetched.
+                    var openJid by rememberSaveable { mutableStateOf<String?>(null) }
+
+                    // One place that hands the core over, and it is idempotent:
+                    // a second attach with the same core is a no-op, so a
+                    // recomposition cannot start a second polling loop draining
+                    // the same event queue.
+                    LaunchedEffect(connection.core) { chat.attach(connection.core) }
+
+                    when (screen) {
+                        Screen.ABOUT -> {
+                            BackHandler { screen = Screen.CONVERSATIONS }
+                            AboutScreen(onBack = { screen = Screen.CONVERSATIONS })
                         }
 
-                        showDiagnostics -> {
-                            BackHandler { showDiagnostics = false }
+                        Screen.DIAGNOSTICS -> {
+                            BackHandler { screen = Screen.CONVERSATIONS }
                             DevShellScreen()
                         }
 
-                        inChat -> {
-                            // Back returns to the connection screen without
-                            // disconnecting: the core, and the socket it owns,
-                            // belong to the ViewModel and outlive both.
-                            BackHandler { inChat = false }
-                            ChatScreen(
-                                core = model.core,
-                                onOpenDiagnostics = { showDiagnostics = true },
-                                onOpenAbout = { showAbout = true },
+                        Screen.CONVERSATION -> {
+                            val jid = openJid
+                            if (jid == null) {
+                                // Defensive: a restored state with no JID is a
+                                // list, not a blank conversation.
+                                screen = Screen.CONVERSATIONS
+                            } else {
+                                BackHandler {
+                                    chat.closeConversation()
+                                    screen = Screen.CONVERSATIONS
+                                }
+                                LaunchedEffect(jid) { chat.open(jid) }
+                                ConversationScreen(
+                                    model = chat,
+                                    jid = jid,
+                                    onBack = {
+                                        chat.closeConversation()
+                                        screen = Screen.CONVERSATIONS
+                                    },
+                                )
+                            }
+                        }
+
+                        Screen.CONVERSATIONS -> {
+                            // Back from the list goes to the connection screen
+                            // WITHOUT disconnecting: the core and its socket
+                            // belong to the ViewModel and outlive this.
+                            BackHandler { screen = Screen.CONNECT }
+                            ConversationsScreen(
+                                model = chat,
+                                onOpen = { jid ->
+                                    openJid = jid
+                                    screen = Screen.CONVERSATION
+                                },
+                                onOpenConnection = { screen = Screen.CONNECT },
+                                onOpenDiagnostics = { screen = Screen.DIAGNOSTICS },
+                                onOpenAbout = { screen = Screen.ABOUT },
                             )
                         }
 
-                        else -> ConnectScreen(
-                            // The same ViewModel instance the chat screen
-                            // reads its core from, resolved against this
-                            // Activity, so the connection survives a rotation
-                            // instead of being rebuilt alongside a second
-                            // Python engine.
-                            model = model,
-                            onOpenDiagnostics = { showDiagnostics = true },
-                            onOpenAbout = { showAbout = true },
-                            onConnected = { inChat = true },
+                        Screen.CONNECT -> ConnectScreen(
+                            model = connection,
+                            onOpenDiagnostics = { screen = Screen.DIAGNOSTICS },
+                            onOpenAbout = { screen = Screen.ABOUT },
+                            onConnected = { screen = Screen.CONVERSATIONS },
+                        )
+                    }
+
+                    // Above every screen, because a changed pinned key is not
+                    // news about one conversation -- it is a reason to stop.
+                    // Rendered here rather than inside the chat screens so it
+                    // cannot be missed by being on the wrong one.
+                    chat.fingerprintAlert?.let { alert ->
+                        FingerprintAlertDialog(
+                            alert = alert,
+                            onAcknowledge = { chat.dismissFingerprintAlert() },
                         )
                     }
                 }

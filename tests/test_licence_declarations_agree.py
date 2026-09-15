@@ -517,7 +517,7 @@ class TestTheNoticeActuallyReachesTheArtifact:
         activity = _read("android", "app", "src", "main", "java", "org",
                          "otrv4plus", "android", "MainActivity.kt")
         assert "AboutScreen(" in activity
-        for screen in ("ConnectScreen.kt", "ChatScreen.kt"):
+        for screen in ("ConnectScreen.kt", "ConversationsScreen.kt"):
             text = _read("android", "app", "src", "main", "java", "org",
                          "otrv4plus", "android", "ui", screen)
             assert "onOpenAbout" in text, "%s cannot reach it" % screen

@@ -46,6 +46,21 @@ interface OtrCore {
     fun sendMessage(peer: String, body: String)
 
     /**
+     * Send one typed line, reporting what actually happened.
+     *
+     * [sendMessage] throws when there is no session, which is the right
+     * guarantee (it never downgrades) but the wrong report: the engine does
+     * not discard the text, it holds it and flushes it when the DAKE
+     * completes. The terminal client has always shown that as
+     * `[queued] will send once OTR is ready`.
+     *
+     * This returns [SendOutcome] so the UI can distinguish the three states a
+     * user cares about. It adds no plaintext path: the engine still decides,
+     * and nothing goes on the wire unencrypted.
+     */
+    fun sendUserText(peer: String, body: String): SendOutcome
+
+    /**
      * Begin verification.
      *
      * [secret] is passed straight to the engine and is not retained, logged or
@@ -129,6 +144,33 @@ enum class CallState {
 }
 
 data class SmpProgress(val step: Int, val total: Int, val state: SmpState)
+
+/**
+ * What happened to a message the user sent.
+ *
+ * Three, not two. QUEUED is neither success nor failure and calling it either
+ * is a lie: the message has not gone, and it has not been lost.
+ */
+enum class SendOutcome {
+    /** The engine encrypted it and the transport took it. */
+    ENCRYPTED,
+
+    /** No session yet. The engine is holding it and will send it after the
+     *  DAKE. Nothing is on the wire. */
+    QUEUED,
+
+    /** It will not be sent, and nothing is retrying. */
+    FAILED,
+    ;
+
+    companion object {
+        fun fromName(name: String): SendOutcome = when (name.lowercase()) {
+            "encrypted" -> ENCRYPTED
+            "queued" -> QUEUED
+            else -> FAILED
+        }
+    }
+}
 
 data class Contact(
     val jid: String,

@@ -342,6 +342,61 @@ class OtrApp:
         self._last_activity[peer] = self._clock()
         return True
 
+    #: What `send_user_text` did. Three outcomes, because the middle one is
+    #: neither success nor failure and calling it either is a lie to the user.
+    SEND_ENCRYPTED = "encrypted"
+    SEND_QUEUED = "queued"
+    SEND_FAILED = "failed"
+
+    def send_user_text(self, peer: str, body: str) -> str:
+        """Send one typed line the way the terminal client does.
+
+        Returns SEND_ENCRYPTED, SEND_QUEUED or SEND_FAILED.
+
+        WHY THIS EXISTS ALONGSIDE `send_message`
+        ----------------------------------------
+        `send_message` raises `not_encrypted` when the engine has no session,
+        and that behaviour is deliberate and tested -- it is the guarantee that
+        this facade never downgrades to plaintext. What it is NOT is an
+        accurate report of what happened, because the engine does not discard
+        the text: `handle_outgoing_message` returns `should_send=False` and
+        keeps it, then flushes it when the DAKE completes. The terminal client
+        has always reported that as `[queued] will send once OTR with <peer>
+        is ready`.
+
+        So the Android side was treating a normal, expected, recoverable state
+        as a send failure. A user typing before a session exists would be told
+        their message failed, when in fact it is waiting and will go.
+
+        This method reports the truth and changes no security property. There
+        is still no plaintext path: the engine decides, and when it says
+        `should_send=False` nothing goes on the wire.
+        """
+        if self._transport is None:
+            raise BridgeError("no_transport")
+        try:
+            payload, should_send = self._engine.handle_outgoing_message(
+                peer, body)
+        except Exception:
+            return self.SEND_FAILED
+
+        if not should_send:
+            # The engine is holding it until there is a session. Not an error.
+            return self.SEND_QUEUED
+        if not payload:
+            return self.SEND_FAILED
+
+        text = (payload.decode("utf-8", errors="replace")
+                if isinstance(payload, (bytes, bytearray)) else str(payload))
+        try:
+            self._transport.send(peer, text)
+        except Exception:
+            # It was encrypted but did not leave. Distinct from queued: there
+            # is nothing holding it and nothing will retry.
+            return self.SEND_FAILED
+        self._last_activity[peer] = self._clock()
+        return self.SEND_ENCRYPTED
+
     def receive_message(self, peer: str, payload: str) -> Optional[str]:
         """Feed an inbound frame to the engine; emit a MessageReceived if it was one.
 
