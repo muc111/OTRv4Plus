@@ -5,6 +5,7 @@ package org.otrv4plus.android.chat
 import org.otrv4plus.android.bridge.ConnectionStatus
 import org.otrv4plus.android.bridge.Contact
 import org.otrv4plus.android.bridge.OtrEvent
+import org.otrv4plus.android.bridge.RosterResult
 import org.otrv4plus.android.bridge.SecurityState
 import org.otrv4plus.android.bridge.SendOutcome
 import org.otrv4plus.android.bridge.SmpState
@@ -408,6 +409,135 @@ class ChatStateTest {
         val s = state(contact(alice))
         s.receive(inbound(alice, "hello"))
         assertEquals(1, s.conversations().count { it.jid == alice })
+    }
+
+    // ── "we cannot read the bridge" is not "the stream is down" ─────────────
+    //
+    // The handset bug: one failing read discarded the connection status with
+    // everything else, and the screen announced a disconnection it had never
+    // observed. These pin the distinction.
+
+    @Test
+    fun `before anything is read the link is unknown, not disconnected`() {
+        val s = ChatState()
+        assertEquals(ChatState.Link.UNKNOWN, s.link)
+        assertFalse(s.canSend())
+    }
+
+    @Test
+    fun `a successful status read makes the link ok`() {
+        val s = state(contact(alice))
+        assertEquals(ChatState.Link.OK, s.link)
+        assertTrue(s.canSend())
+    }
+
+    @Test
+    fun `a failed status read does not overwrite the last known status`() {
+        // Overwriting it would be inventing the answer we just failed to get,
+        // and the direction it invents is the one that stops the user sending.
+        val s = state(contact(alice))
+        s.noteLinkFailure("status:PyException")
+        assertEquals(ChatState.Link.FAILING, s.link)
+        assertTrue(s.connection.connected, "the last known status was discarded")
+    }
+
+    @Test
+    fun `a failing link refuses to send even though the last status said connected`() {
+        val s = state(contact(alice))
+        s.noteLinkFailure("status:PyException")
+        assertFalse(s.canSend(), "sending on a connection state we cannot read")
+    }
+
+    @Test
+    fun `a failing link makes presence unknown rather than stale`() {
+        val s = state(contact(alice, online = true))
+        assertEquals(Presence.ONLINE, s.conversation(alice).presence)
+        s.noteLinkFailure("contacts:PyException")
+        assertEquals(Presence.UNKNOWN, s.conversation(alice).presence)
+    }
+
+    @Test
+    fun `recovering a read clears the failure`() {
+        val s = state(contact(alice))
+        s.noteLinkFailure("status:PyException")
+        s.applyConnection(ConnectionStatus(stage = "connected", connected = true))
+        assertEquals(ChatState.Link.OK, s.link)
+        assertNull(s.linkFailure)
+        assertTrue(s.canSend())
+    }
+
+    @Test
+    fun `the failing read is remembered as a code for diagnosis`() {
+        val s = state(contact(alice))
+        s.noteReadFailure("contacts:PyException")
+        assertEquals("contacts:PyException", s.readFailure)
+        s.noteReadFailure(null)
+        assertNull(s.readFailure)
+    }
+
+    @Test
+    fun `a roster read that failed does not by itself claim a disconnection`() {
+        // contacts() can fail while the stream is perfectly healthy -- that is
+        // exactly what happened on the handset.
+        val s = state(contact(alice))
+        s.noteReadFailure("contacts:PyException")
+        assertEquals(ChatState.Link.OK, s.link)
+        assertTrue(s.canSend())
+    }
+
+    @Test
+    fun `sending is refused while disconnected and the draft is kept`() {
+        // The composer's button is disabled, but the keyboard's Send action is
+        // a second route in and was not gated. Losing the typed text as well
+        // would be the insult after the injury.
+        val s = state(contact(alice))
+        s.setDraft(alice, "hello")
+        s.applyConnection(ConnectionStatus(stage = "disconnected", connected = false))
+        assertNull(s.beginSend(alice))
+        assertEquals("hello", s.draft(alice))
+        assertTrue(s.messages(alice).isEmpty())
+    }
+
+    @Test
+    fun `sending is refused while the link cannot be read`() {
+        val s = state(contact(alice))
+        s.setDraft(alice, "hello")
+        s.noteLinkFailure("status:PyException")
+        assertNull(s.beginSend(alice))
+        assertEquals("hello", s.draft(alice))
+    }
+
+    // ── the answer to adding a contact ──────────────────────────────────────
+
+    @Test
+    fun `a notice is held until it is dismissed`() {
+        val s = state()
+        assertNull(s.notice)
+        s.note("Connect before changing the contact list.")
+        assertEquals("Connect before changing the contact list.", s.notice)
+        s.dismissNotice()
+        assertNull(s.notice)
+    }
+
+    @Test
+    fun `a roster refusal carries a sentence, not just a code`() {
+        assertEquals(
+            "Connect before changing the contact list.",
+            RosterResult(false, "not_connected", "").message(),
+        )
+    }
+
+    @Test
+    fun `a roster success says nothing`() {
+        assertNull(RosterResult(true, "ok", "").message())
+    }
+
+    @Test
+    fun `the controller's own detail is preferred when it wrote one`() {
+        assertEquals(
+            "Server said no.",
+            RosterResult(false, "roster_failed", "Server said no.").message(),
+        )
     }
 
     // ── alerts and misc ─────────────────────────────────────────────────────

@@ -19,6 +19,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import org.otrv4plus.android.chat.ChatState
 import org.otrv4plus.android.chat.ChatViewModel
 import org.otrv4plus.android.chat.Conversation
 import org.otrv4plus.android.chat.Presence
@@ -51,26 +52,42 @@ fun ConversationsScreen(
                 title = { Text("OTRv4+") },
                 actions = {
                     TextButton(onClick = onOpenConnection) {
-                        Text(if (model.connection.connected) "Connected"
-                             else "Not connected")
+                        Text(when {
+                            model.link != ChatState.Link.OK -> "Checking…"
+                            model.connection.connected -> "Connected"
+                            else -> "Not connected"
+                        })
                     }
                 },
             )
         },
         floatingActionButton = {
-            if (model.connection.connected) {
+            if (model.canSend()) {
                 FloatingActionButton(onClick = { showAdd = true }) { Text("+") }
             }
         },
     ) { padding ->
         Column(Modifier.padding(padding).fillMaxSize()) {
 
-            if (!model.connection.connected) {
-                // Not a dialog and not dismissible: while this is true nothing
-                // can be sent or received, and a list of contacts with no
-                // explanation is how you sit waiting for a reply that cannot
-                // arrive.
-                DisconnectedBanner(onOpenConnection)
+            // Three states, not two. Saying "not connected" when we have
+            // merely failed to ASK is a claim the app cannot support, and it
+            // is the one that stops the user trying.
+            when {
+                model.link == ChatState.Link.OK && !model.connection.connected ->
+                    DisconnectedBanner(onOpenConnection)
+
+                model.link == ChatState.Link.FAILING ->
+                    LinkBanner(
+                        "Cannot read the connection state" +
+                            (model.readFailure?.let { " ($it)" } ?: "") + ".",
+                    )
+
+                model.link == ChatState.Link.UNKNOWN ->
+                    LinkBanner("Checking the connection…")
+            }
+
+            model.notice?.let { notice ->
+                NoticeBanner(notice) { model.dismissNotice() }
             }
 
             if (model.droppedEvents > 0) {
@@ -85,7 +102,7 @@ fun ConversationsScreen(
 
             if (conversations.isEmpty()) {
                 EmptyConversations(
-                    connected = model.connection.connected,
+                    connected = model.canSend(),
                     onAdd = { showAdd = true },
                 )
             } else {
@@ -112,6 +129,47 @@ fun ConversationsScreen(
             onAdd = { jid -> model.addContact(jid); showAdd = false },
             onDismiss = { showAdd = false },
         )
+    }
+}
+
+/**
+ * "We do not know", which is not "it is down".
+ *
+ * Deliberately a different colour and a different sentence from
+ * [DisconnectedBanner]. The failure it reports is in this app, not on the
+ * network, and offering a Connect button here would send the user to fix
+ * something that may not be broken. The code is shown because the alternative
+ * -- what shipped -- was a silent failure that took a device round trip and a
+ * source audit to identify.
+ */
+@Composable
+private fun LinkBanner(text: String) {
+    Surface(color = MaterialTheme.colorScheme.surfaceVariant) {
+        Text(
+            text,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.fillMaxWidth().padding(12.dp),
+        )
+    }
+}
+
+/** The answer to something the user just did. Dismissible, because it is. */
+@Composable
+private fun NoticeBanner(text: String, onDismiss: () -> Unit) {
+    Surface(color = MaterialTheme.colorScheme.secondaryContainer) {
+        Row(
+            Modifier.fillMaxWidth().padding(start = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                text,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSecondaryContainer,
+                modifier = Modifier.weight(1f),
+            )
+            TextButton(onClick = onDismiss) { Text("OK") }
+        }
     }
 }
 

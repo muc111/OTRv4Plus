@@ -423,11 +423,42 @@ class ChaquopyOtrCore(private val appContext: Context) : OtrCore {
      * concept and the OTR engine has no opinion about who is on it. Adding
      * someone establishes nothing cryptographic — the conversation is
      * plaintext until a DAKE runs, and the conversation screen says so.
+     *
+     * RETURNS THE ANSWER, and that is the point of this signature.
+     *
+     * `ConnectionController.add_contact` has always returned
+     * `{ok, code, detail}` -- including `not_connected` with the sentence
+     * "Connect before changing the contact list." -- and this threw all of it
+     * away. On a handset that read exactly as the button doing nothing:
+     * Python declined, said why, and nobody looked.
      */
-    fun addContact(jid: String, name: String = "") {
-        val ctl = controller ?: throw OtrBridgeException("not_prepared")
-        wrap { ctl.callAttr("add_contact", jid, name) }
+    fun addContact(jid: String, name: String = ""): RosterResult {
+        val ctl = controller
+            ?: return RosterResult(false, "not_prepared",
+                                   "The connection is not ready yet.")
+        return rosterResult { ctl.callAttr("add_contact", jid, name) }
     }
+
+    /**
+     * Read Python's result dict without letting an exception become the only
+     * survivor. `detail` comes from the controller, which writes it for a
+     * person; engine exception text never reaches it.
+     */
+    private inline fun rosterResult(call: () -> PyObject?): RosterResult =
+        try {
+            val r = call()
+            RosterResult(
+                ok = r?.callAttr("get", "ok")?.toBoolean() ?: false,
+                code = r?.callAttr("get", "code")?.toString() ?: "no_result",
+                detail = r?.callAttr("get", "detail")?.toString() ?: "",
+            )
+        } catch (e: OtrBridgeException) {
+            RosterResult(false, e.code, "")
+        } catch (e: Throwable) {
+            // The TYPE, never the message: a PyException carries the engine's
+            // own text, which can quote what it was handling.
+            RosterResult(false, "bridge_error", "")
+        }
 
     fun removeContact(jid: String) {
         val ctl = controller ?: throw OtrBridgeException("not_prepared")

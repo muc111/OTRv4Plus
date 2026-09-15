@@ -16,6 +16,7 @@ import kotlinx.coroutines.withContext
 import org.otrv4plus.android.bridge.ChaquopyOtrCore
 import org.otrv4plus.android.bridge.ConnectionStatus
 import org.otrv4plus.android.bridge.Contact
+import org.otrv4plus.android.bridge.OtrBridgeException
 import org.otrv4plus.android.bridge.OtrEvent
 import org.otrv4plus.android.bridge.SendOutcome
 
@@ -71,6 +72,16 @@ class ChatViewModel(
 
     val connection: ConnectionStatus get() { observe(); return state.connection }
     val droppedEvents: Int get() { observe(); return state.droppedEvents }
+
+    /** Whether the bridge can be read at all. Not the connection state. */
+    val link: ChatState.Link get() { observe(); return state.link }
+
+    /** A stable code for the last failing read, for diagnosis. Never text. */
+    val readFailure: String? get() { observe(); return state.readFailure }
+
+    /** A sentence from the last roster change, or null. */
+    val notice: String? get() { observe(); return state.notice }
+
     val openConversation: String? get() { observe(); return state.openConversation }
     val fingerprintAlert: OtrEvent.FingerprintChanged?
         get() { observe(); return state.fingerprintAlert }
@@ -100,26 +111,68 @@ class ChatViewModel(
 
     private suspend fun pollLoop(core: ChaquopyOtrCore) {
         while (viewModelScope.isActive) {
-            val batch = withContext(Dispatchers.IO) {
-                runCatching {
-                    Batch(
-                        events = core.drainEvents(),
-                        roster = core.contacts(),
-                        dropped = core.eventsDropped(),
-                        connection = core.connectionStatus(),
-                    )
-                }.getOrNull()
-            }
-            if (batch != null) apply(batch)
+            val batch = withContext(Dispatchers.IO) { gather(core) }
+            apply(batch)
             delay(POLL_INTERVAL_MS)
         }
     }
 
+    /**
+     * Read the four things, INDEPENDENTLY.
+     *
+     * This used to be one `runCatching` around all four, and that single line
+     * produced the worst bug this screen has had. `OtrApp.contacts()` raised --
+     * it calls `security_state` for every roster entry, which was unguarded --
+     * and the whole batch became null. So the connection status was discarded
+     * along with it, the screen fell back to a default `ConnectionStatus()`
+     * whose `connected` is false, and the app announced "Not connected.
+     * Messages cannot be sent or received." about a stream that was up, for as
+     * long as that peer stayed on the roster.
+     *
+     * One failing call must cost only what that call was going to provide. A
+     * roster that cannot be read is an empty list; a connection status that
+     * cannot be read is [ChatState.Link.FAILING], which is not the same claim
+     * as "disconnected" and must never render as one.
+     */
+    private fun gather(core: ChaquopyOtrCore): Batch {
+        val status = runCatching { core.connectionStatus() }
+        val roster = runCatching { core.contacts() }
+        val events = runCatching { core.drainEvents() }
+        val dropped = runCatching { core.eventsDropped() }
+        return Batch(
+            events = events.getOrDefault(emptyList()),
+            roster = roster.getOrNull(),
+            dropped = dropped.getOrNull(),
+            connection = status.getOrNull(),
+            failure = listOf(
+                "status" to status, "contacts" to roster,
+                "events" to events, "dropped" to dropped,
+            ).firstNotNullOfOrNull { (name, r) ->
+                r.exceptionOrNull()?.let { "$name:${codeOf(it)}" }
+            },
+        )
+    }
+
+    /**
+     * A stable code for a throwable, never its message.
+     *
+     * A `PyException` crossing Chaquopy carries the engine's own text, which
+     * can quote what it was handling. The type is enough to say which call is
+     * failing, and carries nothing.
+     */
+    private fun codeOf(t: Throwable): String =
+        (t as? OtrBridgeException)?.code ?: (t::class.simpleName ?: "error")
+
     private fun apply(batch: Batch) {
-        state.applyConnection(batch.connection)
-        state.applyDropped(batch.dropped)
-        state.applyRoster(batch.roster)
+        if (batch.connection != null) state.applyConnection(batch.connection)
+        // Only the status read decides the link: a roster that failed tells us
+        // nothing about whether the stream is up.
+        else state.noteLinkFailure(batch.failure ?: "status:unknown")
+
+        batch.dropped?.let { state.applyDropped(it) }
+        batch.roster?.let { state.applyRoster(it) }
         for (event in batch.events) state.handle(event)
+        state.noteReadFailure(batch.failure)
         revision++
     }
 
@@ -152,13 +205,30 @@ class ChatViewModel(
      * which blocks.
      */
     fun addContact(jid: String) {
-        if (!state.validContact(jid)) return
-        val core = this.core ?: return
+        if (!state.validContact(jid)) {
+            state.note("That does not look like an address (name@server).")
+            revision++
+            return
+        }
+        val core = this.core ?: run {
+            state.note("The connection is not ready yet.")
+            revision++
+            return
+        }
         val bare = ChatState.bare(jid.trim())
         viewModelScope.launch {
-            withContext(Dispatchers.IO) { runCatching { core.addContact(bare) } }
+            // The RESULT, not just the attempt. Discarding it is what made
+            // this button look inert while Python was declining and saying
+            // why.
+            val result = withContext(Dispatchers.IO) { core.addContact(bare) }
+            state.note(result.message())
             revision++
         }
+    }
+
+    fun dismissNotice() {
+        state.dismissNotice()
+        revision++
     }
 
     /**
@@ -199,11 +269,13 @@ class ChatViewModel(
         pollJob?.cancel()
     }
 
+    /** Nullable where a read may have failed; null means "not this time". */
     private data class Batch(
         val events: List<OtrEvent>,
-        val roster: List<Contact>,
-        val dropped: Int,
-        val connection: ConnectionStatus,
+        val roster: List<Contact>?,
+        val dropped: Int?,
+        val connection: ConnectionStatus?,
+        val failure: String?,
     )
 
     companion object {

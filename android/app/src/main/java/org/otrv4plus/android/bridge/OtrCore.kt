@@ -146,6 +146,33 @@ enum class CallState {
 data class SmpProgress(val step: Int, val total: Int, val state: SmpState)
 
 /**
+ * The outcome of a roster change, as the controller reported it.
+ *
+ * `ConnectionController._roster_call` has always returned `{ok, code, detail}`
+ * and the Kotlin side used to discard it, which is why adding a contact on a
+ * handset looked like a button that did nothing: Python was answering
+ * `not_connected`, with a sentence explaining it, to nobody.
+ *
+ * [detail] is written by the controller for a person to read. Engine exception
+ * text never reaches it -- a failure that did not come from the controller
+ * carries a [code] and an empty [detail].
+ */
+data class RosterResult(
+    val ok: Boolean,
+    val code: String,
+    val detail: String,
+) {
+    /** A sentence to show, or null when there is nothing worth saying. */
+    fun message(): String? = when {
+        ok -> null
+        detail.isNotBlank() -> detail
+        code == "not_connected" -> "Connect before changing the contact list."
+        code == "not_prepared" -> "The connection is not ready yet."
+        else -> "Could not add that contact ($code)."
+    }
+}
+
+/**
  * What happened to a message the user sent.
  *
  * Three, not two. QUEUED is neither success nor failure and calling it either

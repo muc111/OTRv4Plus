@@ -464,7 +464,10 @@ class TestPresenceInTheUi:
         Behaviourally covered by ChatStateTest; kept here because it is the
         exact defect the device report described."""
         state = _read(ANDROID, "chat", "ChatState.kt")
-        assert "known = connection.connected" in state
+        # Via canSend(), which is `link == OK && connection.connected` -- so a
+        # poll that could not read the bridge also stops claiming knowledge of
+        # anyone's presence, rather than freezing the last thing it saw.
+        assert "known = canSend() && contact != null" in state
 
     def test_unknown_is_not_rendered_as_offline(self):
         screen = _read(ANDROID, "ui", "ConversationsScreen.kt")
@@ -567,9 +570,10 @@ class TestNothingSensitiveReachesTheUi:
     def test_exception_messages_are_not_rendered(self):
         """An exception's text can carry what the engine was handling."""
         chat_vm = _code_only(_read(ANDROID, "chat", "ChatViewModel.kt"))
-        # `.message` exactly -- `.messages(jid)` is the history accessor and
-        # is not a Throwable.
-        assert not re.search(r"\.message\b", chat_vm)
+        # `.message` as a PROPERTY read, which is what Throwable.message is.
+        # `.messages(jid)` is the history accessor and `result.message()` is
+        # RosterResult's own sentence; neither is a Throwable.
+        assert not re.search(r"\.message\b(?!\()", chat_vm)
 
 
 class TestTheStorageAbstraction:

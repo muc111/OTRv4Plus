@@ -56,8 +56,38 @@ class ChatState(
     var openConversation: String? = null
         private set
 
-    /** The transport's own view. Drives every "can I send" decision. */
+    /** The transport's own view. Only meaningful when [link] is [Link.OK]. */
     var connection: ConnectionStatus = ConnectionStatus()
+        private set
+
+    /**
+     * Whether we are managing to READ the bridge at all.
+     *
+     * This exists because the app got it badly wrong on a handset: the poll
+     * gathered four things in one `runCatching`, so a single throw discarded
+     * the connection status along with everything else, and the screen fell
+     * back to a default `ConnectionStatus()` whose `connected` is false. The
+     * UI then stated, in red, "Not connected. Messages cannot be sent or
+     * received." about a stream that was up.
+     *
+     * That is a fabricated state, and the wrong kind: an app that says the
+     * network is down when it has merely failed to ask is indistinguishable
+     * from one that knows. So "we have not heard" is now its own answer, and
+     * the only thing entitled to claim a disconnection is [Link.OK] plus a
+     * transport that says so.
+     */
+    var link: Link = Link.UNKNOWN
+        private set
+
+    /**
+     * A stable code for the last failed read, or null.
+     *
+     * A CODE, never exception text: a `PyException` crossing Chaquopy carries
+     * the engine's own message, which can quote what it was handling. This is
+     * for telling a developer which call is failing, and it must not become a
+     * route for engine text to reach a screen.
+     */
+    var linkFailure: String? = null
         private set
 
     /** How many events the bounded queue discarded. A gap is worth saying. */
@@ -70,8 +100,52 @@ class ChatState(
 
     // -- what the poll loop feeds in -----------------------------------------
 
+    /** The transport answered: this is its view. */
     fun applyConnection(status: ConnectionStatus) {
         connection = status
+        link = Link.OK
+        linkFailure = null
+    }
+
+    /**
+     * The status read itself failed, so we do not know the connection state.
+     *
+     * The last known [connection] is deliberately KEPT rather than reset to a
+     * disconnected default. Overwriting it would be inventing the answer we
+     * just failed to obtain, and the direction it invents -- "not connected"
+     * -- is the one that stops the user sending.
+     */
+    fun noteLinkFailure(code: String) {
+        link = Link.FAILING
+        linkFailure = code
+    }
+
+    /**
+     * The most recent failing read of ANY of the four, or null if all four
+     * answered.
+     *
+     * Separate from [link] because a roster that will not load is worth
+     * telling somebody about even while the connection reads fine -- that is
+     * the exact combination that made the contact list look empty on a working
+     * stream, and it was invisible because every failure was swallowed.
+     */
+    var readFailure: String? = null
+        private set
+
+    fun noteReadFailure(code: String?) {
+        readFailure = code
+    }
+
+    /** A notice from the last roster change, or null. Cleared once shown. */
+    var notice: String? = null
+        private set
+
+    fun note(message: String?) {
+        notice = message
+    }
+
+    fun dismissNotice() {
+        notice = null
     }
 
     fun applyDropped(count: Int) {
@@ -152,10 +226,11 @@ class ChatState(
                 displayName = contact?.displayName?.takeIf { it.isNotBlank() } ?: jid,
                 presence = Presence.of(
                     online = contact?.online == true,
-                    // Nothing is known about anyone while we are disconnected.
-                    // A stale "online" from before the stream died is a lie
-                    // with a timestamp.
-                    known = connection.connected && contact != null,
+                    // Nothing is known about anyone while we are disconnected,
+                    // and nothing is known while we cannot read the bridge
+                    // either. A stale "online" from before the stream died is
+                    // a lie with a timestamp.
+                    known = canSend() && contact != null,
                 ),
                 security = contact?.security ?: SecurityState.PLAINTEXT,
                 lastMessage = store.lastMessage(jid),
@@ -195,7 +270,7 @@ class ChatState(
      * so this goes false when the stream actually dies rather than when the
      * user gives up.
      */
-    fun canSend(): Boolean = connection.connected
+    fun canSend(): Boolean = link == Link.OK && connection.connected
 
     // -- actions -------------------------------------------------------------
 
@@ -235,6 +310,12 @@ class ChatState(
     fun beginSend(jid: String): Message? {
         val body = draft(jid)
         if (body.isBlank()) return null
+        // Refused here as well as disabled in the composer, because the button
+        // is not the only route in: the keyboard's Send action is the other,
+        // and a guard on only one of them is a guard on neither. The draft is
+        // deliberately NOT cleared on this path -- the user's text stays in
+        // the box rather than vanishing into a message that cannot go.
+        if (!canSend()) return null
         drafts[jid] = ""
         val message = Message(
             id = MessageId.outgoing(jid, ++outgoingSequence),
@@ -288,6 +369,21 @@ class ChatState(
 
     /** Overridable so tests are not at the mercy of the wall clock. */
     internal var now: () -> Long = { System.currentTimeMillis() }
+
+    /**
+     * How well we can read the bridge, which is not the same question as
+     * whether the stream is up.
+     */
+    enum class Link {
+        /** Nothing has been read yet. Say so; do not guess. */
+        UNKNOWN,
+
+        /** The last read succeeded, so [connection] means what it says. */
+        OK,
+
+        /** The read itself is failing. The connection state is unknown. */
+        FAILING,
+    }
 
     companion object {
         /**

@@ -233,7 +233,27 @@ class OtrApp:
     # -- security state --------------------------------------------------------
 
     def security_state(self, peer: str) -> SecurityState:
-        return security_state_from_level(self._engine.get_security_level(peer))
+        """The engine's view of this peer, or PLAINTEXT if it cannot answer.
+
+        GUARDED, and this is not defensive decoration. It is called from
+        `contacts()` for every roster entry on every UI poll -- twice a second
+        -- and from `receive_message` for every inbound frame. Unguarded, a
+        single raise from the engine propagated all the way out of
+        `contacts()`, which on the Android side discarded the entire poll and
+        left the screen asserting "Not connected" about a live stream. Every
+        neighbour here (`smp_state`, `smp_progress`, `security_details`) was
+        already guarded; this one was not, and the omission looks accidental.
+
+        PLAINTEXT is the fail-safe direction and the only defensible one: a
+        state we could not read must never be rendered as more secure than it
+        is. `security_state_from_level` already takes that position for an
+        unrecognised level; this extends it to an engine that raised.
+        """
+        try:
+            return security_state_from_level(
+                self._engine.get_security_level(peer))
+        except Exception:
+            return SecurityState.PLAINTEXT
 
     def smp_state(self, peer: str) -> SmpState:
         try:
@@ -289,23 +309,33 @@ class OtrApp:
         entries = self._safe(self._transport.roster, default=[]) if self._transport else []
         out: List[ContactView] = []
         for entry in entries or []:
-            jid = entry.get("jid") if isinstance(entry, dict) else str(entry)
-            if not jid:
+            # Per entry, because losing the whole contact list to one awkward
+            # peer is how a working roster renders as an empty screen.
+            try:
+                view = self._contact_view(entry)
+            except Exception:
                 continue
-            security = self.security_state(jid)
-            out.append(ContactView(
-                jid=jid,
-                display_name=(entry.get("name") if isinstance(entry, dict) else None) or jid,
-                online=self._presence.get(jid, False),
-                security=security,
-                smp=self.smp_state(jid),
-                last_activity=self._last_activity.get(jid),
-                # Calls are gated on cryptographic verification by the engine
-                # (VoiceCallManager._smp_verified).  This flag is for enabling a
-                # button, and must never be treated as the gate itself.
-                call_available=security is SecurityState.SMP_VERIFIED,
-            ))
+            if view is not None:
+                out.append(view)
         return out
+
+    def _contact_view(self, entry) -> Optional[ContactView]:
+        jid = entry.get("jid") if isinstance(entry, dict) else str(entry)
+        if not jid:
+            return None
+        security = self.security_state(jid)
+        return ContactView(
+            jid=jid,
+            display_name=(entry.get("name") if isinstance(entry, dict) else None) or jid,
+            online=self._presence.get(jid, False),
+            security=security,
+            smp=self.smp_state(jid),
+            last_activity=self._last_activity.get(jid),
+            # Calls are gated on cryptographic verification by the engine
+            # (VoiceCallManager._smp_verified).  This flag is for enabling a
+            # button, and must never be treated as the gate itself.
+            call_available=security is SecurityState.SMP_VERIFIED,
+        )
 
     # -- messaging -------------------------------------------------------------
 
