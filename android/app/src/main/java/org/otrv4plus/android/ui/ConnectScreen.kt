@@ -53,6 +53,7 @@ import org.otrv4plus.android.bridge.RouterProbe
 @Composable
 fun ConnectScreen(
     onOpenDiagnostics: () -> Unit = {},
+    onOpenAbout: () -> Unit = {},
     onConnected: (ChaquopyOtrCore) -> Unit = {},
 ) {
     val context = LocalContext.current
@@ -295,13 +296,20 @@ fun ConnectScreen(
         }
 
         Spacer(Modifier.height(8.dp))
-        // Disabled while connected. The diagnostics screen builds its own
-        // engine, and two EnhancedSessionManagers on one device would open the
-        // same identity and trust files twice.
-        TextButton(
-            enabled = !status.connected && busy == null,
-            onClick = onOpenDiagnostics,
-        ) { Text("Diagnostics") }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            // Disabled while connected. The diagnostics screen builds its own
+            // engine, and two EnhancedSessionManagers on one device would open
+            // the same identity and trust files twice.
+            TextButton(
+                enabled = !status.connected && busy == null,
+                onClick = onOpenDiagnostics,
+            ) { Text("Diagnostics") }
+
+            // Never disabled, and reachable before anyone signs in: the
+            // licence notice and the third-party attribution are obligations
+            // that do not depend on the app's state.
+            TextButton(onClick = onOpenAbout) { Text("About & licences") }
+        }
     }
 }
 

@@ -108,6 +108,32 @@ jobs:
         # not the "What went wrong" summary at the end.
         run: ../.github/scripts/gradle.sh ./gradlew :app:dependencies --configuration debugRuntimeClasspath --no-daemon --console=plain
 
+      - name: No copyleft dependency in the shipped Android graph
+        working-directory: android
+        # The Android counterpart of the cargo check in
+        # tests/test_licence_declarations_agree.py. It resolves the debug and
+        # release runtime classpaths, reads each module's POM and fails on
+        # anything with no permissive option -- or on anything whose licence
+        # it cannot determine.
+        #
+        # It runs HERE rather than in the dev environment because resolving
+        # AndroidX needs dl.google.com, which is the reason this whole
+        # workflow exists. It is also wired into `check`, so a developer who
+        # can reach Google gets it from `./gradlew check` as well.
+        #
+        # One copyleft dependency does not merely add an obligation: it makes
+        # the commercial half of the dual licence unsellable. See
+        # LICENSING_AUDIT.md §0.
+        run: ../.github/scripts/gradle.sh ./gradlew :app:checkRuntimeDependencyLicences --no-daemon --console=plain
+
+      - name: Keep the licence report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dependency-licences
+          path: android/app/build/reports/licences/
+          if-no-files-found: ignore
+
   # ---------------------------------------------------------------------------
   # Proves: the APK's hand-written pip list is the full dependency closure.
   #

@@ -65,6 +65,7 @@ data class ChatMessage(
 fun ChatScreen(
     core: ChaquopyOtrCore,
     onOpenDiagnostics: () -> Unit = {},
+    onOpenAbout: () -> Unit = {},
 ) {
     val scope = rememberCoroutineScope()
 
@@ -168,6 +169,7 @@ fun ChatScreen(
                 }
             },
             onOpenDiagnostics = onOpenDiagnostics,
+            onOpenAbout = onOpenAbout,
         )
     } else {
         Conversation(
@@ -231,6 +233,7 @@ private fun ContactList(
     onPick: (String) -> Unit,
     onAdd: (String) -> Unit,
     onOpenDiagnostics: () -> Unit,
+    onOpenAbout: () -> Unit,
 ) {
     var adding by remember { mutableStateOf("") }
 
@@ -279,7 +282,13 @@ private fun ContactList(
             }
         }
 
-        TextButton(onClick = onOpenDiagnostics) { Text("Diagnostics") }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            TextButton(onClick = onOpenDiagnostics) { Text("Diagnostics") }
+            // The third-party notices and the licence statement. Reachable
+            // from here as well as from the connection screen, so it is never
+            // more than one tap away wherever the user happens to be.
+            TextButton(onClick = onOpenAbout) { Text("About & licences") }
+        }
     }
 }
 

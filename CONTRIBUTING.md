@@ -33,6 +33,41 @@ PSF) — see [LICENSING_AUDIT.md](LICENSING_AUDIT.md). One copyleft library adde
 for convenience would make the commercial half unsellable, and it would not be
 obvious from the diff.
 
+Two guards enforce that, so a mistake here fails a build rather than reaching a
+release:
+
+```bash
+python3 -m pytest tests/test_licence_declarations_agree.py   # the Rust graph
+cd android && ./gradlew :app:checkRuntimeDependencyLicences  # the Android graph
+```
+
+Both resolve the real dependency graph rather than reading the build files, and
+both fail on a module with no permissive option — or on one whose licence they
+cannot determine, because "we could not tell" is exactly the state worth
+stopping on. Test-only dependencies are excluded on purpose: JUnit is Eclipse
+Public License and is fine, because it is not in the artifact anyone receives.
+
+## New files carry an SPDX header
+
+Any **new** source file — `.py`, `.rs`, `.kt`, `.kts` — starts with:
+
+```
+# SPDX-License-Identifier: AGPL-3.0-only OR LicenseRef-OTRv4Plus-Commercial
+# Copyright (C) 2025-2026 muc111
+```
+
+(`//` instead of `#` in Kotlin, Rust and Gradle files.) The repository-root
+`LICENSE` already covers every file in the tree, so this changes nothing about
+the terms. It means a file that gets copied out of the repository — into a bug
+report, a gist, a vendored directory in someone else's project — carries its
+terms with it instead of arriving bare.
+
+**Existing files are deliberately left alone.** A retroactive sweep across
+~200 files would be a large diff that changes no licence and buries real
+history in `git blame`. `tests/test_spdx_headers_on_new_files.py` enforces the
+rule on files added after 2026-09-14 and exempts everything older, so the
+policy applies going forward without rewriting what is already here.
+
 ## Before you write code
 
 Open an issue first to discuss. The single-file Python design is intentional —

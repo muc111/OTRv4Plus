@@ -1248,7 +1248,14 @@ This project is published to invite exactly the review it has not had. The highe
 
 ## License
 
-**Dual-licensed as of v10.17.0.**
+**OTRv4+ is dual-licensed, and has been since v10.17.0.** In SPDX terms, and as
+declared in `Rust/Cargo.toml` and `Rust/pyproject.toml`:
+
+```
+AGPL-3.0-only OR LicenseRef-OTRv4Plus-Commercial
+```
+
+`OR` means you choose. The two halves are:
 
 * **[AGPL-3.0](LICENSE)** — the default, and what you get by cloning this
   repository. Read it, run it, fork it, study it, publish your fork. If you
@@ -1261,17 +1268,31 @@ This project is published to invite exactly the review it has not had. The highe
 Charging money is not the trigger; the AGPL explicitly permits selling copies.
 The trigger is wanting to keep your source closed.
 
-Releases up to and including **v10.16.2 were GPL-3.0**, and stay available
-under it — relicensing applies going forward and cannot withdraw rights already
-granted.
+**The history, stated plainly.** Releases up to and including **v10.16.2 went
+out under GPL-3.0** from this public repository. Everyone who received one of
+those releases keeps their GPL-3.0 rights **permanently**, including the right
+to fork from those commits and to redistribute under the GPL. The change to
+AGPL-3.0 applies from **v10.17.0 onward only**; it does not, and could not,
+withdraw anything already granted. `LICENSE` says so in its own words rather
+than implying a retraction nobody could enforce.
 
 Contributions are welcome under the [CLA](CLA.md), which keeps both licences
 grantable. Paid work has [its own terms](CONTRACTOR-IP.md).
 
-Every third-party dependency is permissive — 109 crates compiled into the
-core, plus the Python and Android layers. [NOTICE](NOTICE) carries their
-attribution and must travel with any binary you distribute;
-[LICENSING_AUDIT.md](LICENSING_AUDIT.md) shows the working.
+Every third-party dependency is permissive — MIT, Apache-2.0, BSD-3-Clause or
+PSF — across the Rust crates compiled into the core and the Python and Android
+layers alike. Nothing in the tree imposes copyleft except this project's own
+licence, and two guards keep it that way: the Rust graph is checked by
+`tests/test_licence_declarations_agree.py`, and the Android runtime graph by
+`./gradlew :app:checkRuntimeDependencyLicences`. Both fail the build on a
+dependency with no permissive option.
+
+[NOTICE](NOTICE) carries the attribution, lists the exact crate count, and
+**must travel with any binary you distribute**. The Android app packages it and
+renders it under *About & licences*; if you ship a build of your own, do the
+equivalent. [LICENSING_AUDIT.md](LICENSING_AUDIT.md) shows the working, and its
+"Counting the dependencies" table explains why a shipped-crate count and a
+full-graph count are different numbers.
 
 ## See also
 
