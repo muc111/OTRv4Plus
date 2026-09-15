@@ -40,8 +40,12 @@ result code rather than an argument.
 
 from __future__ import annotations
 
+import logging
 import socket
-from typing import Any, Callable, Dict, Optional
+import threading
+from typing import Any, Callable, Dict, List, Optional
+
+_log = logging.getLogger("otrv4plus.bridge.connection")
 
 import otrv4plus_address as _address
 
@@ -203,9 +207,17 @@ class ConnectionController:
     because a placeholder was chosen.
     """
 
-    #: In order. Reported as they are entered, so a stall is attributable.
+    #: In order, then the states a live connection can end up in. Reported as
+    #: they are entered, so a stall is attributable.
+    #:
+    #: `disconnected` and `cancelled` are here because they were being entered
+    #: without being declared: the transport emits "disconnected" when the
+    #: server drops the stream, the lambda below passed it straight through,
+    #: and the screen rendered a stage this tuple said did not exist. A stage
+    #: vocabulary that the code can step outside of is not a vocabulary.
     STAGES = ("idle", "checking_router", "building_tunnels",
-              "connecting", "authenticating", "connected", "failed")
+              "connecting", "authenticating", "connected",
+              "disconnected", "cancelled", "failed")
 
     def __init__(self, app: Any, profile: ConnectionProfile,
                  *, transport_factory: Optional[Callable[..., Any]] = None,
@@ -223,6 +235,9 @@ class ConnectionController:
         #: never the value: this object is rendered into a status map that
         #: crosses into Kotlin and ends up in an exported report.
         self._password_present = False
+        #: Guards against two overlapping attempts. See `connect`.
+        self._connect_lock = threading.Lock()
+        self._connecting = False
 
         # Installed here rather than at connect time: a DAKE frame can arrive
         # in the same breath as session_start, and an event emitted before the
@@ -243,6 +258,33 @@ class ConnectionController:
     @property
     def profile(self) -> ConnectionProfile:
         return self._profile
+
+    #: Transport state -> controller stage. Written out because the two
+    #: vocabularies genuinely differ and the difference is not obvious: the
+    #: transport's "connected" means the XMPP stream is up, which is the
+    #: controller's "connecting" -- there is still a SASL exchange to go, and
+    #: calling that connected is the one claim this whole module exists not to
+    #: make. Anything not named here is passed through and validated.
+    _TRANSPORT_STAGE = {
+        "building_tunnels": "building_tunnels",
+        "connected": "connecting",
+        "disconnected": "disconnected",
+        "failed": "failed",
+    }
+
+    def _on_transport_state(self, state: str, _server: str) -> None:
+        """Translate a transport state into a stage, and never invent one."""
+        stage = self._TRANSPORT_STAGE.get(state, state)
+        if stage not in self.STAGES:
+            # A transport state this controller has no stage for. Dropping it
+            # is right -- rendering an undeclared stage is what put the string
+            # "disconnected" on a screen whose labels did not cover it -- but
+            # it is worth a line, because it means the two have drifted.
+            _log.info("ignoring an unmapped transport state")
+            return
+        # A drop after we were up is not a stage on the way to connecting, so
+        # the connected flag has to go with it or `status` keeps saying yes.
+        self._enter(stage)
 
     def _enter(self, stage: str) -> None:
         self._stage = stage
@@ -268,6 +310,28 @@ class ConnectionController:
         the only thing that survives -- which is exactly the failure mode that
         made the first handset report say nothing but "PyException".
         """
+        # One attempt at a time. Two are easy to start by accident on Android
+        # -- rotate the screen during a tunnel build and the recreated screen
+        # presses Connect again -- and two would each build their own tunnel,
+        # each set `app._transport`, and the loser would leave a live worker
+        # thread and an I2P lease behind with nothing holding a reference.
+        with self._connect_lock:
+            if self._connecting:
+                return {"ok": False, "stage": self._stage,
+                        "code": "already_connecting",
+                        "detail": "A connection attempt is already running."}
+            if self._transport is not None and getattr(
+                    self._transport, "is_connected", False):
+                return {"ok": True, "stage": "connected", "code": "ok",
+                        "detail": "Already connected."}
+            self._connecting = True
+        try:
+            return self._connect(password)
+        finally:
+            with self._connect_lock:
+                self._connecting = False
+
+    def _connect(self, password: str) -> Dict[str, Any]:
         self._password_present = bool(password)
         self._enter("checking_router")
         probe = self._prober(self._profile)
@@ -279,9 +343,7 @@ class ConnectionController:
             self._transport = factory(
                 self._profile, password,
                 on_payload=self._app.receive_message,
-                on_state=lambda s, _srv: self._enter(
-                    "building_tunnels" if s == "building_tunnels"
-                    else "connecting" if s == "connected" else s),
+                on_state=self._on_transport_state,
             )
         except Exception as exc:
             return self._fail("transport_failed", type(exc).__name__)
@@ -295,6 +357,19 @@ class ConnectionController:
         except Exception as exc:
             code = getattr(exc, "code", "connect_failed")
             detail = getattr(exc, "detail", "") or type(exc).__name__
+            # A failed attempt keeps nothing. The transport has already given
+            # back its tunnel and stopped slixmpp retrying; dropping the
+            # reference here means the next Connect builds a fresh one rather
+            # than finding a half-dead object and believing it usable.
+            self._release_transport()
+            if code == "cancelled":
+                # Not a failure. Somebody pressed Back, and reporting it in red
+                # next to "could not connect" teaches people to ignore the red.
+                self._enter("cancelled")
+                self._last = {"ok": False, "stage": "cancelled",
+                              "code": "cancelled",
+                              "detail": "The connection attempt was stopped."}
+                return dict(self._last)
             return self._fail(code, detail)
 
         self._enter("connected")
@@ -305,8 +380,46 @@ class ConnectionController:
                       "sam_version": probe.version}
         return dict(self._last)
 
+    def cancel(self) -> Dict[str, Any]:
+        """Stop an attempt that is still running.
+
+        Separate from `disconnect` because they mean different things to a
+        user: one stops something that has not happened yet, the other ends
+        something that has. Rolled together, a Cancel button would also have
+        to be a Disconnect button, and pressing it during a tunnel build would
+        be indistinguishable from pressing it while connected.
+
+        Returns immediately. The blocked `connect` call on the other thread is
+        what actually unwinds, and it reports `cancelled` when it does.
+        """
+        transport = self._transport
+        if transport is None:
+            return {"ok": True, "code": "not_connecting",
+                    "detail": "Nothing to cancel."}
+        try:
+            transport.cancel()
+        except Exception as exc:
+            return {"ok": False, "code": "cancel_failed",
+                    "detail": type(exc).__name__}
+        return {"ok": True, "code": "ok",
+                "detail": "Stopping the connection attempt."}
+
     def disconnect(self) -> Dict[str, Any]:
         """Tear down. Best effort, and always ends at a known state."""
+        self._release_transport()
+        self._enter("idle")
+        self._last = {"ok": True, "stage": "idle", "code": "ok",
+                      "detail": "Disconnected."}
+        return dict(self._last)
+
+    def _release_transport(self) -> None:
+        """Close the transport and forget it. Never raises.
+
+        `close` rather than `disconnect`: the worker thread and the SAM tunnel
+        belong to the transport object, and a transport we are dropping the
+        last reference to must not leave either behind. A disconnected-but-open
+        transport is exactly the shape that leaked a loop thread per attempt.
+        """
         transport, self._transport = self._transport, None
         if transport is not None:
             try:
@@ -317,10 +430,6 @@ class ConnectionController:
             self._app._transport = None
         except Exception:
             pass
-        self._enter("idle")
-        self._last = {"ok": True, "stage": "idle", "code": "ok",
-                      "detail": "Disconnected."}
-        return dict(self._last)
 
     def drain_events(self, limit: int = 0) -> List[Dict[str, Any]]:
         """Hand the UI everything that has happened since it last asked.

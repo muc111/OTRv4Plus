@@ -229,6 +229,22 @@ class ChaquopyOtrCore(private val appContext: Context) : OtrCore {
         return statusFrom(ctl, result)
     }
 
+    /**
+     * Stop a connect that is still running.
+     *
+     * Returns at once; the blocked [connect] call on the other thread is what
+     * unwinds, and it comes back with code `cancelled`.
+     *
+     * This exists because cancelling the Kotlin coroutine around [connect]
+     * does nothing to the work: it is a blocking JNI call into Python, and the
+     * thread stays inside it until Python returns. Without this, backing out
+     * of a four-minute tunnel build left it building.
+     */
+    fun cancelConnect() {
+        val ctl = controller ?: return
+        ctl.callAttr("cancel")
+    }
+
     /** Probe the SAM bridge alone: milliseconds, and it answers the question
      * "is a router running" without a four-minute tunnel attempt. */
     fun probeRouter(): RouterProbe {
@@ -268,6 +284,22 @@ class ChaquopyOtrCore(private val appContext: Context) : OtrCore {
     }
 
     override fun shutdown() {
+        // The connection FIRST, and this is not cosmetic ordering.
+        //
+        // This used to shut the engine down and leave the controller alone,
+        // so the transport's worker thread, its I2P tunnel and its local
+        // listening socket all outlived the object that owned them -- with
+        // nothing left holding a reference that could ever close them. On a
+        // phone that is a live I2P lease belonging to an app the user has
+        // closed.
+        try {
+            controller?.callAttr("disconnect")
+        } catch (_: Throwable) {
+            // Teardown must not throw: it runs from lifecycle callbacks and
+            // from process shutdown, where there is nobody to tell.
+        } finally {
+            controller = null
+        }
         try {
             app?.callAttr("shutdown")
         } catch (_: Throwable) {

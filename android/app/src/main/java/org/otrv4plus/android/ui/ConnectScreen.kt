@@ -8,18 +8,14 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalContext
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
+import androidx.lifecycle.viewmodel.compose.viewModel
+import org.otrv4plus.android.ConnectionViewModel
 import org.otrv4plus.android.bridge.ChaquopyOtrCore
-import org.otrv4plus.android.bridge.ConnectionStatus
-import org.otrv4plus.android.bridge.InitResult
-import org.otrv4plus.android.bridge.RouterProbe
 
 /**
  * The first screen that does something real.
@@ -47,36 +43,41 @@ import org.otrv4plus.android.bridge.RouterProbe
  * belongs to the engine and appears on the conversation screen, derived from
  * `OtrCore.securityState`, once there is a conversation to have.
  *
- * Every call into Python runs on [Dispatchers.IO]. A tunnel build on the main
- * thread is an ANR, not a slow connection.
+ * Nothing long-lived is owned here. The core, the connection and every call
+ * into Python belong to [ConnectionViewModel], which survives Activity
+ * recreation and runs the work off the main thread -- a tunnel build on the
+ * main thread is an ANR, not a slow connection, and a tunnel build in a
+ * screen-scoped coroutine is one the screen stops waiting for the moment the
+ * phone is turned.
+ *
+ * What this screen does own is what is typed into it, and the password in
+ * particular is deliberately NOT hoisted: it must not outlive the composition.
  */
 @Composable
 fun ConnectScreen(
+    model: ConnectionViewModel = viewModel(),
     onOpenDiagnostics: () -> Unit = {},
     onOpenAbout: () -> Unit = {},
     onConnected: (ChaquopyOtrCore) -> Unit = {},
 ) {
-    val context = LocalContext.current
-    val scope = rememberCoroutineScope()
+    // Everything long-lived belongs to the ViewModel, which survives Activity
+    // recreation -- a rotation, a theme change, a font-size change. This
+    // screen used to own the core in `remember`, which does not survive any
+    // of those: rotating during a tunnel build built a SECOND core, with a
+    // second engine over the same identity and trust files, while the first
+    // kept its worker thread and its half-open tunnel.
+    val core = model.core
+    val init = model.init
+    val status = model.status
+    val probe = model.probe
+    val busy = model.busy
+    val error = model.error
 
-    // One core for the lifetime of the screen. It owns the Python interpreter,
-    // the engine and the transport; rebuilding it on recomposition would start
-    // a second interpreter and lose the connection.
-    val core = remember { ChaquopyOtrCore(context) }
-
-
-    var init by remember { mutableStateOf<InitResult?>(null) }
-    var status by remember { mutableStateOf(ConnectionStatus()) }
-    var probe by remember { mutableStateOf<RouterProbe?>(null) }
-    var jid by remember { mutableStateOf("") }
+    // The only state that genuinely belongs to the screen: what is typed into
+    // it. The password in particular must not outlive the composition, so it
+    // is emphatically NOT hoisted into the ViewModel.
+    var jid by rememberSaveable { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
-    var busy by remember { mutableStateOf<String?>("Starting Python...") }
-    var error by remember { mutableStateOf<String?>(null) }
-
-    LaunchedEffect(Unit) {
-        init = withContext(Dispatchers.IO) { core.initialize() }
-        busy = null
-    }
 
     Column(
         modifier = Modifier
@@ -136,7 +137,7 @@ fun ConnectScreen(
         // ── Account ───────────────────────────────────────────────────────
         OutlinedTextField(
             value = jid,
-            onValueChange = { jid = it; error = null },
+            onValueChange = { jid = it },
             label = { Text("Address") },
             placeholder = { Text("you@server.i2p") },
             singleLine = true,
@@ -146,7 +147,7 @@ fun ConnectScreen(
         )
         OutlinedTextField(
             value = password,
-            onValueChange = { password = it; error = null },
+            onValueChange = { password = it },
             label = { Text("Password") },
             singleLine = true,
             enabled = !status.connected && busy == null,
@@ -159,69 +160,48 @@ fun ConnectScreen(
         )
 
         // ── Actions ───────────────────────────────────────────────────────
+        //
+        // Every one of these hands off to the ViewModel rather than launching
+        // in a screen-scoped coroutine. A `rememberCoroutineScope()` is
+        // cancelled when the composition goes away, which on Android includes
+        // a rotation -- so a connect started here would stop being waited on
+        // halfway through its own tunnel build.
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             OutlinedButton(
                 enabled = busy == null,
-                onClick = {
-                    error = null
-                    busy = "Checking for a router..."
-                    scope.launch {
-                        val got = withContext(Dispatchers.IO) {
-                            runCatching {
-                                core.prepareConnection(jid.trim())
-                                core.probeRouter()
-                            }
-                        }
-                        got.onSuccess { probe = it }
-                            .onFailure { error = it.javaClass.simpleName }
-                        status = withContext(Dispatchers.IO) {
-                            runCatching { core.connectionStatus() }
-                                .getOrDefault(status)
-                        }
-                        busy = null
-                    }
-                },
+                onClick = { model.checkRouter(jid) },
             ) { Text("Check router") }
 
             Button(
                 enabled = busy == null && !status.connected &&
                     jid.isNotBlank() && password.isNotBlank(),
                 onClick = {
-                    error = null
-                    busy = "Connecting. A cold I2P tunnel can take minutes."
-                    scope.launch {
-                        val got = withContext(Dispatchers.IO) {
-                            runCatching {
-                                core.prepareConnection(jid.trim())
-                                core.connect(password)
-                            }
-                        }
-                        got.onSuccess { status = it }
-                            .onFailure { error = it.javaClass.simpleName }
-                        // Cleared on both paths: a rejected password is a
-                        // reason to retype it, and a connected session has no
-                        // further use for it here.
-                        password = ""
-                        busy = null
-                    }
+                    model.connect(jid, password)
+                    // Cleared immediately, on both paths: a rejected password
+                    // is a reason to retype it, and a connected session has no
+                    // further use for it here. The ViewModel never keeps a
+                    // copy, so after this line the only one left is inside
+                    // slixmpp, where SASL needs it.
+                    password = ""
                 },
             ) { Text("Connect") }
 
             if (status.connected) {
                 OutlinedButton(
                     enabled = busy == null,
-                    onClick = {
-                        busy = "Disconnecting..."
-                        scope.launch {
-                            val got = withContext(Dispatchers.IO) {
-                                runCatching { core.disconnect() }
-                            }
-                            got.onSuccess { status = it }
-                                .onFailure { error = it.javaClass.simpleName }
-                            busy = null
-                        }
-                    },
+                    onClick = { model.disconnect() },
                 ) { Text("Disconnect") }
+            }
+        }
+
+        // Only while an attempt is actually running. This is the one control
+        // that must not be disabled by `busy`, because `busy` is precisely the
+        // state it exists to get out of: without it, backing out of a cold
+        // tunnel meant waiting up to four minutes or killing the app, and
+        // killing the app left the tunnel building.
+        if (model.connecting) {
+            OutlinedButton(onClick = { model.cancelConnect() }) {
+                Text("Cancel")
             }
         }
 
@@ -327,6 +307,8 @@ private fun stageLabel(stage: String): String = when (stage) {
     "connecting" -> "Connecting to the server"
     "authenticating" -> "Signing in"
     "connected" -> "Connected"
+    "disconnected" -> "Disconnected"
+    "cancelled" -> "Stopped"
     "failed" -> "Failed"
     else -> stage
 }

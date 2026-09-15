@@ -1117,7 +1117,8 @@ _TOR_FORWARDERS = []
 
 
 async def start_i2p_sam_forwarder(
-    dest_b32: str, dest_port: int, sam_host: str = "127.0.0.1", sam_port: int = 7656
+    dest_b32: str, dest_port: int, sam_host: str = "127.0.0.1", sam_port: int = 7656,
+    *, resources=None, log=None,
 ):
     """
     Open an I2P SAM stream to `dest_b32` and expose it as a local TCP endpoint.
@@ -1126,12 +1127,34 @@ async def start_i2p_sam_forwarder(
     does STARTTLS normally; bytes are piped over the SAM stream to the I2P
     destination. The SAM connection, local server, and writer are kept alive on
     the loop so they are not garbage-collected.
+
+    `resources` and `log` exist for the Android bridge and change nothing when
+    they are omitted, which is how the terminal client calls this.
+
+    **resources** -- a list to append the SAM session, the local server and the
+    writer to, INSTEAD of stashing them on `loop._i2p_keep`. The stash is a
+    keep-alive with no way to let go: it grows by three on every connection and
+    nothing ever closes what is in it. In a terminal process that runs one
+    session and exits, that is invisible. In an app where the user presses
+    Connect, fails, and presses it again, every attempt leaves a live I2P
+    tunnel and a listening local socket behind. Handing the caller the list
+    makes releasing them possible; passing nothing keeps the old behaviour
+    exactly.
+
+    **log** -- where the progress lines go, defaulting to `print`. The default
+    is the terminal's. Android needs a different one because Chaquopy routes
+    stdout into logcat, and these lines name the destination -- which is the
+    one thing CONTRIBUTING.md's rejection list says must not be logged. A
+    destination in a terminal a user is looking at is feedback; the same string
+    in a system log that any `adb logcat` reads is a disclosure.
     """
     if I2PSAMConnection is None:
         raise RuntimeError(
             "I2PSAMConnection not available from the OTR module; "
             "cannot use I2P SAM transport."
         )
+
+    say = log if log is not None else print
 
     loop = asyncio.get_event_loop()
     sam = I2PSAMConnection(sam_host=sam_host, sam_port=sam_port)
@@ -1146,13 +1169,13 @@ async def start_i2p_sam_forwarder(
     # the substitution read as though the alias had been ignored.
     resolved, _alias_src = I2PSAMConnection._apply_i2p_alias(dest_b32)
     if resolved != dest_b32:
-        print(f"[i2p] opening SAM stream to {dest_b32} -> {resolved} "
-              "(a cold tunnel can take 30-90s)...")
+        say(f"[i2p] opening SAM stream to {dest_b32} -> {resolved} "
+            "(a cold tunnel can take 30-90s)...")
     else:
-        print(f"[i2p] opening SAM stream to {dest_b32} "
-              "(a cold tunnel can take 30-90s)...")
+        say(f"[i2p] opening SAM stream to {dest_b32} "
+            "(a cold tunnel can take 30-90s)...")
     sam_sock = await loop.run_in_executor(None, _do_sam)
-    print("[i2p] SAM stream established.")
+    say("[i2p] SAM stream established.")
 
     sam_reader, sam_writer = await asyncio.open_connection(sock=sam_sock)
 
@@ -1207,10 +1230,14 @@ async def start_i2p_sam_forwarder(
 
     server = await asyncio.start_server(_handle_local, "127.0.0.1", 0)
     host, port = server.sockets[0].getsockname()[:2]
-    if not hasattr(loop, "_i2p_keep"):
-        loop._i2p_keep = []
-    loop._i2p_keep.extend([sam, server, sam_writer])
-    print(f"[i2p] local bridge ready at {host}:{port} -> {dest_b32}")
+    # Somewhere to keep these alive. Either place works as a keep-alive; only
+    # the caller's list can also be used to let go. See the docstring.
+    if resources is None:
+        if not hasattr(loop, "_i2p_keep"):
+            loop._i2p_keep = []
+        resources = loop._i2p_keep
+    resources.extend([sam, server, sam_writer])
+    say(f"[i2p] local bridge ready at {host}:{port} -> {dest_b32}")
     return host, port
 
 

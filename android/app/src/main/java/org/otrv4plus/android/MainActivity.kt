@@ -8,10 +8,10 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.activity.compose.BackHandler
-import org.otrv4plus.android.bridge.ChaquopyOtrCore
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.lifecycle.viewmodel.compose.viewModel
 import org.otrv4plus.android.ui.AboutScreen
 import org.otrv4plus.android.ui.ChatScreen
 import org.otrv4plus.android.ui.ConnectScreen
@@ -53,11 +53,23 @@ class MainActivity : ComponentActivity() {
                     // internally, so this is a small enum rather than a graph;
                     // navigation-compose earns its place when a deep link or a
                     // back stack that outlives the process does.
-                    var showDiagnostics by remember { mutableStateOf(false) }
-                    var showAbout by remember { mutableStateOf(false) }
-                    var chatCore by remember {
-                        mutableStateOf<ChaquopyOtrCore?>(null)
-                    }
+                    //
+                    // rememberSaveable, not remember: these decide which
+                    // screen you are looking at, and losing them on a rotation
+                    // throws a connected user back to the connect screen. The
+                    // connection itself is unaffected -- the ViewModel holds
+                    // it -- but being bounced out of a conversation because
+                    // the phone turned is the kind of thing that reads as the
+                    // app having crashed.
+                    val model: ConnectionViewModel = viewModel()
+                    var showDiagnostics by rememberSaveable { mutableStateOf(false) }
+                    var showAbout by rememberSaveable { mutableStateOf(false) }
+                    // A Boolean rather than the core itself. The core is not
+                    // Saveable -- it owns a Python interpreter -- and it does
+                    // not need to be: the ViewModel already survives
+                    // recreation, so this only has to remember WHICH screen,
+                    // not which object.
+                    var inChat by rememberSaveable { mutableStateOf(false) }
 
                     when {
                         // Checked before the others so it is reachable from
@@ -74,22 +86,28 @@ class MainActivity : ComponentActivity() {
                             DevShellScreen()
                         }
 
-                        chatCore != null -> {
+                        inChat -> {
                             // Back returns to the connection screen without
                             // disconnecting: the core, and the socket it owns,
-                            // outlive this composition.
-                            BackHandler { chatCore = null }
+                            // belong to the ViewModel and outlive both.
+                            BackHandler { inChat = false }
                             ChatScreen(
-                                core = chatCore!!,
+                                core = model.core,
                                 onOpenDiagnostics = { showDiagnostics = true },
                                 onOpenAbout = { showAbout = true },
                             )
                         }
 
                         else -> ConnectScreen(
+                            // The same ViewModel instance the chat screen
+                            // reads its core from, resolved against this
+                            // Activity, so the connection survives a rotation
+                            // instead of being rebuilt alongside a second
+                            // Python engine.
+                            model = model,
                             onOpenDiagnostics = { showDiagnostics = true },
                             onOpenAbout = { showAbout = true },
-                            onConnected = { chatCore = it },
+                            onConnected = { inChat = true },
                         )
                     }
                 }

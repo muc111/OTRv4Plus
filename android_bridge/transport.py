@@ -41,6 +41,7 @@ log line or a diagnostic report, so `__repr__` is written by hand and
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures as _futures
 import logging
 import threading
 from typing import Any, Callable, Dict, List, Optional
@@ -119,6 +120,55 @@ DEFAULT_C2S_PORT = 5222
 CONNECT_TIMEOUT = 300.0
 CALL_TIMEOUT = 30.0
 
+#: How long teardown waits. Short on purpose: `close` is called from Android
+#: lifecycle callbacks that must return promptly, and a shutdown that blocks
+#: is a worse failure than one that gives up and logs.
+CLOSE_TIMEOUT = 5.0
+
+#: The two unrelated CancelledError classes, as a tuple to catch on. They are
+#: genuinely different types -- `asyncio.CancelledError is
+#: concurrent.futures.CancelledError` is False on 3.12 -- and only one of them
+#: derives from Exception, so naming either alone gets the wrong half.
+_CANCELLED = (asyncio.CancelledError, _futures.CancelledError)
+
+
+def _accepts(fn: Any, name: str) -> bool:
+    """Whether *fn* takes a keyword argument called *name*.
+
+    Asked rather than discovered by catching TypeError, because a TypeError
+    raised inside the callee is indistinguishable from one raised by the call.
+    """
+    try:
+        import inspect
+
+        params = inspect.signature(fn).parameters
+    except (TypeError, ValueError):
+        return False
+    if name in params:
+        return True
+    return any(p.kind is p.VAR_KEYWORD for p in params.values())
+
+
+def _forwarder_log(message: str) -> None:
+    """Where the forwarder's progress lines go on Android.
+
+    Not `print`. Chaquopy routes stdout into logcat, and these lines name the
+    I2P destination -- which CONTRIBUTING.md's rejection list puts alongside
+    keys and plaintext as a thing that must not be logged. In a terminal the
+    same string is feedback to the person who typed the address; in a system
+    log that `adb logcat` reads, it is a record of who this device talks to.
+
+    The stage is still worth knowing, so the message is reduced to whether a
+    tunnel is being opened or is up, with the destination dropped.
+    """
+    text = str(message)
+    if "established" in text:
+        _log.info("i2p: SAM stream established")
+    elif "local bridge ready" in text:
+        _log.info("i2p: local bridge ready")
+    elif "opening SAM stream" in text:
+        _log.info("i2p: opening a SAM stream (a cold tunnel can take 30-90s)")
+
 
 class TransportError(RuntimeError):
     """The transport could not do what was asked.
@@ -173,6 +223,18 @@ class XmppTransport(Transport):
         self._client: Any = None
         self._connected = threading.Event()
         self._lock = threading.RLock()
+        #: Set by close(). After this the object is finished and no call may
+        #: start a loop again -- see _ensure_loop.
+        self._closed = False
+        #: The in-flight connect, so another thread can cancel it. Android's
+        #: Back button and a rotation both need to stop a four-minute tunnel
+        #: build, and the Kotlin coroutine that called in cannot: a blocking
+        #: JNI call is not interruptible by cancelling the coroutine around it.
+        self._connect_future: Any = None
+        #: What the SAM forwarder opened, so it can be closed again. Without
+        #: this the sockets live on `loop._i2p_keep`, which is a keep-alive
+        #: with no release.
+        self._i2p_resources: List[Any] = []
 
     # -- what this object says about itself -----------------------------------
 
@@ -205,6 +267,16 @@ class XmppTransport(Transport):
         would be an ANR.
         """
         with self._lock:
+            if self._closed:
+                # A closed transport must never start a thread. It used to:
+                # close() cleared _loop but left _client set, so the next
+                # call -- and on Android there is always a next call, because
+                # the chat screen polls every 500ms and shutdown races it --
+                # went through _ensure_loop and got a brand new loop thread
+                # that nothing would ever join. Verified before the fix: a
+                # disconnect() after close() left one running.
+                raise TransportError(
+                    "closed", "this transport has been closed")
             if self._loop is not None and self._loop.is_running():
                 return self._loop
             ready = threading.Event()
@@ -257,9 +329,81 @@ class XmppTransport(Transport):
     # -- Transport ------------------------------------------------------------
 
     def connect(self) -> None:
-        self._run(self._connect(), CONNECT_TIMEOUT)
+        """Bring the stream up. Blocks; must not be called on a UI thread.
+
+        Kept out of `_run` because this is the one call another thread needs to
+        be able to stop: a cold tunnel is minutes, and Android will rotate the
+        screen or send Back inside that window.
+        """
+        loop = self._ensure_loop()
+        future = asyncio.run_coroutine_threadsafe(self._connect(), loop)
+        with self._lock:
+            self._connect_future = future
+        try:
+            future.result(timeout=CONNECT_TIMEOUT)
+        except TransportError:
+            raise
+        except _CANCELLED:
+            # BOTH CancelledErrors, because they are not the same class and
+            # which one arrives depends on where the cancellation was noticed.
+            # `asyncio.CancelledError` derives from BaseException (3.8+), so
+            # `except Exception` would miss it; `concurrent.futures`' one does
+            # derive from Exception, so `except Exception` would swallow it and
+            # report `unexpected_error`. It did: the first cut of this method
+            # named only the asyncio class and every cancelled connect came
+            # back as an unexpected error.
+            raise TransportError(
+                "cancelled", "the connection attempt was cancelled")
+        except TimeoutError:
+            # Builtin TimeoutError, which since 3.11 is what both
+            # concurrent.futures.TimeoutError and asyncio.TimeoutError alias.
+            # Nothing raised; the work simply never finished. Cancelling is
+            # what makes that true rather than merely reported -- without it
+            # slixmpp's _connect_loop keeps rescheduling against a tunnel
+            # nobody is waiting on any more.
+            future.cancel()
+            raise TransportError(
+                "timeout",
+                "the operation did not finish within %gs and nothing raised. "
+                "The connection was still in progress when the wait expired."
+                % CONNECT_TIMEOUT)
+        except Exception as exc:
+            raise TransportError("unexpected_error", type(exc).__name__)
+        finally:
+            with self._lock:
+                self._connect_future = None
+
+    def cancel(self) -> None:
+        """Stop an in-flight connect from another thread.
+
+        The reason this exists rather than relying on the caller: Kotlin calls
+        `connect` through Chaquopy, which is a blocking JNI call. Cancelling
+        the coroutine that wrapped it does not interrupt the thread inside
+        Python, so without this a rotation during a four-minute tunnel build
+        leaves the old attempt running while the recreated screen starts a
+        second one.
+
+        Safe at any time, including when nothing is connecting.
+        """
+        with self._lock:
+            future = self._connect_future
+        if future is not None:
+            future.cancel()
 
     async def _connect(self) -> None:
+        try:
+            await self._connect_inner()
+        except BaseException:
+            # Every failure path, cancellation included, gives back what it
+            # took: the SAM tunnel, the local listening socket, and slixmpp's
+            # retry loop. Before this, a connect that timed out left all three
+            # running -- verified -- so pressing Connect a second time built a
+            # second tunnel on top of the first, and the app degraded with
+            # every attempt instead of recovering.
+            await self._abandon()
+            raise
+
+    async def _connect_inner(self) -> None:
         host, port = await self._endpoint()
         # Separately coded for the same reason as the forwarder above: a
         # slixmpp that will not import is a packaging fault, and reporting it
@@ -324,6 +468,66 @@ class XmppTransport(Transport):
         self._connected.set()
         self._emit_state("connected")
 
+    async def _abandon(self) -> None:
+        """Give back everything a failed or cancelled attempt took.
+
+        Runs on the loop thread. Three distinct things, and leaving any of them
+        is its own bug:
+
+        1. **slixmpp's retry loop.** `XMLStream._connect_loop` reschedules a
+           failed connection rather than giving up, so a client that is simply
+           dropped keeps dialling for the life of the process. `abort()` is the
+           call that stops it; `disconnect()` is the fallback for a client that
+           has not got one.
+        2. **The I2P tunnel and the local listening socket.** Opened by the
+           forwarder, and previously parked on `loop._i2p_keep` where nothing
+           could reach them.
+        3. **The reference to the client**, so a later call cannot find a
+           half-dead one and believe it is usable.
+        """
+        self._connected.clear()
+        client, self._client = self._client, None
+        if client is not None:
+            for method in ("abort", "disconnect"):
+                fn = getattr(client, method, None)
+                if fn is None:
+                    continue
+                try:
+                    result = fn()
+                    if asyncio.iscoroutine(result):
+                        await result
+                except Exception:
+                    _log.warning("could not stop the XMPP client cleanly")
+                break
+        self._release_i2p()
+
+    def _release_i2p(self) -> None:
+        """Close the forwarder's sockets. Safe to call more than once.
+
+        Deliberately imports nothing. The first version called a helper in
+        `otrv4plus_xmpp`, which is a twelve-thousand-line module that pulls in
+        the Rust core -- so on the one path where the import was not already
+        warm, teardown sat behind it and the sockets were still open when the
+        caller looked. Measured, not feared: the timeout test closed nothing
+        while the cancel test closed everything, and the only difference was
+        whether that import had happened yet.
+
+        Teardown runs when something has already gone wrong. It gets to depend
+        on nothing.
+        """
+        resources, self._i2p_resources = self._i2p_resources, []
+        # Reverse order: the writer before the SAM session that owns it.
+        for obj in reversed(resources):
+            for method in ("close", "disconnect"):
+                fn = getattr(obj, method, None)
+                if fn is None:
+                    continue
+                try:
+                    fn()
+                except Exception:
+                    pass
+                break
+
     async def _endpoint(self):
         """Where slixmpp should point: the SAM tunnel, or the server itself."""
         if not self._profile.use_i2p:
@@ -348,11 +552,25 @@ class XmppTransport(Transport):
                 "packaging fault, not a router problem."
                 % type(exc).__name__)
 
+        # Ask the signature rather than calling and catching TypeError. A
+        # TypeError raised *inside* the forwarder looks identical from out
+        # here, and retrying on one would open a second tunnel while the first
+        # was still being built -- the precise failure this module exists to
+        # avoid.
+        extra = {}
+        if _accepts(forward, "resources"):
+            extra["resources"] = self._i2p_resources
+        if _accepts(forward, "log"):
+            extra["log"] = _forwarder_log
+        if "resources" not in extra:
+            _log.info("the I2P forwarder does not accept resource handover; "
+                      "its sockets will not be released on teardown")
+
         self._emit_state("building_tunnels")
         try:
             return await forward(
                 self._profile.effective_server, DEFAULT_C2S_PORT,
-                self._profile.sam_host, self._profile.sam_port)
+                self._profile.sam_host, self._profile.sam_port, **extra)
         except Exception as exc:
             self._emit_state("failed")
             raise TransportError(
@@ -369,7 +587,10 @@ class XmppTransport(Transport):
         self._client.send_message(mto=peer, mbody=payload, mtype="chat")
 
     def disconnect(self) -> None:
-        if self._client is None:
+        if self._client is None or self._closed:
+            # Closed is not an error to report here: disconnecting something
+            # already finished with is what a lifecycle callback does, and
+            # raising would turn tidy shutdown into a crash.
             return
         try:
             self._run(self._disconnect(), CALL_TIMEOUT)
@@ -383,7 +604,13 @@ class XmppTransport(Transport):
             self._emit_state("disconnected")
 
     async def _disconnect(self) -> None:
-        self._client.disconnect()
+        client = self._client
+        if client is not None:
+            client.disconnect()
+        # The tunnel goes with the session it carried. Leaving it open would
+        # hold an I2P lease and a listening local socket for a connection that
+        # no longer exists, and the next connect would build a second one.
+        self._release_i2p()
 
     def roster(self) -> List[Dict[str, Any]]:
         if self._client is None:
@@ -414,15 +641,59 @@ class XmppTransport(Transport):
         return out
 
     def close(self) -> None:
-        """Stop the loop thread. Safe to call more than once."""
-        self.disconnect()
+        """Finish with this transport. Safe to call more than once.
+
+        After this the object is spent: every method raises `closed` rather
+        than starting a loop. That is the point. It used to leave `_client`
+        set and `_loop` cleared, so the next call -- and on Android the chat
+        screen polls every 500ms, so there is always a next call -- went
+        through `_ensure_loop` and got a fresh worker thread nothing would
+        ever join.
+        """
         with self._lock:
-            loop, self._loop = self._loop, None
-            thread, self._thread = self._thread, None
-        if loop is not None:
+            already = self._closed
+            self._closed = True
+            future = self._connect_future
+            loop = self._loop
+            thread = self._thread
+            self._loop = None
+            self._thread = None
+        if already and loop is None:
+            return
+
+        # Stop an attempt that is still running, or the teardown below waits
+        # behind a tunnel build.
+        if future is not None:
+            future.cancel()
+
+        if loop is not None and loop.is_running():
+            # On the loop thread, and bounded: teardown that hangs is a worse
+            # failure than teardown that gives up, because the caller is
+            # usually a lifecycle callback that must return.
+            done = threading.Event()
+
+            async def shut():
+                try:
+                    await self._abandon()
+                finally:
+                    done.set()
+
+            try:
+                asyncio.run_coroutine_threadsafe(shut(), loop)
+                done.wait(timeout=CLOSE_TIMEOUT)
+            except Exception:
+                _log.warning("the transport did not shut down cleanly")
             loop.call_soon_threadsafe(loop.stop)
+        else:
+            # No loop to do it on; do what can be done from here.
+            self._release_i2p()
+
         if thread is not None:
-            thread.join(timeout=5)
+            thread.join(timeout=CLOSE_TIMEOUT)
+            if thread.is_alive():
+                _log.warning("the transport's worker thread did not stop")
+        self._connected.clear()
+        self._emit_state("disconnected")
 
     # -- slixmpp wiring -------------------------------------------------------
 
