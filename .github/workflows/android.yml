@@ -384,6 +384,46 @@ jobs:
             exit 1
           fi
 
+      - name: The APK must carry the third-party NOTICE
+        # Same class of silent failure as the core check above, and the same
+        # remedy: inspect the artifact.
+        #
+        # Every dependency in this build is permissive, and every permissive
+        # licence requires its notice to travel with the binary. If
+        # :app:syncNoticeAsset stopped being wired to the asset merge, the
+        # build would still go green, the APK would ship with the obligation
+        # undischarged, and the licences screen would show its "could not be
+        # read" state -- which nobody would see until a user opened it.
+        #
+        # So: assert the asset is there, and that it is the real file rather
+        # than an empty placeholder.
+        run: |
+          set -euo pipefail
+          APK=$(find android/app/build/outputs/apk -name '*.apk' | head -1)
+          test -n "$APK" || { echo "::error::no APK to inspect"; exit 1; }
+
+          if ! unzip -l "$APK" | grep -qE '[[:space:]]assets/NOTICE$'; then
+            echo "::error::the APK does not contain assets/NOTICE -- third-party attribution is not being distributed with the binary"
+            echo "--- assets the APK does contain:"
+            unzip -l "$APK" | grep 'assets/' | head -20
+            exit 1
+          fi
+
+          rm -rf /tmp/notice-check && mkdir -p /tmp/notice-check
+          unzip -q -o "$APK" 'assets/NOTICE' -d /tmp/notice-check
+          SIZE=$(stat -c%s /tmp/notice-check/assets/NOTICE)
+          echo "assets/NOTICE is $SIZE bytes"
+          # A truncated or placeholder NOTICE discharges nothing. The real one
+          # is ~60 KB; 10 KB is a floor that no plausible real file falls below
+          # and no plausible stub reaches.
+          test "$SIZE" -gt 10000 || {
+            echo "::error::assets/NOTICE is only $SIZE bytes -- that is not the generated notice file"; exit 1; }
+          # And it must be the attribution file, not something else that landed
+          # under the same name.
+          grep -q "third-party notices" /tmp/notice-check/assets/NOTICE || {
+            echo "::error::assets/NOTICE is not the generated third-party notice file"; exit 1; }
+          echo "third-party attribution is packaged and non-empty"
+
       - uses: actions/upload-artifact@v4
         if: always()
         with:

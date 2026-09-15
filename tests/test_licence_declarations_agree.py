@@ -472,6 +472,18 @@ class TestTheNoticeActuallyReachesTheArtifact:
         assert "syncNoticeAsset" in build_script.split("MARKER STUBS")[0] or \
             "NOTICE file" in build_script
 
+    def test_ci_checks_the_built_apk_actually_contains_it(self):
+        """The wiring above can be correct and the artifact still wrong. An
+        assembleDebug that goes green proves an APK exists, not what is in
+        it -- exactly the failure mode that shipped APKs with no Rust core
+        for several commits. So CI unzips the APK and looks."""
+        workflow = _read(".github", "workflows", "android.yml")
+        assert "The APK must carry the third-party NOTICE" in workflow
+        assert "assets/NOTICE" in workflow
+        # And checks it is the real file, not an empty placeholder that
+        # satisfies a presence test while discharging nothing.
+        assert "third-party notices" in workflow
+
     def test_the_screen_renders_the_packaged_notice(self, about_screen):
         """From the asset, not from a copy pasted into the source. A second
         copy in Kotlin would be one more thing to go stale, and it would go
