@@ -15,6 +15,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import org.otrv4plus.android.ConnectionViewModel
+import org.otrv4plus.android.connection.SignIn
 
 /**
  * The first screen that does something real.
@@ -52,6 +53,7 @@ import org.otrv4plus.android.ConnectionViewModel
  * What this screen does own is what is typed into it, and the password in
  * particular is deliberately NOT hoisted: it must not outlive the composition.
  */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ConnectScreen(
     model: ConnectionViewModel = viewModel(),
@@ -74,8 +76,24 @@ fun ConnectScreen(
     // The only state that genuinely belongs to the screen: what is typed into
     // it. The password in particular must not outlive the composition, so it
     // is emphatically NOT hoisted into the ViewModel.
-    var jid by rememberSaveable { mutableStateOf("") }
+    // The USERNAME, not a full address. The domain comes from the server
+    // dropdown, because making somebody type a domain they just picked from a
+    // list is the kind of thing that makes an app feel like a config file. A
+    // full address is still accepted and respected -- see SignIn.resolve.
+    var account by rememberSaveable { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
+    // Stored as a Boolean rather than the enum: `rememberSaveable` puts this
+    // in a Bundle, and a primitive needs no argument about whether a custom
+    // Saver is required.
+    var customServerChosen by rememberSaveable { mutableStateOf(false) }
+    var customServer by rememberSaveable { mutableStateOf("") }
+    val choice = if (customServerChosen) SignIn.Choice.CUSTOM
+                 else SignIn.Choice.DEFAULT
+
+    // What a connect attempt would resolve to. Every rule is in SignIn, which
+    // has no Android import and is tested by being executed.
+    val problem = SignIn.problem(account, choice, customServer)
+    val target = SignIn.resolve(account, choice, customServer)
 
     Column(
         modifier = Modifier
@@ -106,38 +124,81 @@ fun ConnectScreen(
         }
 
         // ── Where we are connecting ───────────────────────────────────────
-        Card(Modifier.fillMaxWidth()) {
-            Column(
-                Modifier.padding(16.dp),
-                verticalArrangement = Arrangement.spacedBy(4.dp),
+        //
+        // A DROPDOWN, not a b32 field. The destination hash for the default
+        // server is compiled into android_bridge/settings.py and applied by
+        // the bridge; nobody has to know it exists. Custom routing is still
+        // possible -- it is one selection away -- but it is not the price of
+        // signing in.
+        var serverMenuOpen by remember { mutableStateOf(false) }
+        ExposedDropdownMenuBox(
+            expanded = serverMenuOpen,
+            onExpandedChange = { serverMenuOpen = !serverMenuOpen },
+        ) {
+            OutlinedTextField(
+                value = when (choice) {
+                    SignIn.Choice.DEFAULT -> SignIn.DEFAULT_DOMAIN
+                    SignIn.Choice.CUSTOM -> "Another server"
+                },
+                onValueChange = {},
+                readOnly = true,
+                label = { Text("Server") },
+                trailingIcon = {
+                    ExposedDropdownMenuDefaults.TrailingIcon(serverMenuOpen)
+                },
+                enabled = !status.connected && busy == null,
+                modifier = Modifier
+                    .menuAnchor(MenuAnchorType.PrimaryNotEditable)
+                    .fillMaxWidth(),
+            )
+            ExposedDropdownMenu(
+                expanded = serverMenuOpen,
+                onDismissRequest = { serverMenuOpen = false },
             ) {
-                Text("Server", style = MaterialTheme.typography.titleSmall)
-                Text(
-                    status.server.ifBlank { "(none configured)" },
-                    style = MaterialTheme.typography.bodySmall,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis,
+                DropdownMenuItem(
+                    text = { Text(SignIn.DEFAULT_DOMAIN) },
+                    onClick = {
+                        customServerChosen = false
+                        serverMenuOpen = false
+                    },
                 )
-                Text(
-                    if (status.isDefaultServer)
-                        "The default server. You can point this at your own."
-                    else
-                        "Your own server.",
-                    style = MaterialTheme.typography.bodySmall,
-                )
-                Text(
-                    "I2P SAM bridge: ${status.sam.ifBlank { "127.0.0.1:7656" }}",
-                    style = MaterialTheme.typography.bodySmall,
+                DropdownMenuItem(
+                    text = { Text("Another server\u2026") },
+                    onClick = {
+                        customServerChosen = true
+                        serverMenuOpen = false
+                    },
                 )
             }
         }
 
+        if (choice == SignIn.Choice.CUSTOM) {
+            OutlinedTextField(
+                value = customServer,
+                onValueChange = { customServer = it },
+                label = { Text("Server address") },
+                placeholder = { Text("chat.example.i2p") },
+                supportingText = {
+                    Text("A domain, or a full .b32.i2p destination.")
+                },
+                singleLine = true,
+                enabled = !status.connected && busy == null,
+                modifier = Modifier.fillMaxWidth(),
+            )
+        }
+
         // ── Account ───────────────────────────────────────────────────────
         OutlinedTextField(
-            value = jid,
-            onValueChange = { jid = it },
-            label = { Text("Address") },
-            placeholder = { Text("you@server.i2p") },
+            value = account,
+            onValueChange = { account = it },
+            label = { Text("Username") },
+            placeholder = { Text("alice") },
+            supportingText = {
+                // Says where they are about to end up, without making them
+                // assemble it themselves.
+                Text(target?.jid ?: (problem ?: ""))
+            },
+            isError = account.isNotBlank() && problem != null,
             singleLine = true,
             enabled = !status.connected && busy == null,
             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email),
@@ -167,14 +228,14 @@ fun ConnectScreen(
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             OutlinedButton(
                 enabled = busy == null,
-                onClick = { model.checkRouter(jid) },
+                onClick = { model.checkRouter(target?.jid.orEmpty()) },
             ) { Text("Check router") }
 
             Button(
                 enabled = busy == null && !status.connected &&
-                    jid.isNotBlank() && password.isNotBlank(),
+                    target != null && password.isNotBlank(),
                 onClick = {
-                    model.connect(jid, password)
+                    model.connect(target!!.jid, password, target.server)
                     // Cleared immediately, on both paths: a rejected password
                     // is a reason to retype it, and a connected session has no
                     // further use for it here. The ViewModel never keeps a

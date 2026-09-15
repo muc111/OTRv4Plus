@@ -187,6 +187,16 @@ class OtrConnectionService : Service() {
     private var jid: String = ""
     private var password: String = ""
 
+    /**
+     * The route, or "" for the compiled-in default.
+     *
+     * Not a secret and not in the vault beside the credentials: it is
+     * derivable from the JID's domain for every custom server, and for the
+     * default it is the thing the app ships knowing. Remembered for the life
+     * of the service so a reconnect goes back to the same place.
+     */
+    private var server: String = ""
+
     override fun onBind(intent: Intent?): IBinder = binder
 
     override fun onCreate() {
@@ -221,6 +231,7 @@ class OtrConnectionService : Service() {
                 cancelArrivalNotification()
                 jid = ""
                 password = ""
+                server = ""
                 stopSelf()
                 return START_NOT_STICKY
             }
@@ -231,6 +242,7 @@ class OtrConnectionService : Service() {
                 if (account.isNotBlank()) {
                     jid = account
                     password = secret
+                    server = intent.getStringExtra(EXTRA_SERVER).orEmpty()
                     // Remembered so a reconnect -- or a restart of this
                     // service -- does not have to stop and ask.
                     runCatching {
@@ -242,6 +254,13 @@ class OtrConnectionService : Service() {
                     credentials.load()?.let {
                         jid = it.jid
                         password = it.password
+                        // A remembered account on anything but the default
+                        // server routes to its own domain. The default is the
+                        // blank case, which is what the bridge already means
+                        // by "use the compiled-in destination".
+                        server = if (SignIn.choiceFor(it.jid) ==
+                                     SignIn.Choice.CUSTOM)
+                            SignIn.domainOf(it.jid) else ""
                     }
                 }
                 // The Intent is done with the password the moment it is read.
@@ -334,7 +353,7 @@ class OtrConnectionService : Service() {
                         if (!init.ok) throw IllegalStateException("init_failed")
                         initialised = true
                     }
-                    core.prepareConnection(jid.trim())
+                    core.prepareConnection(jid.trim(), server.trim())
                     core.connect(password)
                 }
             }
@@ -622,6 +641,9 @@ class OtrConnectionService : Service() {
         const val EXTRA_JID = "jid"
         const val EXTRA_PASSWORD = "password"
 
+        /** The route, or absent for the compiled-in default. Not a secret. */
+        const val EXTRA_SERVER = "server"
+
         /** How often to ask the transport whether it is still up. */
         const val WATCH_INTERVAL_MS = 5_000L
 
@@ -635,11 +657,13 @@ class OtrConnectionService : Service() {
         const val DRAIN_INTERVAL_MS = 500L
 
         /** Start the service and ask it to connect. */
-        fun start(context: Context, jid: String, password: String) {
+        fun start(context: Context, jid: String, password: String,
+                  server: String = "") {
             val intent = Intent(context, OtrConnectionService::class.java)
                 .setAction(ACTION_START)
                 .putExtra(EXTRA_JID, jid)
                 .putExtra(EXTRA_PASSWORD, password)
+                .putExtra(EXTRA_SERVER, server)
             ContextCompat.startForegroundService(context, intent)
         }
 

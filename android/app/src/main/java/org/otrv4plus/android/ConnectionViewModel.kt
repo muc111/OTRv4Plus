@@ -197,9 +197,10 @@ class ConnectionViewModel(app: Application) : AndroidViewModel(app) {
      * it is not stored on this object, not logged, and not placed in any state
      * the UI renders.
      */
-    fun connect(jid: String, password: String) {
+    fun connect(jid: String, password: String, server: String = "") {
         error = null
-        OtrConnectionService.start(getApplication(), jid.trim(), password)
+        OtrConnectionService.start(getApplication(), jid.trim(), password,
+                                   server.trim())
     }
 
     /** Stop an attempt that is still running. */
