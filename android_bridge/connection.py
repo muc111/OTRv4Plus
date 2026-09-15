@@ -272,6 +272,26 @@ class ConnectionController:
         "failed": "failed",
     }
 
+    def _on_subscription_request(self, _jid: str) -> None:
+        """Someone asked to see our presence.
+
+        Under the shipped ACCEPT policy slixmpp has already said yes, so this
+        is a notification rather than a question, and the contact appears in
+        the list on the next poll either way.
+
+        Deliberately NOT pushed through the event queue. `EventQueue._describe`
+        flattens dataclasses, so a plain dict arrives in Kotlin as
+        `{"type": "dict"}` with no fields and the mapper drops it -- a new
+        event type would need a dataclass in `android_bridge.events`, a Kotlin
+        branch and an entry in the mapping test. That is worth doing when the
+        UI has somewhere to show it; wiring half of it now would leave a
+        notification that silently goes nowhere.
+
+        The JID is not logged. Who is asking to watch this device's presence
+        is exactly the kind of thing logcat should not have.
+        """
+        _log.info("a subscription request arrived and was handled by policy")
+
     def _on_transport_state(self, state: str, _server: str) -> None:
         """Translate a transport state into a stage, and never invent one."""
         stage = self._TRANSPORT_STAGE.get(state, state)
@@ -344,6 +364,12 @@ class ConnectionController:
                 self._profile, password,
                 on_payload=self._app.receive_message,
                 on_state=self._on_transport_state,
+                # Presence was never wired, so `OtrApp._presence` stayed
+                # empty and every contact rendered "offline" no matter what
+                # the server said. The transport has always emitted these;
+                # nobody was listening.
+                on_presence=self._app.note_presence,
+                on_subscription_request=self._on_subscription_request,
             )
         except Exception as exc:
             return self._fail("transport_failed", type(exc).__name__)

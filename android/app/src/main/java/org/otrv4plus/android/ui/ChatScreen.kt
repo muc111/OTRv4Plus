@@ -24,6 +24,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.otrv4plus.android.bridge.ChaquopyOtrCore
+import org.otrv4plus.android.bridge.ConnectionStatus
 import org.otrv4plus.android.bridge.Contact
 import org.otrv4plus.android.bridge.OtrEvent
 import org.otrv4plus.android.bridge.SecurityDetails
@@ -76,6 +77,11 @@ fun ChatScreen(
     var banner by remember { mutableStateOf<String?>(null) }
     var mismatch by remember { mutableStateOf<OtrEvent.FingerprintChanged?>(null) }
     var gaps by remember { mutableStateOf(0) }
+    // The connection, as the transport currently sees it. Polled with the
+    // rest: the keepalive can declare the stream dead at any moment, and a
+    // contact list that keeps rendering while nothing can be sent is how you
+    // type into the void and blame the other person for not replying.
+    var connection by remember { mutableStateOf(ConnectionStatus()) }
 
     fun append(peer: String, msg: ChatMessage) {
         history[peer] = (history[peer] ?: emptyList()) + msg
@@ -90,13 +96,15 @@ fun ChatScreen(
                     val events = core.drainEvents()
                     val roster = core.contacts()
                     val dropped = core.eventsDropped()
-                    Triple(events, roster, dropped)
+                    Poll(events, roster, dropped, core.connectionStatus())
                 }.getOrNull()
             }
             if (batch != null) {
-                val (events, roster, dropped) = batch
+                val events = batch.events
+                val roster = batch.roster
                 contacts = roster
-                gaps = dropped
+                gaps = batch.dropped
+                connection = batch.connection
                 for (event in events) {
                     when (event) {
                         is OtrEvent.MessageReceived -> append(
@@ -170,6 +178,7 @@ fun ChatScreen(
             },
             onOpenDiagnostics = onOpenDiagnostics,
             onOpenAbout = onOpenAbout,
+            connection = connection,
         )
     } else {
         Conversation(
@@ -234,6 +243,7 @@ private fun ContactList(
     onAdd: (String) -> Unit,
     onOpenDiagnostics: () -> Unit,
     onOpenAbout: () -> Unit,
+    connection: ConnectionStatus,
 ) {
     var adding by remember { mutableStateOf("") }
 
@@ -241,6 +251,11 @@ private fun ContactList(
         verticalArrangement = Arrangement.spacedBy(8.dp)) {
 
         Text("Contacts", style = MaterialTheme.typography.headlineSmall)
+
+        // Who you are and whether the stream is up. Both were invisible here,
+        // and the second one matters: a dead stream looks exactly like a quiet
+        // conversation until you notice nothing has arrived for an hour.
+        AccountLine(connection)
 
         if (gaps > 0) {
             // A gap is worth saying. Silently losing messages is the bug
@@ -270,7 +285,9 @@ private fun ContactList(
         if (contacts.isEmpty()) {
             Text(
                 "No contacts yet. Add one by address, or wait for them to " +
-                    "add you — incoming requests are accepted automatically.",
+                    "add you — incoming requests are accepted automatically. " +
+                    "Your roster is fetched when you connect, so anyone " +
+                    "already on it appears here on its own.",
                 style = MaterialTheme.typography.bodyMedium,
             )
         }
@@ -291,6 +308,46 @@ private fun ContactList(
         }
     }
 }
+
+/**
+ * The account, and whether the stream is actually up.
+ *
+ * `connected` comes from the transport, which the keepalive clears the moment
+ * a round trip stops being answered. So this goes amber the moment the
+ * session dies rather than when the user gives up waiting for a reply.
+ */
+@Composable
+private fun AccountLine(connection: ConnectionStatus) {
+    Column {
+        if (connection.jid.isNotBlank()) {
+            Text(
+                connection.jid,
+                style = MaterialTheme.typography.bodySmall,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+        if (connection.connected) {
+            Text("Connected", style = MaterialTheme.typography.bodySmall)
+        } else {
+            Text(
+                "Not connected — messages cannot be sent or received. " +
+                    "Go back and reconnect.",
+                color = MaterialTheme.colorScheme.error,
+                style = MaterialTheme.typography.bodySmall,
+            )
+        }
+    }
+}
+
+/** One poll's worth of state. A named type rather than a Triple, because
+ *  four unlabelled positions is where the wrong one gets read. */
+private data class Poll(
+    val events: List<OtrEvent>,
+    val roster: List<Contact>,
+    val dropped: Int,
+    val connection: ConnectionStatus,
+)
 
 @Composable
 private fun ContactRow(contact: Contact, onClick: () -> Unit) {

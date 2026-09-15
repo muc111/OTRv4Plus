@@ -41,11 +41,20 @@ def _read(*parts):
 
 
 class FakeApp:
-    """Just enough OtrApp for the controller to wire itself to."""
+    """Just enough OtrApp for the controller to wire itself to.
+
+    "Just enough" means every method the controller hands over as a callback.
+    A missing one is an AttributeError raised while BUILDING the transport,
+    which the controller reports as `transport_failed` -- a failure naming the
+    transport for something the app lacked. Adding `on_presence` did that to
+    seven tests here. `tests/test_android_connection_controller.py` binds its
+    equivalent fakes to the real classes for exactly this reason.
+    """
 
     def __init__(self):
         self._transport = None
         self.sink = None
+        self.presence = []
 
     def set_event_sink(self, sink):
         self.sink = sink
@@ -53,12 +62,15 @@ class FakeApp:
     def receive_message(self, peer, body):
         pass
 
+    def note_presence(self, peer, online):
+        self.presence.append((peer, bool(online)))
+
 
 class FakeTransport:
     """Records the lifecycle calls the controller makes."""
 
     def __init__(self, profile, password, *, on_payload=None, on_state=None,
-                 **_kw):
+                 on_presence=None, on_subscription_request=None, **_kw):
         self.profile = profile
         self.on_state = on_state
         self.closed = 0

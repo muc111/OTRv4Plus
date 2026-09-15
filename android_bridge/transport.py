@@ -127,6 +127,22 @@ CALL_TIMEOUT = 30.0
 #: is a worse failure than one that gives up and logs.
 CLOSE_TIMEOUT = 5.0
 
+# Keepalive, with the terminal client's numbers.
+#
+# These are not independently chosen: tests/test_android_keepalive.py binds
+# them to OTRv4PlusXMPP's own constants, so the two clients cannot drift into
+# disagreeing about how long a silent I2P tunnel may stay silent.
+#
+#: Whitespace tick. Short enough that an idle tunnel is never idle.
+KEEPALIVE_WHITESPACE_S = 8
+#: How often to make the server actually answer.
+KEEPALIVE_PING_S = 60
+#: How long to wait for that answer. Generous: an I2P round trip is slow.
+KEEPALIVE_PING_TIMEOUT_S = 60
+#: Consecutive unanswered pings before the stream is declared dead. Two, not
+#: one: a single missed round trip over I2P is ordinary.
+KEEPALIVE_PING_FAILS = 2
+
 #: The two unrelated CancelledError classes, as a tuple to catch on. They are
 #: genuinely different types -- `asyncio.CancelledError is
 #: concurrent.futures.CancelledError` is False on 3.12 -- and only one of them
@@ -249,6 +265,8 @@ class XmppTransport(Transport):
         #: specific peer.
         self._frag_seq = 0
         self._reassembler = _fragment.Reassembler()
+        #: The keepalive task, so a reconnect cannot leave two running.
+        self._keepalive_task: Any = None
 
     # -- what this object says about itself -----------------------------------
 
@@ -480,7 +498,205 @@ class XmppTransport(Transport):
         client.connect(host=host, port=port)
         await started
         self._connected.set()
+
+        # WHAT A CLIENT OWES THE SERVER ONCE THE SESSION IS UP.
+        #
+        # None of this was here, and the symptom was reported from a handset:
+        # a Termux user logged in as alice saw "bob went offline" over and
+        # over while bob was sitting in the app, connected and authenticated.
+        #
+        # Authenticating is not the same as being present. RFC 6121 §4.2: a
+        # client becomes an available resource by SENDING initial presence,
+        # and until it does the server neither broadcasts it to contacts nor
+        # delivers theirs. So the app was logged in and invisible -- to
+        # everyone, permanently, with nothing on either side saying why.
+        #
+        # The terminal client has always done these three in `_on_start`.
+        # This is the same three, in the same order.
+        self._announce()
+
         self._emit_state("connected")
+
+    def _announce(self) -> None:
+        """Initial presence, the roster, and the keepalive.
+
+        Ordered as the terminal client orders them: presence first, because
+        it is what makes the account visible and costs one stanza; the roster
+        second, because the contact list is empty without it; the keepalive
+        last, because it is only worth running once there is a session to
+        keep.
+
+        Each is guarded separately. A server that refuses a roster fetch has
+        not ended the session, and treating it as a connection failure would
+        throw away a stream that works for messaging.
+        """
+        client = self._client
+        if client is None:
+            return
+        try:
+            client.send_presence()
+        except Exception:
+            _log.warning("could not send initial presence")
+        try:
+            # Returns a Future rather than a coroutine in slixmpp 1.17, so
+            # this schedules the IQ without awaiting its reply. The reply
+            # populates client_roster, which `roster()` reads; the UI polls,
+            # so it picks the contacts up on the next tick rather than
+            # blocking the connect on a round trip.
+            client.get_roster()
+        except Exception:
+            _log.warning("could not request the roster")
+        self._start_keepalive()
+
+    # -- keepalive ------------------------------------------------------------
+
+    def _start_keepalive(self) -> None:
+        """Start the keepalive task, replacing any predecessor.
+
+        Cancelled first rather than reassigned: this runs on every session
+        start, and orphaning a live loop would leave two probing the same
+        stream and counting the same failures, reaching the threshold in half
+        the time for no reason. That exact bug is documented in the terminal
+        client's `_on_start`.
+        """
+        task, self._keepalive_task = self._keepalive_task, None
+        if task is not None and not task.done():
+            task.cancel()
+        # The loop is named rather than inherited. `ensure_future` reaches for
+        # whatever loop happens to be current, which on 3.12 is a
+        # DeprecationWarning when there is not one -- and this object exists
+        # precisely because Chaquopy calls in from threads that have no loop.
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = self._loop
+        if loop is None:
+            _log.warning("no loop to run the keepalive on")
+            return
+        if loop.is_running() and threading.current_thread() is not self._thread:
+            # Off the loop thread, so hand it over rather than touching the
+            # loop's task set from here.
+            self._keepalive_task = asyncio.run_coroutine_threadsafe(
+                self._keepalive_loop(), loop)
+        else:
+            self._keepalive_task = loop.create_task(self._keepalive_loop())
+
+    def _stop_keepalive(self) -> None:
+        task, self._keepalive_task = self._keepalive_task, None
+        if task is not None and not task.done():
+            task.cancel()
+
+    async def _keepalive_loop(self) -> None:
+        """Keep the stream alive, and notice when it is not.
+
+        TWO MECHANISMS, because they answer different questions. This is the
+        terminal client's design and its numbers; the reasoning there is worth
+        repeating rather than re-deriving.
+
+        **Whitespace, every 8 s.** Stops an idle I2P tunnel being torn down
+        during the long silences of a DAKE, an SMP exchange, or a
+        conversation where nobody is typing.
+
+        **A round trip, every 60 s.** This is the one that matters. Writing
+        to the socket succeeds whether or not anything is still listening at
+        the far end, and over I2P that is not a corner case: the SAM stream
+        can be gone while the local socket accepts writes indefinitely. A
+        whitespace-only keepalive therefore reports a healthy stream forever,
+        and -- in the terminal client's own words -- "the first symptom is the
+        peer appearing to go offline".
+
+        Which is precisely what was reported from the handset. The app had no
+        keepalive of either kind.
+
+        A XEP-0199 ping makes the server answer, so it proves the whole path
+        rather than the first hop. An IqError counts as ALIVE: a server
+        replying `service-unavailable` has demonstrated the stream works,
+        which is the only thing being asked.
+
+        Silent while it is working. A heartbeat line every 8 s reports
+        nothing after the second one and buries the conversation it exists to
+        protect.
+        """
+        failures = 0
+        next_probe = asyncio.get_event_loop().time() + KEEPALIVE_PING_S
+        try:
+            while True:
+                await asyncio.sleep(KEEPALIVE_WHITESPACE_S)
+                client = self._client
+                if client is None or not self.is_connected:
+                    return
+
+                try:
+                    client.send_raw(" ")
+                except Exception:
+                    # The write itself failed, which the socket only reports
+                    # when it is genuinely gone. Nothing to do here: the
+                    # round trip below is the real detector, and slixmpp's
+                    # own `disconnected` event clears `_connected`.
+                    _log.info("keepalive whitespace write failed")
+
+                now = asyncio.get_event_loop().time()
+                if now < next_probe:
+                    continue
+                next_probe = now + KEEPALIVE_PING_S
+
+                if await self._probe_stream():
+                    if failures:
+                        _log.info("keepalive: the stream answered again")
+                    failures = 0
+                    continue
+                failures += 1
+                _log.info("keepalive: no answer (%d/%d)",
+                          failures, KEEPALIVE_PING_FAILS)
+                if failures >= KEEPALIVE_PING_FAILS:
+                    self._declare_stream_dead()
+                    return
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            _log.warning("the keepalive loop stopped unexpectedly")
+
+    async def _probe_stream(self) -> bool:
+        """Round-trip liveness against our own server. True if it answered."""
+        client = self._client
+        if client is None:
+            return False
+        try:
+            ping = client["xep_0199"]
+        except Exception:
+            # The plugin is not loaded, so there is no round trip to make.
+            # Reporting "alive" is right: this must not manufacture a
+            # disconnect out of a missing plugin.
+            return True
+        try:
+            await ping.async_ping(
+                client.boundjid.host, timeout=KEEPALIVE_PING_TIMEOUT_S)
+            return True
+        except Exception as exc:
+            # An IqError means the server answered, which is the whole
+            # question. Only a timeout is death.
+            if type(exc).__name__ == "IqError":
+                return True
+            return False
+
+    def _declare_stream_dead(self) -> None:
+        """Take the stream down so the app stops believing it is connected.
+
+        Breaking out of the loop is not enough: it only stops pinging. The
+        session has to actually end, or the UI shows a connection that cannot
+        carry a message and the user retries into silence.
+        """
+        _log.info("keepalive: the stream is dead; disconnecting")
+        self._connected.clear()
+        client = self._client
+        if client is not None:
+            try:
+                result = client.disconnect()
+                if asyncio.iscoroutine(result):
+                    asyncio.ensure_future(result)
+            except Exception:
+                _log.warning("keepalive could not close the stream")
+        self._emit_state("disconnected")
 
     async def _abandon(self) -> None:
         """Give back everything a failed or cancelled attempt took.
@@ -500,6 +716,7 @@ class XmppTransport(Transport):
            half-dead one and believe it is usable.
         """
         self._connected.clear()
+        self._stop_keepalive()
         # Partial sets belong to a session that is ending. They are fragments
         # of decrypted-to-be plaintext and there is nothing left to complete
         # them with, so they go rather than sitting in memory.
@@ -964,6 +1181,16 @@ def _default_client_factory():
             client.enable_direct_tls = False
         if hasattr(client, "enable_starttls"):
             client.enable_starttls = True
+        # XEP-0199, for the keepalive's round trip. Without it `_probe_stream`
+        # has nothing to ping with and reports "alive" unconditionally, which
+        # is the failure this keepalive exists to detect. Registered here
+        # rather than asked for later because a plugin added after the stream
+        # is up does not get its handlers wired.
+        try:
+            client.register_plugin("xep_0199")
+        except Exception:
+            _log.warning("could not register xep_0199; the keepalive will "
+                         "fall back to whitespace only")
         return client
 
     return factory

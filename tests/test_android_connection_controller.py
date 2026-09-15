@@ -33,23 +33,54 @@ SERVER = "hq4t24b7vkllfbk55e5xfocqhfi7hxprwc47zyuilbg6wgzikidq.b32.i2p"
 
 
 class FakeApp:
-    """Stands in for OtrApp at the two points the controller touches it."""
+    """Stands in for OtrApp at the points the controller touches it.
+
+    Every method the controller hands to the transport as a callback has to
+    exist here, or the controller raises AttributeError while BUILDING the
+    transport and reports `transport_failed` -- a failure that names the
+    transport for something the app was missing. Adding `on_presence` did
+    exactly that to fourteen unrelated tests. TestTheFakesMatchTheRealThing
+    below binds this to the real OtrApp so the next one is caught here rather
+    than on a handset.
+    """
 
     def __init__(self):
         self._transport = None
         self.received = []
+        self.presence = []
 
     def receive_message(self, peer, payload):
         self.received.append((peer, payload))
 
+    def note_presence(self, peer, online):
+        self.presence.append((peer, bool(online)))
+
+    def set_event_sink(self, sink):
+        self.sink = sink
+
 
 class FakeTransport:
+    """A stand-in for XmppTransport.
+
+    Accepts every keyword the real one does -- see
+    TestTheFakeAcceptsWhatTheRealTransportDoes below, which binds this
+    signature to the real `__init__`. A fake that is NARROWER than the real
+    thing turns a new callback into a TypeError the controller reports as
+    `transport_failed`, which is how adding `on_presence` broke fourteen
+    tests that had nothing to do with presence. It is the same failure that
+    let `connect(address=...)` pass here while the app raised on a handset.
+    """
+
     def __init__(self, profile, password, *, on_payload, on_state=None,
-                 fail=None):
+                 on_presence=None, on_subscription_request=None,
+                 subscription_policy=None, client_factory=None,
+                 forwarder=None, fail=None):
         self.profile = profile
         self.password = password
         self.on_payload = on_payload
         self.on_state = on_state
+        self.on_presence = on_presence
+        self.on_subscription_request = on_subscription_request
         self.fail = fail
         self.is_connected = False
         self.closed = False
@@ -399,3 +430,60 @@ class TestTheWorkerThreadIsObservable:
 
         made["transport"]._thread = Dead()
         assert ctl.status()["worker_alive"] is False
+
+
+class TestTheFakesMatchTheRealThing:
+    """A fake narrower than the real thing hides a break; a fake wider than
+    the real thing passes a call that would fail in production.
+
+    This project has been bitten by both. `FakeClient.connect(address=...)`
+    accepted a parameter slixmpp does not have, so 34 tests passed while the
+    app raised TypeError on a handset. Then `FakeApp` lacked `note_presence`,
+    which the real OtrApp has, and adding the callback turned fourteen
+    unrelated tests red for a reason none of them was about.
+
+    So both fakes are bound to their originals here.
+    """
+
+    def test_the_transport_fake_accepts_every_real_keyword(self):
+        import inspect
+
+        from android_bridge.transport import XmppTransport
+
+        real = inspect.signature(XmppTransport.__init__).parameters
+        fake = inspect.signature(FakeTransport.__init__).parameters
+        missing = [
+            name for name, p in real.items()
+            if name not in ("self",)
+            and p.kind is inspect.Parameter.KEYWORD_ONLY
+            and name not in fake
+        ]
+        assert not missing, (
+            "FakeTransport does not accept %s, so the controller passing it "
+            "would fail here as a TypeError rather than being tested" % missing)
+
+    def test_the_transport_fake_invents_no_keyword(self):
+        import inspect
+
+        from android_bridge.transport import XmppTransport
+
+        real = inspect.signature(XmppTransport.__init__).parameters
+        fake = inspect.signature(FakeTransport.__init__).parameters
+        invented = [
+            name for name, p in fake.items()
+            if name not in ("self", "profile", "password", "fail")
+            and name not in real
+        ]
+        assert not invented, (
+            "FakeTransport accepts %s, which the real transport does not -- "
+            "a test using it would pass against code that cannot work"
+            % invented)
+
+    def test_the_app_fake_has_every_method_the_controller_hands_over(self):
+        from android_bridge.app import OtrApp
+
+        for name in ("receive_message", "note_presence", "set_event_sink"):
+            assert hasattr(FakeApp, name), "FakeApp is missing %s" % name
+            assert hasattr(OtrApp, name), (
+                "OtrApp no longer has %s, so the controller cannot hand it "
+                "to the transport" % name)
