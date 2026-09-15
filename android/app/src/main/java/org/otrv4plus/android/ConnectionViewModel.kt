@@ -91,12 +91,26 @@ class ConnectionViewModel(app: Application) : AndroidViewModel(app) {
     private var service: OtrConnectionService? = null
     private var poll: Job? = null
 
+    /**
+     * Whether a screen is in front of the user, remembered across a rebind.
+     *
+     * Not UI state -- nothing renders it. It is held here because the service
+     * can go away and come back, and the answer has to be re-delivered when it
+     * does.
+     */
+    private var uiVisible: Boolean = false
+
     private val connection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
             val bound = (binder as? OtrConnectionService.LocalBinder)?.service
             service = bound
             core = bound?.core
             chat = bound?.chat
+            // The UI may already have been on screen for a moment before the
+            // binding landed. Without this the service would still believe
+            // nobody was looking and would notify for a message the user is
+            // watching arrive.
+            bound?.setUiVisible(uiVisible)
             startPolling()
             viewModelScope.launch {
                 // The engine starts once, in the service. Asking here is what
@@ -141,6 +155,19 @@ class ConnectionViewModel(app: Application) : AndroidViewModel(app) {
                 delay(POLL_MS)
             }
         }
+    }
+
+    /**
+     * A screen came to the front, or went away.
+     *
+     * Forwarded to the service, which uses it to decide whether an arriving
+     * message is worth a notification. Held here as well so a rebind can
+     * re-deliver it: a service that has just been reconnected to knows nothing
+     * about what the user can see.
+     */
+    fun setUiVisible(visible: Boolean) {
+        uiVisible = visible
+        service?.setUiVisible(visible)
     }
 
     fun checkRouter(jid: String) {

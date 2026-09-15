@@ -570,6 +570,38 @@ class ChatStateTest {
         assertNull(s.fingerprintAlert)
     }
 
+    // What `handle` RETURNS is what decides whether the phone buzzes. It is
+    // not a detail of the return type: a `true` for a duplicate lets a peer
+    // who resends the same message ring the phone as often as they like.
+
+    @Test
+    fun `handle reports that a new message arrived`() {
+        val s = state(contact(alice))
+        assertTrue(s.handle(inbound(alice, "hello")))
+    }
+
+    @Test
+    fun `handle reports nothing for a message it already had`() {
+        val s = state(contact(alice))
+        s.handle(inbound(alice, "hello"))
+        assertFalse(s.handle(inbound(alice, "hello")),
+            "a resend would notify again, so a peer could buzz the phone at will")
+    }
+
+    @Test
+    fun `handle reports nothing for an event that is not a message`() {
+        val s = state(contact(alice))
+        assertFalse(
+            s.handle(
+                OtrEvent.FingerprintChanged(
+                    peer = alice, storedFingerprint = "AAAA", receivedFingerprint = "BBBB",
+                )
+            ),
+            "a non-message event asked for a new-message notification",
+        )
+        assertFalse(s.handle(OtrEvent.SessionChanged(alice, SecurityState.ENCRYPTED)))
+    }
+
     @Test
     fun `dropped events are reported`() {
         val s = state()

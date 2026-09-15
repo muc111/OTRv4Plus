@@ -166,11 +166,23 @@ class ChatState(
         contacts.keys.retainAll { it in present }
     }
 
-    fun handle(event: OtrEvent) {
-        when (event) {
+    /**
+     * Apply one event from the engine.
+     *
+     * Returns whether a NEW inbound message was stored, which is what decides
+     * whether the user gets a notification. False for a duplicate the store
+     * rejected: a peer who resends must not be able to buzz the phone again,
+     * and false for every other kind of event, which the UI shows without
+     * interrupting anybody.
+     */
+    fun handle(event: OtrEvent): Boolean {
+        return when (event) {
             is OtrEvent.MessageReceived -> receive(event)
-            is OtrEvent.FingerprintChanged -> fingerprintAlert = event
-            else -> Unit
+            is OtrEvent.FingerprintChanged -> {
+                fingerprintAlert = event
+                false
+            }
+            else -> false
         }
     }
 

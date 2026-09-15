@@ -2,18 +2,27 @@
 // Copyright (C) 2025-2026 muc111
 package org.otrv4plus.android
 
+import android.Manifest
+import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.content.ContextCompat
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.viewmodel.compose.viewModel
 import org.otrv4plus.android.chat.ChatViewModel
 import org.otrv4plus.android.ui.AboutScreen
@@ -63,8 +72,33 @@ class MainActivity : ComponentActivity() {
 
     private enum class Screen { CONNECT, CONVERSATIONS, CONVERSATION, ABOUT, DIAGNOSTICS }
 
+    /**
+     * Asking for POST_NOTIFICATIONS, which on API 33+ is not optional.
+     *
+     * The manifest has declared it since the service was written, and a
+     * declared-but-never-requested permission is DENIED: every notification is
+     * dropped silently, including the foreground-service one. So on a modern
+     * handset the connection would have been running with no visible
+     * notification and no arrival alerts, and nothing would have said why.
+     *
+     * A refusal is not an error. The app works without it -- the connection
+     * keeps running and messages keep arriving -- the user simply is not told
+     * about them until they open it. So the result is deliberately discarded:
+     * there is nothing to retry and nothing to nag about.
+     */
+    private val askNotifications =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            ContextCompat.checkSelfPermission(
+                this, Manifest.permission.POST_NOTIFICATIONS,
+            ) != PackageManager.PERMISSION_GRANTED
+        ) {
+            askNotifications.launch(Manifest.permission.POST_NOTIFICATIONS)
+        }
 
         // FLAG_SECURE from the start. The app must not appear in the recents
         // thumbnail or accept screenshots; setting it here means no later
@@ -102,6 +136,36 @@ class MainActivity : ComponentActivity() {
                         val core = connection.core
                         val state = connection.chat
                         if (core != null && state != null) chat.attach(core, state)
+                    }
+
+                    // Whether the user can see any of this. The service needs
+                    // it to decide whether an arriving message is worth a
+                    // notification; a message that lands while this is on
+                    // screen is already visible, and interrupting somebody
+                    // about something they are looking at is how people end up
+                    // turning notifications off.
+                    //
+                    // ON_START/ON_STOP rather than the service binding: the
+                    // binding is held for the ViewModel's whole life and so
+                    // stays up while the app is backgrounded, which is the one
+                    // state this has to detect.
+                    val lifecycle = LocalLifecycleOwner.current.lifecycle
+                    DisposableEffect(lifecycle, connection.chat) {
+                        val observer = LifecycleEventObserver { _, event ->
+                            when (event) {
+                                Lifecycle.Event.ON_START -> connection.setUiVisible(true)
+                                Lifecycle.Event.ON_STOP -> connection.setUiVisible(false)
+                                else -> Unit
+                            }
+                        }
+                        lifecycle.addObserver(observer)
+                        onDispose {
+                            lifecycle.removeObserver(observer)
+                            // Leaving the composition is leaving the screen. If
+                            // this did not fire, the service would believe the
+                            // UI was still in front and go quiet for good.
+                            connection.setUiVisible(false)
+                        }
                     }
 
                     when (screen) {

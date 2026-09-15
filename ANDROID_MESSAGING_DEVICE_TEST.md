@@ -37,9 +37,12 @@ app says so on every one of those screens, and this document uses the word
 *plaintext* rather than the word *secure* throughout, because that is what it
 is. Encryption starts at step 17.
 
-A second thing not tested: **survival in the background**. Android will kill a
-backgrounded process with no foreground service. That is task #61, and step 22
-measures how bad it currently is rather than asserting that it works.
+A second thing this document used to exclude is now **in** scope: survival in
+the background. There is a foreground service (task #61) and history is sealed
+at rest, so steps 22 and 26–31 assert that the connection, the credentials and
+the conversation all outlive the UI — they no longer merely measure how bad it
+is. Every one of those paths is **compiled and unit-tested but has never run on
+a handset**, which is exactly why they are steps here.
 
 ---
 
@@ -123,10 +126,27 @@ Everything above is plaintext. This is where that changes.
 | # | Do | Expect | If it differs |
 |---|---|---|---|
 | 21 | With a conversation open and text half-typed, rotate the screen | The conversation, the history and the half-typed draft all survive | Losing any of the three means state is in the composition rather than the ViewModel |
-| 22 | Background the app for two minutes, return | Note what you find: still connected, reconnecting, or restarted. History is expected to survive a *return*, and to be lost if Android killed the process | Loss on a plain return is a defect; loss after a process kill is the known limitation in §4 |
+| 22 | Background the app for two minutes, return | Still connected. The connection notification was in the shade the whole time, saying only "Connected" | A disconnection here means the foreground service is not holding the process; check whether the notification was present at all, because on Android 13+ a refused notification permission hides it |
 | 23 | Stop i2pd, watch the app for ~2 minutes | The app notices the stream is dead and says "Not connected"; the composer says nothing will be sent | Continuing to look connected for longer than about two minutes means the keepalive is not failing the stream |
 | 24 | While disconnected, check a conversation | Presence reads `presence unknown` for everyone, not `offline`, and history is still there | — |
 | 25 | Restart i2pd, reconnect | Connects again; history is still there | History lost on reconnect means it is being tied to the connection's lifetime |
+
+### Background delivery, durability and credentials
+
+Everything below is new, and **none of it has run on a device**. The Kotlin is
+compiled by CI and the decision logic is unit-tested against fakes; whether the
+AndroidKeyStore, the foreground service and the notification manager behave on
+a real handset is what these steps are for. Treat a failure here as expected
+information, not as a surprise.
+
+| # | Do | Expect | If it differs |
+|---|---|---|---|
+| 26 | Background the app. From Termux, send one message. Wait 30 seconds | A notification appears reading exactly **"New message"** — with **no** sender, no JID and no preview | **A JID or a message body in the notification is a security defect.** Report it as one, with a screenshot cropped to the notification |
+| 27 | Send two more from Termux without opening the app | The notification becomes "3 new messages" and does **not** ring again for each | A second and third sound means `setOnlyAlertOnce` is not doing its job |
+| 28 | Open the app | The notification disappears; all three messages are in the conversation, in order, with the right sender | A message missing here is the serious one: it means the drain loop is not running while the UI is gone. Say which of the three |
+| 29 | Lock the phone, have Termux send one more, look at the lock screen | **Nothing appears on the lock screen at all** — not even the app's name | Anything visible means the notification is not `VISIBILITY_SECRET`. Security defect |
+| 30 | Force-stop the app from Android settings, then reopen it | It comes back **without asking for the password**, reconnects on its own, and the whole conversation history is still there | No history: the sealed store did not round-trip on this device — send `adb logcat` around the launch. Asked for the password: the credential did not round-trip. These are two different failures; say which |
+| 31 | Sign out from the app, then reopen it | It asks for the password again, the conversation history is **gone**, and no arrival notification is left in the shade | History surviving a sign-out is a defect: it leaves one person's conversation on a phone the next person signs in on |
 
 ---
 
@@ -135,17 +155,28 @@ Everything above is plaintext. This is where that changes.
 Not defects — decisions, recorded so a tester does not spend an evening
 re-discovering them.
 
-- **History does not survive the process being killed.** It is held in memory.
-  The project's position is that message bodies are sealed at rest
-  (`RecordType.MESSAGE` exists for it), the key for that comes from an app
-  unlock that is not built yet, and a plaintext history file in the meantime is
-  precisely the artefact the sealed design exists to prevent. See
-  `chat/MessageStore.kt`. Losing history to a *process kill* is expected;
-  losing it to navigation or rotation is a bug.
-- **No foreground service** (task #61), so the connection is at Android's mercy
-  when backgrounded.
-- **No notifications.** A message arriving while the app is backgrounded is
-  visible when you return, not before.
+- **History is now durable, and that is a thing to TEST rather than to work
+  around.** It used to be memory-only; it is now written through a
+  Keystore-sealed vault by `chat/PersistentMessageStore.kt`, owned by the
+  foreground service. So losing history to a process kill is **a bug now**, not
+  an expectation. None of this has run on a handset — CI compiles it and the
+  JVM tests exercise the encoding and the store against a fake vault, but
+  nothing has yet proved that the AndroidKeyStore seals and unseals a real
+  record on a real device. That is TEST H.
+- **The foreground service exists** (task #61), so a backgrounded connection is
+  no longer at Android's mercy in the way it was. Untested on a device:
+  whether it survives Doze, an aggressive OEM battery manager, or the user
+  swiping the app away. Assume nothing; report what you see.
+- **Notifications are a COUNT and nothing else.** "New message" or "3 new
+  messages", no sender and no preview, hidden entirely on a lock screen. That
+  is deliberate (`chat/InboundAlerts.kt`): a lock-screen line naming who just
+  messaged this device undoes what the I2P tunnel under it is for. If you see a
+  JID or a message body in a notification, that is a **security defect** —
+  report it as one.
+  - On Android 13+ the app asks for notification permission on first launch.
+    Refusing it is supported and the app keeps working, but you will then see
+    neither the arrival notifications nor the connection notification, so test
+    the background steps with it granted.
 - **No avatars.** A letter in a circle. Fetching avatars would be a network
   request per contact, which on an anonymity-oriented client is a new place to
   leak who you talk to.
@@ -173,7 +204,16 @@ that is not a reason to put it in a bug report as well.
 
 A clean run proves the messaging path works between the two clients over I2P,
 that history and drafts survive the lifecycle events Android actually produces,
-and that the security wording tracks the engine.
+that the connection and the conversation outlive the UI, that the sealed store
+and the Keystore work on that device, and that the security wording tracks the
+engine.
+
+**Until it has been run, none of that is established.** The repository can
+claim three things and no more: the Python and plain-Kotlin layers are
+*executed* by tests; the Android-coupled layers are *compiled* by CI and an APK
+assembles; and the handset behaviour is *unverified*. A passing CI run is not
+evidence that the app works, and this document exists because nothing short of
+running it is.
 
 It does not prove that steps 1-16 were private. They were not, and the app says
 so on screen. It does not prove anything about voice, file transfer, groups, or

@@ -30,6 +30,7 @@ import org.otrv4plus.android.R
 import org.otrv4plus.android.bridge.ChaquopyOtrCore
 import org.otrv4plus.android.bridge.ConnectionStatus
 import org.otrv4plus.android.chat.ChatState
+import org.otrv4plus.android.chat.InboundAlerts
 import org.otrv4plus.android.chat.PersistentMessageStore
 import org.otrv4plus.android.security.Credentials
 import org.otrv4plus.android.security.CredentialStore
@@ -124,6 +125,14 @@ class OtrConnectionService : Service() {
      */
     val chat: ChatState by lazy { ChatState(messages) }
 
+    /**
+     * Whether an arrival is worth interrupting the user about, and nothing else.
+     *
+     * Every rule is in [InboundAlerts], which has no Android import and is
+     * tested by being run. This class does the platform half only.
+     */
+    val alerts = InboundAlerts()
+
     @Volatile
     var phase: LinkPhase = LinkPhase.STOPPED
         private set
@@ -178,6 +187,11 @@ class OtrConnectionService : Service() {
                 stopConnection(explicit = true)
                 runCatching { credentials.clear() }
                 runCatching { messages.clear() }
+                // And take the notification down with them. A count of unread
+                // messages left in the shade after a sign-out is a statement
+                // about an account that is no longer on this device.
+                alerts.clear()
+                cancelArrivalNotification()
                 jid = ""
                 password = ""
                 stopSelf()
@@ -346,7 +360,13 @@ class OtrConnectionService : Service() {
                     runCatching { core.eventsDropped() }.getOrNull()
                         ?.let { chat.applyDropped(it) }
                     runCatching { core.drainEvents() }.getOrDefault(emptyList())
-                        .forEach { chat.handle(it) }
+                        .forEach { event ->
+                            // handle() returns whether a NEW message was
+                            // stored. Notifying on anything else -- a
+                            // duplicate, a presence change, a session state --
+                            // would let a peer buzz the phone at will.
+                            if (chat.handle(event)) announceArrival()
+                        }
                 }
                 delay(DRAIN_INTERVAL_MS)
             }
@@ -371,6 +391,77 @@ class OtrConnectionService : Service() {
     private fun codeOf(t: Throwable): String =
         t::class.simpleName ?: "error"
 
+    // ── telling the user something arrived ──────────────────────────────────
+
+    /**
+     * A screen came to the front, or went away.
+     *
+     * Called from the Activity's `onStart`/`onStop`, not from a bind: the
+     * binding is held for the ViewModel's whole life and so stays up while the
+     * app is backgrounded, which is precisely the state a notification is for.
+     */
+    fun setUiVisible(visible: Boolean) {
+        if (alerts.setUiVisible(visible)) cancelArrivalNotification()
+    }
+
+    /**
+     * Post, or update, the "something arrived" notification.
+     *
+     * Silent when [InboundAlerts] says the user is already looking. One
+     * notification for everything, replaced in place as more arrive -- a
+     * notification per conversation would make the shade a contact list even
+     * with every name removed, because the number of entries is the number of
+     * people who messaged.
+     */
+    private fun announceArrival() {
+        val alert = alerts.note() ?: return
+        runCatching {
+            getSystemService(NotificationManager::class.java)
+                ?.notify(MESSAGE_NOTIFICATION_ID, buildArrivalNotification(alert))
+        }
+    }
+
+    private fun cancelArrivalNotification() {
+        runCatching {
+            getSystemService(NotificationManager::class.java)
+                ?.cancel(MESSAGE_NOTIFICATION_ID)
+        }
+    }
+
+    /**
+     * How many, and not one word more.
+     *
+     * No peer, no display name, no body, no preview, and no big-text style to
+     * expand into one. See [InboundAlerts] for why: a lock-screen line naming
+     * who just messaged this device defeats the anonymity the transport under
+     * it exists to provide.
+     */
+    private fun buildArrivalNotification(alert: InboundAlerts.Alert): Notification {
+        val open = PendingIntent.getActivity(
+            this, 2,
+            Intent(this, MainActivity::class.java)
+                .setFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP),
+            PendingIntent.FLAG_IMMUTABLE,
+        )
+        val text = if (alert.count == 1) getString(R.string.message_arrived_one)
+                   else getString(R.string.message_arrived_many, alert.count)
+        return NotificationCompat.Builder(this, MESSAGE_CHANNEL_ID)
+            .setContentTitle(getString(R.string.app_name))
+            .setContentText(text)
+            .setSmallIcon(android.R.drawable.stat_notify_chat)
+            .setContentIntent(open)
+            .setAutoCancel(true)
+            .setShowWhen(false)
+            // Hidden entirely on a locked screen -- not "hidden contents",
+            // which still shows the app's name and therefore that this device
+            // is running this app and just received something.
+            .setVisibility(NotificationCompat.VISIBILITY_SECRET)
+            // Only the first of a run makes a sound. A conversation arriving
+            // message by message must not become a burst of alerts.
+            .setOnlyAlertOnce(!alert.first)
+            .build()
+    }
+
     // ── the notification ────────────────────────────────────────────────────
 
     private fun goForeground() {
@@ -393,8 +484,26 @@ class OtrConnectionService : Service() {
             description = getString(R.string.connection_channel_description)
             setShowBadge(false)
         }
+        // A SEPARATE channel for arrivals, so the user can silence one without
+        // silencing the other. Silencing the connection channel must not also
+        // silence the only signal that somebody is trying to reach them, and
+        // silencing arrivals must not stop the foreground notification that
+        // keeps the connection alive at all.
+        val messages = NotificationChannel(
+            MESSAGE_CHANNEL_ID,
+            getString(R.string.message_channel_name),
+            // DEFAULT: an arrival IS an event, and is the one thing in this app
+            // worth interrupting somebody for.
+            NotificationManager.IMPORTANCE_DEFAULT,
+        ).apply {
+            description = getString(R.string.message_channel_description)
+            // No badge and no preview on the lock screen. The count alone is
+            // already the most this may say.
+            setShowBadge(false)
+            lockscreenVisibility = Notification.VISIBILITY_SECRET
+        }
         getSystemService(NotificationManager::class.java)
-            ?.createNotificationChannel(channel)
+            ?.createNotificationChannels(listOf(channel, messages))
     }
 
     /**
@@ -452,6 +561,17 @@ class OtrConnectionService : Service() {
     companion object {
         private const val CHANNEL_ID = "otrv4plus.connection"
         private const val NOTIFICATION_ID = 1
+
+        private const val MESSAGE_CHANNEL_ID = "otrv4plus.messages"
+
+        /**
+         * ONE id for every arrival.
+         *
+         * Not one per conversation: the shade would then have one entry per
+         * person who messaged, which is a contact graph by cardinality even
+         * with every name stripped out.
+         */
+        private const val MESSAGE_NOTIFICATION_ID = 2
 
         const val ACTION_START = "org.otrv4plus.android.START"
         const val ACTION_STOP = "org.otrv4plus.android.STOP"

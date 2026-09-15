@@ -28,4 +28,18 @@
     <string name="connection_reconnecting">Reconnecting…</string>
     <string name="connection_disconnecting">Disconnecting…</string>
     <string name="connection_failed">Connection failed</string>
+
+    <!-- The arrival notification.
+
+         A COUNT, AND NOTHING ELSE. No sender, no display name, no body, no
+         preview. Everything above about the lock screen applies here with more
+         force: this one fires when somebody messages the user, so a name in it
+         would announce exactly who is talking to this device and when.
+
+         tests/test_android_notifications.py fails if a format argument that
+         could carry a name or a body is ever added to these. -->
+    <string name="message_channel_name">Messages</string>
+    <string name="message_channel_description">Tells you a message arrived. Never shows who it is from or what it says.</string>
+    <string name="message_arrived_one">New message</string>
+    <string name="message_arrived_many">%1$d new messages</string>
 </resources>

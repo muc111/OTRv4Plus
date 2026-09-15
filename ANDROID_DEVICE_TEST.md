@@ -96,7 +96,7 @@ including the wording, because the wording is half of what is being tested.
 | 9 | Press **Disconnect** | "Not connected", promptly | — |
 | 10 | Press **Connect** again | Reconnects | A second connection failing where the first succeeded is a teardown bug |
 | 11 | Rotate the screen while connected | Still connected | Losing the connection on rotation means state is being held in the wrong place |
-| 12 | Background the app for a minute, return | Note what happens | Expected to survive for now; the foreground service (task #61) is what makes it reliable |
+| 12 | Background the app for a minute, return | Still connected, with a notification reading only "Connected" in the shade throughout | The foreground service is what holds this up; a drop here means it is not running. Note whether the notification was there at all -- on Android 13+ a refused notification permission hides it |
 
 **Never blocks the UI thread.** At no point should the app show "isn't
 responding". If it does, say so — that is a defect regardless of whether the
@@ -133,7 +133,10 @@ Worth stating, because a green connection is easy to over-read:
   screen deliberately shows no security state for exactly that reason. OTR
   security appears with the conversation screen, derived from the engine.
 - **Nothing about message delivery.** Sending needs a peer and a session.
-- **Nothing about staying connected.** Android will kill a backgrounded process
-  that has no foreground service. That is task #61.
+- **Nothing about staying connected beyond step 12.** There is a foreground
+  service now, so the process is no longer unheld -- but nothing here measures
+  Doze, an OEM battery manager, or an overnight connection.
+  `ANDROID_MESSAGING_DEVICE_TEST.md` steps 22 and 26-31 go further; neither
+  document's background steps have been run on a handset.
 - **Nothing about a bundled router.** This test uses whatever SAM bridge is
   configured. Bundling is task #62, and step 5 is what decides how urgent it is.
