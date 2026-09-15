@@ -964,6 +964,11 @@ class XmppTransport(Transport):
                     "jid": str(jid),
                     "name": entry.get("name") or "",
                     "subscription": entry.get("subscription") or "",
+                    # Separate from `subscription`: a request that has been
+                    # sent and not yet answered leaves the subscription at
+                    # "none", so without this "added, waiting for them" and
+                    # "on the roster, not subscribed" look identical.
+                    "pending": bool(entry.get("pending_out")),
                 })
         except Exception as exc:
             _log.warning("could not read the roster")

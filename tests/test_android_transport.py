@@ -488,6 +488,25 @@ class TestLifecycle:
 
 class TestTheRoster:
 
+    def test_a_sent_request_is_reported_as_pending(self):
+        """slixmpp leaves `subscription` at "none" until the other side
+        approves, so without `pending_out` "waiting for them to accept" and
+        "on the roster, not subscribed" are the same dict -- and the contact
+        reads as a plain "presence unknown" for as long as they take."""
+        t, made = build()
+        try:
+            t.connect()
+            made["client"].client_roster = {
+                "carol@xmpp-elite.i2p": {"name": "",
+                                         "subscription": "none",
+                                         "pending_out": True}}
+            assert t.roster() == [{"jid": "carol@xmpp-elite.i2p",
+                                   "name": "",
+                                   "subscription": "none",
+                                   "pending": True}]
+        finally:
+            t.close()
+
     def test_it_reads_names_and_subscriptions(self):
         t, made = build()
         try:
@@ -497,7 +516,8 @@ class TestTheRoster:
                                        "subscription": "both"}}
             assert t.roster() == [{"jid": "bob@xmpp-elite.i2p",
                                    "name": "Bob",
-                                   "subscription": "both"}]
+                                   "subscription": "both",
+                                   "pending": False}]
         finally:
             t.close()
 

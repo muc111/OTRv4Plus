@@ -6,6 +6,7 @@ import org.otrv4plus.android.bridge.ConnectionStatus
 import org.otrv4plus.android.bridge.Contact
 import org.otrv4plus.android.bridge.OtrEvent
 import org.otrv4plus.android.bridge.SecurityState
+import org.otrv4plus.android.bridge.Subscription
 import org.otrv4plus.android.bridge.SendOutcome
 
 /**
@@ -260,6 +261,10 @@ class ChatState(
                     // either. A stale "online" from before the stream died is
                     // a lie with a timestamp.
                     known = canSend() && contact != null,
+                    // Says WHY it is unknown when it is. A contact who has
+                    // not approved the request yet is not a broken app.
+                    subscription = contact?.subscription
+                        ?: Subscription.UNKNOWN,
                 ),
                 security = contact?.security ?: SecurityState.PLAINTEXT,
                 lastMessage = store.lastMessage(jid),

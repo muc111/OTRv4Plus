@@ -115,6 +115,19 @@ class ContactView:
     smp: SmpState
     last_activity: Optional[float] = None
     call_available: bool = False
+    #: The XMPP roster subscription, verbatim: "none", "to", "from", "both",
+    #: or "" when the roster did not say.
+    #:
+    #: Carried because a contact you have added but who has not yet approved
+    #: you is a REAL and common state, and one the user has to be able to see:
+    #: their presence will read as unknown for hours or days, and "the app is
+    #: broken" is the wrong conclusion to leave available. It was being read
+    #: from the roster and then dropped here.
+    subscription: str = ""
+    #: Whether we have asked and not yet been answered. slixmpp exposes this
+    #: separately from `subscription`, because a pending request does not
+    #: change the subscription until it is approved.
+    pending: bool = False
 
 
 @dataclass(frozen=True)
@@ -335,10 +348,17 @@ class OtrApp:
         if not jid:
             return None
         security = self.security_state(jid)
+        subscription = ""
+        pending = False
+        if isinstance(entry, dict):
+            subscription = str(entry.get("subscription") or "")
+            pending = bool(entry.get("pending"))
         return ContactView(
             jid=jid,
             display_name=(entry.get("name") if isinstance(entry, dict) else None) or jid,
             online=self._presence.get(jid, False),
+            subscription=subscription,
+            pending=pending,
             security=security,
             smp=self.smp_state(jid),
             last_activity=self._last_activity.get(jid),

@@ -312,6 +312,9 @@ internal fun PresenceDot(presence: Presence) {
             Presence.ONLINE -> MaterialTheme.colorScheme.primary
             Presence.OFFLINE -> MaterialTheme.colorScheme.onSurfaceVariant
             Presence.UNKNOWN -> MaterialTheme.colorScheme.onSurfaceVariant
+            // Not an error colour. Nothing is wrong: the other person has
+            // simply not answered yet, and red would say otherwise.
+            Presence.PENDING -> MaterialTheme.colorScheme.tertiary
         },
     )
 }
@@ -321,6 +324,11 @@ internal fun presenceWord(presence: Presence): String = when (presence) {
     Presence.OFFLINE -> "offline"
     // Not "offline". We have not heard, which is a different claim.
     Presence.UNKNOWN -> "presence unknown"
+    // Says WHY, which "presence unknown" cannot. A contact who has not yet
+    // approved the request stays unknown for as long as they take to answer,
+    // and without this the only conclusion available to the user is that the
+    // app is broken.
+    Presence.PENDING -> "waiting for them to accept"
 }
 
 @Composable

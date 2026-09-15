@@ -447,6 +447,9 @@ class ChaquopyOtrCore(private val appContext: Context) : OtrCore {
                 security = SecurityState.fromLevel(c.get("security")?.toInt() ?: 0),
                 smp = SmpState.fromName(c.get("smp")?.get("name")?.toString() ?: "IDLE"),
                 callAvailable = c.get("call_available")?.toBoolean() ?: false,
+                subscription = Subscription.of(
+                    c.get("subscription")?.toString() ?: "",
+                    c.get("pending")?.toBoolean() ?: false),
             )
         }
 

@@ -3,6 +3,7 @@
 package org.otrv4plus.android.chat
 
 import org.otrv4plus.android.bridge.SecurityState
+import org.otrv4plus.android.bridge.Subscription
 
 /**
  * What a message is, in this application.
@@ -142,6 +143,17 @@ enum class Presence {
     ONLINE,
     OFFLINE,
     UNKNOWN,
+
+    /**
+     * We have asked to see them and they have not answered yet.
+     *
+     * A distinct state from UNKNOWN, because it has a distinct CAUSE and a
+     * distinct remedy: nothing is wrong, the other person has simply not
+     * approved the request, and that can take days. Rendered as UNKNOWN it is
+     * indistinguishable from a broken connection, and "the app is broken" is
+     * the wrong conclusion to leave available to somebody waiting on a friend.
+     */
+    PENDING,
     ;
 
     companion object {
@@ -155,6 +167,26 @@ enum class Presence {
          */
         fun of(online: Boolean, known: Boolean): Presence = when {
             !known -> UNKNOWN
+            online -> ONLINE
+            else -> OFFLINE
+        }
+
+        /**
+         * As [of], but able to say WHY presence is unknown.
+         *
+         * A pending subscription outranks everything else: until they approve,
+         * the server sends us nothing about them and no amount of being
+         * connected changes that. Reporting it as a plain UNKNOWN blames the
+         * connection for something the connection is not doing wrong.
+         */
+        fun of(online: Boolean, known: Boolean,
+               subscription: Subscription): Presence = when {
+            subscription == Subscription.PENDING -> PENDING
+            !known -> UNKNOWN
+            // The server does not send us their presence under these, so
+            // "offline" would be a claim we have no basis for.
+            !subscription.presenceIsKnowable &&
+                subscription != Subscription.UNKNOWN -> UNKNOWN
             online -> ONLINE
             else -> OFFLINE
         }

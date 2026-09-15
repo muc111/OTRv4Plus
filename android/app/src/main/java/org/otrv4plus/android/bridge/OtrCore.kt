@@ -219,6 +219,59 @@ enum class SendOutcome {
     }
 }
 
+/**
+ * Where a roster entry has got to, as the XMPP server sees it.
+ *
+ * This matters to a person rather than only to a protocol. A contact you have
+ * added but who has not yet approved you will show as "presence unknown" for
+ * as long as they take to answer -- hours, or days -- and without a name for
+ * that state the only conclusion available to the user is that the app is
+ * broken. It was being read from the roster and then discarded.
+ */
+enum class Subscription {
+    /** Asked, not yet answered. Their presence is genuinely unknowable. */
+    PENDING,
+
+    /** We see them; they do not see us. */
+    TO,
+
+    /** They see us; we do not see them, so presence stays unknown. */
+    FROM,
+
+    /** Both directions. The ordinary working state. */
+    BOTH,
+
+    /** On the roster, subscribed neither way. */
+    NONE,
+
+    /** The roster did not say, or said something we do not know. */
+    UNKNOWN;
+
+    /** Whether presence can be expected to mean anything for this contact. */
+    val presenceIsKnowable: Boolean get() = this == BOTH || this == TO
+
+    companion object {
+        /**
+         * Map the roster's own words, failing to [UNKNOWN].
+         *
+         * `pending` wins over the subscription state: a request that has been
+         * sent and not answered leaves the subscription at "none", so reading
+         * the subscription alone makes "waiting for them" and "on the roster,
+         * not subscribed" identical.
+         */
+        fun of(subscription: String, pending: Boolean): Subscription {
+            if (pending) return PENDING
+            return when (subscription.lowercase()) {
+                "both" -> BOTH
+                "to" -> TO
+                "from" -> FROM
+                "none" -> NONE
+                else -> UNKNOWN
+            }
+        }
+    }
+}
+
 data class Contact(
     val jid: String,
     val displayName: String,
@@ -231,6 +284,8 @@ data class Contact(
      * UI affordance and must never be treated as the gate.
      */
     val callAvailable: Boolean,
+    /** Where the roster entry has got to. See [Subscription]. */
+    val subscription: Subscription = Subscription.UNKNOWN,
 )
 
 /**
