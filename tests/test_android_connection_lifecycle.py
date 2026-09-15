@@ -418,13 +418,20 @@ class TestTheAndroidLifecycleIsWiredForRecreation:
             "the connection must be released before the engine")
 
     def test_the_activity_shares_one_view_model_with_every_screen(self):
-        """Two `viewModel()` calls for the same type in one Activity return
-        the same instance, but obtaining it once and passing it says so. A
+        """Obtained ONCE and passed everywhere. Repeated lookups of the same
+        type return the same instance, but obtaining it once says so -- and a
         second core would be a second engine over the same identity and trust
-        files."""
+        files.
+
+        It is an Activity property rather than a `viewModel()` inside the
+        composition because `onStart`/`onStop` need it too, to tell the service
+        whether anybody can see the screen. Same ViewModelStore, same object.
+        """
         activity = _code_only(_read(UI, "MainActivity.kt"))
-        assert "val connection: ConnectionViewModel = viewModel()" in activity
-        assert activity.count("ConnectionViewModel = viewModel()") == 1, (
+        assert "ViewModelProvider(this)[ConnectionViewModel::class.java]" in activity
+        assert activity.count("ConnectionViewModel = viewModel()") == 0, (
+            "the Activity obtains the connection ViewModel a second way")
+        assert activity.count("ConnectionViewModel::class.java") == 1, (
             "the Activity obtains the connection ViewModel more than once")
         assert "model = connection" in activity
         # The chat is handed the core from that one ViewModel, never its own,

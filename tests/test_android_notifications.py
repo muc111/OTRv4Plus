@@ -207,19 +207,25 @@ class TestTheServiceIsToldWhatTheUserCanSee:
             in service_code
 
     def test_it_comes_from_the_lifecycle_and_not_from_the_binding(self):
-        """The binding is held for the ViewModel's whole life, so it stays up
-        while the app is backgrounded -- which is the one state a notification
-        exists for. ON_START/ON_STOP is what "the user can see this" means."""
+        """The binding is created with the ViewModel and released in
+        `onCleared`, so it stays up while the app is backgrounded -- which is
+        the one state a notification exists for. ON_START/ON_STOP is what "the
+        user can see this" means."""
         activity = _code_only(_read(JAVA, "MainActivity.kt"))
-        assert "Lifecycle.Event.ON_START -> connection.setUiVisible(true)" in activity
-        assert "Lifecycle.Event.ON_STOP -> connection.setUiVisible(false)" in activity
+        for hook, value in (("onStart", "true"), ("onStop", "false")):
+            block = activity[activity.index("override fun %s()" % hook):]
+            block = block[:block.index("\n    }")]
+            assert "connection.setUiVisible(%s)" % value in block, (
+                "%s does not tell the service what the user can see" % hook)
 
-    def test_leaving_the_composition_counts_as_leaving(self):
+    def test_the_activity_and_the_composition_share_one_view_model(self):
+        """Two `viewModel()`-style lookups would be the same object today and
+        an easy thing to get wrong tomorrow; onStart telling one instance while
+        the composition binds another would leave the service permanently
+        believing nobody is looking."""
         activity = _code_only(_read(JAVA, "MainActivity.kt"))
-        block = activity[activity.index("DisposableEffect(lifecycle"):]
-        assert "onDispose" in block
-        assert block.index("connection.setUiVisible(false)",
-                           block.index("onDispose")) > 0
+        assert "ViewModelProvider(this)[ConnectionViewModel::class.java]" in activity
+        assert "val connection: ConnectionViewModel = viewModel()" not in activity
 
     def test_a_rebind_re_delivers_it(self):
         """A service that has just been reconnected to knows nothing about

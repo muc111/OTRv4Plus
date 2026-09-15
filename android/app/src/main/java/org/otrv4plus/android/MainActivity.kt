@@ -14,15 +14,12 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
-import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.platform.LocalLifecycleOwner
-import androidx.lifecycle.Lifecycle
-import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewmodel.compose.viewModel
 import org.otrv4plus.android.chat.ChatViewModel
 import org.otrv4plus.android.ui.AboutScreen
@@ -89,6 +86,43 @@ class MainActivity : ComponentActivity() {
     private val askNotifications =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { }
 
+    /**
+     * The same [ConnectionViewModel] the composition uses.
+     *
+     * Obtained here as well because [onStart] and [onStop] are outside the
+     * composition. `ViewModelProvider(this)` and Compose's `viewModel()` share
+     * this Activity's `ViewModelStore`, so this is one object, not two.
+     *
+     * `ViewModelProvider` rather than the `by viewModels()` delegate: that
+     * delegate lives in `activity-ktx`, which is only a transitive dependency
+     * here, and this is the same object either way.
+     */
+    private val connection: ConnectionViewModel by lazy {
+        ViewModelProvider(this)[ConnectionViewModel::class.java]
+    }
+
+    /**
+     * Whether a screen is in front of the user.
+     *
+     * The service needs it to decide whether an arriving message is worth a
+     * notification: a message that lands while the app is on screen is already
+     * visible, and interrupting somebody about something they are looking at is
+     * how people end up turning notifications off.
+     *
+     * ON_START/ON_STOP rather than the service binding. The binding is created
+     * with the ViewModel and released in `onCleared`, so it stays up while the
+     * app is backgrounded -- which is the one state this has to detect.
+     */
+    override fun onStart() {
+        super.onStart()
+        connection.setUiVisible(true)
+    }
+
+    override fun onStop() {
+        connection.setUiVisible(false)
+        super.onStop()
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
@@ -111,7 +145,11 @@ class MainActivity : ComponentActivity() {
         setContent {
             MaterialTheme {
                 Surface {
-                    val connection: ConnectionViewModel = viewModel()
+                    // `connection` is the Activity's property above, not a
+                    // second `viewModel()` call: one name for one object, so
+                    // there is no doubt that onStart and the composition are
+                    // talking to the same ViewModel. Its state fields are
+                    // snapshot state, so reading them here still recomposes.
                     val chat: ChatViewModel = viewModel()
 
                     var screen by rememberSaveable { mutableStateOf(Screen.CONNECT) }
@@ -136,36 +174,6 @@ class MainActivity : ComponentActivity() {
                         val core = connection.core
                         val state = connection.chat
                         if (core != null && state != null) chat.attach(core, state)
-                    }
-
-                    // Whether the user can see any of this. The service needs
-                    // it to decide whether an arriving message is worth a
-                    // notification; a message that lands while this is on
-                    // screen is already visible, and interrupting somebody
-                    // about something they are looking at is how people end up
-                    // turning notifications off.
-                    //
-                    // ON_START/ON_STOP rather than the service binding: the
-                    // binding is held for the ViewModel's whole life and so
-                    // stays up while the app is backgrounded, which is the one
-                    // state this has to detect.
-                    val lifecycle = LocalLifecycleOwner.current.lifecycle
-                    DisposableEffect(lifecycle, connection.chat) {
-                        val observer = LifecycleEventObserver { _, event ->
-                            when (event) {
-                                Lifecycle.Event.ON_START -> connection.setUiVisible(true)
-                                Lifecycle.Event.ON_STOP -> connection.setUiVisible(false)
-                                else -> Unit
-                            }
-                        }
-                        lifecycle.addObserver(observer)
-                        onDispose {
-                            lifecycle.removeObserver(observer)
-                            // Leaving the composition is leaving the screen. If
-                            // this did not fire, the service would believe the
-                            // UI was still in front and go quiet for good.
-                            connection.setUiVisible(false)
-                        }
                     }
 
                     when (screen) {
