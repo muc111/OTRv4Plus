@@ -28,6 +28,12 @@ what produced each line. Everything upstream is already supposed to be safe;
 this is the belt to that pair of braces. The cost is nothing and the cost of
 being wrong is a credential in a file the user is about to post into a bug
 tracker.
+
+It does two passes. Secrets become `[REDACTED]`, and then identities become
+labels -- `user-A`, `address-B` -- via `otrv4plus_alias`. The second pass is
+here as well as in `trace` because the connection status, the device facts and
+the `inputs` line reach this file without ever passing through the trace, so
+the trace's own aliasing cannot see them.
 """
 
 from __future__ import annotations
@@ -35,6 +41,8 @@ from __future__ import annotations
 import re
 import time
 from typing import Any, Dict, Optional
+
+from otrv4plus_alias import ALIASES as _ALIASES
 
 from .diagnostics import SENSITIVE_KEY_HINTS
 from .trace import REDACTED, TRACE
@@ -79,6 +87,15 @@ def _scrub(text: str) -> str:
     for line in text.splitlines():
         line = _ASSIGNMENT.sub(r"\1\2" + REDACTED, line)
         line = _ALIGNED.sub(r"\1" + REDACTED, line)
+        # Identities second, over what the redaction left. The trace has
+        # already aliased its own fields; this catches everything that did not
+        # come through the trace -- the connection status the controller
+        # supplies, the device facts Kotlin supplies, and the `inputs` line,
+        # none of which pass through `trace._safe`.
+        try:
+            line = _ALIASES.scrub(line)
+        except Exception:                                    # pragma: no cover
+            line = REDACTED
         out.append(line)
     return "\n".join(out)
 
@@ -111,13 +128,19 @@ def build(status: Optional[Dict[str, Any]] = None,
         HEADER,
         "generated  %s" % time.strftime("%Y-%m-%d %H:%M:%S"),
         "",
-        "This file contains connection state, timings and error types. It "
-        "contains NO",
-        "passwords, keys or other secrets, and NO message contents. It DOES "
-        "contain the",
-        "account and server addresses involved, because a roster, presence or "
-        "routing",
-        "fault cannot be diagnosed without them.",
+        "This file contains connection state, timings and error types.",
+        "",
+        "It contains NO passwords, keys or other secrets, NO message "
+        "contents, and NO",
+        "account names, contact names, server addresses, I2P destinations or "
+        "IP addresses.",
+        "Every identity is replaced with a label -- user-A, address-B -- "
+        "assigned in the",
+        "order it was first seen. The labels mean nothing outside this file "
+        "and are not",
+        "the same in the next one: the mapping lives only in the memory of "
+        "the app that",
+        "wrote this and is gone.",
     ]
 
     if device:
@@ -147,6 +170,19 @@ def build(status: Optional[Dict[str, Any]] = None,
     return _scrub("\n".join(parts)) + "\n"
 
 
+def _identity(value: Any, kind: str) -> str:
+    """A label for a value known to be an identity, or "-" when there is none.
+
+    Kept distinct from "absent": `jid -` says the controller had no account
+    configured, which is itself a diagnosis, and turning that into `user-A`
+    would invent one.
+    """
+    text = "" if value is None else str(value).strip()
+    if not text or text == "-":
+        return "-"
+    return _ALIASES.alias(text, kind)
+
+
 def _connection_fields(status: Dict[str, Any]) -> Dict[str, Any]:
     """The live connection view, flattened.
 
@@ -158,8 +194,12 @@ def _connection_fields(status: Dict[str, Any]) -> Dict[str, Any]:
     fields = {
         "stage": status.get("stage", "-"),
         "connected": status.get("connected", False),
-        "jid": status.get("jid", "-"),
-        "server": status.get("server", "-"),
+        # Aliased by NAME rather than left for `_scrub`'s shape sweep. These
+        # two are known to be identities whatever they look like, and a
+        # clearnet server -- which the profile allows -- is a bare hostname
+        # that no shape pattern would recognise.
+        "jid": _identity(status.get("jid"), "user"),
+        "server": _identity(status.get("server"), "address"),
         "default_server": status.get("is_default_server", "-"),
         "sam": status.get("sam", "-"),
         "worker_alive": status.get("worker_alive", "-"),

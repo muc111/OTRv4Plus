@@ -49,6 +49,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 import otrv4plus_fragment as _fragment
 import otrv4plus_ping as _ping
+import otrv4plus_registration as _registration
 
 from .app import Transport
 from .settings import ConnectionProfile
@@ -181,6 +182,56 @@ def _accepts(fn: Any, name: str) -> bool:
     if name in params:
         return True
     return any(p.kind is p.VAR_KEYWORD for p in params.values())
+
+
+#: What a transport-level failure means to somebody trying to create an account.
+#:
+#: Two different vocabularies meeting: `_endpoint` raises TransportError with
+#: codes about the transport, and the Register screen renders codes from
+#: `otrv4plus_registration`. Anything not named here is "unknown", because
+#: guessing at a failure is worse than admitting to one.
+_REGISTRATION_CODES = {
+    # The router did not answer or the tunnel would not open. From the user's
+    # side that is indistinguishable from the server being unreachable, and
+    # the remedy -- check the router, try again -- is the same.
+    "sam_unavailable": "network",
+    # A packaging fault. Nothing the user can do, and calling it a network
+    # problem would send them to look at their router for no reason.
+    "forwarder_import_failed": "unknown",
+    "client_build_failed": "unknown",
+    "cancelled": "cancelled",
+    "timeout": "timeout",
+}
+
+
+def _localpart(jid: str) -> str:
+    """The username out of a JID, tolerating one that is only a username."""
+    return str(jid or "").strip().split("@", 1)[0]
+
+
+def _enable_registration(client) -> None:
+    """Turn a client into one that will create an account.
+
+    XEP-0077 happens during stream negotiation, before authentication, so the
+    plugin has to be registered on a client that has not connected yet -- a
+    plugin added later never sees the feature go past.
+
+    `force_registration` is set because without it slixmpp only attempts
+    registration when the server has offered nothing else to do; a server that
+    advertises SASL alongside `<register/>` would go straight to authenticating
+    an account that does not exist, and the user would be told their password
+    was wrong. With it, `xep_0077` filters the stream features so registration
+    is negotiated first.
+
+    Raises rather than warning, unlike the XEP-0199 registration in
+    `_default_client_factory`. A keepalive that could not be registered
+    degrades; a registration that could not be registered silently logs in
+    instead, which is the failure this whole path exists to avoid.
+    """
+    client.register_plugin("xep_0077")
+    plugin = client["xep_0077"]
+    plugin.create_account = True
+    plugin.force_registration = True
 
 
 def _forwarder_log(message: str) -> None:
@@ -445,6 +496,154 @@ class XmppTransport(Transport):
             future = self._connect_future
         if future is not None:
             future.cancel()
+
+    # -- account creation -----------------------------------------------------
+
+    def register_account(self) -> "tuple[str, str]":
+        """Create the account named by this transport's profile. Blocks.
+
+        Returns `(code, detail)` from `otrv4plus_registration` -- `("ok", ...)`
+        when the server accepted, a classified failure otherwise. It does NOT
+        raise: every outcome here is something the Register screen shows, and a
+        TransportError would have to be translated at the call site anyway.
+
+        WHY IT REGISTERS THE PROFILE'S OWN CREDENTIALS rather than taking a
+        username and password of its own: the next thing the user does is sign
+        in, and a transport that could register one account while being
+        configured for another is a way to create an account nobody can then
+        log into. Build the transport with what was typed on the form; this
+        registers exactly that.
+
+        WHY IT GOES THROUGH `_endpoint` AND `_make_client`: registration is not
+        allowed to be the one operation that reaches the network some other
+        way. Same SAM tunnel, same TLS decision, same local-end host and port
+        -- a separate path here would be a second network policy with nothing
+        holding it to the first, and the credential being sent is the one that
+        matters most.
+
+        The stream is always torn down before returning. Registration leaves
+        slixmpp authenticated on some servers, and keeping that would mean two
+        ways to arrive at a live session; `connect()` stays the only one.
+        """
+        problem = _registration.validate(
+            _localpart(self._profile.jid), self._password)
+        if problem is not None:
+            _TRACE.record("registration", "refused_locally", "info",
+                          code=problem[0])
+            return problem
+
+        loop = self._ensure_loop()
+        future = asyncio.run_coroutine_threadsafe(self._register(), loop)
+        # Recorded in the same slot a connect uses so `cancel()` stops this
+        # too. A cold tunnel is minutes and Android will rotate the screen
+        # inside that window whatever the screen happens to be.
+        with self._lock:
+            self._connect_future = future
+        try:
+            future.result(timeout=CONNECT_TIMEOUT)
+        except BaseException as exc:                 # noqa: BLE001 -- see below
+            # Deliberately everything, CancelledError included: `classify` is
+            # total and answers "cancelled" for that case, and an exception
+            # escaping here would reach Kotlin as a Chaquopy PyException with
+            # the stanza still inside its message.
+            code, detail = _registration.classify(exc)
+            _TRACE.record("registration", "failed", "warn", code=code)
+            return code, detail
+        finally:
+            with self._lock:
+                self._connect_future = None
+        _TRACE.record("registration", "succeeded", "info")
+        return _registration.OK, _registration.describe(_registration.OK)
+
+    async def _register(self) -> None:
+        try:
+            await self._register_inner()
+        finally:
+            # Unconditional, unlike `_connect`'s teardown which only runs on
+            # failure. There is no session to keep here even when it worked.
+            await self._abandon()
+
+    async def _register_inner(self) -> None:
+        try:
+            host, port = await self._endpoint()
+        except TransportError as exc:
+            # `_endpoint` speaks the transport's vocabulary; the Register
+            # screen speaks the registration module's. Translated here, where
+            # both meanings are in scope, rather than by teaching `classify`
+            # about transport codes it has no business knowing.
+            raise _registration.RegistrationFailed(
+                _REGISTRATION_CODES.get(exc.code, "unknown"))
+        try:
+            client = self._make_client()
+        except Exception:
+            raise _registration.RegistrationFailed("unknown")
+        _enable_registration(client)
+        self._client = client
+
+        loop = asyncio.get_event_loop()
+        done = loop.create_future()
+        offered = {"register": False}
+
+        async def on_register(form):
+            """Submit the form XEP-0077 asked us to fill in.
+
+            slixmpp fetches the form and fires this; the submission is ours to
+            build. Errors are caught and put on `done` rather than allowed to
+            escape, because this coroutine is awaited by slixmpp's feature
+            negotiation and an exception in it is logged and dropped -- which
+            is how a rejected registration turns into a silent wait for the
+            300s timeout instead of "that username is taken".
+            """
+            offered["register"] = True
+            try:
+                iq = client.Iq()
+                iq["type"] = "set"
+                iq["register"]["username"] = _localpart(self._profile.jid)
+                iq["register"]["password"] = self._password
+                await iq.send()
+            except Exception as exc:
+                if not done.done():
+                    done.set_exception(exc)
+            else:
+                if not done.done():
+                    done.set_result(True)
+
+        def on_session(_event):
+            # Registration succeeded and slixmpp carried straight on into
+            # SASL. Also the path on a server that never offered registration,
+            # which `_register_inner` distinguishes below.
+            if not done.done():
+                done.set_result(True)
+
+        def on_failed_auth(_event):
+            if done.done():
+                return
+            # The account was not created and the server let us try to log in
+            # as it anyway. That is the shape of a server with no in-band
+            # registration, so say that rather than "wrong password" -- there
+            # is no password to be wrong yet.
+            done.set_exception(
+                _registration.RegistrationFailed("unsupported"))
+
+        def on_connection_failed(event):
+            if not done.done():
+                done.set_exception(ConnectionError(type(event).__name__))
+
+        client.add_event_handler("register", on_register)
+        client.add_event_handler("session_start", on_session)
+        client.add_event_handler("failed_auth", on_failed_auth)
+        client.add_event_handler("connection_failed", on_connection_failed)
+
+        _TRACE.record("registration", "requested", "info")
+        client.connect(host=host, port=port)
+        await done
+
+        if not offered["register"]:
+            # The stream came up and authentication was reached without the
+            # register feature ever appearing. Nothing was created, and
+            # reporting success here would send the user to a sign-in screen
+            # for an account that does not exist.
+            raise _registration.RegistrationFailed("unsupported")
 
     async def _connect(self) -> None:
         try:

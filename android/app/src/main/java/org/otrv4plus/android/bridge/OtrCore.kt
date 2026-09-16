@@ -397,6 +397,43 @@ data class RouterProbe(
     val version: String,
 )
 
+/**
+ * What happened when the user pressed Create account.
+ *
+ * Deliberately NOT a [ConnectionStatus]. Registration ends with nobody signed
+ * in, and reusing the connection's shape would put `connected = false` next to
+ * a success -- which reads as a failure to anybody who has just been told
+ * their account was created.
+ *
+ * [code] comes from `otrv4plus_registration.CODES`: `ok`, `conflict`,
+ * `not_acceptable`, `unsupported`, `timeout`, `network`, `cancelled`,
+ * `unknown` and the rest. [detail] is that module's sentence for the code,
+ * chosen from a fixed table rather than built from the server's own words --
+ * an XMPP error stanza carries the JID being registered, and this string is
+ * rendered on screen.
+ */
+data class RegistrationOutcome(
+    val ok: Boolean,
+    val code: String,
+    val detail: String,
+) {
+    /**
+     * Whether retyping the username is the remedy, so the UI can put the
+     * focus back where the fix is rather than making the user guess.
+     */
+    val isAboutTheUsername: Boolean
+        get() = code == "conflict" || code == "not_acceptable"
+
+    /**
+     * Whether this server will never accept a registration, however good the
+     * details are. Trying again is not the remedy and offering it wastes four
+     * minutes of somebody's evening.
+     */
+    val isPermanent: Boolean
+        get() = code == "unsupported" || code == "not_allowed" ||
+            code == "service_unavailable" || code == "forbidden"
+}
+
 data class SecurityDetails(
     val peer: String,
     val security: SecurityState,

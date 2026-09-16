@@ -22,6 +22,7 @@ import kotlinx.coroutines.withContext
 import org.otrv4plus.android.bridge.ChaquopyOtrCore
 import org.otrv4plus.android.bridge.ConnectionStatus
 import org.otrv4plus.android.bridge.InitResult
+import org.otrv4plus.android.bridge.RegistrationOutcome
 import org.otrv4plus.android.bridge.RouterProbe
 import org.otrv4plus.android.chat.ChatState
 import org.otrv4plus.android.connection.LinkPhase
@@ -68,6 +69,17 @@ class ConnectionViewModel(app: Application) : AndroidViewModel(app) {
     var status by mutableStateOf(ConnectionStatus())
         private set
     var probe by mutableStateOf<RouterProbe?>(null)
+        private set
+
+    /**
+     * The last Create account result, or null if nobody has tried.
+     *
+     * Kept separate from [status] because registration ends with nobody
+     * signed in: folding it into the connection status would put
+     * `connected = false` next to a success, which reads as a failure to
+     * somebody who has just been told their account was created.
+     */
+    var registration by mutableStateOf<RegistrationOutcome?>(null)
         private set
 
     /** The service's authoritative phase. */
@@ -186,6 +198,48 @@ class ConnectionViewModel(app: Application) : AndroidViewModel(app) {
                 .onFailure { error = it.javaClass.simpleName }
             busy = null
         }
+    }
+
+    /**
+     * Create an account, and do not sign in.
+     *
+     * Unlike [connect] this does NOT go through the service. There is no
+     * session at the end of it, so there is nothing for a foreground service
+     * to hold up: the stream is opened, the account is created, and the stream
+     * is given back. The user then presses Log in like anybody else.
+     *
+     * Refused while connected. [ChaquopyOtrCore.prepareConnection] replaces
+     * the core's controller, and doing that under a live session would leave
+     * the service holding a connection nothing could any longer disconnect.
+     */
+    fun register(jid: String, password: String, server: String = "") {
+        val c = core ?: return
+        if (busy != null) return
+        if (status.connected) {
+            registration = RegistrationOutcome(
+                ok = false, code = "already_connected",
+                detail = "Sign out before creating another account.")
+            return
+        }
+        error = null
+        registration = null
+        busy = "Creating the account..."
+        viewModelScope.launch {
+            val got = withContext(Dispatchers.IO) {
+                runCatching {
+                    c.prepareConnection(jid.trim(), server.trim())
+                    c.register(password)
+                }
+            }
+            got.onSuccess { registration = it }
+                .onFailure { error = it.javaClass.simpleName }
+            busy = null
+        }
+    }
+
+    /** Dismiss the last registration result. */
+    fun clearRegistration() {
+        registration = null
     }
 
     /**

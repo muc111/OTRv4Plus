@@ -53,10 +53,12 @@ class TestItRecordsWhatHappened:
         assert len(log.events()) == 1
 
     def test_the_fields_survive(self, log):
+        """Aliased, not dropped. The field is still there and still tells the
+        two events apart; what it no longer says is who."""
         log.record("transport", "session_started", jid=JID, server="x.i2p")
         fields = log.events()[0]["fields"]
-        assert fields["jid"] == JID
-        assert fields["server"] == "x.i2p"
+        assert fields["jid"].startswith("user-")
+        assert fields["server"].startswith("address-")
 
     def test_order_is_oldest_first(self, log):
         for i in range(5):
@@ -154,7 +156,7 @@ class TestExceptions:
             raise ValueError("x")
         except ValueError as exc:
             log.record_exception("roster", "add_contact", exc, jid=JID)
-        assert log.events()[0]["fields"]["jid"] == JID
+        assert log.events()[0]["fields"]["jid"].startswith("user-")
 
     def test_a_third_party_message_is_not_printed_verbatim(self, log):
         """`failure.describe` chooses the detail by TYPE. Our own messages are
@@ -274,17 +276,37 @@ class TestTheReportIsUseful:
         assert exported.index("session_started") < \
             exported.index("stream_declared_dead")
 
-    def test_the_jid_and_server_are_included_deliberately(self, exported):
-        """A roster, presence or routing fault cannot be diagnosed without
-        them. The header says so, so nobody is surprised."""
-        assert JID in exported
-        assert "xmpp-elite.i2p" in exported
+    def test_the_jid_and_server_are_labelled_rather_than_named(self, exported):
+        """REVERSES an earlier decision, deliberately. This file collected the
+        user's account, everybody they talk to and the destination they talk
+        through, and then invited them to post it into a bug tracker.
+
+        The diagnosis survives: `user-A` is consistent through the whole
+        timeline, so "we asked for user-A's presence and user-A never
+        answered" reads exactly as it did."""
+        assert JID not in exported
+        assert "xmpp-elite.i2p" not in exported
+        assert "user-" in exported
+
+    def test_the_same_account_gets_the_same_label_throughout(self, exported):
+        """A label that changed between events would make the timeline
+        unreadable, which is the whole reason to keep a field at all."""
+        import re
+        labels = set(re.findall(r"jid=(user-[A-Z]+)", exported))
+        assert len(labels) == 1, labels
 
     def test_the_header_says_what_is_and_is_not_in_it(self, exported):
         head = exported[:exported.index("Device")]
         assert "NO" in head
         assert "passwords" in head
         assert "message contents" in head
+
+    def test_the_header_says_the_identities_are_labelled(self, exported):
+        """Not hidden. A reader who does not know the labels are labels will
+        read `user-A` as a username somebody actually chose."""
+        head = exported[:exported.index("Device")]
+        assert "user-A" in head
+        assert "label" in head.lower()
 
 
 class TestTheExportCannotCarrySecrets:

@@ -69,9 +69,9 @@ fun ConnectScreen(
     // kept its worker thread and its half-open tunnel.
     val init = model.init
     val status = model.status
-    val probe = model.probe
     val busy = model.busy
     val error = model.error
+    val registration = model.registration
 
     // The only state that genuinely belongs to the screen: what is typed into
     // it. The password in particular must not outlive the composition, so it
@@ -225,15 +225,11 @@ fun ConnectScreen(
         // cancelled when the composition goes away, which on Android includes
         // a rotation -- so a connect started here would stop being waited on
         // halfway through its own tunnel build.
+        val canSubmit = busy == null && !status.connected &&
+            target != null && password.isNotBlank()
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            OutlinedButton(
-                enabled = busy == null,
-                onClick = { model.checkRouter(target?.jid.orEmpty()) },
-            ) { Text("Check router") }
-
             Button(
-                enabled = busy == null && !status.connected &&
-                    target != null && password.isNotBlank(),
+                enabled = canSubmit,
                 onClick = {
                     model.connect(target!!.jid, password, target.server)
                     // Cleared immediately, on both paths: a rejected password
@@ -243,13 +239,33 @@ fun ConnectScreen(
                     // slixmpp, where SASL needs it.
                     password = ""
                 },
-            ) { Text("Connect") }
+            ) { Text("Log in") }
+
+            // SECOND, and an outlined button rather than a filled one.
+            //
+            // Almost every press on this screen is a login; account creation
+            // happens once. Giving both the same weight would make the
+            // commoner action the one you have to look for, and on a server
+            // that does not offer XEP-0077 -- which we cannot know until we
+            // ask -- it is four minutes to find out.
+            //
+            // It deliberately does NOT then sign in. See
+            // ConnectionController.register: two operations, two outcomes,
+            // so a registration that worked and a login that did not can be
+            // told apart.
+            OutlinedButton(
+                enabled = canSubmit,
+                onClick = {
+                    model.register(target!!.jid, password, target.server)
+                    password = ""
+                },
+            ) { Text("Create account") }
 
             if (status.connected) {
                 OutlinedButton(
                     enabled = busy == null,
                     onClick = { model.disconnect() },
-                ) { Text("Disconnect") }
+                ) { Text("Sign out") }
             }
         }
 
@@ -271,46 +287,45 @@ fun ConnectScreen(
         }
 
         // ── What happened ─────────────────────────────────────────────────
+        //
+        // ONE LINE, and it is a sentence. This screen used to carry the SAM
+        // probe's raw detail, the failure code, the worker-thread state and
+        // `inputs` -- the literal arguments that crossed into the transport.
+        // All of it is genuinely useful and none of it belongs in front of
+        // somebody trying to sign in: a login screen that reports
+        // `stream_failed` and `worker thread: alive` reads as broken even when
+        // it is working. It moved to the Debug screen, where somebody who
+        // wants it can go and find it.
         Spacer(Modifier.height(4.dp))
         StatusRow("State", stageLabel(status.stage))
-        if (status.jid.isNotBlank()) StatusRow("Account", status.jid)
 
-        probe?.let {
-            Spacer(Modifier.height(4.dp))
-            Text("I2P router", style = MaterialTheme.typography.titleSmall)
-            StatusRow("Reachable", if (it.reachable) "yes" else "no")
-            if (it.version.isNotBlank()) StatusRow("SAM version", it.version)
-            SelectionContainer {
-                Text(it.detail, style = MaterialTheme.typography.bodySmall)
-            }
-        }
-
-        if (status.detail.isNotBlank()) {
+        // Registration is its own outcome, not a connection state. Placed
+        // here rather than merged into the status line because a success ends
+        // with nobody signed in, and rendering that as part of the connection
+        // would put "Not connected" next to "your account was created".
+        registration?.let {
             Spacer(Modifier.height(4.dp))
             Text(
-                if (status.stage == "failed") "Could not connect"
-                else "Connection",
+                if (it.ok) "Account created" else "Could not create the account",
                 style = MaterialTheme.typography.titleSmall,
+                color = if (it.ok) MaterialTheme.colorScheme.onSurface
+                        else MaterialTheme.colorScheme.error,
             )
-            if (status.code.isNotBlank() && status.stage == "failed") {
-                StatusRow("Reason", status.code)
-            }
-            SelectionContainer {
-                Text(status.detail, style = MaterialTheme.typography.bodySmall)
+            Text(it.detail, style = MaterialTheme.typography.bodySmall)
+            if (it.ok) {
+                Text(
+                    "Now press Log in with the same details.",
+                    style = MaterialTheme.typography.bodySmall,
+                )
             }
         }
 
-        // Shown only after a failure. On the happy path it is noise; on a
-        // failure it is the difference between "the call failed" and "the call
-        // got the wrong arguments", which from a handset are otherwise the
-        // same observation. The password appears here as present/absent only.
-        if (status.stage == "failed" && status.inputs.isNotBlank()) {
+        if (status.detail.isNotBlank() && status.stage == "failed") {
             Spacer(Modifier.height(4.dp))
-            Text("What reached the transport",
+            Text("Could not connect",
                 style = MaterialTheme.typography.titleSmall)
-            StatusRow("Worker thread", if (status.workerAlive) "alive" else "not running")
             SelectionContainer {
-                Text(status.inputs, style = MaterialTheme.typography.bodySmall)
+                Text(status.detail, style = MaterialTheme.typography.bodySmall)
             }
         }
 
@@ -341,7 +356,7 @@ fun ConnectScreen(
             TextButton(
                 enabled = !status.connected && busy == null,
                 onClick = onOpenDiagnostics,
-            ) { Text("Diagnostics") }
+            ) { Text("Debug") }
 
             // Never disabled, and reachable before anyone signs in: the
             // licence notice and the third-party attribution are obligations
@@ -365,6 +380,10 @@ private fun stageLabel(stage: String): String = when (stage) {
     "connecting" -> "Connecting to the server"
     "authenticating" -> "Signing in"
     "connected" -> "Connected"
+    // Not "Disconnected": the account now exists and nobody is signed in,
+    // which is a different thing to say to somebody who has just pressed
+    // Create account.
+    "registered" -> "Account created — not signed in"
     "disconnected" -> "Disconnected"
     "cancelled" -> "Stopped"
     "failed" -> "Failed"

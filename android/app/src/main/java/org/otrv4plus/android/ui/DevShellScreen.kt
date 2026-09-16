@@ -14,19 +14,44 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.otrv4plus.android.BuildConfig
 import org.otrv4plus.android.bridge.ChaquopyOtrCore
+import org.otrv4plus.android.bridge.ConnectionStatus
 import org.otrv4plus.android.bridge.InitResult
+import org.otrv4plus.android.bridge.RouterProbe
 import androidx.compose.ui.platform.LocalContext
 
 /**
- * The Phase 2 development shell.
+ * The Debug screen: everything technical, in one place, off the login path.
  *
- * Shows whether the stack came up, and nothing else. In a debug build it also
- * offers the diagnostics detail; in release, [BuildConfig.DEV_DIAGNOSTICS] is
- * false and the detail screen's source is not even compiled in (it lives in
- * src/debug/).
+ * WHAT MOVED HERE, AND WHY
+ * ------------------------
+ * The login screen used to render the SAM probe's raw output, the failure
+ * code, whether the transport's worker thread was alive, and `inputs` -- the
+ * literal arguments that crossed into the transport. Every one of those is
+ * worth having and none of them belongs in front of somebody trying to sign
+ * in: a login screen that says `stream_failed` and `worker thread: alive`
+ * reads as broken even when it is working, and it teaches people to ignore
+ * the words on it.
+ *
+ * So they are here, along with the start-up snapshot and the event log. The
+ * rule for this screen is the opposite of the login screen's: nothing is
+ * simplified, nothing is hidden, and anything that would help somebody work
+ * out what happened is fair game -- subject to the one constraint that does
+ * not relax, which is that the exported file names nobody. Identities are
+ * replaced with labels by `otrv4plus_alias`, centrally, before anything
+ * reaches the trace.
+ *
+ * In a debug build it also offers the diagnostics detail; in release,
+ * [BuildConfig.DEV_DIAGNOSTICS] is false and the detail screen's source is
+ * not even compiled in (it lives in src/debug/).
  */
 @Composable
-fun DevShellScreen(core: ChaquopyOtrCore? = null) {
+fun DevShellScreen(
+    core: ChaquopyOtrCore? = null,
+    status: ConnectionStatus = ConnectionStatus(),
+    probe: RouterProbe? = null,
+    busy: String? = null,
+    onCheckRouter: () -> Unit = {},
+) {
     val context = LocalContext.current
     var result by remember { mutableStateOf<InitResult?>(null) }
     var running by remember { mutableStateOf(true) }
@@ -59,7 +84,61 @@ fun DevShellScreen(core: ChaquopyOtrCore? = null) {
             .padding(24.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        Text("OTRv4+ integration shell", style = MaterialTheme.typography.headlineSmall)
+        Text("Debug", style = MaterialTheme.typography.headlineSmall)
+
+        // ── The connection, in full ───────────────────────────────────────
+        //
+        // FIRST, and before the start-up snapshot, because it is what somebody
+        // reaching this screen is almost always here about. The snapshot below
+        // is taken at launch and is minutes old by the time anything goes
+        // wrong; this is now.
+        Text("Connection", style = MaterialTheme.typography.titleSmall)
+        StatusRow("Stage", status.stage)
+        StatusRow("Connected", status.connected.toString())
+        StatusRow("Worker thread",
+            if (status.workerAlive) "alive" else "not running")
+        if (status.code.isNotBlank()) StatusRow("Last code", status.code)
+        if (status.sam.isNotBlank()) StatusRow("SAM", status.sam)
+        StatusRow("Default server", status.isDefaultServer.toString())
+        if (status.detail.isNotBlank()) {
+            SelectionContainer {
+                Text(status.detail, style = MaterialTheme.typography.bodySmall)
+            }
+        }
+        // "Did the call fail, or did it get the wrong arguments" are two
+        // questions, and from a handset they are indistinguishable without
+        // this. Rendered in Python, where the rule about what a diagnostic may
+        // contain lives; the password appears as present/absent only.
+        if (status.inputs.isNotBlank()) {
+            Text("What reached the transport",
+                style = MaterialTheme.typography.bodySmall)
+            SelectionContainer {
+                Text(status.inputs, style = MaterialTheme.typography.bodySmall)
+            }
+        }
+
+        // ── The router ────────────────────────────────────────────────────
+        //
+        // A SAM HELLO is a local handshake that answers in milliseconds;
+        // building a tunnel takes up to four minutes. Asked separately, it
+        // answers "is there a router at all" without the wait -- which is why
+        // it is a button and not part of connecting.
+        Spacer(Modifier.height(4.dp))
+        OutlinedButton(enabled = busy == null, onClick = onCheckRouter) {
+            Text("Check I2P router")
+        }
+        probe?.let {
+            StatusRow("Reachable", if (it.reachable) "yes" else "no")
+            StatusRow("Code", it.code)
+            if (it.version.isNotBlank()) StatusRow("SAM version", it.version)
+            SelectionContainer {
+                Text(it.detail, style = MaterialTheme.typography.bodySmall)
+            }
+        }
+        busy?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+
+        Spacer(Modifier.height(12.dp))
+        Text("Start-up", style = MaterialTheme.typography.titleSmall)
 
         if (running) {
             CircularProgressIndicator()

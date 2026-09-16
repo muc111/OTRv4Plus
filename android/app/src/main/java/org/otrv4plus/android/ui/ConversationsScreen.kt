@@ -118,7 +118,7 @@ fun ConversationsScreen(
                 Modifier.fillMaxWidth().padding(horizontal = 8.dp),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                TextButton(onClick = onOpenDiagnostics) { Text("Diagnostics") }
+                TextButton(onClick = onOpenDiagnostics) { Text("Debug") }
                 TextButton(onClick = onOpenAbout) { Text("About & licences") }
             }
         }

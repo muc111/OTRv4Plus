@@ -229,6 +229,34 @@ class ChaquopyOtrCore(private val appContext: Context) : OtrCore {
         return statusFrom(ctl, result)
     }
 
+    /**
+     * Create the account [prepareConnection] was given. Never throws.
+     *
+     * XEP-0077 in-band registration, over the same SAM tunnel a login uses.
+     * It does NOT sign in afterwards: the caller connects next, so that a
+     * registration that succeeded and a login that failed have two outcomes
+     * rather than one. On a network where the second half can take four
+     * minutes, that is the difference between retyping a password and
+     * creating a second account.
+     *
+     * The returned [code] is from `otrv4plus_registration` -- `conflict`,
+     * `not_acceptable`, `unsupported` and the rest -- and [detail] is a
+     * sentence chosen from that module's table, never the server's own words.
+     *
+     * [password] is passed straight through, not retained here, not logged,
+     * and not put in any status field.
+     */
+    fun register(password: String): RegistrationOutcome {
+        val ctl = controller ?: throw OtrBridgeException("not_prepared")
+        val result = ctl.callAttr("register", password)
+        fun str(k: String) = result?.callAttr("get", k)?.toString() ?: ""
+        return RegistrationOutcome(
+            ok = result?.callAttr("get", "ok")?.toBoolean() ?: false,
+            code = str("code").ifBlank { "unknown" },
+            detail = str("detail"),
+        )
+    }
+
     fun disconnect(): ConnectionStatus {
         val ctl = controller ?: return connectionStatus()
         val result = ctl.callAttr("disconnect")

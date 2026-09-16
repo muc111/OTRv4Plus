@@ -48,6 +48,7 @@ from typing import Any, Callable, Dict, List, Optional
 _log = logging.getLogger("otrv4plus.bridge.connection")
 
 import otrv4plus_address as _address
+import otrv4plus_registration as _registration
 
 from .settings import ConnectionProfile
 from .trace import TRACE as _TRACE
@@ -218,6 +219,11 @@ class ConnectionController:
     #: vocabulary that the code can step outside of is not a vocabulary.
     STAGES = ("idle", "checking_router", "building_tunnels",
               "connecting", "authenticating", "connected",
+              # An account was created and NOBODY IS SIGNED IN. Its own stage
+              # rather than "disconnected", because the two look identical on
+              # screen and mean opposite things to somebody who has just
+              # pressed Create account.
+              "registered",
               "disconnected", "cancelled", "failed")
 
     def __init__(self, app: Any, profile: ConnectionProfile,
@@ -427,6 +433,92 @@ class ConnectionController:
                                 % (self._profile.effective_server,
                                    self._profile.jid),
                       "sam_version": probe.version}
+        return dict(self._last)
+
+    def register(self, password: str) -> Dict[str, Any]:
+        """Create the account this controller is configured for.
+
+        Returns the same shape `connect` does -- `ok`, `stage`, `code`,
+        `detail` -- and never raises, for the same reason: every caller is
+        Kotlin, and an exception crossing Chaquopy arrives as a PyException
+        whose message is the only thing that survives.
+
+        WHAT IT DOES NOT DO IS SIGN IN. Registration and authentication are
+        two things and a user who has just created an account may well want to
+        check what they typed before using it; more importantly, folding them
+        together would mean a registration that succeeded and a login that
+        failed had one outcome between them, and the user could not tell which
+        half went wrong. The UI calls `connect` next.
+
+        `code` is from `otrv4plus_registration`, not from the transport. The
+        Register screen renders those, and the two vocabularies are kept apart
+        deliberately -- see `XmppTransport.register_account`.
+        """
+        with self._connect_lock:
+            if self._connecting:
+                return {"ok": False, "stage": self._stage,
+                        "code": "already_connecting",
+                        "detail": "Something else is already running."}
+            self._connecting = True
+        try:
+            return self._register(password)
+        finally:
+            with self._connect_lock:
+                self._connecting = False
+
+    def _register(self, password: str) -> Dict[str, Any]:
+        self._password_present = bool(password)
+        _TRACE.record("registration", "started", "info")
+        self._enter("checking_router")
+        probe = self._prober(self._profile)
+        if not probe.reachable:
+            # The same first gate `connect` has. Without a router there is no
+            # tunnel, and spending the registration timeout discovering that
+            # tells the user nothing a probe would not have said in
+            # milliseconds.
+            self._enter("failed")
+            return {"ok": False, "stage": "failed", "code": "network",
+                    "detail": _registration.describe("network")}
+
+        transport = None
+        try:
+            factory = self._transport_factory or _default_transport_factory()
+            # Built with no callbacks worth wiring: nothing arrives over a
+            # registration stream, and handing it `receive_message` would give
+            # a pre-authentication stanza a route into the engine.
+            transport = factory(self._profile, password,
+                                on_payload=lambda *a: None,
+                                on_state=self._on_transport_state)
+        except Exception:
+            self._enter("failed")
+            return {"ok": False, "stage": "failed", "code": "unknown",
+                    "detail": _registration.describe("unknown")}
+
+        self._enter("connecting")
+        try:
+            code, detail = transport.register_account()
+        except Exception as exc:
+            # `register_account` is documented not to raise. This is here
+            # because "documented not to" is not the same as "cannot", and the
+            # alternative on a handset is a PyException with a stanza in it.
+            code, detail = _registration.classify(exc)
+        finally:
+            # NOT `_release_transport`: that one clears `self._transport` and
+            # `app._transport`, and this object was never installed in either.
+            # Calling it would tear down a live session belonging to somebody
+            # who happened to be connected while this ran.
+            try:
+                transport.close()
+            except Exception:
+                _log.warning("the registration transport did not close cleanly")
+
+        ok = code == _registration.OK
+        self._enter("registered" if ok else "failed")
+        self._last = {"ok": ok,
+                      "stage": "registered" if ok else "failed",
+                      "code": code, "detail": detail}
+        _TRACE.record("registration", "finished", "info" if ok else "warn",
+                      code=code)
         return dict(self._last)
 
     def cancel(self) -> Dict[str, Any]:

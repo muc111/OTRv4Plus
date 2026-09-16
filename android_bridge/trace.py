@@ -41,9 +41,20 @@ The rule is structural rather than a matter of care at each call site.
     may quote a path, a URL with a token in it, or an argument. The type and
     the frame list carry the diagnosis without the values.
 
-JIDs and server names ARE recorded. They are what a roster, presence or
-routing fault is about, and a report without them cannot be diagnosed. That is
-a deliberate trade and is stated in the exported header so nobody is surprised.
+  * **Identities become labels.** JIDs, contact names, server addresses, I2P
+    destinations and IP literals are replaced with `user-A`, `address-B` and
+    so on -- centrally, in [_safe], by key name where the key says what the
+    value is and by SHAPE everywhere else.
+
+THAT LAST RULE REVERSES AN EARLIER DECISION, deliberately. The first version
+of this module recorded JIDs and server names and argued for it: a roster,
+presence or routing fault is *about* those values. It is, and the labels
+preserve that -- "we asked for `user-A`'s presence, `user-A` never answered"
+is the same diagnosis. What the old version also did was collect the user's
+account, everybody they talk to and the destination they talk through into one
+file, and then invite them to post it into a bug tracker. On this project that
+is the wrong side of the trade however useful it is. `otrv4plus_alias` holds
+the mechanism and the reasoning.
 """
 
 from __future__ import annotations
@@ -52,6 +63,8 @@ import threading
 import time
 from collections import deque
 from typing import Any, Dict, List, Optional
+
+from otrv4plus_alias import ALIASES as _ALIASES
 
 from .diagnostics import SENSITIVE_KEY_HINTS
 
@@ -100,7 +113,19 @@ def _is_sensitive(name: str) -> bool:
 
 
 def _safe(name: str, value: Any) -> str:
-    """One field, rendered so it cannot carry a secret or a message body."""
+    """One field, rendered so it cannot carry a secret, a body or an identity.
+
+    Three passes, in this order, and each one is load-bearing:
+
+      1. a key that names a secret becomes `[REDACTED]` outright;
+      2. the value is rendered to a single line;
+      3. identities become labels -- `user-A`, `address-B` -- by key name
+         where the key says what the value is, and by SHAPE everywhere else.
+
+    Three runs before the length cap, not after. Truncating first could cut a
+    JID in half and leave the localpart -- the part that names a person --
+    standing at the end of a line that looks redacted.
+    """
     if _is_sensitive(name):
         return REDACTED
     if value is None:
@@ -112,6 +137,17 @@ def _safe(name: str, value: Any) -> str:
     except Exception:
         return "<unprintable %s>" % type(value).__name__
     text = text.replace("\n", " ").replace("\r", " ").strip()
+    # CENTRAL, rather than asked of each call site. The call sites are the
+    # inbound handler, the keepalive, the roster and the Kotlin bridge, and
+    # the first one to forget is the one whose fault ends up in a file the
+    # user posts into a bug tracker.
+    try:
+        text = _ALIASES.field(name, text)
+    except Exception:                                        # pragma: no cover
+        # A diagnostic must not be able to break the thing it is diagnosing.
+        # Failing closed rather than open: an unaliased value is the exact
+        # thing this pass exists to prevent.
+        return REDACTED
     cap = LONG_KEYS.get(str(name).lower(), MAX_VALUE)
     if len(text) > cap:
         text = text[:cap] + "...(%d more)" % (len(text) - cap)

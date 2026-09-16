@@ -183,8 +183,24 @@ class MainActivity : ComponentActivity() {
                         }
 
                         Screen.DIAGNOSTICS -> {
-                            BackHandler { screen = Screen.CONVERSATIONS }
-                            DevShellScreen(core = connection.core)
+                            // Back to where the user came from. Debug is
+                            // reachable from the login screen as well as from
+                            // the conversation list, and always returning to
+                            // the list sent somebody who had not signed in yet
+                            // to an empty screen they could not get out of.
+                            val back = if (connection.status.connected)
+                                Screen.CONVERSATIONS else Screen.CONNECT
+                            BackHandler { screen = back }
+                            DevShellScreen(
+                                core = connection.core,
+                                status = connection.status,
+                                probe = connection.probe,
+                                busy = connection.busy,
+                                onCheckRouter = {
+                                    connection.checkRouter(
+                                        connection.status.jid)
+                                },
+                            )
                         }
 
                         Screen.CONVERSATION -> {

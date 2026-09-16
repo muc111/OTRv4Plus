@@ -337,6 +337,18 @@ val syncPythonSources by tasks.registering(Copy::class) {
             // are what replaced a bool that could not tell "offline" from
             // "never heard".
             "otrv4plus_presence.py",
+            // XEP-0077 in-band registration: what is refused locally, and how
+            // a server's refusal becomes a sentence. Imported by
+            // android_bridge.transport at module scope, so a missing entry
+            // here is an ImportError at launch rather than a Register button
+            // that does nothing.
+            "otrv4plus_registration.py",
+            // The labels that replace identities in the diagnostic log.
+            // Imported by android_bridge.trace at module scope -- and trace is
+            // imported by the transport, the controller and the bridge, so a
+            // missing entry here is an ImportError at launch rather than a
+            // report that quietly names everybody.
+            "otrv4plus_alias.py",
             "otrv4plus_audio.py",
             "otrv4plus_coreapi.py",
             "otrv4plus_filetransfer.py",
