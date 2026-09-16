@@ -113,9 +113,13 @@ class TestTheServiceIsFoundRatherThanAssumed:
 
     def test_discovery_runs_once_per_screen_not_per_recomposition(self, screen):
         """Two I2P round trips. Repeating them on every recomposition would
-        make the screen unusable."""
-        assert "LaunchedEffect(Unit)" in screen
-        assert "model.discovered" in screen
+        make the screen unusable.
+
+        The effect is keyed rather than bare -- see
+        `test_a_null_core_does_not_permanently_give_up` -- so what makes it
+        run once is the `discovered` guard inside it, not the key."""
+        assert "LaunchedEffect(" in screen
+        assert "!model.discovered" in screen
 
     def test_having_asked_is_distinguished_from_having_found_nothing(
             self, model):
@@ -297,3 +301,87 @@ class TestThePythonIsPackaged:
         assert '"otrv4plus_muc.py"' in read(GRADLE), (
             "imported by android_bridge.transport at module scope, so a "
             "missing entry is an ImportError at launch")
+
+
+# ── the unsaved sender ───────────────────────────────────────────────────────
+
+CONVERSATION = os.path.join(UI, "ui", "ConversationScreen.kt")
+MODELS = os.path.join(UI, "chat", "ChatModels.kt")
+STATE = os.path.join(UI, "chat", "ChatState.kt")
+
+
+class TestSomebodyWhoMessagedUsAndWasNeverAdded:
+    """A message from a stranger is still a message, and the conversation
+    already worked. What was missing is the EXPLANATION: the server sends no
+    presence for somebody we have not subscribed to, so "presence unknown" is
+    permanent rather than slow, and nothing on screen said so.
+    """
+
+    @pytest.fixture(scope="class")
+    @classmethod
+    def conversation(cls):
+        return code_of(CONVERSATION)
+
+    def test_the_conversation_says_they_are_not_a_contact(self, conversation):
+        assert "Not in your contacts" in conversation
+
+    def test_it_says_why_that_matters(self, conversation):
+        """"Not in your contacts" on its own is filing. The point is that it
+        is the reason their availability is unknown."""
+        assert "availability stays unknown" in conversation
+
+    def test_saving_is_offered(self, conversation):
+        assert 'Text("Save contact")' in conversation
+        assert "model.addContact(" in conversation
+
+    def test_it_is_offered_only_when_it_would_do_something(self, conversation):
+        assert "conversation.canBeSaved" in conversation
+
+    def test_the_button_is_disabled_rather_than_hidden_while_offline(
+            self, conversation):
+        """The remedy still exists; it just cannot be carried out this
+        second. Hiding it makes the explanation read as a dead end."""
+        block = body_of(conversation, "private fun UnsavedSenderBanner")
+        assert "enabled = enabled" in block
+
+    def test_it_is_not_dressed_as_an_error(self, conversation):
+        """Nothing is wrong. An error colour here teaches people to ignore
+        error colours."""
+        block = body_of(conversation, "private fun UnsavedSenderBanner")
+        assert "colorScheme.error" not in block
+
+    def test_the_list_row_says_it_too(self):
+        """Where you first see them. Both "not in your contacts" and
+        "presence unknown" are true, and only one says what to do."""
+        assert "not in your contacts" in code_of(LIST)
+
+    def test_the_model_carries_the_fact(self):
+        assert "val saved: Boolean" in code_of(MODELS)
+        assert "val canBeSaved: Boolean" in code_of(MODELS)
+
+    def test_the_state_derives_it_from_the_roster(self):
+        assert "saved = contact != null" in code_of(STATE)
+
+    def test_a_non_address_cannot_be_saved(self):
+        """`addContact` on something that is not a JID is a round trip spent
+        to be refused."""
+        assert "jid.contains('@')" in code_of(MODELS)
+
+
+class TestDiscoveryDoesNotDeadlockItself:
+    """`refreshRooms` returns early when something is already running, and
+    `discover` calls it. The order is load-bearing."""
+
+    def test_the_busy_flag_is_cleared_before_the_room_listing_starts(self):
+        block = body_of(code_of(MODEL), "fun discover(")
+        assert block.index("busy = null") < block.index("refreshRooms("), (
+            "discover() still held `busy` when it called refreshRooms(), "
+            "which returns early while something is running -- so the room "
+            "list would silently never load")
+
+    def test_a_null_core_does_not_permanently_give_up(self):
+        """The service binding can land after this screen is composed. A
+        `LaunchedEffect(Unit)` would ask a null core once and never again."""
+        assert "LaunchedEffect(model.core" in code_of(SCREEN)
+        assert "var core by mutableStateOf" in code_of(MODEL), (
+            "a plain field would not recompose when the binding landed")

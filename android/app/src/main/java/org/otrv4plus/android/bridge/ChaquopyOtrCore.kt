@@ -349,11 +349,21 @@ class ChaquopyOtrCore(private val appContext: Context) : OtrCore {
         Pair<RoomOutcome, RoomStanding> =
         roomWithStanding("room_standing", room, nick)
 
-    fun leaveRoom(room: String, nick: String): RoomOutcome =
-        outcomeOf(call("leave_room", room, nick) ?: return notPrepared())
+    // Block bodies, not expression bodies. `?: return notPrepared()` inside an
+    // expression body does not compile -- "Returns are prohibited for
+    // functions with an expression body" -- and these two were the only pair
+    // written that way. It got through the local plain-Kotlin harness because
+    // that harness cannot compile this file at all (it needs Chaquopy), so CI
+    // was the first compiler to see it.
+    fun leaveRoom(room: String, nick: String): RoomOutcome {
+        val result = call("leave_room", room, nick) ?: return notPrepared()
+        return outcomeOf(result)
+    }
 
-    fun destroyRoom(room: String, reason: String = ""): RoomOutcome =
-        outcomeOf(call("destroy_room", room, reason) ?: return notPrepared())
+    fun destroyRoom(room: String, reason: String = ""): RoomOutcome {
+        val result = call("destroy_room", room, reason) ?: return notPrepared()
+        return outcomeOf(result)
+    }
 
     fun joinedRooms(): Pair<RoomOutcome, List<String>> {
         val result = call("joined_rooms") ?: return notPrepared() to emptyList()

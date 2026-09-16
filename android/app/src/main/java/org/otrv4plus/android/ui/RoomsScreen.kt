@@ -46,11 +46,16 @@ fun RoomsScreen(
     var nick by rememberSaveable { mutableStateOf(defaultNick) }
     var address by rememberSaveable { mutableStateOf("") }
 
-    // Once, when the screen is first shown. Discovery is two round trips over
-    // I2P and repeating it on every recomposition would make the screen
-    // unusable; `model.discovered` is what makes a second visit instant.
-    LaunchedEffect(Unit) {
-        if (!model.discovered) model.discover()
+    // Once, when the screen is first shown AND there is something to ask.
+    // Discovery is two round trips over I2P, so repeating it on every
+    // recomposition would make the screen unusable; `model.discovered` is what
+    // makes a second visit instant.
+    //
+    // Keyed on the core rather than on Unit: the service binding can land
+    // after this screen is composed, and a Unit key would mean a screen opened
+    // in that window asked a null core, gave up, and never tried again.
+    LaunchedEffect(model.core, model.discovered) {
+        if (model.core != null && !model.discovered) model.discover()
     }
 
     Column(

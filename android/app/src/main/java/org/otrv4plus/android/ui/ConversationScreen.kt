@@ -98,6 +98,21 @@ fun ConversationScreen(
         ) {
             SecurityLine(conversation.security)
 
+            // Somebody who messaged us and was never added.
+            //
+            // Not an error and not a warning: a message from a stranger is
+            // still a message, and the conversation works. What it explains is
+            // why their presence says nothing and will go on saying nothing —
+            // the server does not send us the presence of somebody we have not
+            // subscribed to, so this is permanent rather than slow. Saving
+            // them is what asks.
+            if (conversation.canBeSaved) {
+                UnsavedSenderBanner(
+                    enabled = model.canSend(),
+                    onSave = { model.addContact(conversation.jid) },
+                )
+            }
+
             if (messages.isEmpty()) {
                 Box(Modifier.weight(1f).fillMaxWidth(),
                     contentAlignment = Alignment.Center) {
@@ -115,6 +130,33 @@ fun ConversationScreen(
                 ) {
                     items(messages, key = { it.id }) { Bubble(it) }
                 }
+            }
+        }
+    }
+}
+
+/**
+ * "This person is not in your contacts", and the one thing to do about it.
+ *
+ * The button is disabled while the link is down rather than hidden: the
+ * remedy still exists, it just cannot be carried out this second, and hiding
+ * it would make the explanation above it read as a dead end.
+ */
+@Composable
+private fun UnsavedSenderBanner(enabled: Boolean, onSave: () -> Unit) {
+    Surface(color = MaterialTheme.colorScheme.surfaceVariant) {
+        Row(
+            Modifier.fillMaxWidth().padding(start = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                "Not in your contacts, so their availability stays unknown.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.weight(1f),
+            )
+            TextButton(enabled = enabled, onClick = onSave) {
+                Text("Save contact")
             }
         }
     }

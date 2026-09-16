@@ -274,6 +274,11 @@ class ChatState(
                 security = contact?.security ?: SecurityState.PLAINTEXT,
                 lastMessage = store.lastMessage(jid),
                 unread = store.unread(jid),
+                // A conversation with no roster entry is somebody who
+                // messaged us and was never added. Their presence is
+                // unknowable until they are, which is a thing the screen can
+                // say and act on rather than a silent permanent "unknown".
+                saved = contact != null,
             )
         }.sortedWith(
             compareByDescending<Conversation> { it.lastAt }
@@ -291,6 +296,12 @@ class ChatState(
                 security = SecurityState.PLAINTEXT,
                 lastMessage = null,
                 unread = 0,
+                // Nothing is known about this JID at all — it is in neither
+                // the roster nor the store. `false` would put a Save button in
+                // front of somebody who may already be a contact whose roster
+                // entry has simply not arrived, so this branch declines to
+                // offer the remedy rather than offering the wrong one.
+                saved = true,
             )
 
     fun messages(jid: String): List<Message> = store.messages(jid)

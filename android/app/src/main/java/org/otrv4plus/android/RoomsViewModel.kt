@@ -39,8 +39,16 @@ import org.otrv4plus.android.bridge.RoomSummary
  */
 class RoomsViewModel : ViewModel() {
 
-    /** The core, handed over by the Activity once the service has bound. */
-    var core: ChaquopyOtrCore? = null
+    /**
+     * The core, handed over by the Activity once the service has bound.
+     *
+     * Snapshot state, not a plain `var`. There is a window between this screen
+     * being composed and the service binding, and a plain field would not
+     * recompose when it closed — so a screen opened during that window would
+     * call [discover] against a null core, give up silently, and never try
+     * again. The screen keys its one-shot effect on this.
+     */
+    var core by mutableStateOf<ChaquopyOtrCore?>(null)
 
     /** Everything the server hosts, once discovery has run. */
     val services = mutableStateListOf<DiscoveredService>()

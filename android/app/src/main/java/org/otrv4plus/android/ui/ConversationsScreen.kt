@@ -269,7 +269,13 @@ private fun ConversationRow(conversation: Conversation, onClick: () -> Unit) {
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Text(
-                    conversation.preview.ifBlank { presenceWord(conversation.presence) },
+                    conversation.preview.ifBlank {
+                        // "not in your contacts" beats "presence unknown"
+                        // here: both are true, and only one of them says
+                        // what to do about it.
+                        if (conversation.canBeSaved) "not in your contacts"
+                        else presenceWord(conversation.presence)
+                    },
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                     style = MaterialTheme.typography.bodySmall,

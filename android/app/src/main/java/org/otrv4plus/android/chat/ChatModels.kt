@@ -125,12 +125,31 @@ data class Conversation(
     val security: SecurityState,
     val lastMessage: Message?,
     val unread: Int,
+    /**
+     * Whether this person is on the roster.
+     *
+     * False means somebody messaged us who we have never added. That is an
+     * ordinary thing to happen and the conversation exists either way — a
+     * message from a stranger is still a message — but it is WHY their
+     * presence will never be anything but unknown, and the UI has to be able
+     * to say so and offer the remedy.
+     */
+    val saved: Boolean = true,
 ) {
     /** What the list row shows under the name. Empty for a fresh contact. */
     val preview: String
         get() = lastMessage?.body?.replace('\n', ' ')?.take(120) ?: ""
 
     val lastAt: Long get() = lastMessage?.at ?: 0L
+
+    /**
+     * Whether offering "Save contact" would do anything.
+     *
+     * Saving is what subscribes to their presence, so this is not a filing
+     * convenience: an unsaved sender's presence is unknowable, permanently,
+     * and no amount of waiting changes it.
+     */
+    val canBeSaved: Boolean get() = !saved && jid.contains('@')
 }
 
 /**
