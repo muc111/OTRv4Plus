@@ -297,3 +297,14 @@ The automated tests assert the rules this milestone wrote down. Only a person
 reading a real export can say whether the rules were the right ones, and
 whether what is left is still diagnosable. If it is not, that is a finding
 worth reporting — a log nobody can use is not a safer log, it is a missing one.
+
+### One more, from the same milestone
+
+| # | Do | Expect |
+|---|---|---|
+| 30 | From the **second** handset, message an account on the first that has never added it. | On the first handset the conversation appears, the row reads *not in your contacts*, and opening it offers **Save contact** with the reason next to it. |
+| 31 | Press **Save contact**, then accept the request on the second handset. | The banner goes, and the contact's availability stops being unknown. |
+
+Step 30 is the one that used to read as a broken app: their presence was
+unknown, permanently, and nothing said why. Confirm the sentence is there and
+that it names the remedy rather than only the symptom.

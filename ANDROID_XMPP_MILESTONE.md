@@ -244,6 +244,34 @@ Log in ──► Conversations ──► Conversation(jid)
    └─────────────┴──► Debug
 ```
 
+### 2.5 Somebody who messaged you and was never added
+
+An ordinary thing to happen, and the conversation already worked: a message
+from a stranger is still a message, and it got a row from the union of the
+roster and the store.
+
+What was missing is the **explanation**. The server does not send us the
+presence of somebody we have not subscribed to, so their availability reads
+"presence unknown" — *permanently*, not slowly. Waiting does not fix it, and
+nothing on screen said so. That leaves the user with the same conclusion every
+unexplained unknown leaves them with: the app is broken.
+
+`Conversation.saved` carries the fact and `canBeSaved` carries the remedy. The
+conversation shows a line — *not in your contacts, so their availability stays
+unknown* — and a **Save contact** button, which is what sends the subscription.
+The list row says "not in your contacts" in place of "presence unknown",
+because both are true and only one of them says what to do.
+
+It is not dressed as an error: nothing is wrong. The button is disabled rather
+than hidden while the link is down, because the remedy still exists and hiding
+it would make the explanation read as a dead end.
+
+One trap is pinned by a test. `ChatState.conversation(jid)` falls back when the
+union has no row at all, and that fallback reports `saved = true` — claiming
+`false` there would put a Save button in front of somebody who may already be a
+contact whose roster entry has simply not arrived. The first version of that
+line disagreed with the comment sitting above it; the test is what found it.
+
 ---
 
 ## 3. What is executed
@@ -260,11 +288,12 @@ Log in ──► Conversations ──► Conversation(jid)
 | `android/.../RegistrationOutcomeTest.kt` | 14 | Where a failure points the user |
 | `android/.../RoomTypesTest.kt` | 20 | Finding the rooms service, and whether a retry is worth offering |
 | `android/.../LinkPhaseTest.kt` | +6 | That the phase enum declares every stage the controller emits |
+| `android/.../UnsavedSenderTest.kt` | 10 | A stranger's conversation, and where Save is and is not offered |
 
-Totals for the run: **Python 4901 passed, 52 skipped, 1 xfailed**, alongside
+Totals for the run: **Python 4913 passed, 52 skipped, 1 xfailed**, alongside
 four pre-existing failures that reproduce on an unmodified tree
 (`test_identity_and_tofu`, `test_secret_at_rest`, `test_secret_never_echoes`,
-`test_tip_address_relay` — all environmental). **JVM harness: 283 executed, all
+`test_tip_address_relay` — all environmental). **JVM harness: 293 executed, all
 green.**
 
 Several of these bind the fakes against **real slixmpp** — that a
@@ -289,10 +318,42 @@ Everything in Compose. `dl.google.com` is blocked in the build environment, so
 the Android Gradle Plugin does not resolve and `:app:testDebugUnitTest` is
 unavailable until CI; no composable can be executed here.
 
-`ConnectScreen.kt`, `RoomsScreen.kt`, `DevShellScreen.kt`, `MainActivity.kt`
-and `RoomsViewModel.kt` are covered by source-reading tests
-(`tests/test_android_login_and_register_ui.py`,
-`tests/test_android_rooms_ui.py`) and will first compile in CI.
+`ConnectScreen.kt`, `RoomsScreen.kt`, `DevShellScreen.kt`, `MainActivity.kt`,
+`ConversationScreen.kt` and `RoomsViewModel.kt` are covered by source-reading
+tests (`tests/test_android_login_and_register_ui.py`,
+`tests/test_android_rooms_ui.py`) and first compiled in CI.
+
+**CI runs #57 and #59 are green**: the login screen, the Debug screen, the
+rooms screen and the unsaved-sender banner all compile and the APK assembles.
+
+### 4.1 What CI caught that nothing here could
+
+Run #58 failed `:app:compileDebugKotlin`:
+
+```
+ChaquopyOtrCore.kt:353 Returns are prohibited for functions with an
+expression body. Use block body '{...}'.
+```
+
+`leaveRoom` and `destroyRoom` were written as expression bodies containing
+`?: return notPrepared()`, which is not legal Kotlin. The local plain-Kotlin
+harness cannot compile `ChaquopyOtrCore.kt` at all — the file needs Chaquopy,
+which needs the Android Gradle Plugin, which needs `dl.google.com` — so a
+compiler had never seen it.
+
+This is worth recording rather than quietly fixing, because it is the exact
+shape of the limitation in section 4. The source-reading tests check what a
+file *says*; only a compiler checks that it is Kotlin. Both were true here: the
+tests passed and the file did not compile.
+
+Looking for the same pattern elsewhere turned up a second fault of a different
+kind. `RoomsViewModel.core` was a plain `var` assigned when the service binding
+lands, and the rooms screen asked for discovery from `LaunchedEffect(Unit)`. A
+plain field does not recompose, so a Rooms screen opened in the window before
+the binding landed would call `discover()` against a null core, return
+silently, and never try again — an empty rooms screen for the life of that
+screen, with nothing saying why. `core` is snapshot state now and the effect is
+keyed on it.
 
 That is genuinely weaker than executing them. The project's answer to that
 weakness is to keep the **decisions** out of the composables: `SignIn`,
