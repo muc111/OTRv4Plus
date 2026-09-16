@@ -1,6 +1,15 @@
 # Security
 
+> OTRv4+ is an I2P-first private communications client: end-to-end encrypted
+> messaging, file transfer and voice over I2P, with Tor and TLS available as
+> alternative transports for messaging. See [README.md](README.md) for the overview.
+
 Threat model, known issues, and reporting.
+
+Two layers, and they are independent: **I2P protects the network
+relationship; OTRv4+ protects the communication itself.** Neither substitutes
+for the other, and the tables below are about the second one except where they
+name a transport.
 
 ## What OTRv4+ tries to defend against
 

@@ -1,6 +1,13 @@
 # Roadmap
 
-What's next for OTRv4+. Ordered roughly by priority, not by ease.
+> OTRv4+ is an I2P-first private communications client: end-to-end encrypted
+> messaging, file transfer and voice over I2P, with Tor and TLS available as
+> alternative transports for messaging. See [README.md](README.md) for the overview.
+
+What's next for OTRv4+. Ordered roughly by priority, not by ease. What already
+works is [FEATURES.md](FEATURES.md); how far each area has been *verified*
+rather than merely implemented is the README's
+[Project status](README.md#project-status).
 
 ## Recently shipped
 

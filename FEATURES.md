@@ -1,6 +1,11 @@
 # Features
 
-What's implemented as of v10.30.0.
+> OTRv4+ is an I2P-first private communications client: end-to-end encrypted
+> messaging, file transfer and voice over I2P, with Tor and TLS available as
+> alternative transports for messaging. See [README.md](README.md) for the overview.
+
+What's implemented as of v10.30.0. Every entry below is a capability that
+exists in this repository today; planned work lives in [ROADMAP.md](ROADMAP.md).
 
 ## Cryptography
 

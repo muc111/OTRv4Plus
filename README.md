@@ -1,9 +1,34 @@
 <p align="center">
-  <img src="icon.png" width="200" alt="OTRv4+">
+  <img src="icon.png" width="160" alt="OTRv4+">
 </p>
 
 <h1 align="center">OTRv4+</h1>
-<p align="center"><strong>Post-quantum hybrid encryption for Off The Record (OTR) chat <em>and voice calls</em> over IRC and XMPP. Two command-line clients, no GUI. Experimental, unaudited research prototype.</strong></p>
+
+<p align="center"><strong>Private communications over I2P</strong></p>
+
+<p align="center">
+<em>I2P-first · End-to-end encrypted · Hybrid post-quantum · XMPP &amp; IRC · Encrypted voice · Open source</em>
+</p>
+
+---
+
+OTRv4+ is an open-source private communications client built primarily around
+the **I2P network**. It provides end-to-end encrypted messaging, encrypted file
+transfer, and encrypted voice calls between contacts who have verified each
+other with a cryptographic identity check — without a phone number, and without
+the media ever crossing a telephone network.
+
+I2P is not an optional proxy setting bolted on to a chat program. It is the
+network the project was designed around: the transport that carries voice, the
+default on Termux, and the assumption behind the latency budget, the
+fragmentation sizes and the reconnect behaviour. **Tor and TLS are supported
+alternatives for messaging**, with different properties — see
+[Network transports](#network-transports).
+
+> **Experimental, single-author, unaudited research prototype.** It is
+> published to invite the review it has not had. If your safety depends on the
+> security of your messaging, use something audited. The
+> [Honest caveats](#honest-caveats) are not boilerplate — read them.
 
 <p align="center">
 <code>v10.30.0 · Rust crypto core · chat (X448 + ML-KEM-1024, AES-256-GCM) · hybrid PQC SMP (ML-KEM-1024 + ML-DSA-87 + ZKP) · voice (X448 + ML-KEM-1024, AES-256-GCM) · I2P SAM · AAudio · TUI</code>
@@ -11,7 +36,388 @@
 
 ---
 
+## Why OTRv4+?
+
+This started as an attempt to build a modern private messaging client around
+OTR and XMPP, with I2P as the network layer rather than as an afterthought.
+Working on it turned up the usual problem with that idea: almost every part of
+the stack assumes a fast, direct, identified connection, and an anonymising
+overlay breaks all three assumptions at once.
+
+So it grew. What began as chat over I2P now includes a Rust cryptographic core,
+a hybrid post-quantum layer applied at each stage of the protocol rather than
+only at the handshake, encrypted file transfer, and voice calls carried over
+I2P datagrams. Each of those exists because the previous one exposed something
+the anonymous network made harder.
+
+The question the project is trying to answer is what a communications
+application looks like when:
+
+- the anonymous network is part of the architecture, not a proxy setting;
+- encryption is end-to-end, and the server operator is not in the trust
+  boundary;
+- no phone number, no email address and no identity document is involved — an
+  identity is a keypair plus an IRC nickname or an XMPP JID (XMPP still needs
+  an account on some server; it does not need to know who you are);
+- voice does not need a carrier, a PSTN leg, or a direct IP connection between
+  the two people talking;
+- identity can be checked cryptographically, out of band, rather than trusted
+  because a server said so;
+- the primitives are chosen to survive a future quantum adversary recording
+  traffic today;
+- and the user chooses I2P, Tor or TLS according to what they actually need.
+
+It is a research prototype and reads like one. [WHY.md](WHY.md) is the longer
+version of this argument.
+
+### How it got here
+
+The order matters, because each step was forced by the one before it. Milestones
+by version, all traceable in [CHANGELOG.md](CHANGELOG.md):
+
+| | |
+|---|---|
+| **OTR + IRC over I2P** | The starting point: encrypted chat where the network layer does not learn your IP |
+| **A Rust cryptographic core** | Key material moved out of the Python heap into `SecretBytes` with `ZeroizeOnDrop`. Every C extension was retired along the way |
+| **Hybrid post-quantum throughout** | ML-KEM-1024 and ML-DSA-87 added at each stage rather than only at the handshake — including SMP, the identity check itself (v10.9.1) |
+| **XMPP alongside IRC** | A durable identity needs a durable name, which a JID is and an IRC nick is not: persistent identity and fingerprint pinning followed |
+| **Encrypted voice over I2P** | v10.11.0. Then v10.12.0 added liveness detection and authenticated recovery, because an anonymising network's media path moves and stops |
+| **The voice key path into Rust** | v10.13.2 — the epoch root, media keys and X448 scalar, finishing what the chat migration started |
+| **Encrypted file transfer** | `/sendfile`, inside the established session, with a fresh key per transfer |
+| **A native Android app** | In progress. The terminal clients under Termux remain the supported way to run OTRv4+ |
+
+Version numbers here start at v10.6.x because the public repository begins
+mid-history; the work before that point predates this git history and is not
+dated by it.
+
+## What it provides
+
+Every row below is implemented today. Where something is limited to one
+client or one transport, the table says so.
+
+| Feature | What it is for | Scope |
+|---|---|---|
+| **I2P transport** | Communication over an anonymising overlay; neither peer nor server learns the other's IP | IRC and XMPP; default on Termux; **the only transport that carries voice** |
+| **End-to-end encrypted messaging** | Message contents readable only by the two endpoints | IRC and XMPP |
+| **Encrypted voice** | Real-time speech, encrypted end to end, carried over I2P | XMPP, I2P only ([details](#private-voice-over-i2p)) |
+| **Encrypted file transfer** | Send a file inside the established session, with a fresh key per transfer | XMPP only (`/sendfile`) |
+| **Contact verification** | Confirm you are talking to who you think, using a secret agreed out of band | Both, via SMP |
+| **Fingerprint pinning (TOFU)** | Notice when the identity behind a name changes | XMPP (IRC identities are ephemeral by design) |
+| **Hybrid post-quantum cryptography** | Classical and post-quantum primitives together, so breaking one is not enough | Throughout: DAKE, ratchet, SMP, voice |
+| **XMPP** | Interoperable messaging over an existing protocol and server | `otrv4plus_xmpp.py` |
+| **IRC** | Chat over IRC, including I2P IRC networks | `otrv4+.py` |
+| **Tor transport** | Alternative anonymising network for messaging | XMPP and IRC; **no voice**; live-unverified |
+| **TLS 1.3 transport** | Conventional encrypted transport where I2P/Tor are not in use | XMPP and IRC; **no voice**; not anonymous |
+| **Rust cryptographic core** | Keep key material and cryptographic operations out of the Python heap | `otrv4_core`, used by both clients |
+
+Full inventory, with per-feature status: [FEATURES.md](FEATURES.md).
+
+## Private voice over I2P
+
+OTRv4+ carries end-to-end encrypted voice **through I2P**, not over a telephone
+network and not over a direct IP connection between the two people talking.
+
+- **No carrier leg.** Audio goes endpoint → I2P → endpoint. There is no PSTN
+  path, so no carrier call detail record is created.
+- **No direct IP-to-IP media connection.** Each side publishes a transient I2P
+  destination for the call and tears it down afterwards. The XMPP server
+  carries encrypted signalling stanzas; it never carries audio.
+- **Hybrid key establishment.** The media root requires **both** X448 and
+  ML-KEM-1024. Neither alone is sufficient, so an adversary recording the call
+  must break both to play it back later.
+- **No phone number at either end.** Identity is an XMPP JID, verified by SMP
+  against a secret agreed out of band.
+- **A call is refused unless the peer is verified.** The gate is the engine's
+  own cryptographic predicate, not a badge or a log line: if SMP has not
+  succeeded, there is no call. A peer whose pinned fingerprint has changed is
+  refused until that is cleared deliberately.
+- **Opus, shaped for privacy.** Opus at 16 kHz, sent as a constant 279-byte
+  packet every 60 ms for the whole call, with mute sending digital silence — so
+  packet size and timing carry no speech information.
+- **Built for a high-latency network.** An adaptive jitter buffer, Opus in-band
+  FEC, liveness detection on authenticated frames, and authenticated recovery
+  when the media path moves.
+
+**Voice is an active development area and is being tested against the realities
+of I2P latency and jitter.** Median mouth-to-ear is about **917 ms**, where
+ITU-T G.114 calls 400 ms the edge of comfortable — that is the cost of three
+garlic-routed hops in each direction, and reducing it by using fewer hops is
+the one trade this project will not make. It is not a phone replacement. A
+4-hour continuous call has been sustained and a Wi-Fi-to-mobile transition
+recovered authenticated media in 51 seconds, but that is one pair of devices on
+a small number of network paths, and voice remains the newest and
+least-reviewed surface here.
+
+Deeper: [VOICE_MEDIA_PATH.md](VOICE_MEDIA_PATH.md) ·
+[VOICE_LATENCY_BUDGET.md](VOICE_LATENCY_BUDGET.md) ·
+[VOICE_SOAK_TEST.md](VOICE_SOAK_TEST.md) ·
+[Encrypted voice calls](#encrypted-voice-calls) below.
+
+## Why I2P?
+
+Two different problems, solved at two different layers — and the most common
+mistake in this area is treating them as one.
+
+> **I2P protects the network relationship.**
+> **OTRv4+ protects the communication itself.**
+
+No amount of application-layer cryptography hides *which address contacted
+which server*; that is a property of the network, not of the cipher. And no
+overlay network reads your messages for you — I2P carries bytes it cannot
+interpret. You need both layers, and they are genuinely independent.
+
+OTRv4+ is designed so that **communicating endpoints do not need to establish a
+direct IP connection with each other when using the I2P transport.** For chat,
+both peers reach a server through the overlay. For voice, each side publishes a
+transient I2P destination rather than exchanging addresses that could be dialled
+directly.
+
+What this does **not** give you: I2P does not make you untraceable, and it does
+not make traffic analysis impossible. Message size and timing still leak
+metadata; the fact and duration of a voice call remain observable even though
+constant-rate shaping removes the speech-dependent parts; and an XMPP server
+still sees that two JIDs exchanged encrypted stanzas.
+[SECURITY.md](SECURITY.md) states plainly what is and is not defended against,
+and [TRANSPORT_POLICY.md](TRANSPORT_POLICY.md) §1 explains why encryption,
+anonymity and routing are three separate properties.
+
+## How the architecture works
+
+Chat and file transfer travel through a server; voice does not.
+
+```
+        You                                            Your contact
+         │                                                   ▲
+         │ plaintext                               plaintext │
+         ▼                                                   │
+  ┌─────────────────┐                             ┌─────────────────┐
+  │  OTRv4+ engine  │                             │  OTRv4+ engine  │
+  │   (Rust core)   │                             │   (Rust core)   │
+  │  DAKE · ratchet │                             │  DAKE · ratchet │
+  └─────────────────┘                             └─────────────────┘
+         │                                                   ▲
+         │        ╔═══════════════════════════════╗          │
+         │        ║  end-to-end encrypted         ║          │
+         │        ║  nothing below reads this     ║          │
+         │        ╚═══════════════════════════════╝          │
+         ▼                                                   │
+  ┌─────────────────┐                             ┌─────────────────┐
+  │  XMPP  or  IRC  │                             │  XMPP  or  IRC  │
+  └─────────────────┘                             └─────────────────┘
+         │                                                   ▲
+         ▼                                                   │
+  ┌─────────────────┐                             ┌─────────────────┐
+  │    TRANSPORT    │                             │    TRANSPORT    │
+  │  I2P (default)  │                             │  I2P (default)  │
+  │  Tor  ·  TLS    │                             │  Tor  ·  TLS    │
+  └─────────────────┘                             └─────────────────┘
+         │                                                   ▲
+         └──────────────►  ┌───────────────┐  ◄──────────────┘
+                           │  XMPP or IRC  │
+                           │    server     │
+                           └───────────────┘
+                     sees ciphertext, and that two
+                     addresses are talking. Over I2P
+                     those addresses are per-session
+                     I2P destinations, not your IP.
+```
+
+Voice takes a different path. Only the signalling goes through the server, and
+it goes inside the encrypted OTR channel; the audio never touches it:
+
+```
+  You                                                          Your contact
+   │                                                                  │
+   │   ┌── signalling (call setup, rekey) ──────────────────────┐     │
+   │   │   inside the OTR channel, via the XMPP server          │     │
+   │   └────────────────────────────────────────────────────────┘     │
+   │                                                                  │
+   │   media: Opus → AES-256-GCM → I2P datagrams                      │
+   └─────────►  transient I2P destination ─── I2P ───► transient  ────┘
+                (published per call, torn down afterwards)
+
+   No PSTN. No carrier. No direct IP connection between the two endpoints.
+```
+
+Tor and TLS are alternative transports for the **messaging** layer only. Voice
+is I2P-only, deliberately, and fails closed rather than downgrading.
+
+Fuller treatment: [Architecture](#architecture) below and
+[TRANSPORT_POLICY.md](TRANSPORT_POLICY.md).
+
+## Network transports
+
+These are **transport choices, not interchangeable security guarantees.** They
+differ in what they hide, not in how strongly they encrypt: the application-layer
+cryptography is identical on all three.
+
+| Transport | What it is | Anonymity | Voice | Status |
+|---|---|---|---|---|
+| **I2P** | The network OTRv4+ was designed around. Garlic-routed, three hops each way, via the SAM bridge | Neither peer nor server learns your IP | **Yes** — the only transport that carries voice | Implemented; live-verified for XMPP and voice |
+| **Tor** | Alternative anonymising overlay, over SOCKS5, fail-closed with no DNS leak | Neither peer nor server learns your IP | **No** — deliberately not implemented | XMPP and IRC implemented; **live-unverified** |
+| **TLS 1.3** | Conventional encrypted XMPP/IRC, for environments not using an overlay | **None.** Your server sees your IP | **No** | Implemented and working |
+
+TLS 1.3 is **not weak encryption** — it is strong encryption with no network
+anonymity. Calling it "less secure" teaches the wrong lesson; calling it "not
+anonymous" is right. There is no automatic downgrade between transports: one
+that cannot be established fails closed rather than silently falling back to a
+less private one.
+
+Details and the full five-mode policy, including why voice over Tor is not
+implemented: [TRANSPORT_POLICY.md](TRANSPORT_POLICY.md) ·
+[TRANSPORT_AUDIT.md](TRANSPORT_AUDIT.md).
+
+## What is OTRv4+?
+
+Many people arriving here will not know what OTR is.
+
+**Off-the-Record messaging** is a long-standing approach to private chat built
+around three ideas: messages are end-to-end encrypted; keys rotate constantly so
+that compromising one does not expose the conversation's history; and the
+authentication is *deniable*, meaning neither party can later prove to a third
+party who said what.
+
+**OTRv4+ is an evolution of that concept**, extended with modern cryptography,
+post-quantum primitives, authenticated contact verification and additional
+private communications features — voice, file transfer and an I2P-first
+transport layer.
+
+It is **not stock OTRv4, and it is wire-incompatible with it.** Implementations
+such as `pidgin-otr4` and CoyIM cannot talk to OTRv4+: the ML-DSA-87 extension,
+the ML-KEM-1024 brace key and the SHAKE-256 transcript hashing are additions
+with no negotiation path. Both peers must run OTRv4+.
+
+The full wire-level protocol is [SPEC.md](SPEC.md) — enough detail to write an
+independent implementation.
+
+## Security architecture
+
+### In simple terms
+
+Your message or your voice audio is encrypted on your device and decrypted on
+your contact's device. Nothing in between — not the server, not the network —
+can read it. I2P provides the anonymous network transport. OTRv4+ provides the
+authenticated cryptographic session between you and your contact, and the
+identity check that tells you the session really is with them.
+
+The two layers are independent, and you need both. Neither substitutes for the
+other.
+
+### For technical users
+
+Implemented primitives, all inside the Rust `otrv4_core` module:
+
+| Primitive | Role |
+|---|---|
+| **X448** | Ephemeral Diffie–Hellman, in both the DAKE and the double ratchet |
+| **ML-KEM-1024** (FIPS 203) | Post-quantum KEM — DAKE brace key, ratchet rekey, hybrid SMP binding, voice media root |
+| **Ed448** | Long-term identity signing and ClientProfile verification |
+| **Ed448 ring signatures** | Deniable authentication — the property OTR exists for |
+| **ML-DSA-87** (FIPS 204) | Post-quantum signatures, *alongside* the ring signature rather than instead of it |
+| **SHAKE-256** | Key schedule, ring-signature challenge, transcript hashing |
+| **AES-256-GCM** | Authenticated encryption of messages, voice media and at-rest stores |
+| **Argon2id** | SMP passphrase stretch on wire version 0x03, salted with the session ID and both fingerprints |
+
+Architecture:
+
+- **A DAKE** (Deniable Authenticated Key Exchange) establishes the session,
+  hybrid from the start: X448 with ML-KEM-1024 for agreement, Ed448 ring
+  signatures with ML-DSA-87 for authentication.
+- **A double ratchet** rotates keys per message, and re-runs a **fresh
+  ML-KEM-1024 exchange at every DH ratchet step** — not only at the handshake.
+- **SMP** (Socialist Millionaire Protocol) verifies identity against a secret
+  agreed out of band, with the classical zero-knowledge proof wrapped in an
+  ML-KEM-1024 + ML-DSA-87 binding layer. The passphrase never goes on the wire.
+- **Fingerprint pinning** on XMPP: pinned at first contact, a later change is
+  reported and never auto-accepted, and refuses voice until cleared
+  deliberately.
+- **Python orchestrates; Rust holds the secrets.** Long-term private keys,
+  session keys, the voice epoch root, media keys and the X448 private scalar
+  live in Rust `SecretBytes` with `ZeroizeOnDrop` and no accessor. Python holds
+  opaque handles.
+
+Then: [SECURITY.md](SECURITY.md) for the threat model and what is *not*
+defended against · [SPEC.md](SPEC.md) for the wire format ·
+[SECURITY_INVARIANTS.md](SECURITY_INVARIANTS.md) for the machine-checked list.
+
+## Project status
+
+CI being green is not the same as a feature working on a device, and this
+section keeps those apart.
+
+| Area | Status |
+|---|---|
+| **Chat over I2P** | Working. Two-peer live runs on `irc.postman.i2p` (IRC) and a Prosody server reachable over I2P SAM (XMPP). XMPP is newer and has had fewer runs than IRC |
+| **Chat over TLS 1.3** | Working. Live-verified for IRC on Libera.chat |
+| **Chat over Tor** | Implemented, **live-unverified** — the code path exists and has not been exercised against a real hidden service |
+| **Hybrid PQC DAKE, ratchet and SMP** | Working, live-verified. **Unreviewed** — see caveats |
+| **Encrypted file transfer** (`/sendfile`) | Implemented, XMPP only. Two-phone validation plan written; see [FILE_TRANSFER_TEST_PLAN.md](FILE_TRANSFER_TEST_PLAN.md) |
+| **Encrypted voice over I2P** | **Actively tested, still developing.** Two-way audio verified between two Android phones over I2P, with mid-call hybrid rekeys, a 4-hour soak and a network transition. One pair of devices; latency reduction is open work |
+| **Native Android app** | **Under active development.** The messaging foundation — connection service, roster, presence, plaintext XMPP, durable history, diagnostics — is implemented and unit-tested, and CI builds an APK. Physical device acceptance is incomplete: see [ANDROID_FOUNDATION_REPORT.md](ANDROID_FOUNDATION_REPORT.md) |
+| **Group messaging** | **Specification and test vectors only.** [SPEC_GROUP.md](SPEC_GROUP.md) exists, generated before any implementation; there is no group implementation |
+| **External security review** | **None.** This is the single largest gap |
+
+The terminal clients are the supported way to run OTRv4+ today. The native
+Android app is being built alongside them and is not yet a replacement.
+
+## Documentation
+
+**Start here**
+
+- [Quick start](#quick-start) — running it on Termux in about ten minutes
+- [WHY.md](WHY.md) — why this project exists
+- [FEATURES.md](FEATURES.md) — the full feature inventory, with status per feature
+- [ROADMAP.md](ROADMAP.md) — what shipped recently and what is planned
+
+**Security and protocol**
+
+- [SECURITY.md](SECURITY.md) — threat model: what is defended against, and what is not
+- [SPEC.md](SPEC.md) — the formal wire-level protocol specification
+- [SECURITY_INVARIANTS.md](SECURITY_INVARIANTS.md) — the machine-checked invariant list
+- [SECURITY_ISSUES.md](SECURITY_ISSUES.md) — open and resolved security findings
+- [SPEC_GROUP.md](SPEC_GROUP.md) — the group protocol design (specification only)
+
+**Transports and I2P**
+
+- [TRANSPORT_POLICY.md](TRANSPORT_POLICY.md) — which networks may carry traffic, and the rules
+- [TRANSPORT_AUDIT.md](TRANSPORT_AUDIT.md) — what the code actually does today
+- [I2P setup](#2-clone-and-build) — i2pd and the SAM bridge, in Quick start
+
+**Voice**
+
+- [VOICE_MEDIA_PATH.md](VOICE_MEDIA_PATH.md) — the media path end to end
+- [VOICE_LATENCY_BUDGET.md](VOICE_LATENCY_BUDGET.md) — where the milliseconds go
+- [VOICE_SOAK_TEST.md](VOICE_SOAK_TEST.md) — the long-call test procedure
+- [VOICE_AUDIT_REPORT.md](VOICE_AUDIT_REPORT.md) — the voice security audit
+- [Rust/VOICE_TUNING.md](Rust/VOICE_TUNING.md) — every tuning knob and its trade-off
+
+**Android**
+
+- [ANDROID_FOUNDATION_REPORT.md](ANDROID_FOUNDATION_REPORT.md) — current status, root causes, what is unverified
+- [ANDROID_I2P_ARCHITECTURE.md](ANDROID_I2P_ARCHITECTURE.md) — how I2P works on Android
+- [ANDROID_CHAT_ARCHITECTURE.md](ANDROID_CHAT_ARCHITECTURE.md) — the messaging layer
+- [ANDROID_STORAGE_AUDIT.md](ANDROID_STORAGE_AUDIT.md) — what is stored, and how it is protected
+- [ANDROID_MESSAGING_DEVICE_TEST.md](ANDROID_MESSAGING_DEVICE_TEST.md) — the handset acceptance procedure
+
+**Development**
+
+- [DEVELOPMENT.md](DEVELOPMENT.md) — build environment and test plan
+- [CONTRIBUTING.md](CONTRIBUTING.md) — PR guidelines
+- [CHANGELOG.md](CHANGELOG.md) — per-version changes
+- [VERSIONING.md](VERSIONING.md) — the version scheme, and which numbers are wire formats
+- [MIGRATION.md](MIGRATION.md) — moving from earlier versions
+
+**Licensing**
+
+- [LICENSE](LICENSE) (AGPL-3.0) · [LICENSE-COMMERCIAL.md](LICENSE-COMMERCIAL.md) · [LICENSING_AUDIT.md](LICENSING_AUDIT.md) · [CLA.md](CLA.md)
+
+**Known limitations** — [Honest caveats](#honest-caveats) below, and
+[SECURITY.md](SECURITY.md) §"What OTRv4+ does not defend against".
+
+---
+
 ## In action
+
 
 <p align="center">
   <img src="example.png" width="680" alt="OTRv4+ TUI, encrypted session with SMP verified">
@@ -37,9 +443,19 @@
 
 ---
 
-## What this is
+## The cryptography, in one diagram
 
-OTRv4+ is a pair of command-line clients — one for IRC, one for XMPP — that implement OTRv4 with a post-quantum hybrid layer added at each stage of the protocol, including the SMP identity-verification step and, as of v10.11.0, encrypted voice calls carried over I2P — which as of v10.12.0 detect, diagnose and recover from a media path that stops. It runs on Termux (Android) over I2P, Tor, or TLS clearnet, with a Rust crypto core wrapped by a thin Python orchestration layer.
+The sections above are the product. This is the construction underneath it, and
+it is the part that most needs reviewing.
+
+OTRv4+ ships as a pair of command-line clients — one for IRC, one for XMPP —
+implementing OTRv4 with a post-quantum hybrid layer added at each stage of the
+protocol, including the SMP identity-verification step and, as of v10.11.0,
+encrypted voice calls carried over I2P — which as of v10.12.0 detect, diagnose
+and recover from a media path that stops. They run on Termux (Android) over
+I2P, Tor, or TLS clearnet, with a Rust crypto core wrapped by a thin Python
+orchestration layer. A native Android app is under construction alongside them
+([Project status](#project-status)).
 
 Hybrid classical + post-quantum cryptography: X448 with ML-KEM-1024 for key
 agreement, Ed448 with ML-DSA-87 for authentication, keying established
@@ -112,9 +528,12 @@ For someone who wants to try it in about ten minutes on Termux (Android, aarch64
 > **There is an Android APK, and it is not this.** A native app is under
 > construction, and CI publishes each green build as an
 > [experimental prerelease](https://github.com/muc111/OTRv4Plus/releases/tag/android-experimental).
-> **No device has ever launched it** — it is published so it can be tested, not
-> so it can be used. Termux is the supported environment and the rest of this
-> section is the real instructions.
+> It **has** been installed and driven on a handset — that testing is what
+> found the defects recorded in
+> [ANDROID_FOUNDATION_REPORT.md](ANDROID_FOUNDATION_REPORT.md) — but its
+> acceptance run is incomplete and it is published to be tested, not relied on.
+> **Termux is the supported environment** and the rest of this section is the
+> real instructions.
 
 ### 1. Install dependencies
 
