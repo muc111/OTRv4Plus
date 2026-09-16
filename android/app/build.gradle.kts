@@ -331,6 +331,12 @@ val syncPythonSources by tasks.registering(Copy::class) {
             // is also what let the two clients drift apart in the first place:
             // both called `async_ping`, which slixmpp 1.17 does not have.
             "otrv4plus_ping.py",
+            // What we know about a peer's availability, and when we know
+            // nothing. Imported by android_bridge.app at module scope, so a
+            // missing entry here is an ImportError at launch. Its three states
+            // are what replaced a bool that could not tell "offline" from
+            // "never heard".
+            "otrv4plus_presence.py",
             "otrv4plus_audio.py",
             "otrv4plus_coreapi.py",
             "otrv4plus_filetransfer.py",

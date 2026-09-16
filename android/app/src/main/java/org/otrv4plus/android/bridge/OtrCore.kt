@@ -272,10 +272,47 @@ enum class Subscription {
     }
 }
 
+/**
+ * What we know about a peer's availability, INCLUDING not knowing.
+ *
+ * Three states, because the problem has three. This replaced a `Boolean`, and
+ * the boolean was the bug: it could not distinguish "the server has not told
+ * us anything about this peer" from "this peer is offline", so a contact added
+ * a moment ago was reported as offline — and the UI, correctly refusing to
+ * claim knowledge it did not have, rendered "presence unknown" indefinitely.
+ *
+ * Mirrors `otrv4plus_presence.STATES` exactly.
+ */
+enum class PeerPresence {
+    /** No presence stanza has arrived for this peer on this stream. */
+    UNKNOWN,
+
+    /** A presence stanza said they are available. */
+    ONLINE,
+
+    /** A presence stanza said they are not. */
+    OFFLINE;
+
+    companion object {
+        /**
+         * Map Python's answer, failing to [UNKNOWN].
+         *
+         * UNKNOWN is the right unknown: a value this layer does not recognise
+         * must never be rendered as a claim about the peer.
+         */
+        fun of(name: String): PeerPresence = when (name.lowercase()) {
+            "online" -> ONLINE
+            "offline" -> OFFLINE
+            else -> UNKNOWN
+        }
+    }
+}
+
 data class Contact(
     val jid: String,
     val displayName: String,
-    val online: Boolean,
+    /** What the server has told us about their availability. */
+    val presence: PeerPresence,
     val security: SecurityState,
     val smp: SmpState,
     /**
@@ -286,7 +323,18 @@ data class Contact(
     val callAvailable: Boolean,
     /** Where the roster entry has got to. See [Subscription]. */
     val subscription: Subscription = Subscription.UNKNOWN,
-)
+    /** RFC 6121 show: "", "away", "chat", "dnd", "xa". Empty unless online. */
+    val presenceShow: String = "",
+) {
+    /**
+     * Kept for callers that genuinely want a boolean.
+     *
+     * Derived, never stored. False covers both OFFLINE and UNKNOWN, which is
+     * the collapse this enum exists to undo — anything that must tell those
+     * apart reads [presence].
+     */
+    val online: Boolean get() = presence == PeerPresence.ONLINE
+}
 
 /**
  * Where the transport has got to, and what it last said.

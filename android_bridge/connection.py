@@ -305,6 +305,17 @@ class ConnectionController:
             return
         # A drop after we were up is not a stage on the way to connecting, so
         # the connected flag has to go with it or `status` keeps saying yes.
+        #
+        # And everything we knew about who was AVAILABLE goes with it too.
+        # That knowledge was learned over a stream the server is no longer
+        # updating us on, so keeping it means showing a contact as online who
+        # may have left an hour ago. `forget_all` returns every peer to
+        # UNKNOWN, which is the honest answer until the next stanza.
+        if stage in ("failed", "idle") or state == "disconnected":
+            try:
+                self._app.note_presence_lost()
+            except Exception:
+                _log.warning("could not clear presence on a transport drop")
         self._enter(stage)
 
     def _enter(self, stage: str) -> None:

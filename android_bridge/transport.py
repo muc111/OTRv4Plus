@@ -227,7 +227,7 @@ class XmppTransport(Transport):
         password: str,
         *,
         on_payload: Callable[[str, str], None],
-        on_presence: Optional[Callable[[str, bool], None]] = None,
+        on_presence: Optional[Callable[..., None]] = None,
         on_state: Optional[Callable[[str, str], None]] = None,
         on_subscription_request: Optional[Callable[[str], None]] = None,
         subscription_policy: str = SubscriptionPolicy.ACCEPT,
@@ -1235,14 +1235,32 @@ class XmppTransport(Transport):
             peer = str(stanza["from"]).split("/", 1)[0]
         except Exception:
             return
+        # RFC 6121 4.7.2.1. Carried because a UI that has it can tell "online"
+        # from "away" without another round trip; it never DECIDES
+        # availability, which the stanza type already did.
+        show = ""
+        if online:
+            try:
+                show = str(stanza["show"] or "")
+            except Exception:
+                show = ""
         _TRACE.record("presence", "available" if online else "unavailable",
-                      "info", jid=peer)
+                      "info", peer=peer, show=show)
         try:
-            self._on_presence(peer, online)
+            self._on_presence(peer, online, show)
+        except TypeError:
+            # A handler from before `show` existed. Better than dropping the
+            # event: availability is the part that matters.
+            try:
+                self._on_presence(peer, online)
+            except Exception as exc:
+                _log.warning("the presence handler raised")
+                _TRACE.record_exception("presence", "handler_raised", exc,
+                                        peer=peer)
         except Exception as exc:
             _log.warning("the presence handler raised")
             _TRACE.record_exception("presence", "handler_raised", exc,
-                                    jid=peer)
+                                    peer=peer)
 
     def _on_disconnected(self, _event) -> None:
         # Distinct from `stream_declared_dead`: this is slixmpp telling us the

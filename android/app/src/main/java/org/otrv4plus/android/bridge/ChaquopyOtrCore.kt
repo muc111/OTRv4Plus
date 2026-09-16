@@ -443,7 +443,9 @@ class ChaquopyOtrCore(private val appContext: Context) : OtrCore {
             Contact(
                 jid = c.get("jid")?.toString() ?: "",
                 displayName = c.get("display_name")?.toString() ?: "",
-                online = c.get("online")?.toBoolean() ?: false,
+                presence = PeerPresence.of(
+                    c.get("presence")?.toString() ?: ""),
+                presenceShow = c.get("presence_show")?.toString() ?: "",
                 security = SecurityState.fromLevel(c.get("security")?.toInt() ?: 0),
                 smp = SmpState.fromName(c.get("smp")?.get("name")?.toString() ?: "IDLE"),
                 callAvailable = c.get("call_available")?.toBoolean() ?: false,

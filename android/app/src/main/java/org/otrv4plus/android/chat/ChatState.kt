@@ -5,6 +5,7 @@ package org.otrv4plus.android.chat
 import org.otrv4plus.android.bridge.ConnectionStatus
 import org.otrv4plus.android.bridge.Contact
 import org.otrv4plus.android.bridge.OtrEvent
+import org.otrv4plus.android.bridge.PeerPresence
 import org.otrv4plus.android.bridge.SecurityState
 import org.otrv4plus.android.bridge.Subscription
 import org.otrv4plus.android.bridge.SendOutcome
@@ -255,12 +256,16 @@ class ChatState(
                 jid = jid,
                 displayName = contact?.displayName?.takeIf { it.isNotBlank() } ?: jid,
                 presence = Presence.of(
-                    online = contact?.online == true,
+                    // The PEER's own state, not a boolean derived from it.
+                    // A boolean cannot say "no stanza has arrived for them
+                    // yet", so it inferred OFFLINE -- and a just-added
+                    // contact read as unknown forever.
+                    peer = contact?.presence ?: PeerPresence.UNKNOWN,
                     // Nothing is known about anyone while we are disconnected,
                     // and nothing is known while we cannot read the bridge
                     // either. A stale "online" from before the stream died is
                     // a lie with a timestamp.
-                    known = canSend() && contact != null,
+                    linkKnown = canSend() && contact != null,
                     // Says WHY it is unknown when it is. A contact who has
                     // not approved the request yet is not a broken app.
                     subscription = contact?.subscription

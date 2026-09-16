@@ -563,7 +563,22 @@ class TestPresenceInTheUi:
         # Via canSend(), which is `link == OK && connection.connected` -- so a
         # poll that could not read the bridge also stops claiming knowledge of
         # anyone's presence, rather than freezing the last thing it saw.
-        assert "known = canSend() && contact != null" in state
+        #
+        # The parameter is `linkKnown` since presence became three-state: it
+        # was `known`, which read as though it were about the PEER when it has
+        # always been about our own link. Both facts now reach Presence.of --
+        # the peer's state and whether our link is readable -- and this is the
+        # second one.
+        assert "linkKnown = canSend() && contact != null" in state
+
+    def test_the_peers_own_state_reaches_the_ui(self):
+        """The presence fix. A Boolean could not say "no stanza has arrived
+        for this peer yet", so a just-added contact was inferred OFFLINE and
+        rendered as unknown forever."""
+        state = _read(ANDROID, "chat", "ChatState.kt")
+        assert "peer = contact?.presence ?: PeerPresence.UNKNOWN" in state, (
+            "presence is derived from a boolean again, which cannot "
+            "distinguish offline from never-heard")
 
     def test_unknown_is_not_rendered_as_offline(self):
         screen = _read(ANDROID, "ui", "ConversationsScreen.kt")

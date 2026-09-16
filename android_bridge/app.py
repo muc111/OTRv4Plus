@@ -34,6 +34,7 @@ from typing import Any, Callable, Dict, List, Optional
 # Both clients classify and fragment
 # with this module and nothing has a second copy.
 import otrv4plus_fragment as _fragment
+import otrv4plus_presence as _presence
 from otrv4plus_mode import OtrMode
 
 from .events import (
@@ -110,11 +111,19 @@ class ContactView:
 
     jid: str
     display_name: str
-    online: bool
+    #: One of otrv4plus_presence.STATES: "unknown", "online", "offline".
+    #:
+    #: The field that replaced a bare `online: bool`. That bool could not say
+    #: "we have not heard", so a freshly added contact was reported offline and
+    #: the UI -- correctly refusing to claim knowledge it did not have --
+    #: rendered "presence unknown" forever.
+    presence: str
     security: SecurityState
     smp: SmpState
     last_activity: Optional[float] = None
     call_available: bool = False
+    #: RFC 6121 show: "", "away", "chat", "dnd", "xa". Empty unless online.
+    presence_show: str = ""
     #: The XMPP roster subscription, verbatim: "none", "to", "from", "both",
     #: or "" when the roster did not say.
     #:
@@ -128,6 +137,17 @@ class ContactView:
     #: separately from `subscription`, because a pending request does not
     #: change the subscription until it is approved.
     pending: bool = False
+
+    @property
+    def online(self) -> bool:
+        """Kept for callers that genuinely want a boolean.
+
+        DERIVED, never stored: a second field would be a second thing to keep
+        in step, and disagreeing with `presence` is exactly the failure this
+        replaced. False covers both OFFLINE and UNKNOWN, so anything that has
+        to tell those apart must read `presence`.
+        """
+        return self.presence == _presence.ONLINE
 
 
 @dataclass(frozen=True)
@@ -184,7 +204,11 @@ class OtrApp:
         self._sink = event_sink
         self._clock = clock
         self._connection = ConnectionState.DISCONNECTED
-        self._presence: Dict[str, bool] = {}
+        #: What we know about each peer's availability, and when we know
+        #: nothing. A PresenceBook rather than a dict of bools because
+        #: `.get(jid, False)` cannot tell "offline" from "never heard" -- see
+        #: otrv4plus_presence for the bug that produced.
+        self._presence = _presence.PresenceBook()
         self._last_activity: Dict[str, float] = {}
         # Which conversations have had OTR asked for. Never a security state;
         # see otrv4plus_mode.OtrMode.
@@ -247,8 +271,28 @@ class OtrApp:
         self._connection = ConnectionState.CONNECTED
         self._emit(ConnectionStateChanged(state=ConnectionState.CONNECTED))
 
-    def note_presence(self, peer: str, online: bool) -> None:
-        self._presence[peer] = bool(online)
+    def note_presence(self, peer: str, online: bool, show: str = "") -> None:
+        """A presence stanza arrived. Called from the transport's loop thread."""
+        self._presence.note(peer, online, show)
+
+    def note_presence_lost(self) -> None:
+        """The stream went. Everything we knew about availability goes too.
+
+        Availability is knowledge about a peer ON A STREAM: once it dies the
+        server stops telling us about changes, so anything retained is a claim
+        about the past presented as the present. Without this a contact who
+        went offline during a reconnect kept reading ONLINE until they next
+        sent a stanza.
+        """
+        self._presence.forget_all()
+
+    def presence_state(self, peer: str) -> str:
+        """One of otrv4plus_presence.STATES."""
+        return self._presence.state(peer)
+
+    def online_peers(self) -> List[str]:
+        """Peers currently believed available. For the discovery view."""
+        return list(self._presence.online())
 
     @property
     def connection_state(self) -> ConnectionState:
@@ -356,7 +400,8 @@ class OtrApp:
         return ContactView(
             jid=jid,
             display_name=(entry.get("name") if isinstance(entry, dict) else None) or jid,
-            online=self._presence.get(jid, False),
+            presence=self._presence.state(jid),
+            presence_show=self._presence.show(jid),
             subscription=subscription,
             pending=pending,
             security=security,

@@ -2,6 +2,7 @@
 // Copyright (C) 2025-2026 muc111
 package org.otrv4plus.android.chat
 
+import org.otrv4plus.android.bridge.PeerPresence
 import org.otrv4plus.android.bridge.SecurityState
 import org.otrv4plus.android.bridge.Subscription
 
@@ -189,6 +190,38 @@ enum class Presence {
                 subscription != Subscription.UNKNOWN -> UNKNOWN
             online -> ONLINE
             else -> OFFLINE
+        }
+
+        /**
+         * From what the server actually said about THIS PEER.
+         *
+         * The overload above takes a Boolean, which cannot distinguish "the
+         * server has not told us" from "they are offline" — so it inferred
+         * OFFLINE for a peer nothing was known about, and the only thing
+         * standing between that and a wrong label on screen was [linkKnown],
+         * which is a fact about OUR connection rather than about them.
+         *
+         * Precedence, and each step is a different question:
+         *
+         *  1. a request they have not answered -> PENDING, whatever else is
+         *     true: the server will not send their presence until they do;
+         *  2. our own link is not readable -> UNKNOWN: a disconnected client
+         *     knows nothing about anybody;
+         *  3. a subscription that does not carry presence -> UNKNOWN, and
+         *     permanently so — this is correct, not a failure;
+         *  4. otherwise the peer's own state, including UNKNOWN when no
+         *     stanza has arrived yet.
+         */
+        fun of(peer: PeerPresence, linkKnown: Boolean,
+               subscription: Subscription): Presence = when {
+            subscription == Subscription.PENDING -> PENDING
+            !linkKnown -> UNKNOWN
+            !subscription.presenceIsKnowable &&
+                subscription != Subscription.UNKNOWN -> UNKNOWN
+            peer == PeerPresence.ONLINE -> ONLINE
+            peer == PeerPresence.OFFLINE -> OFFLINE
+            // Nothing has arrived for them yet. Says so rather than guessing.
+            else -> UNKNOWN
         }
     }
 }

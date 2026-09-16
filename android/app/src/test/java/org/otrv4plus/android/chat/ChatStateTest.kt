@@ -6,6 +6,8 @@ import org.otrv4plus.android.bridge.ConnectionStatus
 import org.otrv4plus.android.bridge.Contact
 import org.otrv4plus.android.bridge.OtrEvent
 import org.otrv4plus.android.bridge.RosterResult
+import org.otrv4plus.android.bridge.PeerPresence
+import org.otrv4plus.android.bridge.Subscription
 import org.otrv4plus.android.bridge.SecurityState
 import org.otrv4plus.android.bridge.SendOutcome
 import org.otrv4plus.android.bridge.SmpState
@@ -38,14 +40,26 @@ class ChatStateTest {
         return s
     }
 
+    /**
+     * A roster entry.
+     *
+     * `online` stays as the parameter name here because that is what these
+     * tests are expressing, but it now maps onto the three-state
+     * [PeerPresence] rather than a Boolean the model stores. A test that wants
+     * the third state passes `presence` directly.
+     */
     private fun contact(
         jid: String,
         online: Boolean = true,
         security: SecurityState = SecurityState.PLAINTEXT,
         displayName: String = jid,
+        presence: PeerPresence =
+            if (online) PeerPresence.ONLINE else PeerPresence.OFFLINE,
+        subscription: Subscription = Subscription.BOTH,
     ) = Contact(
-        jid = jid, displayName = displayName, online = online, security = security,
-        smp = SmpState.IDLE, callAvailable = false,
+        jid = jid, displayName = displayName, presence = presence,
+        security = security, smp = SmpState.IDLE, callAvailable = false,
+        subscription = subscription,
     )
 
     private fun inbound(peer: String, body: String, at: Double = 1_700.0) =
