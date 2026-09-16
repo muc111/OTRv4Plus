@@ -139,6 +139,15 @@ _ONION = re.compile(r"(?i)\b[A-Za-z0-9.-]+\.onion\b")
 _B32 = re.compile(r"(?i)\b[A-Z2-7]{52}\b")
 
 #: A full I2P destination, which SAM gives as ~516 characters of base64.
+#:
+#: DELIBERATELY BROADER than "a destination". It matches any unbroken run of 80
+#: or more base64-ish characters, so it will also swallow a long opaque token
+#: that is not one. That is the right way round to be wrong: in a log whose
+#: lines are stages, codes, counts and stack frames, an eighty-character word
+#: with no spaces in it is overwhelmingly likely to be an address or a key. The
+#: cost of a false positive is a label where a meaningless blob used to be; the
+#: cost of a false negative is the destination this device talks to, in a file
+#: the user is about to share.
 _DEST64 = re.compile(r"\b[A-Za-z0-9~-]{80,}={0,2}\b")
 
 _IPV4 = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")

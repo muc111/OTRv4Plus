@@ -434,6 +434,96 @@ data class RegistrationOutcome(
             code == "service_unavailable" || code == "forbidden"
 }
 
+/**
+ * Something the server hosts, from XEP-0030 service discovery.
+ *
+ * [category] and [type] are what make this useful: disco#items gives a name
+ * and says nothing about what the thing IS, so finding the rooms service means
+ * asking each item and looking for `conference`/`text`. The convention is
+ * `conference.<domain>`, and it is a convention, not a rule — guessing it
+ * wrong costs an I2P round trip to find out.
+ */
+data class DiscoveredService(
+    val jid: String,
+    val name: String,
+    val category: String,
+    val type: String,
+) {
+    /** Whether this is a Multi-User Chat service, per XEP-0045's identity. */
+    val hostsRooms: Boolean get() = category == "conference" && type == "text"
+}
+
+/** A room a service advertises. Hidden rooms are absent by design. */
+data class RoomSummary(val jid: String, val name: String) {
+    /** The part before the `@`, for a service that advertises no name. */
+    val label: String get() = name.ifBlank { jid.substringBefore('@') }
+}
+
+/**
+ * What we are in a room, and therefore what we may do in it.
+ *
+ * TWO SEPARATE QUESTIONS, and conflating them is the commonest way to get
+ * MUC wrong. [affiliation] is long-term standing with the room and survives
+ * leaving; [role] is standing in this visit and is assigned on join. An owner
+ * who joined a moderated room as a visitor cannot speak until given voice, and
+ * a moderator who owns nothing cannot destroy the room however much of it they
+ * run.
+ *
+ * The booleans are READ, not derived here. `otrv4plus_muc.privileges` works
+ * them out from XEP-0045 §5.1 and is tested by being executed; a second
+ * derivation on this side would be a second opinion that could disagree, and
+ * the disagreement would show up as a button that fails minutes after it is
+ * pressed.
+ *
+ * None of them is a promise. A True means the protocol does not forbid it; the
+ * room's own configuration may still refuse, and what the service says is what
+ * the app reports.
+ */
+data class RoomStanding(
+    val room: String = "",
+    val nick: String = "",
+    val affiliation: String = "none",
+    val role: String = "none",
+    val speak: Boolean = false,
+    val changeSubject: Boolean = false,
+    val invite: Boolean = false,
+    val kick: Boolean = false,
+    val ban: Boolean = false,
+    val configure: Boolean = false,
+    val destroy: Boolean = false,
+    val grantMembership: Boolean = false,
+) {
+    /** Whether any moderation control is worth showing at all. */
+    val moderates: Boolean get() = kick || ban || configure || destroy
+}
+
+/**
+ * What happened when a room operation ran.
+ *
+ * [code] is from `otrv4plus_muc.CODES` — `conflict`, `forbidden`,
+ * `registration_required`, `not_allowed`, `item_not_found`, `timeout` and the
+ * rest — and [detail] is that module's sentence for it, chosen from a fixed
+ * table. Never the service's own words: a MUC error stanza carries the room,
+ * the service and the nickname, and this string is rendered on screen.
+ */
+data class RoomOutcome(
+    val ok: Boolean,
+    val code: String,
+    val detail: String,
+) {
+    /**
+     * Whether trying the same thing again could work. A ban will not stop
+     * being a ban, and inviting a retry wastes four minutes of somebody's
+     * evening on a network this slow.
+     */
+    val worthRetrying: Boolean
+        get() = code == "timeout" || code == "network" ||
+            code == "service_unavailable"
+
+    /** Whether choosing a different nickname is the remedy. */
+    val isAboutTheNickname: Boolean get() = code == "conflict"
+}
+
 data class SecurityDetails(
     val peer: String,
     val security: SecurityState,

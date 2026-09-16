@@ -246,3 +246,54 @@ so on screen. It does not prove anything about voice, file transfer, groups, or
 about a conversation with more than one other person. And a green run on one
 pair of handsets is one data point about I2P tunnel behaviour, not a
 measurement of it.
+
+---
+
+## 7. Account creation, rooms, and reading the log (added with the XMPP milestone)
+
+Steps 1-16 above assume an account that already exists and a conversation
+between two people. This section covers what the XMPP foundation milestone
+added. The reasoning behind each is in
+[ANDROID_XMPP_MILESTONE.md](ANDROID_XMPP_MILESTONE.md); this is the procedure.
+
+**Two accounts are required for steps 22-24**, and they cannot be faked with
+one. The locked-room defect in XEP-0045 §10.1.2 is invisible to the room's
+creator by construction: they are inside a room nobody else can enter, and it
+looks exactly like a working room until somebody tries.
+
+| # | Do | Expect |
+|---|---|---|
+| 17 | On the login screen, type a username that is not taken and a password, and press **Create account**. | "Account created", and the state line reads *Account created — not signed in*. |
+| 18 | Press **Log in** with the same details. | Connects. This is what proves the account was really created — step 17's message alone does not. |
+| 19 | Sign out. Press **Create account** with the *same* username. | "That username is already taken." Note how long it took: over I2P this is a round trip and it should not be the 300 s timeout. |
+| 20 | Repeat step 17 against a server with in-band registration disabled, if one is available. | "This server does not offer in-app registration." **Not** a password error — there is no password to be wrong yet. |
+| 21 | Sign in, open **Rooms**. | The rooms service is found without anything being typed. If the server hosts none, the screen says so rather than showing an empty list. |
+| 22 | Type a room name that does not exist and press **Create**. | The room is created and you are in it, with `owner` and `moderator` shown. |
+| 23 | **On the second handset, with the second account**, join the room created in step 22 by address. | The join succeeds. **If it fails, the room was left locked** — this is the defect step 22 alone cannot detect. |
+| 24 | On the second handset, look at the room's controls. | **Leave** is offered. **Delete room** is not: that account is not an owner. |
+| 25 | Leave the room on the second handset, then rejoin. | Both succeed; the room still exists after being left. |
+| 26 | On the first handset, press **Delete room**. | The room is destroyed and disappears from "You are in". |
+| 27 | Join a room using a nickname already in use in that room. | "That nickname is already taken in this room", and the screen suggests a different one. |
+| 28 | Open **Debug**. Confirm the connection block shows the stage, the worker thread and the last code. | The technical detail is here, and none of it is on the login screen. |
+| 29 | Press **Share error log** and open the exported file. **Read it.** | See below. |
+
+### Step 29 is the one that cannot be delegated
+
+Read the whole file and confirm it contains **none** of:
+
+- your account name, or any part of it;
+- any contact's name or address;
+- any room name or room address;
+- the server's domain or its `.b32.i2p` destination;
+- any IP address, including `127.0.0.1`;
+- any password or key material.
+
+Then confirm the opposite: that the file is still enough to follow what
+happened — the stages in order, the roster calls, the keepalive probes, the
+room operations and their codes. Identities appear as `user-A`, `address-B`,
+`room-C`; the same account is the same label everywhere in the file.
+
+The automated tests assert the rules this milestone wrote down. Only a person
+reading a real export can say whether the rules were the right ones, and
+whether what is left is still diagnosable. If it is not, that is a finding
+worth reporting — a log nobody can use is not a safer log, it is a missing one.

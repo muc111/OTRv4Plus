@@ -343,6 +343,11 @@ val syncPythonSources by tasks.registering(Copy::class) {
             // here is an ImportError at launch rather than a Register button
             // that does nothing.
             "otrv4plus_registration.py",
+            // XEP-0045 room rules: affiliation and role, and what each
+            // allows. Imported by android_bridge.transport and
+            // android_bridge.connection at module scope, so a missing entry
+            // here is an ImportError at launch.
+            "otrv4plus_muc.py",
             // The labels that replace identities in the diagnostic log.
             // Imported by android_bridge.trace at module scope -- and trace is
             // imported by the transport, the controller and the bridge, so a

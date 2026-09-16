@@ -271,6 +271,28 @@ class TestTheStageVocabularyIsClosed:
         to go. Calling that connected is the one claim this must not make."""
         assert ConnectionController._TRANSPORT_STAGE["connected"] == "connecting"
 
+    def test_the_phase_enum_declares_every_stage_the_controller_has(self):
+        """§19: ONE vocabulary, projected -- not a second model.
+
+        `LinkPhase` is the projection of the controller's stages onto the four
+        things a screen needs to tell apart, and it lists them rather than
+        pattern-matching a few. That list is what makes a stage added in
+        Python and forgotten in Kotlin visible; this is what holds the two
+        together. `disconnected` shipped once as a stage the screen rendered
+        raw because nothing had declared it existed.
+        """
+        source = _read(UI, "connection", "LinkPhase.kt")
+        block = source[source.index("val STAGES: Set<String> = setOf("):]
+        block = block[:block.index(")")]
+        declared = set(re.findall(r'"([a-z_]+)"', block))
+        missing = set(ConnectionController.STAGES) - declared
+        assert not missing, (
+            "LinkPhase does not know about these stages: %s" % missing)
+        invented = declared - set(ConnectionController.STAGES)
+        assert not invented, (
+            "LinkPhase declares stages the controller never emits: %s"
+            % invented)
+
     def test_every_stage_the_screen_knows_is_a_stage_the_controller_has(self):
         """Parsed from the Kotlin, so the two lists cannot drift."""
         source = _read(UI, "ui", "ConnectScreen.kt")

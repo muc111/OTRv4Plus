@@ -353,8 +353,8 @@ section keeps those apart.
 | **Hybrid PQC DAKE, ratchet and SMP** | Working, live-verified. **Unreviewed** — see caveats |
 | **Encrypted file transfer** (`/sendfile`) | Implemented, XMPP only. Two-phone validation plan written; see [FILE_TRANSFER_TEST_PLAN.md](FILE_TRANSFER_TEST_PLAN.md) |
 | **Encrypted voice over I2P** | **Actively tested, still developing.** Two-way audio verified between two Android phones over I2P, with mid-call hybrid rekeys, a 4-hour soak and a network transition. One pair of devices; latency reduction is open work |
-| **Native Android app** | **Under active development.** The messaging foundation — connection service, roster, presence, plaintext XMPP, durable history, diagnostics — is implemented and unit-tested, and CI builds an APK. Physical device acceptance is incomplete: see [ANDROID_FOUNDATION_REPORT.md](ANDROID_FOUNDATION_REPORT.md) |
-| **Group messaging** | **Specification and test vectors only.** [SPEC_GROUP.md](SPEC_GROUP.md) exists, generated before any implementation; there is no group implementation |
+| **Native Android app** | **Under active development.** The messaging foundation — connection service, roster, presence, plaintext XMPP, account registration, rooms, durable history, diagnostics — is implemented and unit-tested, and CI builds an APK. Physical device acceptance is incomplete: see [ANDROID_FOUNDATION_REPORT.md](ANDROID_FOUNDATION_REPORT.md) and [ANDROID_XMPP_MILESTONE.md](ANDROID_XMPP_MILESTONE.md) |
+| **Group messaging** | **Specification and test vectors only.** [SPEC_GROUP.md](SPEC_GROUP.md) exists, generated before any implementation; there is no group implementation. The Android app's XMPP rooms (XEP-0045) are **not** this: a room is ordinary group chat, readable by the server hosting it |
 | **External security review** | **None.** This is the single largest gap |
 
 The terminal clients are the supported way to run OTRv4+ today. The native
@@ -394,6 +394,7 @@ Android app is being built alongside them and is not yet a replacement.
 **Android**
 
 - [ANDROID_FOUNDATION_REPORT.md](ANDROID_FOUNDATION_REPORT.md) — current status, root causes, what is unverified
+- [ANDROID_XMPP_MILESTONE.md](ANDROID_XMPP_MILESTONE.md) — account registration, rooms, and the diagnostic-privacy reversal
 - [ANDROID_I2P_ARCHITECTURE.md](ANDROID_I2P_ARCHITECTURE.md) — how I2P works on Android
 - [ANDROID_CHAT_ARCHITECTURE.md](ANDROID_CHAT_ARCHITECTURE.md) — the messaging layer
 - [ANDROID_STORAGE_AUDIT.md](ANDROID_STORAGE_AUDIT.md) — what is stored, and how it is protected

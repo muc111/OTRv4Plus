@@ -236,6 +236,50 @@ class TestTheConditionIsReadStructurally:
         assert reg.classify(IqError(""))[0] == "unknown"
 
 
+class TestACodeTheRaiserAlreadyKnew:
+    """For the cases no XMPP condition describes -- the server never offering
+    registration, the SAM tunnel not opening."""
+
+    def test_it_is_taken_at_its_word(self):
+        code, detail = reg.classify(reg.RegistrationFailed("unsupported"))
+        assert code == "unsupported"
+        assert detail == reg.CODES["unsupported"]
+
+    def test_a_code_that_is_not_one_of_ours_is_unknown(self):
+        assert reg.RegistrationFailed("banana").code == "unknown"
+
+    def test_a_foreign_exceptions_code_is_not_mistaken_for_one_of_ours(self):
+        """`TransportError` also has a `.code`, and its vocabulary is a
+        different one. Without the membership test, `sam_unavailable` would
+        be returned as a registration code the Kotlin side has never heard of
+        -- or would raise KeyError while reporting a failure."""
+        class TransportError(Exception):
+            code = "sam_unavailable"
+
+        code, detail = reg.classify(TransportError())
+        assert code == "unknown"
+        assert detail == reg.CODES["unknown"]
+
+    def test_a_non_string_code_is_ignored(self):
+        class Odd(Exception):
+            code = 42
+
+        assert reg.classify(Odd())[0] == "unknown"
+
+    def test_ok_is_never_returned_from_a_code_attribute(self):
+        """`classify` is only called on a failure. Answering "ok" there would
+        report success for an exception."""
+        class Odd(Exception):
+            code = "ok"
+
+        assert reg.classify(Odd())[0] == "unknown"
+
+    def test_a_known_code_still_loses_to_nothing(self):
+        """The code wins over anything inferred, so a RegistrationFailed
+        carrying `timeout` is a timeout even though its type name is not."""
+        assert reg.classify(reg.RegistrationFailed("timeout"))[0] == "timeout"
+
+
 class TestTheRoundTripNeverCompleting:
 
     def test_a_timeout_is_a_timeout_and_says_i2p_is_slow(self):

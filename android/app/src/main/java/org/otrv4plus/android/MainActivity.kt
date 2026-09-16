@@ -27,6 +27,7 @@ import org.otrv4plus.android.ui.ConnectScreen
 import org.otrv4plus.android.ui.ConversationScreen
 import org.otrv4plus.android.ui.ConversationsScreen
 import org.otrv4plus.android.ui.DevShellScreen
+import org.otrv4plus.android.ui.RoomsScreen
 import org.otrv4plus.android.ui.FingerprintAlertDialog
 
 /**
@@ -38,12 +39,22 @@ import org.otrv4plus.android.ui.FingerprintAlertDialog
  * object graph: everything in navigation state survives Activity recreation
  * because everything in it is a String.
  *
- *     Connect ──► Conversations ──► Conversation(jid)
- *                      │
- *                      ├──► About & licences
- *                      └──► Diagnostics
+ *     Log in ──► Conversations ──► Conversation(jid)
+ *        │             │
+ *        │             ├──► Rooms
+ *        │             ├──► About & licences
+ *        └─────────────┴──► Debug
  *
  * Back unwinds that, which is what the system back button already means.
+ *
+ * Debug hangs off BOTH, and its back goes to whichever the user came from.
+ * It is reachable before anyone has signed in -- which is when a connection
+ * problem is most likely -- and always returning to the conversation list sent
+ * somebody who had not signed in yet to an empty screen with no way out.
+ *
+ * Rooms sit beside conversations rather than inside them. A room is group chat
+ * and is not end-to-end encrypted; listing rooms among one-to-one
+ * conversations would blur two things with different guarantees.
  *
  * WHAT IS NOT IN NAVIGATION STATE
  * -------------------------------
@@ -67,7 +78,7 @@ import org.otrv4plus.android.ui.FingerprintAlertDialog
  */
 class MainActivity : ComponentActivity() {
 
-    private enum class Screen { CONNECT, CONVERSATIONS, CONVERSATION, ABOUT, DIAGNOSTICS }
+    private enum class Screen { CONNECT, CONVERSATIONS, CONVERSATION, ROOMS, ABOUT, DIAGNOSTICS }
 
     /**
      * Asking for POST_NOTIFICATIONS, which on API 33+ is not optional.
@@ -151,6 +162,14 @@ class MainActivity : ComponentActivity() {
                     // talking to the same ViewModel. Its state fields are
                     // snapshot state, so reading them here still recomposes.
                     val chat: ChatViewModel = viewModel()
+                    // Rooms are their own ViewModel rather than more fields
+                    // on the connection's: discovery is two I2P round trips
+                    // and its results outlive the screen, but none of it has
+                    // anything to do with whether the link is up.
+                    val roomsModel: RoomsViewModel = viewModel()
+                    LaunchedEffect(connection.core) {
+                        roomsModel.core = connection.core
+                    }
 
                     var screen by rememberSaveable { mutableStateOf(Screen.CONNECT) }
                     // A JID, never a Conversation object. Stable, saveable, and
@@ -238,8 +257,23 @@ class MainActivity : ComponentActivity() {
                                     screen = Screen.CONVERSATION
                                 },
                                 onOpenConnection = { screen = Screen.CONNECT },
+                                onOpenRooms = { screen = Screen.ROOMS },
                                 onOpenDiagnostics = { screen = Screen.DIAGNOSTICS },
                                 onOpenAbout = { screen = Screen.ABOUT },
+                            )
+                        }
+
+                        Screen.ROOMS -> {
+                            BackHandler { screen = Screen.CONVERSATIONS }
+                            RoomsScreen(
+                                model = roomsModel,
+                                // Seeded from the account's localpart, which
+                                // is what people pick anyway. Editable: a
+                                // nickname in a room is not an identity claim
+                                // and the app should not imply it is.
+                                defaultNick = connection.status.jid
+                                    .substringBefore('@'),
+                                onBack = { screen = Screen.CONVERSATIONS },
                             )
                         }
 

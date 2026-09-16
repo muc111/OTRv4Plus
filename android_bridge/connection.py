@@ -48,6 +48,7 @@ from typing import Any, Callable, Dict, List, Optional
 _log = logging.getLogger("otrv4plus.bridge.connection")
 
 import otrv4plus_address as _address
+import otrv4plus_muc as _muc
 import otrv4plus_registration as _registration
 
 from .settings import ConnectionProfile
@@ -596,6 +597,89 @@ class ConnectionController:
 
     def answer_subscription(self, jid: str, approve: bool) -> Dict[str, Any]:
         return self._roster_call("answer_subscription", jid, approve)
+
+    # -- discovery and rooms --------------------------------------------------
+
+    def discover_services(self) -> Dict[str, Any]:
+        """What the server hosts. The MUC service is what this is for.
+
+        It is conventionally `conference.<domain>` and conventionally is not,
+        and guessing wrong costs an I2P round trip to discover.
+        """
+        return self._muc_call("discover_services")
+
+    def discover_rooms(self, service: str) -> Dict[str, Any]:
+        """The rooms a MUC service advertises.
+
+        Only the public ones. A room configured as hidden is absent by design,
+        so an empty list is a fact about what is advertised rather than
+        evidence that a service has no rooms -- which is why the UI also
+        offers joining a room by address.
+        """
+        return self._muc_call("discover_rooms", service)
+
+    def join_room(self, room: str, nick: str,
+                  password: str = "") -> Dict[str, Any]:
+        """Enter a room, and report what we are in it."""
+        problem = _muc.validate_room(room) or _muc.validate_nick(nick)
+        if problem is not None:
+            return {"ok": False, "code": problem[0], "detail": problem[1],
+                    "value": None}
+        return self._muc_call("join_room", room, nick, password)
+
+    def create_room(self, room: str, nick: str) -> Dict[str, Any]:
+        """Create a room and unlock it. See `XmppTransport.create_room`."""
+        problem = _muc.validate_room(room) or _muc.validate_nick(nick)
+        if problem is not None:
+            return {"ok": False, "code": problem[0], "detail": problem[1],
+                    "value": None}
+        return self._muc_call("create_room", room, nick)
+
+    def leave_room(self, room: str, nick: str) -> Dict[str, Any]:
+        return self._muc_call("leave_room", room, nick)
+
+    def destroy_room(self, room: str, reason: str = "") -> Dict[str, Any]:
+        """Delete a room. Owners only, and the SERVICE is what enforces it."""
+        return self._muc_call("destroy_room", room, reason)
+
+    def room_standing(self, room: str, nick: str) -> Dict[str, Any]:
+        return self._muc_call("room_standing", room, nick)
+
+    def joined_rooms(self) -> Dict[str, Any]:
+        return self._muc_call("joined_rooms")
+
+    def _muc_call(self, name: str, *args) -> Dict[str, Any]:
+        """Run a room operation on the transport and flatten what it says.
+
+        The transport answers `(code, detail, value)` and never raises; this
+        turns that into the dict shape every other controller method returns,
+        because Kotlin reads one shape.
+
+        NOTHING IDENTIFYING IS TRACED. A room address and a nickname are as
+        identifying as a JID -- more so, because a room says who somebody
+        talks to in a group. Only the operation and its code go in; the
+        aliasing in `trace` would label them anyway, and not recording them is
+        one fewer thing depending on that.
+        """
+        transport = self._transport
+        if transport is None:
+            _TRACE.record("muc", name, "warning", result="not_connected")
+            return {"ok": False, "code": "network",
+                    "detail": "Connect before using rooms.", "value": None}
+        try:
+            code, detail, value = getattr(transport, name)(*args)
+        except Exception as exc:
+            # The transport is documented not to raise. This is here because
+            # "documented not to" is not "cannot", and the alternative on a
+            # handset is a PyException carrying the room and the nickname.
+            code, detail = _muc.classify(exc)
+            value = None
+            _TRACE.record("muc", name, "error", code=code)
+        else:
+            _TRACE.record("muc", name, "info" if code == "ok" else "warning",
+                          code=code)
+        return {"ok": code == "ok", "code": code, "detail": detail,
+                "value": value}
 
     def _roster_call(self, name: str, *args) -> Dict[str, Any]:
         # Every roster operation is traced, because "Add Contact did nothing"

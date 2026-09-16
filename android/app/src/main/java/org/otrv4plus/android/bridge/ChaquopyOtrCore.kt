@@ -297,6 +297,124 @@ class ChaquopyOtrCore(private val appContext: Context) : OtrCore {
         return statusFrom(ctl, null)
     }
 
+    // ── service discovery and rooms ───────────────────────────────────────
+    //
+    // Every call here blocks on an I2P round trip and must run off the main
+    // thread. None of them throws for an ordinary failure: the controller
+    // answers {ok, code, detail, value} and these flatten it, because an
+    // exception crossing Chaquopy arrives as a PyException whose message is
+    // all that survives — and a MUC error's message carries the room, the
+    // service and the nickname.
+
+    /** What the server hosts. Finding the rooms service is what this is for. */
+    fun discoverServices(): Pair<RoomOutcome, List<DiscoveredService>> {
+        val result = call("discover_services") ?: return notPrepared() to
+            emptyList()
+        val outcome = outcomeOf(result)
+        val services = mutableListOf<DiscoveredService>()
+        listValue(result)?.let { items ->
+            for (item in items.asList()) {
+                services += DiscoveredService(
+                    jid = entry(item, "jid"),
+                    name = entry(item, "name"),
+                    category = entry(item, "category"),
+                    type = entry(item, "type"),
+                )
+            }
+        }
+        return outcome to services
+    }
+
+    /** The rooms a service advertises. Hidden rooms are absent by design. */
+    fun discoverRooms(service: String): Pair<RoomOutcome, List<RoomSummary>> {
+        val result = call("discover_rooms", service)
+            ?: return notPrepared() to emptyList()
+        val rooms = mutableListOf<RoomSummary>()
+        listValue(result)?.let { items ->
+            for (item in items.asList()) {
+                rooms += RoomSummary(entry(item, "jid"), entry(item, "name"))
+            }
+        }
+        return outcomeOf(result) to rooms
+    }
+
+    fun joinRoom(room: String, nick: String, password: String = ""):
+        Pair<RoomOutcome, RoomStanding> = roomWithStanding(
+            "join_room", room, nick, password)
+
+    fun createRoom(room: String, nick: String): Pair<RoomOutcome, RoomStanding> =
+        roomWithStanding("create_room", room, nick)
+
+    fun roomStanding(room: String, nick: String):
+        Pair<RoomOutcome, RoomStanding> =
+        roomWithStanding("room_standing", room, nick)
+
+    fun leaveRoom(room: String, nick: String): RoomOutcome =
+        outcomeOf(call("leave_room", room, nick) ?: return notPrepared())
+
+    fun destroyRoom(room: String, reason: String = ""): RoomOutcome =
+        outcomeOf(call("destroy_room", room, reason) ?: return notPrepared())
+
+    fun joinedRooms(): Pair<RoomOutcome, List<String>> {
+        val result = call("joined_rooms") ?: return notPrepared() to emptyList()
+        val rooms = listValue(result)?.asList()?.map { it.toString() }
+            ?: emptyList()
+        return outcomeOf(result) to rooms
+    }
+
+    private fun roomWithStanding(name: String, vararg args: Any):
+        Pair<RoomOutcome, RoomStanding> {
+        val result = call(name, *args) ?: return notPrepared() to RoomStanding()
+        val value = result.callAttr("get", "value")
+        val standing = if (value == null) RoomStanding() else RoomStanding(
+            room = entry(value, "room"),
+            nick = entry(value, "nick"),
+            affiliation = entry(value, "affiliation").ifBlank { "none" },
+            role = entry(value, "role").ifBlank { "none" },
+            speak = flag(value, "speak"),
+            changeSubject = flag(value, "change_subject"),
+            invite = flag(value, "invite"),
+            kick = flag(value, "kick"),
+            ban = flag(value, "ban"),
+            configure = flag(value, "configure"),
+            destroy = flag(value, "destroy"),
+            grantMembership = flag(value, "grant_membership"),
+        )
+        return outcomeOf(result) to standing
+    }
+
+    private fun call(name: String, vararg args: Any): PyObject? =
+        controller?.callAttr(name, *args)
+
+    private fun outcomeOf(result: PyObject): RoomOutcome = RoomOutcome(
+        ok = result.callAttr("get", "ok")?.toBoolean() ?: false,
+        code = result.callAttr("get", "code")?.toString()?.ifBlank { "unknown" }
+            ?: "unknown",
+        detail = result.callAttr("get", "detail")?.toString() ?: "",
+    )
+
+    private fun listValue(result: PyObject): PyObject? =
+        result.callAttr("get", "value")
+
+    private fun entry(item: PyObject, key: String): String =
+        runCatching { item.callAttr("get", key)?.toString() }.getOrNull()
+            ?: ""
+
+    private fun flag(item: PyObject, key: String): Boolean =
+        runCatching { item.callAttr("get", key)?.toBoolean() }.getOrNull()
+            ?: false
+
+    /**
+     * No controller yet, which is not the same as a failure to do the thing.
+     *
+     * Reported as `network` because from the user's side it is the same
+     * situation — nothing has connected — and it is the code the rooms screen
+     * already knows how to render.
+     */
+    private fun notPrepared(): RoomOutcome = RoomOutcome(
+        ok = false, code = "network",
+        detail = "Connect before using rooms.")
+
     // ── the shareable error log ───────────────────────────────────────────
 
     /**

@@ -179,6 +179,37 @@ class TestTheSweepFindsIdentitiesInASentence:
         assert "@" not in out
 
 
+class TestALongUnbrokenTokenIsTreatedAsAnAddress:
+    """`_DEST64` is broader than "a base64 I2P destination", on purpose.
+
+    A full destination is ~516 characters of base64 and SAM prints it with no
+    spaces. The pattern matches any unbroken run of 80+ base64-ish characters,
+    which will also swallow a long opaque token that is not a destination.
+
+    That is the right way round to be wrong. In a log whose lines are stages,
+    codes, counts and stack frames, an 80-character word with no spaces in it
+    is overwhelmingly likely to be an address or a key, and the cost of a false
+    positive is a label where a meaningless blob used to be. The cost of a
+    false negative is the destination this device talks to, in a file the user
+    is about to share.
+    """
+
+    def test_a_long_opaque_token_is_aliased(self, book):
+        assert book.scrub("t" * 200).startswith("address-")
+
+    def test_ordinary_prose_is_not_aliased_however_long(self, book):
+        text = "the stream went quiet and the probe went unanswered " * 20
+        assert book.scrub(text) == text
+
+    def test_a_stack_frame_list_survives(self, book):
+        frames = " <- ".join("transport.py:%d in _connect" % n
+                             for n in range(40))
+        assert book.scrub(frames) == frames
+
+    def test_a_short_token_is_left_alone(self, book):
+        assert book.scrub("abcdef0123456789") == "abcdef0123456789"
+
+
 class TestTheSweepDoesNotEatOrdinaryText:
     """A diagnostic that scrubs its own vocabulary is not a diagnostic."""
 
@@ -248,6 +279,31 @@ class TestTheTraceAliasesEveryField:
         line that looks redacted."""
         log.record("x", "y", detail="%s %s" % ("z" * 190, JID))
         assert "alice" not in log.events()[0]["fields"]["detail"]
+
+    def test_a_long_value_is_still_truncated_after_aliasing(self, log):
+        """The cap survives the alias pass being added in front of it. A
+        field that grew unexpectedly must not turn the export into something
+        unopenable on a phone -- and a value that is long because it is
+        rubbish is exactly the kind that grows."""
+        from android_bridge.trace import MAX_VALUE
+
+        # Words rather than one long run of a letter: an unbroken 80-character
+        # token is aliased as a destination (see TestALongUnbrokenTokenIsTreated
+        # AsAnAddress below), which would make this measure the wrong thing.
+        log.record("x", "y", detail="the stream went quiet " * 40)
+        rendered = log.events()[0]["fields"]["detail"]
+        assert len(rendered) < MAX_VALUE * 2
+        assert "more)" in rendered, "the truncation marker is gone"
+
+    def test_a_stack_trace_keeps_its_larger_allowance(self, log):
+        from android_bridge.trace import LONG_KEYS, MAX_VALUE
+
+        frames = " <- ".join("transport.py:%d in _connect" % n
+                             for n in range(60))
+        log.record("x", "y", stack_trace=frames)
+        rendered = log.events()[0]["fields"]["stack_trace"]
+        assert len(rendered) > MAX_VALUE
+        assert len(rendered) <= LONG_KEYS["stack_trace"] + 40
 
     def test_a_secret_key_still_wins_over_aliasing(self, log):
         log.record("x", "y", password=PASSWORD)
@@ -326,6 +382,23 @@ class TestNothingIdentifyingReachesTheFile:
     def test_a_password_still_does_not_reach_the_file(self, log):
         log.record("connect", "attempt", password=PASSWORD)
         assert PASSWORD not in _report(log)
+
+    def test_a_clearnet_server_is_aliased_by_its_key_not_its_shape(self, log):
+        """The case the shape sweep CANNOT catch, and therefore the one the
+        key-name pass exists for.
+
+        `example.com` matches no identity pattern -- it is not a JID, not
+        `.i2p`, not `.onion`, not an IP literal. Only `_connection_fields`
+        knowing that `server` is a host keeps it out of the file. The profile
+        allows a clearnet server, so this is a configuration somebody can
+        actually be in.
+        """
+        text = report.build(
+            status={"stage": "failed", "server": "chat.example.com",
+                    "jid": "alice@chat.example.com"},
+            trace=log)
+        assert "example.com" not in text
+        assert "address-" in text
 
 
 class TestTheLabelsAreConsistentAcrossTheWholeFile:

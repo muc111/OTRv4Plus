@@ -48,6 +48,7 @@ import time
 from typing import Any, Callable, Dict, List, Optional
 
 import otrv4plus_fragment as _fragment
+import otrv4plus_muc as _muc
 import otrv4plus_ping as _ping
 import otrv4plus_registration as _registration
 
@@ -1325,6 +1326,209 @@ class XmppTransport(Transport):
     def subscription_policy(self) -> str:
         return self._subscription_policy
 
+    # -- discovery and rooms --------------------------------------------------
+    #
+    # XEP-0030 and XEP-0045, neither of which was registered on this client
+    # before. Every method here returns a `(code, detail, value)` triple rather
+    # than raising, for the same reason `register_account` does: the caller is
+    # Kotlin through a controller, and an exception crossing Chaquopy arrives
+    # as a PyException whose message -- which for a MUC error contains the room
+    # and the nickname -- is the only thing that survives.
+    #
+    # The timeout is CONNECT_TIMEOUT rather than CALL_TIMEOUT. Joining a room
+    # is a presence round trip plus the room's history, over three I2P hops;
+    # slixmpp's own default for `join_muc_wait` is 300s, and a shorter one here
+    # would report a timeout for something still in flight.
+
+    def discover_services(self) -> "tuple[str, str, list]":
+        """What the server hosts: its disco#items, each with its identity.
+
+        The MUC service is what this is really for -- it is conventionally
+        `conference.<domain>` and conventionally is not, and guessing wrong
+        costs an I2P round trip to find out.
+        """
+        return self._room_call(self._discover_services())
+
+    async def _discover_services(self):
+        disco = self._client["xep_0030"]
+        domain = str(self._client.boundjid.domain)
+        items = await disco.get_items(jid=domain, timeout=CALL_TIMEOUT)
+        out = []
+        for jid, _node, name in items["disco_items"].get_items():
+            entry = {"jid": str(jid), "name": str(name or ""),
+                     "category": "", "type": ""}
+            try:
+                # Asked per item, because disco#items gives a name and nothing
+                # about what the thing IS. Failures are swallowed per item: one
+                # component that will not answer must not empty the list.
+                info = await disco.get_info(jid=jid, timeout=CALL_TIMEOUT)
+                for category, itype, _lang, iname in \
+                        info["disco_info"]["identities"]:
+                    entry["category"] = str(category)
+                    entry["type"] = str(itype)
+                    if not entry["name"]:
+                        entry["name"] = str(iname or "")
+                    break
+                entry["features"] = [str(f) for f
+                                     in info["disco_info"]["features"]]
+            except Exception:
+                _log.info("a service did not answer a disco#info")
+            out.append(entry)
+        return out
+
+    def discover_rooms(self, service: str) -> "tuple[str, str, list]":
+        """The public rooms a MUC service lists.
+
+        Only the public ones: disco#items is what a service chooses to
+        advertise, and a room configured as hidden is absent by design. An
+        empty list is not evidence that a service has no rooms.
+        """
+        return self._room_call(self._discover_rooms(service))
+
+    async def _discover_rooms(self, service: str):
+        items = await self._client["xep_0030"].get_items(
+            jid=service, timeout=CALL_TIMEOUT)
+        return [{"jid": str(jid), "name": str(name or "")}
+                for jid, _node, name in items["disco_items"].get_items()]
+
+    def join_room(self, room: str, nick: str,
+                  password: str = "") -> "tuple[str, str, dict]":
+        """Enter a room, and report what we are in it.
+
+        The privileges come back with the join because they are in the
+        presence the service sends us on arrival, and asking for them
+        separately would be a second round trip for something we already have.
+        """
+        return self._room_call(self._join_room(room, nick, password))
+
+    async def _join_room(self, room: str, nick: str, password: str):
+        await self._client["xep_0045"].join_muc_wait(
+            room, nick, password=password or None, timeout=CONNECT_TIMEOUT)
+        return self._room_standing(room, nick)
+
+    def create_room(self, room: str, nick: str) -> "tuple[str, str, dict]":
+        """Create a room and accept the service's default configuration.
+
+        XEP-0045 §10.1.2's "instant room": joining a room that does not exist
+        creates it in a locked state, and an owner who sends the empty
+        configuration form unlocks it. WITHOUT THAT SECOND STEP THE ROOM STAYS
+        LOCKED -- the creator is in it and nobody else can get in, which looks
+        exactly like a room that works until somebody is invited.
+
+        The alternative, a full configuration form, is a screen of checkboxes
+        in front of somebody who asked for a room. It can come later; a room
+        that exists is the thing being asked for here.
+        """
+        return self._room_call(self._create_room(room, nick))
+
+    async def _create_room(self, room: str, nick: str):
+        muc = self._client["xep_0045"]
+        await muc.join_muc_wait(room, nick, timeout=CONNECT_TIMEOUT)
+        # The empty form. `set_room_config` with a form carrying no fields is
+        # the "accept the defaults" submission §10.1.2 describes.
+        form = self._client["xep_0004"].make_form(ftype="submit")
+        await muc.set_room_config(room, form, timeout=CALL_TIMEOUT)
+        return self._room_standing(room, nick)
+
+    def leave_room(self, room: str, nick: str) -> "tuple[str, str, dict]":
+        """Leave a room. The room continues to exist without us."""
+        return self._room_call(self._leave_room(room, nick))
+
+    async def _leave_room(self, room: str, nick: str):
+        self._client["xep_0045"].leave_muc(room, nick)
+        return {}
+
+    def destroy_room(self, room: str,
+                     reason: str = "") -> "tuple[str, str, dict]":
+        """Delete a room. OWNERS ONLY, and the service is what enforces it.
+
+        `otrv4plus_muc.privileges` is what stops the button being offered to
+        somebody who cannot; this does not check, deliberately. A client-side
+        permission check that disagreed with the service would be a second
+        opinion in a place with no way to be right, and the one that matters
+        is the service's.
+        """
+        return self._room_call(self._destroy_room(room, reason))
+
+    async def _destroy_room(self, room: str, reason: str):
+        await self._client["xep_0045"].destroy(room, reason=reason,
+                                               timeout=CALL_TIMEOUT)
+        return {}
+
+    def room_standing(self, room: str, nick: str) -> "tuple[str, str, dict]":
+        """Our affiliation and role in a room we are already in."""
+        try:
+            return ("ok", _muc.CODES["ok"], self._room_standing(room, nick))
+        except Exception as exc:
+            code, detail = _muc.classify(exc)
+            return (code, detail, {})
+
+    def joined_rooms(self) -> "tuple[str, str, list]":
+        """The rooms this session is in, as slixmpp has them."""
+        try:
+            rooms = self._client["xep_0045"].get_joined_rooms()
+            return ("ok", _muc.CODES["ok"], [str(r) for r in rooms])
+        except Exception as exc:
+            code, detail = _muc.classify(exc)
+            return (code, detail, [])
+
+    def _room_standing(self, room: str, nick: str) -> Dict[str, Any]:
+        """Read affiliation and role out of slixmpp's room roster.
+
+        Both, always, and never one inferred from the other: they are
+        different questions -- see `otrv4plus_muc` -- and an owner who joined
+        as a visitor cannot speak.
+        """
+        muc = self._client["xep_0045"]
+
+        def prop(name):
+            try:
+                return str(muc.get_jid_property(room, nick, name) or "")
+            except Exception:
+                return ""
+
+        affiliation = prop("affiliation") or _muc.NONE
+        role = prop("role") or _muc.NO_ROLE
+        rights = _muc.privileges(affiliation, role)
+        out = rights.as_dict()
+        out["room"] = str(room)
+        out["nick"] = str(nick)
+        return out
+
+    def _room_call(self, coro) -> "tuple[str, str, Any]":
+        """Run a room operation and classify whatever it does.
+
+        Every failure becomes a `(code, detail)` from `otrv4plus_muc`, and the
+        detail is chosen from that module's table rather than built from the
+        exception -- a MUC error stringifies to something carrying the room,
+        the service and the nickname.
+
+        NOT `_run`. That one flattens every exception into
+        `TransportError("unexpected_error", type(exc).__name__)`, which is
+        right for a send and destroys exactly what matters here: the condition
+        inside the stanza is how "that nickname is taken" is told apart from
+        "you are banned", and a type name is neither.
+        """
+        if not self.is_connected:
+            coro.close()
+            return ("network", _muc.CODES["network"], None)
+        try:
+            loop = self._ensure_loop()
+            future = asyncio.run_coroutine_threadsafe(coro, loop)
+            value = future.result(timeout=CONNECT_TIMEOUT)
+        except TimeoutError:
+            # Builtin TimeoutError: nothing raised, the work simply never
+            # finished. Cancelled rather than abandoned, so a join nobody is
+            # waiting on stops occupying the room's presence.
+            future.cancel()
+            return ("timeout", _muc.CODES["timeout"], None)
+        except BaseException as exc:
+            # BaseException for CancelledError, which does not derive from
+            # Exception on the asyncio side. `classify` is total.
+            code, detail = _muc.classify(exc)
+            return (code, detail, None)
+        return ("ok", _muc.CODES["ok"], value)
+
     def _wire(self, client) -> None:
         # Applied explicitly rather than inherited. slixmpp defaults both
         # auto_authorize and auto_subscribe to True, so "we accept everyone"
@@ -1530,6 +1734,25 @@ def _default_client_factory():
         except Exception:
             _log.warning("could not register xep_0199; the keepalive will "
                          "fall back to whitespace only")
+        # Service discovery and rooms. NEITHER WAS REGISTERED, which is why
+        # there was nothing behind a rooms screen: `client["xep_0045"]` on a
+        # client that has not registered it raises, and discovery had no way
+        # to find the MUC service at all.
+        #
+        # Registered here, before the stream, for the same reason xep_0199 is:
+        # a plugin added after the session is up does not get its handlers
+        # wired, and xep_0045's handlers are how joining a room ever completes.
+        #
+        # Each separately, so one that is missing from a slimmed-down slixmpp
+        # does not take the other with it. xep_0004 is named explicitly
+        # because `create_room` submits a data form and a dependency being
+        # pulled in implicitly is one that can stop being pulled in.
+        for plugin in ("xep_0030", "xep_0004", "xep_0045"):
+            try:
+                client.register_plugin(plugin)
+            except Exception:
+                _log.warning("could not register %s; rooms and service "
+                             "discovery will not work", plugin)
         return client
 
     return factory

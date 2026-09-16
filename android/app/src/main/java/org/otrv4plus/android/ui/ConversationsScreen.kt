@@ -40,6 +40,7 @@ fun ConversationsScreen(
     model: ChatViewModel,
     onOpen: (String) -> Unit,
     onOpenConnection: () -> Unit = {},
+    onOpenRooms: () -> Unit = {},
     onOpenDiagnostics: () -> Unit = {},
     onOpenAbout: () -> Unit = {},
 ) {
@@ -118,6 +119,12 @@ fun ConversationsScreen(
                 Modifier.fillMaxWidth().padding(horizontal = 8.dp),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
+                // Rooms sit alongside one-to-one conversations rather
+                // than inside them: a room is group chat and is not
+                // end-to-end encrypted, and listing rooms among
+                // conversations would blur two things that have
+                // different guarantees.
+                TextButton(onClick = onOpenRooms) { Text("Rooms") }
                 TextButton(onClick = onOpenDiagnostics) { Text("Debug") }
                 TextButton(onClick = onOpenAbout) { Text("About & licences") }
             }
