@@ -60,6 +60,21 @@ fun ConversationScreen(
     }
 
     Scaffold(
+        // THE IME IS HANDLED HERE, ONCE.
+        //
+        // The defect: this was on the inner Column instead, and the window was
+        // ALSO resizing behind it. `MainActivity` now turns decor fitting off
+        // so the window stops resizing on every API level (see there), which
+        // leaves exactly one mechanism — and it has to be the Scaffold, not
+        // the content.
+        //
+        // On the Scaffold the whole thing shrinks by the keyboard height, so
+        // `bottomBar` lands on top of the keyboard and the content lambda's
+        // padding is computed from what is genuinely left. On the inner Column
+        // the Scaffold still believed it had the full window: it placed the
+        // composer under the keyboard and handed the content a padding that
+        // reserved space for a composer that was no longer there.
+        modifier = Modifier.imePadding(),
         topBar = {
             TopAppBar(
                 navigationIcon = {
@@ -87,14 +102,17 @@ fun ConversationScreen(
             )
         },
     ) { padding ->
+        // `padding` FIRST, then `fillMaxSize`: the padding reduces the
+        // constraints and the fill takes what is left of them. Reversed, the
+        // Column would size itself to the full window and then be inset,
+        // overflowing by exactly the padding.
+        //
+        // No `imePadding()` here. It is on the Scaffold above, and having it
+        // in both places is what subtracted the keyboard twice.
         Column(
             Modifier
                 .padding(padding)
-                .fillMaxSize()
-                // The keyboard must not cover the composer or the last
-                // message. Applied here rather than per-widget so there is one
-                // place that decides it.
-                .imePadding(),
+                .fillMaxSize(),
         ) {
             SecurityLine(conversation.security)
 

@@ -127,7 +127,14 @@ class TestCredentialsAreNotExposed:
         block = service[service.index("ACTION_LOGOUT ->"):]
         block = block[:block.index("ACTION_START ->")]
         assert "credentials.clear()" in block
-        assert "messages.clear()" in block
+        # `forgetAccount`, not `clear`. The vault is shared between accounts
+        # now, so a sign-out removes THIS account's history and leaves any
+        # other account's entries alone -- signing out is not a licence to
+        # delete somebody else's data off the device.
+        assert "messages.forgetAccount()" in block
+        # And the service stops holding anything at all, rather than staying
+        # bound to the account that just left.
+        assert "enterAccount(AccountScope.NONE)" in block
 
 
 class TestTheServiceOwnsTheConversation:
@@ -186,13 +193,25 @@ class TestHistoryIsSealedNotPlaintext:
                        "FileWriter"):
             assert banned not in store, banned
 
-    def test_the_entry_name_is_not_the_contact(self):
+    def test_the_entry_name_is_neither_the_contact_nor_the_account(self):
         """Names are not sealed -- only values are -- so a directory listing
-        must not read as a contact list."""
-        store = _read(JAVA, "chat", "PersistentMessageStore.kt")
-        block = store[store.index("fun entryFor("):]
-        block = block[:block.index("internal fun stableHash")]
-        assert "stableHash" in block
+        must not read as a contact list.
+
+        The name now carries BOTH halves, since a conversation belongs to an
+        account as well as to a peer, so there are two things to keep out of
+        it rather than one. `AccountScope` is where the hashing moved to."""
+        scope = _read(JAVA, "chat", "AccountScope.kt")
+        block = scope[scope.index("fun entryFor("):]
+        block = block[:block.index("val prefix")]
+        assert "hashOf(" in block
+        assert "chat.$key." in block, "the account is not part of the name"
+
+    def test_the_index_name_carries_the_account_too(self):
+        """A single global index is how the original leak was reachable even
+        before any entry was opened: it listed every conversation on the
+        device regardless of whose it was."""
+        scope = _read(JAVA, "chat", "AccountScope.kt")
+        assert 'indexName: String get() = "chat.$key.index"' in scope
 
     def test_no_cryptographic_material_is_persisted(self):
         """The security label is the WORD `ENCRYPTED`, not a key. A ratchet

@@ -53,6 +53,56 @@ class ChatState(
 
     private var outgoingSequence = 0L
 
+    /**
+     * Whose conversation this is.
+     *
+     * The store enforces the boundary for anything that reaches a disk; this
+     * field is what closes it for the state that never does — the roster, the
+     * drafts, the open conversation, the unread badge. All of it is private
+     * to an account and all of it used to survive a sign-in as somebody else,
+     * because this object is a service singleton and nothing ever told it the
+     * account had changed.
+     */
+    var account: AccountScope = AccountScope.NONE
+        private set
+
+    /**
+     * Bind to an account, dropping everything belonging to the last one.
+     *
+     * ONE CALL, and everything goes in it: the store is rebound, the roster
+     * is emptied, the drafts are dropped, the open conversation is closed and
+     * the connection view is reset. A partial boundary is not a boundary —
+     * leaving the roster behind would show Dave a list of Bob's contacts even
+     * with Bob's messages correctly gone.
+     *
+     * Binding to the same account is a no-op, so a reconnect does not discard
+     * a half-typed message.
+     */
+    fun bindAccount(next: AccountScope) {
+        if (next == account) return
+        account = next
+        contacts.clear()
+        drafts.clear()
+        openConversation = null
+        connection = ConnectionStatus()
+        link = Link.UNKNOWN
+        readFailure = null
+        notice = null
+        droppedEvents = 0
+        outgoingSequence = 0L
+        (store as? PersistentMessageStore)?.bind(next)
+    }
+
+    /**
+     * Whether a message that arrived for [forAccount] may be accepted.
+     *
+     * The ingestion guard. A listener belonging to a session that has been
+     * replaced can still deliver — the callback is held by the old client, not
+     * by us — and without this its message lands in whoever is signed in now.
+     */
+    fun accepts(forAccount: AccountScope): Boolean =
+        account.isAuthenticated && forAccount == account
+
     /** Which conversation is open, or null for the list. A JID, never an
      *  object: navigation state must not hold anything mutable or live. */
     var openConversation: String? = null

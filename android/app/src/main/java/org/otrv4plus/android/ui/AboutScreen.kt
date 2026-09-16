@@ -79,6 +79,12 @@ fun AboutScreen(onBack: () -> Unit = {}) {
     Column(
         modifier = Modifier
             .fillMaxSize()
+            // The window no longer fits the decor -- MainActivity turns that
+            // off so the keyboard is handled by exactly one mechanism -- so
+            // every screen that is not a Scaffold has to inset itself. Without
+            // this the title sits under the status bar and the last control
+            // sits under the navigation bar.
+            .systemBarsPadding()
             .verticalScroll(rememberScrollState())
             .padding(24.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),

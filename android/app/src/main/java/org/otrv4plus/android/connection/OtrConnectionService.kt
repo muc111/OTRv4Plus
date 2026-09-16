@@ -29,6 +29,7 @@ import org.otrv4plus.android.MainActivity
 import org.otrv4plus.android.R
 import org.otrv4plus.android.bridge.ChaquopyOtrCore
 import org.otrv4plus.android.bridge.ConnectionStatus
+import org.otrv4plus.android.chat.AccountScope
 import org.otrv4plus.android.chat.ChatState
 import org.otrv4plus.android.chat.InboundAlerts
 import org.otrv4plus.android.chat.PersistentMessageStore
@@ -114,7 +115,15 @@ class OtrConnectionService : Service() {
      * the UI is gone still has to be written down. A store owned by a
      * ViewModel is a store that does not exist when it matters most.
      */
-    val messages: PersistentMessageStore by lazy { PersistentMessageStore(vault) }
+    val messages: PersistentMessageStore by lazy {
+        // History written before histories had owners cannot be attributed to
+        // anyone -- the old scheme recorded no account at all -- so it is
+        // deleted rather than migrated. Handing it to whoever signs in next is
+        // exactly the defect this boundary removes. Idempotent, and a no-op on
+        // an installation that never had any.
+        runCatching { PersistentMessageStore.purgeLegacy(vault) }
+        PersistentMessageStore(vault)
+    }
 
     /**
      * The conversation, owned here so it outlives every screen.
@@ -223,7 +232,12 @@ class OtrConnectionService : Service() {
                 // person to sign in on this phone would be worse than useless.
                 stopConnection(explicit = true)
                 runCatching { credentials.clear() }
-                runCatching { messages.clear() }
+                // This account's history, not the whole vault: another
+                // account's entries live under another prefix and are not
+                // ours to delete. `enterAccount(NONE)` then leaves the
+                // service holding nothing at all.
+                runCatching { messages.forgetAccount() }
+                runCatching { enterAccount(AccountScope.NONE) }
                 // And take the notification down with them. A count of unread
                 // messages left in the shade after a sign-out is a statement
                 // about an account that is no longer on this device.
@@ -295,10 +309,45 @@ class OtrConnectionService : Service() {
 
     /** Begin, or do nothing if an attempt is already running. */
     fun startConnection() {
+        // THE ACCOUNT BOUNDARY, and it is here rather than in the UI because
+        // this is the one place every route to an authenticated session goes
+        // through: a fresh sign-in, a resume from stored credentials, and a
+        // reconnect. Binding before anything starts means no listener, no
+        // poll and no screen can read the previous account's state, not even
+        // for the moment it takes the connection to come up.
+        //
+        // `bindAccount` is a no-op when the account has not changed, so a
+        // reconnect costs nothing and keeps a half-typed message.
+        enterAccount(AccountScope.of(jid))
         reconnect.onUserConnect()
         startDraining()
         if (worker?.isActive == true) return
         worker = scope.launch { connectLoop() }
+    }
+
+    /**
+     * Make [next] the account this service is holding state for.
+     *
+     * Everything private to an account is dropped and rebound in one place:
+     * the conversation, the roster, the drafts, the history store and the
+     * unread badge. Ordered so nothing belonging to the old account is
+     * readable at any point after the first line.
+     *
+     * The arrival notification goes too. A count of unread messages left in
+     * the shade across a sign-in is a statement about an account that is no
+     * longer the one on this device.
+     */
+    private fun enterAccount(next: AccountScope) {
+        if (next == chat.account) return
+        runCatching {
+            // No JID: the trace names nobody, and this event is about a
+            // transition rather than about who made it.
+            core.note("service", "account_boundary", "info",
+                      if (next.isAuthenticated) "bound" else "cleared")
+        }
+        alerts.clear()
+        cancelArrivalNotification()
+        chat.bindAccount(next)
     }
 
     /**

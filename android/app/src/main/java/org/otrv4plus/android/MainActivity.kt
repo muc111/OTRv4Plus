@@ -12,6 +12,7 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
+import androidx.core.view.WindowCompat
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.LaunchedEffect
@@ -144,6 +145,27 @@ class MainActivity : ComponentActivity() {
         ) {
             askNotifications.launch(Manifest.permission.POST_NOTIFICATIONS)
         }
+
+        // ONE MECHANISM FOR THE KEYBOARD, ON EVERY API LEVEL.
+        //
+        // The chat history collapsed into a strip at the top of the screen as
+        // soon as the input was focused, and the cause was the keyboard being
+        // subtracted twice.
+        //
+        // `targetSdk` is 35, where Android enforces edge-to-edge and the
+        // window no longer resizes for the IME — so `Modifier.imePadding()` is
+        // the right and necessary tool. But `minSdk` is 26, and on Android 14
+        // and earlier the theme here (`Theme.Material.Light.NoActionBar`) gets
+        // the platform default of `adjustResize`: the WINDOW shrinks by the
+        // keyboard height, and then `imePadding()` subtracted that same height
+        // AGAIN from a window that had already lost it. Two subtractions plus
+        // the composer left the message list a sliver.
+        //
+        // Turning decor fitting off makes the modern behaviour the behaviour
+        // everywhere: the window keeps its full height, the insets are
+        // reported, and Compose applies them exactly once. It is also what
+        // `enableEdgeToEdge()` does underneath, without the dependency.
+        WindowCompat.setDecorFitsSystemWindows(window, false)
 
         // FLAG_SECURE from the start. The app must not appear in the recents
         // thumbnail or accept screenshots; setting it here means no later
