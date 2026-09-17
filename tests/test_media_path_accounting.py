@@ -91,25 +91,29 @@ class TestARekeyIsNotAGap:
 
 class TestTheHopNoteSaysOnlyWhatIsTrue:
 
-    def test_this_build_does_not_configure_tunnel_length(self):
-        """THE FINDING. `SESSION CREATE` carries no `inbound.length`, no
-        `outbound.length` and no `i2cp.*` anywhere in this codebase, so the
-        3-hop requirement is inherited from the router's configuration rather
-        than asserted by the client."""
-        assert mp.hops_are_configured() is False
+    def test_this_build_configures_tunnel_length(self):
+        """WAS THE FINDING, now closed. `SESSION CREATE` used to carry no
+        `inbound.length`, no `outbound.length` and no `i2cp.*` anywhere in
+        this codebase, so the 3-hop requirement was inherited from whatever
+        the router happened to be configured for rather than asserted by the
+        client. It is now asked for on the wire."""
+        assert mp.hops_are_configured() is True
 
-    def test_the_source_really_has_no_tunnel_option(self):
-        """Checked against the source, so the claim above cannot go stale if
-        somebody adds the option and forgets to flip the flag."""
-        import otrv4plus_voice as voice
-        import inspect
+    def test_the_flag_is_derived_from_the_options_it_describes(self):
+        """So it cannot claim a configuration the wire does not carry.
 
-        source = inspect.getsource(voice)
-        for option in ("inbound.length", "outbound.length", "i2cp.",
-                       "inbound.quantity"):
-            assert option not in source, (
-                "%s is set now -- hops_are_configured() must return True"
-                % option)
+        This is the property that made the old `return False` safe to trust
+        and would make a bare `return True` worthless: drop the options and
+        the flag has to follow them down.
+        """
+        saved = mp.TUNNEL_OPTIONS
+        try:
+            mp.TUNNEL_OPTIONS = ()
+            assert mp.hops_are_configured() is False
+            assert "default" in mp.hop_note()
+        finally:
+            mp.TUNNEL_OPTIONS = saved
+        assert mp.hops_are_configured() is True
 
     def test_the_note_does_not_claim_six_hops(self):
         """`6 I2P hops` reads as one six-hop path rather than two three-hop
@@ -118,15 +122,26 @@ class TestTheHopNoteSaysOnlyWhatIsTrue:
         note = mp.hop_note()
         assert "6" not in note
 
-    def test_it_names_the_per_direction_architecture(self):
+    def test_it_names_the_two_tunnels_separately(self):
+        """"3-hop inbound + 3-hop outbound", not a single total."""
         note = mp.hop_note()
-        assert str(mp.REQUIRED_HOPS) in note
-        assert "each way" in note or "each direction" in note
+        assert "3-hop inbound" in note
+        assert "3-hop outbound" in note
 
     def test_it_says_where_the_number_came_from(self):
         """A diagnostic mentioning hops must say whether anything measured
-        them. This build did not."""
-        assert "default" in mp.hop_note()
+        them. Nothing did: the client asks, and is not told the answer."""
+        note = mp.hop_note()
+        assert "requested by this client" in note
+        assert "SAM does not report" in note
+
+    def test_it_does_not_claim_the_router_agreed(self):
+        """The distinction the whole module turns on. Asking for three hops
+        and getting three hops are different facts, and SAM supplies only the
+        first."""
+        assert mp.hops_are_confirmed() is False
+        for overclaim in ("enforced", "guaranteed", "verified", "confirmed"):
+            assert overclaim not in mp.hop_note().lower(), overclaim
 
     def test_the_required_hop_count_is_three(self):
         assert mp.REQUIRED_HOPS == 3

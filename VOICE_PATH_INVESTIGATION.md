@@ -108,8 +108,8 @@ line = ("[voice]   %.0fms network (6 I2P hops) + %.0fms jitter "
 
 ### 2.2 The finding
 
-**This application never configures or reads tunnel length.** The media session
-is created with:
+**This application never configured or read tunnel length.** The media session
+was created with:
 
 ```
 SESSION CREATE STYLE=DATAGRAM ID=... DESTINATION=TRANSIENT
@@ -117,12 +117,14 @@ SESSION CREATE STYLE=DATAGRAM ID=... DESTINATION=TRANSIENT
 ```
 
 A search of the entire codebase for `inbound.length`, `outbound.length`,
-`inbound.quantity` and `i2cp.` returns **zero matches** — in the voice module,
+`inbound.quantity` and `i2cp.` returned **zero matches** — in the voice module,
 the XMPP client, and the Android bridge alike.
 
-So tunnel length is **whatever the router defaults to** (3 for i2pd and Java
+So tunnel length was **whatever the router defaulted to** (3 for i2pd and Java
 I2P), and `6` was an assumption typed into a format string by someone
 describing the architecture from memory.
+
+**This is now fixed for the voice path — see §8.**
 
 ### 2.3 Two things were wrong with the wording
 
@@ -134,35 +136,23 @@ describing the architecture from memory.
 ### 2.4 What it says now
 
 ```
-706ms network (I2P: a tunnel each way, 3 hops each at the router's default
-               (this client does not set tunnel length))
+706ms network (I2P: 3-hop inbound + 3-hop outbound, requested by this client
+               (SAM does not report the length the router applied))
 ```
 
-`hop_note()` makes the stronger claim automatically if `hops_are_configured()`
-ever becomes true, and a test asserts the two cannot drift apart.
+`hop_note()` is derived from the options that actually go on the wire, so
+deleting them drops the sentence back to the weaker one on its own.
 
-### 2.5 ⚠ The 3-hop requirement is not enforced
+### 2.5 The 3-hop requirement was not enforced
 
-**This is the most important finding in the document.**
+**This was the most important finding in the document, and §8 closes it for
+the voice path.**
 
-The 3-hop requirement is documented, assumed throughout, and **never asserted
+The 3-hop requirement was documented, assumed throughout, and **never asserted
 on the wire**. A router configured with `inbound.length = 1` — a common latency
-optimisation, and the default in some bundled configurations — would give this
-application a **1-hop path**, and nothing in the client would notice or say so.
-The old diagnostic would have gone on claiming six.
-
-**The tunnel configuration has deliberately not been changed** — §12 forbids
-altering it because the display said six, and §20 forbids redesigning the
-3-hop requirement. But the gap between "documented requirement" and "asserted
-requirement" is a security property this milestone should close, and it is a
-one-line addition to `SESSION CREATE`:
-
-```
-SESSION CREATE ... inbound.length=3 outbound.length=3
-```
-
-That is a behaviour change to a working voice path on a live product, so it is
-recorded as a **recommendation requiring your decision**, not applied.
+optimisation, and the default in some bundled configurations — would have given
+this application a **1-hop path**, and nothing in the client would have noticed
+or said so. The old diagnostic would have gone on claiming six.
 
 ---
 
@@ -289,8 +279,143 @@ instrumentation.
 
 | # | Item | Status |
 |---|---|---|
-| 1 | `inbound.length=3 outbound.length=3` on `SESSION CREATE` | **Recommended — needs your decision** |
+| 1 | `inbound.length=3 outbound.length=3` on `SESSION CREATE` | **Done — §8.** Voice path only |
 | 2 | Where outage packets are lost | Hypothesis only; needs Test C |
 | 3 | One-way latency bias from path asymmetry | Documented; no fix proposed |
 | 4 | Counters wired into the live pipeline | `MediaCounters` is defined and tested; the voice module still uses its own `stats` dict |
 | 5 | Tests A/B/D/E in §22 | Not performed |
+| 6 | The same options on the XMPP and escrow SAM sessions | **Not done** — see §8.6 |
+| 7 | Reading back the length the router actually built | Not possible over SAM — §8.4 |
+
+---
+
+## 8. Tunnel length is now requested, not inherited
+
+### 8.1 What `length` means in the API this client actually speaks
+
+Verified in source before the line was changed, rather than assumed from
+documentation. `geti2p.net` is unreachable from the build container; the
+i2pd and Java I2P repositories on GitHub are not.
+
+The full path from our string to the number of routers in the tunnel:
+
+| Step | Source | What it does |
+|---|---|---|
+| 1 | `SAM.cpp` `SAMSocket::ExtractParams` | Splits the `SESSION CREATE` line on spaces, keeps every `key=value` field |
+| 2 | `SAM.cpp:449` | `CreateSession(id, type, dest, params)` — the whole mapping, unfiltered |
+| 3 | `SAM.cpp:1651/1671` | `CreateNewLocalDestination(..., &params)` |
+| 4 | `Destination.h` | `I2CP_PARAM_INBOUND_TUNNEL_LENGTH = "inbound.length"`, `DEFAULT_INBOUND_TUNNEL_LENGTH = 3` |
+| 5 | `Destination.cpp:40-70` | `params->Get(I2CP_PARAM_INBOUND_TUNNEL_LENGTH, inLen)` → `TunnelPool(inLen, outLen, ...)` |
+| 6 | `TunnelPool.cpp:637-661` | `numHops = m_NumInboundHops + offset` |
+
+i2pd's own log line settles the semantics beyond argument:
+
+```c
+LogPrint (eLogInfo, "Destination: Parameters for tunnel set to: ", inQty,
+          " inbound (", inLen, " hops), ", outQty, " outbound (", outLen,
+          " hops), ", numTags, " tags");
+```
+
+`length` is **hops**, per direction. It is not tunnel count, not quantity, and
+not an end-to-end total.
+
+### 8.2 Why the variance is pinned as well
+
+**`inbound.length=3` alone does not mean "at least three hops."** From
+`TunnelPool.cpp:645-660`:
+
+```c
+numHops = m_NumInboundHops;
+if (m_InboundVariance)
+{
+    int offset = tunnels.GetRng ()() % (std::abs (m_InboundVariance) + 1);
+    if (m_InboundVariance < 0) offset = -offset;
+    numHops += offset;
+}
+```
+
+Length is the **centre of a range**; `lengthVariance` is its width. A router
+holding `inbound.lengthVariance = -2` would build 1, 2 or 3 hops and reply
+`RESULT=OK` either way. Java I2P documents the same latitude on
+`TunnelPoolSettings.getLengthVariance` — *"if negative, this randomly skews
+from (length − variance) to (length + variance)"*.
+
+Requesting a length while leaving the variance to the router would therefore
+have been precisely the silent reduction this change exists to close. **The
+variance is part of the length request, not an unrelated parameter**, so it is
+pinned to `0`.
+
+That value is also both routers' own client default
+(i2pd `DEFAULT_INBOUND_TUNNELS_LENGTH_VARIANCE = 0`, Java I2P
+`DEFAULT_LENGTH_VARIANCE = 0`), so on a stock router it changes nothing. It
+only removes a **non-default** router's ability to vary. The cost is real and
+small, and is stated rather than hidden: a router configured for `+1` would
+have built an occasional 4-hop tunnel and now builds 3. The requirement is 3.
+
+**Nothing else was touched.** Quantity, backup quantity, `allowZeroHop`, idle
+behaviour and every other I2CP option remain the router's.
+
+### 8.3 What goes on the wire
+
+```
+SESSION CREATE STYLE=DATAGRAM ID=... DESTINATION=TRANSIENT SIGNATURE_TYPE=7
+               PORT=... HOST=127.0.0.1
+               inbound.length=3 outbound.length=3
+               inbound.lengthVariance=0 outbound.lengthVariance=0
+```
+
+Both transports carry it. The stream transport is the datagram transport's
+fallback, and a fallback that quietly dropped to the router's default would be
+the original defect with an extra step in front of it.
+
+### 8.4 ⚠ This is a request. It is not a confirmation
+
+**The limitation, stated rather than papered over.** SAM's reply to
+`SESSION CREATE` is:
+
+```
+SESSION STATUS RESULT=OK DESTINATION=$privkey
+```
+
+and that is all of it — `SAMSocket::SendSessionCreateReplyOk` formats the
+private key and nothing else. **There is no accepted-options echo anywhere in
+the SAM v3 grammar**, so a router that clamped, ignored, or never understood
+`inbound.length` answers exactly like one that honoured it.
+
+Java I2P can also lower the length *after* the session exists:
+`TunnelPoolSettings.lengthOverride` is *"a temporary length to be used due to
+network conditions"*, set by the router, and the client is not consulted.
+
+So the honest statement, and the one the diagnostics make:
+
+> This client **requests** three hops in each direction and **cannot verify**
+> that it got them. Reading the count back would require an I2CP-level session
+> that the SAM bridge does not expose.
+
+`hops_are_configured()` is true. `hops_are_confirmed()` is false. They are
+separate functions because they are separate facts, and a test asserts the
+wording never collapses them into "enforced", "guaranteed" or "verified".
+
+### 8.5 Tested by execution, not by description
+
+`tests/test_tunnel_length.py` drives a real `create_session()` against a fake
+SAM bridge and asserts against **the bytes that came out of the socket** — not
+against the source text.
+
+Both defects were re-planted and both failed:
+
+| Re-planted defect | Tests failed |
+|---|---|
+| Remove the options from `SESSION CREATE` | 6 |
+| Request the length but leave the variance to the router | 6 |
+
+### 8.6 Two SAM sessions still inherit the router's length
+
+Scope was the voice tunnels. These were not changed:
+
+- `otrv4+.py:1238` — the escrow/chat `STYLE=STREAM` session. Already flagged
+  in `MONERO_ESCROW_AUDIT.md`.
+- The XMPP transport's session.
+
+They remain on whatever the router defaults to. Named here so the gap is a
+recorded item rather than an oversight.

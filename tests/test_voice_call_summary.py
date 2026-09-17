@@ -399,14 +399,23 @@ class TestTheFigures:
         # expensive. The soak measured sealing and opening together at half a
         # millisecond of an 855 ms budget; naming the hops says where it went.
         line = manager()._call_summary(FakeSession(oneway=576.0))[1]
-        # WAS the literal `(6 I2P hops)`. The client issues SESSION CREATE
-        # with no tunnel-length option at all, so it has never asked the
-        # router how many hops it uses -- and "6 hops" reads as one six-hop
-        # path rather than two three-hop ones, which is a different and worse
+        # WAS the literal `(6 I2P hops)`, typed in at a time when the client
+        # sent no tunnel-length option at all -- so it had never asked the
+        # router how many hops it used, and "6 hops" reads as one six-hop path
+        # rather than two three-hop ones, which is a different and worse
         # anonymity story than the architecture has.
         assert "I2P" in line
         assert "6 I2P hops" not in line
-        assert "each way" in line or "each direction" in line
+        # The two tunnels, named separately, and asked for on the wire.
+        assert "3-hop inbound" in line
+        assert "3-hop outbound" in line
+
+    def test_the_budget_does_not_claim_the_hop_count_was_verified(self):
+        """SAM answers SESSION CREATE with RESULT and DESTINATION and never
+        says what it built, so the summary reports a request, not a fact."""
+        line = manager()._call_summary(FakeSession(oneway=576.0))[1]
+        assert "requested by this client" in line
+        assert "SAM does not report" in line
 
     def test_a_buffer_holding_extra_frames_says_so(self):
         session = FakeSession(oneway=500.0, queued=100)

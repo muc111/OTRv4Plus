@@ -3526,14 +3526,26 @@ class VoiceCallSession:
                     # destination without extra signalling. PORT/HOST ask the
                     # router to forward inbound datagrams straight to us
                     # rather than multiplexing them onto the control socket.
+                    #
+                    # The tunnel options are the 3-hop requirement, asked for
+                    # rather than assumed. This client used to send no tunnel
+                    # length at all and print "6 I2P hops" anyway, so a router
+                    # configured with inbound.length=1 -- a common latency
+                    # tweak -- would have been given a 1-hop path with nothing
+                    # noticing. See otrv4plus_mediapath.TUNNEL_OPTIONS for why
+                    # the variance is pinned too (length alone is a midpoint,
+                    # not a floor) and hops_are_confirmed() for why this is
+                    # still only a request: SAM's SESSION STATUS reply carries
+                    # RESULT and DESTINATION and never says what it built.
                     create = ("SESSION CREATE STYLE=DATAGRAM ID=%s "
                               "DESTINATION=TRANSIENT SIGNATURE_TYPE=7 "
-                              "PORT=%d HOST=127.0.0.1\n"
-                              % (session_id, forward_port))
+                              "PORT=%d HOST=127.0.0.1 %s\n"
+                              % (session_id, forward_port,
+                                 _mediapath.tunnel_options()))
                 else:
                     create = ("SESSION CREATE STYLE=STREAM ID=%s "
-                              "DESTINATION=TRANSIENT SIGNATURE_TYPE=7\n"
-                              % session_id)
+                              "DESTINATION=TRANSIENT SIGNATURE_TYPE=7 %s\n"
+                              % (session_id, _mediapath.tunnel_options()))
                 ctrl.sendall(create.encode("ascii"))
                 # i2pd builds a full tunnel set before answering, so this is
                 # minutes rather than seconds on a busy phone.
@@ -7203,8 +7215,8 @@ class VoiceCallManager:
         the network is two thirds of it.
 
         Only the two parts this client can do anything about are separated
-        out.  The network figure is six I2P hops each way and is not ours;
-        the buffer and the playout path are.
+        out.  The network figure is two three-hop I2P tunnels, one each way,
+        and is not ours; the buffer and the playout path are.
         """
         try:
             if m2e is None:
@@ -7217,11 +7229,12 @@ class VoiceCallManager:
                 return None
             # The hop note is NOT a literal any more. `(6 I2P hops)` was
             # typed into this string by somebody describing the architecture
-            # from memory: the client issues SESSION CREATE with no
-            # tunnel-length option at all, so it has never asked the router
-            # how many hops it is using, and "6 hops" reads as one six-hop
-            # path rather than two three-hop ones -- a different and worse
-            # anonymity story than the architecture actually has.
+            # from memory, at a time when the client sent no tunnel-length
+            # option at all -- so it had never asked the router how many hops
+            # it was using, and "6 hops" reads as one six-hop path rather than
+            # two three-hop ones, a different and worse anonymity story than
+            # the architecture actually has. SESSION CREATE now carries the
+            # request, and the note reports it as a request.
             line = ("[voice]   %.0fms network (%s) + %.0fms jitter "
                     "buffer + %.0fms playout"
                     % (oneway, _mediapath.hop_note(), dwell, playout))
