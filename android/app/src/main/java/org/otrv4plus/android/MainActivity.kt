@@ -296,6 +296,17 @@ class MainActivity : ComponentActivity() {
                                 defaultNick = connection.status.jid
                                     .substringBefore('@'),
                                 onBack = { screen = Screen.CONVERSATIONS },
+                                // Only fires once the server has confirmed the
+                                // join or create. Previously nothing carried
+                                // that outcome anywhere, so a successful
+                                // create left the user on the Rooms screen
+                                // with no way to reach the room it had just
+                                // made -- reported as "it never progresses to
+                                // the next view".
+                                onOpenRoom = { room ->
+                                    openJid = room
+                                    screen = Screen.CONVERSATION
+                                },
                             )
                         }
 

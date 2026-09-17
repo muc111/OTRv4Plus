@@ -39,6 +39,8 @@ fun RoomsScreen(
     model: RoomsViewModel,
     defaultNick: String = "",
     onBack: () -> Unit = {},
+    /** Called with the room JID once a join or create is confirmed. */
+    onOpenRoom: (String) -> Unit = {},
 ) {
     val busy = model.busy
     val last = model.last
@@ -165,14 +167,43 @@ fun RoomsScreen(
             }
         }
 
-        // ── Join or create by address ─────────────────────────────────────
+        // Move into the room the server confirmed we entered.
+        //
+        // There was no state for this at all, which is the other half of
+        // "create never progresses to the next view". It is driven by the
+        // authoritative outcome, so a refused join cannot open a room the
+        // user is not in.
+        LaunchedEffect(model.entered) {
+            model.entered?.let { room ->
+                model.clearEntered()
+                onOpenRoom(room)
+            }
+        }
+
+        // ── Join or create by name ────────────────────────────────────────
         Spacer(Modifier.height(4.dp))
         Text("Join a room", style = MaterialTheme.typography.titleSmall)
         OutlinedTextField(
             value = address,
             onValueChange = { address = it },
-            label = { Text("Room address") },
-            placeholder = { Text("general@${service ?: "rooms.example.i2p"}") },
+            // A NAME, NOT AN ADDRESS.
+            //
+            // This asked for a full JID and somebody creating a room typed
+            // the name of the room -- reasonably. What reached slixmpp was a
+            // domainless JID, `join_muc_wait` sat on it for its 300 s
+            // default, and the throw skipped the line that cleared the
+            // spinner. `RoomAddress` builds the JID from the DISCOVERED
+            // conference service instead; a full address is still accepted
+            // for a room on another server.
+            label = { Text("Room name") },
+            placeholder = { Text("myroom") },
+            supportingText = {
+                Text(
+                    service?.let { "Will be created on $it" }
+                        ?: "Looking for this server's rooms service…",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            },
             singleLine = true,
             enabled = busy == null,
             modifier = Modifier.fillMaxWidth(),
