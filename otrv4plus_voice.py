@@ -166,6 +166,7 @@ import threading
 import time
 
 import otrv4plus_audio as _audio
+import otrv4plus_mediapath as _mediapath
 
 
 def _env_int(name: str, default: int, lo: int, hi: int) -> int:
@@ -2386,6 +2387,13 @@ class JitterBuffer:
                       "overflow": 0, "gaps": 0, "drift": 0,
                       "underrun": 0, "burst_drain": 0}
 
+    #: How far the epoch is shifted in a sequence key.
+    #:
+    #: Named rather than repeated, because two places have to agree about it:
+    #: [sequence] builds the key and [epoch_of] takes it apart, and a
+    #: disagreement between them is invisible until a rekey.
+    EPOCH_SHIFT = 62
+
     @staticmethod
     def sequence(epoch: int, counter: int) -> int:
         """A single monotonic ordering key across epoch boundaries.
@@ -2393,8 +2401,19 @@ class JitterBuffer:
         Counters restart at zero each epoch, so ordering on the counter alone
         would replay the whole epoch's worth of audio backwards at every
         rekey.  62 bits of counter space is 5.9 billion years at 40 ms.
+
+        NOTE FOR ANYONE SUBTRACTING TWO OF THESE: the difference is only a
+        frame count WITHIN one epoch.  Across a rekey it is about 4.6e18,
+        because that is what the epoch field is worth -- see [epoch_of] and
+        the guard in [pop].
         """
-        return (int(epoch) << 62) | (int(counter) & ((1 << 62) - 1))
+        return (int(epoch) << JitterBuffer.EPOCH_SHIFT) | (
+            int(counter) & ((1 << JitterBuffer.EPOCH_SHIFT) - 1))
+
+    @staticmethod
+    def epoch_of(seq: int) -> int:
+        """Which epoch a sequence key belongs to."""
+        return int(seq) >> JitterBuffer.EPOCH_SHIFT
 
     def _observe_arrival(self, seq: int, now: float) -> None:
         """Update the jitter estimate and the target depth.
@@ -2612,7 +2631,31 @@ class JitterBuffer:
             self._seqs.discard(seq)
             self.dwell.add((time.monotonic() - arrived) * 1000.0)
             gap = 0
-            if self._last_played >= 0:
+            # A REKEY IS NOT A GAP.
+            #
+            # `sequence()` packs the epoch into the top bits, so subtracting
+            # two keys is a frame count only while the epoch is the same.
+            # Across a rekey the difference is 2**62 -- about 4.6e18 -- and
+            # without this guard every rekey charged the call that many lost
+            # frames.  Two consequences, one cosmetic and one not:
+            #
+            #   * the hangup summary computes delivery as
+            #     queued/(queued+gaps), so a single rekey drove it to
+            #     "0.0% of audio delivered" on a call whose audio was working
+            #     in both directions -- the defect that started this
+            #     investigation;
+            #   * `gap` is handed to concealment, which is bounded to three
+            #     frames, so the audible cost was ~180 ms of synthetic audio
+            #     per rekey rather than a stall.
+            #
+            # `_observe_arrival` already refused deltas >= 200 for exactly
+            # this reason; this is the same rule in the place that missed it.
+            # Counting zero across the boundary is honest rather than
+            # convenient: the counter restarted, so how many frames were lost
+            # in the changeover is genuinely unknown, and zero is off by at
+            # most a handful where the old value was off by 4.6e18.
+            if (self._last_played >= 0
+                    and self.epoch_of(seq) == self.epoch_of(self._last_played)):
                 gap = max(0, seq - self._last_played - 1)
                 if gap:
                     self.stats["gaps"] += gap
@@ -7130,10 +7173,16 @@ class VoiceCallManager:
             parts.append("mouth-to-ear not measured"
                          + (" (call too short)" if secs < 10 else ""))
         if delivery is not None:
-            parts.append("%.1f%% of audio delivered" % (100.0 * delivery))
-        if shed:
-            parts.append("%.1f%% shed locally to hold latency down"
-                         % (100.0 * shed))
+            # COUNTS, not a percentage. "0.0% of audio delivered" was printed
+            # to somebody who had just finished a working 41-minute
+            # conversation, because a rekey had added 2**62 to the gap
+            # counter (fixed in JitterBuffer.pop). Even uncorrupted the
+            # phrasing invites the reading "zero audio was received", which
+            # is not what the ratio ever meant.
+            parts.append(_mediapath.delivery_line(_mediapath.MediaCounters(
+                played=played, gaps=gaps,
+                shed=int(session.jitter.stats.get("drift", 0)))))
+
         if sent:
             parts.append("%d frames sent" % sent)
 
@@ -7166,8 +7215,16 @@ class VoiceCallManager:
                        + float(session.stages.t["play"].percentile(0.50)))
             if oneway <= 0:
                 return None
-            line = ("[voice]   %.0fms network (6 I2P hops) + %.0fms jitter "
-                    "buffer + %.0fms playout" % (oneway, dwell, playout))
+            # The hop note is NOT a literal any more. `(6 I2P hops)` was
+            # typed into this string by somebody describing the architecture
+            # from memory: the client issues SESSION CREATE with no
+            # tunnel-length option at all, so it has never asked the router
+            # how many hops it is using, and "6 hops" reads as one six-hop
+            # path rather than two three-hop ones -- a different and worse
+            # anonymity story than the architecture actually has.
+            line = ("[voice]   %.0fms network (%s) + %.0fms jitter "
+                    "buffer + %.0fms playout"
+                    % (oneway, _mediapath.hop_note(), dwell, playout))
             learned = getattr(session.jitter, "learned_frames", 0)
             if learned:
                 line += ("; buffer holding %d extra frame(s) after "

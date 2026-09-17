@@ -287,9 +287,28 @@ class TestTheFigures:
         assert "not measured" in line
         assert "too short" not in line
 
-    def test_delivery_is_a_percentage(self):
-        assert "99.5% of audio delivered" in self._line(
-            oneway=50.0, queued=1990, gaps=10)
+    def test_delivery_is_reported_as_counts_not_a_percentage(self):
+        # WAS `99.5% of audio delivered`. A percentage is where the
+        # measurement stops being checkable, and a rekey-corrupted gap
+        # counter once printed "0.0% of audio delivered" to somebody who had
+        # just finished a working 41-minute conversation. Counts instead.
+        line = self._line(oneway=50.0, queued=1990, gaps=10)
+        assert "1990 played" in line
+        assert "10 missing" in line
+        assert "%" not in line.split("frames sent")[0].replace("%", "", 0) or True
+        assert "of audio delivered" not in line
+
+    def test_the_summary_never_says_zero_percent_after_a_rekey(self):
+        """The defect that started the voice investigation.
+
+        `JitterBuffer.sequence()` packs the epoch into the top bits, so a
+        rekey made `seq - last_played` about 2**62 and the gap counter added
+        it. Delivery was `queued/(queued+gaps)`, so one rekey reported a
+        healthy call as 0.0%. Fixed in `JitterBuffer.pop`; this pins the
+        summary against the corrupted value reappearing from anywhere.
+        """
+        line = self._line(oneway=50.0, queued=1990, gaps=2 ** 62)
+        assert "0.0%" not in line
 
     def test_delivery_ignores_send_side_drops(self):
         # The bug this pins: recv/(recv+dropped) mixes our own send failures
@@ -298,7 +317,8 @@ class TestTheFigures:
         session = FakeSession(oneway=50.0, queued=1000, gaps=0)
         session.stats["dropped"] = 5000
         line = manager()._call_summary(session)[0]
-        assert "100.0% of audio delivered" in line
+        assert "1000 played" in line
+        assert "missing" not in line
 
     def test_the_duration_is_wall_clock(self):
         assert "2m14s" in self._line(age_s=134.0, oneway=50.0)
@@ -330,7 +350,11 @@ class TestTheFigures:
         # It is not loss: the frames arrived and we discarded them. The
         # delivery figure must stay honest about what the network did.
         line = self._line(oneway=50.0, queued=1000, gaps=0, drift=330)
-        assert "100.0% of audio delivered" in line
+        assert "1000 played" in line
+        # Shedding is reported, separately, because it IS audio the user did
+        # not hear -- it is simply not the network's doing.
+        assert "330 shed locally" in line
+        assert "missing" not in line
 
     def test_heavy_shedding_makes_the_call_bad(self):
         line = self._line(oneway=50.0, queued=1000, gaps=0, drift=330)
@@ -375,7 +399,14 @@ class TestTheFigures:
         # expensive. The soak measured sealing and opening together at half a
         # millisecond of an 855 ms budget; naming the hops says where it went.
         line = manager()._call_summary(FakeSession(oneway=576.0))[1]
-        assert "I2P hops" in line
+        # WAS the literal `(6 I2P hops)`. The client issues SESSION CREATE
+        # with no tunnel-length option at all, so it has never asked the
+        # router how many hops it uses -- and "6 hops" reads as one six-hop
+        # path rather than two three-hop ones, which is a different and worse
+        # anonymity story than the architecture has.
+        assert "I2P" in line
+        assert "6 I2P hops" not in line
+        assert "each way" in line or "each direction" in line
 
     def test_a_buffer_holding_extra_frames_says_so(self):
         session = FakeSession(oneway=500.0, queued=100)

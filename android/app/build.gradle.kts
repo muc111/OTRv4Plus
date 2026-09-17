@@ -355,6 +355,10 @@ val syncPythonSources by tasks.registering(Copy::class) {
             // bridge imports it and because the rule it enforces is the one
             // that decides whether a group message reaches everybody.
             "otrv4plus_omemo.py",
+            // What the voice diagnostics are allowed to claim. Imported by
+            // otrv4plus_voice at module scope, so a missing entry here is an
+            // ImportError at launch rather than a missing metric.
+            "otrv4plus_mediapath.py",
             // The labels that replace identities in the diagnostic log.
             // Imported by android_bridge.trace at module scope -- and trace is
             // imported by the transport, the controller and the bridge, so a
