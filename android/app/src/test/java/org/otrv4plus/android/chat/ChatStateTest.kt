@@ -10,6 +10,7 @@ import org.otrv4plus.android.bridge.PeerPresence
 import org.otrv4plus.android.bridge.Subscription
 import org.otrv4plus.android.bridge.SecurityState
 import org.otrv4plus.android.bridge.SendOutcome
+import org.otrv4plus.android.bridge.SmpProgress
 import org.otrv4plus.android.bridge.SmpState
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -58,7 +59,7 @@ class ChatStateTest {
         subscription: Subscription = Subscription.BOTH,
     ) = Contact(
         jid = jid, displayName = displayName, presence = presence,
-        security = security, smp = SmpState.IDLE, callAvailable = false,
+        security = security, smp = SmpState.NOT_VERIFIED, callAvailable = false,
         subscription = subscription,
     )
 
@@ -714,6 +715,91 @@ class ChatStateTest {
     fun `bare strips the resource and leaves a bare jid alone`() {
         assertEquals(alice, ChatState.bare("$alice/phone"))
         assertEquals(alice, ChatState.bare(alice))
+    }
+
+    // ── identity verification ───────────────────────────────────────────────
+    //
+    // The state has to be LIVE, not read on the next roster poll: an incoming
+    // request means the peer is sitting there waiting, and the whole point of
+    // `SmpProgressed`/`SmpFinished` reaching here is that the screen learns
+    // about it on the drain tick rather than seconds later.
+
+    @Test
+    fun `an unverified conversation says so`() {
+        val s = state(contact(alice, security = SecurityState.ENCRYPTED))
+        assertEquals(SmpState.NOT_VERIFIED, s.conversation(alice).smp)
+    }
+
+    @Test
+    fun `an incoming verification request is visible immediately`() {
+        // THE RECEIVING REQUIREMENT, at this layer. Nothing was polled and no
+        // roster arrived; the event alone moved the conversation.
+        val s = state(contact(alice, security = SecurityState.ENCRYPTED))
+        s.handle(OtrEvent.SmpProgressed(
+            alice, SmpProgress(0, 4, SmpState.SECRET_REQUIRED)))
+        assertEquals(SmpState.SECRET_REQUIRED, s.conversation(alice).smp)
+    }
+
+    @Test
+    fun `a verification request does not buzz the phone`() {
+        // `handle` returning true is what raises a notification. A peer able
+        // to ring somebody at will by running SMP would be a nuisance vector
+        // with no message attached.
+        val s = state(contact(alice, security = SecurityState.ENCRYPTED))
+        assertFalse(s.handle(OtrEvent.SmpProgressed(
+            alice, SmpProgress(0, 4, SmpState.SECRET_REQUIRED))))
+        assertFalse(s.handle(OtrEvent.SmpFinished(alice, SmpState.VERIFIED)))
+    }
+
+    @Test
+    fun `a completed run is visible immediately`() {
+        val s = state(contact(alice, security = SecurityState.ENCRYPTED))
+        s.handle(OtrEvent.SmpFinished(alice, SmpState.VERIFIED))
+        assertEquals(SmpState.VERIFIED, s.conversation(alice).smp)
+    }
+
+    @Test
+    fun `verification is per peer`() {
+        val s = state(contact(alice, security = SecurityState.ENCRYPTED),
+                      contact(bob, security = SecurityState.ENCRYPTED))
+        s.handle(OtrEvent.SmpFinished(alice, SmpState.VERIFIED))
+        assertEquals(SmpState.VERIFIED, s.conversation(alice).smp)
+        assertEquals(SmpState.NOT_VERIFIED, s.conversation(bob).smp,
+                     "verifying alice marked bob verified")
+    }
+
+    @Test
+    fun `the event survives a roster poll that has not caught up`() {
+        // RECOMPOSITION AND RE-READ. The roster is re-read on a slower tick
+        // and still says NOT_VERIFIED; the event is the newer answer and must
+        // not be overwritten by a stale poll.
+        val s = state(contact(alice, security = SecurityState.ENCRYPTED))
+        s.handle(OtrEvent.SmpFinished(alice, SmpState.VERIFIED))
+        s.applyRoster(listOf(contact(alice, security = SecurityState.ENCRYPTED)))
+        assertEquals(SmpState.VERIFIED, s.conversation(alice).smp)
+        // And repeated reads are stable -- a screen recomposes constantly.
+        repeat(5) { assertEquals(SmpState.VERIFIED, s.conversation(alice).smp) }
+    }
+
+    @Test
+    fun `a failed run is not shown as cancelled and the reverse`() {
+        val s = state(contact(alice, security = SecurityState.ENCRYPTED))
+        s.handle(OtrEvent.SmpFinished(alice, SmpState.FAILED))
+        assertEquals(SmpState.FAILED, s.conversation(alice).smp)
+        s.handle(OtrEvent.SmpFinished(alice, SmpState.CANCELLED))
+        assertEquals(SmpState.CANCELLED, s.conversation(alice).smp)
+    }
+
+    @Test
+    fun `verification does not survive a change of account`() {
+        // The one claim this application must never make wrongly. Carrying a
+        // VERIFIED across the account boundary would show somebody else's
+        // identity check as this account's.
+        val s = state(contact(alice, security = SecurityState.ENCRYPTED))
+        s.handle(OtrEvent.SmpFinished(alice, SmpState.VERIFIED))
+        s.bindAccount(AccountScope.of("dave@example.i2p"))
+        s.applyRoster(listOf(contact(alice, security = SecurityState.ENCRYPTED)))
+        assertEquals(SmpState.NOT_VERIFIED, s.conversation(alice).smp)
     }
 
     private companion object {

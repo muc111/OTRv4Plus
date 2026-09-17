@@ -52,6 +52,28 @@ class FakeEngine:
         self.outgoing = ("?OTRv4 ZW5j", True)
         self.incoming = b""
         self.raise_on_outgoing = False
+        #: The SMP frames this engine produces, and whether a peer's SMP1 is
+        #: being held. Separate knobs because the initiator and responder
+        #: halves fail in different places.
+        self.smp1 = "?OTRv4 c21w"
+        self.smp2 = "?OTRv4 c21wMg"
+        self.secret_required = False
+        self.raise_on_resume = False
+        self.resumed = []
+        #: What an inbound frame moves the SMP status TO, or None
+        #: to leave it alone.
+        self.smp_status_after = None
+
+    def encrypted(self):
+        """Put this engine in the state SMP actually requires.
+
+        A helper rather than a default: PLAINTEXT is the honest starting
+        point for a fake, and a test that needs an encrypted session should
+        have to say so -- `smp_start` refuses without one, which is the rule
+        under test in TestSmpNeedsAnEncryptedSession.
+        """
+        self.level = 1
+        return self
 
     def get_security_level(self, peer): return self.level
     def get_smp_status(self, peer): return self.smp_status
@@ -70,17 +92,37 @@ class FakeEngine:
         return self.outgoing
 
     def handle_incoming_message(self, peer, payload):
+        # A frame CHANGES state -- that is what makes it a frame. A fake whose
+        # status is the same before and after the call cannot exercise a
+        # transition, and `_announce_smp_change` only emits on one.
+        if self.smp_status_after is not None:
+            self.smp_status = self.smp_status_after
         return self.incoming
 
     def start_smp(self, peer, secret, question=""):
         self.smp_secrets_seen.append(secret)
-        return "?OTRv4 c21w"
+        return self.smp1
 
     def set_smp_secret(self, peer, secret):
         self.smp_secrets_seen.append(secret)
         return True
 
     def abort_smp(self, peer): return True
+
+    # -- the responder half ---------------------------------------------------
+    #
+    # Both of these exist on EnhancedSessionManager (otrv4+.py:9669 and
+    # :9674) and are how a held SMP1 is answered. The fake grew them because
+    # the facade could not answer one without them -- which was the defect.
+
+    def smp_secret_required(self, peer):
+        return self.secret_required
+
+    def resume_held_smp1(self, peer):
+        if self.raise_on_resume:
+            raise RuntimeError("secret still not set: cannot answer the held SMP1")
+        self.resumed.append(peer)
+        return self.smp2
 
 
 class FakeTransport(Transport):
@@ -131,10 +173,10 @@ class TestStateMapping:
             assert security_state_from_level(bad) is SecurityState.PLAINTEXT
 
     @pytest.mark.parametrize("phase,expected", [
-        ("IDLE", SmpState.IDLE),
-        ("NONE", SmpState.IDLE),
-        ("no_session", SmpState.IDLE),
-        ("unknown", SmpState.IDLE),
+        ("IDLE", SmpState.NOT_VERIFIED),
+        ("NONE", SmpState.NOT_VERIFIED),
+        ("no_session", SmpState.NOT_VERIFIED),
+        ("unknown", SmpState.NOT_VERIFIED),
         ("AWAITING_MSG2", SmpState.IN_PROGRESS),
         ("AWAITING_MSG3", SmpState.IN_PROGRESS),
         ("AWAITING_MSG4", SmpState.IN_PROGRESS),
@@ -153,7 +195,7 @@ class TestStateMapping:
 
     def test_missing_status_is_idle_not_verified(self):
         for empty in (None, {}):
-            assert smp_state_from_status(empty) is SmpState.IDLE
+            assert smp_state_from_status(empty) is SmpState.NOT_VERIFIED
 
     def test_call_state_mirrors_engine_and_fails_safe(self):
         assert call_state_from_engine("ACTIVE") is CallState.ACTIVE
@@ -228,6 +270,7 @@ class TestSecretsNeverLeak:
 
     def test_smp_secret_is_not_retained_by_the_facade(self, app):
         a, engine, _, _ = app
+        engine.encrypted()
         a.smp_start("bob", SECRET, "our question")
         # engine got it; the facade kept nothing
         assert engine.smp_secrets_seen == [SECRET]
@@ -235,11 +278,27 @@ class TestSecretsNeverLeak:
             assert SECRET not in repr(value)
 
     def test_smp_secret_never_appears_in_events(self, app):
-        a, _, _, sink = app
+        a, engine, _, sink = app
+        engine.encrypted()
         a.smp_start("bob", SECRET, "our question")
+        engine.secret_required = True
         a.smp_respond("bob", SECRET)
+        assert sink.events, "no events were emitted, so this proves nothing"
         for event in sink.events:
             assert SECRET not in repr(event)
+
+    def test_smp_secret_never_reaches_the_wire_as_itself(self, app):
+        """The passphrase is an INPUT to the proof, never part of it. A frame
+        carrying it would defeat the entire point of SMP -- the whole design
+        is that both sides prove they know it without transmitting it."""
+        a, engine, transport, _ = app
+        engine.encrypted()
+        a.smp_start("bob", SECRET, "our question")
+        engine.secret_required = True
+        a.smp_respond("bob", SECRET)
+        assert transport.sent, "nothing was sent, so this proves nothing"
+        for _peer, body in transport.sent:
+            assert SECRET not in body
 
     def test_message_body_never_appears_in_logs(self, app, caplog):
         a, engine, _, _ = app
@@ -356,7 +415,7 @@ class TestFailsClosed:
         a, engine, _, _ = app
         engine.get_smp_status = lambda peer: (_ for _ in ()).throw(RuntimeError())
         engine.get_smp_progress = lambda peer: (_ for _ in ()).throw(RuntimeError())
-        assert a.smp_state("bob") is SmpState.IDLE
+        assert a.smp_state("bob") is SmpState.NOT_VERIFIED
         assert a.smp_progress("bob").total == 4
 
 
@@ -493,7 +552,7 @@ class TestAgainstTheRealEngine:
     def test_security_details_from_real_engine_have_no_secrets(self, real_app):
         app, _, _ = real_app
         details = app.security_details("bob")
-        assert details.smp is SmpState.IDLE
+        assert details.smp is SmpState.NOT_VERIFIED
         assert details.security is SecurityState.PLAINTEXT
         blob = repr(details)
         for banned in ("seed", "private", "chain_key", "root_key", "brace_key"):
@@ -689,3 +748,355 @@ class TestStartingASessionActuallySendsTheHandshake:
         source = inspect.getsource(OtrApp.start_session)
         assert "self._transport.send" in source, (
             "start_session no longer sends anything")
+
+
+class TestSmpNeedsAnEncryptedSession:
+    """SMP proves you are talking to who you think you are.
+
+    Run outside an established session it would prove that about nothing:
+    there is no session binding to tie the proof to. The engine's own
+    `start_smp` already refuses when there is no session; this is the rule
+    stated at the boundary the UI calls, so a button cannot reach a state the
+    protocol has no answer for.
+    """
+
+    def test_smp_cannot_start_on_a_plaintext_conversation(self, app):
+        a, engine, transport, _ = app
+        assert engine.level == 0
+        with pytest.raises(BridgeError) as caught:
+            a.smp_start("bob", SECRET)
+        assert caught.value.code == "smp_not_encrypted"
+        assert transport.sent == [], "a verification frame went out unencrypted"
+
+    def test_a_refused_start_never_reaches_the_engine(self, app):
+        """The passphrase must not be handed to an engine that cannot use it."""
+        a, engine, _, _ = app
+        with pytest.raises(BridgeError):
+            a.smp_start("bob", SECRET)
+        assert engine.smp_secrets_seen == []
+
+    def test_smp_cannot_be_answered_on_a_plaintext_conversation(self, app):
+        a, engine, _, _ = app
+        engine.secret_required = True
+        with pytest.raises(BridgeError) as caught:
+            a.smp_respond("bob", SECRET)
+        assert caught.value.code == "smp_not_encrypted"
+        assert engine.smp_secrets_seen == []
+
+    @pytest.mark.parametrize("level", [1, 2, 3])
+    def test_any_completed_dake_may_verify(self, app, level):
+        """ENCRYPTED, FINGERPRINT and SMP_VERIFIED all mean a DAKE ran.
+        Re-verifying an already-verified peer is a legitimate thing to do."""
+        a, engine, _, _ = app
+        engine.level = level
+        a.smp_start("bob", SECRET)          # must not raise
+
+    def test_a_fingerprint_mismatch_may_still_be_verified(self, app):
+        """That conversation IS encrypted, to somebody. SMP is one of the few
+        things that can tell the user WHICH somebody, so refusing it here
+        would remove the remedy at the moment it is most needed."""
+        a, engine, _, _ = app
+        engine.level = 4
+        a.smp_start("bob", SECRET)          # must not raise
+
+
+class TestAnIncomingSmpRequestIsAnnounced:
+    """THE RESPONDER BUG. Bob was never told a verification was waiting.
+
+    `receive_message` emitted `SessionStateChanged` only when the SECURITY
+    LEVEL changed. An SMP1 arriving on a session that is already ENCRYPTED
+    does not change the level -- it stays ENCRYPTED until SMP passes, which is
+    the entire point of having SMP -- so an incoming request produced no event
+    at all and the UI had nothing to react to.
+
+    The Rust core was doing its part the whole time: it parks the peer's SMP1
+    in `SmpPhase::SecretRequired` rather than aborting, precisely so the
+    responder can supply the passphrase and answer the message that already
+    arrived.
+    """
+
+    @staticmethod
+    def _encrypted_with_incoming_smp1(app):
+        a, engine, transport, sink = app
+        engine.encrypted()
+        engine.incoming = None              # a protocol frame, not user text
+        engine.smp_status_after = {"state": "SECRET_REQUIRED",
+                                   "verified": False, "failed": False}
+        return a, engine, transport, sink
+
+    def test_an_arriving_smp1_emits_an_event(self, app):
+        a, engine, _, sink = self._encrypted_with_incoming_smp1(app)
+        a.receive_message("bob", "?OTRv4 c21w")
+        progressed = sink.of(SmpProgress)
+        assert progressed, (
+            "an SMP1 arrived and nothing was emitted; the responder's UI has "
+            "no way to learn a verification is waiting")
+        assert progressed[-1].state is SmpState.SECRET_REQUIRED
+
+    def test_the_event_is_emitted_although_the_security_level_did_not_move(
+            self, app):
+        """The exact condition the old code tested on. The level is ENCRYPTED
+        before and after -- that is correct and is why it could not be the
+        trigger."""
+        a, engine, _, sink = self._encrypted_with_incoming_smp1(app)
+        before = a.security_state("bob")
+        a.receive_message("bob", "?OTRv4 c21w")
+        assert a.security_state("bob") == before
+        assert sink.of(SmpProgress)
+
+    def test_a_resent_smp1_does_not_announce_twice(self, app):
+        """Emitted on a TRANSITION. Otherwise a peer could stack prompts on
+        the responder's screen just by resending -- the same idempotence
+        `SmpFlow.remote_smp1_arrived` gives the terminal clients."""
+        a, engine, _, sink = self._encrypted_with_incoming_smp1(app)
+        a.receive_message("bob", "?OTRv4 c21w")
+        a.receive_message("bob", "?OTRv4 c21w")
+        a.receive_message("bob", "?OTRv4 c21w")
+        assert len(sink.of(SmpProgress)) == 1
+
+    def test_an_ordinary_message_announces_nothing(self, app):
+        a, engine, _, sink = app
+        engine.encrypted()
+        engine.incoming = b"hello"
+        a.receive_message("bob", "?OTRv4 data")
+        assert sink.of(SmpProgress) == []
+        assert sink.of(SmpResult) == []
+
+    def test_completion_arrives_as_a_result_not_as_progress(self, app):
+        """VERIFIED is an outcome. The UI dismisses a dialog on it, and
+        dismissing on a progress tick would close it mid-run."""
+        a, engine, _, sink = app
+        engine.encrypted()
+        engine.incoming = None
+        engine.smp_status_after = {"state": "VERIFIED", "verified": True,
+                                   "failed": False}
+        a.receive_message("bob", "?OTRv4 c21w")
+        finished = sink.of(SmpResult)
+        assert finished and finished[-1].state is SmpState.VERIFIED
+
+    def test_a_failed_proof_arrives_as_a_result(self, app):
+        a, engine, _, sink = app
+        engine.encrypted()
+        engine.incoming = None
+        engine.smp_status_after = {"state": "FAILED", "verified": False,
+                                   "failed": True}
+        a.receive_message("bob", "?OTRv4 c21w")
+        finished = sink.of(SmpResult)
+        assert finished and finished[-1].state is SmpState.FAILED
+
+
+class TestAnsweringAHeldRequest:
+    """THE OTHER HALF OF THE RESPONDER BUG.
+
+    `smp_respond` called `set_smp_secret` and stopped. Setting the secret is
+    half the operation: the peer's SMP1 is HELD in the Rust core, and
+    answering it means `resume_held_smp1` to consume the held message and
+    produce SMP2 -- and then putting SMP2 on the wire.
+
+    Neither happened, so a responder who typed the correct passphrase sent
+    nothing and both sides hung. Both terminal clients do this properly
+    (`otrv4+.py:15312`, `otrv4plus_xmpp.py:3661`).
+    """
+
+    @staticmethod
+    @pytest.fixture
+    def holding(app):
+        a, engine, transport, sink = app
+        engine.encrypted()
+        engine.secret_required = True
+        return a, engine, transport, sink
+
+    def test_the_answer_reaches_the_wire(self, holding):
+        a, engine, transport, _ = holding
+        a.smp_respond("bob", SECRET)
+        assert transport.sent == [("bob", "?OTRv4 c21wMg")], (
+            "the secret was stored and SMP2 was never sent")
+
+    def test_the_held_message_is_consumed(self, holding):
+        a, engine, _, _ = holding
+        a.smp_respond("bob", SECRET)
+        assert engine.resumed == ["bob"]
+
+    def test_the_secret_is_set_before_the_resume(self, holding):
+        """Order matters: `resume_held_smp1_generate_smp2` needs the secret
+        already bound, and the engine raises a fixed literal if it is not."""
+        a, engine, _, _ = holding
+        a.smp_respond("bob", SECRET)
+        assert engine.smp_secrets_seen == [SECRET]
+
+    def test_answering_when_nothing_is_held_is_refused(self, app):
+        """Storing a passphrase here would bind a secret to a session with no
+        run to spend it on, and tell the user they answered a request that
+        does not exist."""
+        a, engine, transport, _ = app
+        engine.encrypted()
+        engine.secret_required = False
+        with pytest.raises(BridgeError) as caught:
+            a.smp_respond("bob", SECRET)
+        assert caught.value.code == "smp_not_requested"
+        assert engine.smp_secrets_seen == []
+        assert transport.sent == []
+
+    def test_a_resume_that_raises_is_reported_and_sends_nothing(self, holding):
+        a, engine, transport, _ = holding
+        engine.raise_on_resume = True
+        with pytest.raises(BridgeError) as caught:
+            a.smp_respond("bob", SECRET)
+        assert caught.value.code == "smp_resume_failed"
+        assert transport.sent == []
+
+    def test_a_vanished_request_is_reported_rather_than_sending_nothing(
+            self, holding):
+        a, engine, transport, _ = holding
+        engine.smp2 = None
+        with pytest.raises(BridgeError) as caught:
+            a.smp_respond("bob", SECRET)
+        assert caught.value.code == "smp_held_request_gone"
+        assert transport.sent == []
+
+    def test_a_failed_send_is_reported(self, holding):
+        """A proof that never left the socket is not a stage that completed."""
+        class Refusing(FakeTransport):
+            def send(self, peer, payload):
+                raise OSError("stream gone")
+
+        a, engine, _, _ = holding
+        a._transport = Refusing()
+        with pytest.raises(BridgeError) as caught:
+            a.smp_respond("bob", SECRET)
+        assert caught.value.code == "smp_send_failed"
+
+    def test_an_engine_without_resume_is_reported_not_silent(self, app):
+        a, engine, transport, _ = app
+        engine.encrypted()
+        engine.secret_required = True
+        engine.resume_held_smp1 = None
+        with pytest.raises(BridgeError) as caught:
+            a.smp_respond("bob", SECRET)
+        assert caught.value.code == "smp_resume_unsupported"
+
+
+class TestInitiatingSmpPutsTheRequestOnTheWire:
+    """The initiator half, held to the same standard as the DAKE.
+
+    `smp_start` sent through `self._transport.send` directly and did nothing
+    at all when the engine produced no payload -- the shape that let
+    `start_session` report success for a handshake that never left the device.
+    """
+
+    def test_the_request_reaches_the_peer(self, app):
+        a, engine, transport, _ = app
+        engine.encrypted()
+        a.smp_start("bob", SECRET)
+        assert transport.sent == [("bob", "?OTRv4 c21w")]
+
+    def test_a_question_is_passed_to_the_engine(self, app):
+        a, engine, transport, _ = app
+        engine.encrypted()
+        a.smp_start("bob", SECRET, "what did we agree?")
+        assert transport.sent
+
+    def test_no_request_produced_is_an_error_not_silence(self, app):
+        a, engine, transport, _ = app
+        engine.encrypted()
+        engine.smp1 = None
+        with pytest.raises(BridgeError) as caught:
+            a.smp_start("bob", SECRET)
+        assert caught.value.code == "smp_not_produced"
+        assert transport.sent == []
+
+    def test_a_failed_send_is_reported(self, app):
+        class Refusing(FakeTransport):
+            def send(self, peer, payload):
+                raise OSError("stream gone")
+
+        a, engine, _, _ = app
+        engine.encrypted()
+        a._transport = Refusing()
+        with pytest.raises(BridgeError) as caught:
+            a.smp_start("bob", SECRET)
+        assert caught.value.code == "smp_send_failed"
+
+    def test_progress_is_emitted_so_the_ui_can_show_the_run(self, app):
+        a, engine, _, sink = app
+        engine.encrypted()
+        engine.smp_status = {"state": "AWAITING_MSG2", "verified": False,
+                             "failed": False}
+        a.smp_start("bob", SECRET)
+        progressed = sink.of(SmpProgress)
+        assert progressed and progressed[-1].state is SmpState.IN_PROGRESS
+
+
+class TestTheStateMapKnowsEveryPhaseTheCoreCanReport:
+    """SECRET_REQUIRED was missing from `_SMP_PHASE_MAP` and fell through the
+    default to IDLE, so the one state meaning "the other person is waiting on
+    you" read as "nothing is happening". The default is safe -- an unknown
+    phase is never VERIFIED -- but safe is not the same as correct, and a
+    safe fallback is exactly what hid this for two releases.
+
+    Parsed from the Rust source rather than restated, so a phase added there
+    fails here instead of being silently collapsed.
+    """
+
+    @staticmethod
+    def _rust_phases():
+        import pathlib
+        import re
+        src = (pathlib.Path(__file__).resolve().parent.parent
+               / "Rust" / "src" / "smp.rs").read_text(encoding="utf-8")
+        body = src[src.index("pub fn get_phase(&self)"):]
+        body = body[:body.index("}", body.index("match self.phase"))]
+        return set(re.findall(r'=>\s*"([A-Z0-9_]+)"', body))
+
+    def test_the_source_parse_found_the_phases(self):
+        """A regex that matched nothing would make every assertion here
+        vacuous."""
+        phases = self._rust_phases()
+        assert "VERIFIED" in phases and "SECRET_REQUIRED" in phases
+        assert len(phases) >= 8
+
+    def test_every_rust_phase_is_mapped(self):
+        from android_bridge.events import _SMP_PHASE_MAP
+        missing = self._rust_phases() - set(_SMP_PHASE_MAP)
+        assert not missing, (
+            "Rust/src/smp.rs reports %s and the bridge has never been told "
+            "what they mean, so they collapse to NOT_VERIFIED" % sorted(missing))
+
+    def test_secret_required_is_its_own_state(self):
+        assert smp_state_from_status(
+            {"state": "SECRET_REQUIRED", "verified": False, "failed": False}
+        ) is SmpState.SECRET_REQUIRED
+
+    def test_aborted_is_cancelled_and_not_failed(self):
+        """FAILED means the proof ran and the secrets did not match, which on
+        this protocol is what an impersonation looks like. Showing a cancel as
+        a failure would tell a user their peer may be an impostor because
+        somebody closed a dialog."""
+        assert smp_state_from_status(
+            {"state": "ABORTED", "verified": False, "failed": False}
+        ) is SmpState.CANCELLED
+
+    def test_an_unknown_phase_is_never_verified(self):
+        for bogus in ("MADE_UP", "", "verified", "VERIFIED_MAYBE"):
+            assert smp_state_from_status(
+                {"state": bogus, "verified": False, "failed": False}
+            ) is not SmpState.VERIFIED
+
+    def test_the_predicate_matches_the_state(self, app):
+        """`smp_secret_required` and `smp_state` must not disagree about
+        whether somebody is waiting."""
+        a, engine, _, _ = app
+        engine.secret_required = True
+        assert a.smp_secret_required("bob") is True
+        engine.secret_required = False
+        assert a.smp_secret_required("bob") is False
+
+    def test_an_engine_without_the_predicate_falls_back_to_the_phase(self, app):
+        """`smp_engine_compat` exists because this project supports engine
+        builds that predate a call. The fallback reads the phase, which is
+        where the answer comes from anyway."""
+        a, engine, _, _ = app
+        engine.smp_secret_required = None
+        engine.smp_status = {"state": "SECRET_REQUIRED", "verified": False,
+                             "failed": False}
+        assert a.smp_secret_required("bob") is True

@@ -7,6 +7,7 @@ import org.otrv4plus.android.bridge.Contact
 import org.otrv4plus.android.bridge.OtrEvent
 import org.otrv4plus.android.bridge.PeerPresence
 import org.otrv4plus.android.bridge.SecurityState
+import org.otrv4plus.android.bridge.SmpState
 import org.otrv4plus.android.bridge.Subscription
 import org.otrv4plus.android.bridge.SendOutcome
 
@@ -94,6 +95,11 @@ class ChatState(
         // behind here would name a stranger to the new account and offer to
         // grant them Dave's presence.
         subscriptionRequests.clear()
+        // Verification is per account AND per peer. Carrying a VERIFIED into
+        // the next account would show somebody else's identity check as this
+        // account's, which is the one claim this application must never make
+        // wrongly.
+        smpStates.clear()
         postLogin.onSignedOut()
         savedContacts.bind(next)
         (store as? PersistentMessageStore)?.bind(next)
@@ -352,9 +358,37 @@ class ChatState(
                 noteSubscription(event)
                 false
             }
+            // Verification moved. Recorded here rather than waited for on the
+            // next roster poll: an incoming request is the case that matters,
+            // and the peer is sitting there while we decide when to notice.
+            //
+            // Returns false. A verification request is not a message and must
+            // not buzz the phone — a peer able to trigger a notification by
+            // running SMP would be a peer with a way to ring somebody at will.
+            is OtrEvent.SmpProgressed -> {
+                smpStates[event.peer] = event.progress.state
+                false
+            }
+            is OtrEvent.SmpFinished -> {
+                smpStates[event.peer] = event.state
+                false
+            }
             else -> false
         }
     }
+
+    /**
+     * The latest verification state per peer, from events.
+     *
+     * Not a second source of truth — the engine is, and `contacts` carries
+     * its answer on every roster poll. This is the same answer arriving
+     * sooner, and [conversations] prefers it for exactly that reason. It is
+     * cleared with the account like everything else keyed by peer.
+     *
+     * NOTHING CRYPTOGRAPHIC IS HELD HERE. A coarse state name per JID, and no
+     * passphrase, no proof state, no key material — those never leave Rust.
+     */
+    private val smpStates = mutableMapOf<String, SmpState>()
 
     /**
      * An inbound message, routed by the SENDER'S JID.
@@ -435,6 +469,12 @@ class ChatState(
                         ?: Subscription.UNKNOWN,
                 ),
                 security = contact?.security ?: SecurityState.PLAINTEXT,
+                // An event beats the last roster poll. `SmpProgressed` and
+                // `SmpFinished` arrive on the drain loop the moment the
+                // engine moves; the roster is re-read on a slower tick, so
+                // reading only `contact.smp` would leave an incoming
+                // verification request unshown until the next poll caught up.
+                smp = smpStates[jid] ?: contact?.smp ?: SmpState.NOT_VERIFIED,
                 lastMessage = store.lastMessage(jid),
                 unread = store.unread(jid),
                 // A conversation with no roster entry is somebody who

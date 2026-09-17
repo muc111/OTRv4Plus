@@ -56,7 +56,7 @@ class AccountIsolationTest {
     private fun contact(jid: String) = Contact(
         jid = jid, displayName = jid.substringBefore('@'),
         presence = PeerPresence.ONLINE,
-        security = SecurityState.PLAINTEXT, smp = SmpState.IDLE,
+        security = SecurityState.PLAINTEXT, smp = SmpState.NOT_VERIFIED,
         callAvailable = false)
 
     private fun storeFor(vault: Vault, account: String) =

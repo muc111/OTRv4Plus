@@ -326,10 +326,34 @@ class OtrApp:
             return SecurityState.PLAINTEXT
 
     def smp_state(self, peer: str) -> SmpState:
+        """This peer's verification state.
+
+        An engine that raises reports NOT_VERIFIED, which is the safe
+        direction: a state we could not read must never be shown as VERIFIED.
+        """
         try:
             return smp_state_from_status(self._engine.get_smp_status(peer))
         except Exception:
-            return SmpState.IDLE
+            return SmpState.NOT_VERIFIED
+
+    def smp_secret_required(self, peer: str) -> bool:
+        """Whether a peer's SMP1 is held by the core, waiting for our answer.
+
+        The SAME predicate both terminal clients use -- `otrv4+.py:9669` on
+        EnhancedSessionManager, which reads `RustSMP.get_phase() ==
+        "SECRET_REQUIRED"`. Not a second notion of "a request is pending":
+        there is one, it lives in Rust, and this asks it.
+
+        A manager without the method answers False rather than raising. That
+        is not defensive padding -- `smp_engine_compat` exists because this
+        project supports engine builds that predate a call, and reporting
+        "nobody is waiting on you" is the correct answer from an engine that
+        cannot hold an SMP1 in the first place.
+        """
+        ask = getattr(self._engine, "smp_secret_required", None)
+        if ask is None:
+            return self.smp_state(peer) is SmpState.SECRET_REQUIRED
+        return bool(self._safe(lambda: ask(peer), default=False))
 
     def smp_progress(self, peer: str) -> SmpProgress:
         """Drives the verification progress UI.
@@ -646,6 +670,7 @@ class OtrApp:
         # security level as a side effect of this call, and comparing against a
         # post-call reading would always find them equal.
         before = self.security_state(peer)
+        before_smp = self.smp_state(peer)
         try:
             result = self._engine.handle_incoming_message(peer, payload)
         except Exception:
@@ -657,6 +682,7 @@ class OtrApp:
             after = self.security_state(peer)
             if after != before:
                 self._emit(SessionStateChanged(peer=peer, security=after))
+            self._announce_smp_change(peer, before_smp)
             return None
 
         # THE ENGINE'S OUTPUT IS NOT NECESSARILY SOMETHING TO DISPLAY.
@@ -677,6 +703,7 @@ class OtrApp:
             after = self.security_state(peer)
             if after != before:
                 self._emit(SessionStateChanged(peer=peer, security=after))
+            self._announce_smp_change(peer, before_smp)
             return None
 
         body = result.decode("utf-8", errors="replace") if isinstance(result, (bytes, bytearray)) else str(result)
@@ -687,7 +714,45 @@ class OtrApp:
         after = self.security_state(peer)
         if after != before:
             self._emit(SessionStateChanged(peer=peer, security=after))
+        self._announce_smp_change(peer, before_smp)
         return body
+
+    def _announce_smp_change(self, peer: str, before: SmpState) -> None:
+        """Emit when an inbound frame moved this peer's verification state.
+
+        THE DEFECT THIS FIXES
+        ---------------------
+        `receive_message` emitted `SessionStateChanged` only when the SECURITY
+        LEVEL changed. An SMP1 arriving on a session that is already ENCRYPTED
+        does not change the level -- it stays ENCRYPTED until SMP passes, which
+        is the whole point of having SMP -- so an incoming verification request
+        produced NO EVENT AT ALL.
+
+        The Rust core was doing its part: it parks the peer's SMP1 in
+        `SmpPhase::SecretRequired` and waits. The terminal clients notice
+        because they call `smp_secret_required(peer)` on their own inbound
+        path (`otrv4+.py:15404`, `otrv4plus_xmpp.py:2934`). Android had no
+        equivalent, so Bob's device knew a request was held and never said so.
+
+        WHY A TRANSITION AND NOT A POLL
+        -------------------------------
+        Emitted only when the state actually MOVED. A resent SMP1 lands in
+        SECRET_REQUIRED again, and re-announcing it would let a peer stack
+        prompts by resending -- the same idempotence `SmpFlow
+        .remote_smp1_arrived` enforces for the terminal, applied at the point
+        the Android UI actually learns about the request.
+
+        NOTHING HERE DECIDES WHAT THE USER'S NEXT INPUT MEANS. It reports a
+        state change; the UI opens a dialog with its own passphrase field. See
+        `smp_respond` for why that separation is what keeps INV-06.
+        """
+        after = self.smp_state(peer)
+        if after == before:
+            return
+        if after in (SmpState.VERIFIED, SmpState.FAILED, SmpState.CANCELLED):
+            self._emit(SmpResult(peer=peer, state=after))
+        else:
+            self._emit(self.smp_progress(peer))
 
     def _send_protocol(self, peer: str, payload) -> None:
         """Put the engine's protocol response back on the wire.
@@ -712,8 +777,40 @@ class OtrApp:
 
     # -- verification ----------------------------------------------------------
 
+    #: The engine's own rule, restated at this boundary rather than guessed.
+    #: `EnhancedOTRSession.set_smp_secret` raises below 8, and `otrv4+.py`
+    #: defines both constants; the cap keeps an unbounded UI field from
+    #: reaching the Argon2id stretch.
+    SMP_MIN_LEN = 8
+    SMP_MAX_LEN = 512
+
+    def _require_encrypted(self, peer: str, code: str) -> None:
+        """Refuse an SMP operation on a conversation that is not encrypted.
+
+        SMP proves you are talking to who you think you are. Running it
+        outside an established session would prove it about nothing -- there
+        is no session binding to tie the proof to -- so this is a
+        precondition, not a nicety.
+
+        PLAINTEXT is the only refusal. ENCRYPTED, FINGERPRINT and SMP_VERIFIED
+        all mean a DAKE completed. FINGERPRINT_MISMATCH is deliberately NOT
+        refused here: that conversation IS encrypted, to somebody, and running
+        SMP is one of the few things that can tell the user WHICH somebody.
+        """
+        if self.security_state(peer) is SecurityState.PLAINTEXT:
+            self._emit(ErrorOccurred(peer=peer, code=code))
+            raise BridgeError(code, "there is no encrypted session to verify")
+
     def smp_start(self, peer: str, secret: str, question: str = "") -> None:
-        """Begin SMP.  `secret` is passed straight through and never retained."""
+        """Begin SMP.  `secret` is passed straight through and never retained.
+
+        THE PASSPHRASE DOES NOT STOP HERE. It goes to the engine, which copies
+        it into a Rust-owned zeroizing buffer (`RustSMPVault`) and derives
+        from it there. This method holds a reference for the length of one
+        call and drops it; nothing on this object stores it, no event carries
+        it, and `redacting_logger` is not given it.
+        """
+        self._require_encrypted(peer, "smp_not_encrypted")
         try:
             payload = self._engine.start_smp(peer, secret, question)
         except Exception:
@@ -721,12 +818,60 @@ class OtrApp:
             raise BridgeError("smp_start_failed")
         finally:
             del secret
-        if payload and self._transport is not None:
-            self._transport.send(peer, payload)
+        if not payload:
+            # The engine produced no SMP1. Saying nothing would leave the UI
+            # showing a verification that never started -- the same silence
+            # that made `start_session` look like it worked.
+            self._emit(ErrorOccurred(peer=peer, code="smp_not_produced"))
+            raise BridgeError("smp_not_produced",
+                              "the verification request could not be built")
+        try:
+            self._send_protocol_or_raise(peer, payload, "smp_send_failed")
+        except BridgeError:
+            self._emit(self.smp_progress(peer))
+            raise
         self._emit(self.smp_progress(peer))
 
     def smp_respond(self, peer: str, secret: str) -> None:
-        """Answer a peer's verification challenge."""
+        """Answer a peer's verification challenge.
+
+        THE DEFECT THIS FIXES
+        ---------------------
+        This method used to be `set_smp_secret` and nothing else. Setting the
+        secret is half the operation: the peer's SMP1 is HELD by the Rust core
+        in `SmpPhase::SecretRequired`, and answering it means calling
+        `resume_held_smp1` to consume the held message and produce SMP2 -- and
+        then PUTTING SMP2 ON THE WIRE.
+
+        Neither happened. The secret was stored, a progress event was emitted,
+        and the responder's answer never left the device. Both terminal
+        clients do this properly (`otrv4+.py:15312`,
+        `otrv4plus_xmpp.py:3661`); this facade did not, so an Android
+        responder could only ever hang.
+
+        WHY THIS IS SAFE UNDER INV-06
+        -----------------------------
+        SECURITY_INVARIANTS.md INV-06: a remote peer may cause the client to
+        ASK for the passphrase, but may never cause the next thing the user
+        types to BECOME the passphrase. On a terminal those are one step apart
+        because there is ONE input channel, which is why `SmpFlow` puts a
+        consent edge between them.
+
+        On Android the separation is structural instead. This is reached only
+        from a dialog with its OWN password field: a chat message typed into
+        the composer goes to `send_user_text` and cannot arrive here, whatever
+        a peer does. The peer chooses when a dialog appears; they cannot
+        choose what any other input means. That is the property INV-06 names,
+        obtained from the widget boundary rather than from a state machine.
+        """
+        self._require_encrypted(peer, "smp_not_encrypted")
+        if not self.smp_secret_required(peer):
+            # Nothing is being asked. Storing a passphrase here would leave a
+            # secret bound to a session with no run to spend it on, and the
+            # user would be told they had answered a request that does not
+            # exist.
+            raise BridgeError("smp_not_requested",
+                              "there is no verification request to answer")
         try:
             self._engine.set_smp_secret(peer, secret)
         except Exception:
@@ -734,7 +879,47 @@ class OtrApp:
             raise BridgeError("smp_respond_failed")
         finally:
             del secret
+
+        resume = getattr(self._engine, "resume_held_smp1", None)
+        if resume is None:
+            self._emit(ErrorOccurred(peer=peer, code="smp_resume_unsupported"))
+            raise BridgeError("smp_resume_unsupported")
+        try:
+            smp2 = resume(peer)
+        except Exception:
+            # NOT SmpState.FAILED, and the terminal client makes the same
+            # point: no proof was attempted, so this is not an SMP failure and
+            # must not be shown as one.
+            self._emit(ErrorOccurred(peer=peer, code="smp_resume_failed"))
+            raise BridgeError("smp_resume_failed")
+        if not smp2:
+            self._emit(ErrorOccurred(peer=peer, code="smp_held_request_gone"))
+            raise BridgeError("smp_held_request_gone",
+                              "the verification request is no longer waiting")
+
+        self._send_protocol_or_raise(peer, smp2, "smp_send_failed")
         self._emit(self.smp_progress(peer))
+
+    def _send_protocol_or_raise(self, peer: str, payload, code: str) -> None:
+        """Send an SMP frame, or fail loudly.
+
+        `_send_protocol` swallows a send failure into an error event, which is
+        right on the INBOUND path -- an exception there would take down the
+        callback that delivers every other message. It is wrong here: these
+        calls are driven by a user pressing Verify, and a proof that never
+        left the socket is not a stage that completed.
+        """
+        if self._transport is None:
+            self._emit(ErrorOccurred(peer=peer, code="no_transport"))
+            raise BridgeError("no_transport")
+        text = (payload.decode("utf-8", errors="replace")
+                if isinstance(payload, (bytes, bytearray)) else str(payload))
+        try:
+            self._transport.send(peer, text)
+        except Exception as exc:
+            _TRACE.record_exception("smp", code, exc, jid=peer)
+            self._emit(ErrorOccurred(peer=peer, code=code))
+            raise BridgeError(code, "the verification message could not be sent")
 
     def smp_abort(self, peer: str) -> None:
         abort = getattr(self._engine, "abort_smp", None)

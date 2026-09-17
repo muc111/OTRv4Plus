@@ -4,6 +4,7 @@ package org.otrv4plus.android.chat
 
 import org.otrv4plus.android.bridge.PeerPresence
 import org.otrv4plus.android.bridge.SecurityState
+import org.otrv4plus.android.bridge.SmpState
 import org.otrv4plus.android.bridge.Subscription
 
 /**
@@ -135,6 +136,16 @@ data class Conversation(
      * to say so and offer the remedy.
      */
     val saved: Boolean = true,
+    /**
+     * Identity verification, which [security] alone cannot express in flight.
+     *
+     * `SecurityState.SMP_VERIFIED` is the level AFTER a run completes.
+     * SECRET_REQUIRED and IN_PROGRESS have no level of their own — the
+     * session stays ENCRYPTED throughout, correctly — so without this field
+     * "their request is waiting on you" and "nothing is happening" are the
+     * same conversation.
+     */
+    val smp: SmpState = SmpState.NOT_VERIFIED,
 ) {
     /** What the list row shows under the name. Empty for a fresh contact. */
     val preview: String

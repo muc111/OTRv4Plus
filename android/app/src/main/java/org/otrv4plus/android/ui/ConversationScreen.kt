@@ -19,6 +19,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import org.otrv4plus.android.bridge.SecurityState
 import org.otrv4plus.android.chat.ChatViewModel
@@ -26,6 +28,7 @@ import org.otrv4plus.android.chat.Message
 import org.otrv4plus.android.chat.SecurityLabel
 import org.otrv4plus.android.chat.SendState
 import org.otrv4plus.android.crypto.EncryptionKind
+import org.otrv4plus.android.crypto.Verification
 
 /**
  * One conversation: history above, composer below.
@@ -129,6 +132,29 @@ fun ConversationScreen(
                     offered = model.encryptionOffered(jid),
                     reason = { model.encryptionUnavailableReason(jid) },
                     onStart = { model.startEncryption(jid) },
+                )
+            }
+
+            // Verification. Its own row, because it answers a different
+            // question from the one above: encryption asks whether the server
+            // can read this, verification asks who is on the other end. The
+            // row draws nothing at all until there is a session to verify.
+            VerificationOffer(
+                offer = model.verificationOffer(jid),
+                onVerify = { model.requestVerification(jid) },
+                onCancel = { model.dismissVerification(jid) },
+            )
+
+            // The prompt, in BOTH directions. `verificationPrompt` is derived
+            // from the engine's state on every read, so an incoming request
+            // opens this with no button pressed -- which is the requirement:
+            // the Verify Identity control is only for initiating.
+            model.verificationPrompt(jid)?.let { prompt ->
+                VerificationPrompt(
+                    prompt = prompt,
+                    peer = conversation.displayName,
+                    onSubmit = { model.submitVerification(jid, it) },
+                    onDismiss = { model.dismissVerification(jid) },
                 )
             }
 
@@ -250,6 +276,165 @@ private fun EncryptionOffer(
             }
         }
     }
+}
+
+/**
+ * The identity-verification control, and the verified badge it becomes.
+ *
+ * WHY THIS IS SEPARATE FROM [EncryptionOffer]. They answer different
+ * questions and appear at different times. Encryption asks "is this traffic
+ * readable by the server"; verification asks "is this the person I think it
+ * is". A conversation can be fully encrypted and completely unverified, which
+ * is the normal state after a DAKE and is exactly what SMP exists to resolve.
+ *
+ * Hidden entirely before a session exists. There is nothing to verify without
+ * one, and a disabled button would invite a user to wonder what they did
+ * wrong -- [Verification.offer] returns HIDDEN and this draws nothing.
+ */
+@Composable
+private fun VerificationOffer(
+    offer: Verification.Offer,
+    onVerify: () -> Unit,
+    onCancel: () -> Unit,
+) {
+    if (offer == Verification.Offer.HIDDEN) return
+    Surface(color = MaterialTheme.colorScheme.surfaceVariant) {
+        Row(
+            Modifier.fillMaxWidth().padding(start = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                when (offer) {
+                    // Says what verification WOULD buy, rather than just
+                    // naming the feature. "Not verified" alone reads as a
+                    // defect; this reads as a thing still to do.
+                    Verification.Offer.VERIFY ->
+                        "You have not checked who is on the other end."
+                    Verification.Offer.IN_PROGRESS ->
+                        "Verifying… this takes a minute over I2P."
+                    Verification.Offer.ANSWERING ->
+                        "Answering their verification request…"
+                    Verification.Offer.VERIFIED -> "Identity Verified ✓"
+                    Verification.Offer.HIDDEN -> ""
+                },
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.weight(1f).padding(vertical = 8.dp),
+            )
+            when (offer) {
+                Verification.Offer.VERIFY ->
+                    TextButton(onClick = onVerify) { Text("Verify Identity") }
+                // Cancel, not another Verify. A second run against a core
+                // already holding one is the wrong operation, and the user's
+                // only useful choice here is to stop.
+                Verification.Offer.IN_PROGRESS,
+                Verification.Offer.ANSWERING ->
+                    TextButton(onClick = onCancel) { Text("Cancel") }
+                // VERIFIED is a statement, not a control. Offering to verify
+                // again would imply the last answer had expired.
+                else -> Unit
+            }
+        }
+    }
+}
+
+/**
+ * The passphrase prompt, for both directions.
+ *
+ * ONE DIALOG, TWO SENTENCES. The mechanism is identical either way -- both
+ * sides type the same agreed text and the core proves they match without
+ * transmitting it -- so a second dialog would be a second place to get the
+ * handling of a secret wrong. Only the explanation differs, and it comes from
+ * [Verification.explanation] where a JVM test can read it.
+ *
+ * WHY AN AUTOMATIC DIALOG IS SAFE HERE, AND WOULD NOT BE ON A TERMINAL
+ * --------------------------------------------------------------------
+ * SECURITY_INVARIANTS.md INV-06: a remote peer may cause the client to ASK
+ * for the passphrase, but may never cause the next thing the user types to
+ * BECOME the passphrase. On a terminal those are one step apart, because
+ * there is ONE input channel -- which is why `otrv4plus_smpflow.SmpFlow` puts
+ * an explicit consent edge between them.
+ *
+ * Here the separation is structural instead. This field is its own widget: a
+ * message typed into the composer goes to `ChatViewModel.send` and cannot
+ * arrive here, whatever a peer does. The peer chooses when a dialog appears;
+ * they cannot choose what any other input means.
+ *
+ * THE PASSPHRASE LIVES IN THIS COMPOSITION AND NOWHERE ELSE. `remember`, not
+ * `rememberSaveable`: a saveable would put it in the savedInstanceState
+ * Bundle, which Android writes to disk. It is cleared on both exits.
+ */
+@Composable
+private fun VerificationPrompt(
+    prompt: Verification.Prompt,
+    peer: String,
+    onSubmit: (String) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    var secret by remember { mutableStateOf("") }
+    val submit = {
+        // Handed over and cleared on the same path, so the composition does
+        // not keep it after the core has it.
+        onSubmit(secret)
+        secret = ""
+    }
+    val dismiss = {
+        secret = ""
+        onDismiss()
+    }
+    AlertDialog(
+        onDismissRequest = dismiss,
+        title = {
+            Text(
+                when (prompt) {
+                    Verification.Prompt.OUTGOING -> "Verify Identity"
+                    Verification.Prompt.INCOMING -> "Identity Verification"
+                }
+            )
+        },
+        text = {
+            Column {
+                Text(
+                    Verification.explanation(prompt, peer),
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+                OutlinedTextField(
+                    value = secret,
+                    onValueChange = { secret = it },
+                    label = { Text("Shared passphrase") },
+                    singleLine = true,
+                    // A passphrase prompt that shows the passphrase is not a
+                    // passphrase prompt -- the same rule the connect screen
+                    // applies to the account password.
+                    visualTransformation = PasswordVisualTransformation(),
+                    keyboardOptions = KeyboardOptions(
+                        keyboardType = KeyboardType.Password,
+                        imeAction = ImeAction.Done),
+                    keyboardActions = KeyboardActions(onDone = { submit() }),
+                    modifier = Modifier.fillMaxWidth()
+                        .padding(top = 12.dp, bottom = 8.dp),
+                )
+                Text(
+                    "Both of you must enter exactly the same text " +
+                        "(${Verification.MIN_SECRET}-" +
+                        "${Verification.MAX_SECRET} characters).",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        },
+        confirmButton = {
+            // Disabled rather than failing after a round trip: the engine
+            // refuses below the minimum and this says so before the wait.
+            TextButton(
+                enabled = Verification.acceptable(secret),
+                onClick = submit,
+            ) { Text("Verify") }
+        },
+        dismissButton = {
+            TextButton(onClick = dismiss) { Text("Cancel") }
+        },
+    )
 }
 
 /**

@@ -23,6 +23,7 @@ import org.otrv4plus.android.crypto.EncryptionLauncher
 import org.otrv4plus.android.crypto.MlsProvider
 import org.otrv4plus.android.crypto.Omemo2Provider
 import org.otrv4plus.android.crypto.OtrV4PlusProvider
+import org.otrv4plus.android.crypto.Verification
 
 /**
  * The UI's window onto the conversation. It owns none of it.
@@ -418,6 +419,124 @@ class ChatViewModel : ViewModel() {
             }
             revision++
         }
+    }
+
+    // -- identity verification (SMP) -----------------------------------------
+    //
+    // No cryptography here. The proof is `Rust/src/smp.rs` -- X448 with
+    // hybrid ML-KEM-1024 / ML-DSA-87 and the zero-knowledge proofs -- reached
+    // through `OtrApp.smp_start` / `smp_respond`. What is here is which dialog
+    // is open and what the user typed, and the typed text is handed to the
+    // core and dropped on the same line.
+
+    /** Whose prompt the user has asked for, or null. Never a passphrase. */
+    private var verifyRequested: String? = null
+
+    /**
+     * Which prompt should be open for [jid], or null for none.
+     *
+     * Derived on every read from [Verification.prompt] rather than latched,
+     * so an incoming request that arrives while the outgoing prompt is open
+     * flips it to the one that will actually work — `smpRespond` resumes the
+     * peer's held SMP1, `smpStart` would begin a competing run.
+     */
+    fun verificationPrompt(jid: String): Verification.Prompt? {
+        observe()
+        val core = this.core ?: return null
+        return Verification.prompt(
+            security = conversation(jid).security,
+            secretRequired = runCatching { core.smpSecretRequired(jid) }
+                .getOrDefault(false),
+            requested = verifyRequested == jid,
+        )
+    }
+
+    /** What the one verification control should be for [jid]. */
+    fun verificationOffer(jid: String): Verification.Offer {
+        observe()
+        val conversation = conversation(jid)
+        return Verification.offer(conversation.security, conversation.smp)
+    }
+
+    /** The user tapped Verify Identity. Opens the outgoing prompt only. */
+    fun requestVerification(jid: String) {
+        verifyRequested = jid
+        revision++
+    }
+
+    /**
+     * The user dismissed a prompt.
+     *
+     * An OUTGOING prompt closes and nothing else happens: no run had started.
+     *
+     * An INCOMING prompt means the peer's SMP1 is held in the core, and
+     * closing the dialog without telling the engine would leave it held
+     * forever while the initiator waited. So that case aborts, which is how
+     * the state becomes CANCELLED rather than staying SECRET_REQUIRED.
+     */
+    fun dismissVerification(jid: String) {
+        val incoming = verificationPrompt(jid) == Verification.Prompt.INCOMING
+        verifyRequested = null
+        revision++
+        if (!incoming) return
+        val core = this.core ?: return
+        viewModelScope.launch {
+            withContext(Dispatchers.IO) { runCatching { core.smpAbort(jid) } }
+            revision++
+        }
+    }
+
+    /**
+     * Submit the passphrase for [jid].
+     *
+     * WHICH CALL IS NOT A DETAIL. An incoming prompt must go to `smpRespond`,
+     * which binds the secret AND resumes the peer's held SMP1 into SMP2;
+     * `smpStart` there would begin a second, competing run against a core that
+     * is already holding one.
+     *
+     * [secret] is passed to the bridge and not retained: it is not assigned to
+     * a field, not put in a notice, and not logged. The bridge hands it to the
+     * engine, which copies it into Rust-owned zeroizing memory.
+     */
+    fun submitVerification(jid: String, secret: String) {
+        val state = this.state ?: return
+        val core = this.core ?: run {
+            state.note("The connection is not ready yet.")
+            revision++
+            return
+        }
+        if (!Verification.acceptable(secret)) {
+            state.note("The passphrase must be at least " +
+                       "${Verification.MIN_SECRET} characters.")
+            revision++
+            return
+        }
+        val incoming = verificationPrompt(jid) == Verification.Prompt.INCOMING
+        verifyRequested = null
+        revision++
+        viewModelScope.launch {
+            val outcome = withContext(Dispatchers.IO) {
+                // getOrElse, not a rethrow: the exception's text comes from
+                // the bridge and a PyException carries the engine's own
+                // message. The CODE is what reaches the screen.
+                runCatching {
+                    if (incoming) core.smpRespond(jid, secret)
+                    else core.smpStart(jid, secret)
+                }
+            }
+            outcome.onFailure {
+                state.note(
+                    if (incoming) "The verification could not be answered."
+                    else "The verification could not be started.")
+            }
+            revision++
+        }
+    }
+
+    /** What to say about a finished run, or null while one is in flight. */
+    fun verificationOutcome(jid: String): String? {
+        observe()
+        return Verification.outcome(conversation(jid).smp)
     }
 
     override fun onCleared() {

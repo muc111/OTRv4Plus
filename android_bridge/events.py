@@ -53,15 +53,46 @@ class SecurityState(enum.IntEnum):
 class SmpState(enum.Enum):
     """Coarse SMP state for UI.
 
-    The engine exposes six protocol phases; a user needs four outcomes.  The
+    The engine exposes eight protocol phases; a user needs these five.  The
     exact phase stays available via `OtrApp.security_details()` for the advanced
     screen, so collapsing here loses nothing a user should see.
+
+    SECRET_REQUIRED IS NOT A COLLAPSE, AND ADDING IT FIXED A REAL GAP
+    ----------------------------------------------------------------
+    `Rust/src/smp.rs` has had `SmpPhase::SecretRequired` since 0.10.27. It is
+    the state a responder is in when a peer's SMP1 has ARRIVED and is being
+    HELD by the core because no passphrase is set -- the core deliberately
+    holds rather than aborts, "lets the responder supply it and answer the
+    SMP1 that already arrived, so the run continues rather than restarting".
+
+    It was not in this map. `SECRET_REQUIRED` fell through to the default and
+    was reported as IDLE, so the one state that means "the other person is
+    waiting on you right now" was indistinguishable from "nothing is
+    happening". On the terminal that did not show, because the IRC and XMPP
+    clients read `smp_secret_required(peer)` off the session manager directly
+    and never went through this enum. On Android there was no other route.
+
+    CANCELLED IS NOT FAILED, AND THE DIFFERENCE IS THE WHOLE POINT OF SMP
+    --------------------------------------------------------------------
+    FAILED means the proof ran and the secrets did not match -- which, on this
+    protocol, is what an impersonation looks like. CANCELLED means nobody
+    proved anything: an abort, a declined request, an expired prompt. Showing
+    a cancel as a failure would tell a user their peer may be an impostor
+    because they closed a dialog.
     """
 
-    IDLE = "idle"
+    #: No verification has happened. The resting state, and the honest one:
+    #: an OTR session is encrypted TO SOMEBODY, and until SMP passes nobody
+    #: has checked who. Named NOT_VERIFIED rather than IDLE for that reason.
+    NOT_VERIFIED = "not_verified"
+    #: A peer's SMP1 is held by the core, waiting for this side's passphrase.
+    SECRET_REQUIRED = "secret_required"
     IN_PROGRESS = "in_progress"
     VERIFIED = "verified"
+    #: The proof ran and the secrets did not match.
     FAILED = "failed"
+    #: Aborted or declined. Nothing was proved, and nothing failed.
+    CANCELLED = "cancelled"
 
 
 class ConnectionState(enum.Enum):
@@ -101,17 +132,27 @@ def security_state_from_level(level: Any) -> SecurityState:
 
 # RustSMP.get_phase() values, plus the sentinels the manager substitutes when
 # there is no session or the lookup fails.
+#: Every phase string `Rust/src/smp.rs::get_phase` can return, plus the
+#: "there is no session" spellings Python adds, and nothing else. A phase that
+#: is not here is a phase this map has not been taught -- which is exactly how
+#: SECRET_REQUIRED was silently reported as IDLE for two releases -- so
+#: `test_android_bridge` asserts the Rust source's arms are all covered.
 _SMP_PHASE_MAP = {
-    "IDLE": SmpState.IDLE,
-    "NONE": SmpState.IDLE,
-    "no_session": SmpState.IDLE,
-    "unknown": SmpState.IDLE,
-    "UNAVAILABLE": SmpState.IDLE,
+    "IDLE": SmpState.NOT_VERIFIED,
+    "NONE": SmpState.NOT_VERIFIED,
+    "no_session": SmpState.NOT_VERIFIED,
+    "unknown": SmpState.NOT_VERIFIED,
+    "UNAVAILABLE": SmpState.NOT_VERIFIED,
+    # A peer's SMP1 is parked in the core waiting for our passphrase.
+    "SECRET_REQUIRED": SmpState.SECRET_REQUIRED,
     "AWAITING_MSG2": SmpState.IN_PROGRESS,
     "AWAITING_MSG3": SmpState.IN_PROGRESS,
     "AWAITING_MSG4": SmpState.IN_PROGRESS,
     "VERIFIED": SmpState.VERIFIED,
     "FAILED": SmpState.FAILED,
+    # ABORTED is the core's terminal state for `destroy()` and for an explicit
+    # abort. Nothing was proved, so it is not FAILED.
+    "ABORTED": SmpState.CANCELLED,
 }
 
 
@@ -122,14 +163,21 @@ def smp_state_from_status(status: Optional[Dict[str, Any]]) -> SmpState:
     session sets `verified` from `is_verified() or auto_smp_completed`, so a
     completed auto-SMP reports VERIFIED even when the phase has moved on or the
     Rust SMP object has already been destroyed.
+
+    An UNKNOWN phase falls back to NOT_VERIFIED, and that is the safe
+    direction: a state this map has not been taught must never be read as
+    VERIFIED. It is also why the map above is asserted complete against the
+    Rust source rather than trusted -- a fallback that is safe is still a
+    fallback that hides a phase, which is what happened to SECRET_REQUIRED.
     """
     if not status:
-        return SmpState.IDLE
+        return SmpState.NOT_VERIFIED
     if status.get("verified"):
         return SmpState.VERIFIED
     if status.get("failed"):
         return SmpState.FAILED
-    return _SMP_PHASE_MAP.get(str(status.get("state", "IDLE")), SmpState.IDLE)
+    return _SMP_PHASE_MAP.get(str(status.get("state", "IDLE")),
+                              SmpState.NOT_VERIFIED)
 
 
 def call_state_from_engine(state: Any) -> CallState:
@@ -182,12 +230,12 @@ class MessageDelivered(Event):
 class SmpProgress(Event):
     step: int = 0
     total: int = 4
-    state: SmpState = SmpState.IDLE
+    state: SmpState = SmpState.NOT_VERIFIED
 
 
 @dataclass(frozen=True)
 class SmpResult(Event):
-    state: SmpState = SmpState.IDLE
+    state: SmpState = SmpState.NOT_VERIFIED
 
 
 @dataclass(frozen=True)

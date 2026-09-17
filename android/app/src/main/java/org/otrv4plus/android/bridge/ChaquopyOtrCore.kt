@@ -593,7 +593,7 @@ class ChaquopyOtrCore(private val appContext: Context) : OtrCore {
 
     override fun smpState(peer: String): SmpState =
         SmpState.fromName(
-            requireApp().callAttr("smp_state", peer).get("name")?.toString() ?: "IDLE"
+            requireApp().callAttr("smp_state", peer).get("name")?.toString() ?: "NOT_VERIFIED"
         )
 
     override fun smpProgress(peer: String): SmpProgress {
@@ -601,7 +601,7 @@ class ChaquopyOtrCore(private val appContext: Context) : OtrCore {
         return SmpProgress(
             step = p.get("step")?.toInt() ?: 0,
             total = p.get("total")?.toInt() ?: 4,
-            state = SmpState.fromName(p.get("state")?.get("name")?.toString() ?: "IDLE"),
+            state = SmpState.fromName(p.get("state")?.get("name")?.toString() ?: "NOT_VERIFIED"),
         )
     }
 
@@ -610,7 +610,7 @@ class ChaquopyOtrCore(private val appContext: Context) : OtrCore {
         return SecurityDetails(
             peer = peer,
             security = SecurityState.fromLevel(d.get("security")?.toInt() ?: 0),
-            smp = SmpState.fromName(d.get("smp")?.get("name")?.toString() ?: "IDLE"),
+            smp = SmpState.fromName(d.get("smp")?.get("name")?.toString() ?: "NOT_VERIFIED"),
             smpPhase = d.get("smp_phase")?.toString() ?: "",
             localFingerprint = d.get("local_fingerprint")?.toString() ?: "",
             peerFingerprint = d.get("peer_fingerprint")?.toString(),
@@ -627,7 +627,7 @@ class ChaquopyOtrCore(private val appContext: Context) : OtrCore {
                     c.get("presence")?.toString() ?: ""),
                 presenceShow = c.get("presence_show")?.toString() ?: "",
                 security = SecurityState.fromLevel(c.get("security")?.toInt() ?: 0),
-                smp = SmpState.fromName(c.get("smp")?.get("name")?.toString() ?: "IDLE"),
+                smp = SmpState.fromName(c.get("smp")?.get("name")?.toString() ?: "NOT_VERIFIED"),
                 callAvailable = c.get("call_available")?.toBoolean() ?: false,
                 subscription = Subscription.of(
                     c.get("subscription")?.toString() ?: "",
@@ -655,6 +655,11 @@ class ChaquopyOtrCore(private val appContext: Context) : OtrCore {
     override fun smpRespond(peer: String, secret: String) {
         wrap { requireApp().callAttr("smp_respond", peer, secret) }
     }
+
+    override fun smpSecretRequired(peer: String): Boolean =
+        runCatching {
+            requireApp().callAttr("smp_secret_required", peer).toBoolean()
+        }.getOrDefault(false)
 
     override fun smpAbort(peer: String) {
         wrap { requireApp().callAttr("smp_abort", peer) }

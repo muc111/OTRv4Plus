@@ -142,6 +142,6 @@ class PeerPresenceTest {
             jid = "alice@xmpp-elite.i2p", displayName = "alice",
             presence = p,
             security = org.otrv4plus.android.bridge.SecurityState.PLAINTEXT,
-            smp = org.otrv4plus.android.bridge.SmpState.IDLE,
+            smp = org.otrv4plus.android.bridge.SmpState.NOT_VERIFIED,
             callAvailable = false)
 }

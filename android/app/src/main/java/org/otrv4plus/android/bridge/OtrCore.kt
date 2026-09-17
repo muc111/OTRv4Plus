@@ -70,7 +70,24 @@ interface OtrCore {
      */
     fun smpStart(peer: String, secret: String, question: String = "")
 
+    /**
+     * Answer a peer's held verification request.
+     *
+     * NOT the same call as [smpStart] with the roles swapped. The peer's SMP1
+     * is being HELD by the Rust core in `SmpPhase::SecretRequired`; this binds
+     * the passphrase AND resumes that held message into SMP2. Calling
+     * [smpStart] here would begin a second, competing run.
+     */
     fun smpRespond(peer: String, secret: String)
+
+    /**
+     * Whether a peer's SMP1 is held, waiting for this side's passphrase.
+     *
+     * Reads the engine, not a flag kept here: the answer lives in Rust
+     * (`get_phase() == "SECRET_REQUIRED"`) and both terminal clients ask the
+     * same question the same way.
+     */
+    fun smpSecretRequired(peer: String): Boolean
 
     fun smpAbort(peer: String)
 
@@ -124,10 +141,39 @@ enum class SecurityState(val level: Int) {
     }
 }
 
-enum class SmpState { IDLE, IN_PROGRESS, VERIFIED, FAILED;
+/**
+ * Verification state, mirroring `android_bridge.events.SmpState`.
+ *
+ * NOT_VERIFIED IS THE RESTING STATE, AND THE NAME IS THE POINT. An OTR
+ * session is encrypted TO SOMEBODY; until SMP passes, nobody has checked who.
+ * It was called IDLE, which reads as "nothing to do here" for the state that
+ * is precisely the one the user still has work to do in.
+ *
+ * SECRET_REQUIRED is a peer's SMP1 held by the Rust core waiting for this
+ * side's passphrase — the state that drives the incoming prompt. It existed
+ * in `Rust/src/smp.rs` and reached neither this enum nor the Python map, so
+ * "the other person is waiting on you" was reported as "nothing is happening".
+ *
+ * CANCELLED IS NOT FAILED. FAILED means the proof ran and the secrets did not
+ * match, which on this protocol is what an impersonation looks like. Showing
+ * a cancel as a failure would tell a user their peer may be an impostor
+ * because somebody closed a dialog.
+ */
+enum class SmpState {
+    NOT_VERIFIED, SECRET_REQUIRED, IN_PROGRESS, VERIFIED, FAILED, CANCELLED;
+
     companion object {
+        /**
+         * Unknown names fail safe to NOT_VERIFIED.
+         *
+         * The safe direction, and deliberately not VERIFIED: a state this
+         * build has not been taught must never render as a confirmed
+         * identity. `SmpStateTest` asserts the arms match the Python enum, so
+         * a new state is a test failure rather than a silent downgrade.
+         */
         fun fromName(name: String): SmpState =
-            entries.firstOrNull { it.name.equals(name, ignoreCase = true) } ?: IDLE
+            entries.firstOrNull { it.name.equals(name, ignoreCase = true) }
+                ?: NOT_VERIFIED
     }
 }
 

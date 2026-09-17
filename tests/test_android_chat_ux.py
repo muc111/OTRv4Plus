@@ -356,9 +356,37 @@ class TestStateLivesInAViewModel:
         being destroyed entirely."""
         assert "state?.setDraft" in chat_vm
         assert "state?.draft" in chat_vm
-        composer = _code_only(_read(ANDROID, "ui", "ConversationScreen.kt"))
+        screen = _code_only(_read(ANDROID, "ui", "ConversationScreen.kt"))
+
+        # SCOPED TO THE COMPOSER, and it did not used to be. This asserted
+        # that `remember { mutableStateOf` appeared NOWHERE in the file, which
+        # is the mechanism rather than the rule -- and the rule is about the
+        # DRAFT. It went red when `VerificationPrompt` was added, whose
+        # passphrase field is deliberately composition-local and deliberately
+        # not in the ViewModel: a secret held there would outlive the dialog.
+        # A guard that forbids the correct handling of a passphrase in order
+        # to protect a draft is guarding the wrong thing.
+        composer = screen[screen.index("private fun Composer("):]
         assert "remember { mutableStateOf" not in composer, (
             "the composer keeps its own draft, which a recomposition loses")
+
+    def test_only_the_passphrase_is_composition_local(self):
+        """The other half of the rule above, now that it is scoped.
+
+        Exactly one piece of state may live in this file's composition, and it
+        is the SMP passphrase -- because it must not survive the dialog.
+        Anything else appearing here is state that belongs in `ChatState`,
+        which the service owns and which outlives the Activity.
+        """
+        screen = _code_only(_read(ANDROID, "ui", "ConversationScreen.kt"))
+        holders = screen.count("remember { mutableStateOf")
+        assert holders == 1, (
+            "%d pieces of composition-local state; only the SMP passphrase "
+            "may be one" % holders)
+        prompt = screen[screen.index("private fun VerificationPrompt("):]
+        prompt = prompt[:prompt.index("AlertDialog(")]
+        assert "remember { mutableStateOf" in prompt, (
+            "the one composition-local value is not the passphrase")
 
 
 class TestNavigationCarriesNoObjects:
@@ -826,3 +854,222 @@ class TestTheOtrTapReachesTheWire:
         for claimed in ("EncryptionState.ACTIVE", "EncryptionState.VERIFIED"):
             assert claimed not in started, (
                 "establish returns %s before the engine has said so" % claimed)
+
+
+class TestIdentityVerificationReachesTheUser:
+    """The SMP milestone, from the Kotlin end.
+
+    The cryptography is `Rust/src/smp.rs` and is covered by
+    `tests/test_smp_end_to_end.py`; the state machine is
+    `otrv4plus_smpflow.py`, shared with both terminal clients. NONE of that
+    changed, and nothing here re-implements any of it.
+
+    What these guard is the part that is new and is only visible in source:
+    the control appears at the right moment, the incoming prompt does not
+    depend on a button, and the passphrase does not go anywhere it should not.
+    """
+
+    @staticmethod
+    @pytest.fixture(scope="class")
+    def screen():
+        return _code_only(_read(ANDROID, "ui", "ConversationScreen.kt"))
+
+    @staticmethod
+    @pytest.fixture(scope="class")
+    def screen_text():
+        """With string bodies KEPT. The user-facing sentences are the subject
+        of some of these, and `_code_only` blanks them."""
+        return _uncommented(_read(ANDROID, "ui", "ConversationScreen.kt"))
+
+    @staticmethod
+    @pytest.fixture(scope="class")
+    def rules():
+        return _read(ANDROID, "crypto", "Verification.kt")
+
+    # -- the rules are executed, not reviewed --------------------------------
+
+    def test_the_rules_import_nothing_from_android(self, rules):
+        """A `when` inside a Composable is checked by reading it. This
+        environment cannot reach dl.google.com, so Compose is compiled by CI
+        and never run -- which is why every decision here lives in a leaf."""
+        imports = re.findall(r"^import\s+([\w.]+)", _code_only(rules), re.M)
+        for line in imports:
+            assert line.startswith("org.otrv4plus.") or line.startswith("kotlin."), (
+                "Verification imports %s, so its rules can no longer be "
+                "unit-tested without an Android build" % line)
+
+    def test_the_rules_have_executed_tests(self):
+        tests = _read(UNIT_TESTS, "crypto", "VerificationTest.kt")
+        for covered in (
+            "nothing is offered before OTR is established",
+            "the button appears once the session is encrypted",
+            "an incoming request opens a prompt with no button pressed",
+            "a successful run replaces the button with the verified state",
+            "a call is not offered on an encrypted but unverified session",
+        ):
+            assert covered in tests, (
+                "the JVM test for '%s' is gone" % covered)
+
+    # -- no second implementation --------------------------------------------
+
+    def test_no_cryptography_is_implemented_in_kotlin(self, rules):
+        """One SMP implementation, in Rust. A Kotlin one would be a second
+        thing to audit and the first to drift."""
+        for banned in ("MessageDigest", "Mac(", "SecretKey", "Cipher",
+                       "BigInteger", "SecureRandom", "sha256", "hmac"):
+            assert banned not in rules, (
+                "Verification.kt contains %s; SMP is implemented in "
+                "Rust/src/smp.rs and nowhere else" % banned)
+
+    def test_the_kotlin_layer_has_no_smp_state_machine_of_its_own(self, rules):
+        """The phases belong to the core. Naming them here would be a parallel
+        state machine, which is what `otrv4plus_smpflow` exists to prevent."""
+        for phase in ("AWAITING_MSG2", "AWAITING_MSG3", "AWAITING_MSG4",
+                      "generate_smp1", "process_smp"):
+            assert phase not in rules, (
+                "Verification.kt names the protocol phase %s; the core owns "
+                "the state machine" % phase)
+
+    # -- when the control appears --------------------------------------------
+
+    def test_the_control_is_drawn_from_the_rule_not_from_a_local_condition(
+            self, screen):
+        assert "model.verificationOffer(jid)" in screen
+        assert "Verification.Offer.HIDDEN" in screen, (
+            "the screen does not handle the hidden case, so it will draw a "
+            "verification row on a plaintext conversation")
+
+    def test_the_verified_state_is_not_a_button(self, screen):
+        """Offering to verify an already-verified peer implies the last answer
+        expired. It did not."""
+        block = screen[screen.index("private fun VerificationOffer"):]
+        block = block[:block.index("private fun VerificationPrompt")]
+        # The CONTROL branch, not the first mention of VERIFIED -- that one is
+        # in the `when` that picks the sentence, and slicing from it swept in
+        # every button below.
+        # `rindex`: there are TWO `when (offer)` blocks -- the first picks the
+        # sentence, the second picks the control -- and anchoring on the first
+        # was measuring the wrong one.
+        controls = block[block.rindex("when (offer) {"):]
+        assert "Verification.Offer.VERIFIED" not in controls, (
+            "the verified state has a control arm; it is a statement, not a "
+            "button")
+        assert "else -> Unit" in controls, (
+            "the verified state has no arm and no `else`, so the control "
+            "block does not handle it at all")
+
+    # -- the incoming prompt is automatic ------------------------------------
+
+    def test_the_incoming_prompt_does_not_depend_on_a_button(self, screen):
+        """THE RECEIVING REQUIREMENT. `verificationPrompt` is derived from the
+        engine's own `smpSecretRequired`, so a held SMP1 opens the dialog with
+        nothing pressed. A prompt gated on the tap would mean a responder had
+        to guess that a request had arrived."""
+        assert "model.verificationPrompt(jid)" in screen
+        vm = _code_only(_read(ANDROID, "chat", "ChatViewModel.kt"))
+        prompt = vm[vm.index("fun verificationPrompt("):]
+        prompt = prompt[:prompt.index("fun verificationOffer(")]
+        assert "core.smpSecretRequired(jid)" in prompt, (
+            "the prompt is not driven by the engine's held-request state")
+
+    def test_answering_goes_to_respond_and_not_to_start(self):
+        """`smpRespond` binds the secret AND resumes the peer's held SMP1 into
+        SMP2. `smpStart` would begin a second, competing run against a core
+        that is already holding one."""
+        vm = _code_only(_read(ANDROID, "chat", "ChatViewModel.kt"))
+        submit = vm[vm.index("fun submitVerification("):]
+        submit = submit[:submit.index("fun verificationOutcome(")]
+        assert "core.smpRespond(jid, secret)" in submit
+        assert "core.smpStart(jid, secret)" in submit
+        assert "if (incoming)" in submit, (
+            "one call is made for both directions; the responder path must "
+            "resume the held SMP1 rather than start a new run")
+
+    def test_dismissing_an_incoming_prompt_tells_the_engine(self):
+        """The peer's SMP1 is held in the core. Closing the dialog without
+        aborting would leave it held while the initiator waited."""
+        vm = _code_only(_read(ANDROID, "chat", "ChatViewModel.kt"))
+        dismiss = vm[vm.index("fun dismissVerification("):]
+        dismiss = dismiss[:dismiss.index("fun submitVerification(")]
+        assert "core.smpAbort(jid)" in dismiss
+
+    # -- the passphrase ------------------------------------------------------
+
+    def test_the_passphrase_field_is_masked(self, screen):
+        """A passphrase prompt that shows the passphrase is not a passphrase
+        prompt -- the same rule the connect screen applies to the password."""
+        block = screen[screen.index("private fun VerificationPrompt"):]
+        assert "PasswordVisualTransformation()" in block
+
+    def test_the_passphrase_is_not_written_to_the_saved_state_bundle(
+            self, screen):
+        """`rememberSaveable` puts a value in savedInstanceState, which
+        Android serialises to disk. `remember` keeps it in the composition."""
+        block = screen[screen.index("private fun VerificationPrompt"):]
+        field = block[:block.index("AlertDialog(")]
+        assert "rememberSaveable" not in field, (
+            "the passphrase would be written to the saved-state Bundle")
+        assert "remember {" in field
+
+    def test_the_passphrase_is_cleared_on_both_exits(self, screen):
+        block = screen[screen.index("private fun VerificationPrompt"):]
+        assert block.count('secret = ""') >= 2, (
+            "the passphrase survives in the composition after submit or "
+            "cancel")
+
+    def test_the_passphrase_is_never_logged_or_put_in_a_notice(self):
+        """A notice is rendered on screen and an SMP secret in one would be
+        the shared secret in the user's own scrollback -- the thing the
+        terminal client's hidden read exists to avoid."""
+        vm = _uncommented(_read(ANDROID, "chat", "ChatViewModel.kt"))
+        submit = vm[vm.index("fun submitVerification("):]
+        submit = submit[:submit.index("fun verificationOutcome(")]
+        for line in submit.splitlines():
+            if "secret" not in line:
+                continue
+            for leak in ("Log.", "println", "state.note(", "$secret"):
+                assert leak not in line, (
+                    "the passphrase reaches %s: %s" % (leak, line.strip()))
+
+    def test_the_passphrase_is_not_held_on_the_view_model(self):
+        """`verifyRequested` is a JID. A field holding the secret would
+        outlive the dialog and survive into the next conversation."""
+        vm = _code_only(_read(ANDROID, "chat", "ChatViewModel.kt"))
+        for banned in ("private var verifySecret", "var smpSecret",
+                       "private var secret"):
+            assert banned not in vm, (
+                "%s keeps a passphrase on the ViewModel" % banned)
+
+    # -- what the user is told -----------------------------------------------
+
+    def test_both_prompts_say_the_passphrase_was_agreed_out_of_band(
+            self, rules):
+        """A passphrase invented on the spot verifies nothing. The security of
+        SMP is entirely in the secret having been agreed over a channel an
+        attacker does not control."""
+        explanation = rules[rules.index("fun explanation("):]
+        explanation = explanation[:explanation.index("fun outcome(")]
+        assert explanation.count("another channel") == 2, (
+            "one of the two prompts does not name an out-of-band channel")
+
+    def test_encrypted_and_verified_are_not_shown_as_the_same_thing(
+            self, screen_text):
+        """The distinction SMP exists for. A conversation that is encrypted
+        and unverified must not read as verified."""
+        block = screen_text[screen_text.index("private fun VerificationOffer"):]
+        block = block[:block.index("private fun VerificationPrompt")]
+        assert "Identity Verified" in block
+        assert "have not checked who is on the other end" in block
+
+    # -- voice stays gated ---------------------------------------------------
+
+    def test_voice_is_still_gated_on_verification(self, rules):
+        """The existing rule, restated rather than relaxed. `callOffered` only
+        decides whether a button is drawn -- the gate itself is
+        `VoiceCallManager._smp_verified` in the engine -- and it draws nothing
+        until SMP has passed."""
+        gate = rules[rules.index("fun callOffered("):]
+        assert "SecurityState.SMP_VERIFIED" in gate
+        assert "SmpState.VERIFIED" in gate
+        assert "ENCRYPTED" not in gate.split("\n")[1], (
+            "an encrypted but unverified session would be offered a call")
