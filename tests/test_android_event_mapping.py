@@ -120,7 +120,7 @@ class TestTheFieldNamesMatch:
     @pytest.mark.parametrize("type_name", [
         "SessionStateChanged", "MessageReceived", "SmpProgress",
         "SmpResult", "FingerprintChanged", "CallStateChanged",
-        "ErrorOccurred", "ConnectionStateChanged",
+        "ErrorOccurred", "ConnectionStateChanged", "SubscriptionRequested",
     ])
     def test_every_field_read_exists_on_the_python_class(self, type_name):
         events = python_events()
@@ -143,6 +143,13 @@ class TestTheFieldNamesMatch:
         read = self._fields_read_for("FingerprintChanged")
         assert "stored_fingerprint" in read
         assert "received_fingerprint" in read
+
+    def test_the_subscription_policy_reaches_kotlin(self):
+        """Without `policy` the screen cannot tell "they want to see you" from
+        "they can now see you", and would offer a choice already made."""
+        read = self._fields_read_for("SubscriptionRequested")
+        assert "policy" in read
+        assert "peer" in read
 
     def test_the_security_level_is_read_as_a_number(self):
         """Kotlin's SecurityState.fromLevel takes the engine's integer. Reading

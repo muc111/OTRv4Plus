@@ -160,6 +160,84 @@ class ChatViewModel : ViewModel() {
         revision++
     }
 
+    /** People who have asked to see this account's presence. */
+    val pendingSubscriptions: List<OtrEvent.SubscriptionRequested>
+        get() { observe(); return state?.pendingSubscriptions ?: emptyList() }
+
+    /**
+     * Answer a pending subscription request.
+     *
+     * The request is cleared FIRST and unconditionally, before the blocking
+     * call is even scheduled. Two reasons, and the second is the important
+     * one: the answer is an I2P round trip and a banner that lingered for it
+     * reads as the button not working; and a banner that stayed up on failure
+     * would invite a second tap, which under ASK sends a second `subscribed`
+     * stanza for a request that may already have been answered.
+     *
+     * Only sent when the policy actually left the decision open. Under ACCEPT
+     * slixmpp answered before the event was raised, so the stanza would have
+     * nothing to do — the screen offers revoking instead, via
+     * [removeContact].
+     */
+    fun answerSubscription(jid: String, approve: Boolean) {
+        val state = this.state ?: return
+        val bare = ChatState.bare(jid.trim())
+        val pending = state.pendingSubscriptions
+            .firstOrNull { ChatState.bare(it.peer) == bare }
+        state.clearSubscription(bare)
+        revision++
+        if (pending?.isQuestion != true) return
+        val core = this.core ?: run {
+            state.note("The connection is not ready yet.")
+            revision++
+            return
+        }
+        viewModelScope.launch {
+            val result = withContext(Dispatchers.IO) {
+                core.answerSubscription(bare, approve)
+            }
+            state.note(result.message())
+            revision++
+        }
+    }
+
+    /**
+     * Dismiss a request without answering it.
+     *
+     * Distinct from declining. Under ASK, saying nothing leaves the asker
+     * pending on the server rather than telling them no, and that is a
+     * legitimate thing to want — a decline is itself a signal that this
+     * account exists and is being used.
+     */
+    fun dismissSubscription(jid: String) {
+        state?.clearSubscription(ChatState.bare(jid.trim()))
+        revision++
+    }
+
+    /**
+     * Drop a contact and revoke both directions of subscription.
+     *
+     * The remedy the banner offers under ACCEPT, where presence was granted
+     * before anybody was asked. Without it, automatic approval was a one-way
+     * door from the handset.
+     */
+    fun removeContact(jid: String) {
+        val state = this.state ?: return
+        val core = this.core ?: run {
+            state.note("The connection is not ready yet.")
+            revision++
+            return
+        }
+        val bare = ChatState.bare(jid.trim())
+        state.clearSubscription(bare)
+        revision++
+        viewModelScope.launch {
+            val result = withContext(Dispatchers.IO) { core.removeContact(bare) }
+            state.note(result.message())
+            revision++
+        }
+    }
+
     /** Add a contact to the roster, and say what happened. */
     fun addContact(jid: String) {
         val state = this.state ?: return

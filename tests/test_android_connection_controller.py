@@ -81,6 +81,11 @@ class FakeTransport:
         self.on_state = on_state
         self.on_presence = on_presence
         self.on_subscription_request = on_subscription_request
+        # Stored, and readable under the name the real transport exposes it
+        # by. The controller reads the policy back off the transport rather
+        # than off what was requested, because an unrecognised value falls
+        # back to ACCEPT inside SubscriptionPolicy.apply.
+        self.subscription_policy = subscription_policy or "accept"
         self.fail = fail
         self.is_connected = False
         self.closed = False
@@ -487,3 +492,115 @@ class TestTheFakesMatchTheRealThing:
             assert hasattr(OtrApp, name), (
                 "OtrApp no longer has %s, so the controller cannot hand it "
                 "to the transport" % name)
+
+
+class TestASubscriptionRequestReachesTheUser:
+    """THE DEFECT. `_on_subscription_request` was a log line that deliberately
+    queued nothing, and `answer_subscription` -- which exists in the transport
+    and in the controller -- had no Kotlin caller.
+
+    So the `ASK` policy could be set and then never answered: the asker waited
+    forever and the user was never shown the question. Under the shipped
+    `ACCEPT` policy, presence was granted to anyone who asked with no way to
+    find out it had happened.
+
+    The old comment explaining the drop was correct -- `EventQueue._describe`
+    only walks dataclass fields, so a plain dict arrives in Kotlin as
+    `{"type": "dict"}` -- and named its own remedy. `SubscriptionRequested`
+    is that dataclass.
+    """
+
+    def _requests(self, ctl):
+        return [e for e in ctl.drain_events()
+                if e.get("type") == "SubscriptionRequested"]
+
+    def test_a_request_is_queued_rather_than_logged(self):
+        ctl, made = build()
+        ctl.connect("pw")
+        made["transport"].on_subscription_request("bob@xmpp-elite.i2p")
+        got = self._requests(ctl)
+        assert len(got) == 1, "the request never reached the event queue"
+        assert got[0]["peer"] == "bob@xmpp-elite.i2p"
+
+    def test_it_crosses_as_flat_primitives(self):
+        """What the old comment was about: a nested or non-dataclass value
+        arrives in Kotlin with no fields and the mapper drops it."""
+        ctl, made = build()
+        ctl.connect("pw")
+        made["transport"].on_subscription_request("bob@xmpp-elite.i2p")
+        item = self._requests(ctl)[0]
+        for key, value in item.items():
+            assert isinstance(value, (str, int, float, bool)) or value is None, (
+                "%s is %r, which Kotlin cannot read" % (key, type(value)))
+
+    def test_it_carries_the_policy_actually_in_force(self):
+        """The screen says different things under ASK and ACCEPT, and only one
+        of them offers a choice. Getting this wrong means offering to decline
+        something slixmpp already approved."""
+        ctl, made = build()
+        ctl.connect("pw")
+        made["transport"].subscription_policy = "ask"
+        made["transport"].on_subscription_request("bob@xmpp-elite.i2p")
+        assert self._requests(ctl)[0]["policy"] == "ask"
+
+    def test_the_policy_is_read_from_the_transport_not_the_request(self):
+        """`SubscriptionPolicy.apply` falls back to ACCEPT for a value it does
+        not recognise, so what was asked for is not what is in force."""
+        ctl, made = build()
+        ctl.connect("pw")
+        made["transport"].subscription_policy = "accept"
+        made["transport"].on_subscription_request("bob@xmpp-elite.i2p")
+        assert self._requests(ctl)[0]["policy"] == "accept"
+        assert ctl.subscription_policy() == "accept"
+
+    def test_the_policy_defaults_to_accept_before_a_transport_exists(self):
+        ctl, _ = build()
+        assert ctl.subscription_policy() == "accept"
+
+    def test_it_is_reported_even_under_accept(self):
+        """Granting presence automatically is exactly the case the user most
+        needs telling about, because nobody asked them."""
+        ctl, made = build()
+        ctl.connect("pw")
+        made["transport"].on_subscription_request("mallory@elsewhere.i2p")
+        assert len(self._requests(ctl)) == 1
+
+    def test_the_jid_does_not_reach_the_log(self, caplog):
+        """It has to reach the UI -- a request that does not say who is asking
+        cannot be answered -- and must not reach logcat, where it would be a
+        durable record of who wants to watch this device."""
+        import logging
+
+        ctl, made = build()
+        ctl.connect("pw")
+        with caplog.at_level(logging.DEBUG, logger="otrv4plus.bridge"):
+            made["transport"].on_subscription_request("mallory@elsewhere.i2p")
+        assert "mallory" not in caplog.text
+        assert "elsewhere.i2p" not in caplog.text
+
+    def test_a_broken_queue_does_not_kill_the_loop_thread(self):
+        """This is called from the transport's event loop. A sink that throws
+        must not take the connection down with it."""
+        ctl, made = build()
+        ctl.connect("pw")
+
+        def boom(_event):
+            raise RuntimeError("sink is broken")
+
+        ctl._events.on_event = boom
+        made["transport"].on_subscription_request("bob@xmpp-elite.i2p")
+
+    def test_answering_reaches_the_transport(self):
+        ctl, made = build()
+        ctl.connect("pw")
+        seen = []
+        made["transport"].answer_subscription = (
+            lambda jid, approve: seen.append((jid, approve)))
+        assert ctl.answer_subscription("bob@xmpp-elite.i2p", True)["ok"]
+        assert seen == [("bob@xmpp-elite.i2p", True)]
+
+    def test_answering_without_a_connection_says_so(self):
+        ctl, _ = build()
+        got = ctl.answer_subscription("bob@xmpp-elite.i2p", True)
+        assert got["ok"] is False
+        assert got["code"] == "not_connected"

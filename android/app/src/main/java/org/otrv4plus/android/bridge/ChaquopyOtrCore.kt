@@ -697,6 +697,60 @@ class ChaquopyOtrCore(private val appContext: Context) : OtrCore {
     }
 
     /**
+     * Drop [jid] from the roster and revoke both directions of subscription.
+     *
+     * The remedy the subscription banner offers under ACCEPT, where the grant
+     * has already happened and declining is not on the table. Without a caller
+     * this existed in Python only, which meant presence could be granted
+     * automatically and never taken back from the handset.
+     */
+    fun removeContact(jid: String): RosterResult {
+        val ctl = controller
+            ?: return RosterResult(false, "not_prepared",
+                                   "The connection is not ready yet.")
+        return rosterResult { ctl.callAttr("remove_contact", jid) }
+    }
+
+    /**
+     * Answer a pending subscription request.
+     *
+     * ONLY MEANINGFUL UNDER [SubscriptionPolicy.ASK]. Under ACCEPT slixmpp
+     * answered before the event was raised, and sending a second `subscribed`
+     * would be a stanza with nothing to do; under REJECT the same in reverse.
+     * The screen decides using [OtrEvent.SubscriptionRequested.isQuestion]
+     * rather than this method guessing, because the policy the transport
+     * actually applied is the only authority on it and it lives in Python.
+     *
+     * THIS HAD NO KOTLIN CALLER AT ALL. `answer_subscription` has been in the
+     * transport and the controller since rooms were added, so ASK was a policy
+     * that could be set and then never answered: the asker waited forever and
+     * the user was never shown the question.
+     */
+    fun answerSubscription(jid: String, approve: Boolean): RosterResult {
+        val ctl = controller
+            ?: return RosterResult(false, "not_prepared",
+                                   "The connection is not ready yet.")
+        return rosterResult {
+            ctl.callAttr("answer_subscription", jid, approve)
+        }
+    }
+
+    /**
+     * The policy the transport actually applied.
+     *
+     * [SubscriptionPolicy.UNKNOWN] when the controller is not up, rather than
+     * ACCEPT: "not connected yet" and "this build grants presence to anyone
+     * who asks" are different statements and only one of them is true here.
+     */
+    fun subscriptionPolicy(): SubscriptionPolicy {
+        val ctl = controller ?: return SubscriptionPolicy.UNKNOWN
+        val name = runCatching {
+            ctl.callAttr("subscription_policy")?.toString()
+        }.getOrNull() ?: return SubscriptionPolicy.UNKNOWN
+        return SubscriptionPolicy.of(name)
+    }
+
+    /**
      * Read Python's result dict without letting an exception become the only
      * survivor. `detail` comes from the controller, which writes it for a
      * person; engine exception text never reaches it.
@@ -776,6 +830,15 @@ class ChaquopyOtrCore(private val appContext: Context) : OtrCore {
                 OtrEvent.CallChanged(
                     str("peer"), CallState.fromName(str("state")),
                     int("duration_seconds"))
+
+            // Was dropped here for a real reason that has since been fixed:
+            // the controller used to log this and never queue it, because a
+            // plain dict arrives from `EventQueue._describe` as
+            // `{"type": "dict"}` with no fields. It is a dataclass now, so
+            // there is something to map.
+            "SubscriptionRequested" ->
+                OtrEvent.SubscriptionRequested(
+                    str("peer"), SubscriptionPolicy.of(str("policy")))
 
             "ErrorOccurred" ->
                 OtrEvent.Failed(str("peer").ifBlank { null }, str("code"))

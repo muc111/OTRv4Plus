@@ -90,6 +90,10 @@ class ChatState(
         notice = null
         droppedEvents = 0
         outgoingSequence = 0L
+        // Who asked to watch BOB is not Dave's business, and a banner left
+        // behind here would name a stranger to the new account and offer to
+        // grant them Dave's presence.
+        subscriptionRequests.clear()
         (store as? PersistentMessageStore)?.bind(next)
     }
 
@@ -163,6 +167,61 @@ class ChatState(
     /** A blocking warning the user must acknowledge, or null. */
     var fingerprintAlert: OtrEvent.FingerprintChanged? = null
         private set
+
+    /**
+     * People who have asked to see this account's presence, oldest first.
+     *
+     * NOT blocking, unlike [fingerprintAlert]. A fingerprint change means the
+     * person you are talking to may not be who you think; a subscription
+     * request means somebody wants to know when you are online. Treating the
+     * second like the first trains people to dismiss the first.
+     *
+     * A LIST rather than a single slot, because two requests arriving while
+     * the screen is away is ordinary and the second must not silently replace
+     * the first — that would leave one person waiting forever on a question
+     * the user was never shown.
+     */
+    private val subscriptionRequests =
+        ArrayList<OtrEvent.SubscriptionRequested>()
+
+    /** The pending requests, for the screen to render. A copy, not the list:
+     *  this object is owned by the service and read from the UI thread. */
+    val pendingSubscriptions: List<OtrEvent.SubscriptionRequested>
+        get() = subscriptionRequests.toList()
+
+    /**
+     * Record a request, unless the same peer already has one outstanding.
+     *
+     * DEDUPED BY PEER. A `subscribe` presence is retransmitted by servers and
+     * resent by clients, and without this one persistent asker becomes a
+     * column of identical banners the user has to clear one at a time.
+     *
+     * Not recorded at all when nothing is signed in: a request arriving in the
+     * window between the process starting and an identity being established
+     * belongs to no account, and the only safe thing to do with it is nothing.
+     */
+    fun noteSubscription(event: OtrEvent.SubscriptionRequested): Boolean {
+        if (!account.isAuthenticated) return false
+        val jid = bare(event.peer)
+        if (jid.isEmpty()) return false
+        if (subscriptionRequests.any { bare(it.peer) == jid }) return false
+        subscriptionRequests.add(event)
+        return true
+    }
+
+    /**
+     * Drop a request once it has been answered or dismissed.
+     *
+     * Removed whatever the answer was, and whether or not the stanza left the
+     * device. A request that stays on screen after the user has answered it
+     * reads as the answer not having worked, and the remedy for a failed
+     * answer is the banner coming back on the next request, not one that never
+     * goes away.
+     */
+    fun clearSubscription(jid: String) {
+        val wanted = bare(jid)
+        subscriptionRequests.removeAll { bare(it.peer) == wanted }
+    }
 
     // -- what the poll loop feeds in -----------------------------------------
 
@@ -246,6 +305,13 @@ class ChatState(
             is OtrEvent.MessageReceived -> receive(event)
             is OtrEvent.FingerprintChanged -> {
                 fingerprintAlert = event
+                false
+            }
+            // Returns false: this is not a new message and must not buzz the
+            // phone. Somebody asking to see your presence is worth a banner
+            // when you next look, not a notification that interrupts you.
+            is OtrEvent.SubscriptionRequested -> {
+                noteSubscription(event)
                 false
             }
             else -> false

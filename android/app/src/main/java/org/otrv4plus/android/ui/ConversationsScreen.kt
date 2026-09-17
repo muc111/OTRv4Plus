@@ -19,6 +19,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import org.otrv4plus.android.bridge.OtrEvent
 import org.otrv4plus.android.chat.ChatState
 import org.otrv4plus.android.chat.ChatViewModel
 import org.otrv4plus.android.chat.Conversation
@@ -89,6 +90,20 @@ fun ConversationsScreen(
 
             model.notice?.let { notice ->
                 NoticeBanner(notice) { model.dismissNotice() }
+            }
+
+            // Above the conversation list and below the connection state,
+            // because it is about this account rather than about any one
+            // conversation. Every pending request is rendered: a second asker
+            // hidden behind the first is a question the user never gets.
+            for (request in model.pendingSubscriptions) {
+                SubscriptionBanner(
+                    request = request,
+                    onAllow = { model.answerSubscription(request.peer, true) },
+                    onDecline = { model.answerSubscription(request.peer, false) },
+                    onIgnore = { model.dismissSubscription(request.peer) },
+                    onRevoke = { model.removeContact(request.peer) },
+                )
             }
 
             if (model.droppedEvents > 0) {
@@ -176,6 +191,64 @@ private fun NoticeBanner(text: String, onDismiss: () -> Unit) {
                 modifier = Modifier.weight(1f),
             )
             TextButton(onClick = onDismiss) { Text("OK") }
+        }
+    }
+}
+
+/**
+ * Somebody asked to see this account's presence.
+ *
+ * TWO DIFFERENT BANNERS, because they are two different facts and rendering
+ * them the same way would mean lying about one of them.
+ *
+ * Under `ASK` nothing has been answered: the user decides, and the buttons
+ * are Allow and Decline. Under the shipped `ACCEPT` the server library said
+ * yes before this app was told anything, so offering "Decline" would be
+ * offering to undo something already done — the honest sentence is that they
+ * can now see you, and the remedy is revoking.
+ *
+ * "Not now" is deliberately separate from "Decline". Declining tells the
+ * asker no, which is itself a signal that this account exists and is in use;
+ * saying nothing leaves them pending on the server. On an anonymity-oriented
+ * messenger that difference belongs to the user.
+ *
+ * WHAT IT DOES NOT SAY. Nothing about encryption. A subscription grants
+ * presence, not the ability to read anything: messages stay plaintext until a
+ * DAKE runs, and the conversation screen is where that is said.
+ */
+@Composable
+private fun SubscriptionBanner(
+    request: OtrEvent.SubscriptionRequested,
+    onAllow: () -> Unit,
+    onDecline: () -> Unit,
+    onIgnore: () -> Unit,
+    onRevoke: () -> Unit,
+) {
+    val peer = ChatState.bare(request.peer)
+    Surface(color = MaterialTheme.colorScheme.tertiaryContainer) {
+        Column(Modifier.fillMaxWidth().padding(12.dp)) {
+            Text(
+                if (request.isQuestion) "$peer wants to see when you are online."
+                else "$peer can now see when you are online.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onTertiaryContainer,
+            )
+            Text(
+                "This shares your presence, not your messages.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onTertiaryContainer,
+                modifier = Modifier.padding(top = 2.dp),
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                if (request.isQuestion) {
+                    TextButton(onClick = onAllow) { Text("Allow") }
+                    TextButton(onClick = onDecline) { Text("Decline") }
+                    TextButton(onClick = onIgnore) { Text("Not now") }
+                } else {
+                    TextButton(onClick = onRevoke) { Text("Revoke") }
+                    TextButton(onClick = onIgnore) { Text("OK") }
+                }
+            }
         }
     }
 }

@@ -280,25 +280,66 @@ class ConnectionController:
         "failed": "failed",
     }
 
-    def _on_subscription_request(self, _jid: str) -> None:
-        """Someone asked to see our presence.
+    def _on_subscription_request(self, jid: str) -> None:
+        """Someone asked to see our presence. Now it reaches the user.
 
-        Under the shipped ACCEPT policy slixmpp has already said yes, so this
-        is a notification rather than a question, and the contact appears in
-        the list on the next poll either way.
+        THIS USED TO BE A LOG LINE. The comment explaining why was correct --
+        `EventQueue._describe` only walks dataclass fields, so a plain dict
+        arrives in Kotlin as `{"type": "dict"}` and the mapper drops it -- and
+        the answer was the dataclass it named. `SubscriptionRequested` is that
+        dataclass.
 
-        Deliberately NOT pushed through the event queue. `EventQueue._describe`
-        flattens dataclasses, so a plain dict arrives in Kotlin as
-        `{"type": "dict"}` with no fields and the mapper drops it -- a new
-        event type would need a dataclass in `android_bridge.events`, a Kotlin
-        branch and an entry in the mapping test. That is worth doing when the
-        UI has somewhere to show it; wiring half of it now would leave a
-        notification that silently goes nowhere.
+        Emitted under every policy, because the two cases are different
+        sentences rather than one case worth suppressing:
 
-        The JID is not logged. Who is asking to watch this device's presence
-        is exactly the kind of thing logcat should not have.
+          * ASK -- nothing has been answered and the user decides. Dropping it
+            here meant `answer_subscription` could never be called, so ASK was
+            a policy that quietly answered nothing and left the asker waiting
+            forever. That is the defect.
+          * ACCEPT -- slixmpp already said yes, and somebody now knows when
+            this device is online. Silence would make granting presence the
+            only privacy-relevant thing that happens without the user being
+            told. The event carries the policy so the screen can say "they can
+            now see you" rather than offering a choice already made.
+
+        The JID reaches the UI and NOT the log. It has to reach the UI: a
+        request that does not say who is asking cannot be answered. It must
+        not reach logcat, where it would be a durable record of who wants to
+        watch this device.
         """
-        _log.info("a subscription request arrived and was handled by policy")
+        _log.info("a subscription request arrived")
+        try:
+            # Imported here rather than at module scope, like every other
+            # sibling import in this file: `connection` is what Chaquopy loads
+            # first on a cold start and each top-level import is startup cost
+            # paid before a screen appears.
+            from .events import SubscriptionRequested
+
+            self._events.on_event(SubscriptionRequested(
+                peer=jid, policy=self.subscription_policy()))
+        except Exception:
+            # A sink that throws must not kill the transport's loop thread.
+            _log.warning("a subscription request could not be queued")
+
+    def subscription_policy(self) -> str:
+        """The policy actually in force, as the transport applied it.
+
+        A method rather than a property because the caller is Kotlin through
+        `callAttr`, and every other value this controller exposes to it
+        (`events_dropped`, `drain_events`) is one too.
+
+        Read from the transport rather than from what was requested: an
+        unrecognised policy falls back to ACCEPT inside
+        `SubscriptionPolicy.apply`, and a UI that rendered the requested value
+        would promise the user a choice the client is not giving them.
+        """
+        from .transport import SubscriptionPolicy
+
+        transport = self._transport
+        if transport is None:
+            return SubscriptionPolicy.ACCEPT
+        return getattr(transport, "subscription_policy",
+                       SubscriptionPolicy.ACCEPT)
 
     def _on_transport_state(self, state: str, _server: str) -> None:
         """Translate a transport state into a stage, and never invent one."""

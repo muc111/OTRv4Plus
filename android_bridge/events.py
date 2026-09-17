@@ -36,7 +36,7 @@ __all__ = [
     "security_state_from_level", "smp_state_from_status", "call_state_from_engine",
     "Event", "ConnectionStateChanged", "SessionStateChanged", "MessageReceived",
     "MessageDelivered", "SmpProgress", "SmpResult", "FingerprintChanged",
-    "CallStateChanged", "ErrorOccurred", "EventSink",
+    "CallStateChanged", "ErrorOccurred", "SubscriptionRequested", "EventSink",
 ]
 
 
@@ -200,6 +200,41 @@ class FingerprintChanged(Event):
 
     stored_fingerprint: str = ""
     received_fingerprint: str = ""
+
+
+@dataclass(frozen=True)
+class SubscriptionRequested(Event):
+    """Someone asked to see our presence.
+
+    WHY THIS IS AN EVENT AND NOT A LOG LINE. It used to be the latter, with a
+    comment explaining that a plain dict arrives in Kotlin as `{"type":
+    "dict"}` because `EventQueue._describe` only walks dataclass fields -- true,
+    and the reason it is a dataclass now.
+
+    Presence is metadata. Approving tells that account when this device is
+    online, from which resource, and how idle it is, for as long as they keep
+    it. On an anonymity-oriented messenger the user is entitled to know that
+    happened, and under ASK to be the one who decides.
+
+    `policy` is carried because it changes what the UI is allowed to say. Under
+    ASK nothing has been answered and the honest words are "allow or decline".
+    Under ACCEPT slixmpp answered before this was raised, so a prompt offering
+    to decline would be offering to undo something already done -- the honest
+    words there are "they can now see you", with revoking as the remedy. One
+    field, because a screen that got this wrong would be lying about whether
+    the user still has a choice.
+
+    No display name, no roster metadata: the JID is already the most
+    identifying thing that can be here, and it is here because the user cannot
+    answer a question that does not say who is asking.
+    """
+
+    policy: str = "accept"
+
+    @property
+    def is_question(self) -> bool:
+        """Whether the user still has a decision to make."""
+        return self.policy == "ask"
 
 
 @dataclass(frozen=True)

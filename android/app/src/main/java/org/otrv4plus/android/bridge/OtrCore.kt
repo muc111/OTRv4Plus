@@ -551,8 +551,74 @@ sealed interface OtrEvent {
 
     data class CallChanged(val peer: String, val state: CallState, val durationSeconds: Int) : OtrEvent
 
+    /**
+     * Somebody asked to see this account's presence.
+     *
+     * [policy] decides what the screen is allowed to offer, and the two cases
+     * are genuinely different rather than one being a softer version of the
+     * other. Under [SubscriptionPolicy.ASK] nothing has been answered and the
+     * user chooses. Under the shipped [SubscriptionPolicy.ACCEPT] the server
+     * library already said yes before this event existed, so a prompt offering
+     * to decline would be offering to undo something already done — see
+     * [isQuestion].
+     *
+     * Approving is not a cryptographic act. It grants presence, not the
+     * ability to read anything: messages stay plaintext until a DAKE runs.
+     */
+    data class SubscriptionRequested(
+        val peer: String,
+        val policy: SubscriptionPolicy,
+    ) : OtrEvent {
+        /** Whether the user still has a decision to make. */
+        val isQuestion: Boolean get() = policy == SubscriptionPolicy.ASK
+    }
+
     /** [code] is stable and machine-readable; there is no engine text here. */
     data class Failed(val peer: String?, val code: String) : OtrEvent
+}
+
+/**
+ * What happens when someone asks to see this account's presence.
+ *
+ * Mirrors `android_bridge.transport.SubscriptionPolicy` exactly. Presence is
+ * metadata: approving tells that account when this device is online, from
+ * which resource, and how idle it is, for as long as they keep it.
+ *
+ * [UNKNOWN] exists because the alternative is worse. Python falls back to
+ * ACCEPT for a policy string it does not recognise, and a Kotlin enum that did
+ * the same would render "they can now see you" for a state it had not
+ * understood — a confident sentence about a privacy grant, derived from a
+ * parse failure. An unknown policy is shown as unknown.
+ */
+enum class SubscriptionPolicy {
+    /** Approve, and ask for theirs back. The shipped default. */
+    ACCEPT,
+
+    /** Approve, but do not ask for theirs. */
+    ACCEPT_ONE_WAY,
+
+    /** Neither approve nor refuse — the user decides. */
+    ASK,
+
+    /** Refuse. */
+    REJECT,
+
+    /** Python said something this build does not know. */
+    UNKNOWN;
+
+    /** Whether a request under this policy is still the user's to answer. */
+    val defersToUser: Boolean get() = this == ASK
+
+    companion object {
+        /** Map Python's own words, failing to [UNKNOWN] rather than to a default. */
+        fun of(name: String): SubscriptionPolicy = when (name.trim().lowercase()) {
+            "accept" -> ACCEPT
+            "accept_one_way" -> ACCEPT_ONE_WAY
+            "ask" -> ASK
+            "reject" -> REJECT
+            else -> UNKNOWN
+        }
+    }
 }
 
 fun interface OtrEventSink {
