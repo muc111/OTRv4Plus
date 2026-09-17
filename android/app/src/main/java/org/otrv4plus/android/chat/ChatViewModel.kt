@@ -260,9 +260,40 @@ class ChatViewModel : ViewModel() {
         val bare = ChatState.bare(jid.trim())
         viewModelScope.launch {
             val result = withContext(Dispatchers.IO) { core.addContact(bare) }
+            // SAVED ONLY AFTER THE CONTROLLER CONFIRMED IT.
+            //
+            // `RosterResult.ok` is the answer to the roster operation, not to
+            // the tap. Writing on the tap would make the local list a record
+            // of intentions, and the entire reason it is kept apart from the
+            // roster is that it must never assert something the server has
+            // not done.
+            //
+            // What this records is still only local: "this account asked to
+            // keep this JID". Whether they accept the subscription, and
+            // whether their presence ever becomes visible, stays the server's
+            // to say and arrives through the roster poll.
+            if (result.ok) {
+                state.savedContacts.save(bare, at = System.currentTimeMillis())
+            }
             state.note(result.message())
             revision++
         }
+    }
+
+    /** People this device remembers. NOT a statement about the roster. */
+    fun savedContacts(): List<SavedContacts.Saved> {
+        observe()
+        return state?.savedContacts?.all() ?: emptyList()
+    }
+
+    /**
+     * What has finished since authentication, for the screen to explain an
+     * empty list with. Never gates anything.
+     */
+    fun initialising(): Boolean {
+        observe()
+        val s = state ?: return false
+        return s.canSend() && !s.postLogin.rosterSeen
     }
 
     /**

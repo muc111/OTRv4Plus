@@ -117,7 +117,21 @@ fun ConversationsScreen(
             }
 
             if (conversations.isEmpty()) {
+                // `weight(1f)`, NOT the child's own fillMaxSize().
+                //
+                // THE BUG THIS FIXES. `EmptyConversations` declared
+                // `Modifier.fillMaxSize()`, which in a non-scrolling Column
+                // takes the whole remaining height -- so the Rooms / Debug /
+                // About row below was laid out past the bottom of the screen
+                // and could not be reached. The moment any conversation
+                // existed the other branch ran instead, and that one IS
+                // bounded by weight(1f), so the row reappeared.
+                //
+                // On a handset that read as "Rooms only works after somebody
+                // messages me", which looked like an XMPP initialisation
+                // fault and was a layout constraint.
                 EmptyConversations(
+                    modifier = Modifier.weight(1f),
                     connected = model.canSend(),
                     onAdd = { showAdd = true },
                 )
@@ -273,9 +287,13 @@ private fun DisconnectedBanner(onOpenConnection: () -> Unit) {
 }
 
 @Composable
-private fun EmptyConversations(connected: Boolean, onAdd: () -> Unit) {
+private fun EmptyConversations(
+    modifier: Modifier = Modifier,
+    connected: Boolean,
+    onAdd: () -> Unit,
+) {
     Column(
-        Modifier.fillMaxSize().padding(32.dp),
+        modifier.fillMaxWidth().padding(32.dp),
         verticalArrangement = Arrangement.Center,
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {

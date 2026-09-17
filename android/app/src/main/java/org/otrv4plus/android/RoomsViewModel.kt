@@ -17,6 +17,7 @@ import org.otrv4plus.android.bridge.DiscoveredService
 import org.otrv4plus.android.bridge.RoomOutcome
 import org.otrv4plus.android.bridge.RoomStanding
 import org.otrv4plus.android.bridge.RoomSummary
+import org.otrv4plus.android.chat.RoomAddress
 
 /**
  * Rooms: finding the service, listing what it advertises, and being in one.
@@ -88,6 +89,7 @@ class RoomsViewModel : ViewModel() {
         busy = "Looking for a rooms service..."
         last = null
         viewModelScope.launch {
+            try {
             val (outcome, found) = withContext(Dispatchers.IO) {
                 c.discoverServices()
             }
@@ -99,7 +101,11 @@ class RoomsViewModel : ViewModel() {
             roomService = found.firstOrNull { it.hostsRooms }?.jid
             discovered = true
             last = outcome
-            busy = null
+            } finally {
+                // ALWAYS. Without it a throw from the bridge left `busy` set
+                // and the screen stuck on its label -- see `call()`.
+                busy = null
+            }
             roomService?.let { refreshRooms(it) }
         }
     }
@@ -110,21 +116,69 @@ class RoomsViewModel : ViewModel() {
         if (busy != null) return
         busy = "Listing rooms..."
         viewModelScope.launch {
-            val (outcome, found) = withContext(Dispatchers.IO) {
-                c.discoverRooms(service)
+            try {
+                val (outcome, found) = withContext(Dispatchers.IO) {
+                    c.discoverRooms(service)
+                }
+                rooms.clear()
+                rooms.addAll(found)
+                last = outcome
+            } finally {
+                busy = null
             }
-            rooms.clear()
-            rooms.addAll(found)
-            last = outcome
-            busy = null
         }
     }
 
-    fun join(room: String, nick: String, password: String = "") =
-        enter("Joining...", room) { c -> c.joinRoom(room, nick, password) }
+    /**
+     * The room we have just successfully entered, for the screen to navigate
+     * into. Null until an authoritative OK comes back.
+     *
+     * Set from the outcome, never from the tap: the Rooms screen used to have
+     * no way at all to move on from a successful create, which is half of why
+     * "it never progresses to the next view" was reported. The other half was
+     * the spinner that never cleared.
+     */
+    var entered by mutableStateOf<String?>(null)
+        internal set
 
-    fun create(room: String, nick: String) =
-        enter("Creating the room...", room) { c -> c.createRoom(room, nick) }
+    /** Consume [entered] once the screen has acted on it. */
+    fun clearEntered() {
+        entered = null
+    }
+
+    /**
+     * Join a room the user named.
+     *
+     * [typed] may be a bare name -- `myroom` -- which is resolved against the
+     * discovered conference service. See [RoomAddress].
+     */
+    fun join(typed: String, nick: String, password: String = "") {
+        val jid = resolve(typed) ?: return
+        enter("Joining...", jid) { c -> c.joinRoom(jid, nick, password) }
+    }
+
+    /** Create a room the user named. [typed] may be a bare name. */
+    fun create(typed: String, nick: String) {
+        val jid = resolve(typed) ?: return
+        enter("Creating the room...", jid) { c -> c.createRoom(jid, nick) }
+    }
+
+    /**
+     * Turn what was typed into a room JID, or report why not and stop.
+     *
+     * REFUSING HERE IS THE POINT. A domainless JID reached slixmpp, which sat
+     * on `join_muc_wait` for its 300 s default before failing -- so a typo was
+     * indistinguishable from a slow tunnel, for five minutes. The rules are in
+     * [RoomAddress] where a JVM test can drive them.
+     */
+    private fun resolve(typed: String): String? =
+        when (val outcome = RoomAddress.resolve(typed, roomService)) {
+            is RoomAddress.Outcome.Resolved -> outcome.jid
+            is RoomAddress.Outcome.Rejected -> {
+                last = RoomOutcome(false, "bad_room_name", outcome.reason)
+                null
+            }
+        }
 
     private fun enter(
         label: String,
@@ -136,14 +190,29 @@ class RoomsViewModel : ViewModel() {
         busy = label
         last = null
         viewModelScope.launch {
-            val (outcome, standing) = withContext(Dispatchers.IO) { call(c) }
-            // Recorded ONLY on success. A failed join leaves the user outside
-            // the room, and an entry here would put it in the "you are in
-            // these" list with no privileges — which reads as a room that is
-            // broken rather than one that was refused.
-            if (outcome.ok) joined[room] = standing
-            last = outcome
-            busy = null
+            try {
+                val (outcome, standing) =
+                    withContext(Dispatchers.IO) { call(c) }
+                // Recorded ONLY on success. A failed join leaves the user
+                // outside the room, and an entry here would put it in the
+                // "you are in these" list with no privileges — which reads as
+                // a room that is broken rather than one that was refused.
+                if (outcome.ok) joined[room] = standing
+                last = outcome
+                // The screen watches this to navigate INTO the room. Set only
+                // on success and only from the authoritative outcome, so a
+                // refused join cannot open a room the user is not in.
+                if (outcome.ok) entered = room
+            } finally {
+                // THE PERMANENT SPINNER. This was the last line of the
+                // coroutine body, so a throw crossing from Chaquopy -- which
+                // `ChaquopyOtrCore.call` used to let through -- skipped it and
+                // left "Creating the room..." on screen for good.
+                //
+                // In a `finally` it runs on every path: success, a refusal
+                // Python reported properly, a cancelled screen, and a throw.
+                busy = null
+            }
         }
     }
 
@@ -152,13 +221,16 @@ class RoomsViewModel : ViewModel() {
         if (busy != null) return
         busy = "Leaving..."
         viewModelScope.launch {
+            try {
             val outcome = withContext(Dispatchers.IO) { c.leaveRoom(room, nick) }
             // Removed whatever the service said. Leaving is unavailable
             // presence, not a request that can be refused, and a room left in
             // the list after a failed leave is one the user cannot get out of.
             joined.remove(room)
             last = outcome
-            busy = null
+            } finally {
+                busy = null
+            }
         }
     }
 
@@ -176,12 +248,15 @@ class RoomsViewModel : ViewModel() {
         if (busy != null) return
         busy = "Deleting the room..."
         viewModelScope.launch {
-            val outcome = withContext(Dispatchers.IO) {
-                c.destroyRoom(room, reason)
+            try {
+                val outcome = withContext(Dispatchers.IO) {
+                    c.destroyRoom(room, reason)
+                }
+                if (outcome.ok) joined.remove(room)
+                last = outcome
+            } finally {
+                busy = null
             }
-            if (outcome.ok) joined.remove(room)
-            last = outcome
-            busy = null
         }
     }
 

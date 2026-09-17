@@ -94,6 +94,8 @@ class ChatState(
         // behind here would name a stranger to the new account and offer to
         // grant them Dave's presence.
         subscriptionRequests.clear()
+        postLogin.onSignedOut()
+        savedContacts.bind(next)
         (store as? PersistentMessageStore)?.bind(next)
     }
 
@@ -278,17 +280,53 @@ class ChatState(
     }
 
     /**
+     * What has finished since authentication. Observed, never gated on.
+     *
+     * Exists so an empty conversation list can say which empty it is: "the
+     * server says you have no contacts" or "the roster has not arrived yet".
+     * Without it the two render identically, which is what made a handset
+     * report of "contacts do not appear" unanswerable without a log.
+     */
+    val postLogin = PostLogin()
+
+    /**
+     * People this device chose to remember. NOT the roster.
+     *
+     * The server owns subscription and presence; this owns one local fact,
+     * "this account asked to keep this JID". Kept apart so a tap on this
+     * phone can never be rendered as something the server confirmed.
+     */
+    var savedContacts = SavedContacts(null)
+        private set
+
+    /** Give the saved-contact store somewhere to persist. */
+    fun bindVault(vault: org.otrv4plus.android.security.Vault?) {
+        savedContacts = SavedContacts(vault)
+        savedContacts.bind(account)
+    }
+
+    /**
      * Replace the roster with what the engine just reported.
      *
      * Entries that vanished are dropped from the contact map but NOT from the
      * store: a conversation outlives the roster entry, and deleting history
      * because somebody unsubscribed would be destroying data the user did not
      * ask to lose.
+     *
+     * The ROSTER REMAINS AUTHORITATIVE. Locally saved contacts are not merged
+     * in here and do not survive being absent from it as roster entries --
+     * they surface through [conversations] as rows with `saved = false`, so
+     * somebody remembered on this device but not confirmed by the server is
+     * visible and is not described as confirmed.
      */
     fun applyRoster(roster: List<Contact>) {
         for (contact in roster) contacts[contact.jid] = contact
         val present = roster.map { it.jid }.toSet()
         contacts.keys.retainAll { it in present }
+        if (canSend()) {
+            postLogin.onAuthenticated()
+            postLogin.onRoster(roster.size)
+        }
     }
 
     /**
@@ -365,12 +403,21 @@ class ChatState(
      * a message.
      */
     fun conversations(): List<Conversation> {
-        val jids = contacts.keys + store.conversationIds()
+        // Locally saved people are included so somebody remembered on a
+        // previous run has a row before the roster arrives -- but `saved`
+        // below still comes from the ROSTER, so a local record can never
+        // render as a server-confirmed contact.
+        val jids = contacts.keys + store.conversationIds() +
+            savedContacts.all().map { it.jid }
         return jids.map { jid ->
             val contact = contacts[jid]
             Conversation(
                 jid = jid,
-                displayName = contact?.displayName?.takeIf { it.isNotBlank() } ?: jid,
+                displayName = contact?.displayName?.takeIf { it.isNotBlank() }
+                    ?: savedContacts.all()
+                        .firstOrNull { it.jid == jid }?.displayName
+                        ?.takeIf { it.isNotBlank() }
+                    ?: jid,
                 presence = Presence.of(
                     // The PEER's own state, not a boolean derived from it.
                     // A boolean cannot say "no stanza has arrived for them

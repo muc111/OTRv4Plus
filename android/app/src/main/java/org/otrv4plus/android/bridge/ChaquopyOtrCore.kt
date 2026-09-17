@@ -393,8 +393,32 @@ class ChaquopyOtrCore(private val appContext: Context) : OtrCore {
         return outcomeOf(result) to standing
     }
 
+    /**
+     * A controller call that answers rather than throws.
+     *
+     * WRAPPED, and it was not. This returned `controller?.callAttr(...)` bare,
+     * so anything the Python side raised -- a `TransportError` from a room
+     * join, a malformed JID, a timeout -- crossed Chaquopy as a PyException
+     * and propagated out of `createRoom` into `RoomsViewModel`'s coroutine.
+     * That coroutine had no `finally`, so `busy` was never cleared and the
+     * Rooms screen sat on "Creating the room..." for good.
+     *
+     * The roster calls have answered this way since `addContact` was fixed
+     * for the same reason; the room calls were the ones still throwing.
+     * Returning null means "no answer", which every caller here already
+     * handles as `notPrepared()`.
+     *
+     * The exception TYPE is not propagated and its message is never read: a
+     * PyException carries the engine's own text, which can quote what it was
+     * handling. The caller's own `RoomOutcome` carries the reportable code,
+     * which Python wrote for a person.
+     */
     private fun call(name: String, vararg args: Any): PyObject? =
-        controller?.callAttr(name, *args)
+        try {
+            controller?.callAttr(name, *args)
+        } catch (t: Throwable) {
+            null
+        }
 
     private fun outcomeOf(result: PyObject): RoomOutcome = RoomOutcome(
         ok = result.callAttr("get", "ok")?.toBoolean() ?: false,
