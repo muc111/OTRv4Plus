@@ -34,6 +34,8 @@ from typing import Any, Callable, Dict, List, Optional
 # Both clients classify and fragment
 # with this module and nothing has a second copy.
 import otrv4plus_fragment as _fragment
+
+from .trace import TRACE as _TRACE
 import otrv4plus_presence as _presence
 from otrv4plus_mode import OtrMode
 
@@ -422,13 +424,109 @@ class OtrApp:
         conversation goes out in the clear -- including if the handshake
         fails, because a failed handshake is not consent to continue without
         one.
+
+        THE DEFECT THIS FIXES
+        ---------------------
+        It used to read
+
+            payload = self._safe(
+                lambda: self._engine.handle_outgoing_message(peer, ""))
+
+        and then never mention `payload` again. The engine produced DAKE1 --
+        correctly, every time -- and this method dropped it on the floor.
+        Nothing was ever handed to the transport, so no stanza left the
+        device.
+
+        On a handset that was: tap OTRv4+, no visible change, no DAKE, and
+        nothing at all arriving at the other end. Every layer above reported
+        success, because every layer above HAD succeeded: the tap ran, the
+        launcher ran, the provider ran, Python ran, a session was created and
+        `SessionStateChanged` was emitted. The only thing that did not happen
+        was the send.
+
+        The terminal client has always done this properly, and its comment is
+        the one that applies here:
+
+            "OK is reported from the result of the send, not from having
+             attempted it: a DAKE1 that never left the socket is not a
+             completed stage."
+
+        `handle_outgoing_message` returns `(payload, should_send)`, which is
+        why assigning it to a single name and reading it as a payload was easy
+        to miss -- the tuple is truthy either way.
+
+        Fragmentation is the transport's, not ours: `XmppTransport._send`
+        splits on `otrv4plus_fragment.MAX_FRAGMENT`, which exists because a
+        DAKE2 is ~11.7 KB after base64 and goes straight at the ~8 KB I2P
+        cliff.
         """
+        if self._transport is None:
+            raise BridgeError("no_transport")
+
+        # BEFORE the send, and deliberately. From here this conversation is
+        # OTR-requested, so a failure below leaves it refusing plaintext
+        # rather than quietly reverting -- a failed handshake is not consent
+        # to continue without one.
         self._mode.request(peer)
-        payload = self._safe(lambda: self._engine.handle_outgoing_message(peer, ""))
+        _TRACE.record("otr", "dake_requested", "info", jid=peer)
+
+        # NOT `self._safe`. An engine that RAISES here and an engine that
+        # DECLINES to produce DAKE1 are different answers, and swallowing the
+        # first into the second would send an OTR query on behalf of an engine
+        # that is in an unknown state.
+        try:
+            result = self._engine.handle_outgoing_message(peer, "")
+        except Exception as exc:
+            _TRACE.record_exception("otr", "dake_generate_failed", exc, jid=peer)
+            raise BridgeError("dake_generate_failed",
+                              "the handshake could not be built")
+
         try:
             self._engine.get_or_create_session(peer, is_initiator=True)
-        except Exception:
+        except Exception as exc:
+            _TRACE.record_exception("otr", "session_start_failed", exc, jid=peer)
             raise BridgeError("session_start_failed")
+
+        # `(payload, should_send)`. An engine that hands back something else
+        # is treated as having declined, not as a payload: a 2-tuple is truthy
+        # either way, which is exactly how the original defect hid.
+        payload, should_send = None, False
+        try:
+            payload, should_send = result
+        except (TypeError, ValueError):
+            pass
+
+        if payload and should_send:
+            outbound, stage = payload, "dake_sent"
+            _TRACE.record("otr", "dake_generated", "info", jid=peer,
+                          length=len(payload))
+        else:
+            # NOT AN ERROR, and the first version of this fix got that wrong.
+            #
+            # The engine declines to produce DAKE1 when a handshake is already
+            # in flight or a session exists. The terminal client's `else`
+            # branch sends the OTR QUERY here -- `?OTRv4 ` -- which invites the
+            # peer to begin one, and `test_android_chat_ux` already pins that
+            # `start_session` must not raise in this state (a mid-handshake
+            # send reports QUEUED, not failed).
+            #
+            # Raising instead broke three of those tests, which is how the
+            # over-strictness was caught. Doing nothing would be worse: the
+            # user asked for encryption and nothing would leave the device.
+            outbound, stage = _fragment.OTR_PREFIX, "query_sent"
+            _TRACE.record("otr", "dake_not_produced", "info", jid=peer,
+                          produced=bool(payload),
+                          should_send=bool(should_send))
+
+        try:
+            self._transport.send(peer, outbound)
+        except Exception as exc:
+            # A DAKE1 that never left the socket is not a completed stage.
+            _TRACE.record_exception("otr", "dake_send_failed", exc, jid=peer)
+            raise BridgeError("dake_send_failed",
+                              "the handshake could not be sent")
+        _TRACE.record("otr", stage, "info", jid=peer)
+
         self._emit(SessionStateChanged(peer=peer, security=self.security_state(peer)))
 
     def send_message(self, peer: str, body: str) -> bool:

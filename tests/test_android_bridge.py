@@ -32,6 +32,7 @@ from android_bridge.events import (         # noqa: E402
     SmpProgress, SmpResult, SmpState, security_state_from_level,
     smp_state_from_status, call_state_from_engine,
 )
+from otrv4plus_fragment import OTR_PREFIX   # noqa: E402
 
 SECRET = "hunter2-correct-horse"
 PLAINTEXT = "meet me at the usual place"
@@ -508,3 +509,183 @@ class TestAgainstTheRealEngine:
         app, _, _ = real_app
         progress = app.smp_progress("bob")
         assert progress.total == 4 and 0 <= progress.step <= 4
+
+
+class TestStartingASessionActuallySendsTheHandshake:
+    """THE HANDSET BUG. Tap OTRv4+ between Bob and Alice: no visible change,
+    no DAKE, and nothing at all arriving at the other end.
+
+    `start_session` read
+
+        payload = self._safe(
+            lambda: self._engine.handle_outgoing_message(peer, ""))
+
+    and never mentioned `payload` again. The engine produced DAKE1 correctly,
+    every time, and this method dropped it. Nothing was handed to the
+    transport, so no stanza left the device.
+
+    Every layer above reported success because every layer above HAD
+    succeeded -- the tap, the launcher, the provider, the Python call, the
+    session, the emitted event. Only the send was missing, and nothing
+    anywhere asserted it. `start_session` had NO test at all, which is how a
+    one-line omission survived.
+
+    `handle_outgoing_message` returns `(payload, should_send)`. Assigning that
+    to a single name and reading it as a payload is easy to miss: the tuple is
+    truthy either way.
+    """
+
+    def test_the_handshake_reaches_the_transport(self, app):
+        a, engine, transport, sink = app
+        engine.outgoing = ("?OTRv4 DAKE1DATA", True)
+        a.start_session("bob@example.i2p")
+        assert transport.sent == [("bob@example.i2p", "?OTRv4 DAKE1DATA")], (
+            "the DAKE was generated and never sent")
+
+    def test_it_is_sent_to_the_peer_it_was_generated_for(self, app):
+        a, engine, transport, _ = app
+        engine.outgoing = ("?OTRv4 DAKE1DATA", True)
+        a.start_session("carol@example.i2p")
+        peer, _payload = transport.sent[0]
+        assert peer == "carol@example.i2p"
+
+    def test_the_conversation_is_marked_otr_before_anything_can_fail(self):
+        """A failed handshake is not consent to continue without one, so the
+        request is recorded first and the conversation refuses plaintext even
+        when the send then fails."""
+        class Refusing(FakeTransport):
+            def send(self, peer, payload):
+                raise OSError("stream gone")
+
+        engine = FakeEngine()
+        engine.outgoing = ("?OTRv4 DAKE1DATA", True)
+        a = OtrApp(engine, Refusing(), RecordingSink())
+        with pytest.raises(BridgeError):
+            a.start_session("bob@example.i2p")
+        assert a._mode.may_send_plaintext("bob@example.i2p", False) is False
+
+    def test_a_session_state_change_is_emitted_only_after_the_send(self, app):
+        """The event is what the UI follows. Emitting it for a handshake that
+        never left the device is how the screen said one thing and the network
+        did another."""
+        a, engine, transport, sink = app
+        engine.outgoing = ("?OTRv4 DAKE1DATA", True)
+        a.start_session("bob@example.i2p")
+        assert transport.sent, "no send"
+        assert any(type(e).__name__ == "SessionStateChanged"
+                   for e in sink.events)
+
+    # ── failures are reported, never silent ──────────────────────────────────
+
+    def test_no_handshake_produced_still_puts_the_request_on_the_wire(self, app):
+        """The engine declines to build DAKE1 when one is already in flight.
+        That is not an error -- `test_android_chat_ux` pins that a send in
+        this state reports QUEUED -- but it must not be SILENCE either: the
+        user asked for encryption, so the OTR query goes out and invites the
+        peer to start the handshake, exactly as the terminal client's `else`
+        branch does."""
+        a, engine, transport, _ = app
+        engine.outgoing = (None, False)
+        a.start_session("bob@example.i2p")
+        assert transport.sent == [("bob@example.i2p", OTR_PREFIX)], (
+            "nothing left the device for a conversation the user asked to "
+            "encrypt")
+
+    def test_should_send_false_is_not_treated_as_a_handshake(self, app):
+        """The engine can hand back a payload it does not want sent. Sending
+        it anyway would put a frame on the wire the engine did not authorise,
+        so the query goes instead -- and the unauthorised payload does not."""
+        a, engine, transport, _ = app
+        engine.outgoing = ("?OTRv4 SOMETHING", False)
+        a.start_session("bob@example.i2p")
+        assert transport.sent == [("bob@example.i2p", OTR_PREFIX)]
+        assert all("SOMETHING" not in body for _p, body in transport.sent)
+
+    def test_the_two_outcomes_are_distinguishable_in_the_trace(self, app):
+        """"Nothing happened when I tapped it" was unanswerable without ADB.
+        A DAKE that went out and a query sent because the engine declined one
+        are different situations with the same appearance on screen, so the
+        diagnostic must not record them as the same event."""
+        from android_bridge.trace import TRACE
+
+        a, engine, transport, _ = app
+
+        TRACE.clear()
+        engine.outgoing = ("?OTRv4 DAKE1DATA", True)
+        a.start_session("bob@example.i2p")
+        sent = {e["event"] for e in TRACE.events() if e["component"] == "otr"}
+
+        TRACE.clear()
+        engine.outgoing = (None, False)
+        a.start_session("carol@example.i2p")
+        declined = {e["event"] for e in TRACE.events()
+                    if e["component"] == "otr"}
+
+        assert "dake_sent" in sent and "dake_sent" not in declined
+        assert "query_sent" in declined and "query_sent" not in sent
+
+    def test_the_trace_of_a_handshake_carries_no_payload(self, app):
+        """The length of DAKE1 is a diagnosis; DAKE1 is key material."""
+        from android_bridge.trace import TRACE
+
+        a, engine, transport, _ = app
+        TRACE.clear()
+        engine.outgoing = ("?OTRv4 DAKE1DATA", True)
+        a.start_session("bob@example.i2p")
+        rendered = TRACE.render()
+        assert "DAKE1DATA" not in rendered
+        assert "bob@example.i2p" not in rendered
+
+    def test_a_failed_send_is_reported(self):
+        """A DAKE1 that never left the socket is not a completed stage."""
+        class Refusing(FakeTransport):
+            def send(self, peer, payload):
+                raise OSError("stream gone")
+
+        engine = FakeEngine()
+        engine.outgoing = ("?OTRv4 DAKE1DATA", True)
+        a = OtrApp(engine, Refusing(), RecordingSink())
+        with pytest.raises(BridgeError) as caught:
+            a.start_session("bob@example.i2p")
+        assert caught.value.code == "dake_send_failed"
+
+    def test_no_transport_is_reported_before_anything_else(self):
+        a = OtrApp(FakeEngine(), transport=None)
+        with pytest.raises(BridgeError) as caught:
+            a.start_session("bob@example.i2p")
+        assert caught.value.code == "no_transport"
+
+    def test_an_engine_that_cannot_make_a_session_is_reported(self):
+        class Broken(FakeEngine):
+            def get_or_create_session(self, peer, is_initiator=False):
+                raise RuntimeError("no")
+
+        engine = Broken()
+        engine.outgoing = ("?OTRv4 DAKE1DATA", True)
+        transport = FakeTransport()
+        a = OtrApp(engine, transport, RecordingSink())
+        with pytest.raises(BridgeError) as caught:
+            a.start_session("bob@example.i2p")
+        assert caught.value.code == "session_start_failed"
+        assert transport.sent == [], "a handshake went out for a dead session"
+
+    def test_an_engine_that_raises_while_generating_is_reported(self, app):
+        """An engine that THREW and an engine that DECLINED are different
+        answers. Declining sends the query; throwing leaves the engine in an
+        unknown state, and sending an invitation on its behalf would be
+        guessing."""
+        a, engine, transport, _ = app
+        engine.raise_on_outgoing = True
+        with pytest.raises(BridgeError) as caught:
+            a.start_session("bob@example.i2p")
+        assert caught.value.code == "dake_generate_failed"
+        assert transport.sent == []
+
+    def test_the_payload_is_not_unpacked_as_a_bare_value(self):
+        """Guards the specific mistake: `(payload, should_send)` read as one
+        thing. A 2-tuple is truthy, so a naive `if payload:` passes."""
+        import inspect
+
+        source = inspect.getsource(OtrApp.start_session)
+        assert "self._transport.send" in source, (
+            "start_session no longer sends anything")

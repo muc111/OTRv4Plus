@@ -225,11 +225,17 @@ class TestSendUserText:
         assert transport.sent == [(PEER, "?OTRv4 ciphertext")]
 
     def test_no_session_yet_reports_queued_rather_than_failed(self):
-        """Mid-handshake: the engine holds the text and will flush it."""
+        """Mid-handshake: the engine holds the text and will flush it.
+
+        Measured as a DELTA across `send_user_text`, not as an empty list.
+        `start_session` legitimately puts the OTR query on the wire, and
+        counting everything the transport ever saw would confuse "the send
+        was queued" with "the handshake was never requested"."""
         app, _engine, transport = build(should_send=False)
         app.start_session(PEER)
+        before = list(transport.sent)
         assert app.send_user_text(PEER, "hello") == OtrApp.SEND_QUEUED
-        assert transport.sent == []
+        assert transport.sent == before, "a queued message went out anyway"
 
     def test_queued_is_not_an_error(self):
         app, _engine, _transport = build(should_send=False)
@@ -742,3 +748,81 @@ class TestTheJvmUnitTestsExist:
     def test_they_cover_the_security_boundary(self):
         source = _read(UNIT_TESTS, "chat", "ChatModelsTest.kt")
         assert "only a real session labels a message encrypted" in source
+
+
+class TestTheOtrTapReachesTheWire:
+    """THE HANDSET BUG, from the Kotlin end.
+
+    Tapping OTRv4+ did nothing: no visible change, no DAKE, nothing arriving
+    at the other end. The defect was in Python -- `OtrApp.start_session`
+    generated DAKE1 and never handed it to the transport, which
+    `test_android_bridge` now pins directly.
+
+    What made it INVISIBLE is on this side, and that is what these guard.
+    Every layer between the tap and the bridge reported success, because
+    every layer had succeeded, and the two places a failure could have been
+    swallowed on the way back are the two checked here.
+    """
+
+    @staticmethod
+    @pytest.fixture(scope="class")
+    def chat_vm():
+        return _code_only(_read(ANDROID, "chat", "ChatViewModel.kt"))
+
+    @staticmethod
+    @pytest.fixture(scope="class")
+    def provider():
+        return _code_only(_read(ANDROID, "crypto", "OtrV4PlusProvider.kt"))
+
+    def test_the_tap_has_a_caller_all_the_way_down(self):
+        """The chain, named link by link, because each one was once absent:
+        screen -> ChatViewModel.startEncryption -> EncryptionLauncher ->
+        OtrV4PlusProvider.establish -> OtrCore.startSession -> Python."""
+        screen = _code_only(_read(ANDROID, "ui", "ConversationScreen.kt"))
+        assert "model.startEncryption(jid)" in screen
+
+        vm = _code_only(_read(ANDROID, "chat", "ChatViewModel.kt"))
+        assert "launcher.startDefault(" in vm
+        assert "core.startSession(jid)" in vm
+
+        launcher = _code_only(_read(ANDROID, "crypto", "EncryptionLauncher.kt"))
+        assert "provider.establish(conversation)" in launcher
+
+        provider = _code_only(_read(ANDROID, "crypto", "OtrV4PlusProvider.kt"))
+        assert "startSession(conversation.target)" in provider
+
+    def test_the_view_model_has_no_discarding_start_session(self, chat_vm):
+        """The removed method. It read
+
+            withContext(Dispatchers.IO) { runCatching { core.startSession(jid) } }
+
+        with the result dropped -- a failed handshake and a successful one
+        were the same event. `start_session` now RAISES on a send that did not
+        happen, so a wrapper like this would put the silence straight back."""
+        assert "fun startSession(" not in chat_vm, (
+            "ChatViewModel has a startSession again; the encryption path goes "
+            "through startEncryption and the launcher, and a second entry "
+            "point is where the discarded result came back")
+
+    def test_the_failure_of_the_tap_is_shown_to_the_user(self, chat_vm):
+        """A control that silently does nothing is the whole complaint."""
+        assert "if (!outcome.ok)" in chat_vm
+        assert "state.note(" in chat_vm
+
+    def test_the_provider_reports_a_refused_start_rather_than_claiming_one(
+            self, provider):
+        """`establish` does not await the DAKE -- that is correct, it takes an
+        I2P round trip. But it must distinguish "asked" from "could not ask",
+        or a start that threw would still return ESTABLISHING."""
+        assert ".onFailure {" in provider
+        assert "EncryptionOutcome.failed(" in provider
+
+    def test_nothing_on_this_path_fakes_an_established_session(self, provider):
+        """ESTABLISHING is what the tap earns: a request was sent. ACTIVE and
+        VERIFIED are the engine's word, and this class only ever reports them
+        by reading `securityOf`."""
+        started = provider.split("override suspend fun establish", 1)[1] \
+            .split("override suspend fun encrypt", 1)[0]
+        for claimed in ("EncryptionState.ACTIVE", "EncryptionState.VERIFIED"):
+            assert claimed not in started, (
+                "establish returns %s before the engine has said so" % claimed)

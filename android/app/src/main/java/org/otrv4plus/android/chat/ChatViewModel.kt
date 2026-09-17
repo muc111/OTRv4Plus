@@ -321,19 +321,24 @@ class ChatViewModel : ViewModel() {
         }
     }
 
-    /** Start the DAKE with a peer. The engine does the work. */
-    fun startSession(jid: String) {
-        val core = this.core ?: return
-        viewModelScope.launch {
-            withContext(Dispatchers.IO) { runCatching { core.startSession(jid) } }
-            revision++
-        }
-    }
+    // A `startSession(jid)` used to sit here. It read
+    //
+    //     withContext(Dispatchers.IO) { runCatching { core.startSession(jid) } }
+    //
+    // and discarded the result. It has been REMOVED rather than fixed,
+    // because it had no caller -- [startEncryption] goes through
+    // [EncryptionLauncher] and the launcher's provider calls `core` directly
+    // -- and because what it was is a trap. `OtrApp.start_session` now raises
+    // when the handshake cannot be built or cannot be sent, and that is the
+    // entire point of the fix: the tap did nothing and said nothing. A
+    // method on this class, named the obvious thing, that swallows exactly
+    // those exceptions is what a future change would reach for, and the bug
+    // would be back with no test able to see it.
 
     // -- encryption ----------------------------------------------------------
     //
-    // THE GAP THIS CLOSES. `startSession` above existed, `ChaquopyOtrCore`
-    // implemented it, and NO SCREEN CALLED IT. Nothing outside `crypto/` even
+    // THE GAP THIS CLOSES. `startSession` existed on this class, and on
+    // `ChaquopyOtrCore`, and NO SCREEN CALLED IT. Nothing outside `crypto/` even
     // imported the encryption package. So `OtrApp.send_user_text` kept doing
     // the correct thing for "a conversation where nobody has asked for OTR" --
     // sending plaintext -- because on Android nobody could ask.
