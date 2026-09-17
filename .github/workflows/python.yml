@@ -98,11 +98,28 @@ jobs:
           python -m pip install --upgrade pip
           # The APK's closure, minus otrv4_core (built above).
           pip install PySocks slixmpp argon2-cffi pyasn1 pyasn1-modules
-          # Desktop/test-only. `segno` renders the tip QR code, and without it
-          # `test_tip_address_relay` cannot see the third way to pay.
-          # pytest-timeout so a hung test fails in ten minutes rather than
-          # burning the job's thirty and reporting only "cancelled".
-          pip install segno pytest pytest-timeout
+          # Test-and-desktop only. These are answerable to a different
+          # question from the list above: that one is what a handset must
+          # have, this one is what a test needs in order to check a rule at
+          # all. None of them may be added to the APK's closure.
+          #
+          #   segno            renders the tip QR code; without it
+          #                    `test_tip_address_relay` cannot see the third
+          #                    way to pay.
+          #   hypothesis       property-based testing. `tests/conftest.py`
+          #                    imports it, so it is not optional -- without it
+          #                    `test_attacks` and `test_property` do not
+          #                    collect, and those are the adversarial ones.
+          #   cryptography     an INDEPENDENT ed448/x448 implementation that
+          #                    `test_differential` checks this project's wire
+          #                    format against. It is deliberately absent from
+          #                    the APK: shipping a second crypto library is
+          #                    exactly what a differential oracle must not
+          #                    become.
+          #   pytest-timeout   so a hung test fails in ten minutes rather than
+          #                    burning the job's thirty and reporting only
+          #                    "cancelled".
+          pip install segno hypothesis cryptography pytest pytest-timeout
 
       - name: Show what is actually installed
         # Printed because "which environment was this" is the first question
@@ -117,8 +134,25 @@ jobs:
         # reproduce is a baseline that hides things.
         run: pip list
 
+      # Asserted rather than assumed. If the wheel built but did not install,
+      # or installed under a name the suite does not import, the tests that
+      # exercise the Rust core would SKIP and the job would stay green with
+      # the security-critical half of the project untested. A green tick for
+      # a suite that quietly stopped running is the failure this whole
+      # workflow exists to prevent, so it must not be reintroduced here.
+      - name: The Rust core must be importable
+        run: |
+          python - <<'PY'
+          import otrv4_core
+          print("otrv4_core at", otrv4_core.__file__)
+          PY
+
+      # -rs lists the reason for every skip. Skips are how a suite loses
+      # coverage without losing its green tick: `opuslib` and `kyber_py` are
+      # not installed here and some tests stand down accordingly, which is a
+      # known gap and should be readable in the log rather than inferred.
       - name: pytest
-        run: python -m pytest tests/ -q --timeout=600 --durations=10
+        run: python -m pytest tests/ -q -rs --timeout=600 --durations=10
         env:
           # Keeps a stray test from reaching the network if one is ever added
           # without noticing; every transport in this project is local.
