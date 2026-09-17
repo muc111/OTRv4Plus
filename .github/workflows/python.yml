@@ -1,0 +1,134 @@
+# The Python suite — the part of this project CI could not see
+#
+# WHY THIS EXISTS
+# ---------------
+# Until this file, `android.yml` was the only workflow in the repository, and
+# it is path-filtered:
+#
+#     paths: ["android/**", "android_bridge/**", "Rust/**", ".github/..."]
+#
+# Every rule this project actually enforces about the protocol, the transport,
+# the voice path, the diagnostics and the orchestration layer lives in
+# `otrv4plus_*.py`, `otrv4_.py` and `tests/` — none of which match. So a commit
+# touching only those ran NO checks at all and reported nothing, which is
+# indistinguishable from passing. That happened: the commit adding the I2P
+# tunnel-length request produced no run, and it was only noticed because
+# somebody went looking for one.
+#
+# Roughly five thousand tests were being run on a developer's machine and
+# nowhere else. This runs them where a green tick means something.
+#
+# WHY THERE IS NO PATH FILTER
+# ---------------------------
+# Deliberate, and the whole point. Python in this repository is spread across
+# the root (`otrv4plus_*.py`, `otrv4+.py`, `otrv4_.py`), `android_bridge/`,
+# `tests/`, and `Rust/` — which builds the extension module half the suite
+# imports. A filter broad enough to be correct would match nearly everything,
+# and a filter narrower than that is the failure mode this file was written to
+# fix. Running the suite on every push costs about five minutes and cannot
+# silently skip.
+#
+# WHAT A RED RUN MEANS
+# --------------------
+# `build` red: the Rust core did not compile for the host, so the suite could
+# not have run. `tests` red with `build` green: a rule this project asserts is
+# no longer true. The two are separated so the first answer is which.
+
+name: Python
+
+on:
+  push:
+    branches: [main, "claude/**"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  # PEP 701 f-strings in `otrv4+.py`. Not a preference — 3.11 cannot parse it.
+  PYTHON_VERSION: "3.12"
+
+jobs:
+  tests:
+    name: The suite that asserts the protocol rules
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            Rust/target
+          key: cargo-host-${{ hashFiles('Rust/Cargo.lock') }}
+          restore-keys: cargo-host-
+
+      # A HOST build, with no --target. `android.yml` cross-compiles the same
+      # crate for arm64-v8a and x86_64 to put in the APK; those wheels cannot
+      # be imported by the runner's CPython, so the suite needs its own.
+      - name: Build otrv4_core for the host
+        working-directory: Rust
+        run: |
+          pip install 'maturin>=1.0,<2.0'
+          maturin build --release \
+            --features pyo3/extension-module \
+            --interpreter python${{ env.PYTHON_VERSION }} \
+            --out dist
+          pip install dist/*.whl
+
+      # The runtime closure the APK ships, which `verify_python_closure.py`
+      # already holds `android/app/build.gradle.kts` to, PLUS the packages only
+      # the tests and the desktop client need. They are listed separately
+      # because they are answerable to different things: the first set is what
+      # a handset must have, the second is what a test needs to be able to
+      # check a rule at all.
+      - name: Install what the suite imports
+        run: |
+          python -m pip install --upgrade pip
+          # The APK's closure, minus otrv4_core (built above).
+          pip install PySocks slixmpp argon2-cffi pyasn1 pyasn1-modules
+          # Desktop/test-only. `segno` renders the tip QR code, and without it
+          # `test_tip_address_relay` cannot see the third way to pay.
+          # pytest-timeout so a hung test fails in ten minutes rather than
+          # burning the job's thirty and reporting only "cancelled".
+          pip install segno pytest pytest-timeout
+
+      - name: Show what is actually installed
+        # Printed because "which environment was this" is the first question
+        # about any difference between a local run and this one — and that
+        # difference was real. Four tests had been failing on the development
+        # machine for months and were written off as "pre-existing
+        # environmental failures": `test_identity_and_tofu`,
+        # `test_secret_at_rest`, `test_secret_never_echoes` and
+        # `test_tip_address_relay`. Every one of them was a missing package.
+        # With the list above installed the suite is 5081 passed, 0 failed,
+        # and six tests that had been skipping now run. A baseline nobody can
+        # reproduce is a baseline that hides things.
+        run: pip list
+
+      - name: pytest
+        run: python -m pytest tests/ -q --timeout=600 --durations=10
+        env:
+          # Keeps a stray test from reaching the network if one is ever added
+          # without noticing; every transport in this project is local.
+          PYTHONWARNINGS: default
+
+      - name: Keep the report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pytest-report
+          path: |
+            .pytest_cache/**
+          if-no-files-found: ignore
