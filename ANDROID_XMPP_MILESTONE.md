@@ -460,6 +460,21 @@ procedure; the additions this milestone needs are:
    no `.b32.i2p` destination and no IP address — and that it is still enough to
    follow what happened.
 
-Step 8 is the one that cannot be delegated to CI. The tests assert the rules
-this milestone wrote down; only a person reading a real export can say whether
-the rules were the right ones.
+9. Have a **second account ask to see your presence**, and watch the banner.
+   Under the shipped `ACCEPT` policy it must say they *can now* see you and
+   offer Revoke — not offer to decline something the server already approved.
+   Tap Revoke and confirm the subscription is actually gone, not just the
+   banner. Then sign in as a different account and confirm no trace of the
+   request appears.
+10. **Confirm audio is real, not silence.** `test_android_audio_path.py
+    ::test_a_present_backend_is_not_silently_replaced` asserts that when
+    AAudio is available, asking for it yields it rather than a fallback that
+    would transmit silence. That test **cannot run off-device** and has never
+    been executed anywhere — see `SKIP_AUDIT.md`, where it is the one skip of
+    46 with no coverage in any configuration. A call that connects and carries
+    nothing audible is the failure it is looking for.
+
+Steps 8 and 10 are the ones that cannot be delegated to CI. The tests assert
+the rules this milestone wrote down; only a person reading a real export can
+say whether the rules were the right ones, and only a handset can say whether
+the audio path produced sound.
