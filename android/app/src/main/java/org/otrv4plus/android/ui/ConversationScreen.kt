@@ -197,14 +197,6 @@ private fun UnsavedSenderBanner(enabled: Boolean, onSave: () -> Unit) {
 }
 
 /**
- * What the engine says about this conversation, in words.
- *
- * ENCRYPTED without verification means the traffic is encrypted to somebody --
- * the DAKE ran, nobody checked who answered. That distinction is the whole
- * point of SMP, so the two must never read the same.
- */
-@Composable
-/**
  * The control that asks for encryption, or the sentence saying why not.
  *
  * WHY A BUTTON AND NOT A PICKER. With the providers this build ships —
@@ -260,6 +252,13 @@ private fun EncryptionOffer(
     }
 }
 
+/**
+ * What the engine says about this conversation, in words.
+ *
+ * ENCRYPTED without verification means the traffic is encrypted to somebody --
+ * the DAKE ran, nobody checked who answered. That distinction is the whole
+ * point of SMP, so the two must never read the same.
+ */
 @Composable
 private fun SecurityLine(state: SecurityState) {
     // Exhaustive on purpose -- no `else`. A new SecurityState must not be able

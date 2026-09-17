@@ -172,6 +172,51 @@ class TestNoConflictingOverloads:
                 "discarded" % (call, match.group(1)))
 
 
+class TestNoAnnotationIsAppliedTwice:
+    """THE THIRD ONE CI CAUGHT FIRST.
+
+        ConversationScreen.kt:227:1 This annotation is not repeatable.
+
+    An edit anchored on `private fun SecurityLine(...)` inserted a new
+    composable above it and carried its own `@Composable`, leaving the
+    original one stranded on the line before -- so the file read
+
+        @Composable
+        /** doc for the new function */
+        @Composable
+        private fun EncryptionOffer(...)
+
+    Kotlin rejects a repeated non-repeatable annotation. Nothing needed a
+    compiler to see it; the two were four lines apart.
+
+    The KDoc between them is why a naive "two identical lines in a row" check
+    would miss it, and why this one steps over comments.
+    """
+
+    _ANNOTATION = re.compile(r"^\s*(@[A-Za-z_][A-Za-z0-9_]*)", re.M)
+
+    def test_no_annotation_appears_twice_before_one_declaration(self):
+        for name, src in kotlin_files():
+            stripped = strip_comments(src)
+            # Annotations that survive with only blank lines between them are
+            # applied to the same declaration.
+            run = []
+            for line in stripped.splitlines():
+                text = line.strip()
+                if not text:
+                    continue
+                match = self._ANNOTATION.match(line)
+                if match:
+                    run.append(match.group(1).split("(")[0])
+                    duplicates = [a for a in set(run) if run.count(a) > 1]
+                    assert not duplicates, (
+                        "%s applies %s twice to one declaration -- Kotlin "
+                        "rejects a repeated non-repeatable annotation, and "
+                        "reports it at the SECOND one" % (name, duplicates))
+                else:
+                    run = []
+
+
 class TestNoReturnInAnExpressionBody:
     """THE OTHER ONE. `fun f() = x ?: return y` does not compile: "Returns are
     prohibited for functions with an expression body". It cost a CI round trip
