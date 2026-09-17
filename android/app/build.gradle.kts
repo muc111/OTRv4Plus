@@ -34,10 +34,25 @@ android {
         // devices. Left at 26, with the biometric path feature-detected.
         minSdk = 26
         targetSdk = 35
-        versionCode = 7
+        versionCode = 8
+        // 0.3.0 -> 0.4.0: MINOR, per VERSIONING.md. Not a new feature, but
+        // the capability the whole track exists for. At 0.3.0 nothing in this
+        // APK had been run on a handset. At 0.4.0 sign-in, the roster,
+        // contacts, presence, 1:1 conversations, rooms and room navigation
+        // have all been exercised on a real device against the live server,
+        // with no Termux peer needed to make anything appear.
+        //
+        // NOT 1.0 and not out of -experimental: OTR end to end has not been
+        // observed between a handset and a peer, and voice on the APK has
+        // never run. ANDROID_XMPP_MILESTONE.md §7 is the open list.
+        //
+        // The `-experimental` suffix replaces `-phase2`, which named a
+        // programme rather than a maturity and had stopped meaning anything
+        // to a reader of the version string.
+        //
         // core.10.14.0 was wrong for sixteen releases; the Rust core is read
         // from Rust/Cargo.toml so it cannot drift again.
-        versionName = "0.3.0-phase2+core.$rustCoreVersion"
+        versionName = "0.4.0-experimental+core.$rustCoreVersion"
 
         // Which build this is, surfaced in the diagnostic report.
         //

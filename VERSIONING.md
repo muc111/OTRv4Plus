@@ -12,12 +12,33 @@ the project was on. This document exists so that cannot happen quietly again.
 |---|---|---|---|
 | **Client** | `otrv4+.py` `VERSION`, `otrv4plus_xmpp.py` `XMPP_VERSION` | `10.30.0` | The thing a user runs and a peer must match. |
 | **Crypto core** | `Rust/Cargo.toml`, `Rust/pyproject.toml` | `0.10.28` | A crate with its own release history; it is `0.x` because its API is not stable for outside consumers. |
-| **Android app** | `android/app/build.gradle.kts` | `0.3.0-phase2+core.10.14.0` | An APK at an earlier maturity than the Termux client. Its own track, with the client version it embeds recorded as semver build metadata. |
+| **Android app** | `android/app/build.gradle.kts` | `0.4.0-experimental+core.<crate>` | An APK at an earlier maturity than the Termux client. Its own track, with the client version it embeds recorded as semver build metadata. |
 
 The crate and the client are bumped together at a release, so a changelog entry
 reads `VERSION → 10.14.0, otrv4_core 0.10.26`. The Android `versionCode` is a
 monotonically increasing integer because Android requires that; it carries no
 other meaning.
+
+### The Android pre-release suffix is a claim about a handset
+
+`-experimental` is not decoration and it is not removed because the code looks
+finished. It says: **parts of this APK have never been run on a device.** The
+open list is `ANDROID_XMPP_MILESTONE.md` §7, and the suffix comes off when that
+list does — not before.
+
+It replaced `-phase2` at 0.4.0, which named an internal programme rather than a
+maturity and told a reader of the version string nothing. The MINOR bump to
+0.4.0 marks the same thing from the other side: at 0.3.0 nothing in the APK had
+been run on a handset at all, and at 0.4.0 sign-in, the roster, contacts,
+presence, conversations and rooms have been.
+
+**The Android track's changes are not recorded in `CHANGELOG.md`.** That file
+is the client's release history and every section in it is a `v10.x`; an APK
+bump filed among them would read as a client release. The Android record lives
+in the milestone documents — currently `ANDROID_XMPP_MILESTONE.md` §7 — and in
+the rolling prerelease's notes, which
+`.github/scripts/publish-experimental-apk.sh` generates and
+`tests/test_release_notes.py` holds to the open-gate list.
 
 ## What the client number means
 

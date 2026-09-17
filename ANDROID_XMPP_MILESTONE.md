@@ -365,15 +365,23 @@ are all tested by being run. What is left in a composable is layout.
 
 ## 5. What is unverified
 
-Everything that needs a handset, an I2P router and a real server:
+Everything that needs a handset, an I2P router and a real server. Some of it
+now has an answer — see §7.0, which records a handset session that got through
+sign-in, the roster, contacts, presence, conversations and rooms. What is
+**still** open:
 
 * whether `xmpp-elite.i2p` offers XEP-0077 at all, and what it says if it does;
-* whether it hosts a MUC service, under what address, and what it advertises;
 * whether a created room is usable by a second account — the locked-room path
   in 2.2 is derived from the XEP and exercised against a fake, not against a
   service;
-* whether the SAM tunnel survives the extra round trips discovery adds;
-* every screen, on a real display, at a real font size.
+* whether a DAKE completes between a handset and a peer. The control that asks
+  for one was dropping the handshake it generated; that is fixed and
+  unit-tested, and a fix is not an observation.
+
+Answered by that session, and moved out of this list rather than left standing:
+the server does host a MUC service and the app discovers it with nothing typed;
+the SAM tunnel does survive the extra round trips discovery adds; and the
+screens do work on a real display.
 
 ---
 
@@ -438,7 +446,43 @@ the blob is aliased, and ordinary prose and stack-frame lists are not.
 
 ## 7. The handset gate
 
-**Automated verification complete; physical Android acceptance not performed.**
+**Automated verification complete; physical Android acceptance PARTIAL.**
+
+### 7.0 Status, as of the 0.4.0 build
+
+A handset session (Android 15, arm64-v8a) against the live server got through
+the whole messaging path, and the app is no longer at the "does it start"
+stage. What it showed working:
+
+* signing in, with visible progress for the length of an I2P round trip;
+* the roster loading — contacts with their real subscription and presence,
+  **without a message having to arrive first**;
+* adding a contact, reaching the server and surviving the next poll;
+* 1:1 conversations, both directions;
+* Rooms: the MUC service discovered with nothing typed, a room created by
+  name, and navigation into it.
+
+Every one of those was broken in some way in the builds before it, and none of
+the breakages were where they looked: the contact list was empty because
+`slixmpp.roster.RosterItem` has no `.get()` and one `AttributeError` discarded
+the entire roster (`a315c66`), and the Rooms button only became reachable once
+a message arrived because an empty list changed a layout branch (`dfe1338`).
+
+The same session found two more, both fixed in 0.4.0 and neither re-tested on
+a device yet:
+
+* the app attempted a connection on launch, before anybody had signed in, and
+  the only way to the login form was to cancel it;
+* tapping **OTRv4+** generated DAKE1 and dropped it — `OtrApp.start_session`
+  never handed the payload to the transport, so nothing left the device while
+  every layer above reported success.
+
+**Gate items 4 is closed by that session. 9, 10 and 11 remain open, and 11 is
+now the one that matters most**: the defect behind it is fixed and unit-tested,
+and a fix is not an observation. 1–3 (registration), 5–7 (a room shared with a
+second account) and 8 (reading a full export) have not been run.
+
+### 7.1 The list
 
 This milestone is not signed off. `ANDROID_MESSAGING_DEVICE_TEST.md` is the
 procedure; the additions this milestone needs are:
