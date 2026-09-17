@@ -395,6 +395,7 @@ Android app is being built alongside them and is not yet a replacement.
 
 - [ANDROID_FOUNDATION_REPORT.md](ANDROID_FOUNDATION_REPORT.md) — current status, root causes, what is unverified
 - [ANDROID_XMPP_MILESTONE.md](ANDROID_XMPP_MILESTONE.md) — account registration, rooms, and the diagnostic-privacy reversal
+- [ANDROID_ENCRYPTION_ARCHITECTURE.md](ANDROID_ENCRYPTION_ARCHITECTURE.md) — the account boundary, the encryption-provider boundary, and what is not implemented
 - [ANDROID_I2P_ARCHITECTURE.md](ANDROID_I2P_ARCHITECTURE.md) — how I2P works on Android
 - [ANDROID_CHAT_ARCHITECTURE.md](ANDROID_CHAT_ARCHITECTURE.md) — the messaging layer
 - [ANDROID_STORAGE_AUDIT.md](ANDROID_STORAGE_AUDIT.md) — what is stored, and how it is protected
