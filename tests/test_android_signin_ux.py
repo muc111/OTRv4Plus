@@ -165,11 +165,22 @@ class TestTheChoiceReachesTheConnection:
         assert "server" not in _code_only(creds).lower()
 
     def test_a_remembered_custom_account_keeps_its_route(self):
+        """The RULE, not the identifier it was written with.
+
+        This used to pin `SignIn.choiceFor(it.jid)` -- the name of the binding
+        in the `credentials.load()?.let {}` that has since been replaced by
+        `Startup.accountFor`. It failed on a change that kept the behaviour
+        exactly, which is a guard reporting on a rename rather than on the
+        thing it exists to protect.
+        """
         service = _code_only(_read(JAVA, "connection",
                                    "OtrConnectionService.kt"))
-        assert "SignIn.choiceFor(it.jid)" in service, (
+        assert re.search(r"SignIn\.choiceFor\([\w.]+\)\s*==\s*"
+                         r"SignIn\.Choice\.CUSTOM", service), (
             "a remembered custom server reverts to the default on relaunch, "
             "so the app reconnects somewhere the user did not choose")
+        assert re.search(r"SignIn\.domainOf\([\w.]+\)", service), (
+            "the custom route is decided but never used")
 
     def test_the_prepared_connection_gets_the_server(self):
         service = _code_only(_read(JAVA, "connection",

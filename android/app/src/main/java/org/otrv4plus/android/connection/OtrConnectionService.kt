@@ -250,37 +250,71 @@ class OtrConnectionService : Service() {
                 return START_NOT_STICKY
             }
             ACTION_START -> {
+                // Required within seconds of `startForegroundService`,
+                // whatever we decide below, or the system kills the process.
                 goForeground()
                 val account = intent.getStringExtra(EXTRA_JID).orEmpty()
                 val secret = intent.getStringExtra(EXTRA_PASSWORD).orEmpty()
-                if (account.isNotBlank()) {
-                    jid = account
-                    password = secret
-                    server = intent.getStringExtra(EXTRA_SERVER).orEmpty()
-                    // Remembered so a reconnect -- or a restart of this
-                    // service -- does not have to stop and ask.
-                    runCatching {
-                        credentials.save(Credentials(account, secret))
-                    }
-                } else {
-                    // Started with no credentials: a restart, or the UI asking
-                    // us to resume. Use what was stored.
-                    credentials.load()?.let {
-                        jid = it.jid
-                        password = it.password
-                        // A remembered account on anything but the default
-                        // server routes to its own domain. The default is the
-                        // blank case, which is what the bridge already means
-                        // by "use the compiled-in destination".
-                        server = if (SignIn.choiceFor(it.jid) ==
-                                     SignIn.Choice.CUSTOM)
-                            SignIn.domainOf(it.jid) else ""
-                    }
-                }
+                val explicit = account.isNotBlank()
+                // Read once. `load()` decrypts, and asking twice would mean
+                // the decision and the credentials could come from different
+                // reads of the vault.
+                val stored = if (explicit) null
+                             else runCatching { credentials.load() }.getOrNull()
+
+                // THE STARTUP STATE MACHINE, and the whole of the fix.
+                //
+                // `startConnection()` used to be called unconditionally here.
+                // On a first launch `credentials.load()` returned null, `jid`
+                // stayed "", and the service connected as nobody -- tunnels,
+                // a failure, and then a BACKOFF LOOP that the user had to
+                // press Cancel to escape before they could sign in.
+                //
+                // `Startup` is plain Kotlin and decides both halves from one
+                // call, so "connect?" and "as whom?" cannot disagree.
+                val chosen = Startup.accountFor(
+                    intentJid = account, intentPassword = secret,
+                    storedJid = stored?.jid, storedPassword = stored?.password)
+
                 // The Intent is done with the password the moment it is read.
                 // Intents can be logged by the system, so it does not sit in
                 // one any longer than it must.
                 intent.removeExtra(EXTRA_PASSWORD)
+
+                if (chosen == null) {
+                    // Nothing to connect as. NOT a failure: on a first launch
+                    // nothing is wrong, and reporting one would put a red
+                    // line above an empty login form. The service stays bound
+                    // so the UI can talk to it, and stops pretending to be
+                    // doing work in the shade.
+                    runCatching {
+                        core.note("service", "start_without_account", "info",
+                                  if (explicit) "the request carried no usable account"
+                                  else "nothing stored yet")
+                    }
+                    idle()
+                    return START_NOT_STICKY
+                }
+
+                jid = chosen.jid
+                password = chosen.password
+                server = if (explicit) {
+                    intent.getStringExtra(EXTRA_SERVER).orEmpty()
+                } else {
+                    // A remembered account on anything but the default server
+                    // routes to its own domain. The default is the blank
+                    // case, which is what the bridge already means by "use
+                    // the compiled-in destination".
+                    if (SignIn.choiceFor(chosen.jid) == SignIn.Choice.CUSTOM)
+                        SignIn.domainOf(chosen.jid) else ""
+                }
+                if (explicit) {
+                    // Remembered so a reconnect -- or a restart of this
+                    // service -- does not have to stop and ask.
+                    runCatching {
+                        credentials.save(Credentials(chosen.jid, chosen.password))
+                    }
+                }
                 startConnection()
             }
             else -> goForeground()
@@ -581,6 +615,27 @@ class OtrConnectionService : Service() {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q)
                 ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC else 0,
         )
+    }
+
+    /**
+     * Started, but with no account to be. Stand down without claiming a fault.
+     *
+     * The foreground notification goes: a persistent "OTRv4+ — stopped" in
+     * the shade of somebody who has not signed in yet is a statement about
+     * work that is not happening.
+     *
+     * The phase is set to [LinkPhase.STOPPED] rather than [LinkPhase.FAILED].
+     * Nothing failed. A first launch with no stored account is the ordinary
+     * case, and FAILED would put an error above an empty login form and feed
+     * `LoginProgress.problemToShow` a failure the user never caused.
+     *
+     * `stopSelf` is deliberately NOT called. The UI is bound to this service
+     * and is about to send a real ACTION_START; tearing it down between the
+     * two would run [onDestroy], which reports a teardown it did not ask for.
+     */
+    private fun idle() {
+        if (phase != LinkPhase.STOPPED) enter(LinkPhase.STOPPED, "no account yet")
+        ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
     }
 
     private fun createChannel() {
