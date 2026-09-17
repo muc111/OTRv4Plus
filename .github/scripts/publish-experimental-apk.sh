@@ -101,6 +101,13 @@ Two defects found by that session are fixed in this build: the app no longer
 attempts to connect before anybody has signed in, and the OTRv4+ control now
 puts the handshake on the wire instead of generating it and dropping it.
 
+This build also adds **identity verification (SMP)** to the Android UI — a
+Verify Identity control on an encrypted conversation, and an automatic
+passphrase prompt when the other side asks. It uses the same engine the
+terminal client does; no cryptography was added in Kotlin or Python. **It has
+not been run on a device in either direction**, which is why OTR remains on
+the list below.
+
 ## Verified by CI
 
 Asserted on every run rather than assumed:
@@ -122,6 +129,12 @@ Asserted on every run rather than assumed:
   and a peer. The control that asks for one was dropping the handshake it
   generated; that is fixed and unit-tested in this build, and it has not run
   on a device. Do not read "the runtime starts" as "OTR works".
+- **Identity verification (SMP), including with a Termux peer.** Newly wired
+  into the UI in this build and unit-tested on both sides, but no run has
+  been performed between two real clients in either direction. Until one has,
+  **a conversation this app calls verified has not been checked end to end** —
+  and an encrypted OTR session is not a verified identity in any case, which
+  is the distinction SMP exists to settle.
 - **Voice.** Verified under Termux, which is a different process model. The
   test that would show the APK transmits real audio rather than silence
   cannot run off-device and has never been executed anywhere.
