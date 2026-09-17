@@ -27,9 +27,22 @@ working tree has added but not yet committed counts too, so the rule applies
 before the commit rather than after it.
 
 If the baseline commit is not present -- a shallow clone, or a rewritten
-history -- this skips rather than guessing. It is a policy check, not a
-security invariant; failing closed here would mean failing in every CI
-checkout that uses `fetch-depth: 1`.
+history -- this skips rather than guessing, EXCEPT under CI, where it fails.
+
+That exception was added after the skip did real damage. The original
+reasoning was that failing closed "would mean failing in every CI checkout
+that uses `fetch-depth: 1`", which was true and became the problem: when the
+Python workflow arrived it used the default shallow clone, all four tests
+here stood down, and the job reported green. A licence guard on a DUAL
+licensed project was switched off by the thing meant to be running it, and it
+took reading a `-rs` skip list to notice -- 5077 passed / 50 skipped in CI
+against 5081 / 46 locally.
+
+A developer with a shallow clone should not be blocked by a policy check, so
+that still skips. CI's checkout is ours to configure, so there it is a
+failure with the remedy in the message. The asymmetry is the point: a check
+that cannot tell "not applicable here" from "not running any more" is a check
+that eventually stops running.
 """
 
 import io
@@ -64,6 +77,40 @@ def _git(*args):
 def _baseline_exists():
     out = _git("cat-file", "-e", SPDX_POLICY_BASELINE + "^{commit}")
     return out.returncode == 0
+
+
+def _in_ci():
+    """Whether a workflow is running this, rather than a person.
+
+    `CI` is set to "true" by GitHub Actions, GitLab, CircleCI and Travis
+    alike, so this does not tie the rule to one provider. Read as "somebody
+    configured this checkout deliberately", which is what decides whether a
+    missing baseline is a fact of the environment or a mistake in it.
+    """
+    return os.environ.get("CI", "").lower() in ("1", "true", "yes")
+
+
+def _require_baseline():
+    """Stand down outside CI; fail inside it. One place, three callers.
+
+    Every check in this module needs the baseline, so each one used to decide
+    for itself whether to skip -- three copies of a rule, which is how the
+    first two came to be updated and the third forgotten. The asymmetry is
+    stated once here.
+    """
+    if not os.path.isdir(os.path.join(ROOT, ".git")):
+        pytest.skip("not a git checkout")
+    if _baseline_exists():
+        return
+    message = ("baseline %s not in this checkout (shallow clone, or history "
+               "rewritten)" % SPDX_POLICY_BASELINE)
+    if _in_ci():
+        pytest.fail(
+            "%s\n\nUnder CI this is a failure rather than a skip: the "
+            "checkout is configured by the workflow, so a missing baseline "
+            "means the licence guard is not running at all. Set "
+            "`fetch-depth: 0` on actions/checkout." % message)
+    pytest.skip(message)
 
 
 def _files_added_since_baseline():
@@ -111,10 +158,7 @@ def _header_of(path):
 def new_files():
     if not os.path.isdir(os.path.join(ROOT, ".git")):
         pytest.skip("not a git checkout")
-    if not _baseline_exists():
-        pytest.skip(
-            "baseline %s not in this checkout (shallow clone, or history "
-            "rewritten)" % SPDX_POLICY_BASELINE)
+    _require_baseline()
     return _files_added_since_baseline()
 
 
@@ -149,10 +193,7 @@ class TestThePolicyDoesNotReachBackwards:
     """The promise that makes the rule acceptable: no retroactive sweep."""
 
     def test_the_baseline_is_an_ancestor_of_head(self):
-        if not os.path.isdir(os.path.join(ROOT, ".git")):
-            pytest.skip("not a git checkout")
-        if not _baseline_exists():
-            pytest.skip("baseline not in this checkout")
+        _require_baseline()
         out = _git("merge-base", "--is-ancestor", SPDX_POLICY_BASELINE, "HEAD")
         assert out.returncode == 0, (
             "the policy baseline is not an ancestor of HEAD, so 'added after "
@@ -162,10 +203,7 @@ class TestThePolicyDoesNotReachBackwards:
         """Stated as a test because it is the half of the policy that is a
         promise rather than a requirement, and a later well-meaning commit
         could quietly turn this into a whole-repository rule."""
-        if not os.path.isdir(os.path.join(ROOT, ".git")):
-            pytest.skip("not a git checkout")
-        if not _baseline_exists():
-            pytest.skip("baseline not in this checkout")
+        _require_baseline()
         out = _git("ls-tree", "-r", "--name-only", SPDX_POLICY_BASELINE)
         if out.returncode != 0:
             pytest.skip("git ls-tree failed")

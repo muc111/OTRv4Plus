@@ -56,7 +56,16 @@ jobs:
     timeout-minutes: 30
 
     steps:
+      # FULL HISTORY, and not as a precaution. `actions/checkout` defaults to
+      # a shallow clone, and `test_spdx_headers_on_new_files` needs the SPDX
+      # policy baseline commit to work out which files are new. Without it the
+      # fixture skips — so the licence-header guard on a dual-licensed project
+      # stood down in CI while reporting green, which the first run's `-rs`
+      # output caught: 5077 passed / 50 skipped here against 5081 / 46
+      # locally, and the four were exactly these.
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - uses: actions/setup-python@v5
         with:
