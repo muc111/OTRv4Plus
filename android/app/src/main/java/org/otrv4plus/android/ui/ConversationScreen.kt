@@ -25,6 +25,7 @@ import org.otrv4plus.android.chat.ChatViewModel
 import org.otrv4plus.android.chat.Message
 import org.otrv4plus.android.chat.SecurityLabel
 import org.otrv4plus.android.chat.SendState
+import org.otrv4plus.android.crypto.EncryptionKind
 
 /**
  * One conversation: history above, composer below.
@@ -116,6 +117,21 @@ fun ConversationScreen(
         ) {
             SecurityLine(conversation.security)
 
+            // The remedy, next to the statement of the problem.
+            //
+            // Only while the conversation is actually plaintext: once a DAKE
+            // has run, offering to start one again is offering to do something
+            // already done. FINGERPRINT_MISMATCH is deliberately NOT included
+            // -- that conversation IS encrypted, to somebody, and the answer
+            // to it is the blocking dialog, not another handshake.
+            if (conversation.security == SecurityState.PLAINTEXT) {
+                EncryptionOffer(
+                    offered = model.encryptionOffered(jid),
+                    reason = { model.encryptionUnavailableReason(jid) },
+                    onStart = { model.startEncryption(jid) },
+                )
+            }
+
             // Somebody who messaged us and was never added.
             //
             // Not an error and not a warning: a message from a stranger is
@@ -187,6 +203,63 @@ private fun UnsavedSenderBanner(enabled: Boolean, onSave: () -> Unit) {
  * the DAKE ran, nobody checked who answered. That distinction is the whole
  * point of SMP, so the two must never read the same.
  */
+@Composable
+/**
+ * The control that asks for encryption, or the sentence saying why not.
+ *
+ * WHY A BUTTON AND NOT A PICKER. With the providers this build ships —
+ * OTRv4+ available, OMEMO 2 and MLS not implemented — the selector offers
+ * exactly ONE protocol for a 1:1 and NONE for a room. A dropdown would imply
+ * a decision the build cannot honour. The button names what it will start, so
+ * the day a second protocol is genuinely available this becomes a picker and
+ * not a lie in the meantime.
+ *
+ * WHY IT EXISTS AT ALL. Nothing in the Android UI could ask for OTR.
+ * `ChatViewModel.startSession` had no caller and nothing outside `crypto/`
+ * imported the encryption package, so every 1:1 stayed in the state
+ * `OtrApp.send_user_text` calls "a conversation where nobody has asked for
+ * OTR" — and correctly kept sending plaintext, forever, unless the far side
+ * started it.
+ *
+ * An empty offer is a SENTENCE, never an empty menu: an empty menu is
+ * indistinguishable from a broken one.
+ */
+@Composable
+private fun EncryptionOffer(
+    offered: List<EncryptionKind>,
+    reason: () -> String,
+    onStart: () -> Unit,
+) {
+    Surface(color = MaterialTheme.colorScheme.surfaceVariant) {
+        Row(
+            Modifier.fillMaxWidth().padding(start = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            if (offered.isEmpty()) {
+                Text(
+                    reason(),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.weight(1f).padding(vertical = 8.dp),
+                )
+            } else {
+                Text(
+                    "This conversation can be encrypted.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.weight(1f),
+                )
+                // Names the protocol rather than saying "Encrypt", because
+                // which one it is matters and the label is the only place the
+                // user is told.
+                TextButton(onClick = onStart) {
+                    Text("Start ${offered.first().label}")
+                }
+            }
+        }
+    }
+}
+
 @Composable
 private fun SecurityLine(state: SecurityState) {
     // Exhaustive on purpose -- no `else`. A new SecurityState must not be able

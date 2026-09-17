@@ -17,6 +17,12 @@ import org.otrv4plus.android.bridge.ChaquopyOtrCore
 import org.otrv4plus.android.bridge.ConnectionStatus
 import org.otrv4plus.android.bridge.OtrEvent
 import org.otrv4plus.android.bridge.SendOutcome
+import org.otrv4plus.android.crypto.ConversationRef
+import org.otrv4plus.android.crypto.EncryptionKind
+import org.otrv4plus.android.crypto.EncryptionLauncher
+import org.otrv4plus.android.crypto.MlsProvider
+import org.otrv4plus.android.crypto.Omemo2Provider
+import org.otrv4plus.android.crypto.OtrV4PlusProvider
 
 /**
  * The UI's window onto the conversation. It owns none of it.
@@ -289,6 +295,91 @@ class ChatViewModel : ViewModel() {
         val core = this.core ?: return
         viewModelScope.launch {
             withContext(Dispatchers.IO) { runCatching { core.startSession(jid) } }
+            revision++
+        }
+    }
+
+    // -- encryption ----------------------------------------------------------
+    //
+    // THE GAP THIS CLOSES. `startSession` above existed, `ChaquopyOtrCore`
+    // implemented it, and NO SCREEN CALLED IT. Nothing outside `crypto/` even
+    // imported the encryption package. So `OtrApp.send_user_text` kept doing
+    // the correct thing for "a conversation where nobody has asked for OTR" --
+    // sending plaintext -- because on Android nobody could ask.
+
+    /**
+     * Built lazily, and only once a core exists.
+     *
+     * The providers need the engine: `OtrV4PlusProvider` reads the security
+     * state and starts the DAKE through it. A launcher built before the
+     * service bound would hold a dead lambda, which is the same bug
+     * `RoomsViewModel.core` had.
+     */
+    private var launcher: EncryptionLauncher? = null
+
+    private fun encryption(): EncryptionLauncher? {
+        val core = this.core ?: return null
+        launcher?.let { return it }
+        val made = EncryptionLauncher(listOf(
+            OtrV4PlusProvider(
+                securityOf = { jid -> conversation(jid).security },
+                startSession = { jid -> core.startSession(jid) },
+            ),
+            // Named rather than omitted. A provider that reports
+            // NOT_IMPLEMENTED is checkable; a missing one is indistinguishable
+            // from one nobody wrote.
+            Omemo2Provider(backend = null),
+            // Its transport parameter is not nullable and defaults to
+            // MlsTransport.Unavailable, which is the honest value here.
+            MlsProvider(),
+        ))
+        launcher = made
+        return made
+    }
+
+    private fun refFor(jid: String): ConversationRef {
+        val account = state?.account?.bareJid.orEmpty()
+        return ConversationRef(account = account, target = jid, isGroup = false)
+    }
+
+    /**
+     * What this conversation may be encrypted with, in order.
+     *
+     * Empty is a real answer and the screen must say so with
+     * [encryptionUnavailableReason] rather than showing an empty menu.
+     */
+    fun encryptionOffered(jid: String): List<EncryptionKind> {
+        observe()
+        return encryption()?.offered(refFor(jid)) ?: emptyList()
+    }
+
+    fun encryptionUnavailableReason(jid: String): String =
+        encryption()?.unavailableReason(refFor(jid))
+            ?: "The connection is not ready yet."
+
+    /**
+     * Ask for encryption on this conversation.
+     *
+     * Goes through [EncryptionLauncher], which re-derives what is on offer, so
+     * a stale screen cannot start a protocol that is no longer usable. The
+     * outcome is reported as a notice either way: a control that silently does
+     * nothing is what this whole trace found.
+     */
+    fun startEncryption(jid: String) {
+        val state = this.state ?: return
+        val launcher = encryption() ?: run {
+            state.note("The connection is not ready yet.")
+            revision++
+            return
+        }
+        viewModelScope.launch {
+            val outcome = withContext(Dispatchers.IO) {
+                launcher.startDefault(refFor(jid))
+            }
+            if (!outcome.ok) {
+                state.note(outcome.detail.ifBlank {
+                    "Encryption could not be started." })
+            }
             revision++
         }
     }

@@ -31,21 +31,35 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
-BRIDGE_DIR = os.path.join(ROOT, "android", "app", "src", "main", "java", "org",
-                          "otrv4plus", "android", "bridge")
+MAIN_DIR = os.path.join(ROOT, "android", "app", "src", "main", "java", "org",
+                        "otrv4plus", "android")
+BRIDGE_DIR = os.path.join(MAIN_DIR, "bridge")
 
 pytestmark = pytest.mark.skipif(
     not os.path.isdir(BRIDGE_DIR),
     reason="no android/ project in this checkout")
 
 
-def kotlin_files():
+def kotlin_files(directory=None):
+    """Every Kotlin source under *directory*, defaulting to the whole app.
+
+    WIDENED FROM `bridge/` DELIBERATELY. The bridge is the file that cannot be
+    compiled locally, but it is not the only one: `ChatViewModel` and every
+    screen import Compose and AndroidX, which come from the same blocked
+    `dl.google.com`. Roughly half the Kotlin in this project is first compiled
+    by CI, so the checks that need no compiler should cover all of it.
+    """
+    root = directory or MAIN_DIR
     out = []
-    for name in sorted(os.listdir(BRIDGE_DIR)):
-        if name.endswith(".kt"):
-            with open(os.path.join(BRIDGE_DIR, name), encoding="utf-8") as fh:
-                out.append((name, fh.read()))
-    return out
+    for dirpath, _dirnames, filenames in os.walk(root):
+        for name in sorted(filenames):
+            if not name.endswith(".kt"):
+                continue
+            path = os.path.join(dirpath, name)
+            label = os.path.relpath(path, root)
+            with open(path, encoding="utf-8") as fh:
+                out.append((label, fh.read()))
+    return sorted(out)
 
 
 def strip_comments(src):
@@ -70,19 +84,49 @@ _MEMBER_FUN = re.compile(
     re.M | re.S)
 
 
+#: A TOP-LEVEL type declaration, at column zero.
+_TOP_TYPE = re.compile(
+    r"^(?:(?:private|internal|public|abstract|sealed|open|data|value|"
+    r"annotation|enum)\s+)*(?:class|interface|object)\s+"
+    r"([A-Za-z_][A-Za-z0-9_]*)",
+    re.M)
+
+
 def declarations(src):
-    """(name, arity) for each class-level function, comments removed.
+    """(type, name, arity) for each class-level function, comments removed.
+
+    SCOPED PER TYPE, not per file, and that is not a nicety. `MessageStore.kt`
+    declares an interface and the class implementing it in one file, so
+    `append`, `clear`, `messages` and five more each appear twice at four
+    spaces of indentation -- in DIFFERENT type bodies, where they are an
+    interface method and its override rather than conflicting overloads.
+    Reporting those would be a false alarm, and a false alarm is how a guard
+    gets switched off. (The first version of this file made the same mistake
+    one level down, with local `fun str` inside two methods.)
 
     Arity counts top-level commas in the parameter list, which is wrong for a
     parameter whose default value contains a comma. That is acceptable: a
     miscount can only make two declarations look DIFFERENT, so the check
     stays a check and never becomes a false alarm.
     """
+    text = strip_comments(src)
+    # Where each top-level type begins, so a function can be attributed to one.
+    starts = [(m.start(), m.group(1)) for m in _TOP_TYPE.finditer(text)]
+
+    def enclosing(pos):
+        found = "<file>"
+        for start, name in starts:
+            if start <= pos:
+                found = name
+            else:
+                break
+        return found
+
     out = []
-    for match in _MEMBER_FUN.finditer(strip_comments(src)):
+    for match in _MEMBER_FUN.finditer(text):
         params = match.group(2).strip()
         arity = 0 if not params else params.count(",") + 1
-        out.append((match.group(1), arity))
+        out.append((enclosing(match.start()), match.group(1), arity))
     return out
 
 
@@ -96,9 +140,9 @@ class TestNoConflictingOverloads:
     def test_no_file_declares_the_same_signature_twice(self):
         for name, src in kotlin_files():
             seen = {}
-            for fname, arity in declarations(src):
-                seen.setdefault((fname, arity), 0)
-                seen[(fname, arity)] += 1
+            for tname, fname, arity in declarations(src):
+                seen.setdefault((tname, fname, arity), 0)
+                seen[(tname, fname, arity)] += 1
             duplicates = sorted(k for k, n in seen.items() if n > 1)
             assert not duplicates, (
                 "%s declares %s more than once. Kotlin cannot overload on "
@@ -107,8 +151,8 @@ class TestNoConflictingOverloads:
 
     def test_remove_contact_specifically_is_declared_once(self):
         """Named, because this is the one that shipped."""
-        for name, src in kotlin_files():
-            found = [d for d in declarations(src) if d[0] == "removeContact"]
+        for name, src in kotlin_files(BRIDGE_DIR):
+            found = [d for d in declarations(src) if d[1] == "removeContact"]
             assert len(found) <= 1, "%s declares removeContact twice" % name
 
     def test_the_roster_calls_all_return_their_answer(self):
@@ -118,7 +162,7 @@ class TestNoConflictingOverloads:
         reads as the button doing nothing -- the exact report that led to
         `addContact` being changed."""
         src = strip_comments(
-            dict(kotlin_files())["ChaquopyOtrCore.kt"])
+            dict(kotlin_files(BRIDGE_DIR))["ChaquopyOtrCore.kt"])
         for call in ("addContact", "removeContact", "answerSubscription"):
             match = re.search(
                 r"\bfun\s+%s\s*\([^)]*\)\s*:\s*([A-Za-z]+)" % call, src)
