@@ -700,9 +700,16 @@ class ChaquopyOtrCore(private val appContext: Context) : OtrCore {
      * Drop [jid] from the roster and revoke both directions of subscription.
      *
      * The remedy the subscription banner offers under ACCEPT, where the grant
-     * has already happened and declining is not on the table. Without a caller
-     * this existed in Python only, which meant presence could be granted
-     * automatically and never taken back from the handset.
+     * has already happened and declining is not on the table. Nothing called
+     * this before, so presence could be granted automatically and never taken
+     * back from the handset.
+     *
+     * RETURNS THE ANSWER, like [addContact], and REPLACES a version that threw
+     * `OtrBridgeException` and returned Unit. `ConnectionController.remove_
+     * contact` has always answered `{ok, code, detail}` -- including
+     * `not_connected` with a sentence written for a person -- and the throwing
+     * version discarded all of it. That is the same defect [addContact] was
+     * fixed for: Python declined, said why, and nobody looked.
      */
     fun removeContact(jid: String): RosterResult {
         val ctl = controller
@@ -770,11 +777,6 @@ class ChaquopyOtrCore(private val appContext: Context) : OtrCore {
             // own text, which can quote what it was handling.
             RosterResult(false, "bridge_error", "")
         }
-
-    fun removeContact(jid: String) {
-        val ctl = controller ?: throw OtrBridgeException("not_prepared")
-        wrap { ctl.callAttr("remove_contact", jid) }
-    }
 
     /** How many events the bounded queue discarded. A gap is worth saying. */
     fun eventsDropped(): Int =
