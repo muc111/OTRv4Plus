@@ -1155,25 +1155,88 @@ class XmppTransport(Transport):
             _TRACE.record_exception("roster", "read_failed", exc)
             return []
 
-    async def _roster(self) -> List[Dict[str, Any]]:
-        out = []
+    #: What a roster entry is asked for, and what it means when absent.
+    #:
+    #: SUBSCRIPTED BY KEY, NEVER `.get()`. `slixmpp.roster.RosterItem` has no
+    #: `.get` -- it defines `__getitem__` over a fixed `_state` and raises
+    #: KeyError for anything else. `entry.get("name")` therefore raised
+    #:
+    #:     AttributeError: 'RosterItem' object has no attribute 'get'
+    #:
+    #: on the FIRST entry, the blanket `except` below returned [], and every
+    #: poll produced an empty contact list. On a handset that was "no contacts,
+    #: no online users, adding somebody does nothing" -- and the only way
+    #: anybody ever appeared was an inbound message, which reaches the screen
+    #: through the message store instead of the roster.
+    #:
+    #: Subscripting works on a RosterItem AND on a plain dict, so it is
+    #: correct for the real object and for any stand-in.
+    _ROSTER_FIELDS = (("name", ""), ("subscription", ""), ("pending_out", False))
+
+    @staticmethod
+    def _roster_field(entry, key, default):
+        """One field of a roster entry, or *default*.
+
+        KeyError is the documented answer for a key `RosterItem` does not
+        carry, and TypeError covers a stand-in that is not subscriptable at
+        all. Neither is a reason to lose the contact, let alone the roster.
+        """
         try:
-            for jid in self._client.client_roster:
-                entry = self._client.client_roster[jid]
+            value = entry[key]
+        except (KeyError, TypeError, IndexError):
+            return default
+        return default if value is None else value
+
+    async def _roster(self) -> List[Dict[str, Any]]:
+        """The roster as plain dicts, per entry.
+
+        GUARDED PER ENTRY, not once around the loop. It used to be the latter,
+        so the first entry that raised anything discarded the whole contact
+        list -- which is exactly what happened: one AttributeError on entry
+        one, and the user had no contacts at all.
+
+        `OtrApp.contacts()` already guards per entry for this reason and says
+        so ("losing the whole contact list to one awkward peer is how a
+        working roster renders as an empty screen"). That reasoning was right
+        and this layer did not follow it.
+
+        A failure is still RECORDED, per entry and by JID, so a roster that is
+        partly unreadable says so in the diagnostics instead of looking empty.
+        """
+        out: List[Dict[str, Any]] = []
+        client = self._client
+        if client is None:
+            return out
+        try:
+            jids = list(client.client_roster)
+        except Exception as exc:
+            # The roster object itself is unusable. Distinct from an entry
+            # failing, and the only case where returning [] is honest.
+            _log.warning("could not iterate the roster")
+            _TRACE.record_exception("roster", "iterate_failed", exc)
+            return out
+
+        for jid in jids:
+            try:
+                entry = client.client_roster[jid]
                 out.append({
                     "jid": str(jid),
-                    "name": entry.get("name") or "",
-                    "subscription": entry.get("subscription") or "",
+                    "name": self._roster_field(entry, "name", "") or "",
+                    "subscription":
+                        self._roster_field(entry, "subscription", "") or "",
                     # Separate from `subscription`: a request that has been
                     # sent and not yet answered leaves the subscription at
                     # "none", so without this "added, waiting for them" and
                     # "on the roster, not subscribed" look identical.
-                    "pending": bool(entry.get("pending_out")),
+                    "pending": bool(
+                        self._roster_field(entry, "pending_out", False)),
                 })
-        except Exception as exc:
-            _log.warning("could not read the roster")
-            _TRACE.record_exception("roster", "iterate_failed", exc)
-            return []
+            except Exception as exc:
+                _log.warning("could not read one roster entry")
+                _TRACE.record_exception("roster", "entry_failed", exc)
+                continue
+        _TRACE.record("roster", "iterated", "info",
+                      entries=len(out), seen=len(jids))
         return out
 
     def close(self) -> None:

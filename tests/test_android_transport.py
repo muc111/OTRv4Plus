@@ -943,3 +943,152 @@ class TestAddingAndRemovingContacts:
         sub = inspect.signature(slixmpp.ClientXMPP.send_presence_subscription)
         sub.bind(object(), pto="bob@x.i2p", ptype="subscribe")
         sub.bind(object(), pto="bob@x.i2p", ptype="subscribed")
+
+
+class TestTheRosterIsReadWithSlixmppsOwnApi:
+    """THE HANDSET BUG. `roster iterate_failed / AttributeError /
+    transport.py:1165 in _roster`.
+
+    `_roster` called `entry.get("name")`. `slixmpp.roster.RosterItem` has NO
+    `.get`: it defines `__getitem__` over a fixed `_state` and raises KeyError
+    otherwise. So the first entry raised
+
+        AttributeError: 'RosterItem' object has no attribute 'get'
+
+    the blanket `except` around the whole loop returned [], and every poll
+    produced an empty contact list. No contacts, no online users, adding
+    somebody appeared to do nothing -- and the only way anyone ever showed up
+    was an inbound message, which reaches the screen through the MESSAGE STORE
+    rather than the roster.
+
+    WHY THE SUITE DID NOT CATCH IT. The fakes set `client_roster` to a dict of
+    plain dicts, and a dict HAS `.get()`. The fake encoded the same wrong
+    assumption as the code it stood in for -- the third time in this project,
+    after `connect(address=...)` and the SSL context.
+
+    So these tests use the REAL `RosterItem`.
+    """
+
+    def _real_item(self, jid, **state):
+        from slixmpp.roster import RosterItem
+        from slixmpp import JID
+
+        full = {
+            "from": False, "to": False, "pending_in": False,
+            "pending_out": False, "whitelisted": False,
+            "subscription": "none", "name": "", "groups": [],
+            "removed": False,
+        }
+        full.update(state)
+
+        class _Xmpp:
+            boundjid = JID("alice@xmpp-elite.i2p")
+
+        return RosterItem(_Xmpp(), JID(jid), state=full)
+
+    def test_a_real_roster_item_has_no_get(self):
+        """The premise, asserted against the installed slixmpp.
+
+        If a future slixmpp adds `.get`, this fails and somebody re-reads the
+        access below rather than discovering it on a handset.
+        """
+        from slixmpp.roster import RosterItem
+
+        assert not hasattr(RosterItem, "get"), (
+            "RosterItem grew a .get(); the roster reader's comments are now "
+            "out of date")
+
+    def test_the_roster_reads_a_real_roster_item(self):
+        """THE REGRESSION. Drives `roster()` with slixmpp's own object."""
+        t, made = build()
+        try:
+            t.connect()
+            made["client"].client_roster = {
+                "bob@xmpp-elite.i2p": self._real_item(
+                    "bob@xmpp-elite.i2p", name="Bob",
+                    subscription="both", **{"from": True, "to": True}),
+            }
+            assert t.roster() == [{
+                "jid": "bob@xmpp-elite.i2p",
+                "name": "Bob",
+                "subscription": "both",
+                "pending": False,
+            }]
+        finally:
+            t.close()
+
+    def test_a_pending_request_is_reported_from_a_real_item(self):
+        t, made = build()
+        try:
+            t.connect()
+            made["client"].client_roster = {
+                "carol@xmpp-elite.i2p": self._real_item(
+                    "carol@xmpp-elite.i2p", pending_out=True),
+            }
+            got = t.roster()
+            assert got[0]["pending"] is True
+            assert got[0]["subscription"] == "none"
+        finally:
+            t.close()
+
+    def test_one_bad_entry_does_not_lose_the_rest(self):
+        """The blanket try around the whole loop is what turned one raising
+        entry into a user with no contacts."""
+        class Hostile:
+            def __getitem__(self, key):
+                raise RuntimeError("no")
+
+        t, made = build()
+        try:
+            t.connect()
+            made["client"].client_roster = {
+                "bob@xmpp-elite.i2p": self._real_item(
+                    "bob@xmpp-elite.i2p", name="Bob",
+                    subscription="both", **{"from": True, "to": True}),
+                "broken@xmpp-elite.i2p": Hostile(),
+            }
+            jids = [entry["jid"] for entry in t.roster()]
+            assert "bob@xmpp-elite.i2p" in jids, (
+                "one unreadable entry discarded the whole roster")
+        finally:
+            t.close()
+
+    def test_an_entry_missing_a_field_still_produces_a_contact(self):
+        """A RosterItem raises KeyError for a key it does not carry. Losing
+        the contact over a missing display name would be the same failure in
+        miniature."""
+        t, made = build()
+        try:
+            t.connect()
+            made["client"].client_roster = {
+                "dave@xmpp-elite.i2p": {},          # no keys at all
+            }
+            got = t.roster()
+            assert got == [{"jid": "dave@xmpp-elite.i2p", "name": "",
+                            "subscription": "", "pending": False}]
+        finally:
+            t.close()
+
+    def test_an_unusable_roster_object_is_still_reported_as_empty(self):
+        """The one case where [] is the honest answer -- and it must be
+        recorded, not silent."""
+        class Unusable:
+            def __iter__(self):
+                raise RuntimeError("roster is gone")
+
+        t, made = build()
+        try:
+            t.connect()
+            made["client"].client_roster = Unusable()
+            assert t.roster() == []
+        finally:
+            t.close()
+
+    def test_the_reader_does_not_call_get_on_an_entry(self):
+        """Belt and braces, and cheap: the access pattern is the bug."""
+        import inspect
+        from android_bridge.transport import XmppTransport
+
+        source = inspect.getsource(XmppTransport._roster)
+        assert ".get(" not in source, (
+            "_roster calls .get() on something again; RosterItem has no .get")
