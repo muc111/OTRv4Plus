@@ -604,3 +604,102 @@ class TestASubscriptionRequestReachesTheUser:
         got = ctl.answer_subscription("bob@xmpp-elite.i2p", True)
         assert got["ok"] is False
         assert got["code"] == "not_connected"
+
+
+class TestAFailedAttemptDoesNotSurviveALaterSuccess:
+    """THE HANDSET BUG. Press Log in; the screen reports `transport_failed`;
+    the login then succeeds and the app connects anyway.
+
+    The Kotlin half of that was a latch -- `ConnectionViewModel` folded the
+    service's failure into its `error` field with `?.let`, so the value only
+    ever went in and a later success could not take it back. That is fixed in
+    `ConnectionViewModel` and covered by `LoginProgressTest`.
+
+    THIS is the Python half of the contract the Kotlin fix relies on: after a
+    failed attempt followed by a successful one, nothing the controller
+    reports may still describe the failure. If `_last` or the stage kept the
+    old code, mirroring the service faithfully would still show it.
+    """
+
+    def _failing_then_working(self, fail_with):
+        """A factory that raises once, then behaves."""
+        state = {"calls": 0}
+        made = {}
+
+        def factory(p, password, **kw):
+            state["calls"] += 1
+            if state["calls"] == 1:
+                raise fail_with
+            made["transport"] = FakeTransport(p, password, **kw)
+            return made["transport"]
+
+        app = FakeApp()
+        ctl = ConnectionController(
+            app, ConnectionProfile(jid=JID, server=SERVER),
+            transport_factory=factory,
+            prober=lambda _p, **_kw: SamProbe(True, "ok", "fine", "3.1"),
+        )
+        return ctl, state
+
+    def test_the_first_attempt_really_does_report_transport_failed(self):
+        """The premise. A factory that raises is the ONLY thing in this
+        controller that produces that code."""
+        ctl, _ = self._failing_then_working(RuntimeError("boom"))
+        first = ctl.connect("pw")
+        assert first["ok"] is False
+        assert first["code"] == "transport_failed"
+
+    def test_a_later_success_replaces_the_failure_entirely(self):
+        ctl, _ = self._failing_then_working(RuntimeError("boom"))
+        assert ctl.connect("pw")["code"] == "transport_failed"
+
+        second = ctl.connect("pw")
+        assert second["ok"] is True, "the retry did not connect"
+        assert second["code"] == "ok"
+        assert second["stage"] == "connected"
+
+    def test_nothing_the_controller_reports_still_says_transport_failed(self):
+        """The one that would have caught the handset report.
+
+        `status()` is what the Android side polls, and `last` is where a
+        previous verdict would linger.
+        """
+        ctl, _ = self._failing_then_working(RuntimeError("boom"))
+        ctl.connect("pw")
+        ctl.connect("pw")
+
+        status = ctl.status()
+        assert status["connected"] is True
+        assert status["stage"] == "connected"
+        assert status["last"]["code"] == "ok", (
+            "status() still reports %r after a successful reconnect"
+            % status["last"]["code"])
+        assert "transport_failed" not in repr(status), (
+            "the failed attempt is still visible somewhere in status(): %r"
+            % (status,))
+
+    def test_the_stage_is_not_left_at_failed(self):
+        ctl, _ = self._failing_then_working(RuntimeError("boom"))
+        ctl.connect("pw")
+        assert ctl.stage == "failed"
+        ctl.connect("pw")
+        assert ctl.stage == "connected"
+
+    def test_a_genuine_failure_is_still_reported(self):
+        """The other half of the requirement: do not mask a real failure just
+        because something later succeeded. A controller that never connects
+        must go on saying so."""
+        made = {}
+
+        def always_fails(p, password, **kw):
+            raise RuntimeError("boom")
+
+        ctl = ConnectionController(
+            FakeApp(), ConnectionProfile(jid=JID, server=SERVER),
+            transport_factory=always_fails,
+            prober=lambda _p, **_kw: SamProbe(True, "ok", "fine", "3.1"),
+        )
+        for _ in range(3):
+            assert ctl.connect("pw")["code"] == "transport_failed"
+        assert ctl.status()["last"]["code"] == "transport_failed"
+        assert ctl.status()["connected"] is False

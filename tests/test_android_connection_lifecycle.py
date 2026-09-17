@@ -490,9 +490,21 @@ class TestTheAndroidLifecycleIsWiredForRecreation:
         """`busy` is precisely the state the Cancel button exists to get out
         of. Disabling it during `busy` would mean the only way out of a cold
         tunnel build is killing the app -- which leaves the tunnel building."""
-        block = connect_screen[connect_screen.index("model.connecting"):]
-        block = block[:block.index("Cancel") + 20]
+        # Anchored on the Cancel button itself, working BACKWARDS to the
+        # `if (model.connecting)` that guards it.
+        #
+        # This used to slice forward from the first `model.connecting` in the
+        # file, which broke the moment `canSubmit` started consulting it --
+        # the slice then ran from the top of the button row, through the Sign
+        # out button's `enabled = busy == null`, and failed on a property that
+        # was still perfectly true. A test that reports a defect because an
+        # unrelated line moved is a test that gets deleted rather than read.
+        cancel = connect_screen.index('Text("Cancel")')
+        start = connect_screen.rindex("model.connecting", 0, cancel)
+        block = connect_screen[start:cancel]
         assert "enabled = busy == null" not in block
+        assert "enabled" not in block, (
+            "the Cancel button has an `enabled` condition; it must have none")
 
     def test_the_password_is_not_hoisted_into_the_view_model(
             self, connect_screen, view_model):

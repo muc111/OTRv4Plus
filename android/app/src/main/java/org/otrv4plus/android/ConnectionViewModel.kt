@@ -26,6 +26,7 @@ import org.otrv4plus.android.bridge.RegistrationOutcome
 import org.otrv4plus.android.bridge.RouterProbe
 import org.otrv4plus.android.chat.ChatState
 import org.otrv4plus.android.connection.LinkPhase
+import org.otrv4plus.android.connection.LoginProgress
 import org.otrv4plus.android.connection.OtrConnectionService
 
 /**
@@ -92,13 +93,57 @@ class ConnectionViewModel(app: Application) : AndroidViewModel(app) {
 
     /** A Kotlin-side throw, as opposed to a reported Python failure. */
     var error by mutableStateOf<String?>(null)
+
+    /**
+     * The connection's own last failure, mirrored from the service.
+     *
+     * Mirrored on every poll INCLUDING when it is null, which is the whole
+     * point: see the note in [startPolling]. A code here is true of the last
+     * attempt, not of the session — so the screen must not show it while
+     * [ConnectionStatus.connected] is true, because by then the authoritative
+     * answer is that we are connected.
+     */
+    var connectionFailure by mutableStateOf<String?>(null)
         private set
+
+    /**
+     * Whether a login the user asked for is still running.
+     *
+     * Held here rather than computed from [phase] alone because the service
+     * owns the attempt: there is a window between the tap and the service
+     * having any phase to report, and on I2P that is precisely when the user
+     * needs to see that the press was taken.
+     */
+    private val login = LoginProgress()
 
     /** True once the core is up and the connect path is worth offering. */
     val ready: Boolean get() = init?.ok == true
 
-    /** True while a connect attempt is running, including a reconnect. */
-    val connecting: Boolean get() = phase.busy && phase != LinkPhase.DISCONNECTING
+    /**
+     * True while a connect attempt is running, including a reconnect.
+     *
+     * Now also true in the gap between the tap and the service having a phase
+     * to report — see [LoginProgress]. `revision` is read so Compose
+     * recomposes when the poll advances it; the progress itself is derived
+     * rather than stored, so it cannot go stale.
+     */
+    val connecting: Boolean
+        get() {
+            @Suppress("UNUSED_EXPRESSION") revision
+            return login.inProgress(phase)
+        }
+
+    /** What to say next to the progress bar while [connecting]. */
+    val connectingLabel: String get() = login.label(phase)
+
+    /**
+     * Bumped by the poll so the derived properties above recompose.
+     *
+     * [LoginProgress] is plain Kotlin and holds no snapshot state, which is
+     * what makes it testable off-device; the cost is that Compose needs
+     * telling when its answer may have changed.
+     */
+    private var revision by mutableStateOf(0)
 
     private var service: OtrConnectionService? = null
     private var poll: Job? = null
@@ -162,8 +207,30 @@ class ConnectionViewModel(app: Application) : AndroidViewModel(app) {
                 service?.let {
                     phase = it.phase
                     status = it.status
-                    it.failure?.let { code -> error = code }
+                    // MIRRORED, NOT LATCHED. This was
+                    //     it.failure?.let { code -> error = code }
+                    // which assigned when the service had a failure and did
+                    // nothing when it did not -- so the value only ever went
+                    // in. `OtrConnectionService` clears `failure` the moment
+                    // an attempt connects, and that clear never arrived here.
+                    //
+                    // The handset symptom: press Log in, the first attempt
+                    // fails, the backoff retries, the second attempt connects
+                    // -- and the screen goes on showing `transport_failed`
+                    // next to a working session, because nothing could ever
+                    // take the word back.
+                    //
+                    // Kept separate from `error`, which is a Kotlin-side throw
+                    // from a one-shot action (probe, register). Mirroring the
+                    // service into `error` would have wiped a probe failure on
+                    // the next tick.
+                    connectionFailure = it.failure
+                    login.observe(it.phase)
                 }
+                // Even with no service bound: the handover deadline in
+                // LoginProgress expires on the clock, and nothing would
+                // recompose to notice without this.
+                revision++
                 delay(POLL_MS)
             }
         }
@@ -253,22 +320,37 @@ class ConnectionViewModel(app: Application) : AndroidViewModel(app) {
      */
     fun connect(jid: String, password: String, server: String = "") {
         error = null
+        // The previous attempt's verdict, dropped the moment a new one is
+        // asked for. Leaving it would put the old failure next to the new
+        // attempt's progress bar.
+        connectionFailure = null
+        // BEFORE starting the service, so the screen changes on this frame
+        // rather than on whichever poll tick first sees a phase.
+        login.requested()
+        revision++
         OtrConnectionService.start(getApplication(), jid.trim(), password,
                                    server.trim())
     }
 
     /** Stop an attempt that is still running. */
     fun cancelConnect() {
+        login.cancelled()
+        revision++
         OtrConnectionService.stop(getApplication())
     }
 
     /** The user asked to disconnect, which also stops reconnecting. */
     fun disconnect() {
+        login.cancelled()
+        revision++
         OtrConnectionService.stop(getApplication())
     }
 
     /** Sign out: stop, and forget the account and its history. */
     fun logout() {
+        login.cancelled()
+        connectionFailure = null
+        revision++
         OtrConnectionService.logout(getApplication())
     }
 

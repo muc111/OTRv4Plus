@@ -231,7 +231,14 @@ fun ConnectScreen(
         // cancelled when the composition goes away, which on Android includes
         // a rotation -- so a connect started here would stop being waited on
         // halfway through its own tunnel build.
-        val canSubmit = busy == null && !status.connected &&
+        // `model.connecting` included so a login in progress disables both
+        // buttons. It did not before: `busy` is set by the register path and
+        // by start-up, never by a login, so during the 30-120 s an I2P tunnel
+        // takes the Log in button stayed live and a second press started a
+        // second attempt. The service rejects the duplicate
+        // (`already_connecting`), so nothing broke — but the user got a red
+        // code for pressing a button that looked enabled.
+        val canSubmit = busy == null && !model.connecting && !status.connected &&
             target != null && password.isNotBlank()
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Button(
@@ -284,6 +291,23 @@ fun ConnectScreen(
             OutlinedButton(onClick = { model.cancelConnect() }) {
                 Text("Cancel")
             }
+
+            // THE SAME MECHANISM "Create account" USES -- a
+            // LinearProgressIndicator and a line of text -- rather than a
+            // second spinner that behaves subtly differently.
+            //
+            // Register could set `busy` on the line after the call because it
+            // runs in a ViewModel coroutine. A login cannot: the service owns
+            // the attempt, so the only in-progress signal was `phase`, which
+            // does not exist until the service has started and the next poll
+            // tick has read it. Between the tap and that tick the screen said
+            // nothing at all, on the one operation that can take two minutes.
+            // `LoginProgress` covers that gap and expires on its own so this
+            // cannot become a permanent spinner.
+            Spacer(Modifier.height(4.dp))
+            LinearProgressIndicator(Modifier.fillMaxWidth())
+            Text(model.connectingLabel,
+                 style = MaterialTheme.typography.bodySmall)
         }
 
         busy?.let {
@@ -339,11 +363,37 @@ fun ConnectScreen(
             // A Kotlin-side throw, as opposed to a reported Python failure.
             // The class name only: an exception's message can carry what the
             // engine was handling.
+            //
+            // THIS LINE IS WHAT SHOWED `transport_failed` NEXT TO A WORKING
+            // SESSION. The poll used to fold the service's connection failure
+            // into `error`, and folded it one way only -- so a first attempt
+            // that failed, followed by a backoff retry that connected, left
+            // "The app itself failed while doing that (transport_failed)" on
+            // screen permanently. The two are separate fields now; this one is
+            // only ever a Kotlin throw, which is what the sentence claims.
             Text(
                 "The app itself failed while doing that ($it).",
                 color = MaterialTheme.colorScheme.error,
                 style = MaterialTheme.typography.bodySmall,
             )
+        }
+
+        // The connection's own last failure, and ONLY when it is still the
+        // authoritative answer.
+        //
+        // Not while connected: the last attempt's verdict is superseded by a
+        // session that exists, and printing it there is the untruth this whole
+        // fix is about. Not while connecting either: an attempt in progress
+        // has not failed yet, and the previous attempt's code next to a
+        // running progress bar reads as the current one having failed.
+        if (!status.connected && !model.connecting) {
+            model.connectionFailure?.let {
+                Text(
+                    "The last connection attempt failed ($it).",
+                    color = MaterialTheme.colorScheme.error,
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
         }
 
         if (status.connected) {
