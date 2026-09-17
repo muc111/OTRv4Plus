@@ -474,7 +474,19 @@ procedure; the additions this milestone needs are:
     46 with no coverage in any configuration. A call that connects and carries
     nothing audible is the failure it is looking for.
 
-Steps 8 and 10 are the ones that cannot be delegated to CI. The tests assert
+11. **Tap "Start OTRv4+" and confirm a DAKE actually runs.** Until this
+    milestone nothing in the Android UI could ask for encryption at all —
+    `ChatViewModel.startSession` had no caller and nothing outside `crypto/`
+    imported the encryption package, so every 1:1 sent plaintext forever
+    unless the far side initiated. The control exists now; only a handset can
+    show that it reaches the engine. Confirm the security line moves from
+    "Not encrypted" to "Encrypted, but you have not verified who is on the
+    other end", and that a message sent afterwards is reported as encrypted
+    rather than plaintext. Then open a **room** and confirm the control is
+    replaced by a sentence rather than offering a protocol that cannot work
+    there.
+
+Steps 8, 10 and 11 are the ones that cannot be delegated to CI. The tests assert
 the rules this milestone wrote down; only a person reading a real export can
 say whether the rules were the right ones, and only a handset can say whether
 the audio path produced sound.
