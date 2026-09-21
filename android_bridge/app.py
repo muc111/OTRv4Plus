@@ -216,6 +216,59 @@ class OtrApp:
         # see otrv4plus_mode.OtrMode.
         self._mode = OtrMode()
         self._call_states: Dict[str, CallState] = {}
+        self._enable_guided_smp()
+
+    def _enable_guided_smp(self) -> None:
+        """Declare that this front end CAN ask the user for a passphrase.
+
+        THE DEFECT THIS FIXES, AND IT MADE THE WHOLE RESPONDER PATH DEAD
+        ----------------------------------------------------------------
+        `EnhancedSessionManager.smp_guided_prompt` defaults to False, and its
+        own comment says what that means:
+
+            "False means the old behaviour: an SMP1 with no secret is aborted
+             with a reason, because a front end that cannot ask must not leave
+             the peer waiting for an answer that will never come."
+
+        Both terminal clients set it to True -- `otrv4plus_xmpp.py:1727` and
+        `otrv4_.py:14684`. NOTHING IN android_bridge EVER DID. So on Android
+        an arriving SMP1 with no stored passphrase took the abort branch, and
+        every piece of the responder flow downstream was unreachable:
+
+          * the core never called `hold_smp1`, so nothing was parked;
+          * `get_phase()` never returned SECRET_REQUIRED;
+          * `smp_secret_required()` was permanently False;
+          * `_announce_smp_change` therefore never fired for an incoming
+            request, so no prompt could open;
+          * `smp_respond` would refuse with `smp_not_requested`.
+
+        Measured, not deduced. Two real `EnhancedSessionManager`s with a real
+        DAKE, one SMP1 delivered:
+
+            guided=False -> replied=True   secret_required=False  phase=IDLE
+            guided=True  -> replied=False  secret_required=True   phase=SECRET_REQUIRED
+
+        A LATENT DEFECT THE UNIT TESTS COULD NOT SEE. The fake engine answered
+        `smp_secret_required` from a flag the test set, so it agreed with
+        whatever the test wanted. That is the fourth time in this project a
+        fake has encoded the same assumption as the code it stood in for --
+        after `connect(address=...)`, the SSL context, and `RosterItem.get`.
+        `tests/test_smp_android_interop.py` drives the real engine instead.
+
+        WHY HERE AND NOT IN `ChaquopyOtrCore.initialize`. Setting it in Kotlin
+        would work and would be invisible to every Python test. The flag is a
+        claim about the FRONT END -- "this one can ask" -- and `OtrApp` is the
+        front end's entire contract with the engine. Anything holding an
+        OtrApp has the dialog, so anything holding an OtrApp can ask.
+
+        Tolerant of an engine that has no such attribute: `smp_engine_compat`
+        exists because this project supports builds that predate a call, and
+        an engine without the flag is one that cannot park an SMP1 anyway.
+        """
+        try:
+            self._engine.smp_guided_prompt = True
+        except Exception:
+            _log.debug("engine does not accept smp_guided_prompt")
 
     # -- event plumbing --------------------------------------------------------
 
