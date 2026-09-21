@@ -66,29 +66,20 @@ from android_bridge.events import (                             # noqa: E402
 SECRET = "correct horse battery staple"
 WRONG = "not the same passphrase at all"
 
-#: A FRESH PAIR OF JIDS PER TEST, and a rate-limiter reset with them.
+#: A FRESH PAIR OF JIDS PER TEST, and a limiter reset with them.
 #:
 #: `otrv4_._dake1_rate_limiter` is a module-level `DAKE1RateLimiter` -- the M-4
-#: fix -- allowing 5 inbound DAKE1s per bucket per 60 seconds and dropping the
+#: fix -- allowing 5 inbound DAKE1s per peer per 60 seconds and dropping the
 #: rest SILENTLY, deliberately, so an attacker gets no oracle.
 #:
-#: UNIQUE JIDS ARE NOT ENOUGH, AND WHY IS A FINDING IN ITS OWN RIGHT. The class
-#: is documented "Per-peer sliding-window rate limiter" and takes a `peer_key`,
-#: but BOTH call sites -- otrv4_.py:8332 and :9108 -- call
-#: `process_dake1(dake1_msg)` without it, so every peer in the process shares
-#: the default bucket `"unknown"`. Measured, six distinct peer pairs:
+#: WHEN THIS FILE WAS WRITTEN the limit was process-wide rather than per-peer:
+#: both call sites omitted `peer_key`, so every peer shared the bucket
+#: "unknown" and the sixth test in the module lost its DAKE1 in silence. That
+#: was reported and has since been fixed -- see `tests/test_dake1_rate_limit.py`
+#: -- so unique JIDs now genuinely do give each test its own allowance.
 #:
-#:     pair 0..4  responder replied = True
-#:     pair 5     responder replied = False
-#:     limiter buckets: {'unknown': 5}
-#:
-#: So the limit is process-wide rather than per-peer. That is reported, not
-#: fixed here: it is pre-existing engine behaviour, unrelated to SMP or to
-#: Android, and changing a DoS control is not this file's business.
-#:
-#: `reset()` exists for exactly this and `tests/test_otrv4_integration.py:48`
-#: already uses it. Resetting per test keeps these tests measuring SMP rather
-#: than measuring the quota.
+#: The reset stays as ordinary test hygiene: these tests should measure SMP,
+#: not whatever the previous test spent.
 _counter = itertools.count()
 
 
@@ -160,9 +151,9 @@ def pair():
     assembled behind its back.
     """
     alice_jid, bob_jid = _jids()
-    # See the note on `_counter`: the bucket is shared process-wide, so
-    # without this the sixth test in the file loses its DAKE1 in silence.
-    otr._dake1_rate_limiter.reset("unknown")
+    # Test hygiene. Buckets are per-peer now, and these JIDs are unique, so
+    # this is belt and braces rather than the load-bearing workaround it was.
+    otr._dake1_rate_limiter._attempts.clear()
     alice_wire, bob_wire = Wire(), Wire()
     alice = OtrApp(_manager(), alice_wire, Sink())
     bob = OtrApp(_manager(), bob_wire, Sink())
@@ -578,7 +569,7 @@ class TestRefusalsHoldAgainstTheRealEngine:
     def test_smp_cannot_start_without_an_encrypted_session(self):
         """No DAKE has run. A proof here would prove nothing about anybody."""
         _alice_jid, bob_jid = _jids()
-        otr._dake1_rate_limiter.reset("unknown")
+        otr._dake1_rate_limiter._attempts.clear()
         wire = Wire()
         app = OtrApp(_manager(), wire, Sink())
         with pytest.raises(BridgeError) as caught:

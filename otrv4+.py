@@ -4330,16 +4330,92 @@ class DAKE1RateLimiter:
     MAX_ATTEMPTS: int = 5
     WINDOW_SECONDS: float = 60.0
 
+    #: Distinct peers tracked before pruning evicts the least recently seen.
+    #:
+    #: NECESSARY BECAUSE THE BUCKETS BECAME PER-PEER. While every caller shared
+    #: the default key there was exactly one bucket and the table could not
+    #: grow; keying on the peer turns it into one deque per distinct sender,
+    #: kept forever. Measured on the unbounded version: 5000 unique peers left
+    #: 5000 buckets and the map never shed a key.
+    #:
+    #: That would have traded a lockout for a slow memory exhaustion, which is
+    #: not a fix. `otrv4plus_voice.RateLimiter` already had this problem and
+    #: already solved it; the same two-stage approach is used here rather than
+    #: a second one invented.
+    MAX_TRACKED: int = 512
+
     def __init__(self):
         self._lock = threading.Lock()
         self._attempts: Dict[str, deque] = defaultdict(deque)
+        self._last_prune: float = 0.0
+
+    @staticmethod
+    def _canonical(peer_key: str) -> str:
+        """One person, one bucket, however their address is spelled.
+
+        A rate limiter keyed on an un-normalised string can be widened by the
+        peer it is limiting. Measured on the raw version, one contact spelled
+        four ways produced four buckets and therefore four times the
+        allowance:
+
+            alice@x.test  Alice@X.test  alice@x.test/phone  alice@x.test/laptop
+
+        Resource stripped and case folded, which is how every other layer of
+        this project already identifies a peer -- `msg["from"].bare` in the
+        XMPP client, `str(stanza["from"]).split("/", 1)[0]` in the Android
+        transport, `AccountScope.normalise` and `ChatState.bare` in Kotlin.
+
+        Done HERE rather than at the call sites deliberately: a future caller
+        that forgets cannot split a bucket, and normalising in one place
+        cannot drift between two. Folding is always the safe direction -- it
+        can only merge allowance, never multiply it.
+
+        An empty or unusable key keeps the historical "unknown" bucket rather
+        than becoming its own per-caller namespace.
+        """
+        key = str(peer_key or "").strip().split("/", 1)[0].casefold()
+        return key or "unknown"
+
+    def _prune(self, now: float) -> None:
+        """Bound the tracking table.
+
+        Expiry first: a bucket with nothing left inside the window is free to
+        drop and costs an attacker nothing to avoid. Then a hard cap evicting
+        the least recently seen, because a flood of distinct senders inside a
+        single window is all current and expiry alone would keep every one.
+
+        THE CAP IS A DELIBERATE TRADE, and the reasoning differs from the
+        voice limiter's. There, reaching the limiter costs an attacker a full
+        OTR session per identity. DAKE1 is pre-session, so anyone who can get
+        a stanza to us can create a bucket -- eviction is cheaper to force
+        here, and the cap matters more.
+
+        What eviction actually costs is small: a real peer pushed out regains
+        a fresh allowance, which is no worse than the behaviour this whole
+        change replaces, where every peer permanently shared one allowance.
+        Unbounded memory is the worse failure.
+        """
+        cutoff = now - self.WINDOW_SECONDS
+        for key in [k for k, dq in self._attempts.items()
+                    if not dq or dq[-1] < cutoff]:
+            self._attempts.pop(key, None)
+        if len(self._attempts) > self.MAX_TRACKED:
+            ordered = sorted(self._attempts.items(),
+                             key=lambda kv: kv[1][-1] if kv[1] else 0.0)
+            for key, _dq in ordered[:len(self._attempts) - self.MAX_TRACKED]:
+                self._attempts.pop(key, None)
+        self._last_prune = now
 
     def is_allowed(self, peer_key: str) -> bool:
         """Return True and record the attempt if the peer is within quota."""
         now = time.monotonic()
         cutoff = now - self.WINDOW_SECONDS
+        key = self._canonical(peer_key)
         with self._lock:
-            dq = self._attempts[peer_key]
+            if (now - self._last_prune > self.WINDOW_SECONDS
+                    or len(self._attempts) > self.MAX_TRACKED):
+                self._prune(now)
+            dq = self._attempts[key]
             while dq and dq[0] < cutoff:
                 dq.popleft()
             if len(dq) >= self.MAX_ATTEMPTS:
@@ -4348,9 +4424,24 @@ class DAKE1RateLimiter:
             return True
 
     def reset(self, peer_key: str) -> None:
-        """Clear the rate-limit bucket for a peer (call after DAKE success)."""
+        """Clear the rate-limit bucket for a peer.
+
+        NOT CALLED FROM PRODUCTION, AND DELIBERATELY STILL NOT. The
+        parenthetical this docstring used to carry -- "call after DAKE
+        success" -- described an intention that was never implemented, and
+        implementing it now would weaken the control rather than complete it:
+        a completed DAKE costs MORE responder CPU than a rejected DAKE1, so
+        clearing the budget on success hands unlimited DAKE1 processing to any
+        peer able to finish one handshake. Nothing in the tests, the
+        changelog or the M-4 note establishes that as intended.
+
+        Its real use is test hygiene -- `tests/test_otrv4_integration.py` and
+        `tests/test_smp_android_interop.py` clear state between handshakes so
+        they measure the protocol rather than the quota -- and it keeps that
+        use unchanged.
+        """
         with self._lock:
-            self._attempts.pop(peer_key, None)
+            self._attempts.pop(self._canonical(peer_key), None)
 
 
 _dake1_rate_limiter = DAKE1RateLimiter()
@@ -8329,7 +8420,10 @@ class SessionManager:
             )
 
             try:
-                success = dake.process_dake1(dake1_msg)
+                # `peer`, not the default. Omitting it put every peer in one
+                # bucket, so the "per-peer" limit was process-wide and one
+                # sender could lock out DAKE1 from everybody else.
+                success = dake.process_dake1(dake1_msg, peer)
                 if success:
                     dake2 = dake.generate_dake2()
                     self.pending_dakes[peer] = dake
@@ -9105,7 +9199,11 @@ class EnhancedSessionManager:
             dake_engine = session.initialize_dake(self.client_profile, explicit_initiator=False)
             self.dake_engines[peer] = dake_engine
 
-            success = dake_engine.process_dake1(dake1_msg)
+            # `peer`, not the default. This is the live path -- both terminal
+            # clients and the Android bridge reach DAKE1 through
+            # EnhancedSessionManager -- and without the key every sender
+            # shared one allowance.
+            success = dake_engine.process_dake1(dake1_msg, peer)
             if not success:
                 return None
 
