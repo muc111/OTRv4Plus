@@ -172,7 +172,7 @@ def _rust_selftest() -> Dict[str, Any]:
     return result
 
 
-def _otrv4plus_info() -> Dict[str, Any]:
+def _otrv4plus_info(engine: Any = None) -> Dict[str, Any]:
     """Whether the Python orchestration layer imports and initialises.
 
     This is the part that fails first on Android: otrv4+.py pulls in Termux-only
@@ -200,7 +200,20 @@ def _otrv4plus_info() -> Dict[str, Any]:
     info["has_session_manager"] = hasattr(otr, "EnhancedSessionManager")
 
     try:
-        engine = otr.EnhancedSessionManager(config=otr.OTRConfig(test_mode=True))
+        # REUSE THE CALLER'S ENGINE WHEN THERE IS ONE.
+        #
+        # This probe built its own `EnhancedSessionManager` and dropped it,
+        # which cost ~106ms of a ~298ms startup path -- identity key work done
+        # twice per launch, because `ChaquopyOtrCore.initialize` then built the
+        # engine it actually uses.
+        #
+        # Building one is still the fallback, and that is the important half:
+        # when the caller has no engine BECAUSE construction failed, this is
+        # the probe that finds out why, and the report is most valuable exactly
+        # then. `reused` records which happened so a reader can tell.
+        info["engine_reused"] = engine is not None
+        if engine is None:
+            engine = otr.EnhancedSessionManager(config=otr.OTRConfig(test_mode=True))
         fingerprint = engine.get_fingerprint() or ""
         info["engine_constructed"] = True
         # Public fingerprint, truncated: enough to confirm an identity exists and
@@ -311,19 +324,25 @@ def _native_libraries(search_paths: Optional[List[str]] = None) -> Dict[str, Any
 
 
 def collect(include_selftest: bool = True,
-            android_build: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+            android_build: Optional[Dict[str, Any]] = None,
+            engine: Any = None) -> Dict[str, Any]:
     """Gather the Phase 2 diagnostic report.
 
     `android_build` is supplied by Kotlin (Build.VERSION.SDK_INT, RELEASE,
     SUPPORTED_ABIS, MODEL); Python cannot read those, and they are passed in
     rather than guessed.
+
+    `engine` is an already-constructed `EnhancedSessionManager` to report on.
+    Passing the one the caller is going to use anyway avoids building a second
+    just to look at it. None keeps the old behaviour and builds a throwaway
+    probe, which is what the failure path needs.
     """
     report: Dict[str, Any] = {
         "android": android_build or {"note": "not supplied by host (not running on Android)"},
         "python": _python_info(),
         "abi": _abi_info(),
         "rust_core": _rust_core_info(),
-        "otrv4plus": _otrv4plus_info(),
+        "otrv4plus": _otrv4plus_info(engine),
         "at_rest_kdf": _at_rest_kdf(),
         "transport_deps": _transport_deps(),
         "native_libraries": _native_libraries(),

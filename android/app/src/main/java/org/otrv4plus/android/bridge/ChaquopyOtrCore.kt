@@ -25,6 +25,14 @@ class ChaquopyOtrCore(private val appContext: Context) : OtrCore {
     private var app: PyObject? = null
     private var sink: OtrEventSink? = null
 
+    /**
+     * The report from the initialisation that actually ran.
+     *
+     * Held so a second caller can be answered without redoing the work. See
+     * [initialize] for why a second caller exists and what repeating it cost.
+     */
+    private var initResult: InitResult? = null
+
     private val python: Python
         get() {
             if (!Python.isStarted()) {
@@ -33,7 +41,48 @@ class ChaquopyOtrCore(private val appContext: Context) : OtrCore {
             return Python.getInstance()
         }
 
+    /**
+     * Bring the stack up, ONCE.
+     *
+     * WHY THE GUARD, AND WHAT IT COST WITHOUT ONE
+     * -------------------------------------------
+     * This method is not a query. It runs `diagnostics.collect`, constructs an
+     * `EnhancedSessionManager`, and REPLACES `app` with a new `OtrApp` over it.
+     * It had no idempotence guard, and it has two callers:
+     *
+     *   * `OtrConnectionService.connectLoop`, guarded by its own `initialised`
+     *     flag, so it runs the work once;
+     *   * `ConnectionViewModel.onServiceConnected`, guarded by nothing, which
+     *     runs on EVERY service bind -- every Activity creation, so every
+     *     launch, every rotation, every return to the app.
+     *
+     * The ViewModel's comment said "the engine starts once, in the service.
+     * Asking here is what gives the connect screen something to show" -- true
+     * of the intent, not of the call, because the call builds its own.
+     *
+     * The cost was not only time. Measured in Python, running the equivalent
+     * of a second initialisation over a live session:
+     *
+     *     after first initialize + DAKE : security=ENCRYPTED  OTR asked=True
+     *     after a second initialize()   : security=PLAINTEXT  OTR asked=False
+     *
+     * A fresh engine has no sessions, so rotating the phone dropped an
+     * established OTR session. Worse, the fresh `OtrApp` has a fresh
+     * `OtrMode`, so a conversation the user had explicitly asked to encrypt
+     * became willing to send plaintext again -- which is precisely the
+     * downgrade `OtrMode` exists to refuse ("a failed handshake is not consent
+     * to continue without one").
+     *
+     * So this is a correctness fix that happens to also remove repeated work:
+     * ~300ms of Python per bind on a developer machine, and a handset is
+     * slower.
+     *
+     * A FAILED initialisation is NOT cached. The guard is on `app`, which
+     * stays null when the work threw, so a later caller genuinely retries
+     * rather than being handed a stale failure forever.
+     */
     override fun initialize(): InitResult {
+        initResult?.let { if (app != null) return it }
         return try {
             val py = python
             val bootstrap = py.getModule("android_bridge.bootstrap")
@@ -42,15 +91,32 @@ class ChaquopyOtrCore(private val appContext: Context) : OtrCore {
             bootstrap.callAttr("ensure_runtime")
             bootstrap.callAttr("load_orchestration")
 
-            val diagnostics = py.getModule("android_bridge.diagnostics")
-            val report = diagnostics.callAttr("collect", true, androidBuildInfo(py))
-
+            // THE REAL ENGINE FIRST, so diagnostics can report on it instead
+            // of building a second one to look at.
+            //
+            // `_otrv4plus_info` constructed its own `EnhancedSessionManager`
+            // purely to answer "does one come up, and what is its fingerprint
+            // prefix" -- measured at ~106ms of the ~298ms startup path, spent
+            // on an object thrown away immediately afterwards.
+            //
+            // Null on failure, deliberately: `collect` then falls back to its
+            // own probe, so the diagnostic report survives exactly the case it
+            // exists for. Losing the report when the engine will not start
+            // would be trading the answer for the question.
             val otr = py.getModule("otrv4_")
-            val config = otr.callAttr("OTRConfig")
-            val engine = otr.callAttr("EnhancedSessionManager", config)
+            val engine = try {
+                otr.callAttr("EnhancedSessionManager", otr.callAttr("OTRConfig"))
+            } catch (_: Throwable) {
+                null
+            }
+
+            val diagnostics = py.getModule("android_bridge.diagnostics")
+            val report = diagnostics.callAttr(
+                "collect", true, androidBuildInfo(py), engine)
 
             val appModule = py.getModule("android_bridge.app")
-            app = appModule.callAttr("OtrApp", engine)
+            app = appModule.callAttr(
+                "OtrApp", engine ?: throw OtrBridgeException("engine_unavailable"))
 
             InitResult(
                 ok = report.callAttr("get", "ok").toBoolean(),
@@ -59,7 +125,7 @@ class ChaquopyOtrCore(private val appContext: Context) : OtrCore {
                 rustCoreLoaded = section(report, "rust_core", "loaded").toBoolean(),
                 engineInitialized = section(report, "otrv4plus", "initialized").toBoolean(),
                 diagnosticsText = renderReport(diagnostics, report),
-            )
+            ).also { initResult = it }
         } catch (t: Throwable) {
             // Still deliberately no `t.message` -- Python exception text can
             // embed data the engine was handling, and that has not changed.
@@ -582,6 +648,10 @@ class ChaquopyOtrCore(private val appContext: Context) : OtrCore {
             // Teardown must not throw during process shutdown.
         } finally {
             app = null
+            // With the engine gone the cached report describes a stack that
+            // no longer exists. Cleared so the next `initialize` genuinely
+            // re-runs rather than answering from a stale success.
+            initResult = null
         }
     }
 
