@@ -429,6 +429,25 @@ class ConnectionController:
         if not probe.reachable:
             return self._fail(probe.code, probe.detail)
 
+        # THE PREVIOUS ONE GOES FIRST. `self._transport` was assigned over the
+        # top of whatever was there, and the only thing that reaches this line
+        # holding a transport is a RECONNECT -- `connect` short-circuits while
+        # one is connected, so anything still here is a stream that has ended.
+        # Dropping the reference is not enough: `close` is what joins the
+        # worker thread, and `_release_transport` says so ("a
+        # disconnected-but-open transport is exactly the shape that leaked a
+        # loop thread per attempt"). It did. Measured across four
+        # death-and-reconnect cycles, which on a handset is four walks out of
+        # coverage:
+        #
+        #     after cycle 1: leaked transport worker threads = 1
+        #     after cycle 2: leaked transport worker threads = 2
+        #     after cycle 3: leaked transport worker threads = 3
+        #     after cycle 4: leaked transport worker threads = 4
+        #
+        # Harmless when there is nothing to release, which is every first
+        # connect.
+        self._release_transport()
         try:
             factory = self._transport_factory or _default_transport_factory()
             self._transport = factory(

@@ -109,6 +109,11 @@ class FakeClient:
         self.roster_requested = 0
         self.raw = []
         self.disconnects = 0
+        #: `_abandon` prefers `abort()` -- the call that also ends slixmpp's
+        #: retry loop -- and falls back to `disconnect()`. Both are counted so
+        #: these tests can ask "was the stream stopped?" rather than pinning
+        #: whichever call the teardown happens to make.
+        self.aborts = 0
         self.boundjid = FakeBoundJid()
         self.client_roster = {}
         self._plugins = {"xep_0199": ping if ping is not None else FakePing()}
@@ -145,7 +150,12 @@ class FakeClient:
         self.disconnects += 1
 
     def abort(self, *_a, **_kw):
-        pass
+        self.aborts += 1
+
+    @property
+    def stopped(self):
+        """Whether the stream was ended, by either route."""
+        return (self.disconnects + self.aborts) > 0
 
 
 def build(*, ping=None, connect_now=True):
@@ -328,7 +338,7 @@ class TestTheKeepalive:
         ping = FakePing(answer="error")
         transport, made = build(ping=ping)
         assert _settle(lambda: len(ping.calls) >= 3)
-        assert made["client"].disconnects == 0, (
+        assert not made["client"].stopped, (
             "an IqError was treated as a dead stream")
         transport.close()
 
@@ -341,7 +351,7 @@ class TestTheKeepalive:
         monkeypatch.setattr(transport_module, "KEEPALIVE_QUIET_S", 0.0)
         ping = FakePing(answer="timeout")
         transport, made = build(ping=ping)
-        assert _settle(lambda: made["client"].disconnects >= 1), (
+        assert _settle(lambda: made["client"].stopped), (
             "the stream never answered and was never declared dead")
         assert not transport.is_connected
         transport.close()
@@ -358,7 +368,7 @@ class TestTheKeepalive:
         transport, made = build()
         made["client"]._plugins.clear()
         time.sleep(0.2)
-        assert made["client"].disconnects == 0, (
+        assert not made["client"].stopped, (
             "a missing plugin was reported as a dead stream")
         transport.close()
 
@@ -482,7 +492,7 @@ class TestTrafficOutranksAPing:
         time.sleep(0.3)
         assert not ping.calls, (
             "the stream was delivering and got probed anyway")
-        assert made["client"].disconnects == 0
+        assert not made["client"].stopped
         transport.close()
 
     def test_a_quiet_stream_is_probed(self, monkeypatch):

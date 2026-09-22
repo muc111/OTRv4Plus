@@ -442,7 +442,19 @@ class OtrConnectionService : Service() {
         enter(LinkPhase.DISCONNECTING,
               if (explicit) "the user asked to stop" else "teardown")
         // Off the main thread: this crosses into Python and blocks.
-        scope.launch {
+        //
+        // AND OFF `scope`, for the same reason the engine teardown is. Both
+        // callers that matter here are followed immediately by the end of the
+        // service: ACTION_STOP calls `stopSelf()` on the next line, and
+        // `onDestroy` calls `scope.cancel()` two lines later. A disconnect
+        // launched on the service's own scope is a coroutine racing the thing
+        // that cancels it, and losing that race leaves the transport's worker
+        // thread, its authenticated XMPP stream and its I2P tunnel alive with
+        // nothing holding a reference that could ever close them -- a live
+        // I2P lease belonging to an app the user has closed, which is the
+        // exact failure `ChaquopyOtrCore.shutdown` documents and orders its
+        // own calls to avoid.
+        teardown.launch {
             withContext(Dispatchers.IO) {
                 runCatching { core.cancelConnect() }
                 runCatching { core.disconnect() }
@@ -765,17 +777,22 @@ class OtrConnectionService : Service() {
         /**
          * Where work that must survive the service runs.
          *
-         * ONE THING USES THIS, and it should stay that way: tearing the OTR
-         * engine down on an explicit logout. That teardown is started and
-         * then `stopSelf()` is called, so anything on the service's own
-         * scope is racing `onDestroy`'s `scope.cancel()` -- and the loser is
-         * an engine still holding the signed-out account's sessions.
+         * TEARDOWN ONLY, and it should stay that way. Two things use it: the
+         * engine shutdown on an explicit logout, and the connection teardown
+         * in `stopConnection`. Both are started and then the service ends --
+         * `ACTION_STOP` and `ACTION_LOGOUT` call `stopSelf()` on the next
+         * line, and `onDestroy` calls `scope.cancel()` two lines after its
+         * own `stopConnection`. Anything launched on the service's own scope
+         * there is a coroutine racing the thing that cancels it, and the
+         * losers are an engine still holding the signed-out account's
+         * sessions and an I2P tunnel with nothing left to close it.
          *
          * Deliberately NOT a general-purpose escape from the service
          * lifecycle. Connection work belongs on `scope` and must stop when
-         * the service stops; a network attempt that outlived its service
-         * would be tunnels nobody is watching. This carries a short, bounded,
-         * idempotent teardown and nothing else.
+         * the service stops; a connect ATTEMPT that outlived its service
+         * would be tunnels nobody is watching, which is the failure this is
+         * meant to prevent rather than cause. What runs here is short,
+         * bounded and idempotent: give back what we took, and stop.
          */
         private val teardown =
             CoroutineScope(SupervisorJob() + Dispatchers.IO)

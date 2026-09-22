@@ -442,7 +442,37 @@ class XmppTransport(Transport):
         Kept out of `_run` because this is the one call another thread needs to
         be able to stop: a cold tunnel is minutes, and Android will rotate the
         screen or send Back inside that window.
+
+        IDEMPOTENT ON A LIVE STREAM, and that is not tidiness. `_connect_inner`
+        builds a client and assigns `self._client` unconditionally, so a second
+        call on a connected transport used to build a second slixmpp client and
+        a second SAM tunnel and ORPHAN the first -- the reference was
+        overwritten, so nothing would ever abort it or close its sockets.
+        Measured:
+
+            after 1st connect: clients=1 tunnels=1 connected=True
+            after 2nd connect: clients=2 tunnels=2 connected=True
+            the FIRST client was told to stop: False
+            tunnel 0 sockets closed          : False
+
+        The orphan is not merely a leak. It is still wired to `on_payload`, so
+        inbound stanzas arrive twice; it is still authenticated, so the account
+        stays present on a stream nobody is watching; and its I2P tunnel stays
+        up for the life of the process.
+
+        `_abandon` already gives back all three for a FAILED attempt -- "a
+        connect that timed out left all three running ... so pressing Connect a
+        second time built a second tunnel on top of the first". That fix did
+        not cover the path where the first attempt SUCCEEDED, which is this
+        one.
+
+        Guarded on `is_connected` rather than on `_client`, so a stream the
+        keepalive has found dead can still be reconnected: the keepalive clears
+        that flag precisely when the link stops answering.
         """
+        with self._lock:
+            if self._connected.is_set() and self._client is not None:
+                return
         loop = self._ensure_loop()
         future = asyncio.run_coroutine_threadsafe(self._connect(), loop)
         with self._lock:
@@ -816,8 +846,24 @@ class XmppTransport(Transport):
             self._keepalive_task = loop.create_task(self._keepalive_loop())
 
     def _stop_keepalive(self) -> None:
+        """Stop the keepalive task, unless it is the one asking.
+
+        NEVER CANCELS ITSELF. `_declare_stream_dead` runs inside the keepalive
+        loop and tears the stream down through `_abandon`, which stops the
+        keepalive as one of the things it gives back. Cancelling the current
+        task there would raise CancelledError at the next await INSIDE the
+        teardown, so which of the three resources actually came back would
+        depend on where that await happened to fall. The loop returns on its
+        own line after the teardown, so nothing is left running.
+        """
         task, self._keepalive_task = self._keepalive_task, None
-        if task is not None and not task.done():
+        if task is None or task.done():
+            return
+        try:
+            current = asyncio.current_task()
+        except RuntimeError:                                 # pragma: no cover
+            current = None                                   # no running loop
+        if task is not current:
             task.cancel()
 
     async def _keepalive_loop(self) -> None:
@@ -905,7 +951,7 @@ class XmppTransport(Transport):
                               threshold=KEEPALIVE_PING_FAILS,
                               quiet_for=round(self._stream_quiet_for()))
                 if failures >= KEEPALIVE_PING_FAILS:
-                    self._declare_stream_dead()
+                    await self._declare_stream_dead()
                     return
         except asyncio.CancelledError:
             raise
@@ -950,12 +996,29 @@ class XmppTransport(Transport):
         except _CANCELLED:
             raise
 
-    def _declare_stream_dead(self) -> None:
+    async def _declare_stream_dead(self) -> None:
         """Take the stream down so the app stops believing it is connected.
 
         Breaking out of the loop is not enough: it only stops pinging. The
         session has to actually end, or the UI shows a connection that cannot
         carry a message and the user retries into silence.
+
+        AND IT HAS TO GIVE BACK WHAT IT TOOK. This called `client.disconnect()`
+        and stopped there: the client reference stayed, and the I2P tunnel and
+        its local listening socket stayed open. So every death-and-reconnect
+        cycle -- which on a handset is every walk out of coverage -- left one
+        behind. Measured:
+
+            connected                  : clients=1 tunnels=1
+            after the stream died      : tunnel 0 sockets closed: False
+            after the reconnect        : clients=2 tunnels=2
+                                         sockets still open: 6
+
+        `_abandon` is the method that already returns all three, and it is
+        what the FAILED-attempt path uses for exactly this reason. Using it
+        here also upgrades the stop from `disconnect()` to `abort()`, which is
+        the call that ends slixmpp's retry loop rather than merely closing the
+        socket.
         """
         _log.info("keepalive: the stream is dead; disconnecting")
         # The single most important line in an export. An unexplained
@@ -965,15 +1028,7 @@ class XmppTransport(Transport):
                       quiet_for=round(self._stream_quiet_for()),
                       consecutive_failures=KEEPALIVE_PING_FAILS,
                       server=self._profile.effective_server)
-        self._connected.clear()
-        client = self._client
-        if client is not None:
-            try:
-                result = client.disconnect()
-                if asyncio.iscoroutine(result):
-                    asyncio.ensure_future(result)
-            except Exception:
-                _log.warning("keepalive could not close the stream")
+        await self._abandon()
         self._emit_state("disconnected")
 
     async def _abandon(self) -> None:

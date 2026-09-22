@@ -117,6 +117,80 @@ def build(**kw):
     return controller, app, made
 
 
+class TestAReconnectLetsGoOfTheTransportItReplaces:
+    """The path that is NOT a failed attempt, and so never reached the
+    release the class below covers.
+
+    `_connect` assigned `self._transport` over the top of whatever was there.
+    The only thing that gets that far holding one is a reconnect -- `connect`
+    short-circuits while a transport is connected, so anything still present
+    is a stream that has ENDED, which on a handset means the keepalive found
+    the link dead while the user walked out of coverage.
+
+    Dropping the reference is not enough. `close` is what joins the worker
+    thread, and `_release_transport` says so in as many words: "a
+    disconnected-but-open transport is exactly the shape that leaked a loop
+    thread per attempt". Measured, with the real transport:
+
+        after cycle 1: leaked transport worker threads = 1
+        after cycle 2: leaked transport worker threads = 2
+        after cycle 3: leaked transport worker threads = 3
+        after cycle 4: leaked transport worker threads = 4
+    """
+
+    @staticmethod
+    def _reconnect(controller, made):
+        """What a keepalive death plus a retry looks like from here."""
+        first = made["transport"]
+        first.is_connected = False          # the stream died
+        controller.connect("pw")            # the reconnect
+        return first
+
+    def test_the_replaced_transport_is_closed(self):
+        controller, app, made = build()
+        controller.connect("pw")
+        first = self._reconnect(controller, made)
+        assert first.closed == 1, (
+            "the transport being replaced was dropped without being closed, "
+            "so its event-loop thread runs for the life of the process")
+
+    def test_the_new_transport_is_the_one_in_use(self):
+        controller, app, made = build()
+        controller.connect("pw")
+        first = self._reconnect(controller, made)
+        assert made["transport"] is not first
+        assert app._transport is made["transport"]
+        assert controller.status()["connected"] is True
+
+    def test_repeated_cycles_close_every_one_they_replace(self):
+        """One leak per cycle is the thing that makes this matter."""
+        controller, app, made = build()
+        controller.connect("pw")
+        replaced = []
+        for _ in range(4):
+            replaced.append(self._reconnect(controller, made))
+        assert [t.closed for t in replaced] == [1, 1, 1, 1]
+
+    def test_a_first_connect_has_nothing_to_release(self):
+        """The release is unconditional, so it has to be harmless when there
+        is nothing there -- which is every first connect."""
+        controller, app, made = build()
+        assert controller.connect("pw")["ok"] is True
+        assert made["transport"].closed == 0
+
+    def test_connecting_while_connected_still_short_circuits(self):
+        """The guard this sits behind. If `connect` stopped short-circuiting,
+        the release above would tear down a LIVE stream on every call."""
+        controller, app, made = build()
+        controller.connect("pw")
+        first = made["transport"]
+        result = controller.connect("pw")
+        assert result["code"] == "ok" and made["transport"] is first
+        assert first.closed == 0, (
+            "a second connect closed the live transport it should have "
+            "recognised as already connected")
+
+
 class TestAFailedConnectLetsGoOfItsTransport:
     """A transport the controller keeps a reference to but never closes is a
     worker thread and an I2P lease with nobody left to release them."""

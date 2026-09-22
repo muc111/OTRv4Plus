@@ -55,6 +55,31 @@ SERVICE_KT = os.path.join(
 PEER = "bob@example.test"
 
 
+def _launch_bodies(source, call):
+    """The block each `<call> {` opens, by brace depth.
+
+    Counting braces rather than matching a closing indent, because the blocks
+    nest (`withContext` inside `launch`) and an indent-based reader stops at
+    the first inner `}`.
+    """
+    bodies = []
+    start = source.find(call)
+    while start != -1:
+        i = source.index("{", start)
+        depth, j = 0, i
+        while j < len(source):
+            if source[j] == "{":
+                depth += 1
+            elif source[j] == "}":
+                depth -= 1
+                if depth == 0:
+                    break
+            j += 1
+        bodies.append(source[i:j + 1])
+        start = source.find(call, j)
+    return bodies
+
+
 class Wire(Transport):
     def __init__(self):
         self.sent = []
@@ -223,12 +248,40 @@ class TestTheEngineIsToldOnLogout:
             "is about to cancel")
         assert "teardown.launch" in logout_branch
 
-    def test_the_surviving_scope_is_only_used_for_the_teardown(self):
+    def test_the_surviving_scope_is_only_used_for_teardown(self):
         """It is an escape from the service lifecycle, so it stays narrow.
-        A connection attempt outliving its service would be I2P tunnels
-        nobody is watching."""
+
+        A connect ATTEMPT outliving its service would be I2P tunnels nobody
+        is watching -- the failure this exists to prevent, not to cause. So
+        the two uses are named: the engine shutdown on logout, and the
+        connection teardown. A third would have to argue with this line.
+        """
         source = open(SERVICE_KT, encoding="utf-8").read()
-        assert source.count("teardown.launch") == 1
+        assert source.count("teardown.launch") == 2, (
+            "the scope that outlives the service grew a new use; it carries "
+            "teardown and nothing else")
+        for body in _launch_bodies(source, "teardown.launch"):
+            assert "core.shutdown()" in body or "core.disconnect()" in body, (
+                "something that is not a teardown was put on the scope that "
+                "outlives the service:\n%s" % body)
+
+    def test_the_connection_teardown_is_not_racing_its_own_cancellation(self):
+        """`stopConnection` is followed by the end of the service on every
+        path that matters: ACTION_STOP and ACTION_LOGOUT call `stopSelf()`,
+        and `onDestroy` calls `scope.cancel()` two lines later. Launched on
+        `scope`, the disconnect can be cancelled before it runs, leaving the
+        transport's worker thread, its authenticated stream and its I2P
+        tunnel alive with nothing holding a reference that could close them.
+        """
+        source = open(SERVICE_KT, encoding="utf-8").read()
+        body = source[source.index("fun stopConnection("):]
+        body = body[:body.index("\n    }")]
+        assert "core.disconnect()" in body, (
+            "this test cannot find the disconnect it is about")
+        assert "scope.launch" not in body, (
+            "the connection teardown runs on the scope that onDestroy is "
+            "about to cancel")
+        assert "teardown.launch" in body
 
     def test_logout_still_clears_everything_it_did_before(self, logout_branch):
         """The engine teardown is an addition, not a replacement."""
