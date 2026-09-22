@@ -417,6 +417,47 @@ class OtrApp:
         """
         self._presence.forget_all()
 
+    def forget_peer_state(self, peer: str) -> None:
+        """Drop what a subscription entitled us to know about one peer.
+
+        Called when the ROSTER ENTRY GOES, not when the stream does.
+        `PresenceBook.forget` has documented this since it was written --
+        "what we learned under a subscription we no longer hold is not
+        something we are entitled to keep showing" -- and until now it had no
+        caller at all. Measured before it did:
+
+            before remove: presence=online last_activity=True
+            remove_contact: {'ok': True, ...}
+            after remove : presence=online last_activity=True
+
+        So a contact the user had just removed went on reading as online,
+        indefinitely, from a subscription that no longer existed.
+
+        WHAT IS DELIBERATELY LEFT ALONE
+        -------------------------------
+        The OTR session, the trust database and the message history. None of
+        those came from the subscription:
+
+          * a pinned fingerprint is long-term identity about a PEER, and
+            dropping it would turn the next conversation into a fresh
+            trust-on-first-use decision -- the moment this project most wants
+            to be visible;
+          * history outlives the roster entry, because deleting what was said
+            because somebody was unsubscribed destroys data the user did not
+            ask to lose;
+          * a live encrypted session is not made less safe by the roster
+            changing, and tearing it down mid-conversation would be a
+            surprise, not a protection.
+
+        This drops availability and last-seen: the two things the server was
+        telling us only because we were subscribed.
+        """
+        peer = self.canonical_peer(peer)
+        if not peer:
+            return
+        self._presence.forget(peer)
+        self._last_activity.pop(peer, None)
+
     def presence_state(self, peer: str) -> str:
         """One of otrv4plus_presence.STATES."""
         peer = self.canonical_peer(peer)

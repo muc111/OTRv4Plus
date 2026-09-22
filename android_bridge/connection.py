@@ -653,7 +653,29 @@ class ConnectionController:
         return self._roster_call("add_contact", jid, name)
 
     def remove_contact(self, jid: str) -> Dict[str, Any]:
-        return self._roster_call("remove_contact", jid)
+        """Remove the roster entry, and stop showing what it entitled us to.
+
+        The forget happens HERE rather than in the UI so it cannot be
+        forgotten by a screen: every route to a removal goes through this
+        method. Only on a confirmed `ok` -- a refused removal has changed
+        nothing, and discarding the peer's presence because the request failed
+        would make the contact list wrong in the other direction.
+
+        See `OtrApp.forget_peer_state` for what is deliberately kept: the
+        session, the pinned fingerprint and the history, none of which came
+        from the subscription.
+        """
+        result = self._roster_call("remove_contact", jid)
+        if result.get("ok"):
+            try:
+                self._app.forget_peer_state(jid)
+            except Exception:
+                # Best effort. A roster entry that is gone stays gone; failing
+                # to tidy the presence behind it must not turn a successful
+                # removal into a reported failure.
+                _TRACE.record("roster", "forget_peer_failed", "warning",
+                              jid=jid)
+        return result
 
     def answer_subscription(self, jid: str, approve: bool) -> Dict[str, Any]:
         return self._roster_call("answer_subscription", jid, approve)

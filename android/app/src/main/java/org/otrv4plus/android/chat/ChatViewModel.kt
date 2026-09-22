@@ -240,6 +240,21 @@ class ChatViewModel : ViewModel() {
         revision++
         viewModelScope.launch {
             val result = withContext(Dispatchers.IO) { core.removeContact(bare) }
+            // FORGOTTEN LOCALLY TOO, and only once the server confirmed it --
+            // the mirror image of `addContact`, which saves only on `ok`.
+            //
+            // Without this the removal did not remove anything the user could
+            // see. `conversations()` unions the roster with the message store
+            // AND the saved list, so a contact dropped from the roster came
+            // straight back from the local record, now rendered `saved =
+            // false` -- "remembered here, not confirmed by the server" -- with
+            // no way left to get rid of it.
+            //
+            // The HISTORY is deliberately untouched. A conversation outlives
+            // the roster entry, so somebody the user has actually talked to
+            // keeps their row and their messages; what goes is the local
+            // record that was keeping an empty row alive on its own.
+            if (result.ok) state.savedContacts.forget(bare)
             state.note(result.message())
             revision++
         }

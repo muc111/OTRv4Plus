@@ -176,4 +176,75 @@ class SavedContactsTest {
         assertFalse(s.save("no-at-sign"))
         assertTrue(s.all().isEmpty())
     }
+
+    // ── one contact, one record ──────────────────────────────────────────────
+
+    /**
+     * Every entry point keys through [ChatState.bare], INCLUDING the one that
+     * reads records back.
+     *
+     * `save`, `forget` and `isSaved` all fold. `decode` did not, so a stored
+     * record that was not already folded became a key none of them could
+     * reach: present in the list, impossible to remove. The invariant belongs
+     * where records ENTER the map, not only where they are written.
+     */
+    @Test
+    fun `a record stored under another spelling is still reachable`() {
+        val vault = FakeVault()
+        // What a build that folded less thoroughly would have left behind.
+        vault.put("contacts." + alice.key,
+            "Bob@XMPP-Elite.i2p\tBob\t7".toByteArray(Charsets.UTF_8))
+        val saved = SavedContacts(vault).also { it.bind(alice) }
+
+        assertTrue(saved.isSaved("bob@xmpp-elite.i2p"),
+            "a stored contact cannot be found under their own address")
+        assertTrue(saved.forget("bob@xmpp-elite.i2p"),
+            "a stored contact cannot be removed; the row is permanent")
+        assertTrue(saved.all().isEmpty())
+    }
+
+    @Test
+    fun `saving the same person twice is one record`() {
+        val saved = store()
+        saved.save("Bob@XMPP-Elite.i2p", "Bob", at = 1L)
+        saved.save("bob@xmpp-elite.i2p/phone", at = 2L)
+        saved.save("BOB@XMPP-ELITE.I2P", at = 3L)
+        assertEquals(1, saved.all().size, "one person, three records")
+        assertEquals("bob@xmpp-elite.i2p", saved.all().single().jid)
+    }
+
+    @Test
+    fun `the first save keeps its timestamp`() {
+        val saved = store()
+        saved.save("bob@xmpp-elite.i2p", at = 10L)
+        saved.save("Bob@XMPP-Elite.i2p", at = 99L)
+        assertEquals(10L, saved.all().single().savedAt,
+            "re-saving under another spelling reset when they were added")
+    }
+
+    @Test
+    fun `forgetting reaches every spelling`() {
+        val saved = store()
+        saved.save("bob@xmpp-elite.i2p", at = 1L)
+        assertTrue(saved.forget("BOB@XMPP-ELITE.I2P/laptop"))
+        assertFalse(saved.isSaved("bob@xmpp-elite.i2p"))
+    }
+
+    @Test
+    fun `two different people are still two records`() {
+        val saved = store()
+        saved.save("bob@a.i2p", at = 1L)
+        saved.save("bob@b.i2p", at = 2L)
+        saved.save("rob@a.i2p", at = 3L)
+        assertEquals(3, saved.all().size)
+    }
+
+    @Test
+    fun `a truncated record is still dropped rather than guessed at`() {
+        val vault = FakeVault()
+        vault.put("contacts." + alice.key,
+            "\tBob\t7\nnotajid\tx\t1".toByteArray(Charsets.UTF_8))
+        assertTrue(SavedContacts(vault).also { it.bind(alice) }.all().isEmpty(),
+            "a truncated vault entry became a contact")
+    }
 }

@@ -62,7 +62,7 @@ class SavedContacts(private val vault: Vault?) {
     /** Everything remembered for the bound account, in the order saved. */
     fun all(): List<Saved> = saved.values.toList()
 
-    fun isSaved(jid: String): Boolean = ChatState.bare(jid).lowercase() in saved
+    fun isSaved(jid: String): Boolean = ChatState.bare(jid) in saved
 
     /**
      * Bind to an account and load its list.
@@ -92,7 +92,7 @@ class SavedContacts(private val vault: Vault?) {
      */
     fun save(jid: String, displayName: String = "", at: Long = 0L): Boolean {
         if (!scope.isAuthenticated) return false
-        val bare = ChatState.bare(jid.trim()).lowercase()
+        val bare = ChatState.bare(jid)
         if (bare.isEmpty() || !bare.contains('@')) return false
         val existing = saved[bare]
         val entry = Saved(
@@ -110,7 +110,7 @@ class SavedContacts(private val vault: Vault?) {
     /** Forget [jid] locally. Says nothing about the server's roster. */
     fun forget(jid: String): Boolean {
         if (!scope.isAuthenticated) return false
-        val bare = ChatState.bare(jid.trim()).lowercase()
+        val bare = ChatState.bare(jid)
         if (saved.remove(bare) == null) return false
         persist()
         return true
@@ -153,7 +153,12 @@ class SavedContacts(private val vault: Vault?) {
             .filter { it.isNotBlank() }
             .mapNotNull { line ->
                 val parts = line.split("\t")
-                val jid = parts.getOrNull(0)?.trim().orEmpty()
+                // FOLDED ON THE WAY IN, not only on the way out. `save`,
+                // `forget` and `isSaved` all key through `ChatState.bare`, so
+                // a stored record that was not folded would be a key none of
+                // them can reach -- present in the list, impossible to remove.
+                // The invariant belongs where records ENTER the map.
+                val jid = ChatState.bare(parts.getOrNull(0).orEmpty())
                 // A record that cannot be read is skipped, not guessed at.
                 // A truncated vault entry must not become a contact with a
                 // blank JID sitting in the list.
