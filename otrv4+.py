@@ -9549,18 +9549,52 @@ class EnhancedSessionManager:
             return True
 
     def clear_all_sessions(self, reason: str = "cleanup"):
-        """Clear all sessions"""
-        with self.lock:
-            for peer in list(self.sessions.keys()):
-                self.terminate_session(peer, reason)
+        """Forget every session. Used only on shutdown and logout paths.
 
+        IT DID NOT CLEAR THEM. This looped over `terminate_session`, and that
+        method's limitation is written down thirty lines above: it "terminates
+        the session object but leaves the entry in `self.sessions`, so the
+        next `get_or_create_session` hands back the dead one". So the table
+        survived, and with it the security level -- measured through the
+        Android facade:
+
+            after OtrApp.shutdown()          : ENCRYPTED
+            engine has_session('bob@x.test') : True
+
+        Every production caller is a teardown -- `android_bridge.app.shutdown`,
+        the XMPP client's shutdown, the IRC client's shutdown -- and all three
+        mean it. On Android the consequence was the worst of the three:
+        nothing tears the engine down on logout either, so a second account
+        signing in on the same device inherited the first account's live OTR
+        session with any shared peer.
+
+        `end_session` is the method that actually forgets, and it is used here
+        for that reason. The wire behaviour is unchanged: neither it nor
+        `terminate_session` sends a DISCONNECTED TLV, so this is a local
+        teardown exactly as before -- it now simply is one.
+
+        The trust database is untouched, deliberately. A pinned fingerprint is
+        long-term identity and survives a session ending; forgetting it here
+        would turn every shutdown into a fresh trust-on-first-use decision,
+        which is the failure mode TOFU exists to make visible.
+        """
+        with self.lock:
+            held = len(self.sessions)
+            for peer in list(self.sessions.keys()):
+                self.end_session(peer, reason)
+
+            self.sessions.clear()
             self.dake_engines.clear()
 
             self.tracer.trace(
                 "SYSTEM",
                 "CLEANUP",
+                # The count BEFORE, which is the number that tells a reader
+                # whether anything was actually torn down. Reading it after
+                # the loop used to print the unchanged total, which looked
+                # like a successful cleanup of nothing.
+                str(held),
                 str(len(self.sessions)),
-                "0",
                 f"all sessions cleared: {reason }",
             )
 

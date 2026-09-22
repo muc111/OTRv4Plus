@@ -238,6 +238,31 @@ class OtrConnectionService : Service() {
                 // service holding nothing at all.
                 runCatching { messages.forgetAccount() }
                 runCatching { enterAccount(AccountScope.NONE) }
+                // AND THE ENGINE, which nothing told until now.
+                //
+                // `shutdown()` existed on the core and had no caller
+                // anywhere. Logout cleared the credentials, the history, the
+                // chat state and the badge -- and left the OTR engine holding
+                // every session from the account that just signed out. Those
+                // sessions are keyed by PEER JID, so a second account signing
+                // in on the same device inherited the first account's
+                // encrypted session with any shared contact.
+                //
+                // Off the main thread: this crosses into Python and tears
+                // down sessions. The same reason `stopConnection` dispatches
+                // its own teardown to IO.
+                //
+                // The trust database is deliberately NOT cleared. A pinned
+                // fingerprint is long-term identity about a PEER, not about
+                // the account that happened to pin it, and discarding it
+                // would turn the next conversation into a fresh
+                // trust-on-first-use decision -- which is exactly the moment
+                // TOFU exists to make visible.
+                scope.launch {
+                    withContext(Dispatchers.IO) {
+                        runCatching { core.shutdown() }
+                    }
+                }
                 // And take the notification down with them. A count of unread
                 // messages left in the shade after a sign-out is a statement
                 // about an account that is no longer on this device.
