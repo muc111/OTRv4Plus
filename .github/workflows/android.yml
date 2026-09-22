@@ -32,17 +32,52 @@ name: Android
 on:
   push:
     branches: [main, "claude/**"]
-    paths:
+    paths: &android_paths
       - "android/**"
       - "android_bridge/**"
       - "Rust/**"
       - ".github/workflows/android.yml"
+      # THE SHARED ENGINE THE APK ACTUALLY PACKAGES.
+      #
+      # Android depends on these and this workflow did not watch them, so a
+      # change to the engine ran no Android job at all. That is not
+      # hypothetical: b6e82b8 fixed the DAKE1 rate limiter -- live on the
+      # Android path, proved by driving it through OtrApp -- touched only
+      # `otrv4+.py`, matched nothing here, and had to be dispatched by hand.
+      #
+      # NOT "every Python file". This is exactly the list `syncPythonSources`
+      # in android/app/build.gradle.kts copies into the APK, which is itself
+      # the computed module-scope import closure of otrv4+.py and
+      # otrv4plus_xmpp.py. A file the APK does not ship cannot break it.
+      #
+      # GitHub path filters cannot run code, so the list is duplicated here
+      # rather than derived. `tests/test_android_ci_paths.py` asserts the two
+      # agree, so adding a module to the build without adding it here is a
+      # test failure rather than a silently unwatched dependency.
+      - "otrv4+.py"
+      - "otrv4plus_address.py"
+      - "otrv4plus_admin.py"
+      - "otrv4plus_alias.py"
+      - "otrv4plus_audio.py"
+      - "otrv4plus_coreapi.py"
+      - "otrv4plus_filetransfer.py"
+      - "otrv4plus_fragment.py"
+      - "otrv4plus_identity.py"
+      - "otrv4plus_log.py"
+      - "otrv4plus_mediapath.py"
+      - "otrv4plus_mode.py"
+      - "otrv4plus_muc.py"
+      - "otrv4plus_omemo.py"
+      - "otrv4plus_ping.py"
+      - "otrv4plus_presence.py"
+      - "otrv4plus_registration.py"
+      - "otrv4plus_smpflow.py"
+      - "otrv4plus_tip.py"
+      - "otrv4plus_trade.py"
+      - "otrv4plus_voice.py"
+      - "otrv4plus_xmpp.py"
   pull_request:
-    paths:
-      - "android/**"
-      - "android_bridge/**"
-      - "Rust/**"
-      - ".github/workflows/android.yml"
+    paths: *android_paths
   workflow_dispatch:
 
 permissions:
