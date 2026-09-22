@@ -24,6 +24,7 @@ import org.otrv4plus.android.chat.ChatState
 import org.otrv4plus.android.chat.ChatViewModel
 import org.otrv4plus.android.chat.Conversation
 import org.otrv4plus.android.chat.Presence
+import org.otrv4plus.android.chat.RowSecurity
 
 /**
  * The home screen once you are connected: who you can talk to.
@@ -379,8 +380,37 @@ private fun ConversationRow(conversation: Conversation, onClick: () -> Unit) {
                     UnreadBadge(conversation.unread)
                 }
             }
+            SecurityBadge(conversation)
         }
     }
+}
+
+/**
+ * What this row says about its security. A WORD, never a padlock.
+ *
+ * `ConversationScreen` states the rule this follows: an icon blurs "the
+ * network is up" into "this is safe", and a padlock next to a plaintext
+ * message is the one claim this project cannot afford to get wrong. The
+ * decision lives in [RowSecurity], which is plain Kotlin and driven by
+ * `RowSecurityTest`; this maps its three tones onto the theme and nothing
+ * else.
+ */
+@Composable
+private fun SecurityBadge(conversation: Conversation) {
+    val badge = RowSecurity.badge(
+        security = conversation.security,
+        smp = conversation.smp,
+        hasHistory = conversation.lastMessage != null,
+    ) ?: return
+    Text(
+        badge.text,
+        style = MaterialTheme.typography.labelSmall,
+        color = when (badge.tone) {
+            RowSecurity.Tone.ALARM -> MaterialTheme.colorScheme.error
+            RowSecurity.Tone.NEUTRAL -> MaterialTheme.colorScheme.onSurfaceVariant
+            RowSecurity.Tone.GOOD -> MaterialTheme.colorScheme.primary
+        },
+    )
 }
 
 @Composable
