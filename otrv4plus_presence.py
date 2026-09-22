@@ -47,6 +47,7 @@ being run.
 from __future__ import annotations
 
 import threading
+from collections import OrderedDict
 from typing import Dict, Iterable, Tuple
 
 __all__ = ["UNKNOWN", "ONLINE", "OFFLINE", "STATES", "PresenceBook"]
@@ -71,12 +72,42 @@ class PresenceBook:
     Thread-safe: written from the transport's asyncio loop thread and read
     from whichever thread the UI polls on, which on Android is a Kotlin
     thread with no loop of its own.
+
+    BOUNDED, because what goes in here is chosen by other people. Every
+    inbound presence stanza reaches `note`, and the sender's JID is the key.
+    Unbounded, that is a memory-growth path a remote party drives; measured
+    on the Android facade, twenty thousand distinct senders produced twenty
+    thousand entries and nothing reclaimed them. `otrv4+.py`'s
+    `DAKE1RateLimiter` took the same bound for the same reason and this
+    follows it rather than inventing a second answer.
     """
 
+    #: How many peers to remember. A handset roster is tens to hundreds, so
+    #: this is far above any real contact list and only a flood reaches it.
+    #:
+    #: Eviction is LEAST-RECENTLY-NOTED, and the consequence is stated
+    #: plainly: under a flood, a contact nobody has heard from in a while can
+    #: fall out and read UNKNOWN. That is the direction this module already
+    #: chose -- "we have heard nothing" is an answer it can give, and a
+    #: forgotten entry says exactly that rather than making a stale claim.
+    MAX_TRACKED = 2048
+
     def __init__(self) -> None:
-        self._state: Dict[str, str] = {}
+        # Ordered so the bound has something to evict BY. Insertion order is
+        # refreshed on every `note`, which makes it least-recently-noted.
+        self._state: "OrderedDict[str, str]" = OrderedDict()
         self._show: Dict[str, str] = {}
         self._lock = threading.RLock()
+
+    def _prune(self) -> None:
+        """Drop the least recently noted peers down to [MAX_TRACKED].
+
+        Called with the lock held. Both maps together, so `_show` cannot
+        outlive the state it describes.
+        """
+        while len(self._state) > self.MAX_TRACKED:
+            jid, _ = self._state.popitem(last=False)
+            self._show.pop(jid, None)
 
     # -- writing -------------------------------------------------------------
 
@@ -93,10 +124,14 @@ class PresenceBook:
         show = show if show in _SHOWS else ""
         with self._lock:
             self._state[jid] = ONLINE if online else OFFLINE
+            # Hearing about a peer makes them the most recently noted, so a
+            # contact the server keeps broadcasting is not the one evicted.
+            self._state.move_to_end(jid)
             # A show belongs to an available peer. Keeping a stale "away" on
             # somebody who has since gone offline would render as "offline
             # (away)", which is not a thing.
             self._show[jid] = show if online else ""
+            self._prune()
 
     def forget(self, peer: str) -> None:
         """Drop one peer back to UNKNOWN.
@@ -182,9 +217,29 @@ def _bare(peer: str) -> str:
     Presence arrives per-resource. Availability here is a property of the
     account, so `alice@host/phone` and `alice@host/desktop` are one peer — and
     without this the same person appears twice with different states.
+
+    THE CASE HALF WAS DOCUMENTED AND NOT IMPLEMENTED. The line above has said
+    "lower-cased domain-insensitively" since this module was written; the code
+    split the resource off and left the case alone. Measured:
+
+        note("alice@Host", online)
+        state("alice@Host")       = online
+        state("alice@host")       = unknown     <-- the same person
+        forget("alice@host")      -> keys held: {'alice@Host': 'online'}
+
+    The second line is the duplicate this function exists to prevent. The
+    third is worse: [PresenceBook.forget] is the method that drops what we
+    learned under a subscription we no longer hold, and a spelling it does not
+    match means it silently drops nothing and the application goes on
+    displaying the availability of somebody who revoked it.
+
+    `casefold` rather than `lower`, deliberately, because
+    `android_bridge.app.OtrApp.canonical_peer` uses `casefold` and the two
+    have to produce the same key. Folding is one-way safe: it can merge two
+    spellings of one account, never split one or join two accounts.
     """
     try:
         text = str(peer or "").strip()
     except Exception:                                        # pragma: no cover
         return ""
-    return text.split("/", 1)[0]
+    return text.split("/", 1)[0].casefold()

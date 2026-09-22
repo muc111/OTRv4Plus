@@ -648,8 +648,24 @@ class TestTheConversationList:
         messaged; and history with no roster entry still gets a row, because a
         message from a stranger is still a message.
 
-        Both directions are asserted behaviourally in ChatStateTest."""
-        assert "contacts.keys + store.conversationIds()" in state
+        Both directions are asserted behaviourally in ChatStateTest.
+
+        THE PROPERTY, NOT THE SPELLING. This pinned the exact expression
+        `contacts.keys + store.conversationIds()`, which is not what it is
+        protecting: the union acquired a third arm (locally saved contacts)
+        and then a `bare(...)` fold on each arm so one person cannot occupy
+        two rows, and neither change touched the rule. Asserted as "the
+        statement that builds `jids` reads BOTH sources", so dropping either
+        one still fails and a fold over them does not.
+        """
+        body = state[state.index("fun conversations()"):]
+        union = body[body.index("val jids"):body.index("return jids")]
+        assert "contacts.keys" in union, (
+            "the conversation list no longer includes the roster, so a "
+            "contact you have never messaged has no row to start from")
+        assert "store.conversationIds()" in union, (
+            "the conversation list no longer includes the message store, so "
+            "a message from somebody not on the roster has nowhere to appear")
 
     def test_no_contact_is_hard_coded(self):
         for name in ("ConversationsScreen.kt", "ConversationScreen.kt"):

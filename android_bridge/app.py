@@ -26,6 +26,7 @@ from __future__ import annotations
 import logging
 import time
 from dataclasses import dataclass
+from collections import OrderedDict
 from typing import Any, Callable, Dict, List, Optional
 
 # The shared wire format. A dependency-free leaf, which is why importing it at
@@ -211,12 +212,42 @@ class OtrApp:
         #: `.get(jid, False)` cannot tell "offline" from "never heard" -- see
         #: otrv4plus_presence for the bug that produced.
         self._presence = _presence.PresenceBook()
-        self._last_activity: Dict[str, float] = {}
+        #: When we last saw traffic with each peer, for the contact row's
+        #: "last seen". Ordered and bounded -- see `_touch`.
+        self._last_activity: "OrderedDict[str, float]" = OrderedDict()
         # Which conversations have had OTR asked for. Never a security state;
         # see otrv4plus_mode.OtrMode.
         self._mode = OtrMode()
         self._call_states: Dict[str, CallState] = {}
         self._enable_guided_smp()
+
+    #: How many peers' last-seen times to keep.
+    #:
+    #: BOUNDED BECAUSE THE KEY IS CHOSEN BY SOMEBODY ELSE. `receive_message`
+    #: records one for every inbound frame, under the sender's JID, so an
+    #: unbounded map is a memory-growth path a remote party drives. Measured
+    #: before the bound: twenty thousand distinct senders, twenty thousand
+    #: entries, nothing reclaimed. `otrv4+.py`'s `DAKE1RateLimiter` bounds
+    #: itself for the same reason and this matches it rather than inventing a
+    #: second answer.
+    #:
+    #: Far above any real contact list, so only a flood reaches it, and what
+    #: is lost when it does is a "last seen" caption -- never a security
+    #: state, a session or a trust decision, none of which are kept here.
+    MAX_TRACKED_ACTIVITY = 2048
+
+    def _touch(self, peer: str) -> None:
+        """Record that we just exchanged something with *peer*.
+
+        The single write point for `_last_activity`, so the bound cannot be
+        bypassed by a future call site that assigns to the map directly.
+        Eviction is least-recently-active, which is what the value already
+        means.
+        """
+        self._last_activity[peer] = self._clock()
+        self._last_activity.move_to_end(peer)
+        while len(self._last_activity) > self.MAX_TRACKED_ACTIVITY:
+            self._last_activity.popitem(last=False)
 
     def _enable_guided_smp(self) -> None:
         """Declare that this front end CAN ask the user for a passphrase.
@@ -321,6 +352,50 @@ class OtrApp:
             _log.warning("session teardown reported a problem")
         self.disconnect()
 
+    @staticmethod
+    def canonical_peer(peer: str) -> str:
+        """One contact, one key, however their address is spelled.
+
+        WHY THIS EXISTS, AND IT IS NOT TIDINESS
+        ---------------------------------------
+        Every per-peer thing this facade owns is keyed by the string it was
+        handed: `OtrMode` (whether a conversation may send in the clear), the
+        presence book, last-activity, call state, and -- through the engine --
+        the session table itself. Two spellings of one contact are two
+        entries.
+
+        That is a downgrade, not an inconvenience. Measured before this
+        existed, after OTR had been requested for `bob@x.test`:
+
+            may_send_plaintext(bob@x.test       ) = False
+            may_send_plaintext(Bob@X.test       ) = True   <-- LEAK
+            may_send_plaintext(bob@x.test/phone ) = True   <-- LEAK
+
+        And it is reachable. slixmpp normalises an inbound stanza's `from`,
+        so a PEER starting OTR marks the mode under `bob@x.test`; the Android
+        UI's conversation key is whatever was typed into Add Contact, which
+        `ChatState.bare` stripped of its resource but did not case-fold. Send
+        into that conversation and the mode lookup misses -- so a message
+        goes out in the clear on a conversation the other side has encrypted.
+
+        DONE HERE, at the boundary, for the same reason `DAKE1RateLimiter`
+        does it in the limiter rather than at its call sites: a future caller
+        that forgets cannot split state, and one place cannot drift from
+        eighteen. Folding is always the safe direction -- it can only merge
+        two keys into one, never turn one into two.
+
+        Matches how the rest of the project identifies a peer:
+        `msg["from"].bare` in the XMPP client, `split("/", 1)[0]` in the
+        Android transport, `AccountScope.normalise` and `ChatState.bare` in
+        Kotlin, and `DAKE1RateLimiter._canonical` in the engine.
+
+        A value that is not a JID is returned trimmed and folded rather than
+        rejected: this is a key normaliser, not a validator, and refusing
+        here would turn a malformed peer into an exception on a path that
+        already has honest answers for one.
+        """
+        return str(peer or "").strip().split("/", 1)[0].casefold()
+
     def note_connected(self) -> None:
         """Called by the transport once the stream is usable."""
         self._connection = ConnectionState.CONNECTED
@@ -328,6 +403,7 @@ class OtrApp:
 
     def note_presence(self, peer: str, online: bool, show: str = "") -> None:
         """A presence stanza arrived. Called from the transport's loop thread."""
+        peer = self.canonical_peer(peer)
         self._presence.note(peer, online, show)
 
     def note_presence_lost(self) -> None:
@@ -343,6 +419,7 @@ class OtrApp:
 
     def presence_state(self, peer: str) -> str:
         """One of otrv4plus_presence.STATES."""
+        peer = self.canonical_peer(peer)
         return self._presence.state(peer)
 
     def online_peers(self) -> List[str]:
@@ -372,6 +449,7 @@ class OtrApp:
         is. `security_state_from_level` already takes that position for an
         unrecognised level; this extends it to an engine that raised.
         """
+        peer = self.canonical_peer(peer)
         try:
             return security_state_from_level(
                 self._engine.get_security_level(peer))
@@ -384,6 +462,7 @@ class OtrApp:
         An engine that raises reports NOT_VERIFIED, which is the safe
         direction: a state we could not read must never be shown as VERIFIED.
         """
+        peer = self.canonical_peer(peer)
         try:
             return smp_state_from_status(self._engine.get_smp_status(peer))
         except Exception:
@@ -403,6 +482,7 @@ class OtrApp:
         "nobody is waiting on you" is the correct answer from an engine that
         cannot hold an SMP1 in the first place.
         """
+        peer = self.canonical_peer(peer)
         ask = getattr(self._engine, "smp_secret_required", None)
         if ask is None:
             return self.smp_state(peer) is SmpState.SECRET_REQUIRED
@@ -415,6 +495,7 @@ class OtrApp:
         3072-bit work, ~1 minute measured over XMPP/I2P -- so this is a real
         progress indicator, not a spinner.
         """
+        peer = self.canonical_peer(peer)
         try:
             step, total = self._engine.get_smp_progress(peer)
         except Exception:
@@ -423,6 +504,7 @@ class OtrApp:
                            state=self.smp_state(peer))
 
     def security_details(self, peer: str) -> SecurityDetails:
+        peer = self.canonical_peer(peer)
         try:
             status = self._engine.get_smp_status(peer) or {}
         except Exception:
@@ -467,7 +549,36 @@ class OtrApp:
         return out
 
     def _contact_view(self, entry) -> Optional[ContactView]:
+        """One roster entry as the UI sees it, keyed canonically.
+
+        THE JID IS CANONICALISED HERE, and the raw spelling is not kept. This
+        method reads two maps DIRECTLY -- `self._presence` and
+        `self._last_activity` -- rather than through the public accessors that
+        canonicalise for it, and both of those maps are WRITTEN under
+        `canonical_peer` keys by `note_presence`, `receive_message` and
+        `send_message`. A roster entry spelled any other way therefore missed
+        its own state. Measured, with a session live and a message just in:
+
+            roster entry jid emitted : 'Bob@Example.TEST'
+            presence for that row    : unknown            <-- it is known
+            last_activity for the row: None               <-- one just arrived
+            internal presence keys   : ['bob@example.test']
+
+        Worse than the blank fields: `jid` is the key the whole UI then uses,
+        so the Kotlin side got a contact row under one spelling while its
+        message history sat under another, and `conversations()` -- which
+        unions the roster with the message store -- showed the person twice.
+
+        slixmpp normalises the roster it hands us, so this is not reachable
+        through the live XMPP path today; it is reachable through any other
+        `Transport`, and the split it produces is the same one
+        `canonical_peer` exists to prevent. One contact, one key, at the only
+        place a JID enters this class from outside.
+        """
         jid = entry.get("jid") if isinstance(entry, dict) else str(entry)
+        if not jid:
+            return None
+        jid = self.canonical_peer(jid)
         if not jid:
             return None
         security = self.security_state(jid)
@@ -537,6 +648,7 @@ class OtrApp:
         DAKE2 is ~11.7 KB after base64 and goes straight at the ~8 KB I2P
         cliff.
         """
+        peer = self.canonical_peer(peer)
         if self._transport is None:
             raise BridgeError("no_transport")
 
@@ -613,6 +725,7 @@ class OtrApp:
         not encrypted, the payload is dropped and an error is raised rather than
         silently leaking the body onto the wire.
         """
+        peer = self.canonical_peer(peer)
         if self._transport is None:
             raise BridgeError("no_transport")
         try:
@@ -627,7 +740,7 @@ class OtrApp:
             raise BridgeError("not_encrypted",
                               "refusing to send: no encrypted session")
         self._transport.send(peer, payload)
-        self._last_activity[peer] = self._clock()
+        self._touch(peer)
         return True
 
     #: What `send_user_text` did. Four outcomes, and each is a different thing
@@ -672,6 +785,7 @@ class OtrApp:
         SEND_PLAINTEXT, distinct from SEND_ENCRYPTED, so nothing downstream can
         mistake one for the other.
         """
+        peer = self.canonical_peer(peer)
         if self._transport is None:
             raise BridgeError("no_transport")
 
@@ -681,7 +795,7 @@ class OtrApp:
                 self._transport.send(peer, body)
             except Exception:
                 return self.SEND_FAILED
-            self._last_activity[peer] = self._clock()
+            self._touch(peer)
             return self.SEND_PLAINTEXT
 
         try:
@@ -704,7 +818,7 @@ class OtrApp:
             # It was encrypted but did not leave. Distinct from queued: there
             # is nothing holding it and nothing will retry.
             return self.SEND_FAILED
-        self._last_activity[peer] = self._clock()
+        self._touch(peer)
         return self.SEND_ENCRYPTED
 
     def receive_message(self, peer: str, payload: str) -> Optional[str]:
@@ -713,6 +827,7 @@ class OtrApp:
         Returns the plaintext for the caller that wants it inline; the same value
         is delivered as an event.  Nothing here is logged.
         """
+        peer = self.canonical_peer(peer)
         # The PEER asking counts as asking. Marked before the engine runs, so
         # a message typed while a DAKE is arriving cannot slip out in the clear
         # in the gap between their first frame and a completed session.
@@ -760,7 +875,7 @@ class OtrApp:
             return None
 
         body = result.decode("utf-8", errors="replace") if isinstance(result, (bytes, bytearray)) else str(result)
-        self._last_activity[peer] = self._clock()
+        self._touch(peer)
         self._emit(MessageReceived(peer=peer, body=body, timestamp=self._clock()))
         # A decrypted message means a session exists; the level may have moved
         # on this very frame (a DATA message completing a rekey, say).
@@ -863,6 +978,7 @@ class OtrApp:
         call and drops it; nothing on this object stores it, no event carries
         it, and `redacting_logger` is not given it.
         """
+        peer = self.canonical_peer(peer)
         self._require_encrypted(peer, "smp_not_encrypted")
         try:
             payload = self._engine.start_smp(peer, secret, question)
@@ -917,6 +1033,7 @@ class OtrApp:
         choose what any other input means. That is the property INV-06 names,
         obtained from the widget boundary rather than from a state machine.
         """
+        peer = self.canonical_peer(peer)
         self._require_encrypted(peer, "smp_not_encrypted")
         if not self.smp_secret_required(peer):
             # Nothing is being asked. Storing a passphrase here would leave a
@@ -975,6 +1092,7 @@ class OtrApp:
             raise BridgeError(code, "the verification message could not be sent")
 
     def smp_abort(self, peer: str) -> None:
+        peer = self.canonical_peer(peer)
         abort = getattr(self._engine, "abort_smp", None)
         if abort is None:
             raise BridgeError("smp_abort_unsupported")
@@ -987,10 +1105,12 @@ class OtrApp:
         Surfaced as its own event because the UI must block on it rather than
         fold it into the ordinary security state.
         """
+        peer = self.canonical_peer(peer)
         self._emit(FingerprintChanged(peer=peer, stored_fingerprint=stored,
                                       received_fingerprint=received))
 
     def trust_peer(self, peer: str, fingerprint: str) -> bool:
+        peer = self.canonical_peer(peer)
         return bool(self._safe(lambda: self._engine.trust_fingerprint(peer, fingerprint),
                                default=False))
 
@@ -1008,10 +1128,12 @@ class OtrApp:
         The call state machine stays in otrv4plus_voice.py, which already
         validates every transition; the bridge only mirrors it.
         """
+        peer = self.canonical_peer(peer)
         state = call_state_from_engine(engine_state)
         self._call_states[peer] = state
         self._emit(CallStateChanged(peer=peer, state=state,
                                     duration_seconds=duration_seconds, muted=muted))
 
     def call_state(self, peer: str) -> CallState:
+        peer = self.canonical_peer(peer)
         return self._call_states.get(peer, CallState.IDLE)

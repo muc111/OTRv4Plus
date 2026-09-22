@@ -195,6 +195,41 @@ class TestTheEngineIsToldOnLogout:
         """It crosses into Python and terminates sessions."""
         assert "Dispatchers.IO" in logout_branch
 
+    def test_the_teardown_is_not_racing_the_thing_that_cancels_it(
+            self, logout_branch):
+        """THE RACE, and it loses the fix above when it goes the wrong way.
+
+        The branch launches the teardown and then calls `stopSelf()`, which
+        leads to `onDestroy`, which calls `scope.cancel()`. A coroutine
+        started on the service's own scope is therefore racing the
+        cancellation of that scope -- and if cancellation wins,
+        `core.shutdown()` never runs and the engine keeps the signed-out
+        account's sessions for the next account to inherit.
+        """
+        source = open(SERVICE_KT, encoding="utf-8").read()
+        destroy = source[source.index("override fun onDestroy()"):]
+        destroy = destroy[:destroy.index("super.onDestroy()")]
+        assert "scope.cancel()" in destroy, (
+            "this test is about a race with onDestroy's cancellation and "
+            "cannot find it; re-establish what it is protecting")
+        # `rindex` for the call: the comment above the teardown names
+        # `stopSelf()` in prose, and `index` matches the sentence rather than
+        # the statement.
+        assert logout_branch.rindex("stopSelf()") > \
+            logout_branch.index("core.shutdown()"), \
+            "the teardown is started after the service is told to stop"
+        assert "scope.launch" not in logout_branch, (
+            "the engine teardown runs on the service scope that stopSelf() "
+            "is about to cancel")
+        assert "teardown.launch" in logout_branch
+
+    def test_the_surviving_scope_is_only_used_for_the_teardown(self):
+        """It is an escape from the service lifecycle, so it stays narrow.
+        A connection attempt outliving its service would be I2P tunnels
+        nobody is watching."""
+        source = open(SERVICE_KT, encoding="utf-8").read()
+        assert source.count("teardown.launch") == 1
+
     def test_logout_still_clears_everything_it_did_before(self, logout_branch):
         """The engine teardown is an addition, not a replacement."""
         for cleared in ("credentials.clear()", "messages.forgetAccount()",

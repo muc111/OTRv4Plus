@@ -226,3 +226,123 @@ class TestItSurvivesRubbish:
 
     def test_reading_an_empty_peer_is_unknown(self, book):
         assert book.state("") == UNKNOWN
+
+
+# ── one account, one key ─────────────────────────────────────────────────────
+
+class TestTheCaseHalfOfTheDocumentedRule:
+    """`_bare` has said "lower-cased domain-insensitively" since this module
+    was written, and did not do it. Measured before the fix:
+
+        note("alice@Host", online)
+        state("alice@Host")  = online
+        state("alice@host")  = unknown          <-- the same person
+        forget("alice@host") -> {'alice@Host': 'online'}
+
+    The middle line is the duplicate this module exists to prevent. The last
+    is the one that matters: [PresenceBook.forget] drops what we learned under
+    a subscription we no longer hold, and a spelling it did not match meant it
+    dropped nothing and the application went on showing the availability of
+    somebody who had revoked it.
+    """
+
+    #: The same account as the server, as the user types it, and per device.
+    SPELLINGS = ("alice@xmpp-elite.i2p", "Alice@XMPP-Elite.i2p",
+                 "ALICE@XMPP-ELITE.I2P", "alice@xmpp-elite.i2p/phone",
+                 "Alice@XMPP-Elite.i2p/Desktop", "  alice@xmpp-elite.i2p  ")
+
+    @pytest.mark.parametrize("spelling", SPELLINGS)
+    def test_every_spelling_reads_the_same_state(self, book, spelling):
+        book.note(ALICE, online=True, show="chat")
+        assert book.state(spelling) == ONLINE
+        assert book.show(spelling) == "chat"
+
+    @pytest.mark.parametrize("spelling", SPELLINGS)
+    def test_every_spelling_writes_the_same_entry(self, spelling):
+        fresh = PresenceBook()
+        fresh.note(spelling, online=True)
+        assert fresh.state(ALICE) == ONLINE
+        assert len(fresh) == 1, "one account is being held as two peers"
+
+    @pytest.mark.parametrize("spelling", SPELLINGS)
+    def test_forget_reaches_every_spelling(self, spelling):
+        """The privacy half. A subscription revoked under one spelling has to
+        drop what was learned under another, or the screen keeps showing it."""
+        fresh = PresenceBook()
+        fresh.note(spelling, online=True)
+        fresh.forget(ALICE)
+        assert fresh.state(spelling) == UNKNOWN
+        assert len(fresh) == 0
+
+    def test_two_devices_are_one_peer_not_two(self, book):
+        book.note("%s/phone" % ALICE, online=True)
+        book.note("%s/Desktop" % ALICE, online=False)
+        assert len(book) == 1
+        assert book.state(ALICE) == OFFLINE, "the later stanza did not win"
+
+    def test_two_different_accounts_are_still_two(self, book):
+        """Folding is one-way safe: it may merge spellings of one account and
+        must never join two. Nothing below differs only by case."""
+        book.note("alice@a.i2p", online=True)
+        book.note("alice@b.i2p", online=False)
+        book.note("rob@a.i2p", online=True)
+        assert len(book) == 3
+
+    def test_the_key_it_keeps_agrees_with_the_bridge(self):
+        """`OtrApp.canonical_peer` folds with `casefold` and keys the bridge's
+        own maps with the result. If these two disagreed, a peer's presence
+        and their security state would live under different keys."""
+        app = pytest.importorskip("android_bridge.app")
+        fresh = PresenceBook()
+        for spelling in self.SPELLINGS:
+            fresh.note(spelling, online=True)
+            assert list(fresh.snapshot()) == \
+                [app.OtrApp.canonical_peer(spelling)]
+            fresh.forget_all()
+
+
+# ── it must not grow without bound ───────────────────────────────────────────
+
+class TestTheBookIsBounded:
+    """The key is chosen by somebody else.
+
+    Every inbound presence stanza reaches `note`, under the sender's JID, so
+    an unbounded map is a memory-growth path a remote party drives. Measured
+    before the bound, through the Android facade: 20 000 distinct senders
+    produced 20 000 entries and nothing reclaimed them.
+    """
+
+    def test_it_stops_at_the_cap(self):
+        book = PresenceBook()
+        for i in range(PresenceBook.MAX_TRACKED * 2):
+            book.note("flood%d@evil.i2p" % i, online=True)
+        assert len(book) == PresenceBook.MAX_TRACKED
+
+    def test_the_show_map_is_pruned_with_the_state_map(self):
+        """A `show` outliving the state it describes would be a slow leak the
+        length check above would never notice."""
+        book = PresenceBook()
+        for i in range(PresenceBook.MAX_TRACKED * 2):
+            book.note("flood%d@evil.i2p" % i, online=True, show="chat")
+        assert len(book._show) == PresenceBook.MAX_TRACKED
+
+    def test_a_peer_still_being_heard_from_is_not_the_one_dropped(self):
+        """Eviction is least-recently-noted, so a contact the server keeps
+        broadcasting survives a flood that arrives around them."""
+        book = PresenceBook()
+        for i in range(PresenceBook.MAX_TRACKED):
+            book.note("flood%d@evil.i2p" % i, online=True)
+            if i % 100 == 0:
+                book.note(ALICE, online=True)       # still being heard from
+        assert book.state(ALICE) == ONLINE
+
+    def test_re_noting_a_peer_does_not_grow_the_book(self):
+        book = PresenceBook()
+        for _ in range(10_000):
+            book.note(ALICE, online=True)
+        assert len(book) == 1
+
+    def test_the_cap_is_far_above_a_real_contact_list(self):
+        """Stated so a future reduction has to argue with this line. A handset
+        roster is tens to hundreds; only a flood reaches the cap."""
+        assert PresenceBook.MAX_TRACKED >= 1024

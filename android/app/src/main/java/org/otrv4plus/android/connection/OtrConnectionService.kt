@@ -258,7 +258,19 @@ class OtrConnectionService : Service() {
                 // would turn the next conversation into a fresh
                 // trust-on-first-use decision -- which is exactly the moment
                 // TOFU exists to make visible.
-                scope.launch {
+                // NOT `scope`. The `stopSelf()` at the end of this branch
+                // leads to `onDestroy`, which calls `scope.cancel()` -- so a
+                // teardown launched on the service's own scope is a coroutine
+                // racing the thing that cancels it, and if cancellation wins
+                // it never starts. Losing it restores the defect this call
+                // exists to fix: the engine keeps the signed-out account's
+                // sessions, keyed by peer JID, for the next account to
+                // inherit.
+                //
+                // `teardown` outlives the service for exactly this window.
+                // `shutdown()` is idempotent, so a teardown that overlaps
+                // another is harmless.
+                teardown.launch {
                     withContext(Dispatchers.IO) {
                         runCatching { core.shutdown() }
                     }
@@ -750,6 +762,24 @@ class OtrConnectionService : Service() {
     }
 
     companion object {
+        /**
+         * Where work that must survive the service runs.
+         *
+         * ONE THING USES THIS, and it should stay that way: tearing the OTR
+         * engine down on an explicit logout. That teardown is started and
+         * then `stopSelf()` is called, so anything on the service's own
+         * scope is racing `onDestroy`'s `scope.cancel()` -- and the loser is
+         * an engine still holding the signed-out account's sessions.
+         *
+         * Deliberately NOT a general-purpose escape from the service
+         * lifecycle. Connection work belongs on `scope` and must stop when
+         * the service stops; a network attempt that outlived its service
+         * would be tunnels nobody is watching. This carries a short, bounded,
+         * idempotent teardown and nothing else.
+         */
+        private val teardown =
+            CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
         private const val CHANNEL_ID = "otrv4plus.connection"
         private const val NOTIFICATION_ID = 1
 

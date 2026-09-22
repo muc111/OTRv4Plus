@@ -324,10 +324,18 @@ class ChatState(
      * they surface through [conversations] as rows with `saved = false`, so
      * somebody remembered on this device but not confirmed by the server is
      * visible and is not described as confirmed.
+     *
+     * KEYED THROUGH [bare], like everything else here. The bridge already
+     * canonicalises what it emits, so this agrees with it rather than
+     * correcting it -- but `contacts` is unioned with the message store in
+     * [conversations], the store is keyed by `bare(event.peer)`, and two
+     * spellings of one person there is two rows with separate history. This
+     * is the one place a JID enters this object from outside, so it is the
+     * one place that has to fold.
      */
     fun applyRoster(roster: List<Contact>) {
-        for (contact in roster) contacts[contact.jid] = contact
-        val present = roster.map { it.jid }.toSet()
+        for (contact in roster) contacts[bare(contact.jid)] = contact
+        val present = roster.map { bare(it.jid) }.toSet()
         contacts.keys.retainAll { it in present }
         if (canSend()) {
             postLogin.onAuthenticated()
@@ -365,12 +373,18 @@ class ChatState(
             // Returns false. A verification request is not a message and must
             // not buzz the phone — a peer able to trigger a notification by
             // running SMP would be a peer with a way to ring somebody at will.
+            // Keyed through `bare`, because [conversations] reads this map
+            // with a bared JID. A key that did not fold would silently miss
+            // and fall back to the last roster poll -- which for a
+            // verification that just FAILED means the row goes on showing the
+            // previous, better state until the poll catches up. Folding here
+            // is the fail-closed direction.
             is OtrEvent.SmpProgressed -> {
-                smpStates[event.peer] = event.progress.state
+                smpStates[bare(event.peer)] = event.progress.state
                 false
             }
             is OtrEvent.SmpFinished -> {
-                smpStates[event.peer] = event.state
+                smpStates[bare(event.peer)] = event.state
                 false
             }
             else -> false
@@ -441,15 +455,20 @@ class ChatState(
         // previous run has a row before the roster arrives -- but `saved`
         // below still comes from the ROSTER, so a local record can never
         // render as a server-confirmed contact.
-        val jids = contacts.keys + store.conversationIds() +
-            savedContacts.all().map { it.jid }
+        // Every arm of the union is folded, so one person is one row. The
+        // store's ids already are (`receive` bares them) and `SavedContacts`
+        // already lower-cases, but the union is the place the split would
+        // SHOW, so it is the place that states the rule.
+        val jids = contacts.keys.map { bare(it) }.toSet() +
+            store.conversationIds().map { bare(it) } +
+            savedContacts.all().map { bare(it.jid) }
         return jids.map { jid ->
             val contact = contacts[jid]
             Conversation(
                 jid = jid,
                 displayName = contact?.displayName?.takeIf { it.isNotBlank() }
                     ?: savedContacts.all()
-                        .firstOrNull { it.jid == jid }?.displayName
+                        .firstOrNull { bare(it.jid) == jid }?.displayName
                         ?.takeIf { it.isNotBlank() }
                     ?: jid,
                 presence = Presence.of(
@@ -491,10 +510,10 @@ class ChatState(
     }
 
     fun conversation(jid: String): Conversation =
-        conversations().firstOrNull { it.jid == jid }
+        conversations().firstOrNull { it.jid == bare(jid) }
             ?: Conversation(
-                jid = jid,
-                displayName = jid,
+                jid = bare(jid),
+                displayName = bare(jid),
                 presence = Presence.UNKNOWN,
                 security = SecurityState.PLAINTEXT,
                 lastMessage = null,
@@ -507,12 +526,16 @@ class ChatState(
                 saved = true,
             )
 
-    fun messages(jid: String): List<Message> = store.messages(jid)
+    // FOLDED ON THE WAY IN, all four of them. The store and the draft map are
+    // written by `receive` and read by the composer, and the two halves have
+    // to agree about what "this conversation" is or a reply is filed away from
+    // the message it answers.
+    fun messages(jid: String): List<Message> = store.messages(bare(jid))
 
-    fun draft(jid: String): String = drafts[jid] ?: ""
+    fun draft(jid: String): String = drafts[bare(jid)] ?: ""
 
     fun setDraft(jid: String, text: String) {
-        drafts[jid] = text
+        drafts[bare(jid)] = text
     }
 
     /**
@@ -528,12 +551,16 @@ class ChatState(
     // -- actions -------------------------------------------------------------
 
     fun open(jid: String) {
-        openConversation = jid
+        // Folded, because `receive` compares this against `bare(event.peer)`
+        // to decide whether an arriving message has been SEEN. Held under a
+        // different spelling, the comparison never matches and the badge
+        // counts up on the conversation the user is reading.
+        openConversation = bare(jid)
         // Opening a conversation is looking at it. The service's own signal
         // can lag a frame behind the Activity's onStart, and a badge that
         // lingers on the screen you are reading is its own small bug.
         uiVisible = true
-        store.markRead(jid)
+        store.markRead(bare(jid))
     }
 
     /**
@@ -578,6 +605,7 @@ class ChatState(
      * echo and its own confirmation become two bubbles.
      */
     fun beginSend(jid: String): Message? {
+        @Suppress("NAME_SHADOWING") val jid = bare(jid)
         val body = draft(jid)
         if (body.isBlank()) return null
         // Refused here as well as disabled in the composer, because the button
@@ -662,11 +690,28 @@ class ChatState(
 
     companion object {
         /**
-         * The bare JID. Resources come and go with each reconnect and each
-         * device, and a conversation keyed by a full JID would fork every time
-         * the peer's client restarted -- one thread per resource, none of them
-         * the whole conversation.
+         * The bare JID, case-folded. One contact, one key.
+         *
+         * Resources come and go with each reconnect and each device, and a
+         * conversation keyed by a full JID would fork every time the peer's
+         * client restarted -- one thread per resource, none of them the whole
+         * conversation.
+         *
+         * CASE WAS THE HALF THIS MISSED. slixmpp normalises an inbound
+         * stanza's `from`, so everything arriving from the server is already
+         * lower-case; a JID the USER types is not. Add `Bob@Example.test` and
+         * the roster echoes `bob@example.test`, so `conversations()` -- which
+         * unions the roster, the message store and the saved list -- showed
+         * the same person twice, and the two rows had separate history.
+         *
+         * XMPP says the localpart and domain are case-insensitive, so folding
+         * is correct rather than merely convenient. It is also the safe
+         * direction: it can only merge two keys into one, never split one
+         * into two. `OtrApp.canonical_peer` applies the same rule on the
+         * Python side, where the consequence of splitting was a conversation
+         * that had asked for OTR reporting that plaintext was allowed.
          */
-        fun bare(jid: String): String = jid.substringBefore('/')
+        fun bare(jid: String): String =
+            jid.trim().substringBefore('/').lowercase()
     }
 }
