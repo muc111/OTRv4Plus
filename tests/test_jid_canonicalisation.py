@@ -3,6 +3,8 @@
 # Copyright (C) 2025-2026 muc111
 """One contact, one key -- however their address is spelled.
 
+Enforces INV-27.
+
 THE LEAK
 ========
 `OtrApp` keeps a dozen maps keyed by peer JID. One of them is `OtrMode`, which

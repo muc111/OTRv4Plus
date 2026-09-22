@@ -457,6 +457,7 @@ class ChatViewModel : ViewModel() {
      */
     fun verificationPrompt(jid: String): Verification.Prompt? {
         observe()
+        @Suppress("NAME_SHADOWING") val jid = ChatState.bare(jid)
         val core = this.core ?: return null
         return Verification.prompt(
             security = conversation(jid).security,
@@ -475,7 +476,10 @@ class ChatViewModel : ViewModel() {
 
     /** The user tapped Verify Identity. Opens the outgoing prompt only. */
     fun requestVerification(jid: String) {
-        verifyRequested = jid
+        // Folded, because this is compared against the jid every later read
+        // passes in. Two spellings here would mean the prompt is "open" for a
+        // key nothing asks about, so the dialog never appears.
+        verifyRequested = ChatState.bare(jid)
         revision++
     }
 
@@ -490,6 +494,7 @@ class ChatViewModel : ViewModel() {
      * the state becomes CANCELLED rather than staying SECRET_REQUIRED.
      */
     fun dismissVerification(jid: String) {
+        @Suppress("NAME_SHADOWING") val jid = ChatState.bare(jid)
         val incoming = verificationPrompt(jid) == Verification.Prompt.INCOMING
         verifyRequested = null
         revision++
@@ -514,6 +519,7 @@ class ChatViewModel : ViewModel() {
      * engine, which copies it into Rust-owned zeroizing memory.
      */
     fun submitVerification(jid: String, secret: String) {
+        @Suppress("NAME_SHADOWING") val jid = ChatState.bare(jid)
         val state = this.state ?: return
         val core = this.core ?: run {
             state.note("The connection is not ready yet.")

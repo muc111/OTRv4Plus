@@ -3,6 +3,9 @@
 # Copyright (C) 2025-2026 muc111
 """Removing a contact has to remove them.
 
+Enforces INV-27 for the roster half: what a subscription entitled us to
+know goes when the subscription does.
+
 WHAT REMOVAL DID
 ================
 It took the roster entry away, and nothing else. Measured through the

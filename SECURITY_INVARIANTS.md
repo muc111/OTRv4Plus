@@ -214,6 +214,21 @@ otrv4plus_trade.py relays opaque base64 between two wallets it does not run.  It
 **Enforced by:** `tests/test_trade_courier.py`, `tests/test_tip_address_relay.py`
 
 is_smp_verified(peer) is checked on EVERY trade message in both directions, not once when the trade opens -- otherwise a trade agreed at 09:00 and still running at 14:00 spans five hours in which a session teardown goes unnoticed while blobs keep flowing.  Fail-closed like INV-12: a predicate that raises counts as unverified.  The peer's fingerprint is bound when the trade opens and re-checked with it; a change cancels the trade and never re-pins, matching INV-11.  Binding is to the fingerprint and never to the I2P destination, which is TRANSIENT and changes every session by design.  /tip applies the same gate before either branch of its TLV handler: a RESPONSE matters at least as much as a request, because it is a string the client is about to show the user as somewhere to send money.
+### INV-27 — Per-peer security state is reachable under exactly one key, whatever spelling of the JID is used.
+
+**Status:** `ENFORCED`  
+**Enforced by:** `tests/test_jid_canonicalisation.py`, `tests/test_presence_state.py`, `tests/test_removing_a_contact.py`
+
+RFC 6122 makes the localpart and domain case-insensitive and the resource no part of an identity, so the same person arrives spelled several ways: typed into Add Contact, normalised by slixmpp on the server's echo, and carried per-device on a stanza.  `OtrMode` -- which decides whether a conversation may send in the clear -- was keyed by whatever string the caller passed, so a conversation that had asked for OTR reported that plaintext was permitted under three other spellings of the same peer:
+
+    may_send_plaintext(bob@x.test       ) = False
+    may_send_plaintext(Bob@X.test       ) = True   <-- LEAK
+    may_send_plaintext(bob@x.test/phone ) = True   <-- LEAK
+
+`OtrApp.canonical_peer` folds at the boundary and every public per-peer method applies it; `ChatState.bare`, `AccountScope.normalise` and `otrv4plus_presence._bare` fold identically.  Folding is one-way safe: it can merge two spellings of one account and can never split one or join two, and the tests hold both directions.
+
+**Scope:** canonicalisation decides which BUCKET a peer's state lives in.  It is not consulted by the engine, does not touch key material, and never decides trust -- a fingerprint comparison is still byte-for-byte.  That is the boundary of the claim rather than a gap in it.
+
 ## Where secrets live
 
 Updated at v10.13.2, when the voice path finished moving.

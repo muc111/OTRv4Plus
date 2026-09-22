@@ -2,6 +2,9 @@
 # Copyright (C) 2025-2026 muc111
 """A contact was added, saved, and then read "presence unknown" forever.
 
+Enforces INV-27 for availability: one account is one key in this book,
+however their address is spelled.
+
 THE BUG
 -------
 Presence was a `Dict[str, bool]`, read with `.get(jid, False)`. Two states for

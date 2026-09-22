@@ -402,6 +402,35 @@ INVARIANTS: Tuple[Invariant, ...] = (
                   "string the client is about to show the user as somewhere "
                   "to send money.",
     ),
+    Invariant(
+        id="INV-27",
+        statement="Per-peer security state is reachable under exactly one "
+                  "key, whatever spelling of the JID is used.",
+        status="ENFORCED",
+        tests=("test_jid_canonicalisation.py", "test_presence_state.py",
+               "test_removing_a_contact.py"),
+        rationale="RFC 6122 makes the localpart and domain case-insensitive "
+                  "and the resource no part of an identity, so the same "
+                  "person arrives spelled several ways: typed into Add "
+                  "Contact, normalised by slixmpp on the server's echo, and "
+                  "carried per-device on a stanza.  OtrMode -- which decides "
+                  "whether a conversation may send in the clear -- was keyed "
+                  "by whatever string the caller passed, so a conversation "
+                  "that had asked for OTR reported that plaintext was "
+                  "permitted under three other spellings of the same peer.  "
+                  "OtrApp.canonical_peer folds at the boundary and every "
+                  "public per-peer method applies it; ChatState.bare, "
+                  "AccountScope.normalise and otrv4plus_presence._bare fold "
+                  "identically.  Folding is one-way safe: it can merge two "
+                  "spellings of one account and can never split one or join "
+                  "two, which the tests hold in both directions.  Scope: "
+                  "canonicalisation decides which BUCKET a peer's state "
+                  "lives in.  It is not consulted by the engine, does not "
+                  "touch key material, and never decides trust -- a "
+                  "fingerprint comparison is still byte-for-byte.  That is "
+                  "the boundary of the claim, not a gap in it, so this is "
+                  "ENFORCED with no `limits`.",
+    ),
 )
 
 
