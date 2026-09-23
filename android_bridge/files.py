@@ -418,6 +418,30 @@ class FileBridge:
             self._pumps = []
         if manager is None:
             return
+        # EXPLICIT DESTRUCTION, then forgetting. Clearing the dicts used to be
+        # all this did, which left each transfer's FileKey inside a
+        # RustFileSender / RustFileReceiver that zeroizes only when the last
+        # Python reference goes -- so the wipe depended on the garbage
+        # collector. Each is told to zeroize first; an incoming transfer's
+        # partial file is closed and unlinked by the engine's own routine.
+        # Local only: nothing is sent, because this runs as the session that
+        # would carry a CANCEL is being torn down.
+        for transfer in list(getattr(manager, "outgoing", {}).values()):
+            try:
+                transfer.cancelled = True
+                transfer.sender.zeroize()
+                transfer._sealed = []
+            except Exception:
+                pass
+        destroy = getattr(manager, "_destroy_incoming", None)
+        for transfer in list(getattr(manager, "incoming", {}).values()):
+            try:
+                if destroy is not None:
+                    destroy(transfer)
+                elif transfer.receiver is not None:
+                    transfer.receiver.zeroize()
+            except Exception:
+                pass
         for attribute in ("outgoing", "incoming", "_abandoned"):
             try:
                 getattr(manager, attribute).clear()

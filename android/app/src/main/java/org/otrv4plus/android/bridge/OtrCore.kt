@@ -23,6 +23,14 @@ interface OtrCore {
     /** Tear down every session. Safe to call repeatedly. */
     fun shutdown()
 
+    /**
+     * Wipe & Exit, engine side: destroy every session secret in Rust (on the
+     * transport's loop thread), close the transport, and destroy what the
+     * Python side wrote to disk. The core is spent afterwards. Idempotent;
+     * never throws. See `OtrApp.wipe` and `ANDROID_WIPE_AND_EXIT.md`.
+     */
+    fun wipe(): WipeReport
+
     fun localFingerprint(): String
 
     fun securityState(peer: String): SecurityState
@@ -95,6 +103,28 @@ interface OtrCore {
 }
 
 /** Result of bringing the stack up. Carries no secrets. */
+/**
+ * What an engine wipe did. Counts and step names only -- never a key, a JID or
+ * engine text.
+ */
+data class WipeReport(
+    val sessions: Int = 0,
+    val handshakes: Int = 0,
+    val identityKeys: Int = 0,
+    val filesDestroyed: Int = 0,
+    /** Files that could only be unlinked, not overwritten first. */
+    val filesUnlinkedOnly: Int = 0,
+    /** Steps that reported a problem, e.g. "engine_off_thread". */
+    val errors: List<String> = emptyList(),
+) {
+    val ok: Boolean get() = errors.isEmpty()
+
+    companion object {
+        /** A wipe that could not reach Python at all. */
+        val UNREACHABLE = WipeReport(errors = listOf("core_unreachable"))
+    }
+}
+
 data class InitResult(
     val ok: Boolean,
     val pythonVersion: String,

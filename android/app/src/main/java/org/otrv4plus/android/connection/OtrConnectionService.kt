@@ -39,6 +39,8 @@ import org.otrv4plus.android.security.CredentialStore
 import org.otrv4plus.android.security.KeystoreVault
 import org.otrv4plus.android.security.Vault
 import org.otrv4plus.android.security.VaultCredentialStore
+import org.otrv4plus.android.security.WipeAndExit
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * The one owner of the connection, and it outlives every screen.
@@ -215,7 +217,17 @@ class OtrConnectionService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (wipeStarted.get()) {
+            // Nothing starts, resumes or reconnects once a wipe has begun --
+            // a queued ACTION_START from a screen that had not caught up
+            // would otherwise rebuild what the wipe is destroying.
+            return START_NOT_STICKY
+        }
         when (intent?.action) {
+            ACTION_WIPE -> {
+                wipeAndExit()
+                return START_NOT_STICKY
+            }
             ACTION_STOP -> {
                 // Recorded because this is one of only three ways the app can
                 // reach DISCONNECTING, and telling them apart afterwards is
@@ -376,6 +388,84 @@ class OtrConnectionService : Service() {
         drainer = null
         scope.cancel()
         super.onDestroy()
+    }
+
+    // ── Wipe & Exit ─────────────────────────────────────────────────────────
+
+    private val wipeStarted = AtomicBoolean(false)
+
+    /** The last wipe's engine report, for the diagnostics that outlive it. */
+    @Volatile
+    var lastWipe: org.otrv4plus.android.bridge.WipeReport? = null
+        private set
+
+    /**
+     * Destroy everything sensitive and end the process.
+     *
+     * The order and the policy -- what is destroyed, what is kept, why each
+     * step is where it is -- are in [WipeAndExit], which is plain Kotlin and
+     * executed by `WipeAndExitTest`. This supplies the platform half of each
+     * step and nothing else.
+     *
+     * Foreground first: this was started with `startForegroundService`, and
+     * the system kills a process that does not call `startForeground` in
+     * time. Then off the main thread, on `teardown` rather than `scope`,
+     * because the EXIT step ends the service and must not be racing the
+     * cancellation that would cause.
+     */
+    private fun wipeAndExit() {
+        if (!wipeStarted.compareAndSet(false, true)) return
+        goForeground()
+        reconnect.onUserDisconnect()
+        val context = applicationContext
+        val runner = WipeAndExit.Runner(mapOf(
+            WipeAndExit.Step.STOP_BACKGROUND to {
+                worker?.cancel(); worker = null
+                watcher?.cancel(); watcher = null
+                drainer?.cancel(); drainer = null
+            },
+            WipeAndExit.Step.WIPE_ENGINE to {
+                val report = core.wipe()
+                lastWipe = report
+                if (!report.ok) error("engine wipe reported ${report.errors}")
+            },
+            WipeAndExit.Step.CLEAR_NOTIFICATIONS to {
+                alerts.clear()
+                getSystemService(NotificationManager::class.java)?.cancelAll()
+            },
+            WipeAndExit.Step.CLEAR_MEMORY to {
+                jid = ""
+                password = ""
+                server = ""
+                chat.bindAccount(AccountScope.NONE)
+            },
+            WipeAndExit.Step.DESTROY_VAULT to {
+                // The in-memory fallback vault has no key to delete; clearing
+                // it is the whole of its erasure.
+                runCatching { vault.clear() }
+                if (!KeystoreVault.destroy(context) && vault is KeystoreVault) {
+                    error("the vault key could not be confirmed deleted")
+                }
+            },
+            WipeAndExit.Step.CLEAR_CACHE to {
+                context.cacheDir.listFiles()?.forEach { it.deleteRecursively() }
+            },
+            WipeAndExit.Step.EXIT to {
+                enter(LinkPhase.STOPPED, "wiped")
+                ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
+                stopSelf()
+                // The process ending is the last step, not a courtesy. It is
+                // what finally releases the interpreter, every Python object
+                // and every Rust handle still reachable from one; a service
+                // that merely stopped would leave them all in memory until
+                // Android got round to reclaiming it. Stopped first, so the
+                // system does not restart a sticky service into the void.
+                android.os.Process.killProcess(android.os.Process.myPid())
+            },
+        ))
+        teardown.launch {
+            withContext(Dispatchers.IO) { runner.run() }
+        }
     }
 
     // ── connection ──────────────────────────────────────────────────────────
@@ -888,6 +978,7 @@ class OtrConnectionService : Service() {
         const val ACTION_START = "org.otrv4plus.android.START"
         const val ACTION_STOP = "org.otrv4plus.android.STOP"
         const val ACTION_LOGOUT = "org.otrv4plus.android.LOGOUT"
+        const val ACTION_WIPE = "org.otrv4plus.android.WIPE"
         const val EXTRA_JID = "jid"
         const val EXTRA_PASSWORD = "password"
 
@@ -921,6 +1012,16 @@ class OtrConnectionService : Service() {
         fun stop(context: Context) {
             val intent = Intent(context, OtrConnectionService::class.java)
                 .setAction(ACTION_STOP)
+            ContextCompat.startForegroundService(context, intent)
+        }
+
+        /**
+         * Wipe & Exit. Destroys every session secret and every sensitive
+         * record, then ends the process. See [WipeAndExit].
+         */
+        fun wipeAndExit(context: Context) {
+            val intent = Intent(context, OtrConnectionService::class.java)
+                .setAction(ACTION_WIPE)
             ContextCompat.startForegroundService(context, intent)
         }
 

@@ -440,6 +440,34 @@ INVARIANTS: Tuple[Invariant, ...] = (
                   "the boundary of the claim, not a gap in it, so this is "
                   "ENFORCED with no `limits`.",
     ),
+    Invariant(
+        id="INV-28",
+        statement="Wipe & Exit destroys every session secret in Rust, and "
+                  "nothing it destroyed can be used or rebuilt afterwards.",
+        status="PARTIAL",
+        tests=("test_wipe_and_exit.py", "test_rust_owns_secrets.py"),
+        rationale="Every Rust object holding a secret is told to zeroize "
+                  "before its Python reference is dropped -- ratchets, the "
+                  "ratchet DH handle, the pending brace keypair, SMP state "
+                  "and vault, in-flight DAKE state and any unconsumed "
+                  "DakeOutput, the identity and prekey handles, voice key "
+                  "schedules, file-transfer keys -- so the wipe does not "
+                  "depend on garbage collection; the tests hold references "
+                  "and check each object reports itself destroyed.  The "
+                  "engine is wiped on the transport's loop thread, where "
+                  "unsendable DAKE outputs are created.  A wiped engine, "
+                  "facade and controller refuse every entry point and emit "
+                  "nothing.  On Android the vault's AndroidKeyStore key is "
+                  "deleted, which is cryptographic erasure of every sealed "
+                  "record.",
+        limits="Files the Python side wrote (the device seed, received "
+               "files) are overwritten once and unlinked; on flash that "
+               "overwrite is best effort, because wear levelling may leave "
+               "the old block until the controller erases it.  No test can "
+               "show that no copy of a key survives elsewhere in process "
+               "memory; that is the Rust core's ZeroizeOnDrop contract, and "
+               "the process exits after the wipe.",
+    ),
 )
 
 

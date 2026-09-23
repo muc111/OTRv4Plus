@@ -231,6 +231,15 @@ RFC 6122 makes the localpart and domain case-insensitive and the resource no par
 
 **Scope:** canonicalisation decides which BUCKET a peer's state lives in.  It is not consulted by the engine, does not touch key material, and never decides trust -- a fingerprint comparison is still byte-for-byte.  That is the boundary of the claim rather than a gap in it.
 
+### INV-28 — Wipe & Exit destroys every session secret in Rust, and nothing it destroyed can be used or rebuilt afterwards.
+
+**Status:** `PARTIAL`  
+**Enforced by:** `tests/test_wipe_and_exit.py`, `tests/test_rust_owns_secrets.py`
+
+Every Rust object holding a secret is told to zeroize before its Python reference is dropped -- ratchets, the ratchet DH handle, the pending brace keypair, SMP state and vault, in-flight DAKE state and any unconsumed `DakeOutput`, the identity and prekey handles, voice key schedules, file-transfer keys -- so the wipe does not depend on garbage collection; the tests hold references and check each object reports itself destroyed. The engine is wiped on the transport's loop thread, where unsendable DAKE outputs are created. A wiped engine, facade and controller refuse every entry point and emit nothing. On Android the vault's AndroidKeyStore key is deleted, which is cryptographic erasure of every sealed record. See [ANDROID_WIPE_AND_EXIT.md](ANDROID_WIPE_AND_EXIT.md).
+
+**Limit:** Files the Python side wrote (the device seed, received files) are overwritten once and unlinked; on flash that overwrite is best effort, because wear levelling may leave the old block until the controller erases it. No test can show that no copy of a key survives elsewhere in process memory; that is the Rust core's `ZeroizeOnDrop` contract, and the process exits after the wipe.
+
 ## Where secrets live
 
 Updated at Android 0.5.0, when the ratchet DH, the brace KEM, the voice agreement and the ML-DSA key moved.

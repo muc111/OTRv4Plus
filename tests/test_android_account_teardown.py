@@ -253,17 +253,25 @@ class TestTheEngineIsToldOnLogout:
 
         A connect ATTEMPT outliving its service would be I2P tunnels nobody
         is watching -- the failure this exists to prevent, not to cause. So
-        the two uses are named: the engine shutdown on logout, and the
-        connection teardown. A third would have to argue with this line.
+        the uses are named: the engine shutdown on logout, the connection
+        teardown, and Wipe & Exit. A fourth would have to argue with this line.
+
+        Wipe & Exit argued for its place: it IS teardown -- the most complete
+        there is -- and its last step ends the service, so launched on `scope`
+        it would be racing its own cancellation exactly as the logout
+        teardown was. Its body runs the `WipeAndExit.Runner`, whose engine
+        step is `core.wipe()`.
         """
         source = open(SERVICE_KT, encoding="utf-8").read()
-        assert source.count("teardown.launch") == 2, (
+        assert source.count("teardown.launch") == 3, (
             "the scope that outlives the service grew a new use; it carries "
             "teardown and nothing else")
         for body in _launch_bodies(source, "teardown.launch"):
-            assert "core.shutdown()" in body or "core.disconnect()" in body, (
+            assert ("core.shutdown()" in body or "core.disconnect()" in body
+                    or "runner.run()" in body), (
                 "something that is not a teardown was put on the scope that "
                 "outlives the service:\n%s" % body)
+        assert "WipeAndExit.Runner(" in source and "core.wipe()" in source
 
     def test_the_connection_teardown_is_not_racing_its_own_cancellation(self):
         """`stopConnection` is followed by the end of the service on every

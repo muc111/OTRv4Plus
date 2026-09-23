@@ -8,6 +8,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -16,6 +17,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import org.otrv4plus.android.ConnectionViewModel
 import org.otrv4plus.android.connection.SignIn
+import org.otrv4plus.android.security.WipeAndExit
 
 /**
  * The first screen that does something real.
@@ -274,12 +276,63 @@ fun ConnectScreen(
                 },
             ) { Text("Create account") }
 
+            // DISCONNECT, and labelled as what it does. This button said
+            // "Sign out" and called `disconnect()` -- which ends the
+            // connection and keeps the account, its history and its contacts.
+            // A user who pressed "Sign out" to leave nothing behind on a
+            // shared phone left everything behind.
             if (status.connected) {
                 OutlinedButton(
                     enabled = busy == null,
                     onClick = { model.disconnect() },
+                ) { Text("Disconnect") }
+            }
+        }
+
+        // SIGN OUT and WIPE & EXIT, separate from Disconnect and from each
+        // other. Sign out forgets this account (credentials and history) and
+        // leaves the app open. Wipe & Exit destroys everything -- see
+        // WipeAndExit for exactly what -- and closes the app. Neither is
+        // ever described as the other.
+        var confirmWipe by rememberSaveable { mutableStateOf(false) }
+        val activity = LocalContext.current as? android.app.Activity
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            if (status.connected) {
+                OutlinedButton(
+                    enabled = busy == null,
+                    onClick = { model.logout() },
                 ) { Text("Sign out") }
             }
+            OutlinedButton(
+                onClick = { confirmWipe = true },
+                colors = ButtonDefaults.outlinedButtonColors(
+                    contentColor = MaterialTheme.colorScheme.error),
+            ) { Text("Wipe & Exit") }
+        }
+        if (confirmWipe) {
+            AlertDialog(
+                onDismissRequest = { confirmWipe = false },
+                title = { Text(WipeAndExit.CONFIRM_TITLE) },
+                text = { Text(WipeAndExit.CONFIRM_BODY) },
+                confirmButton = {
+                    TextButton(
+                        onClick = {
+                            confirmWipe = false
+                            model.wipeAndExit()
+                            // The task goes too, and with it the recents
+                            // snapshot of whatever this screen was showing.
+                            activity?.finishAndRemoveTask()
+                        },
+                        colors = ButtonDefaults.textButtonColors(
+                            contentColor = MaterialTheme.colorScheme.error),
+                    ) { Text(WipeAndExit.CONFIRM) }
+                },
+                dismissButton = {
+                    TextButton(onClick = { confirmWipe = false }) {
+                        Text(WipeAndExit.CANCEL)
+                    }
+                },
+            )
         }
 
         // Only while an attempt is actually running. This is the one control

@@ -444,6 +444,16 @@ class CallBridge:
                     # Teardown is best effort. A call that will not end
                     # cleanly must not stop the rest of the sign-out.
                     pass
+        # THEN THE AUTHORITATIVE PASS. A graceful end can time out or raise,
+        # and "best effort" is not good enough for the keys: whatever is still
+        # in the table is force-closed synchronously, which stops the audio
+        # streams and zeroizes the key schedule and any key exchange -- the
+        # same routine the terminal client runs when its loop is already gone.
+        if manager is not None:
+            try:
+                manager.cleanup_sync()
+            except Exception:
+                pass
         # Anything still in flight -- most likely a `start_call` part way
         # through a tunnel build -- is cancelled before the loop stops.
         # Stopping the loop with a task still pending leaves the coroutine

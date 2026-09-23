@@ -124,6 +124,40 @@ other on their rosters.
 34. Repeat 31 with A **not** SMP-verified on B.
     **Expect:** nothing at all on B — no notification, no ring.
 
+## 7. Wipe & Exit — two handsets
+
+What it should do and why is in `ANDROID_WIPE_AND_EXIT.md`. Use A as the
+device being wiped and B as its peer.
+
+35. A and B: sign in, start OTR, and complete SMP on both sides.
+36. Exchange a few messages so A has history, and add B as a saved contact.
+37. (Optional) Start a call A→B and leave it active.
+38. (Optional) Start a file transfer B→A, accept on A, and wipe while it is
+    part way through.
+39. On A: Connect screen → **Wipe & Exit**. **Expect:** a confirmation that
+    says it cannot be undone and lists what is lost. Press Cancel once.
+    **Expect:** nothing happens. Press Wipe & Exit again and confirm.
+40. **Expect:** A's app closes within a few seconds and is gone from Recents;
+    no notification from the app remains (no "connected", no unread count, no
+    incoming call). On B the call (step 37) ends and the transfer (step 38)
+    stops.
+41. Relaunch A. **Expect:** the login screen, with no account filled in.
+42. **Expect:** no conversation with B, no history, no saved contacts.
+43. Sign in to the same account. **Expect:** B's conversation shows no OTR
+    session (padlock open), and no SMP verification.
+44. **Expect:** no call bar or call state for B; no transfer rows.
+45. `adb shell run-as org.otrv4plus.android ls -la files/ files/vault cache/`
+    **Expect:** `vault/` empty or recreated empty; no `.otrv4plus/files`
+    content from before; `cache/outbox` empty.
+46. **Expect:** notification channel settings you changed before the wipe are
+    unchanged, and the microphone permission is still granted.
+47. Start OTR with B again. **Expect:** B is told A's fingerprint changed (a new
+    identity) and must verify again.
+48. Complete SMP. **Expect:** a completely new, working session: messages, a
+    call and a file all work as in sections 3–4.
+49. Wipe & Exit again with nothing connected. **Expect:** it still closes
+    cleanly and the next launch is again empty.
+
 ---
 
 ## What to send back
@@ -131,6 +165,9 @@ other on their rosters.
 For each step: pass / fail, and for any fail the exported error log
 (Debug → Share error log). For step 11, say explicitly whether audio was
 heard in each direction.
+
+For step 40, report how long the app took to close. For step 45, paste the
+listing.
 
 ## What this does not cover
 

@@ -246,6 +246,8 @@ class ConnectionController:
         #: Guards against two overlapping attempts. See `connect`.
         self._connect_lock = threading.Lock()
         self._connecting = False
+        #: Set by `wipe`; a wiped controller never connects again.
+        self._wiped = False
 
         # Installed here rather than at connect time: a DAKE frame can arrive
         # in the same breath as session_start, and an event emitted before the
@@ -407,6 +409,9 @@ class ConnectionController:
         # each set `app._transport`, and the loser would leave a live worker
         # thread and an I2P lease behind with nothing holding a reference.
         with self._connect_lock:
+            if self._wiped:
+                return {"ok": False, "stage": self._stage, "code": "wiped",
+                        "detail": "This session was wiped. Restart the app."}
             if self._connecting:
                 return {"ok": False, "stage": self._stage,
                         "code": "already_connecting",
@@ -516,6 +521,9 @@ class ConnectionController:
         deliberately -- see `XmppTransport.register_account`.
         """
         with self._connect_lock:
+            if self._wiped:
+                return {"ok": False, "stage": self._stage, "code": "wiped",
+                        "detail": "This session was wiped. Restart the app."}
             if self._connecting:
                 return {"ok": False, "stage": self._stage,
                         "code": "already_connecting",
@@ -605,6 +613,50 @@ class ConnectionController:
                     "detail": type(exc).__name__}
         return {"ok": True, "code": "ok",
                 "detail": "Stopping the connection attempt."}
+
+    def wipe(self) -> Dict[str, Any]:
+        """Wipe & Exit: stop any attempt, destroy everything, never reconnect.
+
+        DISTINCT FROM `disconnect`, which ends a connection and leaves the
+        account, the sessions' long-term state and this controller usable.
+        This refuses first (`_wiped`, checked by `connect` and `register`
+        under the same lock that serialises them), stops an in-flight attempt
+        so the teardown is not waiting behind a tunnel build, hands the
+        transport to `OtrApp.wipe` -- which destroys every secret on the
+        loop thread and then closes it -- and drops the event queue, so
+        nothing buffered about the old sessions can be drained afterwards.
+
+        Idempotent. Returns `OtrApp.wipe`'s report plus `ok`.
+        """
+        with self._connect_lock:
+            self._wiped = True
+        transport = self._transport
+        if transport is not None:
+            try:
+                transport.cancel()
+            except Exception:
+                pass
+        # The app closes it: it must run the engine wipe on this transport's
+        # loop thread BEFORE the loop goes.
+        self._transport = None
+        try:
+            report = dict(self._app.wipe())
+        except Exception as exc:
+            report = {"errors": ["app:%s" % type(exc).__name__]}
+        if transport is not None:
+            # Idempotent: already closed by the app if it held this one.
+            try:
+                transport.close()
+            except Exception:
+                pass
+        try:
+            self._events.drain(0)
+        except Exception:
+            pass
+        self._password_present = False
+        self._enter("idle")
+        report["ok"] = not report.get("errors")
+        return report
 
     def disconnect(self) -> Dict[str, Any]:
         """Tear down. Best effort, and always ends at a known state."""

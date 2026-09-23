@@ -1294,6 +1294,30 @@ class XmppTransport(Transport):
                       entries=len(out), seen=len(jids))
         return out
 
+    def run_on_loop_thread(self, fn, timeout: float = CALL_TIMEOUT):
+        """Run a plain callable on the loop thread, or here if there is none.
+
+        For work that must happen on the thread that processes inbound OTR --
+        the engine wipe, above all. `DakeOutput` is `unsendable`: PyO3 lets
+        only its creating thread touch it, and dropping it anywhere else LEAKS
+        it instead of zeroizing it. Inbound frames are handled on this loop,
+        so that is where a pending DAKE output was made and where it must be
+        destroyed.
+
+        Never STARTS a loop to do it: a transport whose loop is gone has no
+        thread-bound objects left to honour, so the callable runs inline.
+        """
+        with self._lock:
+            loop = self._loop
+        if loop is None or loop.is_closed() or not loop.is_running():
+            return fn()
+
+        async def _call():
+            return fn()
+
+        future = asyncio.run_coroutine_threadsafe(_call(), loop)
+        return future.result(timeout=timeout)
+
     def close(self) -> None:
         """Finish with this transport. Safe to call more than once.
 

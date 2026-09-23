@@ -625,6 +625,52 @@ class ChaquopyOtrCore(private val appContext: Context) : OtrCore {
         )
     }
 
+    /**
+     * Wipe & Exit, engine side. NOT `shutdown` with extra steps.
+     *
+     * Through the CONTROLLER when there is one: it cancels an attempt in
+     * flight, refuses to connect again, and hands its transport to
+     * `OtrApp.wipe`, which destroys every secret on the transport's loop
+     * thread before closing it. Straight to the app when there is only an
+     * app. And when this process never started the engine at all, the
+     * Python-side files are still destroyed -- a wipe after a cold start must
+     * not leave the previous run's device seed and received files behind.
+     *
+     * Every reference is dropped afterwards, `initResult` included, so the
+     * core cannot answer as though a wiped engine were alive.
+     */
+    override fun wipe(): WipeReport {
+        val report: PyObject? = try {
+            val ctl = controller
+            val a = app
+            when {
+                ctl != null -> ctl.callAttr("wipe")
+                a != null -> a.callAttr("wipe")
+                else -> python.getModule("android_bridge.wipe").callAttr("wipe_disk")
+            }
+        } catch (_: Throwable) {
+            null
+        } finally {
+            controller = null
+            app = null
+            initResult = null
+        }
+        if (report == null) return WipeReport.UNREACHABLE
+        fun int(key: String): Int =
+            runCatching { report.callAttr("get", key, 0)?.toInt() ?: 0 }.getOrDefault(0)
+        val errors = runCatching {
+            report.callAttr("get", "errors")?.asList()?.map { it.toString() }
+        }.getOrNull() ?: emptyList()
+        return WipeReport(
+            sessions = int("sessions"),
+            handshakes = int("handshakes"),
+            identityKeys = int("identity_keys"),
+            filesDestroyed = int("files_destroyed"),
+            filesUnlinkedOnly = int("files_unlinked_only"),
+            errors = errors,
+        )
+    }
+
     override fun shutdown() {
         // The connection FIRST, and this is not cosmetic ordering.
         //

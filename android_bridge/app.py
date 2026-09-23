@@ -24,6 +24,7 @@ thread.
 from __future__ import annotations
 
 import logging
+import threading
 import time
 from dataclasses import dataclass
 from collections import OrderedDict
@@ -37,8 +38,8 @@ from typing import Any, Callable, Dict, List, Optional
 import otrv4plus_fragment as _fragment
 
 from .trace import TRACE as _TRACE
-from .files import FileBridge, is_file_signal
-from .voice import CallBridge, is_call_signal
+from .files import FileBridge, FileOutcome, is_file_signal
+from .voice import CallBridge, CallOutcome, is_call_signal
 import otrv4plus_presence as _presence
 from otrv4plus_mode import OtrMode
 
@@ -247,6 +248,9 @@ class OtrApp:
         #: Same deferral, same reason: the transfer engine pulls in the Rust
         #: core, and a device that never sends a file never loads it.
         self._files_bridge: Optional["FileBridge"] = None
+        #: Set by `wipe` and never cleared. See `wipe` for what it refuses.
+        self._wiped = False
+        self._wipe_lock = threading.Lock()
         self._enable_guided_smp()
 
     #: How many peers' last-seen times to keep.
@@ -342,7 +346,10 @@ class OtrApp:
         lose a session.
         """
         sink = self._sink
-        if sink is None:
+        if sink is None or self._wiped:
+            # After a wipe nothing reaches the UI: no late message, no state
+            # change from a frame that was in flight, nothing a screen could
+            # render about sessions that no longer exist.
             return
         try:
             sink.on_event(event)
@@ -398,6 +405,117 @@ class OtrApp:
         except Exception:
             _log.warning("session teardown reported a problem")
         self.disconnect()
+
+    @property
+    def wiped(self) -> bool:
+        return self._wiped
+
+    def wipe(self) -> Dict[str, Any]:
+        """Wipe & Exit, Python side. Idempotent; the app is spent afterwards.
+
+        NOT `shutdown` with more steps. `shutdown` is a logout: sessions end,
+        the facade stays usable for the next account, and pinned fingerprints
+        survive. This destroys, and refuses to be used again.
+
+        THE ORDER, and why each step is where it is:
+
+          1. Refuse. `_wiped` is set first, so from here no event reaches the
+             UI (`_emit`) and no call or transfer bridge can be rebuilt
+             (`calls`, `files`, and the methods on them). The engine refuses
+             in its own right once step 4 runs.
+          2. Calls. They hold a microphone, a SAM session and media keys, and
+             their END rides the OTR session step 4 destroys -- so they go
+             while it still exists. `CallBridge.shutdown` ends each call, then
+             force-closes whatever is left, which zeroizes the key schedule;
+             then it drains, stops and CLOSES its event loop.
+          3. Transfers. Each FileKey holder is told to zeroize and each
+             partial file is closed and unlinked, before the session is gone.
+          4. The engine, ON THE TRANSPORT'S LOOP THREAD. `DakeOutput` is
+             unsendable and is created while an inbound frame is processed,
+             which happens there; dropped from any other thread it would leak
+             un-zeroized. `EnhancedSessionManager.wipe` zeroizes every
+             ratchet, SMP state, vault, handshake and the identity handles in
+             Rust, then refuses all further use.
+          5. The transport. `close`, not `disconnect`: the XMPP stream, the
+             I2P tunnel and the loop thread all go, and the object is spent.
+          6. What this facade remembered: presence, last activity, the OTR
+             mode, call states.
+          7. Disk. Everything the Python side persists -- see
+             `android_bridge.wipe` for exactly what that is on Android, and
+             what an overwrite on flash does and does not achieve.
+
+        Returns counts for the caller's report. Never raises: a step that
+        fails is recorded and the rest still run, because a wipe that stops
+        at the first problem is worse than one that reports it.
+        """
+        with self._wipe_lock:
+            already = self._wiped
+            self._wiped = True
+        report: Dict[str, Any] = {"already_wiped": already, "errors": []}
+
+        calls, self._calls_bridge = self._calls_bridge, None
+        if calls is not None:
+            try:
+                calls.shutdown()
+            except Exception:
+                report["errors"].append("calls")
+        files, self._files_bridge = self._files_bridge, None
+        if files is not None:
+            try:
+                files.shutdown()
+            except Exception:
+                report["errors"].append("transfers")
+
+        engine_wipe = getattr(self._engine, "wipe", None)
+
+        def _wipe_engine():
+            if engine_wipe is not None:
+                return engine_wipe("wipe and exit")
+            self._engine.clear_all_sessions("wipe and exit")
+            return {}
+
+        transport = self._transport
+        runner = getattr(transport, "run_on_loop_thread", None)
+        try:
+            counts = runner(_wipe_engine) if runner is not None else _wipe_engine()
+        except Exception:
+            # The loop could not run it (stopped mid-teardown, timed out).
+            # Here, then: an output made on that thread may leak rather than
+            # zeroize, which is worse than the right thread and far better
+            # than leaving every session alive.
+            report["errors"].append("engine_off_thread")
+            try:
+                counts = _wipe_engine()
+            except Exception:
+                report["errors"].append("engine")
+                counts = {}
+        report.update({k: v for k, v in (counts or {}).items()
+                       if k != "already_wiped"})
+
+        self._transport = None
+        if transport is not None:
+            closer = getattr(transport, "close", None) or transport.disconnect
+            try:
+                closer()
+            except Exception:
+                report["errors"].append("transport")
+        self._connection = ConnectionState.DISCONNECTED
+
+        self._presence.forget_all()
+        self._last_activity.clear()
+        self._mode = OtrMode()
+        self._call_states.clear()
+
+        from . import wipe as _disk
+        destroyed = failed = 0
+        for root in _disk.python_state_roots():
+            d, f = _disk.destroy_tree(root)
+            destroyed += d
+            failed += f
+        report["files_destroyed"] = destroyed
+        report["files_unlinked_only"] = failed
+        self._sink = None
+        return report
 
     @staticmethod
     def canonical_peer(peer: str) -> str:
@@ -1304,6 +1422,10 @@ class OtrApp:
     @property
     def calls(self) -> "CallBridge":
         """The call bridge, built once per app. See android_bridge.voice."""
+        if self._wiped:
+            # Building one would build a VoiceCallManager: a wiped app must
+            # not grow a new call stack because a late UI poll asked.
+            raise BridgeError("wiped", "this app has been wiped")
         if self._calls_bridge is None:
             self._calls_bridge = CallBridge(self)
         return self._calls_bridge
@@ -1322,20 +1444,28 @@ class OtrApp:
         create a second gate that could disagree with the real one -- and the
         one that matters is the real one.
         """
+        if self._wiped:
+            return CallOutcome.UNAVAILABLE
         return self.calls.start_call(self.canonical_peer(peer))
 
     def answer_call(self, peer: str) -> str:
         """Answer a ringing call. Returns a `CallOutcome` code."""
+        if self._wiped:
+            return CallOutcome.UNAVAILABLE
         return self.calls.answer_call(self.canonical_peer(peer))
 
     def end_call(self, peer: str, notify_peer: bool = True) -> str:
         """End an active call, or reject a ringing one. One verb for both,
         because the state machine has one."""
+        if self._wiped:
+            return CallOutcome.NO_CALL
         return self.calls.end_call(self.canonical_peer(peer), notify_peer)
 
     def call_duration_seconds(self, peer: str) -> int:
         """Seconds since this call became ACTIVE, or 0. Never counts the
         tunnel build: dialling is not talking."""
+        if self._wiped:
+            return 0
         return self.calls.duration_seconds(self.canonical_peer(peer))
 
     def voice_unavailable_reason(self) -> str:
@@ -1345,6 +1475,8 @@ class OtrApp:
         `start_call` asks before doing anything -- so the screen cannot say
         something different from what the engine decides.
         """
+        if self._wiped:
+            return "wiped"
         return self.calls.unavailable_reason()
 
     # -- files -----------------------------------------------------------------
@@ -1357,6 +1489,8 @@ class OtrApp:
     @property
     def files(self) -> "FileBridge":
         """The transfer bridge, built once per app. See android_bridge.files."""
+        if self._wiped:
+            raise BridgeError("wiped", "this app has been wiped")
         if self._files_bridge is None:
             self._files_bridge = FileBridge(self)
         return self._files_bridge
@@ -1374,6 +1508,8 @@ class OtrApp:
         before it arrives. The engine takes a path and does not care who
         chose it, which is why the Termux picker is never reached here.
         """
+        if self._wiped:
+            return FileOutcome.UNAVAILABLE
         return self.files.send_file(self.canonical_peer(peer), path,
                                     bool(strip_metadata))
 
@@ -1387,14 +1523,20 @@ class OtrApp:
 
     def accept_file(self, transfer_id: str) -> str:
         """Accept an offered transfer. Returns a `FileOutcome` code."""
+        if self._wiped:
+            return FileOutcome.UNAVAILABLE
         return self.files.accept(transfer_id)
 
     def decline_file(self, transfer_id: str) -> str:
         """Decline an offered transfer. Returns a `FileOutcome` code."""
+        if self._wiped:
+            return FileOutcome.NO_TRANSFER
         return self.files.decline(transfer_id)
 
     def transfers(self) -> List[Dict[str, Any]]:
         """Every live transfer, structured. Never the engine's own sentences."""
+        if self._wiped:
+            return []
         return self.files.transfers()
 
     def received_file_dir(self) -> str:
@@ -1412,5 +1554,5 @@ class OtrApp:
         reading. Driven from the host's existing drain rather than a timer of
         its own, so there is one observer and nothing to leak.
         """
-        if self._calls_bridge is not None:
+        if self._calls_bridge is not None and not self._wiped:
             self._calls_bridge.poll()

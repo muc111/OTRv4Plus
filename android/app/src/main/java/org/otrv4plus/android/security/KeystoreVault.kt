@@ -141,6 +141,31 @@ class KeystoreVault private constructor(
             InMemoryVault()
         }
 
+        /**
+         * Wipe & Exit: delete the sealing key, then the records.
+         *
+         * THE KEY FIRST, because the key is the erasure. Every record in the
+         * vault is AES-256-GCM under a key that lives in the AndroidKeyStore
+         * (in a TEE or secure element where the device has one) and has never
+         * existed outside it. Once the entry is deleted no record can be
+         * opened again -- not from this app, not from a backup, not from a
+         * block the flash controller has not erased yet. Deleting the files
+         * afterwards is tidiness; it is not what the guarantee rests on, and
+         * on flash it could not carry one.
+         *
+         * Returns whether the key is confirmed gone. The next [open] generates
+         * a fresh key, so a relaunch starts from an empty vault.
+         */
+        fun destroy(context: Context): Boolean {
+            val keyGone = runCatching {
+                val store = KeyStore.getInstance(KEYSTORE).apply { load(null) }
+                if (store.containsAlias(ALIAS)) store.deleteEntry(ALIAS)
+                !store.containsAlias(ALIAS)
+            }.getOrDefault(false)
+            runCatching { File(context.filesDir, "vault").deleteRecursively() }
+            return keyGone
+        }
+
         private fun loadOrCreateKey(): SecretKey {
             val store = KeyStore.getInstance(KEYSTORE).apply { load(null) }
             (store.getEntry(ALIAS, null) as? KeyStore.SecretKeyEntry)
