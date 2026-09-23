@@ -105,6 +105,11 @@ other on their rosters.
 27. Repeat and dismiss the dialog (back button).
     **Expect:** nothing is sent.
 28. Send a screenshot (usually no EXIF). **Expect:** no question is asked.
+28b. If the camera app can save HEIC (often "High efficiency" in its
+    settings), send a HEIC photo. **Expect:** no scrub is offered; the notice
+    says the app cannot check this kind of file. Send a WebP image that
+    carries EXIF, if you have one: **Expect:** the metadata question, as for
+    JPEG.
 29. Send a PDF. **Expect:** it is sent, with a notice that the app cannot
     check this kind of file — not silence.
 30. After all of the above, inspect A's app cache `outbox/` directory
@@ -177,5 +182,6 @@ listing.
   notification ("Incoming call", hidden on the lock screen), not a
   full-screen ringing activity. A full-screen intent would put a call screen
   over the lock screen, which is a disclosure decision, not a wiring one.
-- **Formats other than JPEG and PNG** are never scrubbed; HEIC, WebP and
-  video are sent with the "cannot check" notice.
+- **Formats other than JPEG, PNG and WebP** are never scrubbed. HEIC/HEIF
+  and video (MP4, 3GP, MOV) keep metadata as items inside an ISO-BMFF `meta`
+  box; they are sent with the "cannot check" notice, never described as clean.
