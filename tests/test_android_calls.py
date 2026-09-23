@@ -133,6 +133,13 @@ def audio_available(monkeypatch):
     point as designed -- every gate that decides whether a call may happen,
     including the SMP one, remains the shipped implementation.
     """
+    # Imported FIRST. Its import binds the real host hooks -- including
+    # `voice_available`, which says this container has no audio -- and the
+    # call bridge imports it on first use. Overriding before that import
+    # meant the first test to build a call manager lost the override, so the
+    # INVITE was refused as "unavailable" before it reached the SMP gate and
+    # the gate tests passed or failed depending on which test ran first.
+    import otrv4plus_xmpp                                    # noqa: F401
     previous = voice._HOST["voice_available"]
     voice.bind_host(voice_available=lambda: (True, "ok"))
     yield
@@ -822,6 +829,23 @@ class TestAnIncomingCallRingsThePhone:
         for leak in ("peer", "jid", "displayName", "setContentText(peer"):
             assert leak not in body.replace("R.string.call_incoming", ""), (
                 "the call notification could carry %r" % leak)
+
+    def test_there_is_no_full_screen_call_ui(self, service):
+        """DECIDED, not forgotten. A full-screen intent puts a call screen
+        over the lock screen: a disclosure that somebody is calling this
+        device, visible to whoever holds it, and on Android 14+ a separate
+        permission Play restricts. The heads-up notification rings just as
+        loudly and shows nothing. See CallAlert.kt and the device test doc."""
+        assert "setFullScreenIntent" not in service
+        manifest = open(os.path.join(os.path.dirname(os.path.dirname(
+            os.path.abspath(__file__))), "android", "app", "src", "main",
+            "AndroidManifest.xml"), encoding="utf-8").read()
+        assert "USE_FULL_SCREEN_INTENT" not in manifest
+
+    def test_the_call_channel_is_secret_on_the_lock_screen(self, service):
+        channel = service[service.index("CALL_CHANNEL_ID,"):]
+        channel = channel[:channel.index("createNotificationChannels")]
+        assert "lockscreenVisibility = Notification.VISIBILITY_SECRET" in channel
 
     def test_logout_takes_the_ring_down(self, service):
         logout = service[service.index("ACTION_LOGOUT ->"):]

@@ -52,6 +52,13 @@ def isolated_home(monkeypatch):
 
 @pytest.fixture
 def audio_available(monkeypatch):
+    # Imported FIRST. Its import binds the real host hooks -- including
+    # `voice_available`, which says this container has no audio -- and the
+    # call bridge imports it on first use. Overriding before that import
+    # meant the first test to build a call manager lost the override, so the
+    # INVITE was refused as "unavailable" before it reached the SMP gate and
+    # the gate tests passed or failed depending on which test ran first.
+    import otrv4plus_xmpp                                    # noqa: F401
     previous = voice._HOST["voice_available"]
     voice.bind_host(voice_available=lambda: (True, "ok"))
     yield
