@@ -834,10 +834,30 @@ class ChaquopyOtrCore(private val appContext: Context) : OtrCore {
      * NOT that the peer has it -- the peer has to accept, and then every
      * chunk crosses I2P.
      */
-    fun sendFile(peer: String, path: String): String =
+    fun sendFile(peer: String, path: String,
+                 stripMetadata: Boolean = false): String =
         runCatching {
-            requireApp().callAttr("send_file", peer, path).toString()
+            requireApp().callAttr("send_file", peer, path, stripMetadata)
+                .toString()
         }.getOrDefault(FileOutcome.UNAVAILABLE)
+
+    /**
+     * What [path] carries before it is sent, so the user can choose.
+     *
+     * Examined in Python, where `android_bridge.metadata` is driven against
+     * real files in the test suite. A failure to ask is reported as UNKNOWN
+     * -- "the app cannot check" -- never as clean.
+     */
+    fun inspectFile(path: String): MetadataFinding =
+        runCatching {
+            val d = requireApp().callAttr("inspect_file", path)
+            MetadataFinding(
+                kind = d.get("kind")?.toString() ?: "unknown",
+                carriesMetadata = d.get("carries_metadata")?.toBoolean() ?: false,
+                metadataBytes = d.get("metadata_bytes")?.toInt() ?: 0,
+                canScrub = d.get("can_scrub")?.toBoolean() ?: false,
+            )
+        }.getOrDefault(MetadataFinding.UNKNOWN)
 
     /** Accept an offered transfer, by the id [transfers] reported. */
     fun acceptFile(transferId: String): String =

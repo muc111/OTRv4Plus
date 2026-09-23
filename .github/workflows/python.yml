@@ -128,7 +128,16 @@ jobs:
           #   pytest-timeout   so a hung test fails in ten minutes rather than
           #                    burning the job's thirty and reporting only
           #                    "cancelled".
-          pip install segno hypothesis cryptography pytest pytest-timeout
+          #   pyyaml           resolves the Android workflow's path anchor in
+          #                    `test_android_ci_paths`; without it the one
+          #                    check that push and pull_request agree skips.
+          #   pillow           an INDEPENDENT image decoder: after
+          #                    `android_bridge.metadata` strips a photo,
+          #                    `test_metadata_scrub` decodes it and compares
+          #                    pixels. The scrubber itself is stdlib-only and
+          #                    never imports it; the APK does not ship it.
+          pip install segno hypothesis cryptography pytest pytest-timeout \
+                      pyyaml pillow
 
       - name: Show what is actually installed
         # Printed because "which environment was this" is the first question

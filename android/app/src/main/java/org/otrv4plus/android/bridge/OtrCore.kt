@@ -228,9 +228,28 @@ object FileOutcome {
     const val NO_TRANSFER = "no_transfer"
     const val UNAVAILABLE = "unavailable"
     const val NOT_CONNECTED = "not_connected"
+    const val CANNOT_SCRUB = "cannot_scrub"
 
     val ALL = listOf(STARTED, UNVERIFIED, NO_SESSION, BAD_FILE, NO_TRANSFER,
-                     UNAVAILABLE, NOT_CONNECTED)
+                     UNAVAILABLE, NOT_CONNECTED, CANNOT_SCRUB)
+}
+
+/**
+ * What `android_bridge.metadata` found in a file before it was sent.
+ *
+ * [canScrub] false means the app does not understand the format and is
+ * promising nothing -- NOT that the file is clean.
+ */
+data class MetadataFinding(
+    val kind: String,
+    val carriesMetadata: Boolean,
+    val metadataBytes: Int,
+    val canScrub: Boolean,
+) {
+    companion object {
+        /** What to assume when the question could not be asked at all. */
+        val UNKNOWN = MetadataFinding("unknown", false, 0, false)
+    }
 }
 
 /**

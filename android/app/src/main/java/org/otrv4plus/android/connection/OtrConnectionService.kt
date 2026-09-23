@@ -33,6 +33,7 @@ import org.otrv4plus.android.chat.AccountScope
 import org.otrv4plus.android.chat.ChatState
 import org.otrv4plus.android.chat.InboundAlerts
 import org.otrv4plus.android.chat.PersistentMessageStore
+import org.otrv4plus.android.crypto.CallAlert
 import org.otrv4plus.android.security.Credentials
 import org.otrv4plus.android.security.CredentialStore
 import org.otrv4plus.android.security.KeystoreVault
@@ -280,6 +281,7 @@ class OtrConnectionService : Service() {
                 // about an account that is no longer on this device.
                 alerts.clear()
                 cancelArrivalNotification()
+                cancelCallNotification()
                 jid = ""
                 password = ""
                 server = ""
@@ -552,6 +554,15 @@ class OtrConnectionService : Service() {
                             // duplicate, a presence change, a session state --
                             // would let a peer buzz the phone at will.
                             if (chat.handle(event)) announceArrival()
+                            // A call is not a message, and rings through its
+                            // own path. Only a verified peer can reach
+                            // RINGING -- see CallAlert.
+                            for (change in chat.takeRingChanges()) {
+                                when (change) {
+                                    CallAlert.Change.START -> announceCall()
+                                    CallAlert.Change.STOP -> cancelCallNotification()
+                                }
+                            }
                         }
                 }
                 delay(DRAIN_INTERVAL_MS)
@@ -612,6 +623,51 @@ class OtrConnectionService : Service() {
         runCatching {
             getSystemService(NotificationManager::class.java)
                 ?.notify(MESSAGE_NOTIFICATION_ID, buildArrivalNotification(alert))
+        }
+    }
+
+    /**
+     * Ring for an incoming call. Says "incoming call" and not one word more.
+     *
+     * The same rules as [buildArrivalNotification]: no caller, no name, and
+     * hidden entirely on a locked screen, because a lock-screen line naming
+     * the caller announces exactly who talks to this device. Posted whether
+     * or not the app is on screen: unlike a message, a call that is missed
+     * because the phone stayed silent cannot be read later.
+     *
+     * Heads-up through a HIGH-importance channel, NOT a full-screen intent.
+     * A full-screen intent needs USE_FULL_SCREEN_INTENT, which Play restricts
+     * to calling and alarm apps and which the user has to grant separately
+     * on Android 14+; that is a later decision, not one to make silently.
+     */
+    private fun announceCall() {
+        val open = PendingIntent.getActivity(
+            this, 3,
+            Intent(this, MainActivity::class.java)
+                .setFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP),
+            PendingIntent.FLAG_IMMUTABLE,
+        )
+        val notification = NotificationCompat.Builder(this, CALL_CHANNEL_ID)
+            .setContentTitle(getString(R.string.app_name))
+            .setContentText(getString(R.string.call_incoming))
+            .setSmallIcon(android.R.drawable.stat_sys_phone_call)
+            .setContentIntent(open)
+            .setAutoCancel(true)
+            .setShowWhen(false)
+            .setCategory(NotificationCompat.CATEGORY_CALL)
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setVisibility(NotificationCompat.VISIBILITY_SECRET)
+            .build()
+        runCatching {
+            getSystemService(NotificationManager::class.java)
+                ?.notify(CALL_NOTIFICATION_ID, notification)
+        }
+    }
+
+    private fun cancelCallNotification() {
+        runCatching {
+            getSystemService(NotificationManager::class.java)
+                ?.cancel(CALL_NOTIFICATION_ID)
         }
     }
 
@@ -717,8 +773,21 @@ class OtrConnectionService : Service() {
             setShowBadge(false)
             lockscreenVisibility = Notification.VISIBILITY_SECRET
         }
+        // A THIRD channel, for calls, and HIGH so it can appear heads-up: a
+        // call that waits in the shade for somebody to look is a missed call.
+        // Separate so the user can silence messages without silencing calls,
+        // or the other way round.
+        val calls = NotificationChannel(
+            CALL_CHANNEL_ID,
+            getString(R.string.call_channel_name),
+            NotificationManager.IMPORTANCE_HIGH,
+        ).apply {
+            description = getString(R.string.call_channel_description)
+            setShowBadge(false)
+            lockscreenVisibility = Notification.VISIBILITY_SECRET
+        }
         getSystemService(NotificationManager::class.java)
-            ?.createNotificationChannels(listOf(channel, messages))
+            ?.createNotificationChannels(listOf(channel, messages, calls))
     }
 
     /**
@@ -810,6 +879,11 @@ class OtrConnectionService : Service() {
          * with every name stripped out.
          */
         private const val MESSAGE_NOTIFICATION_ID = 2
+
+        private const val CALL_CHANNEL_ID = "otrv4plus.calls"
+
+        /** One id for a ringing call. Only one call can ring at a time. */
+        private const val CALL_NOTIFICATION_ID = 3
 
         const val ACTION_START = "org.otrv4plus.android.START"
         const val ACTION_STOP = "org.otrv4plus.android.STOP"

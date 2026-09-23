@@ -1361,7 +1361,8 @@ class OtrApp:
             self._files_bridge = FileBridge(self)
         return self._files_bridge
 
-    def send_file(self, peer: str, path: str) -> str:
+    def send_file(self, peer: str, path: str,
+                  strip_metadata: bool = False) -> str:
         """Offer a file. Returns a `FileOutcome` code, never a sentence.
 
         THE VERIFICATION GATE IS NOT HERE. `offer_file` refuses an unverified
@@ -1373,7 +1374,16 @@ class OtrApp:
         before it arrives. The engine takes a path and does not care who
         chose it, which is why the Termux picker is never reached here.
         """
-        return self.files.send_file(self.canonical_peer(peer), path)
+        return self.files.send_file(self.canonical_peer(peer), path,
+                                    bool(strip_metadata))
+
+    def inspect_file(self, path: str) -> Dict[str, Any]:
+        """Whether [path] carries metadata the app can remove.
+
+        Asked BEFORE sending, so the user can choose. See
+        `android_bridge.metadata` for exactly what counts and what is kept.
+        """
+        return self.files.inspect(path)
 
     def accept_file(self, transfer_id: str) -> str:
         """Accept an offered transfer. Returns a `FileOutcome` code."""

@@ -71,6 +71,10 @@ class FileOutcome:
     UNAVAILABLE = "unavailable"
     #: There is no transport, so nothing can leave the device.
     NOT_CONNECTED = "not_connected"
+    #: The user asked for metadata to be removed and this file's format
+    #: cannot be checked. Refused rather than sent as-is: sending it anyway
+    #: would silently overrule the choice the user just made.
+    CANNOT_SCRUB = "cannot_scrub"
 
 
 #: Kept identical to `otrv4plus_filetransfer.FILE_PREFIX` and asserted equal
@@ -222,13 +226,24 @@ class FileBridge:
 
     # -- the actions ----------------------------------------------------------
 
-    def send_file(self, peer: str, path: str) -> str:
+    def send_file(self, peer: str, path: str, strip_metadata: bool = False) -> str:
         """Offer [path] to [peer]. Returns a `FileOutcome` code.
 
         Every refusal that matters is the ENGINE's: `offer_file` checks the
         SMP gate first, then that the path is a readable file within the size
         limit. The codes below distinguish them for the UI without deciding
         any of them here.
+
+        [strip_metadata] is the USER's choice, made in a dialog after
+        `inspect_file` said there was something to remove. When set, the
+        engine seals a scrubbed copy instead of the original. A format that
+        cannot be checked is REFUSED rather than sent as-is -- sending it
+        anyway would quietly overrule what the user just asked for.
+
+        The scrubbed copy is deleted as soon as the offer is made: the engine
+        seals the whole file into memory in `offer_file` and never reads the
+        path again, so leaving the copy on disk would only be leaving a
+        second plaintext of the file behind.
         """
         manager = self._ensure_manager()
         if manager is None:
@@ -238,11 +253,42 @@ class FileBridge:
         ratchet = self._ratchet(peer)
         if ratchet is None:
             return FileOutcome.NO_SESSION
+
+        sent_path = path
+        if strip_metadata:
+            from . import metadata as _metadata
+            if not _metadata.examine_file(path).can_scrub:
+                return FileOutcome.CANNOT_SCRUB
+            sent_path = _metadata.scrub_file(path)
         try:
-            manager.offer_file(peer, path, ratchet)
+            manager.offer_file(peer, sent_path, ratchet)
         except Exception as exc:
             return self._classify(peer, exc, path)
+        finally:
+            if sent_path != path:
+                self._discard(sent_path)
         return FileOutcome.STARTED
+
+    @staticmethod
+    def _discard(path: str) -> None:
+        """Remove a scrubbed copy and the private directory made for it."""
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+        try:
+            os.rmdir(os.path.dirname(path))
+        except OSError:
+            pass
+
+    @staticmethod
+    def inspect(path: str) -> dict:
+        """What [path] carries, for the UI to decide whether to ask.
+
+        Structured, never a sentence: the Kotlin side writes the words.
+        """
+        from . import metadata as _metadata
+        return _metadata.examine_file(path).as_dict()
 
     def accept(self, transfer_id: str) -> str:
         """Accept an offered transfer, by the id the UI was given."""

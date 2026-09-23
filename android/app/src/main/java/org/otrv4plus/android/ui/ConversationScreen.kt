@@ -34,12 +34,14 @@ import androidx.compose.ui.unit.dp
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import org.otrv4plus.android.bridge.SecurityState
+import org.otrv4plus.android.chat.ChatState
 import org.otrv4plus.android.chat.ChatViewModel
 import org.otrv4plus.android.chat.Message
 import org.otrv4plus.android.chat.SecurityLabel
 import org.otrv4plus.android.chat.SendState
 import org.otrv4plus.android.crypto.CallUi
 import org.otrv4plus.android.crypto.EncryptionKind
+import org.otrv4plus.android.crypto.MetadataChoice
 import org.otrv4plus.android.crypto.MicPermission
 import org.otrv4plus.android.crypto.TransferUi
 import org.otrv4plus.android.crypto.Verification
@@ -485,7 +487,28 @@ private fun TransferBar(model: ChatViewModel, jid: String) {
         // and a content URI's grant is scoped to this Activity result -- it
         // would be gone by the time a background thread read the last chunk.
         val staged = runCatching { stageForSending(context, uri) }.getOrNull()
-        if (staged != null) model.sendFile(jid, staged)
+        // Examined before anything leaves: a photo carries where and when it
+        // was taken, and the user decides whether that goes with it.
+        if (staged != null) model.prepareFile(jid, staged)
+    }
+
+    model.pendingMetadata?.takeIf { it.jid == ChatState.bare(jid) }?.let { pending ->
+        AlertDialog(
+            // Dismissing is not consent to either option: nothing is sent.
+            onDismissRequest = { model.cancelMetadata() },
+            title = { Text("Hidden information") },
+            text = { Text(pending.question) },
+            confirmButton = {
+                TextButton(onClick = { model.answerMetadata(strip = true) }) {
+                    Text(MetadataChoice.STRIP)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { model.answerMetadata(strip = false) }) {
+                    Text(MetadataChoice.KEEP)
+                }
+            },
+        )
     }
 
     for (transfer in transfers) {

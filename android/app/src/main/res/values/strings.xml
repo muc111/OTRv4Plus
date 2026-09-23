@@ -42,4 +42,9 @@
     <string name="message_channel_description">Tells you a message arrived. Never shows who it is from or what it says.</string>
     <string name="message_arrived_one">New message</string>
     <string name="message_arrived_many">%1$d new messages</string>
+    <!-- Calls follow the same rule as messages: nothing about who. A caller's
+         name on a locked screen would announce who talks to this device. -->
+    <string name="call_channel_name">Calls</string>
+    <string name="call_channel_description">Rings when a verified contact calls you. Never shows who is calling.</string>
+    <string name="call_incoming">Incoming call</string>
 </resources>

@@ -4,6 +4,51 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.5.0-experimental — 2026-09-23 — calls, files, and what they gave away
+
+*Android only. No client `VERSION` bump: no engine, protocol or cryptographic
+code changed. Everything below is wiring onto engines that already shipped,
+plus the defects that wiring exposed. None of it has run on a handset --
+`ANDROID_CALL_AND_FILE_DEVICE_TEST.md` is the open list.*
+
+**Calls.** `VoiceCallManager` and the AAudio backend were packaged and
+unreachable. `android_bridge/voice.py` wires them, on a loop of its own so a
+30-120 s tunnel build cannot stall the XMPP stream. The SMP gate is the
+manager's; nothing restates it. RECORD_AUDIO is declared at last and asked for
+at the point of use, including the permanent-denial case where Android stops
+showing the dialog. An incoming call now raises an "Incoming call"
+notification in the background (hidden on the lock screen, never naming the
+caller); only an SMP-verified peer can reach the ringing state at all.
+
+**Files.** Same shape: `android_bridge/files.py` wires `otrv4plus_filetransfer`
+and reads the *voice* manager's verification predicate, as the terminal
+client does -- one gate, one definition of verified. Picked with the system
+document picker; no storage permission.
+
+**Metadata.** New, and the only new logic: `android_bridge/metadata.py`
+removes EXIF/XMP/IPTC/comments from JPEG and text/time chunks from PNG, keeps
+the colour profile, and refuses to promise anything about formats it does not
+understand. The user chooses; dismissing the question sends nothing.
+
+**Three defects the wiring exposed.** Call, file and trade control messages
+(`?OTRv4-CALL:`, `?OTRv4-FILE:`, `?OTRv4-TRADE:`) were all displayed in the
+conversation as text from the contact -- measured through two real bridges.
+Each is now routed or suppressed, and a test enumerates every control prefix
+the project defines so a fourth cannot be added unrouted.
+
+**CI.** `test_suite_integrity` rejected the maturin wheel CI installs, where
+`otrv4_core` is a package re-exporting its compiled submodule; it now accepts
+either layout and still fails a pure-Python stand-in.
+
+**Earlier in the same sprint:** one contact, one key (INV-27) -- `OtrMode`
+reported plaintext as permitted under other spellings of a JID that had asked
+for OTR; logout and disconnect teardowns that raced their own cancellation;
+a transport loop thread leaked per reconnect; removing a contact left their
+presence showing and their row in the list; the conversation list said
+nothing about security.
+
+---
+
 ## v10.30.0 — server administration, driven by the server's own forms
 
 *2026-09-10.  `VERSION → 10.30.0`.  `otrv4_core` unchanged at 0.10.28.*

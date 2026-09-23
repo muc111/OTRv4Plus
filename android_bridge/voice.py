@@ -488,6 +488,18 @@ class CallBridge:
             loop.call_soon_threadsafe(loop.stop)
         if thread is not None:
             thread.join(timeout=5)
+        # AND CLOSED. Stopping a loop does not release it: its selector and
+        # self-pipe stay open until somebody calls `close`, and until this
+        # line nobody did -- the loop was left for the garbage collector,
+        # which reported it as "Exception ignored in BaseEventLoop.__del__".
+        # One leaked pipe pair per sign-out. Only once the thread has
+        # actually finished: closing a loop that is still running raises.
+        if (loop is not None and not loop.is_closed()
+                and (thread is None or not thread.is_alive())):
+            try:
+                loop.close()
+            except Exception:
+                pass
 
     # -- internals ------------------------------------------------------------
 

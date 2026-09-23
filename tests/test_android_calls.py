@@ -779,3 +779,80 @@ class _FakeCalls:
     def __init__(self, states):
         self._calls = {peer: _FakeSession(state)
                        for peer, state in states.items()}
+
+
+class TestTheCallLoopIsClosedNotAbandoned:
+    """Stopping an event loop does not release it: its selector and
+    self-pipe stay open until `close`. `shutdown` stopped and joined but
+    never closed, and the garbage collector reported it as "Exception
+    ignored in BaseEventLoop.__del__" -- one leaked pipe pair per sign-out."""
+
+    def test_the_loop_is_closed_after_shutdown(self, pair):
+        bridge = pair.alice.calls
+        bridge._ensure_manager()
+        loop = bridge._loop
+        assert loop is not None and not loop.is_closed()
+        pair.alice.shutdown()
+        assert loop.is_closed(), "the call loop was stopped but never closed"
+
+
+class TestAnIncomingCallRingsThePhone:
+    """`ChatState.handle` returns false for call events, so a call arriving
+    in the background produced no notification at all and was usually timed
+    out before anybody saw it. RINGING is safe to announce because it is
+    unreachable by an unverified peer -- `_on_invite` refuses before a
+    session exists, which `TestTheSmpGate` drives with a real INVITE."""
+
+    @staticmethod
+    @pytest.fixture(scope="class")
+    def service():
+        return _kt("connection", "OtrConnectionService.kt")
+
+    def test_the_drain_acts_on_ring_changes(self, service):
+        drain = service[service.index("if (chat.handle(event)) announceArrival()"):]
+        drain = drain[:drain.index("delay(DRAIN_INTERVAL_MS)")]
+        assert "chat.takeRingChanges()" in drain
+        assert "announceCall()" in drain and "cancelCallNotification()" in drain
+
+    def test_the_ring_says_nothing_about_who(self, service):
+        body = service[service.index("private fun announceCall()"):]
+        body = body[:body.index("private fun cancelCallNotification()")]
+        assert "VISIBILITY_SECRET" in body, (
+            "the call notification is visible on a locked screen")
+        for leak in ("peer", "jid", "displayName", "setContentText(peer"):
+            assert leak not in body.replace("R.string.call_incoming", ""), (
+                "the call notification could carry %r" % leak)
+
+    def test_logout_takes_the_ring_down(self, service):
+        logout = service[service.index("ACTION_LOGOUT ->"):]
+        logout = logout[:logout.index("ACTION_START ->")]
+        assert "cancelCallNotification()" in logout
+
+    def test_the_call_strings_carry_no_format_arguments(self):
+        import io as _io
+        strings = _io.open(os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            "android", "app", "src", "main", "res", "values", "strings.xml"),
+            encoding="utf-8").read()
+        import re
+        for name in ("call_incoming", "call_channel_name",
+                     "call_channel_description"):
+            value = re.search(r'name="%s">([^<]*)<' % name, strings).group(1)
+            assert "%" not in value, (
+                "%s takes a format argument, which is where a name would go"
+                % name)
+
+    def test_changes_are_decided_by_a_tested_leaf(self):
+        leaf = _kt("crypto", "CallAlert.kt")
+        for line in leaf.splitlines():
+            if line.startswith("import "):
+                assert line.startswith("import org.otrv4plus."), line
+        assert os.path.exists(os.path.join(ANDROID_TESTS, "crypto",
+                                           "CallAlertTest.kt"))
+
+    def test_a_ringing_call_is_stopped_when_the_account_changes(self):
+        state = _kt("chat", "ChatState.kt")
+        bind = state[state.index("fun bindAccount("):]
+        bind = bind[:bind.index("callStates.clear()")]
+        assert "CallAlert.Change.STOP" in bind, (
+            "a call ringing for one account keeps ringing for the next")

@@ -3,6 +3,7 @@
 package org.otrv4plus.android.chat
 
 import org.otrv4plus.android.bridge.CallState
+import org.otrv4plus.android.crypto.CallAlert
 import org.otrv4plus.android.bridge.ConnectionStatus
 import org.otrv4plus.android.bridge.Contact
 import org.otrv4plus.android.bridge.OtrEvent
@@ -103,6 +104,12 @@ class ChatState(
         smpStates.clear()
         // A call belongs to the account that placed it. Carrying one into the
         // next account would show somebody else's conversation as in a call.
+        // A call ringing for the old account must stop ringing for the new
+        // one: its notification would otherwise sit in the shade inviting a
+        // different person to answer somebody else's call.
+        if (callStates.values.any { it == CallState.RINGING }) {
+            ringChanges.add(CallAlert.Change.STOP)
+        }
         callStates.clear()
         postLogin.onSignedOut()
         savedContacts.bind(next)
@@ -398,8 +405,14 @@ class ChatState(
             // able to buzz the phone by starting a call is a peer with a way
             // to ring somebody at will, and the ringing UI is the ring.
             is OtrEvent.CallChanged -> {
-                if (event.state == CallState.IDLE) callStates.remove(bare(event.peer))
-                else callStates[bare(event.peer)] = event.state
+                val peer = bare(event.peer)
+                val previous = callStates[peer] ?: CallState.IDLE
+                if (event.state == CallState.IDLE) callStates.remove(peer)
+                else callStates[peer] = event.state
+                // Queued rather than returned: `handle`'s answer means "a new
+                // MESSAGE was stored", and a ringing call is not a message.
+                // The service reads these separately and rings for them.
+                CallAlert.change(previous, event.state)?.let(ringChanges::add)
                 false
             }
             else -> false
@@ -435,6 +448,19 @@ class ChatState(
      * leaves no row behind and `callState` falls back to IDLE by absence.
      */
     private val callStates = mutableMapOf<String, CallState>()
+
+    /**
+     * Ring changes not yet acted on, oldest first. See [CallAlert] for why
+     * a RINGING call may ring the phone when nothing else in this class may.
+     */
+    private val ringChanges = mutableListOf<CallAlert.Change>()
+
+    /** Take, and clear, the ring changes since the last call. */
+    fun takeRingChanges(): List<CallAlert.Change> {
+        val taken = ringChanges.toList()
+        ringChanges.clear()
+        return taken
+    }
 
     /** Where [jid]'s call has got to. IDLE when there is no call. */
     fun callState(jid: String): CallState =

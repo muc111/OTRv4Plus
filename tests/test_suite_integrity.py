@@ -82,11 +82,32 @@ def test_the_engine_carries_the_symbols_the_suite_drives(symbol):
 def test_the_rust_core_is_the_extension_not_a_python_shim():
     """Every cryptographic test in this suite is about `otrv4_core`. A pure
     Python stand-in passing for it would make all of them meaningless."""
+    import importlib.machinery
     core = pytest.importorskip("otrv4_core")
-    path = getattr(core, "__file__", "") or ""
-    assert path.endswith((".so", ".pyd", ".dylib")), (
+    # Two legitimate layouts. A local build puts `otrv4_core.so` on the path,
+    # so the module IS the extension. A maturin wheel (what CI installs)
+    # makes `otrv4_core` a package whose `__init__.py` re-exports the
+    # compiled submodule `otrv4_core.otrv4_core`. Either way, the thing that
+    # answers must have been loaded by the extension loader -- and in the
+    # package case the symbols the suite uses must be the extension's own.
+    def compiled(mod):
+        return isinstance(getattr(getattr(mod, "__spec__", None), "loader",
+                                  None),
+                          importlib.machinery.ExtensionFileLoader)
+
+    if compiled(core):
+        return
+    inner = getattr(core, "otrv4_core", None)
+    assert inner is not None and compiled(inner), (
         "otrv4_core is not a compiled extension (%r); the cryptographic "
-        "tests are not exercising the Rust core" % path)
+        "tests are not exercising the Rust core"
+        % getattr(core, "__file__", None))
+    exported = [n for n in dir(inner) if not n.startswith("_")]
+    assert exported, "the compiled otrv4_core exports nothing"
+    for name in exported:
+        assert getattr(core, name, None) is getattr(inner, name), (
+            "otrv4_core.%s is not the compiled extension's own -- the "
+            "package is shadowing the Rust core with something else" % name)
 
 
 def test_the_aliases_agree():

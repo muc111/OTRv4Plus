@@ -34,7 +34,15 @@ android {
         // devices. Left at 26, with the biometric path feature-detected.
         minSdk = 26
         targetSdk = 35
-        versionCode = 8
+        versionCode = 9
+        // 0.4.0 -> 0.5.0: MINOR, per VERSIONING.md. New capability reachable
+        // from the APK for the first time: SMP-gated voice calls (the engine
+        // and the AAudio backend were already packaged; nothing could reach
+        // them), SMP-gated file transfer through the system document picker,
+        // and a metadata choice before a photo is sent. None of it has run on
+        // a handset: ANDROID_CALL_AND_FILE_DEVICE_TEST.md is the open list,
+        // and the AAudio gate in tests/test_android_audio_path.py stays shut.
+        //
         // 0.3.0 -> 0.4.0: MINOR, per VERSIONING.md. Not a new feature, but
         // the capability the whole track exists for. At 0.3.0 nothing in this
         // APK had been run on a handset. At 0.4.0 sign-in, the roster,
@@ -52,7 +60,7 @@ android {
         //
         // core.10.14.0 was wrong for sixteen releases; the Rust core is read
         // from Rust/Cargo.toml so it cannot drift again.
-        versionName = "0.4.0-experimental+core.$rustCoreVersion"
+        versionName = "0.5.0-experimental+core.$rustCoreVersion"
 
         // Which build this is, surfaced in the diagnostic report.
         //

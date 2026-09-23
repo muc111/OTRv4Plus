@@ -18,12 +18,14 @@ import org.otrv4plus.android.bridge.ChaquopyOtrCore
 import org.otrv4plus.android.bridge.ConnectionStatus
 import org.otrv4plus.android.bridge.FileOutcome
 import org.otrv4plus.android.bridge.FileTransferView
+import org.otrv4plus.android.bridge.MetadataFinding
 import org.otrv4plus.android.bridge.OtrEvent
 import org.otrv4plus.android.bridge.SendOutcome
 import org.otrv4plus.android.crypto.CallUi
 import org.otrv4plus.android.crypto.ConversationRef
 import org.otrv4plus.android.crypto.EncryptionKind
 import org.otrv4plus.android.crypto.EncryptionLauncher
+import org.otrv4plus.android.crypto.MetadataChoice
 import org.otrv4plus.android.crypto.MicPermission
 import org.otrv4plus.android.crypto.MlsProvider
 import org.otrv4plus.android.crypto.Omemo2Provider
@@ -706,28 +708,97 @@ class ChatViewModel : ViewModel() {
     }
 
     /**
-     * Offer a file.
+     * A picked file waiting on the user's metadata choice, or null.
      *
-     * [path] has already been resolved by Android through the Storage Access
-     * Framework. The engine takes a path and does not care who chose it,
-     * which is why the Termux picker is never reached from here.
+     * Held here rather than in the Composable so a rotation mid-dialog does
+     * not lose the question -- and with it the path of a staged copy that
+     * would then never be sent or deleted.
      */
-    fun sendFile(jid: String, path: String) {
+    var pendingMetadata: PendingMetadata? by mutableStateOf(null)
+        private set
+
+    data class PendingMetadata(val jid: String, val path: String,
+                               val question: String)
+
+    /**
+     * A file has been picked and staged. Look at it before anything is sent.
+     *
+     * [path] has been resolved by Android through the Storage Access
+     * Framework and copied into this app's cache. Examined on the IO
+     * dispatcher: it reads the file, and this is reached from a picker
+     * callback on the main thread.
+     */
+    fun prepareFile(jid: String, path: String) {
         val state = this.state ?: return
         val core = this.core ?: run {
             state.note("The connection is not ready yet.")
             revision++
             return
         }
+        viewModelScope.launch {
+            val finding = withContext(Dispatchers.IO) {
+                runCatching { core.inspectFile(path) }
+                    .getOrDefault(MetadataFinding.UNKNOWN)
+            }
+            when (val next = MetadataChoice.next(finding)) {
+                is MetadataChoice.Next.Send -> sendFile(jid, path, false)
+                is MetadataChoice.Next.SendUnchecked -> {
+                    sendFile(jid, path, false)
+                    state.note(next.notice)
+                }
+                is MetadataChoice.Next.Ask ->
+                    pendingMetadata = PendingMetadata(jid, path, next.question)
+            }
+            revision++
+        }
+    }
+
+    /** The user answered the metadata question. */
+    fun answerMetadata(strip: Boolean) {
+        val pending = pendingMetadata ?: return
+        pendingMetadata = null
+        sendFile(pending.jid, pending.path, strip)
+    }
+
+    /**
+     * The user dismissed the question without answering.
+     *
+     * NOTHING IS SENT. Dismissing is not consent to either option, and the
+     * staged copy is deleted rather than left in the cache.
+     */
+    fun cancelMetadata() {
+        val pending = pendingMetadata ?: return
+        pendingMetadata = null
+        discardStaged(pending.path)
+        revision++
+    }
+
+    /**
+     * Offer a file, having settled the metadata question.
+     *
+     * The staged copy is deleted once the offer is made: the engine seals the
+     * whole file into memory in `offer_file` and never reads the path again,
+     * so the copy in the cache would only be a second plaintext of the
+     * user's file left behind.
+     */
+    private fun sendFile(jid: String, path: String, strip: Boolean) {
+        val state = this.state ?: return
+        val core = this.core ?: return
         val bare = ChatState.bare(jid)
         viewModelScope.launch {
             val outcome = withContext(Dispatchers.IO) {
-                runCatching { core.sendFile(bare, path) }
+                val result = runCatching { core.sendFile(bare, path, strip) }
                     .getOrDefault(FileOutcome.UNAVAILABLE)
+                discardStaged(path)
+                result
             }
             TransferUi.refusal(outcome)?.let(state::note)
             revision++
         }
+    }
+
+    private fun discardStaged(path: String) {
+        runCatching { java.io.File(path).delete() }
     }
 
     /** Accept an offered transfer. */

@@ -492,7 +492,8 @@ class TestTheTwoSidesAgreeOnTheCodes:
     def _python_codes():
         from android_bridge.files import FileOutcome as F
         return {F.STARTED, F.UNVERIFIED, F.NO_SESSION, F.BAD_FILE,
-                F.NO_TRANSFER, F.UNAVAILABLE, F.NOT_CONNECTED}
+                F.NO_TRANSFER, F.UNAVAILABLE, F.NOT_CONNECTED,
+                F.CANNOT_SCRUB}
 
     @staticmethod
     def _kotlin_codes():
@@ -701,3 +702,151 @@ class TestTheThirdControlPrefix:
                 "%s is carried in a message body and nothing on the Android "
                 "inbound path recognises it, so it renders as chat text"
                 % prefix)
+
+
+# -- metadata: the user's choice, carried through ----------------------------
+
+
+def _fixture_photo():
+    """A copy of the real GPS-tagged JPEG, somewhere this test owns."""
+    here = os.path.dirname(os.path.abspath(__file__))
+    with open(os.path.join(here, "data", "photo_with_gps.jpg"), "rb") as src:
+        data = src.read()
+    path = os.path.join(tempfile.mkdtemp(), "holiday.jpg")
+    with open(path, "wb") as dst:
+        dst.write(data)
+    return path
+
+
+class TestTheMetadataChoiceReachesThePeer:
+    """End to end: a photo chosen to be stripped arrives stripped, one chosen
+    to be kept arrives as it was, and nothing is decided for the user."""
+
+    @staticmethod
+    def _deliver(verified, landing, photo, strip):
+        assert verified.alice.send_file(verified.bob_jid, photo, strip) == \
+            FileOutcome.STARTED
+        offered = verified.bob.transfers()[0]
+        verified.bob.accept_file(offered["id"])
+        for _ in range(200):
+            if landing.files():
+                break
+            time.sleep(0.02)
+        arrived = landing.files()
+        assert arrived, "nothing landed"
+        return open(arrived[0], "rb").read()
+
+    def test_inspect_reports_the_metadata_before_sending(self, verified):
+        found = verified.alice.inspect_file(_fixture_photo())
+        assert found["kind"] == "jpeg"
+        assert found["can_scrub"] is True
+        assert found["carries_metadata"] is True
+        assert found["metadata_bytes"] > 0
+
+    def test_stripped_means_the_peer_never_sees_it(self, verified, landing):
+        received = self._deliver(verified, landing, _fixture_photo(), True)
+        for leaked in (b"PhoneMaker", b"Model X9", b"2026:09:23"):
+            assert leaked not in received, (
+                "%r reached the peer although the user chose to strip it"
+                % leaked)
+        assert received[:2] == b"\xff\xd8", "what arrived is not a JPEG"
+
+    def test_kept_means_it_arrives_exactly_as_it_was(self, verified, landing):
+        """The user's other choice, honoured just as literally."""
+        photo = _fixture_photo()
+        original = open(photo, "rb").read()
+        assert self._deliver(verified, landing, photo, False) == original
+
+    def test_the_default_changes_nothing(self, verified, landing):
+        """No silent scrubbing behind the user's back either: a caller that
+        does not ask gets the file as it is."""
+        photo = _fixture_photo()
+        original = open(photo, "rb").read()
+        assert verified.alice.send_file(verified.bob_jid, photo) == \
+            FileOutcome.STARTED
+        offered = verified.bob.transfers()[0]
+        verified.bob.accept_file(offered["id"])
+        for _ in range(200):
+            if landing.files():
+                break
+            time.sleep(0.02)
+        assert open(landing.files()[0], "rb").read() == original
+
+    def test_the_users_own_file_is_never_modified(self, verified):
+        photo = _fixture_photo()
+        original = open(photo, "rb").read()
+        verified.alice.send_file(verified.bob_jid, photo, True)
+        assert open(photo, "rb").read() == original
+
+    def test_no_scrubbed_copy_is_left_behind(self, verified):
+        """The engine seals the file into memory in `offer_file` and never
+        reads the path again, so a leftover copy would only be a second
+        plaintext of the photo on disk."""
+        photo = _fixture_photo()
+        directory = os.path.dirname(photo)
+        verified.alice.send_file(verified.bob_jid, photo, True)
+        assert sorted(os.listdir(directory)) == ["holiday.jpg"], (
+            "a scrubbed copy was left on disk: %r" % os.listdir(directory))
+
+    def test_asking_to_strip_an_uncheckable_file_is_refused(self, verified):
+        """Not sent as-is. Sending it anyway would quietly overrule the
+        choice the user just made."""
+        path = os.path.join(tempfile.mkdtemp(), "notes.pdf")
+        with open(path, "wb") as handle:
+            handle.write(b"%PDF-1.7 with an author field inside")
+        before = len(verified.alice._transport.sent)
+        assert verified.alice.send_file(verified.bob_jid, path, True) == \
+            FileOutcome.CANNOT_SCRUB
+        assert len(verified.alice._transport.sent) == before, (
+            "the file went out although it could not be scrubbed")
+
+
+class TestTheMetadataChoiceOnAndroid:
+    """The Kotlin half of the choice. Compose cannot run here; the rules are
+    driven in `MetadataChoiceTest`, and the scrub itself in
+    `tests/test_metadata_scrub.py` against real photographs."""
+
+    @staticmethod
+    @pytest.fixture(scope="class")
+    def model():
+        return _kt("chat", "ChatViewModel.kt")
+
+    def test_a_picked_file_is_examined_before_it_is_sent(self):
+        screen = _kt("ui", "ConversationScreen.kt")
+        picker = screen[screen.index("ActivityResultContracts.OpenDocument()"):]
+        picker = picker[:picker.index("model.pendingMetadata")]
+        assert "model.prepareFile(" in picker, (
+            "a picked file is sent without being examined")
+        assert "model.sendFile(" not in picker
+
+    def test_dismissing_the_question_sends_nothing(self, model):
+        body = model[model.index("fun cancelMetadata()"):]
+        body = body[:body.index("\n    }")]
+        assert "sendFile(" not in body, (
+            "dismissing the metadata question sends the file anyway")
+        assert "discardStaged(" in body, (
+            "a dismissed file's staged copy is left in the cache")
+
+    def test_the_staged_copy_is_deleted_after_sending(self, model):
+        body = model[model.index("private fun sendFile("):]
+        body = body[:body.index("private fun discardStaged(")]
+        assert "discardStaged(path)" in body
+
+    def test_the_core_passes_the_choice_through(self):
+        core = _kt("bridge", "ChaquopyOtrCore.kt")
+        body = core[core.index("fun sendFile("):]
+        body = body[:body.index("\n\n")]
+        assert "stripMetadata" in body and '"send_file"' in body
+
+    def test_inspect_reaches_python(self):
+        core = _kt("bridge", "ChaquopyOtrCore.kt")
+        assert '"inspect_file"' in core
+        assert callable(getattr(OtrApp, "inspect_file", None))
+
+    def test_the_choice_leaf_is_dependency_free(self):
+        source = _kt("crypto", "MetadataChoice.kt")
+        for line in source.splitlines():
+            if line.startswith("import "):
+                assert line.startswith("import org.otrv4plus."), line
+        assert os.path.exists(os.path.join(ANDROID_TESTS, "crypto",
+                                           "MetadataChoiceTest.kt"))
