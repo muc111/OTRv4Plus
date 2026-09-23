@@ -2,6 +2,7 @@
 // Copyright (C) 2025-2026 muc111
 package org.otrv4plus.android.chat
 
+import org.otrv4plus.android.bridge.CallState
 import org.otrv4plus.android.bridge.ConnectionStatus
 import org.otrv4plus.android.bridge.Contact
 import org.otrv4plus.android.bridge.OtrEvent
@@ -100,6 +101,9 @@ class ChatState(
         // account's, which is the one claim this application must never make
         // wrongly.
         smpStates.clear()
+        // A call belongs to the account that placed it. Carrying one into the
+        // next account would show somebody else's conversation as in a call.
+        callStates.clear()
         postLogin.onSignedOut()
         savedContacts.bind(next)
         (store as? PersistentMessageStore)?.bind(next)
@@ -387,6 +391,17 @@ class ChatState(
                 smpStates[bare(event.peer)] = event.state
                 false
             }
+            // Recorded, and NOT a notification. `ChaquopyOtrCore` has decoded
+            // this event since it was written and nothing consumed it, so the
+            // call screen had no way to learn that a call had moved. Returns
+            // false for the same reason the verification events do: a peer
+            // able to buzz the phone by starting a call is a peer with a way
+            // to ring somebody at will, and the ringing UI is the ring.
+            is OtrEvent.CallChanged -> {
+                if (event.state == CallState.IDLE) callStates.remove(bare(event.peer))
+                else callStates[bare(event.peer)] = event.state
+                false
+            }
             else -> false
         }
     }
@@ -403,6 +418,27 @@ class ChatState(
      * passphrase, no proof state, no key material — those never leave Rust.
      */
     private val smpStates = mutableMapOf<String, SmpState>()
+
+    /**
+     * Where each peer's call has got to, from events.
+     *
+     * NOT a second state machine. `otrv4plus_voice.VoiceCallManager` owns the
+     * call, validates every transition and is the only thing that can move
+     * one; this is the latest answer it gave, so the screen has something to
+     * render between polls.
+     *
+     * NOTHING CRYPTOGRAPHIC IS HELD HERE. A coarse state name per JID -- no
+     * media key, no epoch, no destination. Those never leave Rust and the I2P
+     * destination never leaves the call manager.
+     *
+     * Entries are REMOVED on IDLE rather than stored, so a finished call
+     * leaves no row behind and `callState` falls back to IDLE by absence.
+     */
+    private val callStates = mutableMapOf<String, CallState>()
+
+    /** Where [jid]'s call has got to. IDLE when there is no call. */
+    fun callState(jid: String): CallState =
+        callStates[bare(jid)] ?: CallState.IDLE
 
     /**
      * An inbound message, routed by the SENDER'S JID.

@@ -37,6 +37,8 @@ from typing import Any, Callable, Dict, List, Optional
 import otrv4plus_fragment as _fragment
 
 from .trace import TRACE as _TRACE
+from .files import FileBridge, is_file_signal
+from .voice import CallBridge, is_call_signal
 import otrv4plus_presence as _presence
 from otrv4plus_mode import OtrMode
 
@@ -49,6 +51,26 @@ from .events import (
 
 __all__ = ["OtrApp", "Transport", "ContactView", "SecurityDetails",
            "redacting_logger", "BridgeError"]
+
+
+
+#: The trade control prefix, read from `otrv4plus_trade` when it is loaded.
+#:
+#: Kept as a constant rather than importing the module: trade is not wired up
+#: on Android, and importing a twelve-thousand-line dependency to recognise a
+#: twelve-character prefix would be paying for a feature this build does not
+#: have. Asserted equal to the real one by `tests/test_android_files.py`.
+TRADE_PREFIX_FALLBACK = "?OTRv4-TRADE:"
+
+
+def _is_trade_signal(body: Any) -> bool:
+    """Whether a decrypted body is trade signalling rather than a message."""
+    if not isinstance(body, str):
+        return False
+    import sys
+    module = sys.modules.get("otrv4plus_trade")
+    prefix = getattr(module, "TRADE_PREFIX", None) if module else None
+    return body.startswith(prefix or TRADE_PREFIX_FALLBACK)
 
 
 class BridgeError(RuntimeError):
@@ -219,6 +241,12 @@ class OtrApp:
         # see otrv4plus_mode.OtrMode.
         self._mode = OtrMode()
         self._call_states: Dict[str, CallState] = {}
+        #: Built on the first call-related action, never at construction: see
+        #: `android_bridge.voice` for why loading the voice stack is deferred.
+        self._calls_bridge: Optional["CallBridge"] = None
+        #: Same deferral, same reason: the transfer engine pulls in the Rust
+        #: core, and a device that never sends a file never loads it.
+        self._files_bridge: Optional["FileBridge"] = None
         self._enable_guided_smp()
 
     #: How many peers' last-seen times to keep.
@@ -345,7 +373,26 @@ class OtrApp:
         self._emit(ConnectionStateChanged(state=ConnectionState.DISCONNECTED))
 
     def shutdown(self) -> None:
-        """Tear down every session.  Safe to call more than once."""
+        """Tear down every session.  Safe to call more than once.
+
+        THE CALLS GO FIRST, and the order is not cosmetic. A live call holds
+        a SAM session, an I2P lease and an open microphone, and its signalling
+        rides the OTR session this is about to destroy -- so ending the calls
+        after the sessions would mean the END the peer is owed can no longer
+        be encrypted, and they would sit on a call nobody is on.
+        """
+        if self._calls_bridge is not None:
+            try:
+                self._calls_bridge.shutdown()
+            except Exception:
+                _log.warning("call teardown reported a problem")
+            self._calls_bridge = None
+        if self._files_bridge is not None:
+            try:
+                self._files_bridge.shutdown()
+            except Exception:
+                _log.warning("transfer teardown reported a problem")
+            self._files_bridge = None
         try:
             self._engine.clear_all_sessions("shutdown")
         except Exception:
@@ -916,6 +963,57 @@ class OtrApp:
             return None
 
         body = result.decode("utf-8", errors="replace") if isinstance(result, (bytes, bytearray)) else str(result)
+
+        # CALL SIGNALLING IS NOT A MESSAGE, and this branch is what keeps it
+        # out of the conversation. The terminal client tests `CALL_PREFIX` in
+        # three places on its decrypted bodies; this facade tested it nowhere,
+        # so a peer's control message was handed to the UI as chat text.
+        # Measured through two real bridges with a live session:
+        #
+        #     receive_message returned: '?OTRv4-CALL:INVITE:aa|bb|cc|dd'
+        #
+        # -- rendered to the user as a message from their contact. Routed
+        # here instead, where `VoiceCallManager` validates it: `parse_signal`
+        # is structural only, `handle_signal` rate-limits before any work,
+        # and `_on_invite` applies the SMP gate before a session exists, so an
+        # unverified peer cannot make this device ring.
+        #
+        # Returns None like every other protocol frame: nothing to display.
+        if is_call_signal(body):
+            self._touch(peer)
+            self.calls.handle_signal(peer, body)
+            self._announce_smp_change(peer, before_smp)
+            return None
+
+        # FILE SIGNALLING IS NOT A MESSAGE EITHER, and this one is louder
+        # when it goes wrong: every DATA chunk is base64 of a sealed chunk,
+        # so a transfer would have rendered as hundreds of walls of base64
+        # from the user's contact. Measured before this branch existed:
+        #
+        #     returned: '?OTRv4-FILE:OFFER:deadbeef|secret.pdf|1024'
+        #
+        # The engine validates it, including refusing an offer from a peer
+        # who is not SMP-verified before a transfer exists at all.
+        if is_file_signal(body):
+            self._touch(peer)
+            self.files.handle_signal(peer, body)
+            self._announce_smp_change(peer, before_smp)
+            return None
+
+        # AND THE THIRD ONE. `otrv4plus_trade` carries `?OTRv4-TRADE:` in a
+        # body exactly as voice and file transfer do, and Android has no
+        # trade support at all -- so without this branch a peer's trade
+        # signalling would reach the screen as a message from their contact,
+        # which is the same defect the two above fix.
+        #
+        # SUPPRESSED, NOT HANDLED, and the difference is stated because it
+        # matters: this does not make trading work on Android. It stops
+        # protocol text being rendered as something a person said. Wiring
+        # `TradeManager` up is separate work with its own gate to honour.
+        if _is_trade_signal(body):
+            self._touch(peer)
+            return None
+
         self._touch(peer)
         self._emit(MessageReceived(peer=peer, body=body, timestamp=self._clock()))
         # A decrypted message means a session exists; the level may have moved
@@ -1176,5 +1274,133 @@ class OtrApp:
                                     duration_seconds=duration_seconds, muted=muted))
 
     def call_state(self, peer: str) -> CallState:
+        """This peer's call state.
+
+        THE LIVE SESSION WINS. `_call_states` is fed by `note_call_state`,
+        which was the only way a state could ever get in here -- a mirror of
+        a machine nothing could enter, because no `start_call` existed. Now
+        that calls can actually be placed, the manager's own session is the
+        answer and the mirror is the fallback for anything that still reports
+        through `note_call_state`.
+        """
         peer = self.canonical_peer(peer)
+        # Read only if a bridge exists. Asking must not be what CREATES one:
+        # the conversation list polls this for every row, and a device that
+        # has never placed a call has no business building a call manager to
+        # be told there is no call.
+        if self._calls_bridge is not None:
+            live = self._calls_bridge.state(peer)
+            if live is not CallState.IDLE:
+                return live
         return self._call_states.get(peer, CallState.IDLE)
+
+    # -- placing and answering -------------------------------------------------
+    #
+    # Thin on purpose. Every one of these delegates to `CallBridge`, which
+    # delegates to `otrv4plus_voice.VoiceCallManager` -- the same state
+    # machine, signalling and SMP gate the terminal client drives. Nothing
+    # here decides whether a call may happen.
+
+    @property
+    def calls(self) -> "CallBridge":
+        """The call bridge, built once per app. See android_bridge.voice."""
+        if self._calls_bridge is None:
+            self._calls_bridge = CallBridge(self)
+        return self._calls_bridge
+
+    def start_call(self, peer: str) -> str:
+        """Place a call. Returns a `CallOutcome` code, never a sentence.
+
+        Returns as soon as the request is handed over: placing a call builds
+        I2P tunnels, which takes 30-120 s, and a bridge method that waited
+        for that would freeze whatever called it. The UI follows `call_state`
+        and the events that follow.
+
+        THE VERIFICATION GATE IS NOT HERE. `VoiceCallManager.start_call`
+        refuses an unverified peer before anything else happens, reading the
+        engine's own predicate. Restating that check at this layer would
+        create a second gate that could disagree with the real one -- and the
+        one that matters is the real one.
+        """
+        return self.calls.start_call(self.canonical_peer(peer))
+
+    def answer_call(self, peer: str) -> str:
+        """Answer a ringing call. Returns a `CallOutcome` code."""
+        return self.calls.answer_call(self.canonical_peer(peer))
+
+    def end_call(self, peer: str, notify_peer: bool = True) -> str:
+        """End an active call, or reject a ringing one. One verb for both,
+        because the state machine has one."""
+        return self.calls.end_call(self.canonical_peer(peer), notify_peer)
+
+    def call_duration_seconds(self, peer: str) -> int:
+        """Seconds since this call became ACTIVE, or 0. Never counts the
+        tunnel build: dialling is not talking."""
+        return self.calls.duration_seconds(self.canonical_peer(peer))
+
+    def voice_unavailable_reason(self) -> str:
+        """Why voice cannot run on this device, or "" when it can.
+
+        Asked of `otrv4plus_voice`'s own host hook -- the same question
+        `start_call` asks before doing anything -- so the screen cannot say
+        something different from what the engine decides.
+        """
+        return self.calls.unavailable_reason()
+
+    # -- files -----------------------------------------------------------------
+    #
+    # Thin, like the calls. Every decision -- the SMP gate on both sides, the
+    # size limit, the filename rules, the chunk format, the atomic commit --
+    # belongs to `otrv4plus_filetransfer`, which already makes them for the
+    # terminal client.
+
+    @property
+    def files(self) -> "FileBridge":
+        """The transfer bridge, built once per app. See android_bridge.files."""
+        if self._files_bridge is None:
+            self._files_bridge = FileBridge(self)
+        return self._files_bridge
+
+    def send_file(self, peer: str, path: str) -> str:
+        """Offer a file. Returns a `FileOutcome` code, never a sentence.
+
+        THE VERIFICATION GATE IS NOT HERE. `offer_file` refuses an unverified
+        peer before it reads a byte of the file, using the same predicate the
+        call gate uses. Restating it would create a second answer that could
+        disagree with the one that actually refuses.
+
+        [path] is resolved by Android through the Storage Access Framework
+        before it arrives. The engine takes a path and does not care who
+        chose it, which is why the Termux picker is never reached here.
+        """
+        return self.files.send_file(self.canonical_peer(peer), path)
+
+    def accept_file(self, transfer_id: str) -> str:
+        """Accept an offered transfer. Returns a `FileOutcome` code."""
+        return self.files.accept(transfer_id)
+
+    def decline_file(self, transfer_id: str) -> str:
+        """Decline an offered transfer. Returns a `FileOutcome` code."""
+        return self.files.decline(transfer_id)
+
+    def transfers(self) -> List[Dict[str, Any]]:
+        """Every live transfer, structured. Never the engine's own sentences."""
+        return self.files.transfers()
+
+    def received_file_dir(self) -> str:
+        """Where a FINISHED file lands, as the engine decides it.
+
+        Not the partial-work directory, which the engine keeps separate so a
+        partial file can never be mistaken for a complete one.
+        """
+        return self.files.received_dir()
+
+    def poll_calls(self) -> None:
+        """Emit an event for any call whose state moved.
+
+        The manager publishes no state callback, so movement is noticed by
+        reading. Driven from the host's existing drain rather than a timer of
+        its own, so there is one observer and nothing to leak.
+        """
+        if self._calls_bridge is not None:
+            self._calls_bridge.poll()

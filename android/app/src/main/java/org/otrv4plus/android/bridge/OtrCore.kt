@@ -189,6 +189,70 @@ enum class CallState {
     }
 }
 
+/**
+ * What a call request did, as returned by the Python bridge.
+ *
+ * Codes, never sentences. `android_bridge.voice.CallOutcome` defines the same
+ * five and `tests/test_android_calls.py` asserts the two lists agree, so a
+ * screen branching on these cannot drift from what Python answers.
+ *
+ * THESE ARE NOT CALL STATES. [CallState] is where a call has got to;
+ * this is what happened when somebody asked for one. "started" means the
+ * request reached the call manager and nothing more -- placing a call builds
+ * I2P tunnels, so a call that has started has certainly not connected.
+ */
+object CallOutcome {
+    const val STARTED = "started"
+    const val NO_CALL = "no_call"
+    const val ALREADY = "already"
+    const val UNAVAILABLE = "unavailable"
+    const val NOT_CONNECTED = "not_connected"
+
+    /** Every code, so a `when` over them can be checked for completeness. */
+    val ALL = listOf(STARTED, NO_CALL, ALREADY, UNAVAILABLE, NOT_CONNECTED)
+}
+
+/**
+ * What a transfer request did, as returned by the Python bridge.
+ *
+ * Codes, never sentences, and never engine exception text.
+ * `TransferError` messages are written for a person and name the file;
+ * `android_bridge.files` reads them and discards them, and what crosses is
+ * one of these. `tests/test_android_files.py` asserts the two lists agree.
+ */
+object FileOutcome {
+    const val STARTED = "started"
+    const val UNVERIFIED = "unverified"
+    const val NO_SESSION = "no_session"
+    const val BAD_FILE = "bad_file"
+    const val NO_TRANSFER = "no_transfer"
+    const val UNAVAILABLE = "unavailable"
+    const val NOT_CONNECTED = "not_connected"
+
+    val ALL = listOf(STARTED, UNVERIFIED, NO_SESSION, BAD_FILE, NO_TRANSFER,
+                     UNAVAILABLE, NOT_CONNECTED)
+}
+
+/**
+ * One live transfer, as the engine reports it.
+ *
+ * [filename] has already been through the engine's `sanitise_filename`. It
+ * was chosen by somebody else and is about to be rendered, which is the
+ * whole reason that function exists.
+ */
+data class FileTransferView(
+    val id: String,
+    val peer: String,
+    val filename: String,
+    val sizeBytes: Long,
+    /** True when this device is the sender. */
+    val outgoing: Boolean,
+    val accepted: Boolean,
+    val cancelled: Boolean,
+    /** 0f..1f. Chunks moved, not bytes confirmed by the far end. */
+    val progress: Float,
+)
+
 data class SmpProgress(val step: Int, val total: Int, val state: SmpState)
 
 /**

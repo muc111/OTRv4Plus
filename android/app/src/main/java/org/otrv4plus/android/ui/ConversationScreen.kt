@@ -2,6 +2,14 @@
 // Copyright (C) 2025-2026 muc111
 package org.otrv4plus.android.ui
 
+import android.Manifest
+import android.app.Activity
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.net.Uri
+import android.provider.Settings
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -17,17 +25,23 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.core.app.ActivityCompat
+import androidx.core.content.ContextCompat
 import org.otrv4plus.android.bridge.SecurityState
 import org.otrv4plus.android.chat.ChatViewModel
 import org.otrv4plus.android.chat.Message
 import org.otrv4plus.android.chat.SecurityLabel
 import org.otrv4plus.android.chat.SendState
+import org.otrv4plus.android.crypto.CallUi
 import org.otrv4plus.android.crypto.EncryptionKind
+import org.otrv4plus.android.crypto.MicPermission
+import org.otrv4plus.android.crypto.TransferUi
 import org.otrv4plus.android.crypto.Verification
 
 /**
@@ -119,6 +133,13 @@ fun ConversationScreen(
                 .fillMaxSize(),
         ) {
             SecurityLine(conversation.security)
+
+            // Directly under the security line, because it is the same
+            // subject: what this conversation is, and what it lets you do.
+            CallBar(model, jid)
+
+            // Same subject again: what this conversation lets you do.
+            TransferBar(model, jid)
 
             // The remedy, next to the statement of the problem.
             //
@@ -435,6 +456,279 @@ private fun VerificationPrompt(
             TextButton(onClick = dismiss) { Text("Cancel") }
         },
     )
+}
+
+/**
+ * The attach control, and any transfer in flight.
+ *
+ * SAF, NOT A PATH THE APP INVENTED. `OpenDocument` hands back a content URI
+ * the user chose and the system granted; it is copied into the app's own
+ * cache and that path goes to the engine. The app never asks for storage
+ * permissions and never walks the filesystem -- the user picks, and only
+ * what they picked is readable.
+ *
+ * It decides nothing: [TransferUi.offer] says what may be offered and
+ * [TransferUi.row] says what a transfer shows, both driven by
+ * `TransferUiTest`.
+ */
+@Composable
+private fun TransferBar(model: ChatViewModel, jid: String) {
+    val context = LocalContext.current
+    val transfers = model.transfers(jid)
+    val offer = model.transferOffer(jid)
+
+    val picker = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        // Copied rather than handed over as a URI. The engine takes a path,
+        // and a content URI's grant is scoped to this Activity result -- it
+        // would be gone by the time a background thread read the last chunk.
+        val staged = runCatching { stageForSending(context, uri) }.getOrNull()
+        if (staged != null) model.sendFile(jid, staged)
+    }
+
+    for (transfer in transfers) {
+        val row = TransferUi.row(transfer)
+        Surface(color = MaterialTheme.colorScheme.surfaceVariant) {
+            Row(
+                Modifier.fillMaxWidth().padding(horizontal = 12.dp,
+                                                vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text(row.label,
+                         maxLines = 2,
+                         overflow = TextOverflow.Ellipsis,
+                         style = MaterialTheme.typography.bodySmall)
+                    if (row.showsProgress) {
+                        LinearProgressIndicator(
+                            progress = { row.progress },
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                    }
+                }
+                if (row.canAccept) {
+                    TextButton(onClick = {
+                        model.acceptTransfer(transfer.id)
+                    }) { Text("Accept") }
+                }
+                if (row.canDecline) {
+                    TextButton(onClick = {
+                        model.declineTransfer(transfer.id)
+                    }) { Text(if (row.canAccept) "Decline" else "Cancel") }
+                }
+            }
+        }
+    }
+
+    when (offer) {
+        is TransferUi.Offer.Available ->
+            TextButton(onClick = { picker.launch(arrayOf("*/*")) }) {
+                Text("Send a file")
+            }
+        is TransferUi.Offer.NeedsVerification ->
+            TextButton(enabled = false, onClick = {}) {
+                Text("Send a file — verify this contact first")
+            }
+        // The plaintext banner above already offers the handshake; a second
+        // disabled control would be noise.
+        is TransferUi.Offer.NeedsEncryption -> Unit
+    }
+}
+
+/**
+ * Copy a picked document into this app's cache and return its path.
+ *
+ * INSIDE THE APP'S OWN CACHE, never a shared directory: what is copied here
+ * is about to be encrypted and sent, and leaving a readable duplicate in
+ * Downloads would undo the point of sending it privately. The engine seals
+ * from this path and the copy is the user's own file, already on the device.
+ */
+private fun stageForSending(context: android.content.Context,
+                            uri: android.net.Uri): String {
+    val name = displayName(context, uri)
+    val outbox = java.io.File(context.cacheDir, "outbox").apply { mkdirs() }
+    val target = java.io.File(outbox, name)
+    context.contentResolver.openInputStream(uri).use { input ->
+        requireNotNull(input)
+        target.outputStream().use { output -> input.copyTo(output) }
+    }
+    return target.absolutePath
+}
+
+/** The document's own name, or a neutral one. Never a path from the URI. */
+private fun displayName(context: android.content.Context,
+                        uri: android.net.Uri): String {
+    val fallback = "shared-file"
+    val cursor = runCatching {
+        context.contentResolver.query(uri, null, null, null, null)
+    }.getOrNull() ?: return fallback
+    cursor.use {
+        val column = it.getColumnIndex(
+            android.provider.OpenableColumns.DISPLAY_NAME)
+        if (column < 0 || !it.moveToFirst()) return fallback
+        val raw = runCatching { it.getString(column) }.getOrNull()
+        // Basename only. A provider-supplied name is somebody else's string
+        // and must not be able to carry a path separator into a File().
+        val name = raw?.substringAfterLast('/')?.substringAfterLast('\\')
+        return name?.takeIf { candidate -> candidate.isNotBlank() } ?: fallback
+    }
+}
+
+/**
+ * The call control, and the call.
+ *
+ * ONE COMPOSABLE FOR BOTH because they are one thing to the user: the place
+ * a call is started is the place it is shown. It decides nothing --
+ * [CallUi.offer] says what may be offered and [CallUi.phase] says what a
+ * call has got to, both driven by `CallUiTest`.
+ *
+ * NOTHING HERE CLAIMS A CALL IS SECURE. Every word comes from a [CallState]
+ * the engine reported, and the engine reaches ACTIVE only after mutual key
+ * confirmation. There is no optimistic "connected" that outlives its answer.
+ */
+@Composable
+private fun CallBar(model: ChatViewModel, jid: String) {
+    val phase = model.callPhase(jid)
+    val offer = model.callOffer(jid)
+    val context = LocalContext.current
+
+    // Android's third fact, which it does not provide: whether WE have asked.
+    // Without it "never asked" and "permanently denied" are the same two
+    // flags, and confusing them means either never asking or asking forever
+    // into a dialog that no longer appears. Survives recomposition and
+    // process death via rememberSaveable.
+    var askedBefore by rememberSaveable { mutableStateOf(false) }
+    var explain by rememberSaveable { mutableStateOf(false) }
+    var settings by rememberSaveable { mutableStateOf(false) }
+    // What the pending grant is FOR. A launcher result carries no context of
+    // its own, and answering a call when the user asked to place one would
+    // be acting on the wrong intent.
+    var answering by rememberSaveable { mutableStateOf(false) }
+
+    fun granted(): Boolean =
+        ContextCompat.checkSelfPermission(
+            context, Manifest.permission.RECORD_AUDIO) ==
+            PackageManager.PERMISSION_GRANTED
+
+    val launcher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { allowed ->
+        askedBefore = true
+        if (allowed) {
+            if (answering) model.answerCall(jid, true)
+            else model.startCall(jid, true)
+        }
+        answering = false
+    }
+
+    fun act(answer: Boolean) {
+        answering = answer
+        if (granted()) {
+            if (answer) model.answerCall(jid, true) else model.startCall(jid, true)
+            return
+        }
+        val activity = context as? Activity
+        val rationale = activity != null &&
+            ActivityCompat.shouldShowRequestPermissionRationale(
+                activity, Manifest.permission.RECORD_AUDIO)
+        when (MicPermission.decide(
+            MicPermission.State(false, rationale, askedBefore))) {
+            MicPermission.Decision.Proceed ->
+                if (answer) model.answerCall(jid, true)
+                else model.startCall(jid, true)
+            MicPermission.Decision.Request ->
+                launcher.launch(Manifest.permission.RECORD_AUDIO)
+            MicPermission.Decision.ExplainThenRequest -> explain = true
+            // The dialog is spent. Asking again would do nothing at all, so
+            // the app says where to go instead of pretending to try.
+            MicPermission.Decision.OpenSettings -> settings = true
+        }
+    }
+
+    if (phase.active) {
+        Surface(color = MaterialTheme.colorScheme.secondaryContainer) {
+            Row(
+                Modifier.fillMaxWidth().padding(horizontal = 12.dp,
+                                                vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text(phase.label,
+                         style = MaterialTheme.typography.bodyMedium)
+                    if (phase.showsDuration) {
+                        Text(model.callElapsed(jid),
+                             style = MaterialTheme.typography.labelSmall)
+                    }
+                }
+                if (phase.canAnswer) {
+                    Button(onClick = { act(answer = true) }) { Text("Answer") }
+                }
+                if (phase.canEnd) {
+                    OutlinedButton(onClick = { model.endCall(jid) }) {
+                        Text(if (phase.canAnswer) "Reject" else "End")
+                    }
+                }
+            }
+        }
+    } else when (offer) {
+        // Shown DISABLED rather than hidden. A user who cannot find the call
+        // button concludes the app is broken; one told "verify first" knows
+        // what to do next.
+        is CallUi.Offer.Available ->
+            TextButton(onClick = { act(answer = false) }) { Text("Call") }
+        is CallUi.Offer.NeedsVerification ->
+            TextButton(enabled = false, onClick = {}) {
+                Text("Call — verify this contact first")
+            }
+        is CallUi.Offer.Unavailable ->
+            TextButton(enabled = false, onClick = {}) {
+                Text("Call unavailable — ${offer.reason}")
+            }
+        // Nothing to say: the plaintext banner above already offers the
+        // handshake, and a second disabled control would be noise.
+        is CallUi.Offer.NeedsEncryption -> Unit
+    }
+
+    if (explain) {
+        AlertDialog(
+            onDismissRequest = { explain = false },
+            title = { Text("Microphone") },
+            text = { Text(MicPermission.RATIONALE) },
+            confirmButton = {
+                TextButton(onClick = {
+                    explain = false
+                    launcher.launch(Manifest.permission.RECORD_AUDIO)
+                }) { Text("Continue") }
+            },
+            dismissButton = {
+                TextButton(onClick = { explain = false }) { Text("Not now") }
+            },
+        )
+    }
+
+    if (settings) {
+        AlertDialog(
+            onDismissRequest = { settings = false },
+            title = { Text("Microphone") },
+            text = { Text(MicPermission.PERMANENTLY_DENIED) },
+            confirmButton = {
+                TextButton(onClick = {
+                    settings = false
+                    context.startActivity(
+                        Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                               Uri.fromParts("package", context.packageName,
+                                             null)))
+                }) { Text("Open settings") }
+            },
+            dismissButton = {
+                TextButton(onClick = { settings = false }) { Text("Close") }
+            },
+        )
+    }
 }
 
 /**

@@ -735,6 +735,160 @@ class ChaquopyOtrCore(private val appContext: Context) : OtrCore {
         wrap { requireApp().callAttr("smp_abort", peer) }
     }
 
+    // ── Calls ─────────────────────────────────────────────────────────────
+    //
+    // Thin, like everything else here: each of these is one `callAttr` onto
+    // `OtrApp`, which delegates to `android_bridge.voice.CallBridge`, which
+    // delegates to `otrv4plus_voice.VoiceCallManager` -- the same state
+    // machine, signalling and SMP gate the terminal client has always used.
+    //
+    // NOTHING ON THIS SIDE DECIDES WHETHER A CALL MAY HAPPEN. The gate is
+    // `VoiceCallManager`'s, read from the engine's own verification
+    // predicate. A second check in Kotlin would be a second answer that
+    // could disagree with the one that actually refuses, and the UI would
+    // be showing the wrong one.
+    //
+    // BLOCKING, so every one of these belongs on a worker thread -- the same
+    // rule as the rest of this class. None of them waits for a call to
+    // connect, though: placing a call builds I2P tunnels, and the Python
+    // side returns as soon as the request is handed over.
+
+    /**
+     * Place a call to [peer]. Returns a `CallOutcome` code, never a sentence.
+     *
+     * "started" means the request reached the call manager, NOT that anything
+     * is ringing. Building the tunnels takes 30-120 s, so the screen follows
+     * [callState] and the events that arrive through [drainEvents].
+     */
+    fun startCall(peer: String): String =
+        runCatching {
+            requireApp().callAttr("start_call", peer).toString()
+        }.getOrDefault(CallOutcome.UNAVAILABLE)
+
+    /** Answer a ringing call. Returns a `CallOutcome` code. */
+    fun answerCall(peer: String): String =
+        runCatching {
+            requireApp().callAttr("answer_call", peer).toString()
+        }.getOrDefault(CallOutcome.UNAVAILABLE)
+
+    /**
+     * End an active call, or reject a ringing one.
+     *
+     * One verb for both because the state machine has one: rejecting and
+     * hanging up are the same transition, and splitting them here would
+     * invent a distinction the protocol does not have.
+     */
+    fun endCall(peer: String): String =
+        runCatching {
+            requireApp().callAttr("end_call", peer).toString()
+        }.getOrDefault(CallOutcome.UNAVAILABLE)
+
+    /** This peer's call state, read from the live session. */
+    fun callState(peer: String): CallState =
+        runCatching {
+            CallState.fromName(
+                requireApp().callAttr("call_state", peer)
+                    .get("name")?.toString() ?: "IDLE")
+        }.getOrDefault(CallState.IDLE)
+
+    /**
+     * Seconds since the call became ACTIVE, or 0.
+     *
+     * Never counts the tunnel build. A timer that started when the user
+     * pressed Call would show a minute and a half of conversation that had
+     * not happened yet.
+     */
+    fun callDurationSeconds(peer: String): Int =
+        runCatching {
+            requireApp().callAttr("call_duration_seconds", peer).toInt()
+        }.getOrDefault(0)
+
+    /**
+     * Why voice cannot run on this device, or "" when it can.
+     *
+     * Asked of Python, which asks `otrv4plus_voice`'s own host hook -- the
+     * same question the call manager asks before doing anything. A separate
+     * answer here could tell the user something the engine would contradict.
+     */
+    fun voiceUnavailableReason(): String =
+        runCatching {
+            requireApp().callAttr("voice_unavailable_reason").toString()
+        }.getOrDefault("Voice is not available on this device.")
+
+    // ── File transfer ─────────────────────────────────────────────────────
+    //
+    // Thin, like the calls. `otrv4plus_filetransfer` owns the FileKey, the
+    // AEAD, the chunk format, the hashes, the offer semantics, the filename
+    // rules, the size limit and the atomic commit -- and the SMP gate on
+    // BOTH sides. None of that is restated here.
+    //
+    // THE PATH COMES FROM SAF. Android picks through the Storage Access
+    // Framework and hands down a path it has already resolved; the Termux
+    // picker `otrv4plus_filetransfer.pick_file` shells out to is never
+    // reached from an APK.
+
+    /**
+     * Offer a file to [peer]. Returns a `FileOutcome` code, never a sentence.
+     *
+     * "started" means the engine accepted the offer and it is on its way,
+     * NOT that the peer has it -- the peer has to accept, and then every
+     * chunk crosses I2P.
+     */
+    fun sendFile(peer: String, path: String): String =
+        runCatching {
+            requireApp().callAttr("send_file", peer, path).toString()
+        }.getOrDefault(FileOutcome.UNAVAILABLE)
+
+    /** Accept an offered transfer, by the id [transfers] reported. */
+    fun acceptFile(transferId: String): String =
+        runCatching {
+            requireApp().callAttr("accept_file", transferId).toString()
+        }.getOrDefault(FileOutcome.UNAVAILABLE)
+
+    /** Decline an offered transfer. */
+    fun declineFile(transferId: String): String =
+        runCatching {
+            requireApp().callAttr("decline_file", transferId).toString()
+        }.getOrDefault(FileOutcome.UNAVAILABLE)
+
+    /**
+     * Every live transfer, structured.
+     *
+     * Structured rather than the engine's own progress lines: those are
+     * written for a terminal, name files and embed transfer ids. The
+     * filename here has already been through the engine's
+     * `sanitise_filename`, which matters because it was chosen by somebody
+     * else and is about to be rendered.
+     */
+    fun transfers(): List<FileTransferView> =
+        runCatching {
+            requireApp().callAttr("transfers").asList().map { row ->
+                FileTransferView(
+                    id = row.get("id")?.toString().orEmpty(),
+                    peer = row.get("peer")?.toString().orEmpty(),
+                    filename = row.get("filename")?.toString().orEmpty(),
+                    sizeBytes = row.get("size")?.toLong() ?: 0L,
+                    outgoing = row.get("outgoing")?.toBoolean() ?: false,
+                    accepted = row.get("accepted")?.toBoolean() ?: false,
+                    cancelled = row.get("cancelled")?.toBoolean() ?: false,
+                    progress = row.get("progress")?.toFloat() ?: 0f,
+                )
+            }
+        }.getOrDefault(emptyList())
+
+    /**
+     * Where a FINISHED file lands.
+     *
+     * Not the partial-work directory: the engine keeps the two apart so a
+     * partial file can never be mistaken for a complete one, and pointing
+     * the user at that one would point them at the files that are not
+     * theirs yet.
+     */
+    fun receivedFileDir(): String =
+        runCatching {
+            requireApp().callAttr("received_file_dir").toString()
+        }.getOrDefault("")
+
     override fun setEventSink(sink: OtrEventSink?) {
         this.sink = sink
         // Events are PULLED, not pushed -- see [drainEvents]. This setter is

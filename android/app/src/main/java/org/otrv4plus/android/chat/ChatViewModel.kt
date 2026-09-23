@@ -13,16 +13,22 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import org.otrv4plus.android.bridge.CallState
 import org.otrv4plus.android.bridge.ChaquopyOtrCore
 import org.otrv4plus.android.bridge.ConnectionStatus
+import org.otrv4plus.android.bridge.FileOutcome
+import org.otrv4plus.android.bridge.FileTransferView
 import org.otrv4plus.android.bridge.OtrEvent
 import org.otrv4plus.android.bridge.SendOutcome
+import org.otrv4plus.android.crypto.CallUi
 import org.otrv4plus.android.crypto.ConversationRef
 import org.otrv4plus.android.crypto.EncryptionKind
 import org.otrv4plus.android.crypto.EncryptionLauncher
+import org.otrv4plus.android.crypto.MicPermission
 import org.otrv4plus.android.crypto.MlsProvider
 import org.otrv4plus.android.crypto.Omemo2Provider
 import org.otrv4plus.android.crypto.OtrV4PlusProvider
+import org.otrv4plus.android.crypto.TransferUi
 import org.otrv4plus.android.crypto.Verification
 
 /**
@@ -558,6 +564,202 @@ class ChatViewModel : ViewModel() {
     fun verificationOutcome(jid: String): String? {
         observe()
         return Verification.outcome(conversation(jid).smp)
+    }
+
+    // ── calls ───────────────────────────────────────────────────────────────
+    //
+    // Every decision here is somebody else's: what to offer is `CallUi`, what
+    // may happen is `otrv4plus_voice.VoiceCallManager` through the bridge.
+    // This holds which direction a call is going -- a fact only the UI knows,
+    // because RINGING means "they are calling us" and "we are calling them"
+    // depending on who pressed the button.
+
+    /** Which peer this device placed a call to, or null. Not a call state. */
+    private var callingOut: String? = null
+
+    /** Why voice cannot run here, cached: it is a fact about the device. */
+    private var voiceReason: String? = null
+
+    /** What the call control should be for [jid]. Never a security claim. */
+    fun callOffer(jid: String): CallUi.Offer {
+        observe()
+        val core = this.core
+            ?: return CallUi.Offer.Unavailable("The connection is not ready yet.")
+        if (voiceReason == null) {
+            voiceReason = runCatching { core.voiceUnavailableReason() }
+                .getOrDefault("Voice is not available on this device.")
+        }
+        return CallUi.offer(conversation(jid).security, voiceReason.orEmpty())
+    }
+
+    /** Where this peer's call has got to, and what the screen may offer. */
+    fun callPhase(jid: String): CallUi.Phase {
+        observe()
+        val bare = ChatState.bare(jid)
+        val state = state?.callState(bare) ?: CallState.IDLE
+        return CallUi.phase(
+            state,
+            if (callingOut == bare) CallUi.Direction.OUTGOING
+            else if (state == CallState.IDLE) CallUi.Direction.NONE
+            else CallUi.Direction.INCOMING,
+        )
+    }
+
+    /** How long the call has been up, formatted. Empty when none is. */
+    fun callElapsed(jid: String): String {
+        observe()
+        val core = this.core ?: return ""
+        if (!callPhase(jid).showsDuration) return ""
+        return CallUi.elapsed(
+            runCatching { core.callDurationSeconds(ChatState.bare(jid)) }
+                .getOrDefault(0))
+    }
+
+    /**
+     * Place a call, once the microphone is ours to use.
+     *
+     * [micGranted] is passed in rather than read here: this class cannot
+     * touch Android, and a call placed without the permission fails inside
+     * AAudio where the user cannot see why.
+     */
+    fun startCall(jid: String, micGranted: Boolean) {
+        val state = this.state ?: return
+        val core = this.core ?: run {
+            state.note("The connection is not ready yet.")
+            revision++
+            return
+        }
+        if (!micGranted) {
+            state.note(MicPermission.REFUSED)
+            revision++
+            return
+        }
+        val bare = ChatState.bare(jid)
+        // Held BEFORE the request, so the first poll after it already knows
+        // which way the call is going. Set after, a RINGING state arriving
+        // quickly would read as somebody calling us.
+        callingOut = bare
+        viewModelScope.launch {
+            val outcome = withContext(Dispatchers.IO) {
+                runCatching { core.startCall(bare) }.getOrDefault("unavailable")
+            }
+            if (outcome != "started") {
+                callingOut = null
+                CallUi.refusal(outcome)?.let { state.note(it) }
+            }
+            revision++
+        }
+    }
+
+    /** Answer the call that is ringing. */
+    fun answerCall(jid: String, micGranted: Boolean) {
+        val state = this.state ?: return
+        val core = this.core ?: return
+        if (!micGranted) {
+            state.note(MicPermission.REFUSED)
+            revision++
+            return
+        }
+        val bare = ChatState.bare(jid)
+        viewModelScope.launch {
+            val outcome = withContext(Dispatchers.IO) {
+                runCatching { core.answerCall(bare) }.getOrDefault("unavailable")
+            }
+            if (outcome != "started") CallUi.refusal(outcome)?.let(state::note)
+            revision++
+        }
+    }
+
+    /** End an active call, or reject a ringing one. */
+    fun endCall(jid: String) {
+        val core = this.core ?: return
+        val bare = ChatState.bare(jid)
+        // Cleared here rather than on the outcome: whatever the engine
+        // answers, this device is no longer placing a call, and leaving the
+        // flag set would render the next inbound ring as outgoing.
+        callingOut = null
+        viewModelScope.launch {
+            withContext(Dispatchers.IO) { runCatching { core.endCall(bare) } }
+            revision++
+        }
+    }
+
+    // ── files ───────────────────────────────────────────────────────────────
+    //
+    // Every decision is somebody else's: what to offer is `TransferUi`, what
+    // may happen is `otrv4plus_filetransfer` through the bridge, which
+    // enforces the SMP gate on both sides. This only carries the request.
+
+    /** What the attach control should be for [jid]. Never a security claim. */
+    fun transferOffer(jid: String): TransferUi.Offer {
+        observe()
+        return TransferUi.offer(conversation(jid).security)
+    }
+
+    /** Live transfers with [jid], newest state first read. */
+    fun transfers(jid: String): List<FileTransferView> {
+        observe()
+        val core = this.core ?: return emptyList()
+        val bare = ChatState.bare(jid)
+        return runCatching { core.transfers() }.getOrDefault(emptyList())
+            .filter { ChatState.bare(it.peer) == bare }
+    }
+
+    /**
+     * Offer a file.
+     *
+     * [path] has already been resolved by Android through the Storage Access
+     * Framework. The engine takes a path and does not care who chose it,
+     * which is why the Termux picker is never reached from here.
+     */
+    fun sendFile(jid: String, path: String) {
+        val state = this.state ?: return
+        val core = this.core ?: run {
+            state.note("The connection is not ready yet.")
+            revision++
+            return
+        }
+        val bare = ChatState.bare(jid)
+        viewModelScope.launch {
+            val outcome = withContext(Dispatchers.IO) {
+                runCatching { core.sendFile(bare, path) }
+                    .getOrDefault(FileOutcome.UNAVAILABLE)
+            }
+            TransferUi.refusal(outcome)?.let(state::note)
+            revision++
+        }
+    }
+
+    /** Accept an offered transfer. */
+    fun acceptTransfer(transferId: String) {
+        val state = this.state ?: return
+        val core = this.core ?: return
+        viewModelScope.launch {
+            val outcome = withContext(Dispatchers.IO) {
+                runCatching { core.acceptFile(transferId) }
+                    .getOrDefault(FileOutcome.UNAVAILABLE)
+            }
+            TransferUi.refusal(outcome)?.let(state::note)
+            revision++
+        }
+    }
+
+    /** Decline an offered transfer, or cancel one of ours. */
+    fun declineTransfer(transferId: String) {
+        val core = this.core ?: return
+        viewModelScope.launch {
+            withContext(Dispatchers.IO) {
+                runCatching { core.declineFile(transferId) }
+            }
+            revision++
+        }
+    }
+
+    /** Where a finished file lands, for the screen to tell the user. */
+    fun receivedFileDir(): String {
+        observe()
+        val core = this.core ?: return ""
+        return runCatching { core.receivedFileDir() }.getOrDefault("")
     }
 
     override fun onCleared() {

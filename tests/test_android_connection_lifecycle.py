@@ -621,17 +621,79 @@ def _code_only(text):
 
 
 def _assert_balanced(text, name):
-    stripped = re.sub(r'"""(?:.|\n)*?"""', '""', text)
-    stripped = re.sub(r"//[^\n]*", "", stripped)
-    stripped = re.sub(r"/\*(?:.|\n)*?\*/", " ", stripped)
-    stripped = re.sub(r'"(?:\\.|[^"\\\n])*"', '""', stripped)
+    """Brace balance, scanned rather than regex-stripped.
+
+    WHY NOT A STACK OF `re.sub`. The previous version stripped in a fixed
+    order -- triple-quoted strings, line comments, block comments, then
+    ordinary strings -- and a Kotlin string containing `/*` therefore opened
+    a block comment for the stripper. `arrayOf("*/*")`, the MIME filter that
+    means "any file", swallowed everything up to the next `*/` and took real
+    braces with it. It reported three unclosed braces in a file that was
+    perfectly balanced.
+
+    The false positive was the visible half. The same hole works the other
+    way: a string containing `/*` can eat a genuinely unbalanced region and
+    hide it, which is the failure this guard exists to catch.
+
+    So this walks the text once, in the states Kotlin actually has: ordinary
+    code, a string, a triple-quoted string, a character literal, a line
+    comment and a block comment. Escapes are honoured inside the two quoted
+    states, so `'\\'` and `"a \" b"` no longer confuse it.
+    """
     depth = 0
-    for char in stripped:
-        if char == "{":
-            depth += 1
-        elif char == "}":
-            depth -= 1
-            assert depth >= 0, "%s closes a brace that was never opened" % name
+    i, n, state = 0, len(text), None
+    while i < n:
+        char = text[i]
+        if state == "str":
+            if char == "\\":
+                i += 2
+                continue
+            if char == '"':
+                state = None
+        elif state == "raw":
+            if text.startswith('"""', i):
+                state = None
+                i += 3
+                continue
+        elif state == "chr":
+            if char == "\\":
+                i += 2
+                continue
+            if char == "'":
+                state = None
+        elif state == "line":
+            if char == "\n":
+                state = None
+        elif state == "block":
+            if text.startswith("*/", i):
+                state = None
+                i += 2
+                continue
+        else:
+            if text.startswith("//", i):
+                state = "line"
+                i += 2
+                continue
+            if text.startswith("/*", i):
+                state = "block"
+                i += 2
+                continue
+            if text.startswith('"""', i):
+                state = "raw"
+                i += 3
+                continue
+            if char == '"':
+                state = "str"
+            elif char == "'":
+                state = "chr"
+            elif char == "{":
+                depth += 1
+            elif char == "}":
+                depth -= 1
+                assert depth >= 0, (
+                    "%s closes a brace that was never opened" % name)
+        i += 1
+    assert state is None, "%s ends inside a %s" % (name, state)
     assert depth == 0, "%s has %d unclosed brace(s)" % (name, depth)
 
 

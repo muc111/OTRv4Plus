@@ -1,12 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
-    <!-- RECORD_AUDIO arrives with the voice work. The reason given here used
-         to be "requesting it now would put an unexplained microphone
-         permission on a calculator-looking app" — that app no longer exists
-         (ANDROID_PHASE2_REPORT.md §15.7), and the real reason stands on its
-         own: a permission the app cannot yet use is one the user cannot
-         evaluate. It is requested when voice can use it. -->
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
 
@@ -27,6 +21,33 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <!--
+      THE MOMENT THIS WAITED FOR. This declaration was deliberately held
+      back, with the note that a permission the app cannot yet use is one
+      the user cannot evaluate, and that it would be requested when voice
+      could use it. Until now voice could not be reached from Android at
+      all: the bridge had no start_call, answer_call or end_call.
+
+      It does now, so the permission is declared and REQUESTED AT THE POINT
+      OF USE, when the user places or answers a call, never at launch.
+      crypto/MicPermission.kt holds the decision and MicPermissionTest
+      drives it, including the case that matters: once Android stops showing
+      the dialog, asking again is a button that silently does nothing, so
+      the app says so and offers Settings instead.
+
+      Audio is encrypted on this device by otrv4plus_voice, carried over
+      I2P, and never written to disk.
+    -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+
+    <!--
+      A call is a call. dataSync above covers the long-lived XMPP session; a
+      live voice call is a different foreground type, and claiming the wrong
+      one is exactly what the dataSync comment refuses to do.
+    -->
+    <uses-permission
+        android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
 
     <!--
       Security-relevant application attributes, explained here because comments

@@ -639,7 +639,22 @@ class ConnectionController:
         Pull rather than push: these are emitted on the transport's loop
         thread, and a callback into Kotlin from there would put a
         thread-marshalling obligation on every screen that ever handles one.
+
+        CALL STATE IS POLLED HERE, just before the drain, because
+        `otrv4plus_voice.VoiceCallManager` publishes no state callback -- it
+        moves a session through a validated transition table and tells
+        nobody. Reading it on this tick means one observer, feeding the one
+        queue the UI already drains; a timer of its own would be a second
+        thing to start, stop and leak.
+
+        Before the drain rather than after, so a transition noticed on this
+        tick is delivered on this tick rather than waiting for the next.
         """
+        try:
+            self._app.poll_calls()
+        except Exception:
+            # A call-state read must not be able to cost the UI its messages.
+            _TRACE.record("voice", "poll_failed", "warning")
         return self._events.drain(limit)
 
     def add_contact(self, jid: str, name: str = "") -> Dict[str, Any]:
