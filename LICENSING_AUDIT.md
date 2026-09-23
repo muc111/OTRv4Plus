@@ -173,6 +173,19 @@ an identifier. Both are pinned by tests.
 * **App-store terms versus AGPL §6.** Unchanged from §1 below, and the reason
   the commercial licence exists: a store build that cannot satisfy the AGPL
   takes the commercial route instead.
+* **Specification documents.** `SPEC.md` and `SPEC_GROUP.md` now say what is
+  true today: like every file in the repository without its own notice, they
+  are under the repository's licence (AGPL-3.0-only OR the commercial
+  licence). Whether a protocol specification should instead carry a
+  documentation licence, so that independent implementations can quote it
+  freely, is **the author's decision** and has not been taken. Nothing here
+  asserts that it has.
+* **Icon provenance.** `icon.png` was committed by the author (`8665c51`,
+  2026-08-28) and the launcher icons are derived from it by rule
+  (`4b00046`). Who created the original artwork, and under what terms, is not
+  recorded anywhere in the repository. **The author should record it** (their
+  own work, commissioned, or licensed, and from whom) before a store release;
+  the licences screen cannot attribute what is not known.
 
 ---
 
@@ -391,7 +404,9 @@ That check is a Phase 3 task, gated behind building `libi2pd` for arm64-v8a.
 Regardless of the licensing route chosen, the shipped app must reproduce notices
 for every bundled component. Concretely:
 
-- **~120 permissive Rust crates** — Apache-2.0 requires the NOTICE file where one
+- **104 shipped Rust crates** (the §count table's authoritative figure; the
+  full resolved graph is 133 third-party packages, `Cargo.lock` lists 134
+  including `otrv4_core`) — Apache-2.0 requires the NOTICE file where one
   exists; MIT and BSD require the copyright notice and permission text.
 - **CPython** — PSF-2.0 notice.
 - **AndroidX / Compose / Kotlin** — Apache-2.0 notices.

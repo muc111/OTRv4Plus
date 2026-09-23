@@ -5,6 +5,11 @@
 **Companion to:** [SPEC.md](SPEC.md), which specifies the two-party protocol
 this one is built on and does not replace.
 
+**Licence:** the repository's licence, AGPL-3.0-only OR
+`LicenseRef-OTRv4Plus-Commercial` (see `LICENSE`, `LICENSE-COMMERCIAL.md`).
+Whether this document should carry a separate documentation licence is an
+open decision recorded in `LICENSING_AUDIT.md`.
+
 ---
 
 ## 0. Preface

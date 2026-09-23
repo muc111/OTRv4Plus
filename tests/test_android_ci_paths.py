@@ -131,7 +131,14 @@ class TestTheTwoListsAgree:
     def test_the_yaml_anchor_resolves(self):
         """The anchor is what keeps push and pull_request identical. If PyYAML
         cannot resolve it, neither can GitHub."""
-        yaml = pytest.importorskip("yaml")
+        try:
+            import yaml
+        except ImportError:
+            # CI installs PyYAML (python.yml); there, a missing module is a
+            # broken environment and this check must not quietly skip.
+            if os.environ.get("CI"):
+                pytest.fail("PyYAML is required in CI to resolve the anchor")
+            pytest.skip("PyYAML is not installed here")
         parsed = yaml.safe_load(_read(WORKFLOW))
         triggers = parsed[True] if True in parsed else parsed["on"]
         push = set(triggers["push"]["paths"])

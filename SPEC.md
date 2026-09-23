@@ -4,6 +4,11 @@
 **Status:** Draft / Research Prototype
 **Repository:** github.com/muc111/OTRv4Plus
 
+**Licence:** the repository's licence, AGPL-3.0-only OR
+`LicenseRef-OTRv4Plus-Commercial` (see `LICENSE`, `LICENSE-COMMERCIAL.md`).
+Whether this document should carry a separate documentation licence is an
+open decision recorded in `LICENSING_AUDIT.md`.
+
 ---
 
 ## 0. Preface
