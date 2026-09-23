@@ -4,6 +4,7 @@ package org.otrv4plus.android.chat
 
 import org.otrv4plus.android.bridge.SecurityState
 import org.otrv4plus.android.bridge.SmpState
+import org.otrv4plus.android.crypto.SecurityLevel
 
 /**
  * What one row of the conversation list says about its security.
@@ -47,7 +48,17 @@ object RowSecurity {
         GOOD,
     }
 
-    data class Badge(val text: String, val tone: Tone)
+    /**
+     * [mark] is the level's shape from [SecurityLevel] -- the indication that
+     * does not depend on colour. Empty for a badge that is an action rather
+     * than a level ("Verification requested").
+     */
+    data class Badge(val text: String, val tone: Tone, val mark: String = "")
+
+    private fun level(state: SecurityState, tone: Tone): Badge {
+        val level = SecurityLevel.of(state)
+        return Badge(level.label, tone, level.mark)
+    }
 
     /**
      * The badge for a row, or null when there is nothing honest to say.
@@ -70,10 +81,10 @@ object RowSecurity {
         // fact about the CONTACT, and waiting for them to speak first is
         // waiting for the moment it is too late to warn about.
         SecurityState.FINGERPRINT_MISMATCH ->
-            Badge("KEY CHANGED", Tone.ALARM)
+            level(security, Tone.ALARM)
 
         SecurityState.PLAINTEXT ->
-            if (hasHistory) Badge("Not encrypted", Tone.ALARM) else null
+            if (hasHistory) level(security, Tone.ALARM) else null
 
         // ENCRYPTED and FINGERPRINT are deliberately ONE word here.
         //
@@ -89,13 +100,13 @@ object RowSecurity {
                 // list is where the user will see it first.
                 Badge("Verification requested", Tone.NEUTRAL)
             else
-                Badge("Encrypted, unverified", Tone.NEUTRAL)
+                level(security, Tone.NEUTRAL)
 
         // Reached only when the engine says so. `SmpState` is not consulted
         // for this arm: SMP_VERIFIED is the engine's own answer and a second
         // opinion here could only disagree with it.
         SecurityState.SMP_VERIFIED ->
-            Badge("Verified", Tone.GOOD)
+            level(security, Tone.GOOD)
     }
 
     /**

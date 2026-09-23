@@ -403,7 +403,8 @@ private fun SecurityBadge(conversation: Conversation) {
         hasHistory = conversation.lastMessage != null,
     ) ?: return
     Text(
-        badge.text,
+        // Mark first: its SHAPE tells the levels apart without colour.
+        if (badge.mark.isEmpty()) badge.text else "${badge.mark} ${badge.text}",
         style = MaterialTheme.typography.labelSmall,
         color = when (badge.tone) {
             RowSecurity.Tone.ALARM -> MaterialTheme.colorScheme.error

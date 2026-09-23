@@ -786,9 +786,13 @@ private fun SecurityLine(state: SecurityState) {
                 "contact. Do not treat this conversation as verified." to
                 MaterialTheme.colorScheme.error
     }
+    // The level's mark, from the same model the conversation list uses, so a
+    // conversation cannot read "Verified" in one place and something else in
+    // the other -- and its shape carries the level without the colour.
+    val mark = org.otrv4plus.android.crypto.SecurityLevel.of(state).mark
     Surface(color = MaterialTheme.colorScheme.surfaceVariant) {
         Text(
-            text,
+            "$mark $text",
             style = MaterialTheme.typography.bodySmall,
             color = colour,
             modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp,
