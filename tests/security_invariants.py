@@ -132,16 +132,25 @@ INVARIANTS: Tuple[Invariant, ...] = (
                   "that Rust can own instead.",
         status="PARTIAL",
         tests=("test_release_guard.py", "test_rust_zeroization.py",
-               "test_voice_rust_parity.py"),
-        rationale="Ed448 seeds, ratchet keys, SMP scalars and -- since "
-                  "v10.13.2 -- voice media keys, the voice epoch root and "
-                  "the voice X448 scalar never cross the PyO3 boundary; the "
-                  "legacy getters are compiled out.",
+               "test_voice_rust_parity.py", "test_rust_owns_secrets.py"),
+        rationale="Ed448 seeds, ratchet root/chain/brace keys, SMP scalars, "
+                  "voice media keys and the voice epoch root never cross the "
+                  "PyO3 boundary; the legacy getters are compiled out.  "
+                  "Android 0.5.0 closed the four that still did: the X448 "
+                  "shared secret of every DH ratchet step "
+                  "(X448KeyHandle.dh is gone; the ratchet agrees from "
+                  "handles), the brace ML-KEM decapsulation key and shared "
+                  "secret (MlKem1024Keypair + brace_encapsulate/decapsulate), "
+                  "both voice shared secrets and the voice decapsulation key "
+                  "(RustVoiceAgreement), and the ML-DSA-87 DAKE signing key "
+                  "(MlDsa87KeyHandle).",
         limits="The typed SMP passphrase and the account password are Python "
                "`str` before anything can touch them, and a `str` cannot be "
                "wiped.  The identity DEK and the device seeds are Python "
-               "`bytes` read from disk.  Everything derived from them is "
-               "Rust-owned.",
+               "`bytes` read from disk.  The per-message MAC key is returned "
+               "to verify the outer MAC; OTRv4 publishes it after use by "
+               "design, so its secrecy is only ever short-lived.  "
+               "Everything derived from these is Rust-owned.",
     ),
     Invariant(
         id="INV-09",

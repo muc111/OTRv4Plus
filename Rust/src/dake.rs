@@ -216,6 +216,20 @@ impl DakeOutput {
     #[getter]
     fn consumed(&self) -> bool { self.inner.borrow().is_none() }
 
+    /// Destroy the session keys without building a ratchet from them.
+    ///
+    /// For a handshake abandoned between DAKE2 and DAKE3 -- a wipe, a
+    /// logout, a peer that never answers. `DakeSessionKeys` zeroizes on drop,
+    /// so taking it out of the cell and dropping it here is the wipe; doing it
+    /// explicitly means it does not wait on the last Python reference going.
+    ///
+    /// Unsendable: this must run on the thread that created the output, like
+    /// every other access. Idempotent.
+    fn discard(&self) {
+        let taken = self.inner.borrow_mut().take();
+        drop(taken);
+    }
+
     /// Move the secret session keys into a new RustDoubleRatchet.
     /// The keys NEVER become PyBytes - they transit from the private
     /// RefCell<Option<DakeSessionKeys>> directly into the ratchet's owned
@@ -321,9 +335,38 @@ pub struct DakeState {
     #[zeroize(skip)] pub is_initiator: bool,
     #[zeroize(skip)] pub sender_tag:   u32,
     #[zeroize(skip)] pub receiver_tag: u32,
+    /// Set by `wipe`. Checked by every step, including `process_dake1`,
+    /// which has no phase guard of its own (glare needs it to accept a
+    /// DAKE1 from any phase) -- so a wiped handshake cannot be re-entered
+    /// and run on zeroed keys.
+    #[zeroize(skip)] wiped: bool,
 }
 
 impl DakeState {
+    /// Zeroize every secret field in place and move to `Failed`.
+    ///
+    /// The identity and prekey copies, the ephemeral X448 scalar, the ML-KEM
+    /// decapsulation key, the ML-DSA key, the transcript and any derived
+    /// session keys. Public fields are left: they are public. A wiped
+    /// handshake can go nowhere -- every phase check fails from `Failed`.
+    pub fn wipe(&mut self) {
+        self.our_identity_priv.zeroize();
+        self.our_prekey_priv.zeroize();
+        if let Some(k) = self.our_mldsa_priv.as_mut() { k.zeroize(); }
+        self.our_mldsa_priv = None;
+        self.our_eph_x448_priv.zeroize();
+        self.our_mlkem_sk.zeroize();
+        self.session_keys = None;
+        self.transcript.zeroize();
+        self.phase = DakePhase::Failed;
+        self.wiped = true;
+    }
+
+    fn refuse_if_wiped(&self) -> Result<()> {
+        if self.wiped { return Err(OtrError::Dake("handshake was wiped")); }
+        Ok(())
+    }
+
     pub fn new(
         identity_priv: &[u8; 57], identity_pub: &[u8; ED448_PUB_SIZE],
         prekey_priv:   &[u8; 56], prekey_pub:   &[u8; X448_PUB_SIZE],
@@ -349,11 +392,13 @@ impl DakeState {
             peer_mlkem_ek: [0u8; MLKEM_EK_SIZE], peer_mldsa_pub: None, peer_profile_bytes: None,
             our_profile_bytes: Vec::new(), session_keys: None, transcript: Vec::new(),
             phase: DakePhase::Idle, is_initiator: false, sender_tag, receiver_tag: 0,
+            wiped: false,
         })
     }
 
     // ── DAKE1 ────────────────────────────────────────────────
     pub fn generate_dake1(&mut self, client_profile: &[u8], mldsa_pub: Option<&[u8]>) -> Result<Vec<u8>> {
+        self.refuse_if_wiped()?;
         if self.phase != DakePhase::Idle { return Err(OtrError::Dake("wrong phase")); }
         self.is_initiator = true;
         let mut msg = vec![MSG_DAKE1];
@@ -373,6 +418,7 @@ impl DakeState {
     }
 
     pub fn process_dake1(&mut self, data: &[u8]) -> Result<()> {
+        self.refuse_if_wiped()?;
         // Wire: type | X448_pub(56) | MLKEM_ek(1568) | profile(var) | [MLDSA_pub(2592)]
         // R9: derive the bound instead of hand-computing a +3 margin. The
         // profile's version count lives at DAKE1_FIXED_PREFIX + 1, and with
@@ -431,6 +477,7 @@ impl DakeState {
         &mut self, client_profile: &[u8], our_prekey_priv: Option<&[u8]>,
         mldsa_pub: Option<&[u8]>,
     ) -> Result<(Vec<u8>, DakeSessionKeys)> {
+        self.refuse_if_wiped()?;
         if self.phase != DakePhase::ReceivedDake1 { return Err(OtrError::Dake("wrong phase")); }
         let prekey_priv_bytes = our_prekey_priv.unwrap_or(self.our_prekey_priv.expose());
 
@@ -494,6 +541,7 @@ impl DakeState {
     pub fn process_dake2(
         &mut self, data: &[u8], our_prekey_priv: Option<&[u8]>,
     ) -> Result<DakeSessionKeys> {
+        self.refuse_if_wiped()?;
         if self.phase != DakePhase::SentDake1 {
             return Err(OtrError::Dake("wrong phase"));
         }
@@ -599,6 +647,7 @@ impl DakeState {
         Ok(msg)
     }
     pub fn process_dake3(&mut self, data: &[u8]) -> Result<()> {
+        self.refuse_if_wiped()?;
         if self.phase != DakePhase::SentDake2 { return Err(OtrError::Dake("wrong phase")); }
         if data.len() < 1 + RING_SIGMA_SIZE + 1 { return Err(OtrError::TooShort{need:1+RING_SIGMA_SIZE+1,got:data.len()}); }
         if data[0] != MSG_DAKE3 { return Err(OtrError::WireFormat); }
@@ -1297,6 +1346,10 @@ impl PyDake {
         }.to_string()
     }
     fn is_established(&self) -> bool { self.inner.phase == DakePhase::Established }
+
+    /// Destroy every secret this handshake holds, in place, and leave it
+    /// failed. Idempotent. See `DakeState::wipe`.
+    fn zeroize(&mut self) { self.inner.wipe(); }
     #[cfg(feature = "legacy-dake-keys")]
     fn get_session_keys(&mut self) -> Option<Py<PyAny>> {
         Python::with_gil(|py| {
@@ -1311,5 +1364,43 @@ impl PyDake {
                 Some(robj.into_any())
             } else { None }
         })
+    }
+}
+#[cfg(test)]
+mod wipe_tests {
+    use super::*;
+
+    fn state() -> DakeState {
+        DakeState::new(&[7u8; 57], &[8u8; ED448_PUB_SIZE],
+                       &[9u8; 56], &[10u8; X448_PUB_SIZE],
+                       Some(&[11u8; 64]), None, 1)
+            .expect("state")
+    }
+
+    /// Every secret field is zero afterwards, and the handshake is dead.
+    #[test]
+    fn wipe_zeroizes_every_secret_field() {
+        let mut s = state();
+        s.transcript = vec![1, 2, 3];
+        s.wipe();
+        assert!(s.our_identity_priv.expose().iter().all(|b| *b == 0));
+        assert!(s.our_prekey_priv.expose().iter().all(|b| *b == 0));
+        assert!(s.our_eph_x448_priv.expose().iter().all(|b| *b == 0));
+        assert!(s.our_mlkem_sk.expose().iter().all(|b| *b == 0));
+        assert!(s.our_mldsa_priv.is_none());
+        assert!(s.session_keys.is_none());
+        assert!(s.transcript.is_empty());
+        assert!(s.phase == DakePhase::Failed);
+    }
+
+    /// `process_dake1` has no phase guard; the wiped flag is what stops a
+    /// wiped handshake being re-entered on zeroed keys.
+    #[test]
+    fn a_wiped_handshake_cannot_be_reentered() {
+        let mut s = state();
+        s.wipe();
+        assert!(s.process_dake1(&[0u8; 4000]).is_err());
+        assert!(s.generate_dake1(&[0u8; 200], None).is_err());
+        assert!(s.process_dake3(&[0u8; 10]).is_err());
     }
 }

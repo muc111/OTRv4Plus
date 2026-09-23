@@ -49,6 +49,7 @@ fn otrv4_core(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<voice::PyVoiceCipher>()?;
     m.add_class::<voice::PyVoiceKex>()?;
     m.add_class::<voice::PyVoiceRoot>()?;
+    m.add_class::<voice::PyVoiceAgreement>()?;
 
     // v10.14.0: /sendfile.  The FileKey is generated, wrapped, used and
     // zeroized entirely inside Rust; Python holds handles and opaque bytes.
@@ -65,6 +66,7 @@ fn otrv4_core(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(mldsa::mldsa87_keygen, m)?)?;
     m.add_function(wrap_pyfunction!(mldsa::mldsa87_sign,   m)?)?;
     m.add_function(wrap_pyfunction!(mldsa::mldsa87_verify, m)?)?;
+    m.add_class::<mldsa::MlDsa87KeyHandle>()?;
     // AES-256-GCM (Phase 5.3h-B, v10.6.19): replaces cryptography.AESGCM
     m.add_function(wrap_pyfunction!(aead::aes256gcm_encrypt, m)?)?;
     m.add_function(wrap_pyfunction!(aead::aes256gcm_decrypt, m)?)?;
@@ -73,6 +75,7 @@ fn otrv4_core(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(mlkem::mlkem1024_keygen, m)?)?;
     m.add_function(wrap_pyfunction!(mlkem::mlkem1024_encaps, m)?)?;
     m.add_function(wrap_pyfunction!(mlkem::mlkem1024_decaps, m)?)?;
+    m.add_class::<mlkem::MlKemKeypair>()?;
     // Phase 5.3e (v10.6.12): Rust-owned long-term identity key handles
     m.add_class::<key_handles::Ed448KeyHandle>()?;
     m.add_class::<key_handles::X448KeyHandle>()?;

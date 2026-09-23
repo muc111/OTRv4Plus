@@ -427,6 +427,13 @@ def _secure_file_destroy(filepath: str) -> None:
 class MLKEM1024BraceKEM:
     """ML-KEM-1024 keypair for the OTRv4 post-quantum brace KEM.
 
+    NOT USED BY THE RATCHET. The ratchet's brace rotation runs on
+    `otrv4_core.MlKem1024Keypair` and `RustDoubleRatchet.brace_encapsulate`
+    / `brace_decapsulate`, so the decapsulation key and shared secret never
+    become Python objects. This class remains for its size constants and
+    for tests that exercise the primitive; production code must not use it
+    to hold a session key (tests/test_rust_owns_secrets.py enforces that).
+
     NIST Level 5 (~256-bit post-quantum security).
 
     v10.7.3 (Phase 5.3i-C): backed by Rust pqcrypto-mlkem (FIPS 203
@@ -505,7 +512,7 @@ class MLDSA87Auth:
 
     Key sizes (FIPS 204 §4):
       Public key:  2592 bytes
-      Private key: 4896 bytes (mutable bytearray; cleansed on zeroize)
+      Private key: 4896 bytes (held in Rust by MlDsa87KeyHandle)
       Signature:   4627 bytes
     """
 
@@ -514,16 +521,21 @@ class MLDSA87Auth:
     SIG_BYTES = 4627
 
     def __init__(self):
-        """Generate a fresh ML-DSA-87 keypair via Rust pqcrypto-mldsa."""
-        pub, priv = _RustDAKE_module.mldsa87_keygen()
-        self.pub_bytes: bytes = pub
-        self._priv: bytearray = priv
+        """Generate a fresh ML-DSA-87 keypair inside Rust.
+
+        The secret key is held by an opaque `MlDsa87KeyHandle` and never
+        becomes a Python object: `mldsa87_keygen` would return it as a
+        bytearray and `mldsa87_sign` would need it passed back as `bytes`
+        -- a fresh unwipeable copy per signature. `_priv` is the handle.
+        """
+        self._priv = _RustDAKE_module.MlDsa87KeyHandle()
+        self.pub_bytes: bytes = bytes(self._priv.public_bytes)
 
     def sign(self, msg: bytes) -> bytes:
         """Sign a message.  Returns 4627-byte signature."""
         if self._priv is None:
             raise RuntimeError("ML-DSA-87 private key has been zeroized")
-        return _RustDAKE_module.mldsa87_sign(bytes(self._priv), msg)
+        return bytes(self._priv.sign(msg))
 
     @classmethod
     def verify(cls, pub_bytes: bytes, msg: bytes, sig: bytes) -> bool:
@@ -538,9 +550,12 @@ class MLDSA87Auth:
             return False
 
     def zeroize(self):
-        """Overwrite private key material (v10.7.2: ctypes.memset)."""
+        """Destroy the signing key inside Rust, then drop the handle."""
         if self._priv is not None:
-            _secure_wipe(self._priv)
+            try:
+                self._priv.zeroize()
+            except Exception:
+                pass
             self._priv = None
         self.pub_bytes = b"\x00" * self.PUB_BYTES
 
@@ -3729,9 +3744,19 @@ class _RatchetKeyStore:
 class RustBackedDoubleRatchet:
     """OTRv4 Double Ratchet - Rust crypto core.
 
-    X448 key exchange and ML-KEM brace rotation stay in Python.
-    KDF, AES-256-GCM, chain advancement, skip keys, and replay
-    detection are handled by the Rust otrv4_core module.
+    Python orchestrates; Rust owns every secret. The X448 ratchet keys are
+    opaque `X448KeyHandle`s and the agreement happens inside
+    `RustDoubleRatchet.send_ratchet` / `decrypt_new_dh`; the ML-KEM brace
+    rotation holds its decapsulation key in an opaque `MlKem1024Keypair`
+    and folds the shared secret in via `brace_encapsulate` /
+    `brace_decapsulate`. No DH output, KEM shared secret, decapsulation key,
+    root, chain or brace key is a Python object on the production path.
+
+    `root_key`, `chain_key_send`, `chain_key_recv` and `_brace_key` are
+    OBSERVATION MIRRORS: after every operation they hold one-way SHA3 tags
+    of the corresponding Rust key (`RustDoubleRatchet.state_tags`), so a
+    caller can see that a key moved, or that two ends agree, without
+    holding it. They are not keys and cannot be used as keys.
 
     Deterministic zeroization: Rust's Zeroize trait guarantees all
     secret key material is overwritten on drop - unlike Python's GC
@@ -3814,6 +3839,7 @@ class RustBackedDoubleRatchet:
         self._next_expected_recv_num: int = 0
         self._current_recv_dh_pub: Optional[bytes] = None
 
+        self._sync_mirrors()
         self.logger.debug(f"RustBackedDoubleRatchet initialized (initiator={is_initiator })")
 
     @classmethod
@@ -3909,6 +3935,7 @@ class RustBackedDoubleRatchet:
         self._current_recv_dh_pub = None
 
         self._dake_output_consumed = True
+        self._sync_mirrors()
 
         self.logger.debug(
             f"RustBackedDoubleRatchet.from_dake_output (initiator={is_initiator }) "
@@ -4011,9 +4038,7 @@ class RustBackedDoubleRatchet:
 
             enc = self._rust.encrypt(plaintext)
             self.message_counter_send += 1
-
-            new_ck_s, _, _ = self._kdf_ck(self._rks_send.read())
-            self._rks_send.write(new_ck_s)
+            self._sync_mirrors()
 
             return (
                 enc["ciphertext"],
@@ -4091,8 +4116,7 @@ class RustBackedDoubleRatchet:
                         self.skipped_keys.pop((hdr_dh_pub, hdr_msg_num), None)
 
                 self.message_num_recv += 1
-                new_ck_r, _, _ = self._kdf_ck(self._rks_recv.read())
-                self._rks_recv.write(new_ck_r)
+                self._sync_mirrors()
                 return pt, _mkmac
 
             except Exception as e:
@@ -4118,21 +4142,17 @@ class RustBackedDoubleRatchet:
         Called only when is_new_dh=True AND dh_ratchet_remote_pub is not None
         (i.e. a genuine second or later DH epoch, not the first message).
 
-        Rust kdf_root signature:  kdf_1(ROOT_KEY, root_key || dh_secret, 64)
-        The Python-side mirror must use the SAME inputs so the two stay in
-        sync.  A previous version erroneously appended self._brace_key to
-        the KDF input, which diverged from Rust after the first ratchet step.
+        Both agreements -- ours-current with the header key (receive chain)
+        and ours-next with it (send chain) -- happen inside Rust from the two
+        key handles. Python passes handles and receives plaintext.
         """
         dh_pub = self._rust.header_dh_pub(header_bytes)
 
-        dh_secret_recv = self.dh_ratchet_local.dh(dh_pub)
-
         new_local = _RustDAKE_module.generate_x448_keypair()
         new_local_pub = new_local.public_bytes()
-        dh_secret_send = new_local.dh(dh_pub)
 
         _res = self._rust.decrypt_new_dh(
-            header_bytes, ciphertext, nonce, tag, dh_secret_recv, dh_secret_send, new_local_pub
+            header_bytes, ciphertext, nonce, tag, self.dh_ratchet_local, new_local
         )
 
         if self.dh_ratchet_remote_pub is not None:
@@ -4147,50 +4167,49 @@ class RustBackedDoubleRatchet:
         self.ratchet_id = self._dh_epoch
         self.message_counter_send = 0
 
-        _cur_root = self._rks_root.read()
-        _seed_r = kdf_1(KDFUsage.ROOT_KEY, _cur_root + bytes(dh_secret_recv), 64)
-        _new_root_r = _seed_r[:32]
-        _new_ck_recv = _seed_r[32:64]
-
-        _seed_s = kdf_1(KDFUsage.ROOT_KEY, _new_root_r + bytes(dh_secret_send), 64)
-        _new_root_s = _seed_s[:32]
-        _new_ck_send = _seed_s[32:64]
-
-        self._rks_root.write(_new_root_s)
-        self._rks_send.write(_new_ck_send)
-        self._rks_recv.write(_new_ck_recv)
-
+        self._sync_mirrors()
         self.prepare_brace_rotation()
         return _res["plaintext"], _res["mac_key"]
 
     def _ratchet(self, dh_pub):
-        """Send-side forced DH ratchet step."""
+        """Send-side forced DH ratchet step. The agreement is Rust's."""
         with self.lock:
 
-            self.dh_ratchet_local = _RustDAKE_module.generate_x448_keypair()
-            self.dh_ratchet_local_pub = self.dh_ratchet_local.public_bytes()
-            dh_secret = self.dh_ratchet_local.dh(dh_pub)
-
-            self._rust.send_ratchet(dh_secret, self.dh_ratchet_local_pub)
+            new_local = _RustDAKE_module.generate_x448_keypair()
+            self._rust.send_ratchet(new_local, dh_pub)
+            self.dh_ratchet_local = new_local
+            self.dh_ratchet_local_pub = new_local.public_bytes()
 
             self._dh_epoch += 1
             self.ratchet_id = self._dh_epoch
             self.message_counter_send = 0
 
-            _combined = bytes(dh_secret) + self._brace_key
-            _seed = kdf_1(KDFUsage.ROOT_KEY, self._rks_root.read() + _combined, 64)
-            self._rks_root.write(_seed[:32])
-            self._rks_send.write(_seed[32:64])
-
+            self._sync_mirrors()
             self.prepare_brace_rotation()
+
+    def _sync_mirrors(self):
+        """Refresh the observation mirrors from Rust's one-way state tags.
+
+        See the class docstring: tags, not keys. A core too old to provide
+        `state_tags` leaves the mirrors as they were rather than inventing
+        values for them.
+        """
+        tags_of = getattr(self._rust, "state_tags", None)
+        if tags_of is None:
+            return
+        tags = tags_of()
+        self._rks_root.write(bytes(tags["root"]))
+        self._rks_send.write(bytes(tags["chain_send"]))
+        self._rks_recv.write(bytes(tags["chain_recv"]))
+        self._brace_key = bytes(tags["brace"])
 
     def prepare_brace_rotation(self):
         if self._brace_kem_local is not None:
             return
         if self._brace_kem_ct_out is not None:
             return
-        self._brace_kem_local = MLKEM1024BraceKEM()
-        self._brace_kem_ek_out = self._brace_kem_local.encap_key_bytes
+        self._brace_kem_local = _RustDAKE_module.MlKem1024Keypair()
+        self._brace_kem_ek_out = bytes(self._brace_kem_local.encap_key)
 
     def consume_outgoing_kem_ek(self):
         ek = self._brace_kem_ek_out
@@ -4203,24 +4222,48 @@ class RustBackedDoubleRatchet:
         return ct
 
     def process_incoming_kem_ek(self, ek):
-        ct, ss = MLKEM1024BraceKEM.encapsulate(ek)
-        self._brace_kem_ct_out = ct
-        self._rust.rotate_brace_key(ss)
-
-        self._brace_key = kdf_1(KDFUsage.BRACE_KEY_ROTATE, self._brace_key + ss, 32)
+        """Encapsulate to the peer's brace key; the shared secret stays in Rust."""
+        if len(ek) != MLKEM1024BraceKEM.EK_BYTES:
+            raise ValueError(
+                f"ML-KEM-1024 encap key must be {MLKEM1024BraceKEM .EK_BYTES } bytes, got {len (ek )}"
+            )
+        self._brace_kem_ct_out = bytes(self._rust.brace_encapsulate(bytes(ek)))
+        self._sync_mirrors()
 
     def process_incoming_kem_ct(self, ct):
+        """Decapsulate with our pending keypair, inside Rust, consuming it."""
         if self._brace_kem_local is None:
             raise ValueError("Received KEM ct but no local keypair pending")
-        ss = self._brace_kem_local.decapsulate(ct)
-        self._brace_kem_local.zeroize()
+        if len(ct) != MLKEM1024BraceKEM.CT_BYTES:
+            raise ValueError(
+                f"ML-KEM-1024 ciphertext must be {MLKEM1024BraceKEM .CT_BYTES } bytes, got {len (ct )}"
+            )
+        keypair = self._brace_kem_local
         self._brace_kem_local = None
-        self._rust.rotate_brace_key(ss)
-
-        self._brace_key = kdf_1(KDFUsage.BRACE_KEY_ROTATE, self._brace_key + ss, 32)
+        try:
+            self._rust.brace_decapsulate(keypair, bytes(ct))
+        finally:
+            keypair.zeroize()
+        self._sync_mirrors()
 
     def zeroize(self):
+        """Destroy every secret this ratchet holds, then drop the handles.
+
+        EXPLICIT, not left to reference counting. `self._rust = None` frees
+        the Rust ratchet only if nothing else holds it -- a traceback frame, a
+        test, a debugger -- and a wipe must not depend on that. So the Rust
+        objects are told to zeroize themselves first: the ratchet replaces its
+        keys (ZeroizeOnDrop runs on the old ones), the X448 handle zeroes its
+        scalar in place, the pending ML-KEM keypair drops its decapsulation
+        key. Releasing the Python references afterwards is only tidying.
+        """
         with self.lock:
+            for holder in (self._rust, self.dh_ratchet_local):
+                if holder is not None:
+                    try:
+                        holder.zeroize()
+                    except Exception:
+                        pass
             self._rust = None
             self.dh_ratchet_local = None
             self.dh_ratchet_remote = None
@@ -4572,6 +4615,38 @@ class RustDAKEAdapter:
                 "IDLE",
                 f"DAKE engine initialized, initiator={explicit_initiator }",
             )
+
+    def zeroize(self) -> None:
+        """Destroy this handshake's secrets inside Rust. Idempotent.
+
+        The ephemeral X448 scalar, the ML-KEM decapsulation key and the
+        identity copies inside `RustDAKE`; any `DakeOutput` produced but not
+        yet consumed into a ratchet (a handshake abandoned between DAKE2 and
+        DAKE3); and the ML-DSA-87 signing key. `DakeOutput` is unsendable, so
+        this must run on the thread that drove the handshake -- the caller is
+        responsible for that, and `EnhancedSessionManager.wipe` documents it.
+        """
+        keys = getattr(self, "_session_keys", None)
+        output = keys.get("_dake_output") if isinstance(keys, dict) else None
+        if output is not None:
+            try:
+                output.discard()
+            except Exception:
+                pass
+        self._session_keys = None
+        rust = getattr(self, "_rust", None)
+        if rust is not None and hasattr(rust, "zeroize"):
+            try:
+                rust.zeroize()
+            except Exception:
+                pass
+        auth = getattr(self, "_mldsa_auth", None)
+        if auth is not None:
+            try:
+                auth.zeroize()
+            except Exception:
+                pass
+        self._mldsa_auth = None
 
     @property
     def state(self) -> DAKEState:
@@ -6619,8 +6694,6 @@ class EnhancedOTRSession:
         self._sender_tag: int = _generate_instance_tag()
         self._receiver_tag: int = 0
         self._peer_disconnected: bool = False
-        self._last_extra_sym_key: Optional[bytes] = None
-        self._extra_sym_key_cb = None
         self._queued_smp_response: Optional[str] = None
 
         self.auto_smp_secret: bool = False
@@ -7258,15 +7331,20 @@ class EnhancedOTRSession:
                                           "0x%04x" % tlv.type, str(exc)[:80])
 
                 elif tlv.type == OTRv4TLV.EXTRA_SYMMETRIC_KEY:
-                    key = hashlib.sha3_512(
-                        self.session_id + b"OTRv4-EXTRA-SYM" + tlv.value
-                    ).digest()[:32]
-                    self._last_extra_sym_key = key
-                    if self._extra_sym_key_cb:
-                        try:
-                            self._extra_sym_key_cb(self.peer, tlv.value, key)
-                        except Exception:
-                            pass
+                    # Consumed and deliberately NOT turned into a key here.
+                    #
+                    # This used to derive SHA3-512(session_id || label ||
+                    # tlv.value) in Python and kept it on the session. Two
+                    # things were wrong with that:
+                    # every input is visible to anyone who saw the session
+                    # (the SSID is displayed for verification, the TLV value
+                    # is the peer's plaintext context), so the "key" was not
+                    # secret at all; and it was a Python object nothing ever
+                    # read. The real OTRv4 extra symmetric key is derived in
+                    # the DAKE and never leaves Rust -- it keys file transfer
+                    # inside `RustDoubleRatchet.file_sender/file_receiver`.
+                    self.tracer.trace(self.peer, "DEBUG", "TLV",
+                                      "EXTRA_SYMMETRIC_KEY", "ignored")
 
             except Exception as e:
                 self.tracer.trace(self.peer, "ERROR", "TLV", f"0x{tlv .type :04x}", str(e)[:80])
@@ -7773,6 +7851,16 @@ class EnhancedOTRSession:
     def _cleanup_resources(self):
         """Clean up all resources"""
         try:
+            # A handshake that produced session keys but never built a ratchet
+            # from them leaves them here. Destroy them explicitly.
+            pending = getattr(self, "_dake_output", None)
+            if pending is not None:
+                try:
+                    pending.discard()
+                except Exception:
+                    pass
+                self._dake_output = None
+
             if self.ratchet:
                 self.ratchet.zeroize()
                 self.ratchet = None
@@ -8934,6 +9022,7 @@ class EnhancedSessionManager:
     def get_or_create_session(self, peer: str, is_initiator: bool = False) -> EnhancedOTRSession:
         """Get existing session or create new one"""
         with self.lock:
+            self._refuse_if_wiped()
             if peer in self.sessions:
                 session = self.sessions[peer]
 
@@ -9036,6 +9125,7 @@ class EnhancedSessionManager:
         Returns: (encrypted_message_or_dake_message, should_send)
         """
         with self.lock:
+            self._refuse_if_wiped()
             session = self.get_or_create_session(peer, is_initiator=True)
 
             if session.is_encrypted():
@@ -9111,6 +9201,7 @@ class EnhancedSessionManager:
         Returns decrypted plaintext if applicable.
         """
         with self.lock:
+            self._refuse_if_wiped()
             if message.startswith("?OTRv4 "):
                 return self._handle_otr_message(peer, message)
 
@@ -9548,6 +9639,99 @@ class EnhancedSessionManager:
             self.tracer.trace(peer, "END_SESSION", "ACTIVE", "ENDED", reason)
             return True
 
+    #: Set by `wipe`. Checked by every entry point that could create or use
+    #: session state, so nothing -- a late inbound frame, a queued send, a UI
+    #: retry -- can bring a wiped engine back.
+    _wiped = False
+
+    class EngineWiped(RuntimeError):
+        """The engine was wiped; it will not create or use sessions again."""
+
+    def _refuse_if_wiped(self) -> None:
+        if self._wiped:
+            raise EnhancedSessionManager.EngineWiped("engine wiped")
+
+    @property
+    def wiped(self) -> bool:
+        return self._wiped
+
+    def wipe(self, reason: str = "wipe") -> Dict[str, int]:
+        """Destroy every secret this engine holds, then refuse all further use.
+
+        The authoritative teardown for Wipe & Exit, distinct from
+        `clear_all_sessions` (a logout: sessions go, the engine stays usable)
+        in three ways:
+
+          * EXPLICIT RUST DESTRUCTION. Every Rust object that holds a secret
+            is told to zeroize before its Python reference is dropped: each
+            ratchet (keys, DH handle, pending brace keypair), each SMP state
+            machine and vault, each in-flight DAKE (ephemeral scalar, ML-KEM
+            key, ML-DSA key, any unconsumed `DakeOutput`), and the long-term
+            identity and prekey handles. Python garbage collection is not the
+            wipe; it only frees wrappers around keys that are already zero.
+          * NO RESURRECTION. `_wiped` is set FIRST, so a frame arriving while
+            this runs cannot create a session behind it, and every entry point
+            (`get_or_create_session`, `handle_incoming_message`,
+            `handle_outgoing_message`, `start_smp`) raises `EngineWiped` from
+            then on.
+          * IN-MEMORY TRUST AND SMP SECRETS GO TOO. Logout keeps pinned
+            fingerprints deliberately; a wipe does not.
+
+        THREAD. `DakeOutput` is unsendable: PyO3 lets only the creating thread
+        touch it, and a drop from any other thread LEAKS it rather than
+        zeroizing it. Call this on the thread that processes inbound OTR
+        (the transport loop on Android), which is where DAKE outputs are made.
+
+        Idempotent. Returns counts for the caller's report.
+        """
+        with self.lock:
+            already = self._wiped
+            self._wiped = True
+            report = {"sessions": 0, "handshakes": 0, "identity_keys": 0,
+                      "already_wiped": int(already)}
+
+            for peer, engine in list(self.dake_engines.items()):
+                try:
+                    engine.zeroize()
+                    report["handshakes"] += 1
+                except Exception:
+                    pass
+            for peer, session in list(self.sessions.items()):
+                try:
+                    session.terminate(reason)
+                    report["sessions"] += 1
+                except Exception:
+                    try:
+                        session._cleanup_resources()
+                    except Exception:
+                        pass
+            self.sessions.clear()
+            self.dake_engines.clear()
+
+            profile = getattr(self, "client_profile", None)
+            for name in ("identity_key", "prekey"):
+                handle = getattr(profile, name, None) if profile else None
+                if handle is not None and hasattr(handle, "zeroize"):
+                    try:
+                        handle.zeroize()
+                        report["identity_keys"] += 1
+                    except Exception:
+                        pass
+
+            try:
+                with self.trust_db._lock:
+                    self.trust_db._db.clear()
+            except Exception:
+                pass
+            try:
+                with self.smp_storage._lock:
+                    self.smp_storage._secrets.clear()
+            except Exception:
+                pass
+
+            self.tracer.trace("SYSTEM", "WIPE", "LIVE", "WIPED", reason)
+            return report
+
     def clear_all_sessions(self, reason: str = "cleanup"):
         """Forget every session. Used only on shutdown and logout paths.
 
@@ -9777,6 +9961,7 @@ class EnhancedSessionManager:
     def start_smp(self, peer: str, secret: str, question: str = "") -> Optional[str]:
         """Start SMP verification on the session."""
         with self.lock:
+            self._refuse_if_wiped()
             sess = self.sessions.get(peer)
             if not sess:
                 raise RuntimeError(f"start_smp: no session for {peer }")

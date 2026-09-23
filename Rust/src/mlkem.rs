@@ -137,6 +137,107 @@ pub fn mlkem1024_decaps<'py>(
     Ok(PyBytes::new(py, ss.as_bytes()))
 }
 
+// ─── Rust-owned keypair ──────────────────────────────────────────────────────
+
+/// An ML-KEM-1024 keypair whose decapsulation key never leaves Rust.
+///
+/// `mlkem1024_keygen` hands the decapsulation key to Python as a
+/// `bytearray` "so the caller can wipe it". That is the wrong shape for a
+/// session secret: the wipe is only as good as every intermediate copy
+/// (`bytes(dk)` at each decapsulation made another, unwipeable one), and the
+/// shared secret came back as immutable `bytes`. The double ratchet's brace
+/// rotation and the voice key exchange now use this type instead: Python
+/// holds a handle and the public encapsulation key; decapsulation, and
+/// whatever the shared secret feeds, happen inside Rust.
+///
+/// Single use. Decapsulating consumes the decapsulation key whatever the
+/// outcome, because an ephemeral KEM key offered to a peer is spent.
+#[pyclass(name = "MlKem1024Keypair")]
+pub struct MlKemKeypair {
+    ek: Vec<u8>,
+    dk: Option<crate::secure_mem::SecretVec>,
+}
+
+#[pymethods]
+impl MlKemKeypair {
+    #[new]
+    fn py_new() -> Self { Self::generate() }
+
+    /// The encapsulation key. Public by definition.
+    #[getter]
+    fn encap_key<'py>(&self, py: Python<'py>) -> Bound<'py, PyBytes> {
+        PyBytes::new(py, &self.ek)
+    }
+
+    /// True once the decapsulation key has been used or destroyed.
+    #[getter]
+    fn spent(&self) -> bool { self.dk.is_none() }
+
+    /// Destroy the decapsulation key without using it.
+    fn zeroize(&mut self) { self.dk = None; }
+
+    fn __repr__(&self) -> String {
+        format!("<MlKem1024Keypair spent={}>", self.dk.is_none())
+    }
+}
+
+impl MlKemKeypair {
+    pub(crate) fn ek_bytes(&self) -> &[u8] { &self.ek }
+    pub(crate) fn zeroize_key(&mut self) { self.dk = None; }
+
+    pub(crate) fn generate() -> Self {
+        let (pk, sk) = mlkem1024::keypair();
+        Self {
+            ek: pk.as_bytes().to_vec(),
+            dk: Some(crate::secure_mem::SecretVec::from_slice(sk.as_bytes())),
+        }
+    }
+
+    /// Decapsulate `ct`, consuming the decapsulation key. Crate-internal:
+    /// the shared secret is returned only to Rust callers.
+    pub(crate) fn decapsulate_consume(&mut self, ct: &[u8])
+        -> PyResult<crate::secure_mem::SecretBytes<32>>
+    {
+        let dk = self.dk.take().ok_or_else(|| {
+            pyo3::exceptions::PyRuntimeError::new_err(
+                "this ML-KEM keypair has already been used")
+        })?;
+        if ct.len() != MLKEM_CT_SIZE {
+            return Err(PyValueError::new_err(format!(
+                "ML-KEM-1024 ciphertext must be {} bytes, got {}",
+                MLKEM_CT_SIZE, ct.len())));
+        }
+        let sk = mlkem1024::SecretKey::from_bytes(dk.expose()).map_err(|_| {
+            PyValueError::new_err("malformed ML-KEM-1024 decapsulation key")
+        })?;
+        let ciphertext = mlkem1024::Ciphertext::from_bytes(ct).map_err(|_| {
+            PyValueError::new_err("malformed ML-KEM-1024 ciphertext")
+        })?;
+        let ss = mlkem1024::decapsulate(&ciphertext, &sk);
+        crate::secure_mem::SecretBytes::<32>::from_slice(ss.as_bytes())
+            .ok_or_else(|| PyValueError::new_err("ML-KEM shared secret has the wrong length"))
+    }
+}
+
+/// Encapsulate to `ek`, returning `(ciphertext, shared_secret)` with the
+/// shared secret kept as a Rust `SecretBytes`. Crate-internal.
+pub(crate) fn encapsulate_internal(ek: &[u8])
+    -> PyResult<(Vec<u8>, crate::secure_mem::SecretBytes<32>)>
+{
+    if ek.len() != MLKEM_EK_SIZE {
+        return Err(PyValueError::new_err(format!(
+            "ML-KEM-1024 encapsulation key must be {} bytes, got {}",
+            MLKEM_EK_SIZE, ek.len())));
+    }
+    let pk = mlkem1024::PublicKey::from_bytes(ek).map_err(|_| {
+        PyValueError::new_err("malformed ML-KEM-1024 encapsulation key")
+    })?;
+    let (ss, ct) = mlkem1024::encapsulate(&pk);
+    let held = crate::secure_mem::SecretBytes::<32>::from_slice(ss.as_bytes())
+        .ok_or_else(|| PyValueError::new_err("ML-KEM shared secret has the wrong length"))?;
+    Ok((ct.as_bytes().to_vec(), held))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -199,5 +300,25 @@ mod tests {
             ss_wrong.as_bytes(),
             "decapsulating under the wrong key must not reproduce the secret",
         );
+    }
+
+    /// The Rust-owned keypair agrees with the internal encapsulation, and is
+    /// single-use: a second decapsulation is refused, not repeated.
+    #[test]
+    fn owned_keypair_agrees_and_is_single_use() {
+        let mut kp = MlKemKeypair::generate();
+        let (ct, ss_sender) = encapsulate_internal(&kp.ek).expect("encapsulate");
+        let ss_receiver = kp.decapsulate_consume(&ct).expect("decapsulate");
+        assert_eq!(ss_sender.expose(), ss_receiver.expose());
+        assert!(kp.dk.is_none(), "decapsulation must consume the key");
+        assert!(kp.decapsulate_consume(&ct).is_err(), "a spent key was reused");
+    }
+
+    /// A short ciphertext still consumes the key: a probe gets one try.
+    #[test]
+    fn a_bad_ciphertext_spends_the_key() {
+        let mut kp = MlKemKeypair::generate();
+        assert!(kp.decapsulate_consume(&[0u8; 10]).is_err());
+        assert!(kp.dk.is_none());
     }
 }

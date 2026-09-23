@@ -78,17 +78,17 @@ def make_pair(call_id=CALL_ID, epoch=0):
     ini = V.VoiceKeyExchange(True)
     res = V.VoiceKeyExchange(False)
 
-    r_x, r_k, ct = res.responder_agree(ini.public, ini.mlkem_ek)
+    agreement_r, ct = res.responder_agree(ini.public, ini.mlkem_ek)
     transcript_r = V.build_transcript(call_id, OTR_BINDING, FP_B, FP_A,
                                       ini.public, res.public,
                                       ini.mlkem_ek, ct, epoch)
-    root_r = V.derive_voice_root(r_x, r_k, transcript_r)
+    root_r = agreement_r.into_root(transcript_r)
 
-    i_x, i_k = ini.initiator_agree(res.public, ct)
+    agreement_i = ini.initiator_agree(res.public, ct)
     transcript_i = V.build_transcript(call_id, OTR_BINDING, FP_A, FP_B,
                                       ini.public, res.public,
                                       ini.mlkem_ek, ct, epoch)
-    root_i = V.derive_voice_root(i_x, i_k, transcript_i)
+    root_i = agreement_i.into_root(transcript_i)
     return root_i, root_r, ini, res, ct
 
 
@@ -148,17 +148,15 @@ class TestInitialKeyEstablishment(unittest.TestCase):
         ini = V.VoiceKeyExchange(True)
         res = V.VoiceKeyExchange(False)
         evil = V.VoiceKeyExchange(False)
-        r_x, r_k, ct = res.responder_agree(ini.public, ini.mlkem_ek)
-        root_r = V.derive_voice_root(
-            r_x, r_k, V.build_transcript(CALL_ID, OTR_BINDING, FP_B, FP_A,
-                                         ini.public, res.public,
-                                         ini.mlkem_ek, ct, 0))
+        agreement_r, ct = res.responder_agree(ini.public, ini.mlkem_ek)
+        root_r = agreement_r.into_root(
+            V.build_transcript(CALL_ID, OTR_BINDING, FP_B, FP_A,
+                               ini.public, res.public, ini.mlkem_ek, ct, 0))
         # Initiator is fed the wrong peer public.
-        i_x, i_k = ini.initiator_agree(evil.public, ct)
-        root_i = V.derive_voice_root(
-            i_x, i_k, V.build_transcript(CALL_ID, OTR_BINDING, FP_A, FP_B,
-                                         ini.public, evil.public,
-                                         ini.mlkem_ek, ct, 0))
+        agreement_i = ini.initiator_agree(evil.public, ct)
+        root_i = agreement_i.into_root(
+            V.build_transcript(CALL_ID, OTR_BINDING, FP_A, FP_B,
+                               ini.public, evil.public, ini.mlkem_ek, ct, 0))
         self.assertNotEqual(_root_id(root_i), _root_id(root_r))
 
     def test_malformed_x448_rejected(self):
@@ -189,14 +187,17 @@ class TestInitialKeyEstablishment(unittest.TestCase):
         # than failing, so the roots must simply differ.
         ini = V.VoiceKeyExchange(True)
         res = V.VoiceKeyExchange(False)
-        _, _, ct = res.responder_agree(ini.public, ini.mlkem_ek)
+        agreement_r, ct = res.responder_agree(ini.public, ini.mlkem_ek)
         other = V.VoiceKeyExchange(False)
-        _, _, ct2 = other.responder_agree(
+        _, ct2 = other.responder_agree(
             V.VoiceKeyExchange(True).public,
             V.VoiceKeyExchange(True).mlkem_ek)
-        i_x, i_k = ini.initiator_agree(res.public, ct2)
-        self.assertEqual(len(i_k), 32)
-        self.assertNotEqual(bytes(i_k), b"\x00" * 32)
+        agreement_i = ini.initiator_agree(res.public, ct2)
+        # Same transcript on both sides, so only the KEM secret differs.
+        t = V.build_transcript(CALL_ID, OTR_BINDING, FP_A, FP_B,
+                               ini.public, res.public, ini.mlkem_ek, ct, 0)
+        self.assertNotEqual(_root_id(agreement_i.into_root(t)),
+                            _root_id(agreement_r.into_root(t)))
 
     def test_transcript_mismatch_produces_different_roots(self):
         base = V.build_transcript(CALL_ID, OTR_BINDING, FP_A, FP_B,
@@ -269,12 +270,30 @@ class TestInitialKeyEstablishment(unittest.TestCase):
     def test_private_keys_are_single_use(self):
         ini = V.VoiceKeyExchange(True)
         res = V.VoiceKeyExchange(False)
-        _, _, ct = res.responder_agree(ini.public, ini.mlkem_ek)
+        _, ct = res.responder_agree(ini.public, ini.mlkem_ek)
         ini.initiator_agree(res.public, ct)
         with self.assertRaises(RuntimeError):
             ini.initiator_agree(res.public, ct)
         with self.assertRaises(RuntimeError):
             res.responder_agree(ini.public, ini.mlkem_ek)
+
+    def test_the_agreement_does_not_give_up_its_secrets(self):
+        # The exchange used to return the X448 and ML-KEM shared secrets as
+        # bytearrays. It returns a Rust handle now, whose only outputs are a
+        # root handle and short one-way digests.
+        ini = V.VoiceKeyExchange(True)
+        res = V.VoiceKeyExchange(False)
+        agreement, ct = res.responder_agree(ini.public, ini.mlkem_ek)
+        self.assertNotIsInstance(agreement, (bytes, bytearray, tuple))
+        public = {n for n in dir(agreement) if not n.startswith("_")}
+        self.assertEqual(public, {"into_root", "into_rekey_root", "digests",
+                                  "zeroize", "spent"})
+        x_digest, k_digest = agreement.digests()
+        self.assertEqual((len(x_digest), len(k_digest)), (12, 12))
+        agreement.into_root(b"t")
+        self.assertTrue(agreement.spent)
+        with self.assertRaises(RuntimeError):
+            agreement.into_root(b"t")
 
     def test_role_confusion_rejected(self):
         with self.assertRaises(RuntimeError):
@@ -623,14 +642,14 @@ def rekey_once(sched_i, sched_r, epoch, call_id=CALL_ID):
     """One honest hybrid rekey between two schedules.  Returns confirm tags."""
     ini = V.VoiceKeyExchange(True)
     res = V.VoiceKeyExchange(False)
-    r_x, r_k, ct = res.responder_agree(ini.public, ini.mlkem_ek)
+    agreement_r, ct = res.responder_agree(ini.public, ini.mlkem_ek)
     t = V.build_transcript(call_id, OTR_BINDING, FP_A, FP_B,
                            ini.public, res.public, ini.mlkem_ek, ct, epoch)
-    root_r = V.derive_rekey_root(sched_r.current_root(), r_x, r_k, t)
+    root_r = agreement_r.into_rekey_root(sched_r.current_root(), t)
     sched_r.begin_rekey(epoch, root_r)
 
-    i_x, i_k = ini.initiator_agree(res.public, ct)
-    root_i = V.derive_rekey_root(sched_i.current_root(), i_x, i_k, t)
+    agreement_i = ini.initiator_agree(res.public, ct)
+    root_i = agreement_i.into_rekey_root(sched_i.current_root(), t)
     sched_i.begin_rekey(epoch, root_i)
     # Captured while pending: commit_rekey clears the pending state, so
     # the tags must be read before either side commits — which is exactly

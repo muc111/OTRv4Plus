@@ -1572,23 +1572,23 @@ class VoiceKeyExchange:
         # retrying with a different peer key is the shape of a small-subgroup
         # probe.
         _require_rust_voice()
-        self._kex = _RustVoiceKex()
+        # With the initiator's ML-KEM keypair inside the same Rust object: the
+        # decapsulation key, and both shared secrets, never become Python
+        # objects. What this class hands back is a `RustVoiceAgreement`,
+        # which can only turn into a root.
+        self._kex = _RustVoiceKex(self.is_initiator)
         self.public = bytes(self._kex.public)
         self._private = self._kex        # legacy attribute name, same object
 
-        # Initiator only: the ML-KEM keypair it will decapsulate with.
-        self.mlkem_ek = b""
-        self._mlkem_dk = None
-        if self.is_initiator:
-            ek, dk = self._kem.keygen()
-            if len(ek) != MLKEM_EK_LEN:
-                raise ValueError("ML-KEM encapsulation key must be %d bytes, "
-                                 "got %d" % (MLKEM_EK_LEN, len(ek)))
-            self.mlkem_ek, self._mlkem_dk = ek, dk
+        # Initiator only: the encapsulation key it publishes. Public.
+        self.mlkem_ek = bytes(self._kex.mlkem_ek) if self.is_initiator else b""
+        if self.is_initiator and len(self.mlkem_ek) != MLKEM_EK_LEN:
+            raise ValueError("ML-KEM encapsulation key must be %d bytes, "
+                             "got %d" % (MLKEM_EK_LEN, len(self.mlkem_ek)))
 
-    # -- X448 -------------------------------------------------------------
+    # -- checks both roles make before agreeing ---------------------------
 
-    def _agree_x448(self, peer_public: bytes) -> bytearray:
+    def _check_peer_x448(self, peer_public: bytes) -> None:
         if self._private is None:
             raise RuntimeError("X448 private key already consumed")
         if not peer_public or len(peer_public) != self.PUB_LEN:
@@ -1600,79 +1600,63 @@ class VoiceKeyExchange:
             raise ValueError("peer echoed our own X448 public key")
         if peer_public == b"\x00" * self.PUB_LEN:
             raise ValueError("peer sent an all-zero X448 public key")
-        # Every check that used to live here is now inside `raw_agree`: the
-        # reflection test, the all-zero peer key, the on-curve check, and the
-        # RFC 7748 requirement that a degenerate (all-zero) shared secret
-        # abort the exchange rather than be used.  They are repeated above
-        # anyway, because a check that runs twice costs nothing and a check
-        # that runs nowhere costs everything.
-        try:
-            shared = bytearray(self._kex.agree(peer_public))
-        finally:
-            self._private = None
-        if len(shared) != 56 or shared == bytearray(56):
-            _wipe(shared)
-            raise ValueError("degenerate X448 shared secret — aborting")
-        return shared
+        # The same checks run again inside Rust (`raw_agree`), together with
+        # the on-curve test and RFC 7748's abort on a degenerate shared
+        # secret. A check that runs twice costs nothing.
 
     # -- initiator --------------------------------------------------------
 
     def initiator_agree(self, peer_x448_pub: bytes, mlkem_ct: bytes):
-        """Complete both halves as the initiator.  Returns (x448_ss, kem_ss)."""
+        """Complete both halves as the initiator.
+
+        Returns a `RustVoiceAgreement`: the X448 and ML-KEM shared secrets,
+        held in Rust, usable only via `into_root` / `into_rekey_root`.
+        """
         if not self.is_initiator:
             raise RuntimeError("initiator_agree called on a responder exchange")
-        if self._mlkem_dk is None:
+        if self._private is None:
             raise RuntimeError("ML-KEM decapsulation key already consumed")
         if not mlkem_ct or len(mlkem_ct) != MLKEM_CT_LEN:
             raise ValueError("ML-KEM ciphertext must be %d bytes" % MLKEM_CT_LEN)
-
-        x_ss = self._agree_x448(peer_x448_pub)
         try:
-            kem_ss = self._kem.decaps(bytes(mlkem_ct), self._mlkem_dk)
-        except Exception:
-            _wipe(x_ss)
-            raise
+            self._check_peer_x448(peer_x448_pub)
+            return self._kex.initiator_agree(bytes(peer_x448_pub), bytes(mlkem_ct))
         finally:
-            _wipe(self._mlkem_dk)
-            self._mlkem_dk = None
-        if len(kem_ss) != MLKEM_SS_LEN:
-            _wipe(x_ss)
-            _wipe(kem_ss)
-            raise ValueError("ML-KEM shared secret has the wrong length")
-        return x_ss, kem_ss
+            self._private = None
 
     # -- responder --------------------------------------------------------
 
     def responder_agree(self, peer_x448_pub: bytes, peer_mlkem_ek: bytes):
         """Complete both halves as the responder.
 
-        Returns (x448_ss, kem_ss, mlkem_ct).  The ciphertext must be sent to
-        the initiator and is part of the transcript on both sides.
+        Returns ``(agreement, mlkem_ct)``. The ciphertext must be sent to the
+        initiator and is part of the transcript on both sides; the agreement
+        holds the secrets, in Rust.
         """
         if self.is_initiator:
             raise RuntimeError("responder_agree called on an initiator exchange")
         if not peer_mlkem_ek or len(peer_mlkem_ek) != MLKEM_EK_LEN:
             raise ValueError("ML-KEM encapsulation key must be %d bytes"
                              % MLKEM_EK_LEN)
-
-        x_ss = self._agree_x448(peer_x448_pub)
         try:
-            ct, kem_ss = self._kem.encaps(bytes(peer_mlkem_ek))
-        except Exception:
-            _wipe(x_ss)
-            raise
-        if len(ct) != MLKEM_CT_LEN or len(kem_ss) != MLKEM_SS_LEN:
-            _wipe(x_ss)
-            _wipe(kem_ss)
+            self._check_peer_x448(peer_x448_pub)
+            agreement, ct = self._kex.responder_agree(bytes(peer_x448_pub),
+                                                      bytes(peer_mlkem_ek))
+        finally:
+            self._private = None
+        ct = bytes(ct)
+        if len(ct) != MLKEM_CT_LEN:
+            agreement.zeroize()
             raise ValueError("ML-KEM encapsulation produced wrong-sized output")
-        return x_ss, kem_ss, bytes(ct)
+        return agreement, ct
 
     def destroy(self) -> None:
         """Release any private material still held.  Idempotent."""
         self._private = None
-        if self._mlkem_dk is not None:
-            _wipe(self._mlkem_dk)
-            self._mlkem_dk = None
+        try:
+            self._kex.zeroize()
+        except Exception:
+            pass
 
 
 # ---------------------------------------------------------------------------
@@ -3322,16 +3306,15 @@ class VoiceCallSession:
         if self.schedule.ready:
             raise RuntimeError("media keys already derived")
 
-        x_ss, kem_ss, mlkem_ct = self.kex.responder_agree(
+        agreement, mlkem_ct = self.kex.responder_agree(
             peer_x448_pub, peer_mlkem_ek)
         try:
             transcript = self._transcript(0, peer_x448_pub, self.kex.public,
                                           peer_mlkem_ek, mlkem_ct)
-            self._debug_transcript(x_ss, kem_ss, transcript)
-            root = derive_voice_root(x_ss, kem_ss, transcript)
+            self._debug_transcript(agreement, transcript)
+            root = agreement.into_root(transcript)
         finally:
-            _wipe(x_ss)
-            _wipe(kem_ss)
+            agreement.zeroize()
             self.kex.destroy()
 
         # The schedule owns the handle from here; zeroize() on teardown is
@@ -3355,15 +3338,14 @@ class VoiceCallSession:
         if self.schedule.ready:
             raise RuntimeError("media keys already derived")
 
-        x_ss, kem_ss = self.kex.initiator_agree(peer_x448_pub, mlkem_ct)
+        agreement = self.kex.initiator_agree(peer_x448_pub, mlkem_ct)
         try:
             transcript = self._transcript(0, self.kex.public, peer_x448_pub,
                                           self.kex.mlkem_ek, mlkem_ct)
-            self._debug_transcript(x_ss, kem_ss, transcript)
-            root = derive_voice_root(x_ss, kem_ss, transcript)
+            self._debug_transcript(agreement, transcript)
+            root = agreement.into_root(transcript)
         finally:
-            _wipe(x_ss)
-            _wipe(kem_ss)
+            agreement.zeroize()
             self.kex.destroy()
 
         # The schedule owns the handle from here; zeroize() on teardown is
@@ -3389,8 +3371,10 @@ class VoiceCallSession:
         except Exception:
             self.keys_confirmed.set()
 
-    def _debug_transcript(self, x_ss, kem_ss, transcript) -> None:
-        """Digests only, never raw secrets.
+    def _debug_transcript(self, agreement, transcript) -> None:
+        """Digests only, never raw secrets -- and the secret digests are
+        computed inside Rust (`RustVoiceAgreement.digests`), so the secrets
+        themselves are not in reach of this function.
 
         Comparing these five lines across the two devices names precisely
         which input differs when a confirmation mismatch occurs — that is the
@@ -3404,8 +3388,9 @@ class VoiceCallSession:
                 else str(value).encode()
             return "%s=%s" % (label, hashlib.sha256(bytes(raw)).hexdigest()[:12])
 
-        _print("[voice-bind] role=%s %s %s %s %s"
-               % (self.role, d("x448", x_ss), d("mlkem", kem_ss),
+        x_digest, k_digest = agreement.digests()
+        _print("[voice-bind] role=%s x448=%s mlkem=%s %s %s"
+               % (self.role, x_digest, k_digest,
                   d("transcript", transcript), d("callid", self.call_id)))
 
     # -- rekey ------------------------------------------------------------
@@ -3426,8 +3411,8 @@ class VoiceCallSession:
         """
         kex = VoiceKeyExchange(False)
         try:
-            x_ss, kem_ss, mlkem_ct = kex.responder_agree(peer_x448_pub,
-                                                         peer_mlkem_ek)
+            agreement, mlkem_ct = kex.responder_agree(peer_x448_pub,
+                                                      peer_mlkem_ek)
         finally:
             kex.destroy()
         try:
@@ -3438,13 +3423,12 @@ class VoiceCallSession:
                 # the new one is ever a Python object.  The schedule takes
                 # ownership of the handle, so there is nothing left here to
                 # wipe -- abort_rekey and commit_rekey zeroize it.
-                new_root = self.schedule.current_root().derive_rekey(
-                    x_ss, kem_ss, transcript)
+                new_root = agreement.into_rekey_root(
+                    self.schedule.current_root(), transcript)
                 self.schedule.begin_rekey(epoch, new_root)
                 our_confirm = self.schedule.our_confirm()
         finally:
-            _wipe(x_ss)
-            _wipe(kem_ss)
+            agreement.zeroize()
         return our_confirm, mlkem_ct, kex.public
 
     def rekey_initiator_finish(self, epoch: int, peer_x448_pub: bytes,
@@ -3457,7 +3441,7 @@ class VoiceCallSession:
         if kex is None:
             raise RuntimeError("no rekey in progress")
         try:
-            x_ss, kem_ss = kex.initiator_agree(peer_x448_pub, mlkem_ct)
+            agreement = kex.initiator_agree(peer_x448_pub, mlkem_ct)
         finally:
             kex.destroy()
             self._rekey_kex = None
@@ -3465,14 +3449,13 @@ class VoiceCallSession:
             transcript = self._transcript(epoch, kex.public, peer_x448_pub,
                                           kex.mlkem_ek, mlkem_ct)
             with self._key_lock:
-                new_root = self.schedule.current_root().derive_rekey(
-                    x_ss, kem_ss, transcript)
+                new_root = agreement.into_rekey_root(
+                    self.schedule.current_root(), transcript)
                 self.schedule.begin_rekey(epoch, new_root)
                 return (self.schedule.our_confirm(),
                         self.schedule.expected_peer_confirm())
         finally:
-            _wipe(x_ss)
-            _wipe(kem_ss)
+            agreement.zeroize()
 
     def commit_rekey(self, epoch: int, peer_confirm: bytes) -> bool:
         with self._key_lock:

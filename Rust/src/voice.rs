@@ -509,6 +509,57 @@ fn salt_for(transcript: &[u8]) -> [u8; 64] {
     salt
 }
 
+impl PyVoiceRoot {
+    /// The initial hybrid root from two raw shared secrets. Crate-internal.
+    fn derive_initial(x: &[u8], k: &[u8], transcript: &[u8]) -> PyResult<Self> {
+        if x.len() != X448_SS_LEN || k.len() != MLKEM_SS_LEN {
+            return Err(PyValueError::new_err("shared secrets have the wrong length"));
+        }
+        let mut ikm = Vec::with_capacity(8 + X448_SS_LEN + MLKEM_SS_LEN);
+        let built = lp(x, &mut ikm).and_then(|_| lp(k, &mut ikm));
+        if let Err(e) = built { ikm.zeroize(); return Err(PyValueError::new_err(e)); }
+
+        let mut info = Vec::with_capacity(LABEL_INITIAL.len() + transcript.len());
+        info.extend_from_slice(LABEL_INITIAL);
+        info.extend_from_slice(transcript);
+
+        let mut root = [0u8; ROOT_LEN];
+        let derived = hkdf_sha512(&ikm, &salt_for(transcript), &info, &mut root);
+        ikm.zeroize();
+        derived.map_err(PyValueError::new_err)?;
+
+        let held = SecretBytes::new(root);
+        root.zeroize();
+        Ok(Self { root: Some(held) })
+    }
+
+    /// The next epoch's root, chained onto this one. Crate-internal.
+    fn derive_next(&self, x: &[u8], k: &[u8], transcript: &[u8]) -> PyResult<Self> {
+        if x.len() != X448_SS_LEN || k.len() != MLKEM_SS_LEN {
+            return Err(PyValueError::new_err("shared secrets have the wrong length"));
+        }
+        let old = self.expose()?;
+        let mut ikm = Vec::with_capacity(12 + ROOT_LEN + X448_SS_LEN + MLKEM_SS_LEN);
+        let built = lp(old, &mut ikm)
+            .and_then(|_| lp(x, &mut ikm))
+            .and_then(|_| lp(k, &mut ikm));
+        if let Err(e) = built { ikm.zeroize(); return Err(PyValueError::new_err(e)); }
+
+        let mut info = Vec::with_capacity(LABEL_REKEY.len() + transcript.len());
+        info.extend_from_slice(LABEL_REKEY);
+        info.extend_from_slice(transcript);
+
+        let mut root = [0u8; ROOT_LEN];
+        let derived = hkdf_sha512(&ikm, &salt_for(transcript), &info, &mut root);
+        ikm.zeroize();
+        derived.map_err(PyValueError::new_err)?;
+
+        let held = SecretBytes::new(root);
+        root.zeroize();
+        Ok(Self { root: Some(held) })
+    }
+}
+
 #[pymethods]
 impl PyVoiceRoot {
     /// Derive the initial root from the hybrid agreement.
@@ -526,25 +577,10 @@ impl PyVoiceRoot {
                                 "X448 shared secret")?;
         let mut k = take_shared(mlkem_shared, MLKEM_SS_LEN,
                                 "ML-KEM shared secret")?;
-
-        let mut ikm = Vec::with_capacity(8 + X448_SS_LEN + MLKEM_SS_LEN);
-        let built = lp(&x, &mut ikm).and_then(|_| lp(&k, &mut ikm));
+        let out = Self::derive_initial(&x, &k, transcript);
         x.zeroize();
         k.zeroize();
-        built.map_err(PyValueError::new_err)?;
-
-        let mut info = Vec::with_capacity(LABEL_INITIAL.len() + transcript.len());
-        info.extend_from_slice(LABEL_INITIAL);
-        info.extend_from_slice(transcript);
-
-        let mut root = [0u8; ROOT_LEN];
-        let derived = hkdf_sha512(&ikm, &salt_for(transcript), &info, &mut root);
-        ikm.zeroize();
-        derived.map_err(PyValueError::new_err)?;
-
-        let held = SecretBytes::new(root);
-        root.zeroize();
-        Ok(Self { root: Some(held) })
+        out
     }
 
     /// Derive the next epoch's root, chained onto this one.
@@ -566,28 +602,10 @@ impl PyVoiceRoot {
                                 "X448 shared secret")?;
         let mut k = take_shared(mlkem_shared, MLKEM_SS_LEN,
                                 "ML-KEM shared secret")?;
-        let old = self.expose()?;
-
-        let mut ikm = Vec::with_capacity(12 + ROOT_LEN + X448_SS_LEN + MLKEM_SS_LEN);
-        let built = lp(old, &mut ikm)
-            .and_then(|_| lp(&x, &mut ikm))
-            .and_then(|_| lp(&k, &mut ikm));
+        let out = self.derive_next(&x, &k, transcript);
         x.zeroize();
         k.zeroize();
-        built.map_err(PyValueError::new_err)?;
-
-        let mut info = Vec::with_capacity(LABEL_REKEY.len() + transcript.len());
-        info.extend_from_slice(LABEL_REKEY);
-        info.extend_from_slice(transcript);
-
-        let mut root = [0u8; ROOT_LEN];
-        let derived = hkdf_sha512(&ikm, &salt_for(transcript), &info, &mut root);
-        ikm.zeroize();
-        derived.map_err(PyValueError::new_err)?;
-
-        let held = SecretBytes::new(root);
-        root.zeroize();
-        Ok(Self { root: Some(held) })
+        out
     }
 
     /// Build the media cipher for one epoch.  The root never leaves Rust.
@@ -695,6 +713,10 @@ impl PyVoiceRoot {
 pub struct PyVoiceKex {
     secret: Option<SecretBytes<56>>,
     public: [u8; 56],
+    /// Initiator only: the ML-KEM-1024 keypair it decapsulates with. Held
+    /// here, not in Python, so the decapsulation key and the KEM shared
+    /// secret never become Python objects either.
+    kem: Option<crate::mlkem::MlKemKeypair>,
 }
 
 // Not #[pymethods]: raw_agree is an internal helper.  Exposing it would put
@@ -759,7 +781,8 @@ impl PyVoiceKex {
 #[pymethods]
 impl PyVoiceKex {
     #[new]
-    fn new() -> PyResult<Self> {
+    #[pyo3(signature = (with_kem = false))]
+    fn new(with_kem: bool) -> PyResult<Self> {
         use rand::RngCore;
         let mut sk = [0u8; 56];
         rand::rngs::OsRng.fill_bytes(&mut sk);
@@ -770,7 +793,8 @@ impl PyVoiceKex {
 
         let held = SecretBytes::new(sk);
         sk.zeroize();
-        Ok(Self { secret: Some(held), public: pub_bytes })
+        let kem = if with_kem { Some(crate::mlkem::MlKemKeypair::generate()) } else { None };
+        Ok(Self { secret: Some(held), public: pub_bytes, kem })
     }
 
     /// Our X448 public key.  Public by definition -- safe to hand out.
@@ -779,78 +803,131 @@ impl PyVoiceKex {
         PyBytes::new(py, &self.public)
     }
 
-    /// Agree with the peer and derive the epoch root, all inside Rust.
-    ///
-    /// `info` is the transcript the caller has already built; it is public
-    /// material (call id, fingerprints, epoch) and is not secret.
-    ///
-    /// Returns the 64-byte root.  That IS secret and does become a Python
-    /// object -- for now.  Moving the root behind a handle is the key-schedule
-    /// migration; this step removes the X448 private scalar and the raw DH
-    /// output, which are the two values Python could never wipe at all.
-    fn agree_into_root<'py>(
-        &mut self,
-        py: Python<'py>,
-        peer_public: &[u8],
-        mlkem_shared: &[u8],
-        salt: &[u8],
-        info: &[u8],
-    ) -> PyResult<Bound<'py, PyBytes>> {
-        if peer_public.len() != 56 {
-            return Err(PyValueError::new_err(
-                "peer X448 public key must be 56 bytes"));
+    /// The initiator's ML-KEM encapsulation key; empty for a responder.
+    #[getter]
+    fn mlkem_ek<'py>(&self, py: Python<'py>) -> Bound<'py, PyBytes> {
+        match &self.kem {
+            Some(kp) => PyBytes::new(py, kp.ek_bytes()),
+            None => PyBytes::new(py, b""),
         }
-        let shared = self.raw_agree(peer_public)?;
-
-        let mut ikm = Vec::with_capacity(56 + mlkem_shared.len());
-        ikm.extend_from_slice(shared.expose_slice());
-        ikm.extend_from_slice(mlkem_shared);
-
-        let mut root = [0u8; ROOT_LEN];
-        let derived = hkdf_sha512(&ikm, salt, info, &mut root);
-
-        ikm.zeroize();
-        // `secret` and `shared` drop here; SecretBytes zeroizes, and the x448
-        // crate's own types zeroize on drop.
-
-        derived.map_err(PyValueError::new_err)?;
-        let out = PyBytes::new(py, &root);
-        root.zeroize();
-        Ok(out)
     }
 
-    /// Agree with the peer, returning the raw X448 shared secret.
-    ///
-    /// Matches the shape of the Python `_agree_x448` it replaces, so the
-    /// call sites do not change: the caller still receives the shared secret
-    /// and still combines it with the ML-KEM secret itself.  What changes is
-    /// the PRIVATE SCALAR -- previously an OpenSSL object Python could
-    /// neither wipe nor reach, now `SecretBytes<56>` that zeroizes on drop.
-    ///
-    /// Returned as a `bytearray` rather than `bytes` so the caller's existing
-    /// `_wipe` still works on it.  Handing back `bytes` would have made the
-    /// shared secret unwipeable and undone half the point.
-    ///
-    /// `agree_into_root` is the stronger form and keeps the shared secret
-    /// inside Rust entirely; it is used once the key schedule moves too.
-    fn agree<'py>(
-        &mut self,
-        py: Python<'py>,
-        peer_public: &[u8],
-    ) -> PyResult<Bound<'py, PyByteArray>> {
-        let shared = self.raw_agree(peer_public)?;
-        let out = PyByteArray::new(py, shared.expose_slice());
-        Ok(out)
+    /// Initiator: agree with the responder's X448 key and decapsulate its
+    /// ciphertext. Both shared secrets go into the returned
+    /// `RustVoiceAgreement`; neither is returned to Python. Consumes the
+    /// scalar and the decapsulation key whatever the outcome.
+    fn initiator_agree(&mut self, peer_public: &[u8], mlkem_ct: &[u8])
+        -> PyResult<PyVoiceAgreement>
+    {
+        let mut kem = self.kem.take().ok_or_else(|| {
+            self.secret = None;
+            PyRuntimeError::new_err(
+                "no ML-KEM decapsulation key: not an initiator exchange, or \
+                 already used")
+        })?;
+        let x = match self.raw_agree(peer_public) {
+            Ok(x) => x,
+            Err(e) => { kem.zeroize_key(); return Err(e); }
+        };
+        let k = kem.decapsulate_consume(mlkem_ct)?;
+        Ok(PyVoiceAgreement { x: Some(x), k: Some(k) })
     }
 
-    /// Drop the private scalar without performing an agreement.
-    fn zeroize(&mut self) { self.secret = None; }
+    /// Responder: agree with the initiator's X448 key and encapsulate to
+    /// its ML-KEM key. Returns `(agreement, ciphertext)`; the ciphertext is
+    /// public and goes on the wire, the secrets stay in the agreement.
+    fn responder_agree<'py>(&mut self, py: Python<'py>,
+        peer_public: &[u8], peer_mlkem_ek: &[u8],
+    ) -> PyResult<(PyVoiceAgreement, Bound<'py, PyBytes>)> {
+        if self.kem.is_some() {
+            self.zeroize();
+            return Err(PyRuntimeError::new_err(
+                "responder_agree called on an initiator exchange"));
+        }
+        let x = self.raw_agree(peer_public)?;
+        let (ct, k) = crate::mlkem::encapsulate_internal(peer_mlkem_ek)?;
+        Ok((PyVoiceAgreement { x: Some(x), k: Some(k) }, PyBytes::new(py, &ct)))
+    }
+
+    /// Drop the private scalar (and any ML-KEM key) without agreeing.
+    fn zeroize(&mut self) {
+        self.secret = None;
+        self.kem = None;
+    }
 
     #[getter]
     fn spent(&self) -> bool { self.secret.is_none() }
 
     fn __repr__(&self) -> String {
         format!("<RustVoiceKex spent={}>", self.secret.is_none())
+    }
+}
+
+// ─── the agreed secrets, held until they become a root ───────────────────────
+
+/// The two shared secrets of one hybrid voice exchange, owned by Rust.
+///
+/// This is what `RustVoiceKex.initiator_agree` / `responder_agree` return in
+/// place of the raw X448 and ML-KEM secrets they used to hand to Python.
+/// The only things it can do are turn into a root -- the initial one, or a
+/// rekey chained onto a current root -- and report short digests for the
+/// `--debug-binding` diagnostic. Each is single-use.
+#[pyclass(name = "RustVoiceAgreement")]
+pub struct PyVoiceAgreement {
+    x: Option<SecretBytes<56>>,
+    k: Option<SecretBytes<32>>,
+}
+
+impl PyVoiceAgreement {
+    fn take(&mut self) -> PyResult<(SecretBytes<56>, SecretBytes<32>)> {
+        match (self.x.take(), self.k.take()) {
+            (Some(x), Some(k)) => Ok((x, k)),
+            _ => Err(PyRuntimeError::new_err(
+                "this agreement has already been used; its secrets are gone")),
+        }
+    }
+}
+
+#[pymethods]
+impl PyVoiceAgreement {
+    /// The initial epoch root. Consumes the agreement.
+    fn into_root(&mut self, transcript: &[u8]) -> PyResult<PyVoiceRoot> {
+        let (x, k) = self.take()?;
+        PyVoiceRoot::derive_initial(x.expose_slice(), k.expose_slice(), transcript)
+    }
+
+    /// The next epoch's root, chained onto `current`. Consumes the agreement
+    /// but not `current`: a rekey that fails to confirm must leave the call
+    /// on the epoch it already had.
+    fn into_rekey_root(&mut self, current: PyRef<'_, PyVoiceRoot>, transcript: &[u8])
+        -> PyResult<PyVoiceRoot>
+    {
+        let (x, k) = self.take()?;
+        current.derive_next(x.expose_slice(), k.expose_slice(), transcript)
+    }
+
+    /// `(x448, mlkem)`: the first 12 hex digits of SHA-256 of each secret,
+    /// for the `--debug-binding` comparison across two devices. One-way and
+    /// truncated; it identifies which input differs, and nothing more.
+    fn digests(&self) -> PyResult<(String, String)> {
+        use sha2::{Digest, Sha256};
+        let short = |b: &[u8]| -> String {
+            Sha256::digest(b).iter().take(6).map(|v| format!("{:02x}", v)).collect()
+        };
+        match (&self.x, &self.k) {
+            (Some(x), Some(k)) => Ok((short(x.expose_slice()), short(k.expose_slice()))),
+            _ => Err(PyRuntimeError::new_err("this agreement has already been used")),
+        }
+    }
+
+    /// Destroy both secrets without using them. Idempotent.
+    fn zeroize(&mut self) { self.x = None; self.k = None; }
+
+    #[getter]
+    fn spent(&self) -> bool { self.x.is_none() || self.k.is_none() }
+
+    fn __repr__(&self) -> String {
+        format!("<RustVoiceAgreement spent={}>", self.x.is_none() || self.k.is_none())
     }
 }
 

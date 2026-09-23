@@ -215,6 +215,11 @@ impl DoubleRatchet {
     pub fn ratchet_id(&self) -> u32 { self.ratchet_id }
     pub fn brace_key(&self) -> &[u8; 32] { &self.brace_key }
 
+    /// Crate-internal view of the four keys, for `state_tags` only.
+    pub(crate) fn key_refs(&self) -> (&[u8; 32], &[u8; 32], &[u8; 32], &[u8; 32]) {
+        (&self.root_key, &self.chain_key_send, &self.chain_key_recv, &self.brace_key)
+    }
+
     // ── Send‑side DH ratchet ────────────────────────────────────
     pub fn send_ratchet(&mut self, dh_secret: &[u8], new_local_pub: &[u8; 56]) {
         let (new_root, new_chain) = kdf_root(&self.root_key, dh_secret);
@@ -632,6 +637,20 @@ impl DoubleRatchet {
     // _desync_the_receive_chain.
 }
 
+/// SHA3-256("OTRv4+ ratchet state tag v1" || label || 0x00 || key). One-way,
+/// domain-separated from every KDF usage in the protocol.
+fn state_tag(label: &[u8], key: &[u8; 32]) -> [u8; 32] {
+    use sha3::{Digest, Sha3_256};
+    let mut h = Sha3_256::new();
+    h.update(b"OTRv4+ ratchet state tag v1");
+    h.update(label);
+    h.update([0u8]);
+    h.update(key);
+    let mut out = [0u8; 32];
+    out.copy_from_slice(&h.finalize());
+    out
+}
+
 // ── PyO3 wrapper with ALL required methods ──────────────────────────
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict};
@@ -903,27 +922,36 @@ impl RustDoubleRatchet {
         Ok(d)
     }
 
-    // Nine arguments, and clippy is right that seven is usually the limit.
-    // They are not incidental here: each one is a distinct field of the
-    // OTRv4 wire message this function constructs, and the alternative --
-    // bundling them into a struct -- moves the compiler's arity check from
-    // the call site into a struct literal, where a transposed pair of
-    // same-typed byte slices stops being a type error. For a function whose
-    // whole job is laying out an authenticated message in a fixed order,
-    // that trade is the wrong way round.
+    /// Receive-side DH ratchet step, with the agreement done here.
+    ///
+    /// `local` is the key pair the peer's new header was addressed to (our
+    /// current ratchet key); `new_local` is the one we move to. Both are
+    /// opaque `X448KeyHandle`s: the two X448 shared secrets are computed
+    /// inside Rust from the header's public key and never exist in Python.
+    ///
+    /// This replaced a signature that took `dh_secret_recv` and
+    /// `dh_secret_send` as Python `bytes`, which meant every DH ratchet step
+    /// put two session secrets on the Python heap, where nothing could wipe
+    /// them. The commit discipline is unchanged: nothing is committed unless
+    /// the message authenticates.
     #[allow(clippy::too_many_arguments)]
     fn decrypt_new_dh<'py>(&mut self, py: Python<'py>,
         header: &[u8], ciphertext: &[u8], nonce: &[u8], tag: &[u8],
-        dh_secret_recv: &[u8], dh_secret_send: &[u8], new_local_pub: &[u8],
+        local: PyRef<'py, crate::key_handles::X448KeyHandle>,
+        new_local: PyRef<'py, crate::key_handles::X448KeyHandle>,
     ) -> PyResult<Bound<'py, PyDict>> {
         let nonce_arr: &[u8; 12] = nonce.try_into()
             .map_err(|_| pyo3::exceptions::PyValueError::new_err("nonce must be 12 bytes"))?;
         let tag_arr: &[u8; 16] = tag.try_into()
             .map_err(|_| pyo3::exceptions::PyValueError::new_err("tag must be 16 bytes"))?;
-        let new_local_pub: &[u8; 56] = new_local_pub.try_into()
-            .map_err(|_| pyo3::exceptions::PyValueError::new_err("new_local_pub must be 56 bytes"))?;
+        let remote = DoubleRatchet::header_dh_pub(header).ok_or_else(|| {
+            pyo3::exceptions::PyValueError::new_err("header carries no DH public key")
+        })?;
+        let secret_recv = local.dh_internal(&remote)?;
+        let secret_send = new_local.dh_internal(&remote)?;
+        let new_local_pub = *new_local.public_array();
         let r = self.inner.decrypt_new_dh(header, ciphertext, nonce_arr, tag_arr,
-            dh_secret_recv, dh_secret_send, new_local_pub)
+            secret_recv.expose_slice(), secret_send.expose_slice(), &new_local_pub)
             .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
         let d = PyDict::new(py);
         d.set_item("plaintext", PyBytes::new(py, &r.plaintext))?;
@@ -931,15 +959,56 @@ impl RustDoubleRatchet {
         Ok(d)
     }
 
-    fn send_ratchet(&mut self, dh_secret: &[u8], new_local_pub: &[u8]) -> PyResult<()> {
-        let new_local_pub: &[u8; 56] = new_local_pub.try_into()
-            .map_err(|_| pyo3::exceptions::PyValueError::new_err("new_local_pub must be 56 bytes"))?;
-        self.inner.send_ratchet(dh_secret, new_local_pub);
+    /// Send-side DH ratchet step to `new_local`, agreeing with `remote_pub`
+    /// inside Rust. Replaces `send_ratchet(dh_secret, new_local_pub)`, which
+    /// took the shared secret from Python.
+    fn send_ratchet(&mut self,
+        new_local: PyRef<'_, crate::key_handles::X448KeyHandle>,
+        remote_pub: &[u8],
+    ) -> PyResult<()> {
+        let secret = new_local.dh_internal(remote_pub)?;
+        let new_local_pub = *new_local.public_array();
+        self.inner.send_ratchet(secret.expose_slice(), &new_local_pub);
         Ok(())
     }
 
-    fn rotate_brace_key(&mut self, shared_secret: &[u8]) {
-        self.inner.rotate_brace_key(shared_secret);
+    /// Brace rotation, responder half: encapsulate to the peer's ML-KEM key
+    /// and fold the shared secret into the brace key here. Returns only the
+    /// ciphertext to send. Replaces `rotate_brace_key(shared_secret)`.
+    fn brace_encapsulate<'py>(&mut self, py: Python<'py>, peer_ek: &[u8])
+        -> PyResult<Bound<'py, PyBytes>>
+    {
+        let (ct, ss) = crate::mlkem::encapsulate_internal(peer_ek)?;
+        self.inner.rotate_brace_key(ss.expose_slice());
+        Ok(PyBytes::new(py, &ct))
+    }
+
+    /// Brace rotation, initiator half: decapsulate with our pending keypair
+    /// (consuming it) and fold the shared secret in, all inside Rust.
+    fn brace_decapsulate(&mut self,
+        mut keypair: PyRefMut<'_, crate::mlkem::MlKemKeypair>,
+        ct: &[u8],
+    ) -> PyResult<()> {
+        let ss = keypair.decapsulate_consume(ct)?;
+        self.inner.rotate_brace_key(ss.expose_slice());
+        Ok(())
+    }
+
+    /// One-way tags of the current key state, for observing that it moved.
+    ///
+    /// `{"root", "chain_send", "chain_recv", "brace"}` -> 32 bytes each,
+    /// SHA3-256 over a domain label and the key. Not the keys and not
+    /// usable as keys: the tags answer "did this change?" and "do both ends
+    /// agree?", which is what the test suite asks of a ratchet, without the
+    /// suite -- or anything else in Python -- holding key material.
+    fn state_tags<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        let d = PyDict::new(py);
+        let (root, cks, ckr, brace) = self.inner.key_refs();
+        d.set_item("root", PyBytes::new(py, &state_tag(b"root", root)))?;
+        d.set_item("chain_send", PyBytes::new(py, &state_tag(b"chain_send", cks)))?;
+        d.set_item("chain_recv", PyBytes::new(py, &state_tag(b"chain_recv", ckr)))?;
+        d.set_item("brace", PyBytes::new(py, &state_tag(b"brace", brace)))?;
+        Ok(d)
     }
 
     fn is_new_dh(&self, header_bytes: &[u8]) -> bool {

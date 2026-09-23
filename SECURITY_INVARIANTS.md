@@ -76,11 +76,13 @@ SecretBytes<N> and SecretVec derive ZeroizeOnDrop; their Debug impls print [REDA
 ### INV-08 — Python does not receive long-lived private key material that Rust can own instead.
 
 **Status:** `PARTIAL`  
-**Enforced by:** `tests/test_release_guard.py`, `tests/test_rust_zeroization.py`, `tests/test_voice_rust_parity.py`
+**Enforced by:** `tests/test_release_guard.py`, `tests/test_rust_zeroization.py`, `tests/test_voice_rust_parity.py`, `tests/test_rust_owns_secrets.py`
 
-Ed448 seeds, ratchet keys, SMP scalars and -- since v10.13.2 -- voice media keys, the voice epoch root and the voice X448 scalar never cross the PyO3 boundary; the legacy getters are compiled out.
+Ed448 seeds, ratchet root/chain/brace keys, SMP scalars, voice media keys and the voice epoch root never cross the PyO3 boundary; the legacy getters are compiled out.
 
-**Limit:** The typed SMP passphrase and the account password are Python `str` before anything can touch them, and a `str` cannot be wiped.  The identity DEK and the device seeds are Python `bytes` read from disk.  Everything derived from them is Rust-owned.
+Android 0.5.0 closed the four that still did. The X448 shared secret of every DH ratchet step was returned by `X448KeyHandle.dh` and passed back to Rust; the method is gone and the ratchet agrees from key handles. The brace rotation's ML-KEM decapsulation key and shared secret were a Python `bytearray` and `bytes`; they live in `MlKem1024Keypair` and `brace_encapsulate`/`brace_decapsulate`. Both voice shared secrets and the voice decapsulation key were Python buffers; the exchange returns a `RustVoiceAgreement` that can only become a root. The ML-DSA-87 DAKE signing key was a `bytearray` for the life of the session; it is an `MlDsa87KeyHandle`.
+
+**Limit:** The typed SMP passphrase and the account password are Python `str` before anything can touch them, and a `str` cannot be wiped.  The identity DEK and the device seeds are Python `bytes` read from disk.  The per-message MAC key is returned to verify the outer MAC; OTRv4 publishes it after use by design, so its secrecy is only ever short-lived.  Everything derived from these is Rust-owned.
 
 ### INV-09 — XMPP persistent identity and IRC ephemeral identity are separate stores.
 
@@ -231,7 +233,7 @@ RFC 6122 makes the localpart and domain case-insensitive and the resource no par
 
 ## Where secrets live
 
-Updated at v10.13.2, when the voice path finished moving.
+Updated at Android 0.5.0, when the ratchet DH, the brace KEM, the voice agreement and the ML-DSA key moved.
 
 | Material | Owner | Representation | Wipeable |
 |---|---|---|---|
@@ -242,7 +244,11 @@ Updated at v10.13.2, when the voice path finished moving.
 | Voice epoch root | Rust | `SecretBytes<64>` | yes, on drop |
 | Voice media keys | Rust | `SecretBytes<32>` | yes, on drop |
 | Voice X448 private scalar | Rust | `SecretBytes<56>` | yes, on drop |
-| X448 / ML-KEM shared secrets | Python → Rust | `bytearray`, wiped by Rust | yes |
+| Ratchet DH shared secrets | Rust | computed from `X448KeyHandle`s inside the ratchet | yes, on drop |
+| Brace ML-KEM decapsulation key and shared secret | Rust | `MlKem1024Keypair` / `SecretBytes<32>` | yes, on drop |
+| Voice X448 / ML-KEM shared secrets | Rust | `RustVoiceAgreement` | yes, on drop |
+| ML-DSA-87 DAKE signing key | Rust | `MlDsa87KeyHandle` (`SecretVec`) | yes, on drop |
+| Per-message MAC key | Rust → Python | `bytes`, published after use by OTRv4 design | no, and not secret for long |
 | SMP passphrase (typed) | Python → Rust | `str` → `bytearray` → Rust | the `str` cannot be |
 | Account password | Python | `str` | **no** |
 | Identity DEK, device seeds | Python | `bytes` from disk | **no** |
