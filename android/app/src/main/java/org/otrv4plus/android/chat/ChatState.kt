@@ -2,6 +2,8 @@
 // Copyright (C) 2025-2026 muc111
 package org.otrv4plus.android.chat
 
+import org.otrv4plus.android.crypto.TransferUi
+
 import org.otrv4plus.android.bridge.CallState
 import org.otrv4plus.android.crypto.CallAlert
 import org.otrv4plus.android.bridge.ConnectionStatus
@@ -112,6 +114,9 @@ class ChatState(
             ringChanges.add(CallAlert.Change.STOP)
         }
         callStates.clear()
+        // An offer from the last account's peer is not this account's to
+        // answer.
+        fileOffers.clear()
         postLogin.onSignedOut()
         savedContacts.bind(next)
         deleted.bind(next)
@@ -462,8 +467,57 @@ class ChatState(
                 CallAlert.change(previous, event.state)?.let(ringChanges::add)
                 false
             }
+            // An offer IS announced: it is the one file event the user has
+            // to act on, and only an SMP-verified peer can make one (the
+            // engine drops offers from anybody else before they exist).
+            is OtrEvent.FileTransferChanged -> noteTransfer(event)
             else -> false
         }
+    }
+
+    // -- file transfers --------------------------------------------------------
+
+    /** Incoming offers nobody has answered, oldest first. Keyed by transfer id. */
+    private val fileOffers = LinkedHashMap<String, OtrEvent.FileTransferChanged>()
+
+    /** What the incoming-file prompt shows. Never auto-accepted. */
+    val pendingFileOffers: List<OtrEvent.FileTransferChanged>
+        get() = fileOffers.values.toList()
+
+    /** The prompt was answered (Accept or Decline) or put aside. */
+    fun dismissFileOffer(transferId: String) {
+        fileOffers.remove(transferId)
+    }
+
+    /**
+     * Record where a transfer has got to. Endings (and SENT) become a line in
+     * the conversation, persisted with the history, with a stable id so a
+     * repeated event is one line, not two. Returns true only for a NEW
+     * incoming offer.
+     */
+    private fun noteTransfer(event: OtrEvent.FileTransferChanged): Boolean {
+        val peer = bare(event.peer)
+        var announce = false
+        if (event.state == TransferUi.State.OFFERED && !event.outgoing) {
+            announce = fileOffers.put(event.transferId, event) == null
+        } else {
+            fileOffers.remove(event.transferId)
+        }
+        val line = TransferUi.statusLine(event.state, event.outgoing,
+                                         event.filename, event.reason)
+        if (line != null && peer.isNotEmpty()) {
+            val added = store.append(Message(
+                id = "file:${event.transferId}:${event.state}",
+                conversationId = peer,
+                body = line,
+                outgoing = false,
+                at = now(),
+                sendState = SendState.NONE,
+                security = SecurityLabel.SYSTEM,
+            ))
+            if (added) deleted.restore(peer)
+        }
+        return announce
     }
 
     /**

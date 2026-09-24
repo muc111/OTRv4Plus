@@ -1604,6 +1604,12 @@ class OtrApp:
             return FileOutcome.NO_TRANSFER
         return self.files.decline(transfer_id)
 
+    def cancel_file(self, transfer_id: str) -> str:
+        """Stop a transfer that is under way, either direction. A `FileOutcome`."""
+        if self._wiped:
+            return FileOutcome.NO_TRANSFER
+        return self.files.cancel(transfer_id)
+
     def transfers(self) -> List[Dict[str, Any]]:
         """Every live transfer, structured. Never the engine's own sentences."""
         if self._wiped:

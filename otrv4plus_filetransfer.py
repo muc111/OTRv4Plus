@@ -714,6 +714,45 @@ class OtrChunkTransport(ChunkTransport):
 # transfers
 # --------------------------------------------------------------------------
 
+class TransferState:
+    """Where a transfer has got to, as a stable code for a UI.
+
+    Emitted through `FileTransferManager(on_state=...)`. Codes, never
+    sentences: the terminal's `notify` lines stay as they were, and a UI
+    that must not substring-match printed English (Android) reads these.
+
+    SENT is not DELIVERED. SENT: every chunk and the DONE marker left this
+    device. DELIVERED: the receiver said RECEIVED, which it sends only after
+    all five integrity checks in `_finish` passed and the file was committed.
+    A peer on a build without RECEIVED never confirms, and SENT is then the
+    last thing that can honestly be said.
+    """
+
+    OFFERED = "offered"        # incoming offer, awaiting the user
+    WAITING = "waiting"        # outgoing offer, awaiting the peer
+    ACCEPTED = "accepted"      # data is moving
+    SENT = "sent"              # outgoing: everything sent, not yet confirmed
+    DELIVERED = "delivered"    # outgoing: receiver verified and saved it
+    RECEIVED = "received"      # incoming: verified and saved
+    DECLINED = "declined"
+    CANCELLED = "cancelled"
+    FAILED = "failed"
+
+    TERMINAL = frozenset({DELIVERED, RECEIVED, DECLINED, CANCELLED, FAILED})
+
+
+class TransferReason:
+    """Why a transfer ended badly. A fixed set: engine text never leaves."""
+
+    NONE = ""
+    LOST_CHUNK = "lost_chunk"
+    AUTH_FAILED = "auth_failed"
+    VERIFY_FAILED = "verify_failed"      # a hash, size or count check in _finish
+    TRANSPORT = "transport"
+    BY_US = "by_us"
+    BY_PEER = "by_peer"
+
+
 @dataclass
 class OutgoingTransfer:
     peer: str
@@ -727,6 +766,9 @@ class OutgoingTransfer:
     #: When the last progress line was printed, so they are throttled rather
     #: than one per chunk.
     last_report_at: float = 0.0
+    #: A `TransferState` code, for a UI. See `FileTransferManager._state`.
+    state: str = "waiting"
+    reason: str = ""
 
     @property
     def progress(self) -> float:
@@ -755,6 +797,8 @@ class IncomingTransfer:
     #: exemption is bounded by the file the USER agreed to receive rather than
     #: being open-ended.  See `absorb_transfer_message`.
     rate_allowance: int = 0
+    state: str = "offered"
+    reason: str = ""
 
     @property
     def progress(self) -> float:
@@ -810,7 +854,8 @@ class FileTransferManager:
     def __init__(self, transport: ChunkTransport,
                  notify: Callable[[str], None],
                  verified: Callable[[str], bool],
-                 spawn: Optional[Callable[["OutgoingTransfer"], None]] = None):
+                 spawn: Optional[Callable[["OutgoingTransfer"], None]] = None,
+                 on_state: Optional[Callable[[object, bool], None]] = None):
         if _core is None:                        # pragma: no cover
             raise TransferError(
                 "otrv4_core is unavailable, so file transfer cannot run; "
@@ -826,6 +871,11 @@ class FileTransferManager:
         # keepalives stop, the stream is declared dead, and the transfer takes
         # the connection down with it.  Found on a device, not by reading.
         self._spawn = spawn or self._pump
+        # Structured state for a UI, `(transfer, outgoing)`, called after the
+        # transfer's `state` and `reason` are set. Optional: the terminal
+        # client reads `notify`. It must not raise into the protocol path, so
+        # `_state` swallows what it raises.
+        self._on_state = on_state
         self.outgoing: Dict[str, OutgoingTransfer] = {}
         self.incoming: Dict[str, IncomingTransfer] = {}
         # Transfers we gave up on. A CANCEL goes to the sender, but chunks
@@ -931,6 +981,17 @@ class FileTransferManager:
     def _fail(self, peer: str, message: str) -> None:
         self._notify("[file] %s" % message)
 
+    def _state(self, transfer, outgoing: bool, state: str,
+               reason: str = TransferReason.NONE) -> None:
+        """Record where [transfer] has got to and tell the UI, if any."""
+        transfer.state = state
+        transfer.reason = reason
+        if self._on_state is not None:
+            try:
+                self._on_state(transfer, outgoing)
+            except Exception:
+                pass
+
     # -- sending ---------------------------------------------------------
 
     def offer_file(self, peer: str, path: str, ratchet) -> OutgoingTransfer:
@@ -986,8 +1047,10 @@ class FileTransferManager:
                                     sender=sender)
         transfer._sealed = sealed_parts          # type: ignore[attr-defined]
         self.outgoing[self._key(offer.transfer_id)] = transfer
+        self._state(transfer, True, TransferState.WAITING)
         if not self.transport.send_control(peer, "OFFER", offer.encode()):
-            self.cancel(offer.transfer_id, "the offer could not be sent")
+            self.cancel(offer.transfer_id, "the offer could not be sent",
+                        reason=TransferReason.TRANSPORT)
             raise TransferError("the offer could not be sent")
         return transfer
 
@@ -1005,6 +1068,10 @@ class FileTransferManager:
         if transfer.cancelled:
             return False
         if index >= len(sealed):
+            # SENT BEFORE DONE goes out: the receiver can answer RECEIVED
+            # before `send_control` returns, and `on_received` only honours a
+            # confirmation of a send that has finished.
+            self._state(transfer, True, TransferState.SENT)
             self.transport.send_control(transfer.peer, "DONE",
                                         transfer.offer.transfer_id.hex())
             self._notify("[file] sent %s (%s) in %s — waiting for %s to "
@@ -1018,7 +1085,8 @@ class FileTransferManager:
         if not self.transport.send_chunk(
                 transfer.peer, transfer.offer.transfer_id, index,
                 sealed[index]):
-            self.cancel(transfer.offer.transfer_id, "the transport failed")
+            self.cancel(transfer.offer.transfer_id, "the transport failed",
+                        reason=TransferReason.TRANSPORT)
             return False
         transfer.chunks_sent = index + 1
         self._report_progress(transfer, "↑", transfer.chunks_sent,
@@ -1046,6 +1114,7 @@ class FileTransferManager:
             raise TransferError("duplicate transfer id")
         transfer = IncomingTransfer(peer=peer, offer=offer)
         self.incoming[key] = transfer
+        self._state(transfer, False, TransferState.OFFERED)
         self._notify(
             "\n[file] %s wants to send %s (%s)\n"
             "       /transfer accept %s   or   /transfer decline %s"
@@ -1074,6 +1143,9 @@ class FileTransferManager:
         transfer.rate_allowance = (transfer.offer.chunk_count
                                    * _STANZAS_PER_CHUNK_CEILING
                                    + _TRANSFER_RATE_SLACK)
+        # Before ACCEPT goes out, for the same reason: the whole file can
+        # arrive before `send_control` returns.
+        self._state(transfer, False, TransferState.ACCEPTED)
         self.transport.send_control(transfer.peer, "ACCEPT",
                                     transfer.offer.transfer_id.hex())
         return transfer
@@ -1083,6 +1155,7 @@ class FileTransferManager:
         self.transport.send_control(transfer.peer, "DECLINE",
                                     transfer.offer.transfer_id.hex())
         self._destroy_incoming(transfer)
+        self._state(transfer, False, TransferState.DECLINED, TransferReason.BY_US)
         self._notify("[file] declined")
 
     def on_data(self, peer: str, payload: str) -> None:
@@ -1132,7 +1205,7 @@ class FileTransferManager:
             # once per remaining chunk.  Before this it was once per chunk,
             # which buried the cause under twenty identical lines.
             expected = transfer.chunks_received
-            self._abandon_incoming(transfer)
+            self._abandon_incoming(transfer, TransferReason.LOST_CHUNK)
             raise TransferError(
                 "chunk %d arrived but %d was expected — a chunk was lost in "
                 "transit, and the sequence cannot be resumed. Transfer "
@@ -1152,7 +1225,7 @@ class FileTransferManager:
             # A chunk that fails its tag is not a transient error: the peer
             # is broken or hostile, and continuing would leave a partial file
             # on disk waiting for chunks that will never verify.
-            self._abandon_incoming(transfer)
+            self._abandon_incoming(transfer, TransferReason.AUTH_FAILED)
             raise TransferError("chunk %d failed authentication — transfer "
                                 "abandoned" % index) from exc
         transfer.handle.write(plain)
@@ -1176,8 +1249,19 @@ class FileTransferManager:
         try:
             final = self._finish(transfer)
         except Exception:
-            self._destroy_incoming(transfer)
+            # Told, like any other abandonment: without the CANCEL the sender
+            # is left believing it sent a file the receiver threw away.
+            self._abandon_incoming(transfer, TransferReason.VERIFY_FAILED)
             raise
+        # Only now, after every check in `_finish` and the atomic commit.
+        # A sender reads this as DELIVERED; an older sender drops the
+        # unknown verb, which `handle_control` has always done.
+        try:
+            self.transport.send_control(transfer.peer, "RECEIVED",
+                                        transfer.offer.transfer_id.hex())
+        except Exception:
+            pass
+        self._state(transfer, False, TransferState.RECEIVED)
         self._notify(
             "[file] received %s (%s) — hashes verified, saved to %s"
             % (sanitise_filename(transfer.offer.filename),
@@ -1239,8 +1323,12 @@ class FileTransferManager:
 
     # -- cancellation ----------------------------------------------------
 
-    def cancel(self, transfer_id: bytes, why: str = "cancelled") -> None:
+    def cancel(self, transfer_id: bytes, why: str = "cancelled",
+               reason: str = TransferReason.BY_US,
+               notify_peer: bool = True) -> None:
         key = self._key(transfer_id)
+        final = (TransferState.FAILED if reason == TransferReason.TRANSPORT
+                 else TransferState.CANCELLED)
         out = self.outgoing.pop(key, None)
         if out is not None:
             out.cancelled = True
@@ -1249,18 +1337,53 @@ class FileTransferManager:
             except Exception:
                 pass
             out._sealed = []                     # type: ignore[attr-defined]
-            self.transport.send_control(out.peer, "CANCEL", key)
+            if notify_peer:
+                self.transport.send_control(out.peer, "CANCEL", key)
+            self._state(out, True, final, reason)
         inc = self.incoming.get(key)
         if inc is not None:
-            self.transport.send_control(inc.peer, "CANCEL", key)
+            if notify_peer:
+                self.transport.send_control(inc.peer, "CANCEL", key)
             self._destroy_incoming(inc)
+            self._state(inc, False, final, reason)
         self._notify("[file] transfer %s: %s" % (key[:8], why))
 
     def on_cancel(self, peer: str, payload: str) -> None:
-        self.cancel(bytes.fromhex(payload.strip()), "the peer cancelled")
+        # From the peer, so not echoed back; and only for OUR transfers with
+        # THAT peer -- a CANCEL naming somebody else's transfer id is refused.
+        transfer_id = bytes.fromhex(payload.strip())
+        key = self._key(transfer_id)
+        mine = self.outgoing.get(key) or self.incoming.get(key)
+        if mine is None or mine.peer != peer:
+            return
+        self.cancel(transfer_id, "the peer cancelled",
+                    reason=TransferReason.BY_PEER, notify_peer=False)
+
+    def on_received(self, peer: str, payload: str) -> None:
+        """The receiver verified and saved our file. The end of a send."""
+        key = payload.strip()
+        transfer = self.outgoing.get(key)
+        if transfer is None or transfer.peer != peer or not transfer.accepted:
+            return
+        if transfer.state != TransferState.SENT:
+            # Confirmation of something we have not finished sending is not
+            # a confirmation. Ignored rather than trusted.
+            return
+        self.outgoing.pop(key, None)
+        try:
+            transfer.sender.zeroize()
+        except Exception:
+            pass
+        transfer._sealed = []                    # type: ignore[attr-defined]
+        self._state(transfer, True, TransferState.DELIVERED)
+        self._notify("[file] %s received %s and verified it"
+                     % (peer, sanitise_filename(transfer.offer.filename)))
 
     def on_decline(self, peer: str, payload: str) -> None:
         key = payload.strip()
+        out = self.outgoing.get(key)
+        if out is not None and out.peer != peer:
+            return
         out = self.outgoing.pop(key, None)
         if out is not None:
             out.cancelled = True
@@ -1269,9 +1392,11 @@ class FileTransferManager:
             except Exception:
                 pass
             out._sealed = []                     # type: ignore[attr-defined]
+            self._state(out, True, TransferState.DECLINED, TransferReason.BY_PEER)
         self._notify("[file] %s declined the transfer" % peer)
 
-    def _abandon_incoming(self, transfer: IncomingTransfer) -> None:
+    def _abandon_incoming(self, transfer: IncomingTransfer,
+                          reason: str = TransferReason.NONE) -> None:
         """Give up on an incoming transfer AND tell the sender to stop.
 
         `_destroy_incoming` alone is not enough, and the difference is not
@@ -1298,6 +1423,7 @@ class FileTransferManager:
             self._abandoned.clear()
         self._abandoned[key] = 0
         self._destroy_incoming(transfer)
+        self._state(transfer, False, TransferState.FAILED, reason)
 
     def _destroy_incoming(self, transfer: IncomingTransfer) -> None:
         """Remove every trace.  Runs on decline, cancellation and failure."""
@@ -1353,6 +1479,7 @@ class FileTransferManager:
             "CANCEL": self.on_cancel,
             "DECLINE": self.on_decline,
             "ACCEPT": self.on_accept,
+            "RECEIVED": self.on_received,
         }
         handler = handlers.get(verb.strip().upper())
         if handler is None:
@@ -1371,6 +1498,7 @@ class FileTransferManager:
         if transfer is None or transfer.peer != peer:
             return
         transfer.accepted = True
+        self._state(transfer, True, TransferState.ACCEPTED)
         self._notify("[file] %s accepted %s — sending"
                      % (peer, transfer.offer.filename))
         self._spawn(transfer)

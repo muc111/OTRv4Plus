@@ -45,7 +45,7 @@ import os
 import threading
 from typing import Any, Optional
 
-from .events import ErrorOccurred, Event
+from .events import ErrorOccurred, Event, FileTransferChanged
 
 __all__ = ["FileBridge", "FileOutcome", "is_file_signal"]
 
@@ -106,6 +106,12 @@ class FileBridge:
         self._lock = threading.RLock()
         self._manager = None
         self._pumps = []
+        #: The last few transfers that ENDED, so a row can say how it ended
+        #: after the engine has forgotten it. Bounded; in memory only.
+        self._finished = {}
+
+    #: How many ended transfers `transfers()` keeps reporting.
+    FINISHED_KEPT = 16
 
     # -- construction ---------------------------------------------------------
 
@@ -132,6 +138,7 @@ class FileBridge:
                     notify=self._notify,
                     verified=self._verified,
                     spawn=self._spawn,
+                    on_state=self._on_state,
                 )
             except Exception:
                 # The engine refuses to construct without `otrv4_core`, and
@@ -195,6 +202,37 @@ class FileBridge:
         engine text in front of a user, which this bridge does not do.
         """
         return None
+
+    def _on_state(self, transfer, outgoing: bool) -> None:
+        """The engine's structured state, as an event for the UI.
+
+        This is what the UI renders a transfer's end from -- not a timer and
+        not the disappearance of a row. A transfer that finished and one that
+        silently stalled used to look the same on Android (a row that stopped
+        moving, or a row that vanished), because every line the engine wrote
+        about it went to `_notify` and was dropped there on purpose.
+        """
+        try:
+            import otrv4plus_filetransfer as ft
+            offer = transfer.offer
+            key = offer.transfer_id.hex()
+            event = FileTransferChanged(
+                peer=str(transfer.peer),
+                transfer_id=key,
+                filename=ft.sanitise_filename(getattr(offer, "filename", "")),
+                size=int(getattr(offer, "plaintext_size", 0) or 0),
+                outgoing=bool(outgoing),
+                state=str(getattr(transfer, "state", "")),
+                reason=str(getattr(transfer, "reason", "")),
+            )
+            if event.state in ft.TransferState.TERMINAL:
+                with self._lock:
+                    self._finished[key] = self._row(ft, key, transfer, outgoing)
+                    while len(self._finished) > self.FINISHED_KEPT:
+                        self._finished.pop(next(iter(self._finished)))
+            self._app._emit(event)
+        except Exception:
+            pass
 
     def _spawn(self, transfer) -> None:
         """Send the file on a thread of its own.
@@ -321,6 +359,30 @@ class FileBridge:
             return FileOutcome.NO_TRANSFER
         return FileOutcome.STARTED
 
+    def cancel(self, transfer_id: str) -> str:
+        """Stop a transfer under way: one of ours, or one we accepted.
+
+        Not `decline`, which is the answer to an OFFER and only exists for an
+        incoming transfer nobody has accepted. Cancelling our own send used to
+        go through `decline`, found no incoming transfer under that id, and
+        did nothing -- so the Cancel on a sending row was a button with no
+        effect. The engine sends CANCEL to the peer, zeroizes the key and,
+        for an incoming transfer, closes and unlinks the partial file.
+        """
+        manager = self._ensure_manager()
+        if manager is None:
+            return FileOutcome.UNAVAILABLE
+        key = str(transfer_id)
+        known = (key in getattr(manager, "outgoing", {})
+                 or key in getattr(manager, "incoming", {}))
+        if not known:
+            return FileOutcome.NO_TRANSFER
+        try:
+            manager.cancel(bytes.fromhex(key))
+        except Exception:
+            return FileOutcome.NO_TRANSFER
+        return FileOutcome.STARTED
+
     # -- inbound --------------------------------------------------------------
 
     def handle_signal(self, peer: str, body: str) -> bool:
@@ -367,6 +429,9 @@ class FileBridge:
             rows.append(self._row(ft, key, transfer, outgoing=True))
         for key, transfer in list(getattr(manager, "incoming", {}).items()):
             rows.append(self._row(ft, key, transfer, outgoing=False))
+        live = {row["id"] for row in rows}
+        with self._lock:
+            rows.extend(dict(r) for k, r in self._finished.items() if k not in live)
         return rows
 
     @staticmethod
@@ -381,6 +446,8 @@ class FileBridge:
             "accepted": bool(getattr(transfer, "accepted", False)),
             "cancelled": bool(getattr(transfer, "cancelled", False)),
             "progress": float(getattr(transfer, "progress", 0.0) or 0.0),
+            "state": str(getattr(transfer, "state", "")),
+            "reason": str(getattr(transfer, "reason", "")),
         }
 
     def received_dir(self) -> str:
@@ -416,6 +483,7 @@ class FileBridge:
         with self._lock:
             manager, self._manager = self._manager, None
             self._pumps = []
+            self._finished = {}
         if manager is None:
             return
         # EXPLICIT DESTRUCTION, then forgetting. Clearing the dicts used to be

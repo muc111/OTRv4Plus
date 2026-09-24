@@ -50,6 +50,21 @@ object TransferUi {
         SecurityState.PLAINTEXT -> Offer.NeedsEncryption
     }
 
+    /** The engine's `TransferState` codes (otrv4plus_filetransfer). */
+    object State {
+        const val OFFERED = "offered"
+        const val WAITING = "waiting"
+        const val ACCEPTED = "accepted"
+        const val SENT = "sent"
+        const val DELIVERED = "delivered"
+        const val RECEIVED = "received"
+        const val DECLINED = "declined"
+        const val CANCELLED = "cancelled"
+        const val FAILED = "failed"
+
+        val TERMINAL = setOf(DELIVERED, RECEIVED, DECLINED, CANCELLED, FAILED)
+    }
+
     /** What a transfer row shows and which buttons it carries. */
     data class Row(
         val label: String,
@@ -60,10 +75,18 @@ object TransferUi {
         /** 0f..1f, shown only once something is actually moving. */
         val progress: Float,
         val showsProgress: Boolean,
+        /** "12 KB of 40 KB · 31%" while moving; the size otherwise. */
+        val detail: String = "",
+        /** Ended, one way or the other: no buttons, no bar. */
+        val finished: Boolean = false,
+        /** Ended badly. Rendered in the error colour. */
+        val failed: Boolean = false,
     )
 
     /**
-     * What to show for one transfer.
+     * What to show for one transfer. DRIVEN BY THE ENGINE'S STATE, never by a
+     * timer and never by a row having vanished: those are how a transfer
+     * came to sit at "transferring" after it had ended.
      *
      * An OUTGOING transfer is never acceptable by the sender, and an
      * incoming one stops being acceptable the moment it has been accepted --
@@ -72,28 +95,96 @@ object TransferUi {
     @JvmStatic
     fun row(transfer: FileTransferView): Row {
         val name = transfer.filename.ifBlank { "a file" }
-        if (transfer.cancelled) {
-            return Row("$name — cancelled", false, false, 0f, false)
+        val size = humanBytes(transfer.sizeBytes)
+        val moving = progressDetail(transfer.progress, transfer.sizeBytes)
+        fun ended(label: String, failed: Boolean = false) =
+            Row(label, false, false, 0f, false, size, finished = true, failed = failed)
+        val state = transfer.state.ifBlank {
+            // An older bridge with no state: what the flags can say.
+            when {
+                transfer.cancelled -> State.CANCELLED
+                transfer.accepted -> State.ACCEPTED
+                transfer.outgoing -> State.WAITING
+                else -> State.OFFERED
+            }
         }
-        if (transfer.outgoing) {
-            return Row(
-                label = if (transfer.accepted) "Sending $name"
-                        else "Offered $name — waiting for them to accept",
-                canAccept = false,
-                canDecline = true,
-                progress = transfer.progress,
-                showsProgress = transfer.accepted,
-            )
+        return when (state) {
+            State.OFFERED -> Row("$name — $size", canAccept = !transfer.outgoing,
+                                 canDecline = true, progress = 0f,
+                                 showsProgress = false, detail = size)
+            State.WAITING -> Row("Offered $name — waiting for them to accept",
+                                 false, true, 0f, false, size)
+            State.ACCEPTED -> Row(
+                if (transfer.outgoing) "Sending $name" else "Receiving $name",
+                false, true, transfer.progress, true, moving)
+            State.SENT -> Row(
+                "Sent $name — waiting for them to confirm it arrived intact",
+                false, false, 1f, true, moving, finished = false)
+            State.DELIVERED -> ended("Sent $name — they received it and verified it")
+            State.RECEIVED -> ended("Received $name — hashes verified")
+            State.DECLINED -> ended(
+                if (transfer.outgoing) "$name — they declined it" else "$name — declined")
+            State.CANCELLED -> ended("$name — cancelled", failed = false)
+            State.FAILED -> ended("$name — failed: ${reasonText(transfer.reason)}", failed = true)
+            else -> ended("$name — cancelled")
         }
-        return Row(
-            label = if (transfer.accepted) "Receiving $name"
-                    else "$name — ${humanBytes(transfer.sizeBytes)}",
-            canAccept = !transfer.accepted,
-            canDecline = true,
-            progress = transfer.progress,
-            showsProgress = transfer.accepted,
-        )
     }
+
+    /** "12 KB of 40 KB · 31%". Bytes are chunks moved, not bytes confirmed. */
+    @JvmStatic
+    fun progressDetail(progress: Float, sizeBytes: Long): String {
+        val p = progress.coerceIn(0f, 1f)
+        val done = (sizeBytes * p).toLong()
+        return "${humanBytes(done)} of ${humanBytes(sizeBytes)} · ${(p * 100).toInt()}%"
+    }
+
+    /** Why a transfer ended badly, for a person. From a fixed set of codes. */
+    @JvmStatic
+    fun reasonText(reason: String): String = when (reason) {
+        "lost_chunk" -> "part of it was lost in transit; ask them to send it again"
+        "auth_failed" -> "part of it failed authentication and was discarded"
+        "verify_failed" -> "it did not match its hashes and was discarded"
+        "transport" -> "the connection failed while sending"
+        "by_peer" -> "cancelled by the other side"
+        "by_us" -> "cancelled"
+        else -> "it did not complete"
+    }
+
+    /**
+     * The line kept in the conversation when a transfer ends, or null for a
+     * state that is not an ending. Persisted with the history, so it
+     * survives a restart -- unlike the live row, which is gone with the
+     * process that was moving the bytes.
+     *
+     * SENT gets a line of its own because a peer on an older build never
+     * confirms, and "waiting for confirmation" is then the last true thing.
+     */
+    @JvmStatic
+    fun statusLine(state: String, outgoing: Boolean, filename: String, reason: String): String? {
+        val name = filename.ifBlank { "a file" }
+        return when (state) {
+            State.RECEIVED -> "File received successfully — $name (hashes verified)"
+            State.DELIVERED -> "File sent successfully — $name (they received it and verified it)"
+            State.SENT -> "File sent — $name. Waiting for them to confirm it arrived intact."
+            State.DECLINED ->
+                if (outgoing) "File declined by the other side — $name"
+                else "File declined — $name"
+            State.CANCELLED -> "File transfer cancelled — $name" +
+                (if (reason == "by_peer") " (by the other side)" else "")
+            State.FAILED -> "File transfer failed — $name: ${reasonText(reason)}"
+            else -> null
+        }
+    }
+
+    /** The incoming-file prompt. Name and size, always; nothing auto-accepted. */
+    @JvmStatic
+    fun promptTitle(): String = "Incoming file"
+
+    @JvmStatic
+    fun promptBody(peer: String, filename: String, sizeBytes: Long): String =
+        "$peer wants to send you ${filename.ifBlank { "a file" }} " +
+            "(${humanBytes(sizeBytes)}). It is encrypted end to end and " +
+            "checked against its hashes when it arrives."
 
     /** A size for a person. Never more precision than it deserves. */
     @JvmStatic

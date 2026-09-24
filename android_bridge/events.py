@@ -36,7 +36,8 @@ __all__ = [
     "security_state_from_level", "smp_state_from_status", "call_state_from_engine",
     "Event", "ConnectionStateChanged", "SessionStateChanged", "MessageReceived",
     "RoomMessageReceived", "MessageDelivered", "SmpProgress", "SmpResult", "FingerprintChanged",
-    "CallStateChanged", "ErrorOccurred", "SubscriptionRequested", "EventSink",
+    "CallStateChanged", "ErrorOccurred", "SubscriptionRequested",
+    "FileTransferChanged", "EventSink",
 ]
 
 
@@ -301,6 +302,22 @@ class CallStateChanged(Event):
     state: CallState = CallState.IDLE
     duration_seconds: int = 0
     muted: bool = False
+
+
+@dataclass(frozen=True)
+class FileTransferChanged(Event):
+    """A file transfer moved. `state` is an `otrv4plus_filetransfer.
+    TransferState` code and `reason` a `TransferReason` code -- never engine
+    text. `filename` has been through `sanitise_filename`: somebody else chose
+    it and it is about to be rendered. No hash, no key, no path.
+    """
+
+    transfer_id: str = ""
+    filename: str = ""
+    size: int = 0
+    outgoing: bool = False
+    state: str = ""
+    reason: str = ""
 
 
 @dataclass(frozen=True)

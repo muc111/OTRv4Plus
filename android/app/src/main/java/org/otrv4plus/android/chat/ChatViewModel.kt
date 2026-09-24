@@ -896,10 +896,24 @@ class ChatViewModel : ViewModel() {
         runCatching { java.io.File(path).delete() }
     }
 
+    /** Incoming offers waiting for Accept or Decline. See [ChatState.pendingFileOffers]. */
+    fun fileOffers(): List<OtrEvent.FileTransferChanged> {
+        observe()
+        return state?.pendingFileOffers ?: emptyList()
+    }
+
+    /** "Not now": the prompt goes; the offer stays in its conversation. */
+    fun putAsideFileOffer(transferId: String) {
+        state?.dismissFileOffer(transferId)
+        revision++
+    }
+
     /** Accept an offered transfer. */
     fun acceptTransfer(transferId: String) {
         val state = this.state ?: return
         val core = this.core ?: return
+        state.dismissFileOffer(transferId)
+        revision++
         viewModelScope.launch {
             val outcome = withContext(Dispatchers.IO) {
                 runCatching { core.acceptFile(transferId) }
@@ -910,12 +924,29 @@ class ChatViewModel : ViewModel() {
         }
     }
 
-    /** Decline an offered transfer, or cancel one of ours. */
+    /** Decline an offered transfer. */
     fun declineTransfer(transferId: String) {
         val core = this.core ?: return
+        state?.dismissFileOffer(transferId)
+        revision++
         viewModelScope.launch {
             withContext(Dispatchers.IO) {
                 runCatching { core.declineFile(transferId) }
+            }
+            revision++
+        }
+    }
+
+    /**
+     * Stop a transfer under way -- one of ours, or one we accepted. Not
+     * [declineTransfer]: that answers an offer, and routing a cancel through
+     * it found no offer and did nothing.
+     */
+    fun cancelTransfer(transferId: String) {
+        val core = this.core ?: return
+        viewModelScope.launch {
+            withContext(Dispatchers.IO) {
+                runCatching { core.cancelFile(transferId) }
             }
             revision++
         }

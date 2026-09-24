@@ -30,6 +30,7 @@ import org.otrv4plus.android.ui.ConversationsScreen
 import org.otrv4plus.android.ui.DevShellScreen
 import org.otrv4plus.android.ui.RoomsScreen
 import org.otrv4plus.android.ui.FingerprintAlertDialog
+import org.otrv4plus.android.ui.IncomingFileDialog
 import org.otrv4plus.android.security.WipeAndExit
 
 /**
@@ -341,6 +342,12 @@ class MainActivity : ComponentActivity() {
                             onAcknowledge = { chat.dismissFingerprintAlert() },
                         )
                     }
+
+                    // The incoming-file prompt, here for the same reason: an
+                    // offer waits on the user whichever screen is open. The
+                    // fingerprint alert goes first; a changed key is not the
+                    // moment to accept a file.
+                    if (chat.fingerprintAlert == null) IncomingFileDialog(chat)
                 }
             }
         }

@@ -300,6 +300,10 @@ data class FileTransferView(
     val cancelled: Boolean,
     /** 0f..1f. Chunks moved, not bytes confirmed by the far end. */
     val progress: Float,
+    /** The engine's `TransferState` code; empty from an older bridge. */
+    val state: String = "",
+    /** The engine's `TransferReason` code, for FAILED/CANCELLED/DECLINED. */
+    val reason: String = "",
 )
 
 data class SmpProgress(val step: Int, val total: Int, val state: SmpState)
@@ -710,6 +714,20 @@ sealed interface OtrEvent {
      */
     data class RoomMessageReceived(
         val room: String, val sender: String, val body: String, val timestamp: Double,
+    ) : OtrEvent
+    /**
+     * A file transfer moved. [state] and [reason] are the engine's
+     * `TransferState` / `TransferReason` codes, never its text; [filename]
+     * was sanitised by the engine. See `crypto/TransferUi`.
+     */
+    data class FileTransferChanged(
+        val peer: String,
+        val transferId: String,
+        val filename: String,
+        val size: Long,
+        val outgoing: Boolean,
+        val state: String,
+        val reason: String,
     ) : OtrEvent
     data class SmpProgressed(val peer: String, val progress: SmpProgress) : OtrEvent
     data class SmpFinished(val peer: String, val state: SmpState) : OtrEvent

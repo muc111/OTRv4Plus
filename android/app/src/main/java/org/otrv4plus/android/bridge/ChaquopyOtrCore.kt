@@ -935,6 +935,12 @@ class ChaquopyOtrCore(private val appContext: Context) : OtrCore {
             requireApp().callAttr("accept_file", transferId).toString()
         }.getOrDefault(FileOutcome.UNAVAILABLE)
 
+    /** Stop a transfer under way: ours, or one we accepted. */
+    fun cancelFile(transferId: String): String =
+        runCatching {
+            requireApp().callAttr("cancel_file", transferId).toString()
+        }.getOrDefault(FileOutcome.UNAVAILABLE)
+
     /** Decline an offered transfer. */
     fun declineFile(transferId: String): String =
         runCatching {
@@ -962,6 +968,8 @@ class ChaquopyOtrCore(private val appContext: Context) : OtrCore {
                     accepted = row.get("accepted")?.toBoolean() ?: false,
                     cancelled = row.get("cancelled")?.toBoolean() ?: false,
                     progress = row.get("progress")?.toFloat() ?: 0f,
+                    state = row.get("state")?.toString().orEmpty(),
+                    reason = row.get("reason")?.toString().orEmpty(),
                 )
             }
         }.getOrDefault(emptyList())
@@ -1188,6 +1196,13 @@ class ChaquopyOtrCore(private val appContext: Context) : OtrCore {
             "SubscriptionRequested" ->
                 OtrEvent.SubscriptionRequested(
                     str("peer"), SubscriptionPolicy.of(str("policy")))
+
+            "FileTransferChanged" ->
+                OtrEvent.FileTransferChanged(
+                    str("peer"), str("transfer_id"), str("filename"),
+                    item.callAttr("get", "size")?.toLong() ?: 0L,
+                    item.callAttr("get", "outgoing")?.toBoolean() ?: false,
+                    str("state"), str("reason"))
 
             "ErrorOccurred" ->
                 OtrEvent.Failed(str("peer").ifBlank { null }, str("code"))

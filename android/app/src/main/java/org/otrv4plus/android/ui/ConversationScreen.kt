@@ -585,6 +585,10 @@ private fun TransferBar(model: ChatViewModel, jid: String) {
 
     for (transfer in transfers) {
         val row = TransferUi.row(transfer)
+        // An ended transfer is a persisted line in the conversation already
+        // (`TransferUi.statusLine`); a second, live copy of it here would say
+        // the same thing twice and outlive nothing.
+        if (row.finished) continue
         Surface(color = MaterialTheme.colorScheme.surfaceVariant) {
             Row(
                 Modifier.fillMaxWidth().padding(horizontal = 12.dp,
@@ -603,6 +607,11 @@ private fun TransferBar(model: ChatViewModel, jid: String) {
                             modifier = Modifier.fillMaxWidth(),
                         )
                     }
+                    if (row.detail.isNotBlank()) {
+                        Text(row.detail,
+                             style = MaterialTheme.typography.labelSmall,
+                             color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
                 }
                 if (row.canAccept) {
                     TextButton(onClick = {
@@ -610,8 +619,11 @@ private fun TransferBar(model: ChatViewModel, jid: String) {
                     }) { Text("Accept") }
                 }
                 if (row.canDecline) {
+                    // Decline answers an offer; Cancel stops one under way.
+                    // Two operations in the engine, so two calls here.
                     TextButton(onClick = {
-                        model.declineTransfer(transfer.id)
+                        if (row.canAccept) model.declineTransfer(transfer.id)
+                        else model.cancelTransfer(transfer.id)
                     }) { Text(if (row.canAccept) "Decline" else "Cancel") }
                 }
             }
@@ -1026,4 +1038,36 @@ internal fun formatTimestamp(at: Long): String {
     val pattern = if (sameDay) "HH:mm" else "d MMM HH:mm"
     return java.text.SimpleDateFormat(pattern, java.util.Locale.getDefault())
         .format(java.util.Date(at))
+}
+
+/**
+ * "Incoming file": who, what and how big, with Accept and Decline.
+ *
+ * Shown over whatever screen is open, because an offer waits on the user and
+ * the conversation it belongs to may not be the one in front of them. Never
+ * answered for them: dismissing is "not now", and the offer stays in the
+ * conversation with its own Accept and Decline.
+ */
+@Composable
+fun IncomingFileDialog(model: ChatViewModel) {
+    val offer = model.fileOffers().firstOrNull() ?: return
+    AlertDialog(
+        onDismissRequest = { model.putAsideFileOffer(offer.transferId) },
+        title = { Text(TransferUi.promptTitle()) },
+        text = {
+            Text(TransferUi.promptBody(
+                model.conversation(offer.peer).displayName,
+                offer.filename, offer.size))
+        },
+        confirmButton = {
+            TextButton(onClick = { model.acceptTransfer(offer.transferId) }) {
+                Text("Accept")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = { model.declineTransfer(offer.transferId) }) {
+                Text("Decline")
+            }
+        },
+    )
 }
