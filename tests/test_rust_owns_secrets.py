@@ -101,12 +101,6 @@ RAW_SECRET_PRIMITIVES = {"mlkem1024_keygen", "mlkem1024_encaps",
 
 #: Where they may still appear in shipped code, and why.
 ALLOWED = {
-    # Kept for its size constants and the primitive tests; the ratchet no
-    # longer instantiates it (asserted below).
-    ("otrv4+.py", "MLKEM1024BraceKEM"),
-    # The voice KEM *provider* is a capability probe; the call path uses
-    # the Rust-owned keypair inside RustVoiceKex.
-    ("otrv4plus_voice.py", "_RustKem"),
     # Startup self-test on throwaway keys: no session secret involved.
     ("android_bridge/diagnostics.py", "*"),
 }
@@ -155,6 +149,14 @@ class TestProductionDoesNotHoldRawSecrets:
                 if isinstance(n, ast.Call)
                 and getattr(n.func, "id", "") == "MLKEM1024BraceKEM"]
         assert not made, "MLKEM1024BraceKEM() instantiated at %r" % made
+
+    def test_the_brace_kem_class_is_sizes_only(self):
+        # It wrapped keygen/encaps/decaps and returned the shared secret as
+        # Python bytes. Nothing used it; it is now three integers.
+        cls = _engine().MLKEM1024BraceKEM
+        for name in ("__init__", "encapsulate", "decapsulate", "zeroize"):
+            assert name not in vars(cls), "MLKEM1024BraceKEM.%s is back" % name
+        assert (cls.EK_BYTES, cls.CT_BYTES, cls.SS_BYTES) == (1568, 1568, 32)
 
     def test_the_voice_exchange_does_not_use_the_python_kem(self):
         import otrv4plus_voice as V

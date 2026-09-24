@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Integration tests: otrv4plus_voice <-> otrv4plus_audio.
 
-    OTRV4PLUS_ALLOW_PYTHON_MLKEM=1 python3 -m unittest test_voice_audio_integration -v
+    python3 -m unittest test_voice_audio_integration -v
 
 These drive the REAL VoiceCallSession capture and playback workers against a
 fake libaaudio, so the whole path is exercised:
@@ -24,7 +24,6 @@ import threading
 import time
 import unittest
 
-os.environ.setdefault("OTRV4PLUS_ALLOW_PYTHON_MLKEM", "1")
 
 import otrv4plus_audio as A
 import otrv4plus_voice as V

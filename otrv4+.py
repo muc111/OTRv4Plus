@@ -425,68 +425,22 @@ def _secure_file_destroy(filepath: str) -> None:
 
 
 class MLKEM1024BraceKEM:
-    """ML-KEM-1024 keypair for the OTRv4 post-quantum brace KEM.
+    """ML-KEM-1024 (FIPS 203) wire sizes for the OTRv4 post-quantum brace KEM.
 
-    NOT USED BY THE RATCHET. The ratchet's brace rotation runs on
-    `otrv4_core.MlKem1024Keypair` and `RustDoubleRatchet.brace_encapsulate`
-    / `brace_decapsulate`, so the decapsulation key and shared secret never
-    become Python objects. This class remains for its size constants and
-    for tests that exercise the primitive; production code must not use it
-    to hold a session key (tests/test_rust_owns_secrets.py enforces that).
-
-    NIST Level 5 (~256-bit post-quantum security).
-
-    v10.7.3 (Phase 5.3i-C): backed by Rust pqcrypto-mlkem (FIPS 203
-    ML-KEM-1024) via the otrv4_core PyO3 module.  Previously used the
-    otr4_crypto_ext C extension.  This was the last otr4_crypto_ext
-    dependency; after this migration the C extension has no callers.
-    The same pqcrypto-mlkem crate powers the DAKE's ML-KEM in dake.rs,
-    so the brace KEM and the DAKE KEM now run on one code path.
-
-    Usage (initiator side):
-        kem = MLKEM1024BraceKEM()
-        kem.encap_key_bytes
-        K = kem.decapsulate(ct_bytes)
-
-    Usage (responder side - class method):
-        ct, K = MLKEM1024BraceKEM.encapsulate(ek_bytes)
+    Sizes only. The brace KEM runs entirely in the Rust core
+    (`otrv4_core.MlKem1024Keypair`, `RustDoubleRatchet.brace_encapsulate` /
+    `brace_decapsulate`), so its decapsulation key and shared secret never
+    become Python objects. This class used to wrap the raw
+    `mlkem1024_keygen` / `encaps` / `decaps` primitives and hand the shared
+    secret back as Python bytes; nothing in production used it, and a
+    Python-side key holder that nothing uses is only somewhere for a future
+    change to put a secret. The primitives remain in the core for
+    known-answer tests, which call them directly.
     """
 
     EK_BYTES = 1568
     CT_BYTES = 1568
     SS_BYTES = 32
-
-    def __init__(self):
-        """Generate a fresh ML-KEM-1024 keypair via the Rust core."""
-        ek, self._dk_handle = _RustDAKE_module.mlkem1024_keygen()
-        self.encap_key_bytes: bytes = ek
-
-    @classmethod
-    def encapsulate(cls, ek_bytes: bytes) -> Tuple[bytes, bytes]:
-        """Encapsulate to a peer's ek.  Returns (ciphertext, shared_secret)."""
-        if len(ek_bytes) != cls.EK_BYTES:
-            raise ValueError(
-                f"ML-KEM-1024 encap key must be {cls .EK_BYTES } bytes, got {len (ek_bytes )}"
-            )
-
-        ct, ss = _RustDAKE_module.mlkem1024_encaps(ek_bytes)
-        return ct, ss
-
-    def decapsulate(self, ct_bytes: bytes) -> bytes:
-        """Decapsulate a ciphertext with our private key.  Returns shared_secret."""
-        if len(ct_bytes) != self.CT_BYTES:
-            raise ValueError(
-                f"ML-KEM-1024 ciphertext must be {self .CT_BYTES } bytes, got {len (ct_bytes )}"
-            )
-        return _RustDAKE_module.mlkem1024_decaps(ct_bytes, bytes(self._dk_handle))
-
-    def zeroize(self):
-        """Overwrite the private key material (v10.7.2: ctypes.memset)."""
-        if self._dk_handle is not None:
-            if isinstance(self._dk_handle, bytearray):
-                _secure_wipe(self._dk_handle)
-            self._dk_handle = None
-        self.encap_key_bytes = b"\x00" * self.EK_BYTES
 
 
 class MLDSA87Auth:

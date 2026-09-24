@@ -23,7 +23,6 @@ import asyncio
 import os
 import unittest
 
-os.environ.setdefault("OTRV4PLUS_ALLOW_PYTHON_MLKEM", "1")
 
 import otrv4plus_voice as V
 

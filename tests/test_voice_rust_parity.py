@@ -542,6 +542,7 @@ class TestTheRootStaysInRust:
         assert isinstance(sched.current_root(), C.RustVoiceRoot)
 
     def test_a_media_key_cannot_be_extracted_from_a_handle(self):
-        root = C.RustVoiceRoot.from_initial_agreement(X_SS, K_SS, TRANSCRIPT)
-        with pytest.raises(TypeError, match="point of the handle"):
-            V.derive_media_key(root, CALL, 0, V.DIR_INITIATOR)
+        # There is no Python function that derives a media key at all now,
+        # from a handle or from bytes.
+        assert not hasattr(V, "derive_media_key")
+        assert not hasattr(V, "ratchet_key")

@@ -1,5 +1,10 @@
 # OTRv4+ voice subsystem — audit, repair and hybrid-PQ upgrade
 
+> **0.6.0-experimental:** the pure-Python `kyber-py` ML-KEM provider and the
+> `OTRV4PLUS_ALLOW_PYTHON_MLKEM` switch described below no longer exist. Voice
+> ML-KEM-1024, X448 and every HKDF step run only in the Rust core; without it
+> voice is unavailable.
+
 > **Status banner added at v10.12.0 — this is a historical audit; its findings
 > are not retracted.** Two of the rows below were closed by the work the audit
 > prompted, and are recorded here so the table is not read as current state:

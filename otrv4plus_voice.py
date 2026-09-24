@@ -6,7 +6,7 @@ could not be tested.  It was reachable only by importing a 6 200-line file
 that pulls in slixmpp, opuslib and PulseAudio at import time, so the key
 agreement, the rekey state machine and the replay window had no test
 coverage at all.  Everything security-relevant in here imports nothing
-beyond the standard library and ``cryptography``, and is exercised by
+beyond the standard library and the Rust core, and is exercised by
 ``test_voice_security.py``.
 
 The audio/SAM host helpers are injected by ``bind_host()`` rather than
@@ -452,7 +452,19 @@ class KemUnavailable(RuntimeError):
 
 
 class _RustKem:
-    """ML-KEM-1024 via otrv4_core (the production path)."""
+    """ML-KEM-1024 capability of the Rust core. The only provider.
+
+    A CAPABILITY, not a key API: it answers "can this device do a hybrid
+    exchange", by running one inside Rust. The call path never asks it for
+    keys -- `VoiceKeyExchange` owns its ML-KEM keypair inside `RustVoiceKex`
+    and gets back an opaque `RustVoiceAgreement`.
+
+    There used to be a second provider, `kyber-py`: pure Python, not
+    constant-time, and holding keys in Python objects. It was reachable only
+    with an environment variable set, and it was a duplicate implementation of
+    a primitive the Rust core owns. It is gone; a device without the Rust core
+    has no voice, which is the honest answer.
+    """
 
     name = "otrv4_core/pqcrypto-mlkem"
     post_quantum = True
@@ -460,61 +472,33 @@ class _RustKem:
     def __init__(self, module):
         self._m = module
 
-    def keygen(self):
-        ek, dk = self._m.mlkem1024_keygen()
-        return bytes(ek), bytearray(dk)
-
-    def encaps(self, ek: bytes):
-        ct, ss = self._m.mlkem1024_encaps(ek)      # already (ct, ss)
-        return bytes(ct), bytearray(ss)
-
-    def decaps(self, ct: bytes, dk) -> bytearray:
-        return bytearray(self._m.mlkem1024_decaps(ct, bytes(dk)))
-
-
-class _PurePythonKem:
-    """ML-KEM-1024 via the pure-Python kyber-py package.
-
-    A real FIPS 203 implementation, used when the Rust core is not loaded —
-    on a workstation running the test suite, for example.  It is orders of
-    magnitude slower than the Rust path and is not constant-time, so it is
-    refused for live calls unless OTRV4PLUS_ALLOW_PYTHON_MLKEM=1 is set.
-    """
-
-    name = "kyber-py (pure Python)"
-    post_quantum = True
-
-    def __init__(self, cls):
-        self._c = cls
-
-    def keygen(self):
-        ek, dk = self._c.keygen()
-        return bytes(ek), bytearray(dk)
-
-    def encaps(self, ek: bytes):
-        ss, ct = self._c.encaps(ek)                # (ss, ct) — inverted here
-        return bytes(ct), bytearray(ss)
-
-    def decaps(self, ct: bytes, dk) -> bytearray:
-        return bytearray(self._c.decaps(bytes(dk), ct))
-
 
 _KEM = None
 _KEM_RESOLVED = False
 
 
-def _kem_self_test(provider) -> bool:
-    """One keygen/encaps/decaps round trip. False if anything is wrong."""
+def _kem_self_test(module) -> bool:
+    """One full hybrid exchange inside Rust. False if anything is wrong.
+
+    Both ends must agree on both secrets, which also catches the
+    (ct, ss)/(ss, ct) inversion that otherwise presents much later as "media
+    keys did not agree". Compared by the agreement's one-way digests: no
+    secret leaves Rust to be compared.
+    """
     try:
-        ek, dk = provider.keygen()
-        if len(ek) != MLKEM_EK_LEN or len(dk) != MLKEM_DK_LEN:
+        initiator = module.RustVoiceKex(True)
+        responder = module.RustVoiceKex(False)
+        ek = bytes(initiator.mlkem_ek)
+        if len(ek) != MLKEM_EK_LEN:
             return False
-        ct, ss = provider.encaps(bytes(ek))
-        if len(ct) != MLKEM_CT_LEN or len(ss) != MLKEM_SS_LEN:
+        from_responder, ct = responder.responder_agree(bytes(initiator.public), ek)
+        if len(bytes(ct)) != MLKEM_CT_LEN:
             return False
-        # Also catches the (ct, ss) vs (ss, ct) inversion, which is otherwise
-        # silent and presents much later as "media keys did not agree".
-        return bytes(provider.decaps(bytes(ct), dk)) == bytes(ss)
+        from_initiator = initiator.initiator_agree(bytes(responder.public), bytes(ct))
+        ok = from_initiator.digests() == from_responder.digests()
+        from_initiator.zeroize()
+        from_responder.zeroize()
+        return ok
     except Exception:
         return False
 
@@ -526,23 +510,13 @@ def _resolve_kem():
     _KEM_RESOLVED = True
     try:
         import otrv4_core                                   # type: ignore
-        if all(hasattr(otrv4_core, n) for n in
-               ("mlkem1024_keygen", "mlkem1024_encaps", "mlkem1024_decaps")):
-            candidate = _RustKem(otrv4_core)
-            # Prove it works before trusting it. Attribute presence is not
-            # evidence: a partially built core, or a stub installed by another
-            # module, satisfies hasattr and then fails at call time — during a
-            # call, after the user has already dialled. One round trip here
-            # costs microseconds and turns that into a clean fallback.
-            if _kem_self_test(candidate):
-                _KEM = candidate
-                return _KEM
-    except Exception:
-        pass
-    try:
-        from kyber_py.ml_kem import ML_KEM_1024              # type: ignore
-        _KEM = _PurePythonKem(ML_KEM_1024)
-        return _KEM
+        # Prove it works before trusting it. Attribute presence is not
+        # evidence: a partially built core, or a stub installed by another
+        # module, satisfies hasattr and then fails at call time -- during a
+        # call, after the user has already dialled.
+        if hasattr(otrv4_core, "RustVoiceKex") and _kem_self_test(otrv4_core):
+            _KEM = _RustKem(otrv4_core)
+            return _KEM
     except Exception:
         pass
     _KEM = None
@@ -550,7 +524,7 @@ def _resolve_kem():
 
 
 def kem_provider():
-    """Return the ML-KEM provider, or raise KemUnavailable.
+    """Return the ML-KEM capability, or raise KemUnavailable.
 
     Voice refuses to run without one.  Falling back to X448-only would give
     a call that reports itself as hybrid while carrying no post-quantum
@@ -559,15 +533,9 @@ def kem_provider():
     kem = _resolve_kem()
     if kem is None:
         raise KemUnavailable(
-            "ML-KEM-1024 unavailable — otrv4_core is not loaded and kyber-py "
-            "is not installed.  Voice requires a hybrid exchange and will "
-            "not fall back to X448 alone.")
-    if isinstance(kem, _PurePythonKem) and not os.environ.get(
-            "OTRV4PLUS_ALLOW_PYTHON_MLKEM"):
-        raise KemUnavailable(
-            "only the pure-Python ML-KEM is available; it is not "
-            "constant-time and is refused for live calls.  Load otrv4_core, "
-            "or set OTRV4PLUS_ALLOW_PYTHON_MLKEM=1 for testing.")
+            "ML-KEM-1024 unavailable -- the Rust core (otrv4_core) is not "
+            "loaded or failed its self-test.  Voice requires a hybrid exchange "
+            "and will not fall back to X448 alone.")
     return kem
 
 
@@ -1358,34 +1326,6 @@ MEDIA_KEY_LEN = 32
 CONFIRM_LEN = 32
 
 
-def _invalid_tag_type():
-    """The exception AESGCM.decrypt raises when a tag does not verify.
-
-    It is NOT a FrameError, so every AEAD failure was landing in the generic
-    handler and being counted as a plain drop: `authfail` only ever counted
-    the structural rejections above the cipher (wrong epoch, bad length,
-    sub-epoch too far). A tampered or mis-keyed frame -- the one event this
-    counter exists to report -- was invisible in it.
-    """
-    try:
-        from cryptography.exceptions import InvalidTag
-        return InvalidTag
-    except Exception:                      # pragma: no cover - no cryptography
-        class _NeverRaised(Exception):
-            pass
-        return _NeverRaised
-
-
-_INVALID_TAG = _invalid_tag_type()
-
-
-def _hkdf(ikm: bytes, salt: bytes, info: bytes, length: int) -> bytes:
-    from cryptography.hazmat.primitives import hashes
-    from cryptography.hazmat.primitives.kdf.hkdf import HKDF
-    return HKDF(algorithm=hashes.SHA512(), length=length,
-                salt=salt, info=info).derive(ikm)
-
-
 def build_transcript(call_id: bytes, otr_binding: bytes,
                      local_fp, remote_fp,
                      initiator_x448_pub: bytes, responder_x448_pub: bytes,
@@ -1442,40 +1382,20 @@ def derive_rekey_root(old_root, x448_shared, mlkem_shared,
     ephemerals gains nothing, and one who holds only the old root is locked
     out by the fresh X448 and ML-KEM secrets.
     """
-    # A root handle chains inside Rust, where neither root is ever a Python
-    # object.  Raw bytes are still accepted for the tests that build a
-    # schedule from a fixed root.
-    if isinstance(old_root, _RustVoiceRoot):
-        return old_root.derive_rekey(bytes(x448_shared), bytes(mlkem_shared),
-                                     transcript)
-    if not old_root or len(old_root) != ROOT_LEN:
-        raise ValueError("old root must be %d bytes" % ROOT_LEN)
-    if not x448_shared or len(x448_shared) != 56:
-        raise ValueError("X448 shared secret must be 56 bytes")
-    if not mlkem_shared or len(mlkem_shared) != MLKEM_SS_LEN:
-        raise ValueError("ML-KEM shared secret must be %d bytes" % MLKEM_SS_LEN)
-    ikm = bytearray()
-    ikm += _lp(bytes(old_root))
-    ikm += _lp(bytes(x448_shared))
-    ikm += _lp(bytes(mlkem_shared))
-    try:
-        return bytearray(_hkdf(bytes(ikm), _salt_for(transcript),
-                               _LABEL_REKEY + transcript, ROOT_LEN))
-    finally:
-        _wipe(ikm)
+    # Chains inside Rust, where neither root is ever a Python object. Raw root
+    # bytes (a test building a schedule from a fixed root) are moved INTO a
+    # Rust handle first -- the safe direction -- and never derived from here.
+    return _as_root_handle(old_root).derive_rekey(
+        bytes(x448_shared), bytes(mlkem_shared), transcript)
 
 
-def derive_media_key(root, call_id: bytes, epoch: int, direction: int) -> bytearray:
-    """One directional AES-256-GCM key for one epoch."""
-    if direction not in (DIR_INITIATOR, DIR_RESPONDER):
-        raise ValueError("direction must be DIR_INITIATOR or DIR_RESPONDER")
-    if isinstance(root, _RustVoiceRoot):
-        raise TypeError(
-            "a media key cannot be extracted from a root handle -- that is "
-            "the point of the handle. Use root.make_cipher(...) instead.")
-    info = (_LABEL_MEDIA + _lp(call_id) + _u64(epoch)
-            + struct.pack(">B", direction))
-    return bytearray(_hkdf(bytes(root), call_id, info, MEDIA_KEY_LEN))
+# `derive_media_key` and `ratchet_key` are GONE. They re-implemented the
+# Rust key schedule in Python -- HKDF-SHA512 through the `cryptography`
+# package -- and returned media keys as bytearrays. Production never called
+# them (every cipher is built from a root handle by `make_cipher`); only
+# tests did, which kept a duplicate implementation of a secret-bearing
+# derivation in the shipped module. The tests now check Rust against a
+# reference written from the spec, inside the test suite.
 
 
 def derive_confirmations(root, call_id: bytes, epoch: int):
@@ -1485,11 +1405,8 @@ def derive_confirmations(root, call_id: bytes, epoch: int):
     one side cannot simply be reflected back to satisfy the other.  Each side
     computes both, transmits its own and checks the peer's.
     """
-    if isinstance(root, _RustVoiceRoot):
-        return root.confirmations(call_id, epoch)
-    info = _LABEL_CONFIRM + _lp(call_id) + _u64(epoch)
-    raw = _hkdf(bytes(root), call_id, info, CONFIRM_LEN * 2)
-    return raw[:CONFIRM_LEN], raw[CONFIRM_LEN:]
+    ci, cr = _as_root_handle(root).confirmations(call_id, epoch)
+    return bytes(ci), bytes(cr)
 
 
 def derive_endpoint_tag(root, call_id: bytes, epoch: int, seq: int,
@@ -1519,24 +1436,8 @@ def derive_endpoint_tag(root, call_id: bytes, epoch: int, seq: int,
       destination  the endpoint itself, so it cannot be substituted
       direction    which side sent it, so it cannot be reflected back
     """
-    if isinstance(root, _RustVoiceRoot):
-        return root.endpoint_tag(call_id, epoch, seq, destination,
-                                 from_initiator)
-    info = (_LABEL_ENDPOINT + _lp(call_id) + _u64(epoch) + _u64(seq)
-            + _lp(destination.encode("ascii"))
-            + struct.pack(">B", 1 if from_initiator else 0))
-    return _hkdf(bytes(root), call_id, info, CONFIRM_LEN)
-
-
-def ratchet_key(key) -> bytearray:
-    """One irreversible step of the symmetric media chain.
-
-    Gives forward secrecy for audio already sent.  It does NOT give
-    post-compromise recovery: an attacker holding the current chain key can
-    step it forward indefinitely.  Recovery comes only from the periodic
-    hybrid rekey.
-    """
-    return bytearray(_hkdf(bytes(key), b"", _LABEL_RATCHET, MEDIA_KEY_LEN))
+    return bytes(_as_root_handle(root).endpoint_tag(
+        call_id, epoch, seq, destination, from_initiator))
 
 
 # ---------------------------------------------------------------------------
@@ -4348,16 +4249,10 @@ class VoiceCallSession:
             cipher = self.schedule.cipher_for_epoch(epoch)
             if cipher is None:
                 raise FrameError("no live key for epoch %d" % epoch, FrameError.NO_KEY)
-            try:
-                plaintext = cipher.open(header, sealed)
-            except _INVALID_TAG:
-                # The ONLY rejection that is an authentication failure: a
-                # frame we hold the key for, whose AES-256-GCM tag did not
-                # verify.  Everything else is state -- wrong epoch, retired
-                # epoch, unparseable header -- and counting those here is
-                # what made "authfail=87" unreadable.
-                raise FrameError("frame failed authentication",
-                                 FrameError.AUTH)
+            # A tag that does not verify comes back from the Rust cipher as
+            # FrameError(AUTH) -- `VoiceFrameCrypto.open` classifies it -- and
+            # is the ONLY rejection that is an authentication failure.
+            plaintext = cipher.open(header, sealed)
         return epoch, counter, plaintext, ftype
 
     async def _network_reader(self) -> None:
@@ -7357,7 +7252,7 @@ __all__ = [
     "CallState", "IllegalTransition", "ReplayWindow", "JitterBuffer",
     "RateLimiter", "FrameError", "SignalError", "parse_signal",
     "build_transcript", "derive_voice_root", "derive_rekey_root",
-    "derive_media_key", "derive_confirmations", "ratchet_key",
+    "derive_confirmations",
     "pack_media_header", "parse_media_header", "media_aad", "media_nonce",
     "pad_opus", "unpad_opus", "sorted_fingerprints", "normalise_fingerprint",
     "CALL_PREFIX", "DIR_INITIATOR", "DIR_RESPONDER",
