@@ -136,7 +136,7 @@ INVARIANTS: Tuple[Invariant, ...] = (
         rationale="Ed448 seeds, ratchet root/chain/brace keys, SMP scalars, "
                   "voice media keys and the voice epoch root never cross the "
                   "PyO3 boundary; the legacy getters are compiled out.  "
-                  "Android 0.5.0 closed the four that still did: the X448 "
+                  "Android 0.6.0 closed the four that still did: the X448 "
                   "shared secret of every DH ratchet step "
                   "(X448KeyHandle.dh is gone; the ratchet agrees from "
                   "handles), the brace ML-KEM decapsulation key and shared "

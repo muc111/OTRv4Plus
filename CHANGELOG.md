@@ -4,6 +4,47 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.6.0-experimental — 2026-09-24 — Rust owns the secrets; Wipe & Exit
+
+*The Rust core's Python API changed; the wire format did not. Every DH
+agreement, KEM encapsulation and signature computes the same bytes as before,
+so a peer on 0.5.0 or on the Termux client interoperates unchanged. None of
+this has run on a handset yet -- see `ANDROID_CALL_AND_FILE_DEVICE_TEST.md`
+steps 35-54.*
+
+**Four session secrets stopped crossing into Python (INV-08).** The X448
+shared secret of every DH ratchet step (`X448KeyHandle.dh` is gone; the
+ratchet agrees from handles inside Rust), the brace rotation's ML-KEM
+decapsulation key and shared secret (`MlKem1024Keypair`,
+`brace_encapsulate`/`brace_decapsulate`), both voice shared secrets and the
+voice decapsulation key (`RustVoiceAgreement`), and the ML-DSA-87 DAKE signing
+key (`MlDsa87KeyHandle`). A Python-derived "extra symmetric key" built from
+public inputs and read by nothing was removed.
+
+**Wipe & Exit (INV-28).** Separate from Disconnect and Sign out. Destroys
+every session secret in Rust explicitly -- not by garbage collection -- on
+the transport's loop thread (where unsendable DAKE outputs live), deletes the
+AndroidKeyStore vault key (cryptographic erasure of history, contacts and
+credentials), overwrites and removes the engine's files and received files,
+clears notifications and cache, and ends the process. Idempotent; nothing can
+resurrect a session afterwards. `ANDROID_WIPE_AND_EXIT.md` states exactly what
+is and is not guaranteed.
+
+**The Connect screen's "Sign out" only disconnected.** It is now labelled
+Disconnect; Sign out (forget this account) is reachable at last.
+
+**Rooms are group chat.** They opened as a one-to-one conversation with the
+room's JID: sends were rejected by the server while shown as sent, and
+nothing said in a room appeared. Room text is now plaintext group chat,
+labelled so on every line, with the sender shown and a participant list;
+OTR, SMP, calls and files are refused for rooms by the bridge.
+
+**Security levels** are one model for list and screen: a word plus a
+shape-distinct mark (`!`, `○`, `✓`, `⚠`), colour only as a supplement.
+
+**Metadata**: WebP is scrubbed; HEIC and video remain "cannot check".
+Pillow- and PyYAML-dependent checks fail rather than skip in CI.
+
 ## Android 0.5.0-experimental — 2026-09-23 — calls, files, and what they gave away
 
 *Android only. No client `VERSION` bump: no engine, protocol or cryptographic

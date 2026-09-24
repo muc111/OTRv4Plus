@@ -34,7 +34,7 @@ android {
         // devices. Left at 26, with the biometric path feature-detected.
         minSdk = 26
         targetSdk = 35
-        versionCode = 9
+        versionCode = 10
         // 0.4.0 -> 0.5.0: MINOR, per VERSIONING.md. New capability reachable
         // from the APK for the first time: SMP-gated voice calls (the engine
         // and the AAudio backend were already packaged; nothing could reach
@@ -60,7 +60,7 @@ android {
         //
         // core.10.14.0 was wrong for sixteen releases; the Rust core is read
         // from Rust/Cargo.toml so it cannot drift again.
-        versionName = "0.5.0-experimental+core.$rustCoreVersion"
+        versionName = "0.6.0-experimental+core.$rustCoreVersion"
 
         // Which build this is, surfaced in the diagnostic report.
         //

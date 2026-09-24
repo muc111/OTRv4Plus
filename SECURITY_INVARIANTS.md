@@ -80,7 +80,7 @@ SecretBytes<N> and SecretVec derive ZeroizeOnDrop; their Debug impls print [REDA
 
 Ed448 seeds, ratchet root/chain/brace keys, SMP scalars, voice media keys and the voice epoch root never cross the PyO3 boundary; the legacy getters are compiled out.
 
-Android 0.5.0 closed the four that still did. The X448 shared secret of every DH ratchet step was returned by `X448KeyHandle.dh` and passed back to Rust; the method is gone and the ratchet agrees from key handles. The brace rotation's ML-KEM decapsulation key and shared secret were a Python `bytearray` and `bytes`; they live in `MlKem1024Keypair` and `brace_encapsulate`/`brace_decapsulate`. Both voice shared secrets and the voice decapsulation key were Python buffers; the exchange returns a `RustVoiceAgreement` that can only become a root. The ML-DSA-87 DAKE signing key was a `bytearray` for the life of the session; it is an `MlDsa87KeyHandle`.
+Android 0.6.0 closed the four that still did. The X448 shared secret of every DH ratchet step was returned by `X448KeyHandle.dh` and passed back to Rust; the method is gone and the ratchet agrees from key handles. The brace rotation's ML-KEM decapsulation key and shared secret were a Python `bytearray` and `bytes`; they live in `MlKem1024Keypair` and `brace_encapsulate`/`brace_decapsulate`. Both voice shared secrets and the voice decapsulation key were Python buffers; the exchange returns a `RustVoiceAgreement` that can only become a root. The ML-DSA-87 DAKE signing key was a `bytearray` for the life of the session; it is an `MlDsa87KeyHandle`.
 
 **Limit:** The typed SMP passphrase and the account password are Python `str` before anything can touch them, and a `str` cannot be wiped.  The identity DEK and the device seeds are Python `bytes` read from disk.  The per-message MAC key is returned to verify the outer MAC; OTRv4 publishes it after use by design, so its secrecy is only ever short-lived.  Everything derived from these is Rust-owned.
 
@@ -242,7 +242,7 @@ Every Rust object holding a secret is told to zeroize before its Python referenc
 
 ## Where secrets live
 
-Updated at Android 0.5.0, when the ratchet DH, the brace KEM, the voice agreement and the ML-DSA key moved.
+Updated at Android 0.6.0, when the ratchet DH, the brace KEM, the voice agreement and the ML-DSA key moved.
 
 | Material | Owner | Representation | Wipeable |
 |---|---|---|---|
