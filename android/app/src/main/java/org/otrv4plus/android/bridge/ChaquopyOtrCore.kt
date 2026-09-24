@@ -431,6 +431,15 @@ class ChaquopyOtrCore(private val appContext: Context) : OtrCore {
         return outcomeOf(result)
     }
 
+    /** Who is in [room]. Moderators first, as the bridge orders them. */
+    fun roomOccupants(room: String): Pair<RoomOutcome, List<RoomOccupant>> {
+        val result = call("room_occupants", room) ?: return notPrepared() to emptyList()
+        val people = listValue(result)?.asList()?.map {
+            RoomOccupant(entry(it, "nick"), entry(it, "role"), entry(it, "affiliation"))
+        } ?: emptyList()
+        return outcomeOf(result) to people
+    }
+
     fun joinedRooms(): Pair<RoomOutcome, List<String>> {
         val result = call("joined_rooms") ?: return notPrepared() to emptyList()
         val rooms = listValue(result)?.asList()?.map { it.toString() }
@@ -1121,6 +1130,10 @@ class ChaquopyOtrCore(private val appContext: Context) : OtrCore {
             "MessageReceived" ->
                 OtrEvent.MessageReceived(
                     str("peer"), str("body"), num("timestamp"))
+
+            "RoomMessageReceived" ->
+                OtrEvent.RoomMessageReceived(
+                    str("peer"), str("sender"), str("body"), num("timestamp"))
 
             // The Python class is SmpProgress, the Kotlin event is
             // SmpProgressed. The names differ and that is a trap: these

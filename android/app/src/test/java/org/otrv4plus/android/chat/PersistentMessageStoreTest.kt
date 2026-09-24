@@ -342,15 +342,38 @@ class MessageCodecTest {
         // The direction that matters. A label this build cannot read must not
         // become a claim.
         val line = listOf("m1", alice, "0", "1000", "NONE",
-                          "SOME_FUTURE_LABEL", "body").joinToString("")
+                          "SOME_FUTURE_LABEL", "", "body").joinToString("")
         assertEquals(SecurityLabel.UNKNOWN, MessageCodec.decode(line)?.security)
     }
 
     @Test
     fun `an unknown send state reads as none`() {
         val line = listOf("m1", alice, "0", "1000", "SOME_FUTURE_STATE",
-                          "PLAINTEXT", "body").joinToString("")
+                          "PLAINTEXT", "", "body").joinToString("")
         assertEquals(SendState.NONE, MessageCodec.decode(line)?.sendState)
+    }
+
+    @Test
+    fun `a room message keeps its sender through the codec`() {
+        val original = Message(
+            id = "room:r:1:2:3", conversationId = "room@muc.example", body = "hi",
+            outgoing = false, at = 5L, sendState = SendState.NONE,
+            security = SecurityLabel.PLAINTEXT, sender = "bob\u001fevil",
+        )
+        assertEquals(original, MessageCodec.decode(MessageCodec.encode(original)))
+    }
+
+    @Test
+    fun `history written by the previous format still reads`() {
+        // Version 1: seven fields, no sender. An upgrade must not lose it.
+        val v1 = listOf("1", "0").joinToString("\u001f") + "\u001e" +
+            listOf("m1", alice, "0", "1000", "SENT", "ENCRYPTED", "old body")
+                .joinToString("\u001f")
+        val decoded = MessageCodec.decodeAll(v1)
+        assertEquals(1, decoded.size)
+        assertEquals("old body", decoded[0].body)
+        assertEquals("", decoded[0].sender)
+        assertEquals(SecurityLabel.ENCRYPTED, decoded[0].security)
     }
 
     @Test

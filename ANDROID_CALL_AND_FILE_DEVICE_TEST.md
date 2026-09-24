@@ -171,6 +171,21 @@ For each step: pass / fail, and for any fail the exported error log
 (Debug → Share error log). For step 11, say explicitly whether audio was
 heard in each direction.
 
+## 8. Rooms — two handsets
+
+50. On A: Rooms → wait for discovery (it can take a minute over I2P; the
+    screen says it is working). **Expect:** the server's room service is
+    found and its rooms listed, or "Nothing is advertised here".
+51. Create or join a room on A and on B. **Expect:** the room opens with a
+    red line "Room — not end-to-end encrypted…" and **no** Start OTR,
+    Verify, Call or Send-file controls.
+52. **Expect:** "N in this room"; Show lists both nicknames, moderators first.
+53. Send a line from each side. **Expect:** it appears on the other with the
+    sender's nickname above it and "Not encrypted" under it; your own line
+    appears once, not twice.
+54. Toggle airplane mode on A for 30 s, then let it reconnect. **Expect:**
+    typing in the room does not claim to send until A has rejoined.
+
 For step 40, report how long the app took to close. For step 45, paste the
 listing.
 

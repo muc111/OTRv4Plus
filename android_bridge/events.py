@@ -35,7 +35,7 @@ __all__ = [
     "SecurityState", "SmpState", "ConnectionState", "CallState",
     "security_state_from_level", "smp_state_from_status", "call_state_from_engine",
     "Event", "ConnectionStateChanged", "SessionStateChanged", "MessageReceived",
-    "MessageDelivered", "SmpProgress", "SmpResult", "FingerprintChanged",
+    "RoomMessageReceived", "MessageDelivered", "SmpProgress", "SmpResult", "FingerprintChanged",
     "CallStateChanged", "ErrorOccurred", "SubscriptionRequested", "EventSink",
 ]
 
@@ -219,6 +219,17 @@ class MessageReceived(Event):
     body: str = ""
     timestamp: float = 0.0
     message_id: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class RoomMessageReceived(Event):
+    """Plaintext group chat. `peer` is the ROOM; `sender` is the nickname the
+    room gave the author, which the room controls and which is not an
+    identity claim."""
+
+    sender: str = ""
+    body: str = ""
+    timestamp: float = 0.0
 
 
 @dataclass(frozen=True)

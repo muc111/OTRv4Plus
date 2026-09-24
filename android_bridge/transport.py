@@ -294,6 +294,8 @@ class XmppTransport(Transport):
         self._profile = profile
         self._password = password
         self._on_payload = on_payload
+        #: Set by `set_room_handler`; None drops room messages.
+        self._on_room_message: Optional[Callable[..., None]] = None
         self._on_presence = on_presence
         self._on_state = on_state
         self._on_subscription_request = on_subscription_request
@@ -1146,6 +1148,109 @@ class XmppTransport(Transport):
                 "could not open an I2P stream (%s). Is the router running and "
                 "is its SAM bridge enabled?" % type(exc).__name__)
 
+    # -- rooms: plaintext group chat ---------------------------------------------
+    #
+    # XEP-0045 group chat is NOT end-to-end encrypted, here or anywhere this
+    # app runs: every occupant and the server read every message. It is kept
+    # entirely apart from the OTR path -- a separate handler in, a separate
+    # sender out -- so that no room message is ever handed to the engine and
+    # no OTR frame is ever sent into a room.
+
+    #: Longest nickname carried to the UI; a room controls this string.
+    MAX_NICK = 64
+    #: Longest room message carried to the UI.
+    MAX_ROOM_BODY = 16 * 1024
+
+    def set_room_handler(self, handler: Optional[Callable[..., None]]) -> None:
+        """`handler(room, nick, body, timestamp)` for each room message."""
+        self._on_room_message = handler
+
+    @classmethod
+    def _clean(cls, text: str, limit: int) -> str:
+        """Drop control characters (other than newline and tab) and cap length.
+
+        A nickname and a body are chosen by other people. Neither may carry
+        a bidi override or a terminal escape into a screen that renders it.
+        """
+        out = []
+        for ch in str(text or "")[:limit]:
+            code = ord(ch)
+            if ch in "\n\t" or (code >= 0x20 and code != 0x7F
+                                  and not 0x202A <= code <= 0x202E
+                                  and not 0x2066 <= code <= 0x2069):
+                out.append(ch)
+        return "".join(out)
+
+    def _our_nick(self, room: str) -> str:
+        try:
+            return str(self._client["xep_0045"].our_nicks.get(room, ""))
+        except Exception:
+            return ""
+
+    def _on_groupchat(self, stanza) -> None:
+        """One room message, up to the handler. Our own echo is dropped.
+
+        XEP-0045 §7.2.3 reflects every message back to its sender. The UI
+        already shows what we sent, so the reflection would be a duplicate.
+        A subject change carries no body and is skipped.
+        """
+        if self._on_room_message is None:
+            return
+        try:
+            sender = stanza["from"]
+            room = str(sender.bare)
+            nick = self._clean(str(sender.resource), self.MAX_NICK)
+            body = self._clean(stanza["body"] or "", self.MAX_ROOM_BODY)
+        except Exception:
+            _log.warning("could not read a room message")
+            return
+        if not body or not nick:
+            return
+        if nick == self._our_nick(room):
+            return
+        stamp = 0.0
+        try:
+            delay = stanza["delay"]["stamp"]
+            if delay:
+                stamp = delay.timestamp()
+        except Exception:
+            stamp = 0.0
+        try:
+            self._on_room_message(room, nick, body, stamp or time.time())
+        except Exception:
+            _log.warning("the room message handler raised")
+
+    def send_room_message(self, room: str, body: str) -> None:
+        """Send plaintext to a room we are in. Raises TransportError."""
+        if not self.is_connected:
+            raise TransportError("not_connected", "not connected")
+        self._run(self._send_room(room, body), CALL_TIMEOUT)
+
+    async def _send_room(self, room: str, body: str) -> None:
+        self._client.send_message(mto=room, mbody=body, mtype="groupchat")
+
+    def room_occupants(self, room: str) -> "tuple[str, str, list]":
+        """Who is in a room: `[{nick, role, affiliation}]`, moderators first."""
+        return self._room_call(self._room_occupants(room))
+
+    async def _room_occupants(self, room: str):
+        muc = self._client["xep_0045"]
+        order = {_muc.MODERATOR: 0, _muc.PARTICIPANT: 1, _muc.VISITOR: 2}
+        people = []
+        for nick in list(muc.get_roster(room) or []):
+            def prop(name, nick=nick):
+                try:
+                    return str(muc.get_jid_property(room, nick, name) or "")
+                except Exception:
+                    return ""
+            people.append({
+                "nick": self._clean(nick, self.MAX_NICK),
+                "role": prop("role") or _muc.NO_ROLE,
+                "affiliation": prop("affiliation") or _muc.NONE,
+            })
+        people.sort(key=lambda p: (order.get(p["role"], 3), p["nick"].casefold()))
+        return people
+
     def send(self, peer: str, payload: str) -> None:
         if not self.is_connected:
             raise TransportError("not_connected", "not connected")
@@ -1690,6 +1795,10 @@ class XmppTransport(Transport):
             _log.warning("could not install the inbound filter")
         client.add_event_handler("presence_subscribe", self._on_subscribe)
         client.add_event_handler("message", self._on_message)
+        # Room messages arrive as type="groupchat", which `_on_message`
+        # deliberately ignores: a room is not a peer, and its traffic must
+        # never reach the OTR engine as though it were.
+        client.add_event_handler("groupchat_message", self._on_groupchat)
         client.add_event_handler("presence_available",
                                  lambda p: self._presence(p, True))
         client.add_event_handler("presence_unavailable",

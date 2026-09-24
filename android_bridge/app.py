@@ -46,6 +46,7 @@ from otrv4plus_mode import OtrMode
 from .events import (
     CallState, CallStateChanged, ConnectionState, ConnectionStateChanged,
     ErrorOccurred, Event, EventSink, FingerprintChanged, MessageReceived,
+    RoomMessageReceived,
     SecurityState, SessionStateChanged, SmpProgress, SmpResult, SmpState,
     call_state_from_engine, security_state_from_level, smp_state_from_status,
 )
@@ -248,6 +249,10 @@ class OtrApp:
         #: Same deferral, same reason: the transfer engine pulls in the Rust
         #: core, and a device that never sends a file never loads it.
         self._files_bridge: Optional["FileBridge"] = None
+        #: Rooms this session is in (canonical JIDs). A room is not a peer:
+        #: its text goes out as plaintext group chat and it never gets an OTR
+        #: session, SMP, a call or a file. See `note_room_joined`.
+        self._rooms: set = set()
         #: Set by `wipe` and never cleared. See `wipe` for what it refuses.
         self._wiped = False
         self._wipe_lock = threading.Lock()
@@ -409,6 +414,45 @@ class OtrApp:
     @property
     def wiped(self) -> bool:
         return self._wiped
+
+    # -- rooms -----------------------------------------------------------------
+
+    def note_room_joined(self, room: str) -> None:
+        """We are in [room]: its text is group chat from now on."""
+        self._rooms.add(self.canonical_peer(room))
+
+    def note_room_left(self, room: str) -> None:
+        self._rooms.discard(self.canonical_peer(room))
+
+    def forget_rooms(self) -> None:
+        """The stream went; so did every room membership it carried."""
+        self._rooms.clear()
+
+    def is_room(self, peer: str) -> bool:
+        return self.canonical_peer(peer) in self._rooms
+
+    def joined_room_list(self) -> List[str]:
+        return sorted(self._rooms)
+
+    def _refuse_room(self, peer: str, code: str) -> None:
+        """Rooms get no OTR, no SMP, no calls and no files.
+
+        OTR is a two-party protocol: a DAKE sent into a room would be read by
+        every occupant and answered by none of them, or by the wrong one.
+        """
+        if peer in self._rooms:
+            raise BridgeError(code, "rooms are not end-to-end encrypted")
+
+    def receive_room_message(self, room: str, nick: str, body: str,
+                             timestamp: float = 0.0) -> None:
+        """A room message from the transport. Emitted as its own event type,
+        never as `MessageReceived`: nothing downstream may confuse a room's
+        plaintext with a peer's decrypted text."""
+        room = self.canonical_peer(room)
+        if room not in self._rooms:
+            return
+        self._emit(RoomMessageReceived(peer=room, sender=nick, body=body,
+                                       timestamp=timestamp))
 
     def wipe(self) -> Dict[str, Any]:
         """Wipe & Exit, Python side. Idempotent; the app is spent afterwards.
@@ -855,6 +899,7 @@ class OtrApp:
         cliff.
         """
         peer = self.canonical_peer(peer)
+        self._refuse_room(peer, 'room_not_encryptable')
         if self._transport is None:
             raise BridgeError("no_transport")
 
@@ -932,6 +977,7 @@ class OtrApp:
         silently leaking the body onto the wire.
         """
         peer = self.canonical_peer(peer)
+        self._refuse_room(peer, 'room_not_encryptable')
         if self._transport is None:
             raise BridgeError("no_transport")
         try:
@@ -994,6 +1040,21 @@ class OtrApp:
         peer = self.canonical_peer(peer)
         if self._transport is None:
             raise BridgeError("no_transport")
+
+        # A ROOM, and never the OTR path. Group chat is plaintext by design
+        # (XEP-0045 has no end-to-end encryption) and is labelled so on every
+        # message; sending it as type="chat" to the room's JID -- what this
+        # method did before rooms were routed -- is rejected by the server
+        # while the UI reported it sent.
+        if peer in self._rooms:
+            sender = getattr(self._transport, "send_room_message", None)
+            if sender is None:
+                return self.SEND_FAILED
+            try:
+                sender(peer, body)
+            except Exception:
+                return self.SEND_FAILED
+            return self.SEND_PLAINTEXT
 
         if self._mode.may_send_plaintext(
                 peer, self.security_state(peer) is not SecurityState.PLAINTEXT):
@@ -1236,6 +1297,7 @@ class OtrApp:
         it, and `redacting_logger` is not given it.
         """
         peer = self.canonical_peer(peer)
+        self._refuse_room(peer, 'room_not_verifiable')
         self._require_encrypted(peer, "smp_not_encrypted")
         try:
             payload = self._engine.start_smp(peer, secret, question)
@@ -1291,6 +1353,7 @@ class OtrApp:
         obtained from the widget boundary rather than from a state machine.
         """
         peer = self.canonical_peer(peer)
+        self._refuse_room(peer, 'room_not_verifiable')
         self._require_encrypted(peer, "smp_not_encrypted")
         if not self.smp_secret_required(peer):
             # Nothing is being asked. Storing a passphrase here would leave a
@@ -1444,7 +1507,7 @@ class OtrApp:
         create a second gate that could disagree with the real one -- and the
         one that matters is the real one.
         """
-        if self._wiped:
+        if self._wiped or self.is_room(peer):
             return CallOutcome.UNAVAILABLE
         return self.calls.start_call(self.canonical_peer(peer))
 
@@ -1508,7 +1571,7 @@ class OtrApp:
         before it arrives. The engine takes a path and does not care who
         chose it, which is why the Termux picker is never reached here.
         """
-        if self._wiped:
+        if self._wiped or self.is_room(peer):
             return FileOutcome.UNAVAILABLE
         return self.files.send_file(self.canonical_peer(peer), path,
                                     bool(strip_metadata))

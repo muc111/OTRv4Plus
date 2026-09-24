@@ -665,6 +665,9 @@ data class RoomStanding(
  * table. Never the service's own words: a MUC error stanza carries the room,
  * the service and the nickname, and this string is rendered on screen.
  */
+/** One person in a room, as the room reports them. */
+data class RoomOccupant(val nick: String, val role: String, val affiliation: String)
+
 data class RoomOutcome(
     val ok: Boolean,
     val code: String,
@@ -698,6 +701,16 @@ sealed interface OtrEvent {
     data class ConnectionChanged(val state: ConnectionState) : OtrEvent
     data class SessionChanged(val peer: String, val security: SecurityState) : OtrEvent
     data class MessageReceived(val peer: String, val body: String, val timestamp: Double) : OtrEvent
+
+    /**
+     * Plaintext group chat. [room] is the room's JID; [sender] is the
+     * nickname the ROOM assigned, which is not an identity claim. Kept a
+     * separate type from [MessageReceived] so nothing can mistake a room's
+     * plaintext for a peer's decrypted text.
+     */
+    data class RoomMessageReceived(
+        val room: String, val sender: String, val body: String, val timestamp: Double,
+    ) : OtrEvent
     data class SmpProgressed(val peer: String, val progress: SmpProgress) : OtrEvent
     data class SmpFinished(val peer: String, val state: SmpState) : OtrEvent
 

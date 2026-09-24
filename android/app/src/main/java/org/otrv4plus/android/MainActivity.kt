@@ -304,6 +304,9 @@ class MainActivity : ComponentActivity() {
                                 // made -- reported as "it never progresses to
                                 // the next view".
                                 onOpenRoom = { room ->
+                                    // A room from here on: group chat, not
+                                    // an OTR conversation with the room JID.
+                                    chat.noteRoom(room)
                                     openJid = room
                                     screen = Screen.CONVERSATION
                                 },

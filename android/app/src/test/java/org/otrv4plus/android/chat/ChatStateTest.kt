@@ -802,6 +802,46 @@ class ChatStateTest {
         assertEquals(SmpState.NOT_VERIFIED, s.conversation(alice).smp)
     }
 
+    // ── rooms ────────────────────────────────────────────────────────────────
+
+    private val room = "lobby@rooms.xmpp-elite.i2p"
+
+    private fun roomLine(sender: String, body: String, at: Double = 1_700.0) =
+        OtrEvent.RoomMessageReceived(room = room, sender = sender, body = body,
+                                     timestamp = at)
+
+    @Test
+    fun `a room message is kept with its sender and marked not encrypted`() {
+        val s = state()
+        s.handle(roomLine("bob", "hello room"))
+        val m = s.messages(room).single()
+        assertEquals("bob", m.sender)
+        assertEquals("hello room", m.body)
+        assertEquals(SecurityLabel.PLAINTEXT, m.security)
+        assertTrue(s.isRoom(room))
+    }
+
+    @Test
+    fun `a room message never interrupts anybody`() {
+        assertFalse(state().handle(roomLine("bob", "hi")))
+    }
+
+    @Test
+    fun `two people saying the same thing at once are two messages`() {
+        val s = state()
+        s.handle(roomLine("bob", "ok"))
+        s.handle(roomLine("carol", "ok"))
+        assertEquals(2, s.messages(room).size)
+    }
+
+    @Test
+    fun `a room is only a room for the account that joined it`() {
+        val s = state()
+        s.noteRoom(room)
+        s.bindAccount(AccountScope.of("dave@xmpp-elite.i2p"))
+        assertFalse(s.isRoom(room))
+    }
+
     private companion object {
         const val FIXED_NOW = 1_600_000_000_000L
     }

@@ -84,6 +84,7 @@ class ChatState(
     fun bindAccount(next: AccountScope) {
         if (next == account) return
         account = next
+        rooms.clear()
         contacts.clear()
         drafts.clear()
         openConversation = null
@@ -366,6 +367,13 @@ class ChatState(
     fun handle(event: OtrEvent): Boolean {
         return when (event) {
             is OtrEvent.MessageReceived -> receive(event)
+            // Stored, never announced: a busy room would otherwise buzz the
+            // phone for every line strangers type. The unread count still
+            // shows it.
+            is OtrEvent.RoomMessageReceived -> {
+                receiveRoom(event)
+                false
+            }
             is OtrEvent.FingerprintChanged -> {
                 fingerprintAlert = event
                 false
@@ -476,6 +484,43 @@ class ChatState(
      *
      * Returns whether it was stored, which is false for a duplicate.
      */
+    // -- rooms ---------------------------------------------------------------
+
+    /**
+     * Conversations that are ROOMS. A room's text is plaintext group chat;
+     * the conversation screen shows who wrote each line, says the room is
+     * not end-to-end encrypted, and offers no encryption, verification,
+     * call or file. Learned when a room is opened and from its messages.
+     */
+    private val rooms = mutableSetOf<String>()
+
+    fun noteRoom(jid: String) { rooms.add(bare(jid)) }
+
+    fun isRoom(jid: String): Boolean = bare(jid) in rooms
+
+    fun receiveRoom(event: OtrEvent.RoomMessageReceived): Boolean {
+        val room = bare(event.room)
+        rooms.add(room)
+        val at = if (event.timestamp > 0) (event.timestamp * 1000).toLong()
+                 else now()
+        val added = store.append(
+            Message(
+                id = MessageId.room(room, event.sender, at, event.body),
+                conversationId = room,
+                body = event.body,
+                outgoing = false,
+                at = at,
+                // Always plaintext: XEP-0045 group chat has no end-to-end
+                // encryption, whatever the room's own settings say.
+                security = SecurityLabel.PLAINTEXT,
+                sendState = SendState.NONE,
+                sender = event.sender,
+            )
+        )
+        if (added && uiVisible && openConversation == room) store.markRead(room)
+        return added
+    }
+
     fun receive(event: OtrEvent.MessageReceived): Boolean {
         val jid = bare(event.peer)
         val at = if (event.timestamp > 0) (event.timestamp * 1000).toLong()

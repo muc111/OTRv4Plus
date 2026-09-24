@@ -366,6 +366,12 @@ class ConnectionController:
                 self._app.note_presence_lost()
             except Exception:
                 _log.warning("could not clear presence on a transport drop")
+            # Room membership is a property of the stream too: after a drop we
+            # are in no room until we join again, and text typed into one
+            # must not be routed as though we were.
+            forget = getattr(self._app, "forget_rooms", None)
+            if forget is not None:
+                forget()
         self._enter(stage)
 
     def _enter(self, stage: str) -> None:
@@ -472,6 +478,12 @@ class ConnectionController:
         # The transport is what OtrApp sends through. Set before connecting so
         # a stanza arriving during session_start has somewhere to go.
         self._app._transport = self._transport
+        # Room messages by a setter rather than the factory call, so a
+        # transport without rooms (and every test double) needs no change.
+        attach = getattr(self._transport, "set_room_handler", None)
+        receive = getattr(self._app, "receive_room_message", None)
+        if attach is not None and receive is not None:
+            attach(receive)
         self._enter("connecting")
         try:
             self._transport.connect()
@@ -774,7 +786,8 @@ class ConnectionController:
         if problem is not None:
             return {"ok": False, "code": problem[0], "detail": problem[1],
                     "value": None}
-        return self._muc_call("join_room", room, nick, password)
+        return self._noting_room(self._muc_call("join_room", room, nick, password),
+                                 room, joined=True)
 
     def create_room(self, room: str, nick: str) -> Dict[str, Any]:
         """Create a room and unlock it. See `XmppTransport.create_room`."""
@@ -782,14 +795,31 @@ class ConnectionController:
         if problem is not None:
             return {"ok": False, "code": problem[0], "detail": problem[1],
                     "value": None}
-        return self._muc_call("create_room", room, nick)
+        return self._noting_room(self._muc_call("create_room", room, nick),
+                                 room, joined=True)
 
     def leave_room(self, room: str, nick: str) -> Dict[str, Any]:
-        return self._muc_call("leave_room", room, nick)
+        return self._noting_room(self._muc_call("leave_room", room, nick),
+                                 room, joined=False)
 
     def destroy_room(self, room: str, reason: str = "") -> Dict[str, Any]:
         """Delete a room. Owners only, and the SERVICE is what enforces it."""
-        return self._muc_call("destroy_room", room, reason)
+        return self._noting_room(self._muc_call("destroy_room", room, reason),
+                                 room, joined=False)
+
+    def room_occupants(self, room: str) -> Dict[str, Any]:
+        """Who is in [room], as `{nick, role, affiliation}` rows."""
+        return self._muc_call("room_occupants", room)
+
+    def _noting_room(self, result: Dict[str, Any], room: str,
+                     joined: bool) -> Dict[str, Any]:
+        """Tell the app about membership, but only when the server agreed."""
+        if result.get("ok"):
+            name = "note_room_joined" if joined else "note_room_left"
+            note = getattr(self._app, name, None)
+            if note is not None:
+                note(room)
+        return result
 
     def room_standing(self, room: str, nick: str) -> Dict[str, Any]:
         return self._muc_call("room_standing", room, nick)

@@ -122,6 +122,58 @@ class ChatViewModel : ViewModel() {
 
     fun canSend(): Boolean { observe(); return state?.canSend() == true }
 
+    // -- rooms ------------------------------------------------------------------
+
+    /** Whether [jid] is a room: plaintext group chat, no OTR. See [ChatState.isRoom]. */
+    fun isRoom(jid: String): Boolean { observe(); return state?.isRoom(jid) == true }
+
+    /** Called when the Rooms screen opens [jid]: it is a room from now on. */
+    fun noteRoom(jid: String) {
+        state?.noteRoom(jid)
+        revision++
+    }
+
+    /** Who is in each room, as last fetched. Empty until [refreshOccupants]. */
+    private val occupants = mutableMapOf<String, List<org.otrv4plus.android.bridge.RoomOccupant>>()
+
+    /** Whether the last occupant fetch failed, per room; shown, not hidden. */
+    private val occupantsFailed = mutableSetOf<String>()
+
+    fun occupants(jid: String): List<org.otrv4plus.android.bridge.RoomOccupant> {
+        observe()
+        return occupants[jid].orEmpty()
+    }
+
+    fun occupantsUnavailable(jid: String): Boolean { observe(); return jid in occupantsFailed }
+
+    /** Whether the participant list is open, per room. Survives recreation. */
+    private val occupantsShown = mutableSetOf<String>()
+
+    fun occupantsShown(jid: String): Boolean { observe(); return jid in occupantsShown }
+
+    fun toggleOccupants(jid: String) {
+        if (!occupantsShown.remove(jid)) occupantsShown.add(jid)
+        revision++
+    }
+
+    /** Ask the room who is in it. Over I2P this can take tens of seconds. */
+    fun refreshOccupants(jid: String) {
+        val c = core ?: return
+        viewModelScope.launch {
+            val (outcome, people) = withContext(Dispatchers.IO) {
+                runCatching { c.roomOccupants(jid) }.getOrNull()
+                    ?: (org.otrv4plus.android.bridge.RoomOutcome(false, "network", "") to emptyList())
+            }
+            if (outcome.ok) {
+                occupants[jid] = people
+                occupantsFailed.remove(jid)
+            } else {
+                occupantsFailed.add(jid)
+            }
+            revision++
+        }
+    }
+
     // -- wiring ---------------------------------------------------------------
 
     /**

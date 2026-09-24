@@ -68,6 +68,11 @@ fun ConversationScreen(
     val conversation = model.conversation(jid)
     val messages = model.messages(jid)
     val listState = rememberLazyListState()
+    // A ROOM is plaintext group chat, and this screen says so instead of
+    // offering encryption, verification, calls or files -- none of which a
+    // room can have. The bridge refuses all four for a room regardless.
+    val room = model.isRoom(jid)
+    LaunchedEffect(jid, room) { if (room) model.refreshOccupants(jid) }
 
     // Scroll to the newest ONLY when the user is already near the bottom.
     // Yanking the view down while somebody is reading back through yesterday
@@ -134,6 +139,9 @@ fun ConversationScreen(
                 .padding(padding)
                 .fillMaxSize(),
         ) {
+            if (room) {
+                RoomHeader(model, jid)
+            } else {
             SecurityLine(conversation.security)
 
             // Directly under the security line, because it is the same
@@ -195,6 +203,7 @@ fun ConversationScreen(
                     onSave = { model.addContact(conversation.jid) },
                 )
             }
+            }
 
             if (messages.isEmpty()) {
                 Box(Modifier.weight(1f).fillMaxWidth(),
@@ -213,6 +222,69 @@ fun ConversationScreen(
                 ) {
                     items(messages, key = { it.id }) { Bubble(it) }
                 }
+            }
+        }
+    }
+}
+
+/**
+ * What a room is, and who is in it.
+ *
+ * The first line is the security statement, in the same place a one-to-one
+ * conversation puts its own, and it never varies: XEP-0045 group chat has no
+ * end-to-end encryption, so every occupant and the server read every line.
+ * The mark is the NOT_ENCRYPTED one from [SecurityLevel].
+ *
+ * Participants are fetched from the room and can take a while over I2P, so
+ * "asking the room…" is said while waiting and a failure is said as a
+ * failure, with a retry, rather than showing an empty list that reads as
+ * "nobody here".
+ */
+@Composable
+private fun RoomHeader(model: ChatViewModel, jid: String) {
+    val level = org.otrv4plus.android.crypto.SecurityLevel.Level.NOT_ENCRYPTED
+    Surface(color = MaterialTheme.colorScheme.surfaceVariant) {
+        Text(
+            "${level.mark} Room — not end-to-end encrypted. Everyone in the " +
+                "room and the server can read every message.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.error,
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp),
+        )
+    }
+    val expanded = model.occupantsShown(jid)
+    val people = model.occupants(jid)
+    Row(
+        Modifier.fillMaxWidth().padding(horizontal = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            when {
+                model.occupantsUnavailable(jid) -> "Could not ask the room who is here."
+                people.isEmpty() -> "Asking the room who is here…"
+                else -> "${people.size} in this room"
+            },
+            style = MaterialTheme.typography.labelMedium,
+            modifier = Modifier.weight(1f),
+        )
+        if (people.isNotEmpty()) {
+            TextButton(onClick = { model.toggleOccupants(jid) }) {
+                Text(if (expanded) "Hide" else "Show")
+            }
+        }
+        TextButton(onClick = { model.refreshOccupants(jid) }) { Text("Refresh") }
+    }
+    if (expanded) {
+        Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp)) {
+            for (person in people) {
+                Text(
+                    // The role is the room's word for what they may do; a
+                    // nickname is the room's label, not an identity.
+                    "${person.nick} · ${person.role}",
+                    style = MaterialTheme.typography.bodySmall,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
             }
         }
     }
@@ -825,6 +897,17 @@ private fun Bubble(message: Message) {
                 )
                 .padding(horizontal = 10.dp, vertical = 6.dp),
         ) {
+            // A room line says who wrote it, ABOVE and apart from the body, so
+            // a body that begins "Bob: " cannot pass for a line from Bob.
+            if (message.sender.isNotEmpty() && !outgoing) {
+                Text(
+                    message.sender,
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.primary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
             SelectionContainer {
                 Text(message.body, style = MaterialTheme.typography.bodyMedium)
             }

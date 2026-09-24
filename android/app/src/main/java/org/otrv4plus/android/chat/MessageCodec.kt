@@ -36,8 +36,13 @@ internal object MessageCodec {
     private const val FIELD = ''
     private const val RECORD = ''
 
-    /** The version marker. A future format change can recognise this one. */
-    private const val VERSION = "1"
+    /**
+     * The version marker. "2" added the room SENDER as a field before the
+     * body; "1" records (seven fields, no sender) still decode, so history
+     * written by an older build survives the upgrade.
+     */
+    private const val VERSION = "2"
+    private const val LEGACY_VERSION = "1"
 
     /**
      * The header carries the UNREAD COUNT as well as the version.
@@ -54,8 +59,10 @@ internal object MessageCodec {
     fun decodeAll(text: String): List<Message> {
         if (text.isEmpty()) return emptyList()
         val parts = text.split(RECORD)
-        if (!isHeader(parts.firstOrNull())) return emptyList()
-        return parts.drop(1).mapNotNull { decode(it) }
+        val header = parts.firstOrNull()
+        if (!isHeader(header)) return emptyList()
+        val legacy = header?.split(FIELD)?.firstOrNull() == LEGACY_VERSION
+        return parts.drop(1).mapNotNull { decode(it, legacy) }
     }
 
     /** The persisted unread count, or null when the record is unreadable. */
@@ -66,7 +73,8 @@ internal object MessageCodec {
     }
 
     private fun isHeader(header: String?): Boolean =
-        header != null && header.split(FIELD).firstOrNull() == VERSION
+        header != null && header.split(FIELD).firstOrNull()
+            .let { it == VERSION || it == LEGACY_VERSION }
 
     fun encode(message: Message): String = listOf(
         escape(message.id),
@@ -75,6 +83,7 @@ internal object MessageCodec {
         message.at.toString(),
         message.sendState.name,
         message.security.name,
+        escape(message.sender),
         escape(message.body),
     ).joinToString(FIELD.toString())
 
@@ -87,10 +96,11 @@ internal object MessageCodec {
      * security label this build does not recognise becomes UNKNOWN, never
      * ENCRYPTED.
      */
-    fun decode(line: String): Message? {
+    fun decode(line: String, legacy: Boolean = false): Message? {
         if (line.isBlank()) return null
-        val parts = line.split(FIELD, limit = 7)
-        if (parts.size != 7) return null
+        val count = if (legacy) 7 else 8
+        val parts = line.split(FIELD, limit = count)
+        if (parts.size != count) return null
         val at = parts[3].toLongOrNull() ?: return null
         val id = unescape(parts[0])
         val conversationId = unescape(parts[1])
@@ -98,7 +108,8 @@ internal object MessageCodec {
         return Message(
             id = id,
             conversationId = conversationId,
-            body = unescape(parts[6]),
+            body = unescape(parts[count - 1]),
+            sender = if (legacy) "" else unescape(parts[6]),
             outgoing = parts[2] == "1",
             at = at,
             sendState = SendState.entries.firstOrNull { it.name == parts[4] }

@@ -35,6 +35,13 @@ data class Message(
     val at: Long,
     val sendState: SendState,
     val security: SecurityLabel,
+    /**
+     * Who wrote it, for ROOM messages only: the nickname the room assigned.
+     * Empty in a one-to-one conversation, where the conversation IS the
+     * sender. Rendered apart from the body, so a body beginning "Bob: "
+     * cannot pass for a line from Bob.
+     */
+    val sender: String = "",
 )
 
 /**
@@ -299,6 +306,13 @@ object MessageId {
      */
     fun inbound(conversationId: String, at: Long, body: String): String =
         "in:$conversationId:$at:${body.hashCode()}"
+
+    /**
+     * A room message. The SENDER is part of the id: two people in a room can
+     * send "ok" in the same second, and they are two messages.
+     */
+    fun room(room: String, sender: String, at: Long, body: String): String =
+        "room:$room:$at:${sender.hashCode()}:${body.hashCode()}"
 
     /** For a locally generated note about the session. */
     fun system(conversationId: String, at: Long, text: String): String =
