@@ -8,8 +8,11 @@
 //! `unsafe` is denied everywhere except the one PQClean call in `mlkem`.
 #![deny(unsafe_code)]
 
+pub mod client;
 pub mod hpke_backend;
 pub mod mlkem;
 pub mod provider;
+pub mod storage;
 
+pub use client::{Event, MlsClient, MlsError};
 pub use provider::{CoreCrypto, CoreProvider, SignatureKeyPair, CIPHERSUITE};

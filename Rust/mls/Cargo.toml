@@ -28,7 +28,11 @@ publish = false
 [dependencies]
 openmls = { version = "=0.9.0", default-features = false, features = ["draft-ietf-mls-pq-ciphersuites"] }
 openmls_traits = { version = "=0.6.0", features = ["draft-ietf-mls-pq-ciphersuites"] }
-openmls_memory_storage = "=0.6.0"
+# The storage traits only; the store itself is src/storage.rs (zeroizing,
+# CBOR), derived from openmls_memory_storage, which is not a dependency.
+ciborium = "0.2"
+serde = { version = "1", features = ["derive"] }
+serde_bytes = "0.11"
 # "hazmat" only exposes the derived private key bytes so they can be handed
 # to OpenMLS, as the reference provider does; they stay inside Rust.
 hpke-rs = { version = "=0.7.0", default-features = false, features = ["hazmat"] }

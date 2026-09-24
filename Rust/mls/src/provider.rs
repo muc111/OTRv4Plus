@@ -27,7 +27,7 @@ use hkdf::Hkdf;
 use hmac::{Hmac, Mac};
 use hpke_rs::{Hpke, Mode};
 use hpke_rs_crypto::types::{AeadAlgorithm, KdfAlgorithm, KemAlgorithm};
-use openmls_memory_storage::MemoryStorage;
+use crate::storage::SecureStorage;
 use openmls_traits::{
     crypto::OpenMlsCrypto,
     random::OpenMlsRand,
@@ -339,18 +339,35 @@ impl OpenMlsRand for CoreCrypto {
     }
 }
 
-/// The provider OpenMLS runs on. Storage is in memory for now; persistence
-/// (encrypted, destroyed by Wipe & Exit) is a later stage.
+/// The provider OpenMLS runs on. Storage is `SecureStorage`: Rust-owned,
+/// zeroized on wipe and on drop. Encrypted persistence is a later stage.
 #[derive(Default)]
 pub struct CoreProvider {
     crypto: CoreCrypto,
-    storage: MemoryStorage,
+    storage: SecureStorage,
+}
+
+impl CoreProvider {
+    /// Destroy every group secret this provider's storage holds.
+    pub fn wipe(&self) {
+        self.storage.wipe();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn storage_values_for_test(&self) -> Vec<Vec<u8>> {
+        self.storage.values_for_test()
+    }
+
+    /// Entries in storage (no contents).
+    pub fn stored_entries(&self) -> usize {
+        self.storage.len()
+    }
 }
 
 impl OpenMlsProvider for CoreProvider {
     type CryptoProvider = CoreCrypto;
     type RandProvider = CoreCrypto;
-    type StorageProvider = MemoryStorage;
+    type StorageProvider = SecureStorage;
 
     fn storage(&self) -> &Self::StorageProvider {
         &self.storage
