@@ -515,6 +515,10 @@ class ConnectionController:
         # The OTRv4Plus Welcome room, joined in the background after every
         # successful sign-in (each connect builds a fresh transport, so a
         # reconnect rejoins). Discovery only: see android_bridge.welcome.
+        hook = getattr(self._transport, "set_welcome_handler", None)
+        joined = getattr(self._app, "note_room_joined", None)
+        if hook is not None and joined is not None:
+            hook(joined)
         start = getattr(self._transport, "start_welcome", None)
         if start is not None:
             try:
@@ -850,6 +854,11 @@ class ConnectionController:
             return {"state": "failed", "room": "", "detail": "unexpected_error",
                     "anonymity": "unknown", "public": False,
                     "persistent": False, "people": [], "hidden": 0}
+
+    def create_welcome_room(self) -> Dict[str, Any]:
+        """Create the OTRv4Plus Welcome room. See XmppTransport.create_welcome."""
+        nick = self._profile.jid.split("@", 1)[0]
+        return self._muc_call("create_welcome", nick)
 
     def discover_online_users(self) -> Dict[str, Any]:
         """Server-wide online users, when Prosody lets this account ask.

@@ -210,13 +210,31 @@ object OnlineUsers {
                 if (discovery?.available == true) null
                 else "This server has no public room named \u201cOTRv4Plus " +
                     "Welcome\u201d, so only your contacts and requests are " +
-                    "shown. Add someone by address, or ask the server admin " +
-                    "to create the room."
+                    "shown. You can create it below, or add someone by address."
             W.AMBIGUOUS -> "More than one room is named \u201cOTRv4Plus " +
                 "Welcome\u201d on this server; none was joined."
             W.LEFT -> "You are no longer in the OTRv4Plus Welcome room."
             else -> "Could not join the OTRv4Plus Welcome room."
         }
+    }
+
+    /** Shown before creating the Welcome room: what it will reveal. */
+    const val WELCOME_CREATE_WARNING =
+        "This creates a public room named \u201cOTRv4Plus Welcome\u201d on " +
+            "your server so OTRv4Plus users can find each other. Everyone " +
+            "in it sees everyone else's address and when they are online. " +
+            "It is not end-to-end encrypted: the server can read it. Private " +
+            "chats stay OTRv4+ as before."
+
+    /** The result of creating it, in words. */
+    @JvmStatic
+    fun welcomeCreated(ok: Boolean, detail: String, missing: List<String>): String = when {
+        !ok -> "The Welcome room was not created: " +
+            detail.ifBlank { "the server refused." }
+        missing.isEmpty() -> "The OTRv4Plus Welcome room is ready. Other users " +
+            "join it automatically when they sign in."
+        else -> "The Welcome room was created, but the server did not allow: " +
+            missing.joinToString("; ") + ". Ask the server admin to change it."
     }
 
     /** The header: "ONLINE USERS (3)". */

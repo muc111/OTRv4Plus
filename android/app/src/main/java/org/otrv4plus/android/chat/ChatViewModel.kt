@@ -295,6 +295,41 @@ class ChatViewModel : ViewModel() {
         }
     }
 
+    /** Whether the server has no Welcome room, so creating one is offered. */
+    val welcomeMissing: Boolean
+        get() {
+            observe()
+            val s = state ?: return false
+            return s.canSend() &&
+                s.welcome.state == org.otrv4plus.android.bridge.WelcomeView.NOT_FOUND
+        }
+
+    /** Busy creating the Welcome room; the button is disabled meanwhile. */
+    var creatingWelcome by mutableStateOf(false)
+        private set
+
+    /**
+     * Create the OTRv4Plus Welcome room, after the user confirmed the
+     * warning. Reports what the server would not apply, in words.
+     */
+    fun createWelcomeRoom() {
+        val state = this.state ?: return
+        val core = this.core ?: return
+        if (creatingWelcome) return
+        creatingWelcome = true
+        viewModelScope.launch {
+            val (outcome, missing) = withContext(Dispatchers.IO) {
+                runCatching { core.createWelcomeRoom() }.getOrNull()
+                    ?: (org.otrv4plus.android.bridge.RoomOutcome(false, "network", "") to emptyList())
+            }
+            creatingWelcome = false
+            state.note(OnlineUsers.welcomeCreated(outcome.ok, outcome.detail, missing))
+            lastWelcome = 0L
+            refreshWelcome()
+            revision++
+        }
+    }
+
     private var lastWelcome = 0L
 
     /**

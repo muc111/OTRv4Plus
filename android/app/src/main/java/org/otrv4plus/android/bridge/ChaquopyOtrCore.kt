@@ -449,6 +449,19 @@ class ChaquopyOtrCore(private val appContext: Context) : OtrCore {
         return outcome to mam
     }
 
+    /**
+     * Create the OTRv4Plus Welcome room (explicit user action only).
+     * Returns the outcome and the settings the server did NOT apply.
+     */
+    fun createWelcomeRoom(): Pair<RoomOutcome, List<String>> {
+        val result = call("create_welcome_room") ?: return notPrepared() to emptyList()
+        val outcome = outcomeOf(result)
+        val missing = runCatching {
+            listValue(result)?.callAttr("get", "missing")?.asList()?.map { it.toString() }
+        }.getOrNull() ?: emptyList()
+        return outcome to missing
+    }
+
     /** The Welcome room's state and discoverable people. No network. */
     fun welcomeDirectory(): WelcomeView {
         val v = call("welcome_directory") ?: return WelcomeView.NONE
