@@ -250,3 +250,19 @@ gh release create "$TAG" "$ROUT" "$OUT" "$MANIFEST" \
     --target "$GITHUB_SHA"
 
 echo "published $TAG: $ROUT ($RSHA256), $OUT ($SHA256)"
+
+# ONE APK ON THE RELEASES PAGE. The owner's instruction: older builds must
+# not stay available to be installed by mistake. Only after the new release
+# exists -- deleting first could leave the page with nothing on it if the
+# upload failed -- every OTHER Android release (android-v*, and the rolling
+# android-experimental) is deleted together with its tag. Only Android APK
+# releases are touched; nothing else on the page is.
+gh release list --limit 200 --json tagName --jq '.[].tagName' |
+    grep -E '^android-(v|experimental$)' |
+    while read -r old; do
+        if [ "$old" != "$TAG" ]; then
+            echo "removing superseded release $old"
+            gh release delete "$old" --yes --cleanup-tag ||
+                echo "::warning::could not remove $old"
+        fi
+    done
