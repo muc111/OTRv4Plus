@@ -152,6 +152,28 @@ object Verification {
      * SMP is entirely in the secret having been agreed over a channel an
      * attacker does not control.
      */
+    /**
+     * How long an identity -- and so a verification -- lasts on this device.
+     *
+     * Decision B1: the engine is built with `OTRConfig()`, whose
+     * `persist_identity` is false, so every launch generates a new Ed448
+     * identity and nothing about the old one survives. That is deliberate and
+     * is not changed here; what was missing is that nothing told the user.
+     * A verification is a proof about a key, so it ends with the key, and
+     * every contact who pinned the old one will see a key-change warning for
+     * the new one. Saying so up front is what stops that warning being
+     * learned as noise.
+     */
+    const val IDENTITY_LIFETIME: String =
+        "Your identity on this device is new each time the app starts. " +
+            "Nothing about it is kept after you close the app. Contacts who " +
+            "saved your previous key will be warned that it changed, and any " +
+            "verification has to be done again."
+
+    /** Appended to a successful verification: it is not permanent. */
+    const val VERIFIED_UNTIL: String =
+        "This lasts until the app closes: your identity is new each launch."
+
     fun explanation(prompt: Prompt, peer: String): String = when (prompt) {
         Prompt.OUTGOING ->
             "Enter the passphrase you agreed with this contact in person or " +
@@ -174,7 +196,7 @@ object Verification {
     fun outcome(state: SmpState): String? = when (state) {
         SmpState.VERIFIED ->
             "Identity verified. You are talking to the person who knows the " +
-                "shared passphrase."
+                "shared passphrase. $VERIFIED_UNTIL"
         SmpState.FAILED ->
             "Verification failed. The passphrases did not match — check you " +
                 "both entered the same text. If they did, this may not be " +

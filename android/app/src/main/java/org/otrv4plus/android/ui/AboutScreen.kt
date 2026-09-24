@@ -95,6 +95,13 @@ fun AboutScreen(onBack: () -> Unit = {}) {
         StatusRow("Build", BuildConfig.BUILD_ID)
 
         Spacer(Modifier.height(4.dp))
+        Text("Identity", style = MaterialTheme.typography.titleSmall)
+        Text(
+            org.otrv4plus.android.crypto.Verification.IDENTITY_LIFETIME,
+            style = MaterialTheme.typography.bodySmall,
+        )
+
+        Spacer(Modifier.height(4.dp))
         Text("Licence", style = MaterialTheme.typography.titleSmall)
         Text(
             "Copyright (C) 2025-2026 muc111.",

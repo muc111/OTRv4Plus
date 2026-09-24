@@ -188,8 +188,13 @@ tunnels is precisely the case foreground services exist for.
 | Both killed | Everything is lost; the next launch starts LOCKED and the router is not started until after unlock |
 | Device reboot | Nothing auto-starts. No `BOOT_COMPLETED` receiver: a router starting before the user has unlocked the app would put them on the network without their knowledge. |
 
-**Identity survives all of these** — it is sealed on disk (decision B1) and does
-not depend on the router. Tunnels and SAM sessions are ephemeral by design;
+**Identity does not survive a process death.** Decision B1 as built: the
+engine is constructed with `OTRConfig()` (`persist_identity=False`), so every
+launch generates a new identity and nothing of the old one is kept. (An
+earlier revision of this document said the identity was sealed on disk; the
+Rust sealing path exists and the Termux XMPP client uses it, but the Android
+app does not.) Losing the router alone does not change the identity, which
+does not depend on it. Tunnels and SAM sessions are ephemeral by design;
 losing them costs reconnection time, not identity.
 
 ---

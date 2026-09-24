@@ -157,13 +157,17 @@ class TestItConnectsThroughTheTunnel:
         async def broken(*_a):
             raise OSError("connection refused")
 
-        t, _ = build(forwarder=broken)
+        t, made = build(forwarder=broken)
         try:
             with pytest.raises(TransportError) as caught:
                 t.connect()
             assert caught.value.code == "sam_unavailable"
             assert "router" in caught.value.detail
             assert not t.is_connected
+            # No fallback: with the tunnel down, nothing is dialled directly.
+            client = made.get("client")
+            assert client is None or getattr(client, "connected_to", None) is None, (
+                "SAM failed and the client connected somewhere anyway")
         finally:
             t.close()
 

@@ -312,4 +312,15 @@ class VerificationTest {
             }
         }
     }
+
+    @Test
+    fun `a verification says it does not survive a restart`() {
+        // B1: a new identity every launch. A tick that did not say so would
+        // overstate what was proved.
+        val said = Verification.outcome(SmpState.VERIFIED)!!
+        assertTrue("until the app closes" in said, said)
+        assertTrue("new each" in Verification.IDENTITY_LIFETIME)
+        assertTrue("warned" in Verification.IDENTITY_LIFETIME,
+            "the user is not told their contacts will see a key change")
+    }
 }
