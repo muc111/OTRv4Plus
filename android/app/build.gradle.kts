@@ -523,6 +523,13 @@ val syncNoticeAsset by tasks.registering(Copy::class) {
 tasks.matching { it.name.matches(Regex("merge[A-Z]\\w*Assets")) }
     .configureEach { dependsOn(syncNoticeAsset) }
 
+// Release builds also run lint-vital, whose model task reads every asset
+// directory -- including the one syncNoticeAsset writes -- and Gradle refuses
+// an undeclared producer. assembleDebug never runs it, which is why this only
+// surfaced when CI began building the release variant.
+tasks.matching { it.name.matches(Regex("(generate|lint)\\w*Lint\\w*|lintVital\\w*")) }
+    .configureEach { dependsOn(syncNoticeAsset, syncPythonSources) }
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Dependency licence guard
 //

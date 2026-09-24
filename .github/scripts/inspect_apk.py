@@ -45,6 +45,11 @@ FORBIDDEN_ANYWHERE = re.compile(
     r"(^|/)\.git/|smp_secrets|identity\.sealed|\.identity_dek|\.smp_seed|\.device_seed",
     re.I)
 
+#: Public files allowed despite a key-like extension: Chaquopy's CA bundle
+#: for TLS. Its content is checked to be certificates and nothing else.
+PUBLIC_PEM = {"assets/chaquopy/cacert.pem"}
+PRIVATE_KEY = re.compile(rb"-----BEGIN [A-Z ]*PRIVATE KEY-----")
+
 #: PyO3 names that exist only when the core is built with a test/legacy
 #: feature. Their presence in the shipped .so means a gated API shipped.
 GATED_CORE_SYMBOLS = (b"get_session_keys", b"load_by_handle", b"expose_seed",
@@ -92,9 +97,21 @@ def main():
     r.check("assets/NOTICE" in names and
             b"third-party notices" in apk.read("assets/NOTICE"),
             "assets/NOTICE is present and is the generated attribution file")
-    bad = [n for n in names if FORBIDDEN_ANYWHERE.search(n)]
+    bad = [n for n in names if FORBIDDEN_ANYWHERE.search(n) and n not in PUBLIC_PEM]
     r.check(not bad, "no key, credential, secret-store or VCS file packaged %s"
             % (bad[:5] if bad else ""))
+    # Content, not just names: a private key under an innocent name is still
+    # a private key. Every entry, including inside Chaquopy's zips.
+    keyed = [n for n in names if PRIVATE_KEY.search(apk.read(n))]
+    for imy in [n for n in names if n.endswith(".imy")]:
+        z = zipfile.ZipFile(io.BytesIO(apk.read(imy)))
+        keyed += ["%s!%s" % (imy, m) for m in z.namelist() if PRIVATE_KEY.search(z.read(m))]
+    r.check(not keyed, "no private key material anywhere in the APK %s" % (keyed[:5] or ""))
+    for pem in PUBLIC_PEM & set(names):
+        body = apk.read(pem)
+        r.check(body.count(b"-----BEGIN CERTIFICATE-----") > 0 and
+                not re.search(rb"-----BEGIN (?!CERTIFICATE)", body),
+                "%s holds public CA certificates only" % pem)
 
     print("python sources:")
     app = _nested(apk, "app")
