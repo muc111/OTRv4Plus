@@ -313,8 +313,11 @@ def test_production_artifact_exposes_no_seed_injection():
 
 def test_identity_sealing_api_is_present_in_production():
     """The B1 replacement must actually ship, or persistence silently breaks."""
-    for name in ("seal_identity", "unseal_identity", "create_sealed_identity",
-                 "identity_record_version"):
+    # The handle-based API (the DEK is a Rust `FileDek`). The raw-DEK
+    # variants (seal_identity, unseal_identity, create_sealed_identity) are
+    # test-build only since R3.
+    for name in ("create_sealed_identity_under", "unseal_identity_under",
+                 "FileDek", "identity_record_version"):
         assert hasattr(otrv4_core, name), f"otrv4_core is missing {name}"
 
 
@@ -413,3 +416,84 @@ def test_optin_object_file_really_carries_the_gated_symbols():
         f"opt-in build for {sorted(expected_features)} but {so.name} carries "
         f"no matching gated symbol -- the installed wheel is not that build"
     )
+
+
+# ── R3: raw-key entry points (Cargo feature `raw-key-test-api`) ─────────────
+#
+# Python entry points that take or return raw key material. Production uses
+# handles; these exist for known-answer, cross-implementation and fixed-key
+# tests. OFF by default, refused by build.rs unless
+# OTRV4PLUS_ALLOW_RAW_KEY_TEST_API=1. CI runs the suite on the test wheel and
+# then runs THIS file on a separately built release wheel with the variable
+# unset: that is the assertion that nothing here ships.
+
+RAW_KEY_MODULE_FUNCTIONS = (
+    "py_ring_sign", "mldsa87_keygen", "mldsa87_sign",
+    "aes256gcm_encrypt", "aes256gcm_decrypt",
+    "mlkem1024_keygen", "mlkem1024_encaps", "mlkem1024_decaps",
+    "seal_identity", "unseal_identity", "create_sealed_identity",
+)
+RAW_KEY_CLASS_METHODS = {
+    "RustDoubleRatchet": ("from_dakeresult",),
+    "RustDAKE": ("new_from_bytearrays", "sign_profile_body_and_construct",
+                 "ed448_sign_test"),
+    "RustVoiceRoot": ("from_initial_agreement", "derive_rekey", "from_bytes"),
+}
+# The raw-key constructors: callable with raw keys only in the test build.
+RAW_KEY_CONSTRUCTORS = ("RustDoubleRatchet", "RustDAKE")
+
+_RAW_KEY_TEST_BUILD = os.environ.get("OTRV4PLUS_ALLOW_RAW_KEY_TEST_API") == "1"
+
+
+def _exposed_raw_key_surface():
+    exposed = [n for n in RAW_KEY_MODULE_FUNCTIONS if hasattr(otrv4_core, n)]
+    for cls_name, methods in RAW_KEY_CLASS_METHODS.items():
+        cls = getattr(otrv4_core, cls_name)
+        exposed += [f"{cls_name}.{m}" for m in methods if hasattr(cls, m)]
+    for cls_name in RAW_KEY_CONSTRUCTORS:
+        try:
+            getattr(otrv4_core, cls_name)(*([b""] * 6))
+        except TypeError as exc:
+            if ("No constructor defined" in str(exc)
+                    or "cannot create" in str(exc)):
+                continue
+            exposed.append(f"{cls_name}()")
+        except Exception:
+            exposed.append(f"{cls_name}()")
+    return exposed
+
+
+@pytest.mark.skipif(_RAW_KEY_TEST_BUILD,
+                    reason="OTRV4PLUS_ALLOW_RAW_KEY_TEST_API=1: this is the test wheel")
+def test_production_artifact_exposes_no_raw_key_entry_point():
+    exposed = _exposed_raw_key_surface()
+    assert not exposed, (
+        f"otrv4_core exposes raw-key entry points {exposed}. Production uses "
+        f"handles; rebuild without --features raw-key-test-api.")
+
+
+@pytest.mark.skipif(not _RAW_KEY_TEST_BUILD, reason="release build: nothing to confirm")
+def test_raw_key_optin_build_really_is_the_test_build():
+    """With the opt-in set, the whole surface must be there, or the tests
+    that need it would fail for the wrong reason."""
+    expected = len(RAW_KEY_MODULE_FUNCTIONS) + sum(
+        len(m) for m in RAW_KEY_CLASS_METHODS.values()) + len(RAW_KEY_CONSTRUCTORS)
+    assert len(_exposed_raw_key_surface()) == expected
+
+
+def test_the_raw_key_surface_is_fully_enumerated():
+    """Every item gated in Rust is listed here, so the release assertion
+    covers it."""
+    rust = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                        "Rust", "src")
+    if not os.path.isdir(rust):
+        pytest.skip("Rust sources not present next to the tests")
+    gated = 0
+    for name in os.listdir(rust):
+        if name.endswith(".rs"):
+            with open(os.path.join(rust, name), encoding="utf-8") as f:
+                gated += f.read().count('#[cfg(feature = "raw-key-test-api")]\n')
+    listed = (len(RAW_KEY_MODULE_FUNCTIONS) + sum(len(m) for m in RAW_KEY_CLASS_METHODS.values())
+              + len(RAW_KEY_CONSTRUCTORS))
+    # +1: the PyByteArray import in dake.rs is gated on the same feature.
+    assert gated == listed + 1, (gated, listed)

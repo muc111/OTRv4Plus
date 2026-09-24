@@ -6,7 +6,9 @@
 // natively so that optional ML‑DSA‑87 fields are processed correctly.
 
 use pyo3::prelude::*;
-use pyo3::types::{PyBytes, PyByteArray};
+use pyo3::types::PyBytes;
+#[cfg(feature = "raw-key-test-api")]
+use pyo3::types::PyByteArray;
 use zeroize::{Zeroize, ZeroizeOnDrop};   // R8: Zeroize wipes the raw DH/KEM Vec<u8>s
 
 use pqcrypto_traits::kem::{
@@ -132,6 +134,7 @@ impl Dakeresult {
         } else { Ok(()) }
     }
 
+    #[cfg_attr(not(feature = "raw-key-test-api"), allow(dead_code))]
     fn aggressive_zero(v: &mut Option<Vec<u8>>) {
         if let Some(ref mut inner) = v {
             for b in inner.iter_mut() { *b = 0; } inner.clear(); inner.shrink_to_fit();
@@ -139,6 +142,7 @@ impl Dakeresult {
         *v = None;
     }
 
+    #[cfg_attr(not(feature = "raw-key-test-api"), allow(dead_code))]
     pub(crate) fn mark_consumed_and_zero(&mut self) {
         Self::aggressive_zero(&mut self.root_key);
         Self::aggressive_zero(&mut self.chain_key_a);
@@ -873,6 +877,7 @@ pub struct PyDake { inner: DakeState }
 
 #[pymethods]
 impl PyDake {
+    #[cfg(feature = "raw-key-test-api")]
     #[new]
     #[pyo3(signature = (is_initiator, our_profile_bytes, our_ik_bytes, our_prekey_bytes, mldsa_priv=None, mldsa_pub=None, sender_tag=0))]
     fn new(
@@ -921,6 +926,7 @@ impl PyDake {
     /// representation of the private bytes is the bytearray we wipe,
     /// not an immutable bytes object that lingers in the heap until
     /// GC.
+    #[cfg(feature = "raw-key-test-api")]
     #[staticmethod]
     #[pyo3(signature = (is_initiator, our_profile_bytes, our_ik_bytes, our_prekey_bytes, mldsa_priv=None, mldsa_pub=None, sender_tag=0))]
     fn new_from_bytearrays<'py>(
@@ -1032,6 +1038,7 @@ impl PyDake {
     /// PyValueError.  On error, the source bytearrays MAY be partially
     /// wiped; callers should treat them as untrusted and wipe
     /// defensively.
+    #[cfg(feature = "raw-key-test-api")]
     #[staticmethod]
     #[pyo3(signature = (is_initiator, our_profile_bytes, unsigned_body, our_ik_bytes, our_prekey_bytes, mldsa_priv=None, mldsa_pub=None, sender_tag=0))]
     // Nine arguments, and clippy is right that seven is usually the limit.
@@ -1268,6 +1275,7 @@ impl PyDake {
     ///
     /// Intended ONLY for startup compatibility verification.  Do not
     /// use this for production signing.
+    #[cfg(feature = "raw-key-test-api")]
     #[staticmethod]
     fn ed448_sign_test<'py>(
         py: Python<'py>,

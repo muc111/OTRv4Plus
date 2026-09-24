@@ -64,20 +64,28 @@ fn otrv4_core(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(filetransfer::file_transfer_chunk_len, m)?)?;
     m.add_function(wrap_pyfunction!(filetransfer::file_transfer_format_version, m)?)?;
     // Ring signature (Phase 5.3c)
+    #[cfg(feature = "raw-key-test-api")]
     m.add_function(wrap_pyfunction!(ring_sig::py_ring_sign,   m)?)?;
     m.add_function(wrap_pyfunction!(ring_sig::py_ring_verify, m)?)?;
     // ML-DSA-87 (Phase 5.3j, v10.6.18): replaces the otr4_mldsa_ext C extension
+    #[cfg(feature = "raw-key-test-api")]
     m.add_function(wrap_pyfunction!(mldsa::mldsa87_keygen, m)?)?;
+    #[cfg(feature = "raw-key-test-api")]
     m.add_function(wrap_pyfunction!(mldsa::mldsa87_sign,   m)?)?;
     m.add_function(wrap_pyfunction!(mldsa::mldsa87_verify, m)?)?;
     m.add_class::<mldsa::MlDsa87KeyHandle>()?;
     // AES-256-GCM (Phase 5.3h-B, v10.6.19): replaces cryptography.AESGCM
+    #[cfg(feature = "raw-key-test-api")]
     m.add_function(wrap_pyfunction!(aead::aes256gcm_encrypt, m)?)?;
+    #[cfg(feature = "raw-key-test-api")]
     m.add_function(wrap_pyfunction!(aead::aes256gcm_decrypt, m)?)?;
     // ML-KEM-1024 (Phase 5.3i-C, v10.7.3): replaces the otr4_crypto_ext
     // mlkem1024_* entry points.  Backs the Python MLKEM1024BraceKEM class.
+    #[cfg(feature = "raw-key-test-api")]
     m.add_function(wrap_pyfunction!(mlkem::mlkem1024_keygen, m)?)?;
+    #[cfg(feature = "raw-key-test-api")]
     m.add_function(wrap_pyfunction!(mlkem::mlkem1024_encaps, m)?)?;
+    #[cfg(feature = "raw-key-test-api")]
     m.add_function(wrap_pyfunction!(mlkem::mlkem1024_decaps, m)?)?;
     m.add_class::<mlkem::MlKemKeypair>()?;
     // Phase 5.3e (v10.6.12): Rust-owned long-term identity key handles
@@ -89,8 +97,11 @@ fn otrv4_core(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     // Android decision B1 (option B): identity persistence sealed INSIDE Rust.
     // No seed accessor is added -- only ciphertext and handles cross the
     // boundary.  See src/identity.rs.
+    #[cfg(feature = "raw-key-test-api")]
     m.add_function(wrap_pyfunction!(identity::seal_identity,           m)?)?;
+    #[cfg(feature = "raw-key-test-api")]
     m.add_function(wrap_pyfunction!(identity::unseal_identity,         m)?)?;
+    #[cfg(feature = "raw-key-test-api")]
     m.add_function(wrap_pyfunction!(identity::create_sealed_identity,  m)?)?;
     m.add_function(wrap_pyfunction!(identity::identity_record_version, m)?)?;
     m.add_class::<at_rest::FileDek>()?;

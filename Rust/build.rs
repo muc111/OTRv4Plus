@@ -33,6 +33,7 @@
 fn main() {
     guard_test_only_kdf();
     guard_legacy_dake_keys();
+    guard_raw_key_test_api();
     warn_if_cdylib_will_be_dropped();
 }
 
@@ -174,4 +175,33 @@ fn guard_test_only_kdf() {
 
     println!("cargo:warning=OTRV4PLUS_ALLOW_TEST_GATES=1: building with test-only-kdf; \
               vault read-back is EXPOSED. This artifact must not be distributed.");
+}
+
+fn guard_raw_key_test_api() {
+    println!("cargo:rerun-if-env-changed=OTRV4PLUS_ALLOW_RAW_KEY_TEST_API");
+    if std::env::var_os("CARGO_FEATURE_RAW_KEY_TEST_API").is_none() {
+        return;
+    }
+    let allowed = std::env::var("OTRV4PLUS_ALLOW_RAW_KEY_TEST_API")
+        .map(|v| v == "1")
+        .unwrap_or(false);
+    if !allowed {
+        panic!(
+            "\n\
+             ============================================================\n\
+             REFUSING TO BUILD: `raw-key-test-api` is enabled.\n\
+             ============================================================\n\
+             This feature compiles in Python entry points that take or\n\
+             return raw key material (raw ratchet/DAKE constructors, raw\n\
+             ML-KEM/ML-DSA/AES-GCM primitives, raw-DEK identity sealing).\n\
+             They exist for the test suite only. An artifact built this way\n\
+             must not be distributed.\n\
+             \n\
+             To build the TEST wheel deliberately:\n\
+             \n\
+                 OTRV4PLUS_ALLOW_RAW_KEY_TEST_API=1 maturin build --release \\\n\
+                     --features pyo3/extension-module,raw-key-test-api\n\
+             ============================================================\n"
+        );
+    }
 }

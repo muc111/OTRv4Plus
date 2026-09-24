@@ -148,3 +148,29 @@ class TestNoPythonDake3Crypto:
                 src = f.read()
             calls = [m.start() for m in re.finditer(r"RingSignature\.sign\(", src)]
             assert calls == [], rel
+
+
+class TestTheLivePathNeedsNoRawKeyApi:
+    """What production runs -- DAKE, ratchets from the DakeOutput, messages
+    both ways with the outer MAC in Rust -- uses handles only, so it also
+    runs on a release wheel built without `raw-key-test-api` (CI runs this
+    file against that wheel)."""
+
+    def test_handshake_then_messages_both_ways(self):
+        from otrv4_ import RustBackedDoubleRatchet
+        a, b, _, _ = _pair()
+        assert b.process_dake3(a.generate_dake3())
+        ra = RustBackedDoubleRatchet.from_dake_output(
+            a.get_session_keys()["_dake_output"], is_initiator=True)
+        rb = RustBackedDoubleRatchet.from_dake_output(
+            b.get_session_keys()["_dake_output"], is_initiator=False)
+        for sender, receiver, text in ((ra, rb, b"hello bob"), (rb, ra, b"hello alice"),
+                                       (ra, rb, b"again")):
+            ct, header, nonce, tag, _e, _rev, send_mac = sender.encrypt_message(text)
+            region = b"public region"
+            sealed = bytes(send_mac.seal(region))
+            plaintext, recv_mac = receiver.decrypt_message(header, ct, nonce, tag)
+            assert plaintext == text
+            assert recv_mac.verify(region, sealed)
+            send_mac.zeroize()
+            recv_mac.zeroize()

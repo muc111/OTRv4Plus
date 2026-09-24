@@ -118,6 +118,25 @@ test-only-kdf = []
 # does not expose the surface.
 legacy-dake-keys = []
 
+# R3: Python entry points that take or return RAW key material, compiled in
+# only for the test suite. Production never calls them: it uses the handle
+# APIs (key handles, DakeOutput, MessageMacKey, RustVoiceKex/Agreement,
+# FileDek). They exist for known-answer and cross-implementation tests and for
+# tests that build a ratchet or voice root from fixed keys:
+#
+#   RustDoubleRatchet(root, cks, ckr, brace, ...)   RustDoubleRatchet.from_dakeresult
+#   RustDAKE(ik, prekey, mldsa_priv, ...)           RustDAKE.new_from_bytearrays
+#   RustDAKE.sign_profile_body_and_construct        RustDAKE.ed448_sign_test
+#   RustVoiceRoot.from_initial_agreement / derive_rekey / from_bytes
+#   py_ring_sign  mldsa87_keygen  mldsa87_sign  aes256gcm_encrypt/decrypt
+#   mlkem1024_keygen/encaps/decaps  seal_identity  unseal_identity
+#   create_sealed_identity
+#
+# OFF by default: the APK and the Termux build do not contain them at all.
+# build.rs refuses the feature unless OTRV4PLUS_ALLOW_RAW_KEY_TEST_API=1, and
+# tests/test_release_guard.py asserts a release wheel exposes none of them.
+raw-key-test-api = []
+
 [dependencies]
 pyo3         = { version = "0.29", features = ["abi3-py39"] }
 zeroize      = { version = "1.8",  features = ["derive", "alloc"] }

@@ -762,6 +762,7 @@ pub struct RustDoubleRatchet {
 
 #[pymethods]
 impl RustDoubleRatchet {
+    #[cfg(feature = "raw-key-test-api")]
     #[new]
     #[pyo3(signature = (root_key, chain_key_send, chain_key_recv, brace_key, dh_pub_local, is_initiator))]
     fn new(
@@ -804,6 +805,7 @@ impl RustDoubleRatchet {
     /// Python adapter pattern:
     ///   ratchet = RustDoubleRatchet.from_dakeresult(dake_result, dh_pub_local, is_initiator)
     ///   # dake_result.consumed == True; reading any secret field raises.
+    #[cfg(feature = "raw-key-test-api")]
     #[staticmethod]
     fn from_dakeresult(
         result:       &Bound<'_, pyo3::PyAny>,

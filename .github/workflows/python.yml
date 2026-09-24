@@ -94,8 +94,12 @@ jobs:
           # android-opus too, so the APK's codec (and the Android voice path
           # that uses it) is exercised here, not only on a handset. The
           # Termux build (Rust/build.sh) does not enable it.
-          maturin build --release \
-            --features pyo3/extension-module,android-opus \
+          # The TEST wheel: it also compiles in `raw-key-test-api`, the
+          # raw-key entry points that known-answer and fixed-key tests need
+          # and production never calls. The release wheel is built and
+          # checked on its own after the suite (see "Release wheel").
+          OTRV4PLUS_ALLOW_RAW_KEY_TEST_API=1 maturin build --release \
+            --features pyo3/extension-module,android-opus,raw-key-test-api \
             --interpreter python${{ env.PYTHON_VERSION }} \
             --out dist
           pip install dist/*.whl
@@ -187,6 +191,22 @@ jobs:
           # Keeps a stray test from reaching the network if one is ever added
           # without noticing; every transport in this project is local.
           PYTHONWARNINGS: default
+          OTRV4PLUS_ALLOW_RAW_KEY_TEST_API: "1"
+
+      # The artifact that ships -- the APK's features, nothing test-only --
+      # must expose no raw-key entry point and must still run the live
+      # paths: the engine imports, the handle-based self-test passes, and a
+      # real DAKE plus messages both ways go through.
+      - name: Release wheel exposes no raw-key API
+        working-directory: Rust
+        run: |
+          maturin build --release \
+            --features pyo3/extension-module,android-opus \
+            --interpreter python${{ env.PYTHON_VERSION }} \
+            --out ../dist-release
+          pip install --force-reinstall --no-deps ../dist-release/*.whl
+          cd .. && python -m pytest -q tests/test_release_guard.py \
+            tests/test_dake3_rust_authority.py tests/test_android_diagnostics.py
 
       - name: Keep the report
         if: always()

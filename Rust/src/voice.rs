@@ -445,6 +445,7 @@ impl Drop for PyVoiceCipher {
 /// they can be wiped, so this zeroes it here rather than relying on the
 /// caller's `finally` -- one fewer place the wipe can be forgotten or, as had
 /// already happened twice elsewhere, defeated by an intervening copy.
+#[cfg_attr(not(feature = "raw-key-test-api"), allow(dead_code))]
 fn take_shared(value: &Bound<'_, PyAny>, expect_len: usize, what: &str)
     -> PyResult<Vec<u8>>
 {
@@ -490,6 +491,7 @@ impl PyVoiceRoot {
         })
     }
 
+    #[cfg_attr(not(feature = "raw-key-test-api"), allow(dead_code))]
     fn from_bytes(bytes: &[u8]) -> PyResult<Self> {
         SecretBytes::<ROOT_LEN>::from_slice(bytes)
             .map(|r| Self { root: Some(r) })
@@ -567,6 +569,7 @@ impl PyVoiceRoot {
     /// Both secrets are mandatory: an X448-only root would be classically
     /// secure and post-quantum worthless, which is the whole reason the
     /// exchange is hybrid.
+    #[cfg(feature = "raw-key-test-api")]
     #[staticmethod]
     fn from_initial_agreement(
         x448_shared:  &Bound<'_, PyAny>,
@@ -592,6 +595,7 @@ impl PyVoiceRoot {
     ///
     /// The old root is NOT consumed -- a rekey that fails to confirm must
     /// leave the call running on the epoch it already had.
+    #[cfg(feature = "raw-key-test-api")]
     fn derive_rekey(
         &self,
         x448_shared:  &Bound<'_, PyAny>,
@@ -681,6 +685,7 @@ impl PyVoiceRoot {
     /// exists as a Python object.  This exists so tests can build a schedule
     /// from a fixed root without a full hybrid agreement, and so a caller
     /// holding a root from an older build can hand it over rather than keep it.
+    #[cfg(feature = "raw-key-test-api")]
     #[staticmethod]
     #[pyo3(name = "from_bytes")]
     fn py_from_bytes(bytes: &[u8]) -> PyResult<Self> {

@@ -90,12 +90,13 @@ except ImportError:
 
 
 try:
-    from otrv4_core import py_ring_sign as _rust_ring_sign
+    # Verification only. Signing is `Ed448KeyHandle.ring_sign` (the seed
+    # stays in Rust); the raw-seed `py_ring_sign` exists only in test builds
+    # (Cargo feature `raw-key-test-api`).
     from otrv4_core import py_ring_verify as _rust_ring_verify
 
     RUST_RING_SIG_AVAILABLE = True
 except ImportError:
-    _rust_ring_sign = None
     _rust_ring_verify = None
     RUST_RING_SIG_AVAILABLE = False
 
@@ -107,20 +108,21 @@ def _check_rust_requirements():
             "The .so was not built with the dake module.  "
             "Rebuild Rust/ with: cargo build --release --features pq-rust"
         )
-    if not RUST_RING_SIG_AVAILABLE or _rust_ring_sign is None or _rust_ring_verify is None:
+    if not RUST_RING_SIG_AVAILABLE or _rust_ring_verify is None:
         raise ImportError(
-            "OTRv4+ v10.6.11+ requires otrv4_core.py_ring_sign and "
+            "OTRv4+ v10.6.11+ requires "
             "otrv4_core.py_ring_verify.  The .so was not built with the "
             "ring_sig module.  Rebuild Rust/ with the latest src/ring_sig.rs "
             "and src/lib.rs that registers it."
         )
+    # Only the handle-based surface the live path uses. The raw-key
+    # constructors are compiled into test builds only (R3).
     _required_methods = [
-        "new_from_bytearrays",
-        "sign_profile_body_and_construct",
         "sign_profile_body_and_construct_with_handles",
-        "ed448_sign_test",
         "generate_dake2_output",
         "process_dake2_output",
+        "generate_dake3",
+        "process_dake3",
     ]
     _missing = [m for m in _required_methods if not hasattr(_RustDAKE, m)]
     if _missing:
@@ -136,14 +138,10 @@ def _check_rust_requirements():
         "generate_ed448_keypair",
         "generate_x448_keypair",
         "verify_ed448_sig",
-        "mldsa87_keygen",
-        "mldsa87_sign",
         "mldsa87_verify",
-        "aes256gcm_encrypt",
-        "aes256gcm_decrypt",
-        "mlkem1024_keygen",
-        "mlkem1024_encaps",
-        "mlkem1024_decaps",
+        "MlDsa87KeyHandle",
+        "MlKem1024Keypair",
+        "MessageMacKey",
     ]
     _missing_mod = [s for s in _required_module_symbols if not hasattr(_RustDAKE_module, s)]
     if _missing_mod:

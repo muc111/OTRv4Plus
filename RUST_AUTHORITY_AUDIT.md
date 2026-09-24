@@ -101,7 +101,12 @@ and vaults, identity handles, voice key schedules, file keys. Tested by
 `tests/test_wipe_and_exit.py` and the Kotlin wipe tests. **MLS state is not
 covered because the app has none yet**; stage 4 must add it.
 
-## 7. Remediation list (not started)
+## 7. Remediation list
+
+Status: R1, R2 and R3 are done (commits "R1: DAKE3 signed, verified and
+decided in Rust", "R2: the per-message MAC key stays in Rust", "R3: raw-key
+entry points only in test builds"). R4 and R5 are being addressed with MLS
+stage 3.
 
 * **R1, DAKE3 into Rust.** Rust computes the Auth-I digest from its own
   transcript, signs DAKE3 with the identity and ML-DSA handles, and
