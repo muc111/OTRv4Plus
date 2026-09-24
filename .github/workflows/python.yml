@@ -80,7 +80,8 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             Rust/target
-          key: cargo-host-${{ hashFiles('Rust/Cargo.lock') }}
+            Rust/mls/target
+          key: cargo-host-${{ hashFiles('Rust/Cargo.lock', 'Rust/mls/Cargo.lock') }}
           restore-keys: cargo-host-
 
       # A HOST build, with no --target. `android.yml` cross-compiles the same
@@ -98,6 +99,14 @@ jobs:
             --interpreter python${{ env.PYTHON_VERSION }} \
             --out dist
           pip install dist/*.whl
+
+      # MLS group encryption (Rust/mls), stage 2: the OpenMLS provider on
+      # the core's PQClean ML-KEM-1024 / ML-DSA-87, AES-256-GCM and SHA-384,
+      # in-process groups, and a cross-check against OpenMLS's reference
+      # provider (a dev-dependency only). Not in the APK yet.
+      - name: MLS provider and group tests
+        working-directory: Rust/mls
+        run: cargo test --release --locked
 
       # The runtime closure the APK ships, which `verify_python_closure.py`
       # already holds `android/app/build.gradle.kts` to, PLUS the packages only
