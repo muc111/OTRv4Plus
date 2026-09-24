@@ -103,9 +103,8 @@ class FakeEngine:
         self.smp_secrets_seen.append(secret)
         return self.smp1
 
-    def set_smp_secret(self, peer, secret):
+    def bind_smp_secret(self, peer, secret):
         self.smp_secrets_seen.append(secret)
-        return True
 
     def abort_smp(self, peer): return True
 
@@ -516,7 +515,7 @@ class TestFacadeMatchesRealEngine:
             "get_session_state", "get_fingerprint", "get_peer_fingerprint",
             "is_peer_trusted", "trust_fingerprint", "get_or_create_session",
             "clear_all_sessions", "handle_outgoing_message",
-            "handle_incoming_message", "start_smp", "set_smp_secret",
+            "handle_incoming_message", "start_smp", "bind_smp_secret",
         ]
         missing = [m for m in used if not hasattr(real, m)]
         assert not missing, f"OtrApp calls methods the engine does not have: {missing}"

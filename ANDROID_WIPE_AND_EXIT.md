@@ -53,7 +53,7 @@ nothing. The process ending is the last step, always attempted.
    4. *Transport*: closed (stream, I2P tunnel, loop thread).
    5. *Python-side files*: `~/.otrv4plus` (the engine's key-storage file,
       received files, partial transfers) and the configured file directory,
-      each file overwritten once with throwaway-key AES-GCM output, fsync'd and
+      each file overwritten once with random bytes, fsync'd and
       unlinked. Symlinks are removed, never followed.
 3. **Notifications**: all cancelled.
 4. **Memory**: the conversation, drafts, roster, call states and unread count.

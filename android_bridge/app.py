@@ -1363,7 +1363,11 @@ class OtrApp:
             raise BridgeError("smp_not_requested",
                               "there is no verification request to answer")
         try:
-            self._engine.set_smp_secret(peer, secret)
+            # `bind_smp_secret`, NOT `set_smp_secret`: the latter is the
+            # terminal auto-respond setter, which persists the secret and
+            # re-binds it into later sessions so the NEXT challenge is
+            # answered without asking anyone.
+            self._engine.bind_smp_secret(peer, secret)
         except Exception:
             self._emit(ErrorOccurred(peer=peer, code="smp_respond_failed"))
             raise BridgeError("smp_respond_failed")

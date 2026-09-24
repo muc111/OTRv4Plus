@@ -6,7 +6,9 @@ WHAT IS HERE, ON ANDROID
 ------------------------
 Measured by constructing the engine exactly as `ChaquopyOtrCore` does
 (`EnhancedSessionManager(OTRConfig())`) under an empty HOME: the only file it
-writes is `~/.otrv4plus/keys/.device_seed`. Identity and trust are in memory
+writes is `~/.otrv4plus/keys/.device_seed`. (An SMP answer used to add
+`smp_secrets.json` and `.smp_seed`: the bridge went through the terminal
+auto-respond setter. It now binds the answer into the Rust vault only.) Identity and trust are in memory
 (`persist_identity` / `persist_trust` default False). Received files land in
 `otrv4plus_filetransfer.state_dir()` -- `~/.otrv4plus/files` unless
 `OTRV4PLUS_FILE_DIR` says otherwise -- and partial transfers in its
@@ -20,9 +22,9 @@ deletion of something else).
 
 WHAT "DESTROYED" MEANS, AND WHAT IT DOES NOT
 --------------------------------------------
-Each file is overwritten once with AES-256-GCM ciphertext under a fresh,
-immediately discarded key, fsync'd, and unlinked -- the terminal client's
-`_secure_file_destroy`, reused rather than restated. On flash storage that
+Each file is overwritten once with random bytes from the kernel CSPRNG,
+fsync'd, and unlinked -- the terminal client's `_secure_file_destroy`, reused
+rather than restated. On flash storage that
 overwrite is BEST EFFORT: wear levelling and the flash translation layer may
 write the new bytes elsewhere and leave the old block to be erased later, and
 nothing an app can do guarantees otherwise. What bounds the exposure on

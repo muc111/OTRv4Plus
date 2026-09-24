@@ -6088,7 +6088,8 @@ class OTRv4PlusXMPP(ClientXMPP):
         except Exception:
             pass
 
-        # 4. Cryptographically destroy ~/.otrv4plus (fingerprints, trust DB, SMP)
+        # 4. Overwrite and remove ~/.otrv4plus (fingerprints, trust DB, SMP).
+        #    File-level only: on flash the old blocks are beyond our reach.
         #    Uses the same _secure_file_destroy function the IRC client uses.
         try:
             secure_destroy = getattr(_otr, "_secure_file_destroy", None)
@@ -6629,7 +6630,7 @@ def _request_microphone_permission():
     and cannot raise a runtime permission dialog; only the Termux:API bridge
     can. A one-second recording is therefore started purely to make the system
     dialog appear, then stopped, and the resulting file is destroyed with the
-    OTR engine's cryptographic shredder. It contains a second of ambient audio
+    OTR engine's overwrite-and-unlink (file-level only). It contains a second of ambient audio
     at most and never survives this function.
     """
     target = os.path.join(

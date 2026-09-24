@@ -21,6 +21,25 @@ voice decapsulation key (`RustVoiceAgreement`), and the ML-DSA-87 DAKE signing
 key (`MlDsa87KeyHandle`). A Python-derived "extra symmetric key" built from
 public inputs and read by nothing was removed.
 
+**Answering a verification on Android remembered the passphrase.** The
+bridge's `smp_respond` went through the terminal clients' auto-respond setter,
+which wrote the SMP secret to `smp_secrets.json`, kept it in a Python dict for
+the life of the process, and re-bound it into every later session -- so the
+peer's NEXT challenge was answered without the dialog appearing. The bridge
+now binds the answer into the Rust vault only (`bind_smp_secret`).
+
+**Production audit: dead and duplicate crypto removed.** Voice's pure-Python
+ML-KEM fallback (`kyber-py`) and its Python HKDF key derivations
+(`derive_media_key`, `ratchet_key`) are gone; voice key material is derived
+only in the Rust core. `MLKEM1024BraceKEM` is reduced to wire-size constants.
+A v5 "legacy" data-message parser that fed the ratchet without the outer MAC
+or instance-tag checks (and had stopped working) is removed. `.attic/` -- a
+pre-Rust copy of the engine and two prebuilt `.so` files of unrecorded
+provenance -- is deleted. File destruction is a one-pass random overwrite,
+fsync and unlink, and its documentation no longer claims NIST SP 800-88
+compliance or that wear-levelled blocks hold only ciphertext: on flash, the
+old blocks hold the old data and no file-level call reaches them.
+
 **Wipe & Exit (INV-28).** Separate from Disconnect and Sign out. Destroys
 every session secret in Rust explicitly -- not by garbage collection -- on
 the transport's loop thread (where unsendable DAKE outputs live), deletes the

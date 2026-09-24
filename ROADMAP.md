@@ -96,7 +96,7 @@ What was previously labelled "Phase 5.3f" turned out to be larger than a single 
 
 #### Phase 5.3h, parts A2 + B + C — shipped in v10.6.19
 
-- **Part A2 (legacy file cleanup).** Startup migration securely destroying `~/.otrv4_vault`, `~/.otrv4_smp_secrets.json`, and `~/.otrv4_keys/` orphans via `_secure_file_destroy` (NIST SP 800-88r1).
+- **Part A2 (legacy file cleanup).** Startup migration overwriting and removing `~/.otrv4_vault`, `~/.otrv4_smp_secrets.json`, and `~/.otrv4_keys/` orphans via `_secure_file_destroy` (one-pass random overwrite, fsync, unlink — not a flash-sanitisation guarantee).
 - **Part B (AES-GCM swap).** Three live `AESGCM(key)` call sites swapped to `otrv4_core.aes256gcm_{encrypt,decrypt}` via `Rust/src/aead.rs` (`aes-gcm` 0.10 crate). Wire format identical.
 - **Part C (Ed448PublicKey wrap removal).** Six `Ed448PublicKey.from_public_bytes` call sites replaced with raw bytes.
 

@@ -546,3 +546,33 @@ class TestTheAndroidSideIsWired:
         assert "~/.otrv4plus" in plan
         roots = disk.python_state_roots()
         assert roots[0].endswith(os.sep + ".otrv4plus")
+
+
+# ---------------------------------------------------------------------------
+# Answering one challenge does not persist the passphrase or pre-answer the next
+# ---------------------------------------------------------------------------
+
+class TestAnAndroidSmpAnswerIsNotRemembered:
+    """`smp_respond` went through the terminal AUTO-RESPOND setter.
+
+    That wrote the passphrase to `smp_secrets.json` (under a key derived from
+    a seed file beside it), kept it in a Python dict for the life of the
+    process, and re-bound it into every later session -- so the next SMP1 the
+    peer sent was answered without the dialog ever appearing.
+    """
+
+    def test_nothing_is_stored_after_a_verification(self, verified):
+        engine = verified.bob._engine
+        assert engine.smp_storage._secrets == {}, "the passphrase is held in Python"
+        assert not os.path.exists(engine.smp_storage.secrets_path), (
+            "the passphrase was written to disk")
+
+    def test_the_next_challenge_waits_for_the_user(self, verified):
+        p = verified
+        p.alice._engine.sessions.pop(p.bob_jid, None)
+        p.bob._engine.sessions.pop(p.alice_jid, None)
+        otr._dake1_rate_limiter._attempts.clear()
+        p.alice.start_session(p.bob_jid)
+        p.alice.smp_start(p.bob_jid, SECRET)
+        assert p.bob.smp_secret_required(p.alice_jid), (
+            "the second challenge was answered from a remembered passphrase")

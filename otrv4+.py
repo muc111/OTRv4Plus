@@ -371,57 +371,39 @@ def _secure_wipe_bytes(b: bytes) -> None:
 
 
 def _secure_file_destroy(filepath: str) -> None:
-    """Cryptographically destroy a file on disk.
+    """Overwrite a file once with random bytes, fsync it, and unlink it.
 
-    NIST SP 800-88r1 compliant for non-magnetic media (flash, SSD):
-    single-pass cryptographic overwrite is sufficient.
+    WHAT THIS DOES NOT DO: guarantee the old contents are gone from flash.
+    On flash storage (every phone, most laptops) the controller's
+    wear-levelling writes the overwrite to NEW physical blocks and leaves the
+    old ones -- holding the old plaintext -- to be erased whenever it chooses.
+    Neither this function nor any other file-level call can reach them. An
+    earlier version of this docstring claimed NIST SP 800-88 compliance and
+    that surviving blocks would be "ciphertext whose key has been destroyed";
+    both were wrong, because the old blocks were never encrypted by the
+    overwrite. What this does achieve: the file's logical contents are
+    replaced before unlink, so the data is not recoverable through the file
+    system, by undelete tools, or from a copy-on-write-free journal.
 
-    Method:
-      1. Read file size
-      2. Generate a 256-bit AES key from os.urandom (kernel CSPRNG)
-      3. Generate a 96-bit nonce from os.urandom
-      4. Encrypt `size` bytes of zeros with AES-256-GCM (produces ciphertext
-         indistinguishable from random, plus authentication tag)
-      5. Overwrite the file with ciphertext + tag
-      6. fsync to force write to storage controller
-      7. Zero the key via OPENSSL_cleanse
-      8. Unlink the file
-
-    Even if wear-leveling preserves old blocks, the recovered data is
-    AES-256-GCM ciphertext whose key has been destroyed.
+    The overwrite bytes come straight from the kernel CSPRNG. (It used to
+    AES-GCM-encrypt zeros under a throwaway Python-held key to get the same
+    thing: a key in a Python bytearray bought nothing os.urandom does not.)
     """
     size = os.path.getsize(filepath)
     if size == 0:
         os.remove(filepath)
         return
 
-    key = bytearray(os.urandom(32))
-    nonce = os.urandom(12)
+    with open(filepath, "r+b") as f:
+        written = 0
+        while written < size:
+            chunk = os.urandom(min(65536, size - written))
+            f.write(chunk)
+            written += len(chunk)
+        f.flush()
+        os.fsync(f.fileno())
 
-    try:
-
-        plaintext_len = max(size - 16, 1)
-        ct = _RustDAKE_module.aes256gcm_encrypt(bytes(key), nonce, b"\x00" * plaintext_len, b"wipe")
-
-        with open(filepath, "r+b") as f:
-
-            written = 0
-            while written < size:
-                chunk = (
-                    ct[written : written + 65536]
-                    if written < len(ct)
-                    else os.urandom(min(65536, size - written))
-                )
-                f.write(chunk)
-                written += len(chunk)
-            f.flush()
-            os.fsync(f.fileno())
-
-        os.remove(filepath)
-    finally:
-
-        _secure_wipe(key)
-        del key
+    os.remove(filepath)
 
 
 class MLKEM1024BraceKEM:
@@ -5362,7 +5344,8 @@ class SecureKeyStorage:
                 return None
 
     def delete_key(self, key_id: str, key_type: str) -> bool:
-        """Cryptographically destroy a key file."""
+        """Overwrite and unlink a key file (see `_secure_file_destroy` for
+        what that does and does not guarantee on flash)."""
         with self._lock:
             try:
                 key_id = self._safe_key_component(key_id)
@@ -5379,7 +5362,8 @@ class SecureKeyStorage:
             return False
 
     def clear_all(self):
-        """Cryptographically destroy all stored keys and the device seed."""
+        """Overwrite and unlink all stored keys and the device seed (see
+        `_secure_file_destroy` for the limits on flash)."""
         with self._lock:
             for filename in os.listdir(self.storage_dir):
                 filepath = os.path.join(self.storage_dir, filename)
@@ -7055,7 +7039,12 @@ class EnhancedOTRSession:
     def decrypt_message(self, encrypted_msg: str) -> bytes:
         """Decrypt an OTRv4 DATA message; return human-readable text as UTF-8 bytes.
 
-        Handles both v6 OTRv4DataMessage format and v5 legacy format.
+        Only the current OTRv4DataMessage frame is accepted. The v5 "legacy"
+        branch that used to sit here is gone: nothing has emitted that format
+        since the data-message rewrite, it fed the ratchet without the outer
+        MAC or instance-tag checks, and it no longer even ran (it treated the
+        ratchet's (plaintext, mkmac) tuple as bytes). A second parser for a
+        format no peer sends is attack surface and nothing else.
         All TLVs in the payload are routed to their protocol handlers.
         """
         if not self._acquire_lock():
@@ -7077,12 +7066,9 @@ class EnhancedOTRSession:
             raw = encrypted_msg[7:].strip()
             decoded = _safe_b64decode(raw)
 
-            if (
-                OTRv4DataMessage.looks_like_data_frame(decoded)
-            ):
-                text_bytes = self._enh_dec_v6(decoded)
-            else:
-                text_bytes = self._enh_dec_legacy(decoded)
+            if not OTRv4DataMessage.looks_like_data_frame(decoded):
+                raise ValueError("unsupported data message format")
+            text_bytes = self._enh_dec_v6(decoded)
 
             self.tracer.trace(
                 self.peer, "DECRYPT", "ENCRYPTED", "PLAINTEXT", f"len={len (text_bytes )}"
@@ -7232,26 +7218,6 @@ class EnhancedOTRSession:
         payload_obj = OTRv4Payload.decode(plaintext)
         self._enh_route_tlvs(payload_obj.tlvs)
         return payload_obj.text.encode("utf-8")
-
-    def _enh_dec_legacy(self, decoded: bytes) -> bytes:
-        """Decrypt v5 legacy format (backward compatibility)."""
-        if not decoded or decoded[0] != OTRConstants.MESSAGE_TYPE_DATA:
-            raise ValueError(f"Not a DATA message: 0x{decoded [0 ]if decoded else 0 :02x}")
-        off = 1
-        sid = decoded[off : off + OTRConstants.SESSION_ID_BYTES]
-        off += OTRConstants.SESSION_ID_BYTES
-        if not hmac.compare_digest(sid, self.session_id):
-            raise ValueError("Session ID mismatch (legacy)")
-        hdr = decoded[off : off + 64]
-        off += 64
-        non = decoded[off : off + 12]
-        off += 12
-        tag = decoded[off : off + 16]
-        off += 16
-        ct = decoded[off:]
-        pt = self.ratchet.decrypt_message(hdr, ct, non, tag)
-        null_pos = pt.find(b"\x00")
-        return pt[:null_pos] if null_pos != -1 else pt
 
     def _enh_route_tlvs(self, tlvs: List["OTRv4TLV"]) -> None:
         """Route TLVs from decrypted payload to protocol handlers."""
@@ -9987,6 +9953,27 @@ class EnhancedSessionManager:
             except Exception as _se:
                 self.logger.debug("set_smp_secret: session bind FAILED")
         return True
+
+    def bind_smp_secret(self, peer: str, secret: str) -> None:
+        """Bind an SMP secret to *peer*'s live session, and nothing else.
+
+        `set_smp_secret` is the terminal clients' AUTO-RESPOND setter: it also
+        writes the secret to `smp_storage` (a file, and a Python dict for the
+        life of the process), and the DATA/SMP handlers re-bind that stored
+        secret into every later session -- so a later SMP1 from the peer is
+        answered without anybody being asked. That is the feature on a
+        terminal. It is not acceptable for a one-off answer typed into a
+        dialog: the Android bridge used `set_smp_secret`, so answering one
+        challenge silently persisted the passphrase and pre-answered every
+        future one. This goes to the Rust vault only, and raises rather than
+        swallowing a failure.
+        """
+        with self.lock:
+            self._refuse_if_wiped()
+            sess = self.sessions.get(peer)
+        if sess is None:
+            raise RuntimeError("bind_smp_secret: no session for this peer")
+        sess.set_smp_secret(secret)
 
     def display_fingerprints(self, peer: str) -> str:
         """Return remote fingerprint string."""
@@ -16770,21 +16757,15 @@ class EnhancedOTRv4IRCClient(OTRv4IRCClient):
             self.debug(f"Error clearing screen: {e }")
 
     def _secure_wipe_data(self):
-        """Cryptographically destroy all persisted OTR data.
+        """Overwrite and remove all persisted OTR data under ~/.otrv4plus.
 
-        Method: each file is overwritten with AES-256-GCM ciphertext keyed by
-        a fresh 256-bit key from os.urandom (kernel CSPRNG - /dev/urandom on
-        Linux, CryptGenRandom on Windows).  The key is used once then zeroed
-        via OPENSSL_cleanse.  This is superior to random-byte overwrite because:
-
-          1. Even if the overwritten bytes are recovered from flash wear-leveling
-             or journaled FS snapshots, they are AES-256-GCM ciphertext whose
-             key no longer exists.
-          2. A single cryptographic pass is sufficient on modern storage - NIST
-             SP 800-88r1 recommends one-pass overwrite for non-magnetic media.
-          3. fsync ensures the overwrite hits the storage controller before unlink.
-
-        After overwriting, the file is unlinked and the directory removed.
+        Each file is overwritten once with random bytes, fsynced and
+        unlinked (`_secure_file_destroy`), then the directory is removed.
+        That makes the data unrecoverable through the file system. It does
+        NOT guarantee the old physical blocks are erased on flash storage:
+        wear-levelling keeps them out of reach of any file-level call. The
+        earlier claim here -- that recovered blocks would be ciphertext
+        under a destroyed key -- was wrong; the old blocks hold the old data.
         """
         import glob
 
@@ -16824,7 +16805,7 @@ class EnhancedOTRv4IRCClient(OTRv4IRCClient):
 
                 shutil.rmtree(otrv4plus_dir, ignore_errors=True)
 
-                status = f"🗑  ~/.otrv4plus wiped - {wiped } file(s) cryptographically destroyed"
+                status = f"🗑  ~/.otrv4plus wiped - {wiped } file(s) overwritten and removed"
                 if failed:
                     status += f" ({failed } fallback)"
                 self.add_message("system", colorize(status, "green"))
@@ -16982,7 +16963,7 @@ def main():
             if os.path.exists(_orphan):
                 _secure_file_destroy(_orphan)
                 if DEBUG_MODE:
-                    print(f"[startup] securely destroyed legacy file: {_orphan }")
+                    print(f"[startup] overwrote and removed legacy file: {_orphan }")
         except Exception as _e:
             if DEBUG_MODE:
                 print(f"[startup] could not destroy legacy file {_orphan }: {_e }")

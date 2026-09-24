@@ -559,6 +559,6 @@ There is no bug bounty. The project is solo and unfunded.
 8. Fragment buffer collision when same nick sends two parallel fragmented messages (closed at v10.5)
 9. SMP secret stored as Python `bytes` (closed at v10.5, now lives in `RustSMPVault`)
 10. Skipped message keys not zeroized (closed at v10.5)
-11. NIST SP 800-88r1 secure file destruction missing (closed at v10.5)
+11. NIST SP 800-88r1 secure file destruction missing (closed at v10.5) — *restated in 0.6.0-experimental: what shipped is a one-pass random overwrite, fsync and unlink. That is not SP 800-88 sanitisation of flash, and the claim that it was has been withdrawn; on flash, wear-levelling can keep old blocks the application cannot reach. Only a full-disk-encryption key erase (the OS's factory reset) reaches them.*
 
 Phase 5.x changes since v10.6.3 are architectural hardening beyond audit scope. The audit count remains at 11/11 closed.
