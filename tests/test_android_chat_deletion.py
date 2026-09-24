@@ -116,7 +116,7 @@ def test_a_disconnected_transport_does_not_ask():
 
 class _LeavingMuc:
     def __init__(self, nicks):
-        self.our_nicks = dict(nicks)
+        self.our_nicks = {None: dict(nicks)}   # slixmpp: our_nicks[pfrom][room]
         self.left = []
         self.destroyed = []
 

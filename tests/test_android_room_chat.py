@@ -149,7 +149,11 @@ class _Jid:
 
 class _Muc:
     def __init__(self, ours="me", roster=None, props=None):
-        self.our_nicks = {ROOM: ours}
+        # slixmpp's REAL shape: our_nicks[pfrom][room], pfrom None for a
+        # client. This fake used to be flat, {room: nick} -- the same wrong
+        # assumption the transport made, so this file passed while a handset
+        # showed every message the user sent to a room twice.
+        self.our_nicks = {None: {ROOM: ours}}
         self._roster = roster or []
         self._props = props or {}
 
@@ -184,6 +188,43 @@ class TestTheTransportRoomPath:
         t, got = _transport(_Muc(ours="me"))
         t._on_groupchat(_stanza("me", "what I said"))
         assert got == []
+
+    def test_our_reflection_is_dropped_with_the_real_slixmpp_plugin(self):
+        """Reported from a handset: "hello" sent to a room as Alice came back
+        as a message FROM Alice. Driven with slixmpp's own xep_0045 plugin,
+        its nickname table filled the way join_muc_wait fills it, and a real
+        groupchat stanza whose room JID differs in case from the join."""
+        slixmpp = pytest.importorskip("slixmpp")
+        from slixmpp import JID
+        from slixmpp.xmlstream import ET
+        client = slixmpp.ClientXMPP("alice@example.i2p", "pw")
+        client.register_plugin("xep_0045")
+        client.register_plugin("xep_0203")
+        muc = client.plugin["xep_0045"]
+        muc.our_nicks[None][JID(ROOM.upper())] = "alice"
+        t = XmppTransport.__new__(XmppTransport)
+        t._client = client
+        got = []
+        t._on_room_message = lambda *a: got.append(a)
+        mine = client.Message(xml=ET.fromstring(
+            '<message xmlns="jabber:client" type="groupchat" from="%s/alice">'
+            '<body>hello</body></message>' % ROOM))
+        theirs = client.Message(xml=ET.fromstring(
+            '<message xmlns="jabber:client" type="groupchat" from="%s/bob">'
+            '<body>hi alice</body></message>' % ROOM))
+        t._on_groupchat(mine)
+        assert got == [], "our own reflected message was shown again"
+        t._on_groupchat(theirs)
+        assert [g[1:3] for g in got] == [("bob", "hi alice")]
+
+    def test_the_nick_we_joined_with_is_remembered(self):
+        """If slixmpp's table is empty, the nickname recorded at join time
+        still identifies our reflection."""
+        t, got = _transport(_Muc(ours=""))
+        t._room_nicks = {ROOM.lower(): "me"}
+        t._on_groupchat(_stanza("me", "mine"))
+        t._on_groupchat(_stanza("bob", "theirs"))
+        assert [g[1] for g in got] == ["bob"]
 
     def test_a_subject_change_is_not_a_message(self):
         t, got = _transport(_Muc())

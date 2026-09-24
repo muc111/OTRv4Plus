@@ -62,6 +62,24 @@ That Termux client printed "0.0% of audio delivered" at hang-up; it was
 running `main`, which still has the rekey-overflow bug fixed on this branch
 in `c90d612` (the summary now prints frame counts).
 
+### Later the same day (reported by the owner)
+
+- With the Termux client synced to `main`, an app-to-Termux call of 9 min 01 s
+  with `--voice-debug` ended "good": 8373 played, 292 missing, 256 shed
+  locally (frames), 8723 sent, ~800 ms mouth to ear, across several rekeys
+  (`epoch=4`). The "0.0% delivered" summary is gone.
+- Password-protected rooms: the join prompt appeared and the password
+  admitted the user.
+- Found: a message sent to a room appeared twice, the second time "from"
+  the sender. The echo filter read slixmpp's nickname table one level too
+  shallow (`our_nicks[room]` instead of `our_nicks[None][room]`) and never
+  recognised our own reflection. Fixed after this run; not yet re-tested on
+  a handset.
+- Automatic OTRv4+ app to Termux did not start while the Termux client was a
+  Sep 15 build, which does not advertise OTRv4Plus; `/otr` from Termux
+  worked. Expected to start automatically once Termux runs `main`; not yet
+  re-tested.
+
 ### What the rc.1 handset run established (reported by the owner)
 
 Android OTR works. Android SMP works. The Termux client's stored SMP

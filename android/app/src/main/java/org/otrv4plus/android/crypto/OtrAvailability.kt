@@ -42,8 +42,10 @@ object OtrAvailability {
             "Contact offline. OTRv4+ starts automatically when they return. " +
                 "Not encrypted."
         UNAVAILABLE ->
-            "OTRv4Plus unavailable — this contact is using a client that " +
-                "does not support OTRv4Plus. Messages here are NOT encrypted."
+            "OTRv4Plus unavailable: this contact's client does not advertise " +
+                "OTRv4Plus, so it is not started automatically. If they use an " +
+                "older OTRv4Plus build, they can start it from their side " +
+                "(Termux: /otr). Messages here are NOT encrypted."
         else ->
             "Not encrypted — anything sent here is readable by the server."
     }
