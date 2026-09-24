@@ -1,0 +1,112 @@
+# SPDX-License-Identifier: CC-BY-SA-4.0
+# Copyright (C) 2025-2026 muc111
+#
+# Per-path licensing, REUSE 3.x format. The human-readable version is
+# LICENSING.md; tests/test_licensing_scope.py checks the two agree with the
+# files. Paths are listed explicitly: a new document is not covered until it
+# is added here, which is deliberate.
+version = 1
+
+[[annotations]]
+path = ["**/*.py", "**/*.rs", "**/*.kt", "**/*.kts", "**/*.toml", "**/*.yml",
+        "**/*.sh", "**/*.xml", "**/*.json", "**/*.cfg", "**/*.ini",
+        "**/*.pro", "**/*.properties", "tests/data/**"]
+precedence = "closest"
+SPDX-FileCopyrightText = "2025-2026 muc111"
+SPDX-License-Identifier = "AGPL-3.0-only OR LicenseRef-OTRv4Plus-Commercial"
+
+# Documentation and specifications. Code inside them is ALSO available under
+# the software licence (LICENSING.md).
+[[annotations]]
+path = [
+    "ANDROID_ARCHITECTURE_AUDIT.md",
+    "ANDROID_CALL_AND_FILE_DEVICE_TEST.md",
+    "ANDROID_CHAT_ARCHITECTURE.md",
+    "ANDROID_DEVICE_TEST.md",
+    "ANDROID_ENCRYPTION_ARCHITECTURE.md",
+    "ANDROID_FOUNDATION_REPORT.md",
+    "ANDROID_I2P_ARCHITECTURE.md",
+    "ANDROID_I2P_FEASIBILITY.md",
+    "ANDROID_MESSAGING_DEVICE_TEST.md",
+    "ANDROID_PHASE2_REPORT.md",
+    "ANDROID_STORAGE_AUDIT.md",
+    "ANDROID_WIPE_AND_EXIT.md",
+    "ANDROID_XMPP_MILESTONE.md",
+    "ASSETS.md",
+    "AUDIO_BACKEND_REPORT.md",
+    "AUDIT_HANDOFF.md",
+    "CHANGELOG.md",
+    "CHANGES.md",
+    "CONTRIBUTING.md",
+    "CRYPTO_SOURCE_OF_TRUTH.md",
+    "DEVELOPMENT.md",
+    "FEATURES.md",
+    "FILE_TRANSFER_TEST_PLAN.md",
+    "GROUP_CRYPTO_AUDIT.md",
+    "LICENSES/README.md",
+    "LICENSING.md",
+    "LICENSING_AUDIT.md",
+    "MAC_FIX_REVIEW.md",
+    "MAC_KEY_REVELATION_AUDIT.md",
+    "MIGRATION.md",
+    "MONERO_ESCROW_AUDIT.md",
+    "OPUS_AUDIT.md",
+    "README.md",
+    "ROADMAP.md",
+    "RUST_SECURITY_PATCHES.md",
+    "Rust/VOICE_TUNING.md",
+    "SECURITY.md",
+    "SECURITY_INVARIANTS.md",
+    "SECURITY_ISSUES.md",
+    "SKIP_AUDIT.md",
+    "SMP_UX_AUDIT.md",
+    "SPEC.md",
+    "SPEC_GROUP.md",
+    "TRADE.md",
+    "TRANSPORT_AUDIT.md",
+    "TRANSPORT_POLICY.md",
+    "TWO_DEVICE_TEST.md",
+    "VERSIONING.md",
+    "VOICE_AUDIT_REPORT.md",
+    "VOICE_LATENCY_BUDGET.md",
+    "VOICE_MEDIA_PATH.md",
+    "VOICE_PATH_INVESTIGATION.md",
+    "VOICE_SOAK_TEST.md",
+    "WHY.md",
+]
+precedence = "override"
+SPDX-FileCopyrightText = "2025-2026 muc111"
+SPDX-License-Identifier = "CC-BY-SA-4.0"
+
+# README screenshots: documentation illustrations.
+[[annotations]]
+path = [
+    "example.png",
+    "xmpp-verify.png",
+    "xmpp-call-sendfile.png",
+]
+precedence = "override"
+SPDX-FileCopyrightText = "2025-2026 muc111"
+SPDX-License-Identifier = "CC-BY-SA-4.0"
+
+# Artwork: AI-generated placeholder; no copyright or licence asserted
+# (ASSETS.md). LicenseRef-OTRv4Plus-NoLicense means exactly that.
+[[annotations]]
+path = ["icon.png", "android/app/src/main/res/mipmap-*/*.png"]
+precedence = "override"
+SPDX-FileCopyrightText = "NONE"
+SPDX-License-Identifier = "LicenseRef-OTRv4Plus-NoLicense"
+
+# Legal instruments: reproduce verbatim.
+[[annotations]]
+path = ["LICENSE", "LICENSE-COMMERCIAL.md", "CLA.md", "CONTRACTOR-IP.md", "NOTICE"]
+precedence = "override"
+SPDX-FileCopyrightText = "2025-2026 muc111"
+SPDX-License-Identifier = "LicenseRef-OTRv4Plus-Legal"
+
+# Third-party material: its own terms.
+[[annotations]]
+path = ["third_party/**", "LICENSES/*.txt"]
+precedence = "override"
+SPDX-FileCopyrightText = "see each file"
+SPDX-License-Identifier = "LicenseRef-OTRv4Plus-ThirdParty"

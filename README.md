@@ -412,7 +412,7 @@ Android app is being built alongside them and is not yet a replacement.
 
 **Licensing**
 
-- [LICENSE](LICENSE) (AGPL-3.0) · [LICENSE-COMMERCIAL.md](LICENSE-COMMERCIAL.md) · [LICENSING_AUDIT.md](LICENSING_AUDIT.md) · [CLA.md](CLA.md)
+- [LICENSE](LICENSE) (AGPL-3.0) · [LICENSE-COMMERCIAL.md](LICENSE-COMMERCIAL.md) · [LICENSING.md](LICENSING.md) (what is licensed how; documentation is CC BY-SA 4.0) · [ASSETS.md](ASSETS.md) · [LICENSING_AUDIT.md](LICENSING_AUDIT.md) · [CLA.md](CLA.md)
 
 **Known limitations** — [Honest caveats](#honest-caveats) below, and
 [SECURITY.md](SECURITY.md) §"What OTRv4+ does not defend against".
@@ -1696,11 +1696,20 @@ AGPL-3.0 applies from **v10.17.0 onward only**; it does not, and could not,
 withdraw anything already granted. `LICENSE` says so in its own words rather
 than implying a retraction nobody could enforce.
 
+**Documentation is licensed separately**, under
+[CC BY-SA 4.0](LICENSES/CC-BY-SA-4.0.txt), from 2026-09-24: the README, the
+specifications, and the design, audit and test documents, so the protocol can
+be quoted and reimplemented freely. Code inside documents is also available
+under the software licence. Legal texts, third-party material and the icon are
+outside both licences. [LICENSING.md](LICENSING.md) is the map, and
+[ASSETS.md](ASSETS.md) records where every image came from — the icon is an
+AI-generated placeholder in which no licence is asserted.
+
 Contributions are welcome under the [CLA](CLA.md), which keeps both licences
 grantable. Paid work has [its own terms](CONTRACTOR-IP.md).
 
-Every third-party dependency is permissive — MIT, Apache-2.0, BSD-3-Clause or
-PSF — across the Rust crates compiled into the core and the Python and Android
+Every third-party dependency is permissive — MIT, Apache-2.0, BSD-2-Clause,
+BSD-3-Clause, Unicode-3.0 or PSF, with SQLite in the public domain — across the Rust crates compiled into the core and the Python and Android
 layers alike. Nothing in the tree imposes copyleft except this project's own
 licence, and two guards keep it that way: the Rust graph is checked by
 `tests/test_licence_declarations_agree.py`, and the Android runtime graph by

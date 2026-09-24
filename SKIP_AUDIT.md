@@ -1,4 +1,4 @@
-<!-- SPDX-License-Identifier: AGPL-3.0-only OR LicenseRef-OTRv4Plus-Commercial -->
+<!-- SPDX-License-Identifier: CC-BY-SA-4.0 -->
 <!-- Copyright (C) 2025-2026 muc111 -->
 
 # The 46 skips, and where each property is actually tested
