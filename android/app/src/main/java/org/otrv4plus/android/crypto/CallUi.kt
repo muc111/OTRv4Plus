@@ -82,6 +82,73 @@ object CallUi {
         }
     }
 
+    /**
+     * Why the call control is, or is not, offered. ONE value per state, in a
+     * fixed order, so "why is there no call button" always has an answer and
+     * a test can pin it. Mirrors `OtrApp.CALL_GATES`.
+     */
+    enum class Gate(val code: String) {
+        AVAILABLE("available"),
+        WIPED("wiped"),
+        ROOM("room"),
+        NOT_CONNECTED("not_connected"),
+        NO_SESSION("no_session"),
+        FINGERPRINT_CHANGED("fingerprint_changed"),
+        NOT_VERIFIED("not_verified"),
+        VOICE_UNAVAILABLE("voice_unavailable"),
+        /** The bridge answered with a code this build does not know. */
+        UNKNOWN("unknown");
+
+        companion object {
+            @JvmStatic
+            fun of(code: String): Gate = entries.firstOrNull { it.code == code } ?: UNKNOWN
+        }
+    }
+
+    /**
+     * The gate as this side can see it, for when the bridge cannot be asked.
+     * Never more permissive than the engine: AVAILABLE only for an
+     * SMP-verified session this app has been told is live.
+     */
+    @JvmStatic
+    fun localGate(
+        connected: Boolean,
+        isRoom: Boolean,
+        security: SecurityState,
+        voiceUnavailableReason: String,
+    ): Gate = when {
+        isRoom -> Gate.ROOM
+        !connected -> Gate.NOT_CONNECTED
+        security == SecurityState.FINGERPRINT_MISMATCH -> Gate.FINGERPRINT_CHANGED
+        security == SecurityState.PLAINTEXT -> Gate.NO_SESSION
+        security != SecurityState.SMP_VERIFIED -> Gate.NOT_VERIFIED
+        voiceUnavailableReason.isNotBlank() -> Gate.VOICE_UNAVAILABLE
+        else -> Gate.AVAILABLE
+    }
+
+    /**
+     * The control for a [gate]. Only AVAILABLE enables it; every other gate
+     * shows it DISABLED with its reason -- nothing is hidden without a word,
+     * which is how "the call button did not appear" went unexplained.
+     * A room shows nothing: calls are one-to-one and the room header says so.
+     */
+    @JvmStatic
+    fun control(gate: Gate, reason: String = ""): Control = when (gate) {
+        Gate.AVAILABLE -> Control(true, true, "Call")
+        Gate.ROOM -> Control(false, false, "")
+        Gate.WIPED -> Control(true, false, "Call unavailable — the app was wiped")
+        Gate.NOT_CONNECTED -> Control(true, false, "Call — connect first")
+        Gate.NO_SESSION -> Control(true, false, "Call — start encryption first")
+        Gate.FINGERPRINT_CHANGED ->
+            Control(true, false, "Call unavailable — their key changed")
+        Gate.NOT_VERIFIED -> Control(true, false, "Call — verify this contact first")
+        Gate.VOICE_UNAVAILABLE -> Control(true, false,
+            "Call unavailable — " + reason.ifBlank { "voice cannot run on this device" })
+        Gate.UNKNOWN -> Control(true, false, "Call unavailable")
+    }
+
+    data class Control(val visible: Boolean, val enabled: Boolean, val label: String)
+
     /** Which way a call is going, when one is going at all. */
     enum class Direction { OUTGOING, INCOMING, NONE }
 

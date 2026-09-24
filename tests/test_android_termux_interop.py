@@ -355,3 +355,85 @@ class TestTheGateAcrossPlatforms:
         assert new.mgr.get_fingerprint() != w.termux.mgr.get_fingerprint()
         assert not _gate(w.app._engine, w.termux_jid)
         assert w.app.security_state(w.termux_jid) is not SecurityState.SMP_VERIFIED
+
+
+class TestTheCallGateAndroidRenders:
+    """`OtrApp.call_gate`: the one answer the Android call control shows.
+
+    The handset report was "the call button did not appear". The screen read
+    security from the roster poll, and this harness's roster is EMPTY -- the
+    same as a peer who is not on the account's roster -- so every assertion
+    below would have been PLAINTEXT to the old screen.
+    """
+
+    def _voice_ok(self, monkeypatch, w):
+        monkeypatch.setattr(type(w.app), "voice_unavailable_reason", lambda self: "")
+
+    def test_the_gate_walks_the_states_in_order(self, world, monkeypatch):
+        w = world
+        self._voice_ok(monkeypatch, w)
+        assert w.app.call_gate(w.termux_jid)["gate"] == "no_session"
+        w.app.start_session(w.termux_jid)
+        assert w.app.call_gate(w.termux_jid)["gate"] == "not_verified"
+        w.termux.mgr.set_smp_secret(w.android_jid, SECRET)
+        w.app.smp_start(w.termux_jid, SECRET)
+        assert w.app.call_gate(w.termux_jid) == {"gate": "available", "reason": ""}
+        # Case and resource do not change the answer.
+        assert w.app.call_gate(w.termux_jid.upper() + "/phone")["gate"] == "available"
+
+    def test_a_wrong_passphrase_keeps_it_closed(self, world, monkeypatch):
+        w = world
+        self._voice_ok(monkeypatch, w)
+        w.app.start_session(w.termux_jid)
+        w.termux.mgr.set_smp_secret(w.android_jid, "something else")
+        w.app.smp_start(w.termux_jid, SECRET)
+        assert w.app.call_gate(w.termux_jid)["gate"] == "not_verified"
+
+    def test_a_new_session_closes_it_again(self, world, monkeypatch):
+        w = world
+        self._voice_ok(monkeypatch, w)
+        TestTheGateAcrossPlatforms()._verify(w)
+        assert w.app.call_gate(w.termux_jid)["gate"] == "available"
+        w.app._engine.sessions.pop(w.termux_jid, None)
+        w.termux.mgr.sessions.pop(w.android_jid, None)
+        assert w.app.call_gate(w.termux_jid)["gate"] == "no_session"
+        otr._dake1_rate_limiter._attempts.clear()
+        w.app.start_session(w.termux_jid)
+        assert w.app.call_gate(w.termux_jid)["gate"] == "not_verified"
+
+    def test_voice_that_cannot_run_is_said_after_verification(self, world, monkeypatch):
+        w = world
+        monkeypatch.setattr(type(w.app), "voice_unavailable_reason",
+                            lambda self: "no audio backend")
+        TestTheGateAcrossPlatforms()._verify(w)
+        assert w.app.call_gate(w.termux_jid) == {"gate": "voice_unavailable",
+                                                 "reason": "no audio backend"}
+
+    def test_rooms_and_a_wiped_app_are_never_available(self, world):
+        w = world
+        w.app.note_room_joined("lobby@rooms.example.test")
+        assert w.app.call_gate("lobby@rooms.example.test")["gate"] == "room"
+        w.app.wipe()
+        assert w.app.call_gate(w.termux_jid)["gate"] == "wiped"
+
+    def test_every_answer_is_a_known_code(self, world):
+        w = world
+        assert w.app.call_gate(w.termux_jid)["gate"] in OtrApp.CALL_GATES
+
+    def test_the_events_android_consumes_arrive_in_a_safe_order(self, world):
+        """Kotlin drops a VERIFIED when a later SessionStateChanged says the
+        session is no longer SMP_VERIFIED. That is only right if the engine
+        reports SMP_VERIFIED no later than the SmpResult -- checked here."""
+        from android_bridge.events import SessionStateChanged, SmpResult
+        w = world
+        w.app.start_session(w.termux_jid)
+        w.termux.mgr.set_smp_secret(w.android_jid, SECRET)
+        w.app.smp_start(w.termux_jid, SECRET)
+        seq = [e for e in w.sink.events if isinstance(e, (SessionStateChanged, SmpResult))]
+        verified_at = next(i for i, e in enumerate(seq)
+                           if isinstance(e, SmpResult) and e.state is SmpState.VERIFIED)
+        after = [e for e in seq[verified_at:] if isinstance(e, SessionStateChanged)]
+        assert all(e.security is SecurityState.SMP_VERIFIED for e in after), (
+            "a level below SMP_VERIFIED was reported after the verification")
+        assert any(isinstance(e, SessionStateChanged) and
+                   e.security is SecurityState.SMP_VERIFIED for e in seq)

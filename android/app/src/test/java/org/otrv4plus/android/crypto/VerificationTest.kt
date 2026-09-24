@@ -262,6 +262,15 @@ class VerificationTest {
     }
 
     @Test
+    fun `a verified run left over from an ended or changed session does not unlock a call`() {
+        for (security in listOf(SecurityState.PLAINTEXT, SecurityState.ENCRYPTED,
+                                SecurityState.FINGERPRINT,
+                                SecurityState.FINGERPRINT_MISMATCH)) {
+            assertFalse(Verification.callOffered(security, SmpState.VERIFIED), "$security")
+        }
+    }
+
+    @Test
     fun `a failed or cancelled run does not unlock a call`() {
         assertFalse(Verification.callOffered(SecurityState.ENCRYPTED,
                                              SmpState.FAILED))

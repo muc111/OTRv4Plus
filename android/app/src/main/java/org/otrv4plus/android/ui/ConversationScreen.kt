@@ -699,7 +699,7 @@ private fun displayName(context: android.content.Context,
 @Composable
 private fun CallBar(model: ChatViewModel, jid: String) {
     val phase = model.callPhase(jid)
-    val offer = model.callOffer(jid)
+    val gateAndReason = model.callGate(jid)
     val context = LocalContext.current
 
     // Android's third fact, which it does not provide: whether WE have asked.
@@ -781,23 +781,18 @@ private fun CallBar(model: ChatViewModel, jid: String) {
                 }
             }
         }
-    } else when (offer) {
-        // Shown DISABLED rather than hidden. A user who cannot find the call
-        // button concludes the app is broken; one told "verify first" knows
-        // what to do next.
-        is CallUi.Offer.Available ->
-            TextButton(onClick = { act(answer = false) }) { Text("Call") }
-        is CallUi.Offer.NeedsVerification ->
-            TextButton(enabled = false, onClick = {}) {
-                Text("Call — verify this contact first")
-            }
-        is CallUi.Offer.Unavailable ->
-            TextButton(enabled = false, onClick = {}) {
-                Text("Call unavailable — ${offer.reason}")
-            }
-        // Nothing to say: the plaintext banner above already offers the
-        // handshake, and a second disabled control would be noise.
-        is CallUi.Offer.NeedsEncryption -> Unit
+    } else {
+        // ONE GATE, FROM THE ENGINE, and never hidden without a word: every
+        // state that is not "available" shows the control disabled with its
+        // reason. The previous version hid it for anything it read as
+        // plaintext -- and it read every peer off the roster as plaintext --
+        // so "the call button did not appear" had no visible explanation.
+        val (gate, reason) = gateAndReason
+        val control = CallUi.control(gate, reason)
+        if (control.visible) {
+            TextButton(enabled = control.enabled,
+                       onClick = { act(answer = false) }) { Text(control.label) }
+        }
     }
 
     if (explain) {

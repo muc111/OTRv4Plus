@@ -217,5 +217,9 @@ object Verification {
      * passed, so an unverified peer is never offered a call.
      */
     fun callOffered(security: SecurityState, smp: SmpState): Boolean =
-        security == SecurityState.SMP_VERIFIED || smp == SmpState.VERIFIED
+        // BOTH: the session is verified AND the run said so. An SmpState of
+        // VERIFIED on its own used to be enough -- and that state is a record
+        // of a past run, which outlives the session it verified: after the
+        // session ended or the key changed, it still unlocked the button.
+        security == SecurityState.SMP_VERIFIED && smp == SmpState.VERIFIED
 }

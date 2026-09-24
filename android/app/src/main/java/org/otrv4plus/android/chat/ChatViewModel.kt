@@ -677,6 +677,28 @@ class ChatViewModel : ViewModel() {
     /** Why voice cannot run here, cached: it is a fact about the device. */
     private var voiceReason: String? = null
 
+    /**
+     * Why the call control is or is not offered for [jid]. The ENGINE's
+     * answer (`call_gate`) when it can be asked; otherwise what this side
+     * knows, which is never more permissive. Deterministic: one gate per
+     * state, rendered by [CallUi.control].
+     */
+    fun callGate(jid: String): Pair<CallUi.Gate, String> {
+        observe()
+        val core = this.core
+        val bare = ChatState.bare(jid)
+        val fromEngine = core?.let { c -> runCatching { c.callGate(bare) }.getOrNull() }
+        if (fromEngine != null) return CallUi.Gate.of(fromEngine.first) to fromEngine.second
+        return CallUi.localGate(
+            connected = canSend(),
+            isRoom = isRoom(bare),
+            security = conversation(bare).security,
+            // Not asked yet is not "voice works": the fallback never offers
+            // what it has not checked.
+            voiceUnavailableReason = voiceReason ?: "voice has not been checked yet",
+        ) to (voiceReason ?: "voice has not been checked yet")
+    }
+
     /** What the call control should be for [jid]. Never a security claim. */
     fun callOffer(jid: String): CallUi.Offer {
         observe()

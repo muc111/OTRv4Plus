@@ -105,6 +105,7 @@ class ChatState(
         // account's, which is the one claim this application must never make
         // wrongly.
         smpStates.clear()
+        sessionStates.clear()
         // A call belongs to the account that placed it. Carrying one into the
         // next account would show somebody else's conversation as in a call.
         // A call ringing for the old account must stop ringing for the new
@@ -390,7 +391,23 @@ class ChatState(
      * one place that has to fold.
      */
     fun applyRoster(roster: List<Contact>) {
-        for (contact in roster) contacts[bare(contact.jid)] = contact
+        for (contact in roster) {
+            val jid = bare(contact.jid)
+            contacts[jid] = contact
+            // A poll is a read of the engine, but it may have been taken
+            // before an event this side already applied. So it may END a
+            // session (PLAINTEXT, a changed key) -- the fail-safe direction --
+            // but may not pull a verified session back to merely ENCRYPTED;
+            // that downgrade arrives as its own event when it is real.
+            val known = sessionStates[jid]
+            val lagging = known == SecurityState.SMP_VERIFIED &&
+                contact.security == SecurityState.ENCRYPTED
+            if (!lagging) sessionStates[jid] = contact.security
+            if (contact.security == SecurityState.PLAINTEXT ||
+                contact.security == SecurityState.FINGERPRINT_MISMATCH) {
+                smpStates.remove(jid)
+            }
+        }
         val present = roster.map { bare(it.jid) }.toSet()
         contacts.keys.retainAll { it in present }
         if (canSend()) {
@@ -420,6 +437,22 @@ class ChatState(
             }
             is OtrEvent.FingerprintChanged -> {
                 fingerprintAlert = event
+                // A changed key ends whatever the old one verified.
+                val peer = bare(event.peer)
+                sessionStates[peer] = SecurityState.FINGERPRINT_MISMATCH
+                invalidateStaleVerification(peer)
+                false
+            }
+            // CONSUMED NOW. The bridge has emitted this on every level change
+            // and `ChaquopyOtrCore` has decoded it, and this `when` dropped it
+            // -- so the only security this side knew was the ROSTER POLL's.
+            // A peer not on the roster was plaintext here however encrypted
+            // and verified the session was, which hid the call and file
+            // controls; a peer on it lagged by a poll.
+            is OtrEvent.SessionChanged -> {
+                val peer = bare(event.peer)
+                sessionStates[peer] = event.security
+                invalidateStaleVerification(peer)
                 false
             }
             // Returns false: this is not a new message and must not buzz the
@@ -532,6 +565,30 @@ class ChatState(
      * passphrase, no proof state, no key material — those never leave Rust.
      */
     private val smpStates = mutableMapOf<String, SmpState>()
+
+    /**
+     * The engine's security level per peer: from events as they happen and
+     * from every roster poll, whichever is later. Keyed by [bare]. A coarse
+     * enum per JID and nothing else.
+     */
+    private val sessionStates = mutableMapOf<String, SecurityState>()
+
+    /**
+     * A VERIFIED that the session no longer carries is dropped. Verification
+     * is a property of the session it ran in: when that session ends
+     * (PLAINTEXT), is replaced by a fresh unverified one (ENCRYPTED), or its
+     * key changes (FINGERPRINT_MISMATCH), a VERIFIED left in this map would be
+     * a stale claim -- the one this app must never make.
+     */
+    private fun invalidateStaleVerification(peer: String) {
+        // Called for EVENTS, which arrive in the engine's order: a level
+        // other than SMP_VERIFIED after a verification means that session
+        // is over or was replaced.
+        if (sessionStates[peer] != SecurityState.SMP_VERIFIED &&
+            smpStates[peer] == SmpState.VERIFIED) {
+            smpStates.remove(peer)
+        }
+    }
 
     /**
      * Where each peer's call has got to, from events.
@@ -704,13 +761,13 @@ class ChatState(
                     subscription = contact?.subscription
                         ?: Subscription.UNKNOWN,
                 ),
-                security = contact?.security ?: SecurityState.PLAINTEXT,
+                security = securityOf(jid),
                 // An event beats the last roster poll. `SmpProgressed` and
                 // `SmpFinished` arrive on the drain loop the moment the
                 // engine moves; the roster is re-read on a slower tick, so
                 // reading only `contact.smp` would leave an incoming
                 // verification request unshown until the next poll caught up.
-                smp = smpStates[jid] ?: contact?.smp ?: SmpState.NOT_VERIFIED,
+                smp = effectiveSmp(jid, contact?.smp),
                 lastMessage = store.lastMessage(jid),
                 unread = store.unread(jid),
                 // A conversation with no roster entry is somebody who
@@ -732,9 +789,13 @@ class ChatState(
                 jid = bare(jid),
                 displayName = bare(jid),
                 presence = Presence.UNKNOWN,
-                security = SecurityState.PLAINTEXT,
+                // The ENGINE's word, not a constant: a peer in neither the
+                // roster nor the store can still have a live session, and a
+                // hard-coded PLAINTEXT here hid its call and file controls.
+                security = securityOf(bare(jid)),
                 lastMessage = null,
                 unread = 0,
+                smp = effectiveSmp(bare(jid), null),
                 // Nothing is known about this JID at all — it is in neither
                 // the roster nor the store. `false` would put a Save button in
                 // front of somebody who may already be a contact whose roster
@@ -888,7 +949,21 @@ class ChatState(
     }
 
     private fun securityOf(jid: String): SecurityState =
-        contacts[jid]?.security ?: SecurityState.PLAINTEXT
+        sessionStates[jid] ?: contacts[jid]?.security ?: SecurityState.PLAINTEXT
+
+    /**
+     * What verification to show. Never VERIFIED over a session that has
+     * ended or whose key changed, whichever source still remembers the run.
+     * (A just-finished run may show before the level catches up; the call
+     * and file gates read the ENGINE, not this.)
+     */
+    private fun effectiveSmp(jid: String, polled: SmpState?): SmpState {
+        val smp = smpStates[jid] ?: polled ?: SmpState.NOT_VERIFIED
+        val security = securityOf(jid)
+        val ended = security == SecurityState.PLAINTEXT ||
+            security == SecurityState.FINGERPRINT_MISMATCH
+        return if (smp == SmpState.VERIFIED && ended) SmpState.NOT_VERIFIED else smp
+    }
 
     /** Overridable so tests are not at the mercy of the wall clock. */
     internal var now: () -> Long = { System.currentTimeMillis() }

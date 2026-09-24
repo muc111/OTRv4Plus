@@ -880,6 +880,19 @@ class ChaquopyOtrCore(private val appContext: Context) : OtrCore {
      * same question the call manager asks before doing anything. A separate
      * answer here could tell the user something the engine would contradict.
      */
+    /**
+     * Whether a call may be offered to [peer], from the engine: the code and,
+     * for "voice_unavailable", the host hook's reason. Null when the bridge
+     * could not be asked -- the caller then decides from what it has, and
+     * never towards "available". See `OtrApp.call_gate`.
+     */
+    fun callGate(peer: String): Pair<String, String>? =
+        runCatching {
+            val d = requireApp().callAttr("call_gate", peer)
+            (d.callAttr("get", "gate")?.toString() ?: return@runCatching null) to
+                (d.callAttr("get", "reason")?.toString() ?: "")
+        }.getOrNull()
+
     fun voiceUnavailableReason(): String =
         runCatching {
             requireApp().callAttr("voice_unavailable_reason").toString()

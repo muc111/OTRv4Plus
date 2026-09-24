@@ -1539,6 +1539,66 @@ class OtrApp:
             return 0
         return self.calls.duration_seconds(self.canonical_peer(peer))
 
+    #: Why a call control is not offered. A FIXED SET, and the order in
+    #: `call_gate` is the order they are checked in, so one state has one
+    #: answer. Kotlin renders a sentence per code (`CallUi.Gate`).
+    CALL_GATES = ("available", "wiped", "room", "not_connected", "no_session",
+                  "fingerprint_changed", "not_verified", "voice_unavailable")
+
+    def call_gate(self, peer: str) -> Dict[str, Any]:
+        """Whether a call may be offered to [peer], and if not, why.
+
+        ONE ANSWER, FROM THE ENGINE. Android used to decide this from the
+        security level carried on the last ROSTER POLL, so a peer that was not
+        on the roster was PLAINTEXT to the screen however encrypted and
+        verified the session was -- and PLAINTEXT hid the control with nothing
+        said. This asks what `start_call` itself will ask:
+
+          * an encrypted OTR session with the peer exists (`has_encrypted_
+            session`), and its level is not a changed fingerprint;
+          * the voice gate -- `otrv4plus_voice._smp_query_default`, the engine's
+            published SMP predicates, the one definition of verified that
+            calls and files share -- says verified;
+          * this device can run voice at all.
+
+        Only when all hold is the answer "available". Returns
+        `{"gate": code, "reason": str}`; `reason` is set only for
+        "voice_unavailable" and is the host hook's own words. No secrets.
+        """
+        def answer(gate: str, reason: str = "") -> Dict[str, Any]:
+            return {"gate": gate, "reason": reason}
+
+        if self._wiped:
+            return answer("wiped")
+        peer = self.canonical_peer(peer)
+        if peer in self._rooms:
+            return answer("room")
+        transport = self._transport
+        if transport is None or not bool(getattr(transport, "is_connected", True)):
+            return answer("not_connected")
+        try:
+            encrypted = bool(self._engine.has_encrypted_session(peer))
+        except Exception:
+            encrypted = False
+        if not encrypted:
+            return answer("no_session")
+        security = self.security_state(peer)
+        if security is SecurityState.FINGERPRINT_MISMATCH:
+            return answer("fingerprint_changed")
+        if security is SecurityState.PLAINTEXT:
+            return answer("no_session")
+        try:
+            import otrv4plus_voice as _voice
+            verified, _state = _voice._smp_query_default(self._engine, peer)
+        except Exception:
+            verified = False
+        if not verified:
+            return answer("not_verified")
+        reason = self.voice_unavailable_reason()
+        if reason:
+            return answer("voice_unavailable", reason)
+        return answer("available")
+
     def voice_unavailable_reason(self) -> str:
         """Why voice cannot run on this device, or "" when it can.
 
