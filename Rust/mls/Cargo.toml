@@ -1,0 +1,53 @@
+# SPDX-License-Identifier: AGPL-3.0-only OR LicenseRef-OTRv4Plus-Commercial
+# Copyright (C) 2025-2026 muc111
+#
+# MLS (RFC 9420) group encryption for OTRv4Plus, on the core's OWN crypto.
+#
+# Ciphersuite MLS_256_MLKEM1024_AES256GCM_SHA384_MLDSA87 (draft-ietf-mls-pq-
+# ciphersuites): ML-KEM-1024 and ML-DSA-87 from PQClean (pqcrypto-mlkem /
+# pqcrypto-mldsa, the same crates and versions otrv4_core uses), AES-256-GCM
+# from aes-gcm, HKDF/HMAC/SHA-384 from hkdf/hmac/sha2 -- no second
+# implementation of any primitive the core already has. The MLS protocol is
+# OpenMLS; HPKE composition is hpke-rs over our backend.
+#
+# SEPARATE FROM otrv4_core ON PURPOSE, like opus-codec: one small FFI call
+# (PQClean's seeded ML-KEM key generation, which pqcrypto-mlkem compiles but
+# does not export) needs `unsafe`, and otrv4_core keeps
+# #![forbid(unsafe_code)].
+#
+# STAGE 2 OF MLS_FEASIBILITY.md: a Rust spike with in-process members only.
+# No transport, no persistence, no UI. Nothing here claims interoperability
+# with any other MLS client: the ciphersuite is a draft.
+[package]
+name = "otrv4-mls"
+version = "0.1.0"
+edition = "2021"
+license = "AGPL-3.0-only OR LicenseRef-OTRv4Plus-Commercial"
+publish = false
+
+[dependencies]
+openmls = { version = "=0.9.0", default-features = false, features = ["draft-ietf-mls-pq-ciphersuites"] }
+openmls_traits = { version = "=0.6.0", features = ["draft-ietf-mls-pq-ciphersuites"] }
+openmls_memory_storage = "=0.6.0"
+# "hazmat" only exposes the derived private key bytes so they can be handed
+# to OpenMLS, as the reference provider does; they stay inside Rust.
+hpke-rs = { version = "=0.7.0", default-features = false, features = ["hazmat"] }
+hpke-rs-crypto = { version = "=0.7.0" }
+tls_codec = { version = "0.5", features = ["derive", "serde", "mls"] }
+# The core's versions, so no second copy of a primitive enters the build.
+pqcrypto-mlkem  = { version = "0.1.1", default-features = false, features = ["std"] }
+pqcrypto-mldsa  = { version = "0.1.2", default-features = false, features = ["std"] }
+pqcrypto-traits = "0.3"
+aes-gcm = { version = "0.10", features = ["aes"] }
+hkdf = "0.12"
+hmac = "0.12"
+sha2 = "0.10"
+getrandom = "0.2"
+zeroize = { version = "1.8", features = ["derive", "alloc"] }
+thiserror = "1.0"
+rand_core_hpke = { package = "rand_core", version = "0.10" }
+
+[dev-dependencies]
+# TEST ONLY, never shipped: the reference provider, so our provider is
+# checked against an independent implementation of the same suite.
+openmls_rust_crypto = { version = "=0.6.0", features = ["draft-ietf-mls-pq-ciphersuites"] }

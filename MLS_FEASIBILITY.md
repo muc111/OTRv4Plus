@@ -243,10 +243,13 @@ I2P hides network location from the server. It does not hide any of the above.
    MAM retention and PubSub availability were not inspected.
 2. **No published XMPP MLS standard**, so there is no interoperability target.
 3. **Post-quantum parity**: RFC 9420 suites are classical. Matching ML-KEM and
-   ML-DSA needs draft or custom suites.
+   ML-DSA needs draft or custom suites. *Decided: the draft PQ suite, see
+   section 21.*
 4. **Persistence against B1**: MLS membership requires persistent state. The
    owner must decide whether groups are allowed to break B1, for example
-   persistent group state while the 1:1 identity stays ephemeral.
+   persistent group state while the 1:1 identity stays ephemeral. *Decided:
+   group state and its signing key persist, encrypted in the Keystore vault
+   and destroyed by Wipe & Exit; the 1:1 identity stays fresh per launch.*
 5. **Delivery ordering on MUC**: this needs a client rule or a server module.
 6. **No physical multi-device test setup** was available.
 
@@ -276,3 +279,55 @@ I2P hides network location from the server. It does not hide any of the above.
 
 Until stage 7 passes, rooms stay plain MUC and are labelled "not end-to-end
 encrypted".
+
+## 21. Stage 2 result: the Rust provider (2026-09-24)
+
+**Owner decisions.** Ciphersuite `MLS_256_MLKEM1024_AES256GCM_SHA384_MLDSA87`
+(0x0907, draft-ietf-mls-pq-ciphersuites) on OpenMLS 0.9.0, with the core's own
+primitives. Group state persists (section 19, item 4).
+
+**What exists.** `Rust/mls` (crate `otrv4-mls`), separate from `otrv4_core`
+like `opus-codec`, because it needs one `unsafe` FFI call and the core keeps
+`#![forbid(unsafe_code)]`.
+
+| MLS needs | Supplied by |
+|---|---|
+| ML-KEM-1024 | PQClean via `pqcrypto-mlkem` 0.1.1, as the core. Seeded key generation calls PQClean's `crypto_kem_keypair_derand`, which the crate compiles but does not export (the only `unsafe`). |
+| ML-DSA-87 | PQClean via `pqcrypto-mldsa` 0.1.2, as the core's DAKE (FIPS 204, empty context). |
+| AES-256-GCM, HKDF/HMAC/SHA-384 | `aes-gcm` 0.10, `hkdf`/`hmac` 0.12, `sha2` 0.10, the core's versions. |
+| HPKE (RFC 9180) composition | `hpke-rs` 0.7 over our backend. |
+| Randomness | the OS (`getrandom`). |
+
+Any other suite, hash, AEAD, KEM or signature scheme is refused with an error.
+Signing keys live in a `SignatureKeyPair` that wipes on drop and never prints
+key bytes.
+
+**One new primitive implementation.** `hpke-rs` derives ML-KEM seeds with
+SHAKE-256 from `libcrux-sha3` (Apache-2.0, formally verified), a hard
+dependency of `hpke-rs`. It is used only for that derivation, and the result is
+cross-checked below.
+
+**Tests** (`cargo test --release` in `Rust/mls`, run by the Python workflow):
+
+* A three-member group: create, add two members in one commit, join from the
+  Welcome, messages in all directions, a member's key update, removal. The
+  removed member cannot read the next epoch or export its secrets. Every
+  message goes through its wire bytes.
+* A tampered message is rejected. Other suites are refused.
+* **Independent cross-check** against OpenMLS's reference provider
+  (`openmls_rust_crypto`: RustCrypto `ml-dsa` and a separate ML-KEM,
+  test-only). Derived HPKE public keys are identical, HPKE seal/open and
+  export work in both directions, ML-DSA-87 signatures verify in both
+  directions, and a mixed group (one member on each provider) joins, talks and
+  follows a key update.
+
+**Not done yet.** Stages 3 to 7: transport over MUC and I2P, KeyPackage
+distribution, commit ordering, persistence, verification binding, UI and
+physical tests. Nothing in the app uses this crate, and rooms are still plain
+MUC labelled "not end-to-end encrypted".
+
+**Before it ships.** `hpke-rs` and `hpke-rs-crypto` are MPL-2.0 (file-level
+copyleft: their source must stay available under MPL-2.0). That is compatible
+with AGPL-3.0, but the commercial licence needs the owner to confirm it.
+NOTICE gets the new crates when the crate first enters a shipped build.
+
