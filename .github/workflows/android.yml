@@ -459,12 +459,103 @@ jobs:
             echo "::error::assets/NOTICE is not the generated third-party notice file"; exit 1; }
           echo "third-party attribution is packaged and non-empty"
 
+      - name: Inspect the debug APK's contents
+        run: |
+          set -euo pipefail
+          APK=$(find android/app/build/outputs/apk -name '*.apk' | head -1)
+          python .github/scripts/inspect_apk.py "$APK" --variant debug
+
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: apk-debug
           path: android/app/build/outputs/apk/**/*.apk
           if-no-files-found: warn
+
+  # ---------------------------------------------------------------------------
+  # The RELEASE variant: R8-minified, android.util.Log calls stripped
+  # (proguard-rules.pro), the debug diagnostics screen not compiled in
+  # (src/debug/). This is the release candidate.
+  #
+  # Signing: with the owner's release keystore when the repository secrets
+  # OTRV4PLUS_RELEASE_KEYSTORE_B64 / _STORE_PASSWORD / _KEY_ALIAS /
+  # _KEY_PASSWORD are set; otherwise the variant is signed with the runner's
+  # debug key and the release notes say so. The keystore is decoded into the
+  # runner's temp directory, never the workspace, and never uploaded.
+  # ---------------------------------------------------------------------------
+  apk-release:
+    name: Assemble and inspect the release APK
+    runs-on: ubuntu-latest
+    needs: [configure, rust]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: otrv4_core-*
+          path: android/app/wheels
+          merge-multiple: true
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Accept SDK licences
+        run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
+
+      - name: Release signing key, if the owner has provided one
+        env:
+          KS_B64: ${{ secrets.OTRV4PLUS_RELEASE_KEYSTORE_B64 }}
+        run: |
+          set -euo pipefail
+          if [ -n "${KS_B64:-}" ]; then
+            printf '%s' "$KS_B64" | base64 -d > "$RUNNER_TEMP/release.jks"
+            echo "OTRV4PLUS_RELEASE_KEYSTORE=$RUNNER_TEMP/release.jks" >> "$GITHUB_ENV"
+            echo "signing with the owner's release key"
+          else
+            echo "no release key configured: signing with the debug key"
+          fi
+
+      - name: assembleRelease
+        working-directory: android
+        env:
+          OTRV4PLUS_RELEASE_STORE_PASSWORD: ${{ secrets.OTRV4PLUS_RELEASE_STORE_PASSWORD }}
+          OTRV4PLUS_RELEASE_KEY_ALIAS: ${{ secrets.OTRV4PLUS_RELEASE_KEY_ALIAS }}
+          OTRV4PLUS_RELEASE_KEY_PASSWORD: ${{ secrets.OTRV4PLUS_RELEASE_KEY_PASSWORD }}
+        run: ../.github/scripts/gradle.sh ./gradlew :app:assembleRelease --no-daemon --console=plain
+
+      - name: Inspect the release APK's contents, signature and manifest
+        run: |
+          set -euo pipefail
+          APK=$(find android/app/build/outputs/apk/release -name '*.apk' | head -1)
+          test -n "$APK" || { echo "::error::assembleRelease produced no APK"; exit 1; }
+          mkdir -p release-out
+          python .github/scripts/inspect_apk.py "$APK" --variant release \
+              --manifest release-out/apk-contents.sha256.txt
+          BT=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)
+          "$BT/apksigner" verify --verbose --print-certs "$APK" | tee release-out/signature.txt
+          "$BT/aapt2" dump badging "$APK" | tee release-out/badging.txt | head -5
+          if "$BT/aapt2" dump xmltree --file AndroidManifest.xml "$APK" | grep -q 'debuggable.*=true'; then
+            echo "::error::the release APK is debuggable"; exit 1
+          fi
+          echo "not debuggable" | tee -a release-out/badging.txt
+          if [ -n "${OTRV4PLUS_RELEASE_KEYSTORE:-}" ]; then echo owner > release-out/signing-key.txt
+          else echo debug > release-out/signing-key.txt; fi
+          cp "$APK" release-out/
+          rm -f "$RUNNER_TEMP/release.jks"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: apk-release
+          path: release-out/
+          if-no-files-found: error
 
   # ---------------------------------------------------------------------------
   # Proves: the Kotlin security layer still passes. The tests themselves are
@@ -549,7 +640,7 @@ jobs:
     # EVERY job, not just `apk`. A build whose tests failed must not be
     # published, and `apk` alone would not notice: it does not depend on
     # kotlin-tests or python-deps.
-    needs: [configure, python-deps, rust, apk, kotlin-tests]
+    needs: [configure, python-deps, rust, apk, apk-release, kotlin-tests]
     if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/claude/otrv4plus-android-spec-a3oq4d'
     permissions:
       # Narrower than it looks: this replaces the workflow-level `contents:
@@ -562,6 +653,11 @@ jobs:
         with:
           name: apk-debug
           path: apk
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: apk-release
+          path: apk-release
 
       - name: Publish the rolling experimental prerelease
         env:

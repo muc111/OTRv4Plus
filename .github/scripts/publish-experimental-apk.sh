@@ -25,20 +25,31 @@
 #
 set -euo pipefail
 
-TAG="android-experimental"
-
 APK=$(find apk -name '*.apk' -print -quit)
-if [ -z "$APK" ]; then
-    echo "::error::no .apk in the downloaded artifact; nothing to publish"
+RAPK=$(find apk-release -name '*.apk' -print -quit)
+if [ -z "$APK" ] || [ -z "$RAPK" ]; then
+    echo "::error::the debug or release .apk is missing from the artifacts; nothing to publish"
     exit 1
 fi
 
 SHORT="${GITHUB_SHA:0:7}"
 OUT="otrv4plus-${SHORT}-debug.apk"
+ROUT="otrv4plus-${SHORT}-release.apk"
+MANIFEST="otrv4plus-${SHORT}-release-contents.sha256.txt"
 cp "$APK" "$OUT"
+cp "$RAPK" "$ROUT"
+cp apk-release/apk-contents.sha256.txt "$MANIFEST"
 
 SHA256=$(sha256sum "$OUT" | cut -d' ' -f1)
+RSHA256=$(sha256sum "$ROUT" | cut -d' ' -f1)
 SIZE=$(du -h "$OUT" | cut -f1)
+RSIZE=$(du -h "$ROUT" | cut -f1)
+SIGNED_WITH=$(cat apk-release/signing-key.txt 2>/dev/null || echo unknown)
+if [ "$SIGNED_WITH" = "owner" ]; then
+    SIGNING="signed with the project owner's release key"
+else
+    SIGNING="signed with the CI runner's DEBUG key -- no release key is configured, so an update from one build to the next may need an uninstall first"
+fi
 
 # Read the core version from the Rust crate rather than hardcoding it here,
 # so this cannot drift into claiming a version the binary does not contain.
@@ -57,21 +68,26 @@ if [ -z "$APP" ] || [ -z "$CODE" ]; then
     exit 1
 fi
 
+# A release candidate gets its own tag, kept; everything else replaces the
+# rolling one. The version is read from the build file, never typed here.
+VERSION="${APP%%+*}"
+case "$VERSION" in
+    *.rc.*) TAG="android-v${VERSION}"; KIND="release candidate" ;;
+    *)      TAG="android-experimental"; KIND="development build" ;;
+esac
+
 cat > notes.md <<EOF
-# ⚠️ EXPERIMENTAL — a development build, not a release
+# ⚠️ EXPERIMENTAL — a ${KIND}, not a release
 
-This is an automated build, published so it can be tested. It is not a
-release, it is not supported, and it should not be used to protect anything
-real.
+\`${APP}\` — built from \`${GITHUB_SHA}\`.
 
-**The messaging client now works on a handset.** Sign-in, contacts, presence
-and conversations have been used on a real device against the live server.
-What is still unverified is listed below, and that list -- not a guess about
-quality -- is why this remains marked experimental.
-
-The headline gap is **OTR itself**: no handshake has been observed completing
-between a handset and a peer. Until it has, treat everything this APK sends as
-unencrypted beyond the I2P tunnel.
+A **release candidate** means every repository-level gate is closed: the
+secrets the terminal clients keep at rest are held by the Rust core, the
+dependency audit is clean, the documentation licence is decided, the icon's
+origin is recorded, and the release variant is built and its contents
+inspected on this run. It is still **not a release** and it is still
+EXPERIMENTAL, because the handset checks below have not been run. It should
+not be used to protect anything real until they have.
 
 For a client that is known to work end to end today, including OTR and voice,
 **Termux remains the reference implementation**. See the README.
@@ -85,7 +101,8 @@ Reported from a handset (Android 15, arm64-v8a):
 - the APK installs and launches;
 - Chaquopy starts CPython 3.12 and \`import otrv4_core\` succeeds on the real
   ABI;
-- \`EnhancedSessionManager\` constructs with a persistent identity;
+- \`EnhancedSessionManager\` constructs (with a new identity on each
+  launch, by design -- decision B1);
 - the SAM probe, the I2P tunnel, the XMPP connection and SASL authentication
   complete against the live server;
 - **signing in**, with the button showing progress for the length of an I2P
@@ -112,7 +129,17 @@ the list below.
 
 Asserted on every run rather than assumed:
 
-- The project configures and \`assembleDebug\` completes.
+- The project configures, and both \`assembleDebug\` and \`assembleRelease\`
+  complete. The **release** APK is R8-minified, strips every \`android.util.Log\`
+  call, is not debuggable (read from its manifest), and does not contain the
+  debug diagnostics screen.
+- Both APKs are **unpacked and inspected** (\`.github/scripts/inspect_apk.py\`):
+  the right Python modules and none of the terminal-only, test or retired ones;
+  the pinned Python packages and none of the removed ones (argon2-cffi, cffi,
+  cryptography, aiodns); the Rust core for both ABIs with no test-only or
+  legacy API compiled in; the NOTICE; no key, credential or secret-store file.
+  The release APK's full content list with a SHA-256 per file is attached.
+- The release APK's signature is verified with \`apksigner\`: ${SIGNING}.
 - The Rust core (\`otrv4_core\` ${CORE}) is cross-compiled for \`arm64-v8a\` and
   \`x86_64\`, and its \`DT_NEEDED\` names \`libpython3.12.so\` — the libpython
   Chaquopy actually installs.
@@ -143,9 +170,14 @@ Asserted on every run rather than assumed:
   see your presence.
 - **A room shared with a second account.** Rooms have been created and
   entered from one handset; the locked-room path needs two.
+- **Calls, file transfer and metadata stripping on a handset**, Wipe & Exit,
+  and a two-device run: \`ANDROID_CALL_AND_FILE_DEVICE_TEST.md\` lists every
+  step, separating what CI has verified from what needs hardware. None of the
+  hardware steps has been run for this build.
 
-Also absent by design at this stage: **no in-APK I2P router** and no signed
-release build.
+Also absent by design at this stage: **no in-APK I2P router** (an I2P router
+app with SAM enabled must be running on the phone). The icon is a
+**placeholder** (AI-generated, no licence asserted -- see \`ASSETS.md\`).
 
 \`ANDROID_XMPP_MILESTONE.md\` §7 is the open gate list, item by item;
 \`ANDROID_MESSAGING_DEVICE_TEST.md\` is the procedure;
@@ -153,8 +185,15 @@ release build.
 
 ## Install
 
-Debug-signed, so it sideloads without adb. Android will ask you to allow
-installation from an unknown source.
+Two APKs are attached:
+
+- **\`${ROUT}\`** — the release candidate. Use this for validation.
+- **\`${OUT}\`** — the same commit as a debug build, which adds the
+  integration diagnostics screen. Use it if the release APK misbehaves and you
+  need to see why.
+
+The release APK is ${SIGNING}. Android will ask you to allow installation from
+an unknown source.
 
 - **minSdk 26** (Android 8.0). Both ABIs are in the one file, so there is no
   variant to choose.
@@ -175,34 +214,39 @@ installation from an unknown source.
 | commit | \`${GITHUB_SHA}\` |
 | workflow run | [#${GITHUB_RUN_NUMBER}](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}) |
 | built | $(date -u '+%Y-%m-%d %H:%M UTC') |
-| size | ${SIZE} |
-| sha256 | \`${SHA256}\` |
+| release APK | \`${ROUT}\` (${RSIZE}) |
+| release sha256 | \`${RSHA256}\` |
+| debug APK | \`${OUT}\` (${SIZE}) |
+| debug sha256 | \`${SHA256}\` |
+| release contents | \`${MANIFEST}\` (SHA-256 of every file inside the release APK) |
 
 \`\`\`
-sha256sum ${OUT}
+sha256sum ${ROUT} ${OUT}
 \`\`\`
 
 Built from this repository by \`.github/workflows/android.yml\` on a
-GitHub-hosted runner. Source for this binary is the commit above; the project
-is dual-licensed AGPL-3.0 + commercial (see \`LICENSE\`).
+GitHub-hosted runner. Source for this binary is the commit above; the software
+is dual-licensed AGPL-3.0 + commercial (see \`LICENSE\`), and the
+documentation is CC BY-SA 4.0 (see \`LICENSING.md\`).
 EOF
 
 echo "=== release notes ==="
 cat notes.md
 echo "====================="
 
-# Delete and recreate rather than upload --clobber: the asset filename carries
+# Delete and recreate rather than upload --clobber: the asset filenames carry
 # the commit SHA, so clobbering would leave every previous build's APK
-# attached and it would stop being obvious which one is current.
+# attached and it would stop being obvious which one is current. For a
+# release-candidate tag this replaces a rerun of the same candidate only.
 if gh release view "$TAG" >/dev/null 2>&1; then
     echo "replacing the existing $TAG release"
     gh release delete "$TAG" --yes --cleanup-tag
 fi
 
-gh release create "$TAG" "$OUT" \
-    --title "Experimental Android APK — development build" \
+gh release create "$TAG" "$ROUT" "$OUT" "$MANIFEST" \
+    --title "Android ${VERSION} — ${KIND} (experimental)" \
     --notes-file notes.md \
     --prerelease \
     --target "$GITHUB_SHA"
 
-echo "published $OUT ($SHA256)"
+echo "published $TAG: $ROUT ($RSHA256), $OUT ($SHA256)"

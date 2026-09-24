@@ -4,6 +4,43 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.1 — 2026-09-24 — release candidate (core 0.11.0)
+
+*The first release candidate: every repository-level gate is closed. It stays
+`-experimental`, per VERSIONING.md, because the handset checklist in
+`ANDROID_CALL_AND_FILE_DEVICE_TEST.md` has not been run. Wire format
+unchanged; interoperates with 0.6.0 and with the Termux client.*
+
+**Verification Cancel works.** The bridge's Cancel called an engine method
+that did not exist -- only the unit tests' fake engine had it -- so cancelling
+an SMP run raised on a device. The engine now aborts the Rust run, drops the
+bound passphrase and tells the peer.
+
+**At-rest secrets are Rust's (INV-08).** Rust core 0.11.0 adds `at_rest.rs`:
+the terminal clients' SMP auto-respond store (`SmpSecretStore`, no getter,
+legacy files migrated in Rust) and the Termux identity key (`FileDek`). The
+unused Python key store and its `.device_seed` are gone; the Android engine
+writes no file at all. The XMPP password is dropped when the transport closes.
+argon2-cffi and its native chain (cffi, pycparser, libffi) leave the APK.
+
+**Release build.** CI now builds, inspects and publishes the R8-minified,
+log-stripped, non-debuggable release variant next to the debug build, with
+the release APK's full content list and SHA-256s. It is signed with the
+owner's release key when one is configured in the repository secrets, and
+otherwise with the debug key, and the release notes say which.
+
+**Dependencies and licences.** RustSec audit: 0 vulnerabilities; the five
+"unmaintained" warnings (the PQClean-based ML-KEM/ML-DSA crates) are recorded
+with reasons and a weekly `cargo audit --deny warnings` job catches anything
+new. NOTICE now lists exactly what the APK bundles, with each package's own
+licence text. Documentation is CC BY-SA 4.0 (`LICENSING.md`). The icon is
+recorded as an AI-generated placeholder (`ASSETS.md`).
+
+**Tests.** Termux↔Termux and Android↔Termux runs (DAKE, fragmentation,
+ratchet, SMP, abort, reconnect, changed key, call/file gate); I2P never falls
+back to a direct connection in any failure mode; an APK inspector runs on
+both variants.
+
 ## Android 0.6.0-experimental — 2026-09-24 — Rust owns the secrets; Wipe & Exit
 
 *The Rust core's Python API changed; the wire format did not. Every DH

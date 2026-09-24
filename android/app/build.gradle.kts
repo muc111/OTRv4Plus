@@ -34,7 +34,15 @@ android {
         // devices. Left at 26, with the biometric path feature-detected.
         minSdk = 26
         targetSdk = 35
-        versionCode = 10
+        versionCode = 11
+        // 0.6.0 -> 0.7.0-experimental.rc.1: the first release CANDIDATE. Every
+        // repository-level gate is closed (INV-08's at-rest secrets in Rust,
+        // documentation licence decided, icon provenance recorded, dependency
+        // audit clean, release variant built and inspected). `-experimental`
+        // stays, per VERSIONING.md, because the handset list in
+        // ANDROID_CALL_AND_FILE_DEVICE_TEST.md has not been run; `.rc.1` says
+        // nothing else is known to be missing.
+        //
         // 0.4.0 -> 0.5.0: MINOR, per VERSIONING.md. New capability reachable
         // from the APK for the first time: SMP-gated voice calls (the engine
         // and the AAudio backend were already packaged; nothing could reach
@@ -60,7 +68,7 @@ android {
         //
         // core.10.14.0 was wrong for sixteen releases; the Rust core is read
         // from Rust/Cargo.toml so it cannot drift again.
-        versionName = "0.6.0-experimental+core.$rustCoreVersion"
+        versionName = "0.7.0-experimental.rc.1+core.$rustCoreVersion"
 
         // Which build this is, surfaced in the diagnostic report.
         //
@@ -112,6 +120,23 @@ android {
     //
     // splits { abi { ... } }  -- see above
 
+    // Release signing comes from the environment, never the repository: CI
+    // decodes the owner's keystore from secrets into the runner's temp dir
+    // (.github/workflows/android.yml, apk-release). Without it the release
+    // variant is signed with the debug key, and the published notes say so.
+    val releaseKeystore = System.getenv("OTRV4PLUS_RELEASE_KEYSTORE")
+        ?.takeIf { it.isNotBlank() && file(it).isFile }
+    signingConfigs {
+        if (releaseKeystore != null) {
+            create("release") {
+                storeFile = file(releaseKeystore)
+                storePassword = System.getenv("OTRV4PLUS_RELEASE_STORE_PASSWORD")
+                keyAlias = System.getenv("OTRV4PLUS_RELEASE_KEY_ALIAS")
+                keyPassword = System.getenv("OTRV4PLUS_RELEASE_KEY_PASSWORD")
+            }
+        }
+    }
+
     buildTypes {
         debug {
             isMinifyEnabled = false
@@ -123,6 +148,9 @@ android {
         release {
             isMinifyEnabled = true
             isShrinkResources = true
+            isDebuggable = false
+            signingConfig = if (releaseKeystore != null)
+                signingConfigs.getByName("release") else signingConfigs.getByName("debug")
             buildConfigField("boolean", "DEV_DIAGNOSTICS", "false")
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),

@@ -1,13 +1,45 @@
-# Android device test: calls, files and metadata
+<!-- SPDX-License-Identifier: CC-BY-SA-4.0 -->
+<!-- Copyright (C) 2025-2026 muc111 -->
 
-Everything in this document was implemented and tested **without a handset**.
-The Python half ran against the real `VoiceCallManager`, the real
-`FileTransferManager`, real OTR sessions and real SMP runs through the Rust
-core; the Kotlin half is compiled and unit-tested by CI. What none of that can
-reach is listed here, as steps a person runs.
+# Android device test: the release candidate
 
-Nothing below has been run on a device. Each step names what would falsify
-the implementation, not what would merely look right.
+**Build under test:** the release APK of `0.7.0-experimental.rc.1` (versionCode
+11), published by CI with its SHA-256 in the release notes. Check the hash
+before installing. Steps that need `adb shell run-as` (45, and the file
+listings) need the **debug** APK from the same release, because a release
+build is not debuggable.
+
+Everything below the checklist was implemented and tested **without a
+handset**. The Python half ran against the real engine and the real Rust core;
+the Kotlin half is compiled and unit-tested by CI. What none of that can reach
+is listed here, as steps a person runs. **None of the hardware steps has been
+run for this build.** Each step names what would falsify the implementation,
+not what would merely look right.
+
+## Release-candidate checklist
+
+| Area | Verified automatically (CI, every run) | Requires hardware | Status |
+|---|---|---|---|
+| First launch | APK builds; contents inspected (`inspect_apk.py`); core imports under Chaquopy in the debug diagnostics | §9 steps 55–57 | NOT RUN |
+| Identity and fingerprint (new each launch, B1) | `test_peer_fingerprint_is_stable.py`, `test_android_termux_interop.py` (fingerprints agree both ways; Android identity not persisted) | §9 steps 58–60 | NOT RUN |
+| XMPP over I2P | Transport against a fake forwarder; no direct fallback in any failure mode (`test_android_transport_lifecycle.py`) | §10 steps 61–63 | NOT RUN |
+| OTR (DAKE) | Real DAKE through the bridge, fragmented, both initiators (`test_android_termux_interop.py`, `test_smp_android_interop.py`) | §10 step 64, §11 | NOT RUN |
+| Fingerprint verification / SMP | Real SMP runs Android↔Android and Android↔Termux, success, failure, abort | §1, §9 step 60, §10 step 66 | NOT RUN |
+| SMP Cancel | Fixed in this build (the engine had no abort); real-engine test | §10 step 66 | NOT RUN |
+| Normal messaging, ratchet | 60 alternating messages and bursts across platforms | §10 step 64 | NOT RUN |
+| Reconnect | Transport reconnect builds a fresh tunnel; a new session requires re-verification | §10 step 65 | NOT RUN |
+| Roster | Roster read on the loop thread; malformed roster survivable | §10 step 62 | NOT RUN |
+| Rooms | Room path separated from OTR (`test_android_room_chat.py`) | §8 steps 50–54 | NOT RUN |
+| Calls, two-way audio | Voice keys in Rust; gate closed unless verified; integer bounds | §2, §3 | NOT RUN |
+| Background, lock screen, incoming ringing | Notification content and channel (Kotlin unit tests) | §6 steps 31–34 | NOT RUN |
+| File picker, file transfer | Real transfers through the bridge (`test_android_files.py`) | §4 | NOT RUN |
+| JPEG, PNG, WebP metadata | Scrubbers against real fixtures (`test_metadata_scrub.py`) | §5 steps 24–28, 28a, 28b | NOT RUN |
+| HEIC and video limitation | "Cannot check" path tested | §5 step 28b, 29 | NOT RUN |
+| Wipe & Exit, relaunch after wipe | `test_wipe_and_exit.py` (Rust handles destroyed, disk tree removed, nothing resurrects) | §7 steps 35–49 | NOT RUN |
+| Two-device interoperability | Android↔Termux and Android↔Android protocol runs, in one process | §11 steps 67–70 | NOT RUN |
+
+Do not mark a row passed until its hardware steps have been run on this build
+and reported as below.
 
 ---
 
@@ -105,6 +137,9 @@ other on their rosters.
 27. Repeat and dismiss the dialog (back button).
     **Expect:** nothing is sent.
 28. Send a screenshot (usually no EXIF). **Expect:** no question is asked.
+28a. Send a PNG that carries text chunks (many editors add them; an image
+    saved from a web page often has them). **Expect:** the metadata question;
+    after Remove and send, B's copy has no `tEXt`/`iTXt`/`eXIf` chunks.
 28b. If the camera app can save HEIC (often "High efficiency" in its
     settings), send a HEIC photo. **Expect:** no scrub is offered; the notice
     says the app cannot check this kind of file. Send a WebP image that
@@ -188,6 +223,49 @@ heard in each direction.
 
 For step 40, report how long the app took to close. For step 45, paste the
 listing.
+
+## 9. First launch and identity — one handset
+
+55. Install the release APK on a phone that has never had OTRv4+. Launch it.
+    **Expect:** the sign-in screen, no connection attempt before sign-in.
+56. About screen. **Expect:** the version reads `0.7.0-experimental.rc.1+core.…`,
+    the Identity paragraph says the identity is new each launch, and the
+    third-party notices open.
+57. Sign in. **Expect:** progress for the length of an I2P round trip, then
+    the roster.
+58. Start OTR with a peer and note your fingerprint as the peer sees it.
+59. Force-stop the app and relaunch. Start OTR again. **Expect:** the peer is
+    warned your key changed (a Termux peer that pinned you; an Android peer
+    keeps no pins across its own restart).
+60. Complete SMP. **Expect:** "Identity verified … This lasts until the app
+    closes". Relaunch: **Expect:** no longer verified.
+
+## 10. Messaging, reconnect and roster over I2P — two handsets or one plus Termux
+
+61. With the I2P router app stopped, press Connect. **Expect:** an error that
+    names the router/SAM bridge. Nothing connects any other way.
+62. Start the router; connect. **Expect:** the roster with real presence.
+63. Leave it idle 10 minutes. **Expect:** still connected (keepalive).
+64. Start OTR and exchange 30 messages each way, including one over 6000
+    characters. **Expect:** all arrive, in order, once.
+65. Toggle airplane mode for 60 s. **Expect:** reconnects by itself; the OTR
+    session must be re-established, and the conversation shows **not
+    verified** until SMP is run again.
+66. Start SMP and press **Cancel** before the other side answers.
+    **Expect:** both sides stop showing a verification in progress; the
+    conversation stays unverified; Call and Send-a-file stay disabled.
+
+## 11. Android ↔ Termux — one handset, one Termux client
+
+67. Termux client (`otrv4plus_xmpp.py`) and the APK on different accounts,
+    both over I2P. From Android, start OTR. **Expect:** Termux shows the DAKE
+    completing and the fingerprint the Android About/verify screen shows.
+68. From Termux, `/otr` to the Android account. **Expect:** same, other way.
+69. `/smp` from Termux; answer on Android. Then Verify from Android and answer
+    in Termux. **Expect:** VERIFIED on both, both times.
+70. With the session verified, `/call` from Termux and a call from Android;
+    `/sendfile` from Termux and a file from Android. **Expect:** audio both
+    ways and files both ways.
 
 ## What this does not cover
 
