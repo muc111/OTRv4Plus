@@ -251,6 +251,7 @@ class OtrConnectionService : Service() {
                 // ours to delete. `enterAccount(NONE)` then leaves the
                 // service holding nothing at all.
                 runCatching { messages.forgetAccount() }
+                runCatching { chat.forgetAccountRecords() }
                 runCatching { enterAccount(AccountScope.NONE) }
                 // AND THE ENGINE, which nothing told until now.
                 //

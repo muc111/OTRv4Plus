@@ -3,7 +3,9 @@
 package org.otrv4plus.android.ui
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -20,6 +22,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import org.otrv4plus.android.bridge.OtrEvent
+import org.otrv4plus.android.chat.ChatDeletion
 import org.otrv4plus.android.chat.ChatState
 import org.otrv4plus.android.chat.ChatViewModel
 import org.otrv4plus.android.chat.Conversation
@@ -48,6 +51,8 @@ fun ConversationsScreen(
 ) {
     val conversations = model.conversations()
     var showAdd by rememberSaveable { mutableStateOf(false) }
+    // A JID, not a Conversation: the row can change under an open dialog.
+    var deleting by rememberSaveable { mutableStateOf<String?>(null) }
 
     Scaffold(
         topBar = {
@@ -139,7 +144,11 @@ fun ConversationsScreen(
             } else {
                 LazyColumn(Modifier.weight(1f)) {
                     items(conversations, key = { it.jid }) { conversation ->
-                        ConversationRow(conversation) { onOpen(conversation.jid) }
+                        ConversationRow(
+                            conversation,
+                            onClick = { onOpen(conversation.jid) },
+                            onLongClick = { deleting = conversation.jid },
+                        )
                         HorizontalDivider()
                     }
                 }
@@ -159,6 +168,18 @@ fun ConversationsScreen(
                 TextButton(onClick = onOpenAbout) { Text("About & licences") }
             }
         }
+    }
+
+    deleting?.let { jid ->
+        val kind = model.deletionKind(jid)
+        val name = model.conversation(jid).displayName
+        DeleteChatDialog(
+            kind = kind,
+            name = name,
+            canLeave = kind == ChatDeletion.Kind.ROOM && model.inRoom(jid),
+            onDelete = { leave -> model.deleteChat(jid, leaveRoom = leave); deleting = null },
+            onDismiss = { deleting = null },
+        )
     }
 
     if (showAdd) {
@@ -324,10 +345,21 @@ private fun EmptyConversations(
  * inventing one would be a network request per contact -- which on an
  * anonymity-oriented client is a new place to leak who you talk to.
  */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun ConversationRow(conversation: Conversation, onClick: () -> Unit) {
+private fun ConversationRow(
+    conversation: Conversation,
+    onClick: () -> Unit,
+    onLongClick: () -> Unit,
+) {
     Row(
-        Modifier.fillMaxWidth().clickable(onClick = onClick).padding(12.dp),
+        Modifier.fillMaxWidth()
+            .combinedClickable(
+                onClick = onClick,
+                onLongClick = onLongClick,
+                onLongClickLabel = "Delete chat",
+            )
+            .padding(12.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(12.dp),
     ) {
@@ -515,5 +547,44 @@ private fun AddContactDialog(onAdd: (String) -> Unit, onDismiss: () -> Unit) {
             ) { Text("Add") }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+    )
+}
+
+/**
+ * Confirm "Delete chat". Every word comes from [ChatDeletion].
+ *
+ * A room gets "Delete and leave room" only when there is a room to leave, and
+ * never anything that destroys it: destroying is an owner action on the
+ * Rooms screen, for a room other people are in.
+ */
+@Composable
+private fun DeleteChatDialog(
+    kind: ChatDeletion.Kind,
+    name: String,
+    canLeave: Boolean,
+    onDelete: (leave: Boolean) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(ChatDeletion.confirmTitle(kind, name)) },
+        text = { Text(ChatDeletion.confirmBody(kind)) },
+        confirmButton = {
+            Column(horizontalAlignment = Alignment.End) {
+                if (canLeave) {
+                    TextButton(
+                        onClick = { onDelete(true) },
+                        colors = ButtonDefaults.textButtonColors(
+                            contentColor = MaterialTheme.colorScheme.error),
+                    ) { Text(ChatDeletion.CONFIRM_AND_LEAVE) }
+                }
+                TextButton(
+                    onClick = { onDelete(false) },
+                    colors = ButtonDefaults.textButtonColors(
+                        contentColor = MaterialTheme.colorScheme.error),
+                ) { Text(ChatDeletion.CONFIRM) }
+            }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text(ChatDeletion.CANCEL) } },
     )
 }

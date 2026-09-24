@@ -320,6 +320,49 @@ class ChatViewModel : ViewModel() {
         }
     }
 
+    /** What kind of chat [jid] is, for the delete dialog. */
+    fun deletionKind(jid: String): ChatDeletion.Kind =
+        if (isRoom(jid)) ChatDeletion.Kind.ROOM else ChatDeletion.Kind.DIRECT
+
+    /** Whether [jid] is a room this session is in, so leaving means something. */
+    fun inRoom(jid: String): Boolean { observe(); return state?.inRoomThisSession(jid) == true }
+
+    /**
+     * "Delete chat". Local deletion first and unconditionally -- it does not
+     * wait on the network, and it is the part the user asked for. Then, if
+     * asked, leave the room (never destroy it); then ask the server what it
+     * keeps, and say exactly that. See [ChatDeletion].
+     */
+    fun deleteChat(jid: String, leaveRoom: Boolean = false) {
+        val state = this.state ?: return
+        val bare = ChatState.bare(jid.trim())
+        val kind = deletionKind(bare)
+        val deleted = state.deleteConversation(bare)
+        revision++
+        val core = this.core
+        viewModelScope.launch {
+            var left: Boolean? = null
+            if (kind == ChatDeletion.Kind.ROOM && leaveRoom) {
+                left = core != null && withContext(Dispatchers.IO) {
+                    core.leaveRoom(bare, "").ok
+                }
+                if (left == true) state.forgetRoom(bare)
+            }
+            val (probe, mam) = if (core == null || !state.canSend()) null to null
+                else withContext(Dispatchers.IO) {
+                    core.archiveSupport(if (kind == ChatDeletion.Kind.ROOM) bare else "")
+                }
+            state.note(ChatDeletion.Outcome(
+                kind = kind,
+                deletedLocally = deleted,
+                left = left,
+                server = ChatDeletion.serverArchive(
+                    answered = probe?.ok == true && mam != null, mam = mam == true),
+            ).message)
+            revision++
+        }
+    }
+
     /** Add a contact to the roster, and say what happened. */
     fun addContact(jid: String) {
         val state = this.state ?: return

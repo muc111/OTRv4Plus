@@ -173,6 +173,26 @@ class PersistentMessageStore(
         vault.clear()
     }
 
+    /**
+     * Delete one conversation, in memory and on disk.
+     *
+     * The record is REMOVED, not rewritten empty, and the index is rewritten
+     * without it -- so the next process neither finds the entry nor is told
+     * to look for it. Marked loaded, so a read in this process cannot
+     * re-hydrate a record a concurrent writer had not yet seen go.
+     */
+    override fun delete(conversationId: String): Boolean = synchronized(lock) {
+        if (!scope.isAuthenticated) return@synchronized false
+        hydrate(conversationId)
+        val had = memory.delete(conversationId)
+        val existed = vault.get(scope.entryFor(conversationId))
+            ?.also { it.fill(0) } != null
+        vault.remove(scope.entryFor(conversationId))
+        loaded.add(conversationId)
+        writeIndex(memory.conversationIds())
+        had || existed
+    }
+
     // -- durability -----------------------------------------------------------
 
     private fun hydrate(conversationId: String) {
@@ -202,6 +222,13 @@ class PersistentMessageStore(
 
     private fun persist(conversationId: String) {
         if (!scope.isAuthenticated) return
+        // Nothing in it -- a deleted conversation that was then marked read,
+        // say -- is no record at all, not an empty one left in the vault.
+        if (memory.lastMessage(conversationId) == null) {
+            vault.remove(scope.entryFor(conversationId))
+            writeIndex(memory.conversationIds())
+            return
+        }
         val text = MessageCodec.encodeAll(
             memory.messages(conversationId), memory.unread(conversationId))
         vault.put(scope.entryFor(conversationId),

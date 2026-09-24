@@ -74,6 +74,13 @@ interface MessageStore {
 
     /** Forget everything. Used when the account changes. */
     fun clear()
+
+    /**
+     * Delete one conversation's history: every message, its unread count and,
+     * for a durable store, its record and its place in the index. Returns
+     * whether there was anything to delete. The user's "Delete chat".
+     */
+    fun delete(conversationId: String): Boolean
 }
 
 /**
@@ -145,6 +152,12 @@ class InMemoryMessageStore(
             ids.clear()
             unreadCounts.clear()
         }
+    }
+
+    override fun delete(conversationId: String): Boolean = synchronized(lock) {
+        ids.remove(conversationId)
+        unreadCounts.remove(conversationId)
+        byConversation.remove(conversationId) != null
     }
 
     /**

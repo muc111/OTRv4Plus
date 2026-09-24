@@ -1697,7 +1697,14 @@ class XmppTransport(Transport):
         return self._room_call(self._leave_room(room, nick))
 
     async def _leave_room(self, room: str, nick: str):
-        self._client["xep_0045"].leave_muc(room, nick)
+        muc = self._client["xep_0045"]
+        # No nickname from the caller -- "Delete and leave" on the chat list,
+        # which never saw the join -- means the one this session joined with.
+        # Not joined this session: there is no presence to withdraw, and the
+        # server has already dropped us with the old stream.
+        nick = nick or dict(getattr(muc, "our_nicks", {}) or {}).get(room, "")
+        if nick:
+            muc.leave_muc(room, nick)
         return {}
 
     def destroy_room(self, room: str,
@@ -1716,6 +1723,42 @@ class XmppTransport(Transport):
         await self._client["xep_0045"].destroy(room, reason=reason,
                                                timeout=CALL_TIMEOUT)
         return {}
+
+    #: disco#info features that bear on deleting history from a SERVER.
+    #: Read, never acted on: see `archive_support`.
+    ARCHIVE_FEATURES = {
+        "urn:xmpp:mam:2": "mam",                       # XEP-0313 archive
+        "urn:xmpp:mam:1": "mam",
+        "urn:xmpp:message-retract:1": "retract",       # XEP-0424
+        "urn:xmpp:message-retract:0": "retract",
+        "urn:xmpp:message-moderate:1": "moderate",     # XEP-0425 (rooms)
+        "urn:xmpp:message-moderate:0": "moderate",
+    }
+
+    def archive_support(self, jid: str = "") -> "tuple[str, str, dict]":
+        """What [jid] -- our own account when empty, or a room -- advertises
+        about keeping and deleting history.
+
+        A QUESTION, NOT A CAPABILITY. No XEP lets a client delete a server's
+        message archive: XEP-0313 (MAM) defines query only; XEP-0424
+        retraction asks the other side's clients to hide one message by its
+        archive id, which this app does not record; XEP-0425 moderation is
+        per message and for room moderators. So this reports, and "Delete
+        chat" tells the user what the server said, instead of implying the
+        server's copy went with the local one.
+        """
+        return self._room_call(self._archive_support(jid))
+
+    async def _archive_support(self, jid: str):
+        target = jid or str(self._client.boundjid.bare)
+        info = await self._client["xep_0030"].get_info(
+            jid=target, timeout=CALL_TIMEOUT)
+        found = {"mam": False, "retract": False, "moderate": False}
+        for feature in info["disco_info"]["features"]:
+            key = self.ARCHIVE_FEATURES.get(str(feature))
+            if key:
+                found[key] = True
+        return found
 
     def room_standing(self, room: str, nick: str) -> "tuple[str, str, dict]":
         """Our affiliation and role in a room we are already in."""

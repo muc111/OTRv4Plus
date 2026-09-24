@@ -431,6 +431,21 @@ class ChaquopyOtrCore(private val appContext: Context) : OtrCore {
         return outcomeOf(result)
     }
 
+    /**
+     * What the server advertises about keeping [jid]'s history (our own
+     * account when blank). `null` mam when it did not answer: unknown is not
+     * "no archive". Asked, never acted on -- see `ChatDeletion`.
+     */
+    fun archiveSupport(jid: String = ""): Pair<RoomOutcome, Boolean?> {
+        val result = call("archive_support", jid) ?: return notPrepared() to null
+        val outcome = outcomeOf(result)
+        if (!outcome.ok) return outcome to null
+        val mam = runCatching {
+            listValue(result)?.callAttr("get", "mam")?.toBoolean()
+        }.getOrNull()
+        return outcome to mam
+    }
+
     /** Who is in [room]. Moderators first, as the bridge orders them. */
     fun roomOccupants(room: String): Pair<RoomOutcome, List<RoomOccupant>> {
         val result = call("room_occupants", room) ?: return notPrepared() to emptyList()

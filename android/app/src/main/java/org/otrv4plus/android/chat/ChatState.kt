@@ -114,6 +114,7 @@ class ChatState(
         callStates.clear()
         postLogin.onSignedOut()
         savedContacts.bind(next)
+        deleted.bind(next)
         (store as? PersistentMessageStore)?.bind(next)
     }
 
@@ -317,11 +318,49 @@ class ChatState(
     var savedContacts = SavedContacts(null)
         private set
 
-    /** Give the saved-contact store somewhere to persist. */
+    /** Conversations the user deleted; see [DeletedConversations]. */
+    var deleted = DeletedConversations(null)
+        private set
+
+    /** Give the saved-contact and deleted-conversation records somewhere to persist. */
     fun bindVault(vault: org.otrv4plus.android.security.Vault?) {
         savedContacts = SavedContacts(vault)
         savedContacts.bind(account)
+        deleted = DeletedConversations(vault)
+        deleted.bind(account)
     }
+
+    /**
+     * Sign out: forget this account's device-side records other than the
+     * history, which the message store forgets itself. Before this, Sign out
+     * left the saved-contact list behind although the documentation said it
+     * went with the account.
+     */
+    fun forgetAccountRecords() {
+        savedContacts.forgetAccount()
+        deleted.forgetAccount()
+    }
+
+    /**
+     * "Delete chat": this conversation's history, draft and unread count,
+     * from memory and from the vault, and the row stays gone until the
+     * conversation has something in it again. See [ChatDeletion] for what
+     * it does not do -- it removes no contact, destroys no room and deletes
+     * nothing on the server. Returns whether there was history to delete.
+     */
+    fun deleteConversation(jid: String): Boolean {
+        val bare = bare(jid)
+        if (bare.isEmpty() || !account.isAuthenticated) return false
+        val had = store.delete(bare)
+        drafts.remove(bare)
+        if (openConversation == bare) openConversation = null
+        deleted.add(bare)
+        return had
+    }
+
+    /** Whether [jid]'s stored history is room traffic: lines carry a sender nick. */
+    private fun storedAsRoom(jid: String): Boolean =
+        store.messages(jid).any { it.sender.isNotEmpty() }
 
     /**
      * Replace the roster with what the engine just reported.
@@ -496,7 +535,19 @@ class ChatState(
 
     fun noteRoom(jid: String) { rooms.add(bare(jid)) }
 
-    fun isRoom(jid: String): Boolean = bare(jid) in rooms
+    /** Joined, or heard from, in this session: leaving has something to do. */
+    fun inRoomThisSession(jid: String): Boolean = bare(jid) in rooms
+
+    /** We left [jid]. Its stored history, if any, still reads as a room. */
+    fun forgetRoom(jid: String) { rooms.remove(bare(jid)) }
+
+    /**
+     * In a room joined this session, OR history that is room traffic. The
+     * second half is what keeps a room a room after a restart: membership is
+     * forgotten with the stream, and without it a room's stored history came
+     * back looking like a one-to-one conversation with the room's address.
+     */
+    fun isRoom(jid: String): Boolean = bare(jid) in rooms || storedAsRoom(bare(jid))
 
     fun receiveRoom(event: OtrEvent.RoomMessageReceived): Boolean {
         val room = bare(event.room)
@@ -517,6 +568,7 @@ class ChatState(
                 sender = event.sender,
             )
         )
+        if (added) deleted.restore(room)
         if (added && uiVisible && openConversation == room) store.markRead(room)
         return added
     }
@@ -542,6 +594,7 @@ class ChatState(
         // Read as it arrives only if the user is actually looking at it --
         // BOTH that this conversation is the open one and that the screen is
         // in front of them. Either alone is not "they saw it".
+        if (added) deleted.restore(jid)
         if (added && uiVisible && openConversation == jid) store.markRead(jid)
         return added
     }
@@ -566,9 +619,12 @@ class ChatState(
         // store's ids already are (`receive` bares them) and `SavedContacts`
         // already lower-cases, but the union is the place the split would
         // SHOW, so it is the place that states the rule.
-        val jids = contacts.keys.map { bare(it) }.toSet() +
+        val jids = (contacts.keys.map { bare(it) }.toSet() +
             store.conversationIds().map { bare(it) } +
-            savedContacts.all().map { bare(it.jid) }
+            savedContacts.all().map { bare(it.jid) })
+            // A deleted conversation stays out of the list while it is empty,
+            // however the roster or the saved list would bring it back.
+            .filterNot { deleted.contains(it) && store.lastMessage(it) == null }
         return jids.map { jid ->
             val contact = contacts[jid]
             Conversation(
@@ -663,6 +719,8 @@ class ChatState(
         // different spelling, the comparison never matches and the badge
         // counts up on the conversation the user is reading.
         openConversation = bare(jid)
+        // Opened on purpose, from the contacts or online list: it is wanted.
+        deleted.restore(bare(jid))
         // Opening a conversation is looking at it. The service's own signal
         // can lag a frame behind the Activity's onStart, and a badge that
         // lingers on the screen you are reading is its own small bug.
@@ -734,6 +792,7 @@ class ChatState(
             security = SecurityLabel.UNKNOWN,
         )
         store.append(message)
+        deleted.restore(jid)
         return message
     }
 

@@ -125,6 +125,8 @@ object WipeAndExit {
               Step.DESTROY_VAULT),
         Store("Saved contacts", "vault: contacts.<account>",
               Category.SENSITIVE_PERSISTENT, Step.DESTROY_VAULT),
+        Store("Deleted-conversation list (addresses only)", "vault: deleted.<account>",
+              Category.SENSITIVE_PERSISTENT, Step.DESTROY_VAULT),
         Store("The vault's sealing key",
               "AndroidKeyStore: otrv4plus.vault.v1",
               Category.SENSITIVE_PERSISTENT, Step.DESTROY_VAULT),

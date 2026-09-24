@@ -811,6 +811,11 @@ class ConnectionController:
         """Who is in [room], as `{nick, role, affiliation}` rows."""
         return self._muc_call("room_occupants", room)
 
+    def archive_support(self, jid: str = "") -> Dict[str, Any]:
+        """What the server says about archiving [jid]'s history. See
+        `XmppTransport.archive_support`: reported, never acted on."""
+        return self._muc_call("archive_support", jid)
+
     def _noting_room(self, result: Dict[str, Any], room: str,
                      joined: bool) -> Dict[str, Any]:
         """Tell the app about membership, but only when the server agreed."""
