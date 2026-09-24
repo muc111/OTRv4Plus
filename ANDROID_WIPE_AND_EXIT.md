@@ -34,11 +34,19 @@ says that it cannot be undone.
 Each step is attempted even if an earlier one failed; a second request does
 nothing. The process ending is the last step, always attempted.
 
-1. **Stop background work.** The drain loop (which writes arriving messages to
-   the vault) and the reconnect loop are cancelled first, so nothing writes
-   back or reconnects behind the wipe. From here the service ignores every
-   start request.
-2. **Wipe the engine**, while the transport still exists:
+1. **Stop background work.** The vault is **latched** first (`LatchedVault`:
+   from here it refuses every write and read, and the latch waits for a write
+   already in progress), then the drain loop (which writes arriving messages
+   to the vault) and the reconnect loop are cancelled, so nothing writes back
+   or reconnects behind the wipe. From here the service ignores every start
+   request, and a screen opened in this process closes at once.
+2. **Notifications**: all cancelled.
+3. **Memory**: the conversation list, drafts, roster, rooms, call states,
+   verification states and unread count.
+4. **Vault**: the AndroidKeyStore key is deleted, then the vault files.
+5. **Cache**: files staged for sending, metadata-scrubbed copies, exported
+   diagnostics.
+6. **Wipe the engine**, while the transport still exists:
    1. *Calls*: each is ended, then anything left is force-closed, which stops
       the audio streams and zeroizes the key schedule and key exchange; the
       call event loop is drained, stopped and closed.
@@ -56,13 +64,31 @@ nothing. The process ending is the last step, always attempted.
       seed) and the configured file directory,
       each file overwritten once with random bytes, fsync'd and
       unlinked. Symlinks are removed, never followed.
-3. **Notifications**: all cancelled.
-4. **Memory**: the conversation, drafts, roster, call states and unread count.
-5. **Vault**: the AndroidKeyStore key is deleted, then the vault files.
-6. **Cache**: files staged for sending, metadata-scrubbed copies, exported
-   diagnostics.
 7. **Exit**: the service stops (so it is not restarted as sticky), the task is
    removed from Recents, and the process is killed.
+
+### Why local state goes before the engine (the "conversations reappear" report)
+
+Up to rc.1 the order was engine, notifications, memory, vault. The engine
+step ends calls and closes the XMPP stream and the I2P tunnel, and each of
+those waits on a network timeout (`CALL_TIMEOUT` 30 s, `CLOSE_TIMEOUT` 5 s),
+so it can take tens of seconds. For all of that time the process was alive
+with the conversation list in memory and every record still in the vault:
+
+* reopening the app in that window showed every conversation, because the
+  Activity read the still-populated `ChatState` of the still-running process;
+* anything that ended the process in that window (the system, a force stop,
+  a crash in the teardown) meant the memory and vault steps never ran, and the
+  conversations were still there on every later launch;
+* the drain loop is cancelled, not joined, so a message it was already
+  storing could be written after the vault was cleared.
+
+Memory, vault and cache are local and take milliseconds, and the engine reads
+neither the vault nor `ChatState`, so they now run first; the vault is
+latched before anything else; and `MainActivity` refuses to build a screen
+while a wipe is in progress. `WipePersistenceTest` reproduces the report
+(conversations → restart → present → wipe → restart → absent → restart →
+absent, with the vault's contents inspected) and the late-write race.
 
 ### Why the engine is wiped on the loop thread
 
@@ -142,3 +168,12 @@ roster and may have offline messages, which are OTR ciphertext).
 The next launch is a first launch: login screen, no contacts, no history, a
 new identity and fingerprint. Peers will see the new key and must verify again
 with SMP. Notification channel settings and granted permissions remain.
+
+**Signing in to the same account again brings back the server's roster, not
+the history.** The conversation list shows every roster contact so a
+conversation can be started with them, and the roster is held by the XMPP
+server, not by the device. After a wipe those rows reappear with no messages,
+no preview and no verification. That is server state, which a local wipe
+does not and cannot remove; removing a contact from the server roster is a
+separate, explicit action. Rooms are not rejoined: the app keeps no room
+bookmarks, locally or on the server.

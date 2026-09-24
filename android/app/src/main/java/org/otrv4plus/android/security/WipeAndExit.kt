@@ -27,17 +27,33 @@ import java.util.concurrent.atomic.AtomicBoolean
  * the vault and the reconnect loop can start a new connection. Either one
  * running after the vault is destroyed would write something back, or bring
  * a session back. Stopped first, nothing re-creates what later steps destroy.
+ * The service also LATCHES the vault here (`LatchedVault`): cancelling the
+ * drain loop does not wait for a write already in progress, and a latched
+ * vault refuses it.
  *
- * [Step.WIPE_ENGINE] next, while the transport still exists: the engine must
- * be wiped on the transport's loop thread (see `OtrApp.wipe`), and calls end
- * over the OTR session that step destroys.
- *
- * [Step.CLEAR_NOTIFICATIONS] and [Step.CLEAR_MEMORY] before the vault, so
- * nothing on screen or in the shade outlives the records behind it.
+ * [Step.CLEAR_NOTIFICATIONS], [Step.CLEAR_MEMORY] and [Step.DESTROY_VAULT]
+ * next, BEFORE the engine, and this is the order that makes "wiped" true on
+ * a handset. They are local and take milliseconds. [Step.WIPE_ENGINE] ends
+ * calls and closes the XMPP stream and I2P tunnel, and each of those is
+ * bounded by a network timeout -- tens of seconds over three I2P hops. When
+ * the vault came after it, the whole of that time was a window in which the
+ * conversation list was still in memory and every record still on disk: a
+ * user who reopened the app to check saw every conversation still there, and
+ * anything that stopped the process in that window (the system, a force
+ * stop, a crash in the teardown) left them there for good. The engine does
+ * not read the vault or the chat state, so nothing it does depends on them.
  *
  * [Step.DESTROY_VAULT] deletes the AndroidKeyStore key and then the files.
  * The key is what makes this erasure rather than deletion: a sealed record
  * whose key no longer exists cannot be opened, whatever the flash still holds.
+ *
+ * [Step.CLEAR_CACHE] before the engine too: staged outgoing files are local.
+ * A transfer still reading one keeps its open descriptor until the engine
+ * step ends it.
+ *
+ * [Step.WIPE_ENGINE] then, while the transport still exists: the engine must
+ * be wiped on the transport's loop thread (see `OtrApp.wipe`), and calls end
+ * over the OTR session that step destroys.
  *
  * [Step.EXIT] last, and always attempted, even when an earlier step failed:
  * the process ending is what finally releases anything a step could not.
@@ -46,13 +62,25 @@ object WipeAndExit {
 
     enum class Step {
         STOP_BACKGROUND,
-        WIPE_ENGINE,
         CLEAR_NOTIFICATIONS,
         CLEAR_MEMORY,
         DESTROY_VAULT,
         CLEAR_CACHE,
+        WIPE_ENGINE,
         EXIT,
     }
+
+    /**
+     * Whether a wipe has started in this process. Process-wide on purpose:
+     * a screen opened while the engine step is still running must show
+     * nothing and close, not render whatever it can still reach.
+     */
+    private val begun = AtomicBoolean(false)
+
+    val inProgress: Boolean get() = begun.get()
+
+    /** Marks the wipe begun. Returns false if it already was. */
+    fun begin(): Boolean = begun.compareAndSet(false, true)
 
     /** The order the steps run in. */
     val ORDER: List<Step> = Step.entries.toList()

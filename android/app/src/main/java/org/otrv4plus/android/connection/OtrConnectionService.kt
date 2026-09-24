@@ -37,6 +37,7 @@ import org.otrv4plus.android.crypto.CallAlert
 import org.otrv4plus.android.security.Credentials
 import org.otrv4plus.android.security.CredentialStore
 import org.otrv4plus.android.security.KeystoreVault
+import org.otrv4plus.android.security.LatchedVault
 import org.otrv4plus.android.security.Vault
 import org.otrv4plus.android.security.VaultCredentialStore
 import org.otrv4plus.android.security.WipeAndExit
@@ -106,7 +107,7 @@ class OtrConnectionService : Service() {
      * same key and separated by the entry name, which is bound into each
      * record's authenticated data so one cannot be replayed as the other.
      */
-    val vault: Vault by lazy { KeystoreVault.open(applicationContext) }
+    val vault: LatchedVault by lazy { LatchedVault(KeystoreVault.open(applicationContext)) }
 
     /** The remembered account, so a dropped tunnel is not a password prompt. */
     val credentials: CredentialStore by lazy { VaultCredentialStore(vault) }
@@ -415,11 +416,15 @@ class OtrConnectionService : Service() {
      */
     private fun wipeAndExit() {
         if (!wipeStarted.compareAndSet(false, true)) return
+        WipeAndExit.begin()
         goForeground()
         reconnect.onUserDisconnect()
         val context = applicationContext
         val runner = WipeAndExit.Runner(mapOf(
             WipeAndExit.Step.STOP_BACKGROUND to {
+                // Before the loops are cancelled: cancelling does not wait for
+                // a write already under way, and the latch does.
+                vault.latch()
                 worker?.cancel(); worker = null
                 watcher?.cancel(); watcher = null
                 drainer?.cancel(); drainer = null
@@ -443,7 +448,7 @@ class OtrConnectionService : Service() {
                 // The in-memory fallback vault has no key to delete; clearing
                 // it is the whole of its erasure.
                 runCatching { vault.clear() }
-                if (!KeystoreVault.destroy(context) && vault is KeystoreVault) {
+                if (!KeystoreVault.destroy(context) && vault.inner is KeystoreVault) {
                     error("the vault key could not be confirmed deleted")
                 }
             },

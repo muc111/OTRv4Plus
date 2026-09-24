@@ -41,11 +41,33 @@ class WipeAndExitTest {
     }
 
     @Test
-    fun `the engine is wiped before the vault and exit is last`() {
+    fun `local state is destroyed before the network-bound engine step, and exit is last`() {
+        // The engine step closes calls, the stream and the I2P tunnel, each
+        // bounded by a network timeout. Memory and the vault used to come
+        // after it, and that window is where "wiped" conversations were
+        // still on screen and on disk (WipePersistenceTest).
         val order = WipeAndExit.ORDER
-        assertTrue(order.indexOf(Step.WIPE_ENGINE) < order.indexOf(Step.DESTROY_VAULT))
+        for (local in listOf(Step.CLEAR_NOTIFICATIONS, Step.CLEAR_MEMORY,
+                             Step.DESTROY_VAULT, Step.CLEAR_CACHE)) {
+            assertTrue(order.indexOf(local) < order.indexOf(Step.WIPE_ENGINE), "$local")
+        }
+        assertTrue(order.indexOf(Step.CLEAR_MEMORY) < order.indexOf(Step.DESTROY_VAULT))
         assertTrue(order.indexOf(Step.CLEAR_NOTIFICATIONS) < order.indexOf(Step.DESTROY_VAULT))
         assertEquals(Step.EXIT, order.last())
+    }
+
+    @Test
+    fun `a latched vault refuses writes and reads but still erases`() {
+        val disk = InMemoryVault()
+        val vault = LatchedVault(disk)
+        vault.put("a", byteArrayOf(1))
+        vault.latch()
+        vault.put("b", byteArrayOf(2))
+        assertNull(disk.get("b"), "a write after the latch reached the disk")
+        assertNull(vault.get("a"), "a read after the latch returned a record")
+        vault.clear()
+        assertNull(disk.get("a"), "clear stopped working once latched")
+        assertTrue(vault.isLatched)
     }
 
     @Test
@@ -54,7 +76,8 @@ class WipeAndExitTest {
         val report = WipeAndExit.Runner(
             recording(log, failing = setOf(Step.WIPE_ENGINE, Step.DESTROY_VAULT))).run()
         assertEquals(WipeAndExit.ORDER, log, "a failure skipped later steps")
-        assertEquals(listOf(Step.WIPE_ENGINE, Step.DESTROY_VAULT), report.failed)
+        assertEquals(WipeAndExit.ORDER.filter { it == Step.WIPE_ENGINE || it == Step.DESTROY_VAULT },
+                     report.failed)
         assertFalse(report.ok)
         assertTrue(Step.EXIT in report.completed)
     }

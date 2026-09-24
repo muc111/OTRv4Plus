@@ -30,6 +30,7 @@ import org.otrv4plus.android.ui.ConversationsScreen
 import org.otrv4plus.android.ui.DevShellScreen
 import org.otrv4plus.android.ui.RoomsScreen
 import org.otrv4plus.android.ui.FingerprintAlertDialog
+import org.otrv4plus.android.security.WipeAndExit
 
 /**
  * Single Activity, Compose, unidirectional data flow.
@@ -137,6 +138,15 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        // Reopened while Wipe & Exit is still ending calls and closing the
+        // tunnel. The process is alive for those seconds, and a screen built
+        // now would render whatever it could still reach. Nothing is shown;
+        // the process ends when the wipe does.
+        if (WipeAndExit.inProgress) {
+            finishAndRemoveTask()
+            return
+        }
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
             ContextCompat.checkSelfPermission(
