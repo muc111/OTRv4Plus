@@ -3,8 +3,8 @@
 
 # Android device test: the release candidate
 
-**Build under test:** the release APK of `0.7.0-experimental.rc.1` (versionCode
-11), published by CI with its SHA-256 in the release notes. Check the hash
+**Build under test:** the release APK of `0.7.0-experimental.rc.2` (versionCode
+12), published by CI with its SHA-256 in the release notes. Check the hash
 before installing. Steps that need `adb shell run-as` (45, and the file
 listings) need the **debug** APK from the same release, because a release
 build is not debuggable.
@@ -38,8 +38,21 @@ not what would merely look right.
 | Wipe & Exit, relaunch after wipe | `test_wipe_and_exit.py` (Rust handles destroyed, disk tree removed, nothing resurrects) | §7 steps 35–49 | NOT RUN |
 | Two-device interoperability | Android↔Termux and Android↔Android protocol runs, in one process | §11 steps 67–70 | NOT RUN |
 
+| Wipe & Exit leaves no conversations (rc.2 fix) | `WipePersistenceTest` (restart → present → wipe → restart ×2 → absent, vault inspected; late-write race) | §16 steps 91–97 | NOT RUN |
+| Delete chat, 1:1 and room | `ChatDeletionTest`, `test_android_chat_deletion.py` | §12 steps 71–78 | NOT RUN |
+| Incoming-file prompt, progress, outcomes | `test_file_transfer_states.py` (real ratchets), `TransferStatesTest` | §13 steps 79–85 | NOT RUN |
+| Call control visible when verified; two-way audio | `TestTheCallGateAndroidRenders`, `SecurityTransitionsTest` | §14 steps 86–89 | NOT RUN |
+| Online users | `OnlineUsersTest` | §15 step 90 | NOT RUN |
+| No secrets in Android persistence | `WipeAndExit.STORES` audit, vault-only persistence | §17 step 98 | NOT RUN |
+
 Do not mark a row passed until its hardware steps have been run on this build
 and reported as below.
+
+### What the rc.1 handset run established (reported by the owner)
+
+Android OTR works. Android SMP works. The Termux client's stored SMP
+verification works. Termux file transfer works, with the hashes checked. The
+UI gaps it found are what §12–§17 re-test on rc.2.
 
 ---
 
@@ -266,6 +279,102 @@ listing.
 70. With the session verified, `/call` from Termux and a call from Android;
     `/sendfile` from Termux and a file from Android. **Expect:** audio both
     ways and files both ways.
+
+## 12. Delete chat (Test G) — one handset
+
+71. Create chats with Alice and Bob; send a message in each. Long-press
+    Alice. **Expect:** "Delete chat with Alice?" with Delete and Cancel.
+    Cancel. **Expect:** nothing changed.
+72. Long-press Alice → Delete. **Expect:** Alice's row is gone, and a notice
+    starts "Deleted from this device. Server-side deletion is not supported"
+    and then says what the server advertises, or that it could not be checked.
+73. Force-stop and reopen (sign in if asked). **Expect:** Alice is still
+    gone, even after the roster arrives; Bob is still there with history.
+74. Alice sends a new message. **Expect:** Alice's row returns with only the
+    new message. Nothing from before the delete comes back.
+75. Delete Bob. Restart. **Expect:** Bob is gone.
+76. Old English group chat: open Rooms, note the room type is MUC (joined via
+    the Rooms screen). Long-press its row. **Expect:** "Delete room chat …?"
+    with *Delete*, and *Delete and leave room* only if you are in it this
+    session. **Expect:** no option to destroy.
+77. Delete and leave. **Expect:** "You left the room; it still exists for
+    everyone else." From Termux (or another member) check that the room still
+    exists and its occupants are unaffected.
+78. Restart. **Expect:** the room row stays gone.
+
+## 13. Incoming file prompt and progress (Tests D) — handset + Termux, verified
+
+79. Verify SMP between Android and Termux (§11 step 69). From Termux,
+    `/sendfile` a file of about 300 KB. **Expect:** on Android an "Incoming
+    file" dialog naming Termux, the filename and the size, with Accept and
+    Decline. Nothing downloads before you answer.
+80. Accept. **Expect:** a row "Receiving name" with a bar, "x KB of y KB ·
+    n%" moving, then a lasting line "File received successfully — name
+    (hashes verified)". Termux prints "… received … and verified it".
+    `sha256sum` on both sides: the same hash.
+81. Send again; Decline. **Expect:** "File declined — name" on Android;
+    Termux says the transfer was declined.
+82. Send a larger file; press Cancel on Android mid-transfer. **Expect:**
+    "File transfer cancelled — name" on Android; Termux says the peer
+    cancelled; no partial file in the received directory.
+83. Android → Termux: Send a file. **Expect:** "Offered … waiting", then
+    "Sending" with progress, then "File sent — … Waiting for them to confirm",
+    then "File sent successfully — name (they received it and verified it)".
+84. Start a transfer and force-stop Android mid-way. Reopen. **Expect:** no
+    row stuck at "transferring"; the chat shows only lines for transfers that
+    ended.
+85. (Hash failure is exercised by `test_file_transfer_states.py`; it cannot be
+    induced from the UI.)
+
+## 14. Calls, Android ↔ Termux (Test E) — handset + Termux
+
+86. Before OTR: open the Termux conversation. **Expect:** a disabled "Call —
+    start encryption first". Start OTR: **Expect:** "Call — verify this contact
+    first" and a padlock mark. Run SMP to VERIFIED: **Expect:** the blue
+    lock-with-key mark and an enabled **Call**. This must hold even if Termux
+    is **not** on the Android roster.
+87. Android taps Call. **Expect:** Termux receives the call signalling and
+    rings; accept on Termux. Both sides go through Connecting → Confirming keys
+    → connected. **Talk both ways and confirm you can hear each other** (a
+    visible button is not a pass). Transport stays I2P datagrams; do not
+    change it.
+88. End from Android. **Expect:** both sides return to idle; the conversation
+    stays encrypted and verified; Call is available again.
+89. End the OTR session (or restart Termux, which makes a new session).
+    **Expect:** "Verified" disappears on Android and Call becomes "verify this
+    contact first" — a verification never outlives its session.
+
+## 15. Online users (Test F) — handset + Termux
+
+90. On the conversation list, open **ONLINE USERS (n)**. Bring Termux online
+    and offline. **Expect:** the list and count change without restarting;
+    each row says online, OTR encrypted or not, SMP verified if so, and call
+    available only when verified. Tap Termux's row twice from different
+    places. **Expect:** the same one conversation each time, never a duplicate.
+
+## 16. Wipe & Exit again (Test H) — one handset
+
+91. With several conversations present, force-stop and reopen. **Expect:**
+    they are there (baseline).
+92. Settings/Connect → Wipe & Exit → confirm. **Expect:** the app closes.
+93. **Immediately** reopen the app (within a few seconds, while the tunnel may
+    still be closing). **Expect:** it does not show any conversation; it closes
+    or shows the sign-in screen.
+94. Reopen after it has exited. **Expect:** sign-in screen, empty list.
+95. With the debug APK: `adb shell run-as org.otrv4plus.android ls -la
+    files/ files/vault` **Expect:** no `vault` directory, or an empty one.
+96. Sign in to the same account. **Expect:** roster contacts may reappear as
+    rows **with no messages and no verification** (the server keeps the
+    roster). No history returns. Deleted-chat and saved-contact lists are empty.
+97. Restart again. **Expect:** still no history.
+
+## 17. Security regression (Test I) — debug APK
+
+98. After some chats, a transfer and a verified session: `adb shell run-as
+    org.otrv4plus.android find files cache -type f`. **Expect:** only
+    `files/vault/*` (AES-GCM records), Chaquopy runtime files, and received
+    files you accepted. No `shared_prefs`, no database, no `smp_secrets`,
+    `.smp_seed`, `.device_seed` or `identity.sealed`. Record the listing.
 
 ## What this does not cover
 

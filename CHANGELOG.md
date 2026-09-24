@@ -4,6 +4,74 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.2 — 2026-09-24 — what the rc.1 handset run found (core 0.11.0)
+
+*The rc.1 handset run proved OTR and SMP on Android, the Termux client's
+stored SMP state, and Termux file transfer with the hashes checked. It also
+found UI gaps, and this release fixes them. It stays `-experimental`: the rc.2
+checklist in `ANDROID_CALL_AND_FILE_DEVICE_TEST.md` (§12–§17) has not been run
+yet. The OTR wire format is unchanged. File transfer adds one control verb,
+`RECEIVED`, which older peers ignore.*
+
+**Wipe & Exit really wipes before anything slow.** Conversations came back
+after a wipe for these reasons:
+
+- The chat memory and vault steps ran *after* the engine teardown. That step
+  closes calls, the XMPP stream and the I2P tunnel under network timeouts,
+  which can take tens of seconds.
+- For all of that window the app still showed everything if it was reopened.
+- A process death in that window left the records on disk.
+
+The order is now memory, vault and cache first, then the engine. The vault
+is latched so a late write cannot land after it. A screen opened during a
+wipe closes at once. A test reproduces the report and inspects the vault. If
+you sign in to the same account again after a wipe, the *server's roster*
+returns, but no history.
+
+**Delete chat.** Long-press a conversation and confirm.
+
+- One-to-one: the history is deleted from the vault and the index, and the
+  row stays gone across restarts until the chat has something in it again.
+- Rooms (XEP-0045 MUC): a local delete, with an optional "Delete and leave
+  room". Delete **never** destroys a room.
+- Server-side deletion is not supported, because no XEP lets a client delete
+  a server archive, and the app says so. It reports whether the server
+  advertises a message archive (disco#info) and never claims the server
+  deleted anything. See `ANDROID_CHAT_DELETION.md`.
+
+**File transfer finishes on screen.**
+
+- An "Incoming file" prompt shows the name and size, with Accept and
+  Decline. Nothing is auto-accepted.
+- Rows show a progress bar, bytes and a percentage.
+- Every ending leaves a lasting line: "File received successfully — …",
+  "File sent successfully — …" or "File transfer failed — …".
+- The engine now reports structured states. The receiver confirms `RECEIVED`
+  only after its integrity checks pass, so "sent" and "delivered" are
+  different claims.
+- A receiver that discards a file tells the sender.
+- Cancel on a sending row works. It used to call decline, which did nothing.
+
+**The call control follows the engine.** It was hidden for a verified peer:
+
+- the screen read security only from the roster poll and dropped the
+  engine's session events;
+- a peer not on the roster was therefore "plaintext";
+- plaintext hid the control without a word.
+
+A single engine-computed gate (`call_gate`) now decides. It returns one
+reason from a fixed set, and every closed state shows a disabled control
+that says why. A stale "verified" is dropped when the session ends, is
+replaced, or its key changes.
+
+**Online users.** A live list built from XMPP presence. Online, OTR, SMP and
+call-available stay four separate facts, and a tap opens the one
+conversation for that person.
+
+**Security marks.** A padlock for an OTR session, and a lock-with-key and
+tick in the verified blue for an SMP-verified one, as the Termux client
+shows. Plaintext and a changed key never carry a padlock.
+
 ## Android 0.7.0-experimental.rc.1 — 2026-09-24 — release candidate (core 0.11.0)
 
 *The first release candidate: every repository-level gate is closed. It stays

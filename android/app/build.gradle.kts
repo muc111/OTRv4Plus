@@ -34,7 +34,14 @@ android {
         // devices. Left at 26, with the biometric path feature-detected.
         minSdk = 26
         targetSdk = 35
-        versionCode = 11
+        versionCode = 12
+        // rc.1 -> rc.2: the handset run of rc.1 proved OTR, SMP, Termux SMP
+        // state and Termux file transfer, and found UI gaps: Wipe & Exit left
+        // conversations behind, no per-chat delete, no incoming-file prompt,
+        // transfers never finished on screen, the call control hidden for a
+        // verified peer, no online list. All fixed here; still
+        // `-experimental` because the rc.2 handset checklist has not run.
+        //
         // 0.6.0 -> 0.7.0-experimental.rc.1: the first release CANDIDATE. Every
         // repository-level gate is closed (INV-08's at-rest secrets in Rust,
         // documentation licence decided, icon provenance recorded, dependency
@@ -68,7 +75,7 @@ android {
         //
         // core.10.14.0 was wrong for sixteen releases; the Rust core is read
         // from Rust/Cargo.toml so it cannot drift again.
-        versionName = "0.7.0-experimental.rc.1+core.$rustCoreVersion"
+        versionName = "0.7.0-experimental.rc.2+core.$rustCoreVersion"
 
         // Which build this is, surfaced in the diagnostic report.
         //
