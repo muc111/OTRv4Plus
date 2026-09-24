@@ -227,6 +227,11 @@ jobs:
           echo "CARGO_TARGET_${UPPER}_LINKER=$NDK_BIN/${{ matrix.cc }}" >> "$GITHUB_ENV"
           echo "CC_${{ matrix.target }}=$NDK_BIN/${{ matrix.cc }}" >> "$GITHUB_ENV"
           echo "AR_${{ matrix.target }}=$NDK_BIN/llvm-ar" >> "$GITHUB_ENV"
+          # The APK's Opus codec (feature android-opus): opusic-sys builds
+          # upstream libopus with CMake and, given ANDROID_NDK_HOME, uses the
+          # NDK's own android.toolchain.cmake for this ABI at API 26.
+          echo "ANDROID_NDK_HOME=$ANDROID_NDK_LATEST_HOME" >> "$GITHUB_ENV"
+          echo "ANDROID_PLATFORM=android-26" >> "$GITHUB_ENV"
 
       - name: Android libpython, because the linker demands one
         # `ld.lld: error: unable to find library -lpython3`, run #1.
@@ -288,7 +293,7 @@ jobs:
           pip install maturin
           maturin build --release \
             --target ${{ matrix.target }} \
-            --features pyo3/extension-module \
+            --features pyo3/extension-module,android-opus \
             --interpreter python${{ env.PYTHON_VERSION }} \
             --out dist
 

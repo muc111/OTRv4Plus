@@ -124,26 +124,31 @@ class Pair:
 
 @pytest.fixture
 def audio_available(monkeypatch):
-    """Tell `otrv4plus_voice` this platform has voice, through `bind_host`.
+    """Tell the ANDROID host this device has audio.
 
-    THE PLATFORM ANSWER, NOT CALL LOGIC. `_HOST["voice_available"]` is the
-    hook the module uses to ask its host whether opus and an audio backend
-    exist; `otrv4plus_xmpp` binds the real one, which correctly reports that
-    this container has neither. Supplying it here is using the injection
-    point as designed -- every gate that decides whether a call may happen,
-    including the SMP one, remains the shipped implementation.
+    THE PLATFORM ANSWER, NOT CALL LOGIC. On Android the voice host hooks are
+    `android_bridge.android_audio`'s -- the APK's Rust Opus codec and AAudio
+    -- bound by `CallBridge` after `otrv4plus_xmpp` has bound the Termux ones.
+    A container has no libaaudio.so, so the one thing supplied here is
+    `aaudio_available`. The codec is the real Rust one when this core was
+    built with `android-opus` (CI builds it so); a stand-in only otherwise.
+    Every gate that decides whether a call may happen, including the SMP one,
+    remains the shipped implementation.
+
+    It used to override `_HOST["voice_available"]` -- the TERMUX hook. The
+    Android bridge no longer asks that hook, which is the fix for
+    "opuslib not installed" on a handset.
     """
-    # Imported FIRST. Its import binds the real host hooks -- including
-    # `voice_available`, which says this container has no audio -- and the
-    # call bridge imports it on first use. Overriding before that import
-    # meant the first test to build a call manager lost the override, so the
-    # INVITE was refused as "unavailable" before it reached the SMP gate and
-    # the gate tests passed or failed depending on which test ran first.
+    import types
     import otrv4plus_xmpp                                    # noqa: F401
-    previous = voice._HOST["voice_available"]
-    voice.bind_host(voice_available=lambda: (True, "ok"))
+    from android_bridge import android_audio
+    monkeypatch.setattr(android_audio, "aaudio_available", lambda: True)
+    if android_audio.codec() is None:
+        fake = types.SimpleNamespace(
+            Encoder=object, Decoder=object, APPLICATION_VOIP=2048,
+            SIGNAL_VOICE=3001, BANDWIDTH_WIDEBAND=1103)
+        monkeypatch.setattr(android_audio, "codec", lambda: fake)
     yield
-    voice._HOST["voice_available"] = previous
 
 
 @pytest.fixture
@@ -381,20 +386,27 @@ class TestVoiceAvailability:
     def test_an_unavailable_device_refuses_immediately(self, pair,
                                                        monkeypatch):
         """Synchronously, because it is a permanent fact about the device
-        rather than something to discover two frames later."""
-        voice.bind_host(voice_available=lambda: (False, "no audio backend"))
-        try:
-            assert pair.alice.start_call(pair.bob_jid) == \
-                CallOutcome.UNAVAILABLE
-        finally:
-            voice.bind_host(voice_available=lambda: (True, "ok"))
+        rather than something to discover two frames later. The answer is
+        the ANDROID one (no AAudio), bound into the hook `start_call` asks."""
+        from android_bridge import android_audio
+        monkeypatch.setattr(android_audio, "aaudio_available", lambda: False)
+        assert pair.alice.start_call(pair.bob_jid) == CallOutcome.UNAVAILABLE
 
-    def test_the_reason_comes_from_the_engines_own_hook(self, pair):
-        voice.bind_host(voice_available=lambda: (False, "libopus missing"))
-        try:
-            assert pair.alice.voice_unavailable_reason() == "libopus missing"
-        finally:
-            voice.bind_host(voice_available=lambda: (True, "ok"))
+    def test_the_reason_is_androids_and_is_the_one_start_call_asks(self, pair,
+                                                                   monkeypatch):
+        """Was `test_the_reason_comes_from_the_engines_own_hook`, which bound
+        the Termux hook and asserted Android repeated it -- the very route by
+        which "opuslib not installed" reached a handset. Now: the reason is
+        android_audio's, and after a manager exists it is ALSO what
+        `otrv4plus_voice._HOST["voice_available"]` answers, so the screen and
+        `start_call` cannot disagree."""
+        from android_bridge import android_audio
+        monkeypatch.setattr(android_audio, "aaudio_available", lambda: False)
+        assert pair.alice.voice_unavailable_reason() == android_audio.NO_AAUDIO
+        pair.alice.calls._ensure_manager()
+        assert voice._HOST["voice_available"]() == (False, android_audio.NO_AAUDIO)
+        monkeypatch.setattr(android_audio, "codec", lambda: None)
+        assert pair.alice.voice_unavailable_reason() == android_audio.NO_CODEC
 
     def test_an_available_device_reports_no_reason(self, pair):
         assert pair.alice.voice_unavailable_reason() == ""

@@ -26,7 +26,12 @@ import zipfile
 REQUIRED_APP_MODULES = ("otrv4_.py", "otrv4plus_xmpp.py", "otrv4plus_voice.py",
                         "otrv4plus_filetransfer.py", "otrv4plus_identity.py",
                         "android_bridge/app.py", "android_bridge/wipe.py",
-                        "android_bridge/transport.py")
+                        "android_bridge/transport.py",
+                        # Android voice: AAudio capture/playback, and the
+                        # module that binds the APK's codec and AAudio instead
+                        # of the Termux (opuslib) hooks.
+                        "otrv4plus_audio.py", "android_bridge/android_audio.py",
+                        "android_bridge/voice.py")
 
 #: Never in the APK: terminal-only programs, test scaffolding, the retired
 #: pre-Rust engine, and anything that would be a second implementation.
@@ -37,7 +42,11 @@ FORBIDDEN_APP = re.compile(
 #: Python distributions the APK must carry, and ones it must not.
 REQUIRED_REQS = ("otrv4_core", "slixmpp", "socks", "pyasn1", "pyasn1_modules")
 FORBIDDEN_REQS = ("argon2", "_cffi_backend", "cffi/", "pycparser", "cryptography/",
-                  "aiodns", "pycares", "Crypto/", "kyber_py", "nacl/")
+                  "aiodns", "pycares", "Crypto/", "kyber_py", "nacl/",
+                  # The TERMUX codec wrapper. The APK's codec is libopus inside
+                  # otrv4_core; opuslib here would mean the Android voice path
+                  # had fallen back to the Termux one.
+                  "opuslib")
 
 #: Files that must never be packaged.
 FORBIDDEN_ANYWHERE = re.compile(
@@ -144,6 +153,15 @@ def main():
         r.check(not gated, "%s exposes no test-only or legacy API %s" % (n, gated or ""))
         r.check(b"SmpSecretStore" in blob and b"FileDek" in blob,
                 "%s is the 0.11 core (Rust-owned at-rest store present)" % n)
+        # The voice codec, IN the artifact: the classes Python binds, and
+        # libopus itself -- its version string is only present if the library
+        # was linked (`opus_version()` reads it, so LTO keeps it). A core
+        # built without `android-opus` would import fine and fail on the first
+        # call.
+        r.check(b"OpusEncoder" in blob and b"OpusDecoder" in blob,
+                "%s exposes the Android Opus codec (OpusEncoder/OpusDecoder)" % n)
+        r.check(b"libopus 1.5" in blob,
+                "%s has libopus 1.5 statically linked" % n)
 
     print("kotlin:")
     dex = b"".join(apk.read(n) for n in names if re.match(r"classes\d*\.dex$", n))

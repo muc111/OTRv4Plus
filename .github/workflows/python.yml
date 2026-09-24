@@ -90,8 +90,11 @@ jobs:
         working-directory: Rust
         run: |
           pip install 'maturin>=1.0,<2.0'
+          # android-opus too, so the APK's codec (and the Android voice path
+          # that uses it) is exercised here, not only on a handset. The
+          # Termux build (Rust/build.sh) does not enable it.
           maturin build --release \
-            --features pyo3/extension-module \
+            --features pyo3/extension-module,android-opus \
             --interpreter python${{ env.PYTHON_VERSION }} \
             --out dist
           pip install dist/*.whl

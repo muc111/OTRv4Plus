@@ -20,7 +20,7 @@ framework is not in the shipped artifact and is not attributed here.
 
 
 ----------------------------------------------------------------------------
-1. Rust crates compiled into otrv4_core (104)
+1. Rust crates compiled into otrv4_core (105)
 ----------------------------------------------------------------------------
 
 aead 0.5.2
@@ -386,6 +386,11 @@ opaque-debug 0.3.1
     copyright notice that is included in or attached to the work
     copyright license to reproduce, prepare Derivative Works of,
     Copyright (c) 2018-2024 The RustCrypto Project Developers
+
+opusic-sys 0.5.6
+    Licence: BSD-3-Clause
+    Source:  https://github.com/DoumanAsh/opusic-sys
+    Copyright 2001-2023 Xiph.Org, Skype Limited, Octasic,
 
 parking_lot_core 0.9.12
     Offered: MIT OR Apache-2.0

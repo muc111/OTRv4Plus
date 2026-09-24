@@ -30,6 +30,8 @@ pub mod aead;             // v10.6.19: AES-256-GCM PyO3 bindings (Phase 5.3h, pa
 pub mod mlkem;            // v10.7.3: ML-KEM-1024 PyO3 bindings (Phase 5.3i-C)
 pub mod identity;         // Android B1 (option B): Rust-owned identity sealing (additive)
 pub mod voice;            // v10.13.2: Rust-owned media keys and voice X448
+#[cfg(feature = "android-opus")]
+pub mod opus_codec;       // libopus for the APK only; Termux uses opuslib
 pub mod at_rest;          // Rust-owned at-rest secrets (SMP auto-respond store, identity DEK)
 pub mod filetransfer;     // v10.14.0: Rust-owned /sendfile keys and chunk AEAD
 
@@ -94,6 +96,11 @@ fn otrv4_core(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<at_rest::SmpSecretStore>()?;
     m.add_function(wrap_pyfunction!(at_rest::create_sealed_identity_under, m)?)?;
     m.add_function(wrap_pyfunction!(at_rest::unseal_identity_under,        m)?)?;
+    // The Android APK's Opus codec. Present only in builds with the
+    // `android-opus` feature; `hasattr(otrv4_core, "OpusEncoder")` is how the
+    // Android host tells.
+    #[cfg(feature = "android-opus")]
+    opus_codec::register(m)?;
 
     Ok(())
 }

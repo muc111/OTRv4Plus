@@ -69,7 +69,11 @@ def shipped_packages(meta):
             if any(k.get("kind") is None for k in kinds):
                 stack.append(dep["pkg"])
     seen.discard(root)
-    return seen
+    # First-party path crates (Rust/opus-codec) are this project's own code
+    # under its own licence, not third-party material to attribute. A path
+    # crate has no registry `source`.
+    first_party = {p["id"] for p in meta["packages"] if p.get("source") is None}
+    return seen - first_party
 
 
 def copyrights_for(pkg):

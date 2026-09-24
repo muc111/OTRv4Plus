@@ -177,3 +177,30 @@ try:
     settings.load_profile(os.environ.get("HYPOTHESIS_PROFILE", "termux"))
 except ImportError:
     pass
+
+
+# ── 5. Voice host hooks are process-global; keep each test's to itself ───────
+#
+# `otrv4plus_voice._HOST` is bound by whichever host imports it: the Termux
+# client (`otrv4plus_xmpp`, opuslib) or the Android bridge
+# (`android_bridge.android_audio`, the Rust codec and AAudio, pinned through
+# OTRV4PLUS_AUDIO_BACKEND). Both run in this one test process. Restored after
+# every test so an Android test cannot leave the Termux tests running on the
+# Android hooks, or the reverse.
+import pytest as _pytest
+
+
+@_pytest.fixture(autouse=True)
+def _restore_voice_host():
+    backend = os.environ.get("OTRV4PLUS_AUDIO_BACKEND")
+    voice = sys.modules.get("otrv4plus_voice")
+    saved = dict(voice._HOST) if voice is not None else None
+    yield
+    if backend is None:
+        os.environ.pop("OTRV4PLUS_AUDIO_BACKEND", None)
+    else:
+        os.environ["OTRV4PLUS_AUDIO_BACKEND"] = backend
+    voice_now = sys.modules.get("otrv4plus_voice")
+    if voice_now is not None and saved is not None and voice_now is voice:
+        voice_now._HOST.clear()
+        voice_now._HOST.update(saved)

@@ -24,14 +24,20 @@ by `VoiceCallManager`, which already answers it for the terminal client. A
 second copy of any of those would be a second thing to get wrong, and the
 one that matters is the SMP gate.
 
-WHY THE HOST IS BOUND BY IMPORTING THE TERMINAL CLIENT
-======================================================
+WHY THE TERMINAL CLIENT IS IMPORTED, AND WHAT IS REPLACED AFTERWARDS
+====================================================================
 `otrv4plus_voice` reaches its platform through `_HOST`, a dict of injected
-helpers: SAM open/read/parse, the pipe helpers, opus loading, and
-`voice_available()`. `otrv4plus_xmpp` binds every one of them at module
-scope and is already packaged in the APK, so importing it is how this side
-gets the same bindings the terminal client uses rather than a second set
-that could disagree.
+helpers. `otrv4plus_xmpp` binds all of them at module scope. Most are the same
+on both platforms and are kept: SAM open/read/parse and release, which make up
+the I2P datagram transport, and the sanitiser.
+
+THREE ARE NOT THE SAME, and `android_audio.bind` replaces them right after the
+import: the codec (`opus`, `load_opus`) and the availability answer. The
+Termux ones are `opuslib` over Termux's libopus.so, and an APK has neither.
+Leaving them bound is what put "Call unavailable — opuslib not installed (pip
+install ...)" on a handset, and it would have failed every Android call at
+`_build_codec`. Android uses the Rust Opus codec in `otrv4_core` and AAudio;
+see `android_audio`.
 
 It is imported INSIDE a function. `tests/test_android_transport.py` bans
 `otrv4plus_xmpp` at module scope in `android_bridge.transport` and
@@ -39,10 +45,6 @@ It is imported INSIDE a function. `tests/test_android_transport.py` bans
 and a terminal" -- and names the remedy: "the import has to move back inside
 a function". Measured at 0.61 s here, paid once, on the first call-related
 action, on a worker thread.
-
-`voice_available()` already gets Android right: it prefers AAudio and treats
-a missing PulseAudio as a note rather than a fatal, so nothing about it
-needed changing.
 
 WHY THIS OWNS ITS OWN EVENT LOOP
 ================================
@@ -216,6 +218,11 @@ class CallBridge:
                 import otrv4plus_voice as voice
             except Exception:
                 return None
+            # AFTER that import, which binds the TERMUX codec and
+            # availability hooks (opuslib). The APK has its own: see
+            # android_bridge.android_audio.
+            from . import android_audio
+            android_audio.bind(voice)
             loop = self._ensure_loop()
             try:
                 self._manager = voice.VoiceCallManager(_VoiceClient(self._app),
@@ -229,20 +236,17 @@ class CallBridge:
     def unavailable_reason(self) -> str:
         """Why voice cannot run here, or "" when it can.
 
-        Asked of `otrv4plus_voice`'s own host hook, which is the same
-        question `start_call` asks before doing anything. A separate answer
-        here could disagree with the one that actually decides.
+        ANDROID'S answer: the APK's codec and AAudio
+        (`android_audio.unavailable_reason`), which is also what `bind`
+        installs as the hook `start_call` asks -- one answer, not two.
+
+        NOT `otrv4plus_xmpp.voice_available`. That is the Termux client's
+        question ("is opuslib installed?") with the Termux remedy, and asking
+        it here is what put "opuslib not installed (pip install ...)" on an
+        Android conversation screen.
         """
-        try:
-            import otrv4plus_xmpp                          # noqa: F401
-            import otrv4plus_voice as voice
-        except Exception as exc:
-            return "voice support is not available (%s)" % type(exc).__name__
-        try:
-            ok, reason = voice._HOST["voice_available"]()
-        except Exception:
-            return "voice support could not be checked"
-        return "" if ok else str(reason)
+        from . import android_audio
+        return android_audio.unavailable_reason()
 
     # -- the three actions ----------------------------------------------------
 
