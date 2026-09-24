@@ -408,8 +408,11 @@ class ChaquopyOtrCore(private val appContext: Context) : OtrCore {
         Pair<RoomOutcome, RoomStanding> = roomWithStanding(
             "join_room", room, nick, password)
 
-    fun createRoom(room: String, nick: String): Pair<RoomOutcome, RoomStanding> =
-        roomWithStanding("create_room", room, nick)
+    /** [password] non-empty makes the room password-protected. Not kept. */
+    fun createRoom(room: String, nick: String, password: String = ""):
+        Pair<RoomOutcome, RoomStanding> =
+        if (password.isEmpty()) roomWithStanding("create_room", room, nick)
+        else roomWithStanding("create_room", room, nick, password)
 
     fun roomStanding(room: String, nick: String):
         Pair<RoomOutcome, RoomStanding> =

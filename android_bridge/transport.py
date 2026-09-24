@@ -1755,7 +1755,8 @@ class XmppTransport(Transport):
             room, nick, password=password or None, timeout=CONNECT_TIMEOUT)
         return self._room_standing(room, nick)
 
-    def create_room(self, room: str, nick: str) -> "tuple[str, str, dict]":
+    def create_room(self, room: str, nick: str,
+                    password: str = "") -> "tuple[str, str, dict]":
         """Create a room and accept the service's default configuration.
 
         XEP-0045 §10.1.2's "instant room": joining a room that does not exist
@@ -1767,16 +1768,53 @@ class XmppTransport(Transport):
         The alternative, a full configuration form, is a screen of checkboxes
         in front of somebody who asked for a room. It can come later; a room
         that exists is the thing being asked for here.
-        """
-        return self._room_call(self._create_room(room, nick))
 
-    async def _create_room(self, room: str, nick: str):
+        PASSWORD. With [password], the submitted form sets exactly two
+        XEP-0045 fields -- `muc#roomconfig_passwordprotectedroom` and
+        `muc#roomconfig_roomsecret` -- and the room's disco#info is then read
+        back. A service that accepted the form but did not protect the room
+        would leave an OPEN room the user believes is closed, so that room is
+        destroyed and the create reported as failed (`password_not_applied`).
+        The password is never logged, traced or kept here. A room password
+        controls who may ENTER; it is not end-to-end encryption -- the server
+        still reads the room.
+        """
+        return self._room_call(self._create_room(room, nick, password))
+
+    ROOMCONFIG = "http://jabber.org/protocol/muc#roomconfig"
+
+    async def _create_room(self, room: str, nick: str, password: str = ""):
         muc = self._client["xep_0045"]
         await muc.join_muc_wait(room, nick, timeout=CONNECT_TIMEOUT)
         # The empty form. `set_room_config` with a form carrying no fields is
         # the "accept the defaults" submission §10.1.2 describes.
         form = self._client["xep_0004"].make_form(ftype="submit")
+        if password:
+            form.add_field(var="FORM_TYPE", ftype="hidden",
+                           value=self.ROOMCONFIG)
+            form.add_field(var="muc#roomconfig_passwordprotectedroom",
+                           ftype="boolean", value=True)
+            form.add_field(var="muc#roomconfig_roomsecret",
+                           ftype="text-private", value=password)
         await muc.set_room_config(room, form, timeout=CALL_TIMEOUT)
+        if password:
+            protected = False
+            try:
+                info = await self._client["xep_0030"].get_info(
+                    jid=room, timeout=CALL_TIMEOUT)
+                protected = "muc_passwordprotected" in {
+                    str(f) for f in info["disco_info"]["features"]}
+            except Exception:
+                protected = False
+            if not protected:
+                try:
+                    await muc.destroy(room, reason="password could not be set",
+                                      timeout=CALL_TIMEOUT)
+                except Exception:
+                    pass
+                raise TransportError(
+                    "password_not_applied",
+                    "the service did not password-protect the room")
         return self._room_standing(room, nick)
 
     def leave_room(self, room: str, nick: str) -> "tuple[str, str, dict]":

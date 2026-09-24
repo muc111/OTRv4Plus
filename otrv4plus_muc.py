@@ -209,6 +209,25 @@ def validate_nick(nick: str) -> Optional[Tuple[str, str]]:
     return None
 
 
+#: Longest room password accepted. XEP-0045 sets no limit; this keeps a
+#: pasted blob out of a stanza.
+MAX_ROOM_PASSWORD = 128
+
+
+def validate_room_password(password: str) -> Optional[Tuple[str, str]]:
+    """None if [password] may be used as a room password (non-empty)."""
+    text = password or ""
+    if not text.strip():
+        return ("bad_request", "Enter a password for the room.")
+    if len(text) > MAX_ROOM_PASSWORD:
+        return ("bad_request", "That password is too long (limit %d "
+                "characters)." % MAX_ROOM_PASSWORD)
+    if any(ord(c) < 32 for c in text):
+        return ("bad_request", "A room password cannot contain control "
+                "characters.")
+    return None
+
+
 # -- what the service said ----------------------------------------------------
 
 #: Every code the room operations can return, and what each means.
@@ -218,6 +237,8 @@ CODES = {
     "ok": "Done.",
     "conflict": "That nickname is already taken in this room.",
     "not_authorized": "This room needs a password.",
+    "password_not_applied": "The server did not password-protect the room, "
+                            "so it was removed rather than left open.",
     "forbidden": "You are banned from this room.",
     "registration_required": "This room is members only.",
     "not_allowed": "This service does not let you create rooms.",

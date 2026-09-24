@@ -804,13 +804,22 @@ class ConnectionController:
         return self._noting_room(self._muc_call("join_room", room, nick, password),
                                  room, joined=True)
 
-    def create_room(self, room: str, nick: str) -> Dict[str, Any]:
-        """Create a room and unlock it. See `XmppTransport.create_room`."""
+    def create_room(self, room: str, nick: str,
+                    password: str = "") -> Dict[str, Any]:
+        """Create a room and unlock it. See `XmppTransport.create_room`.
+
+        [password], when given, makes the room password-protected; the
+        transport confirms the service applied it. Not retained or traced
+        here -- `_muc_call` records the operation and its code only.
+        """
         problem = _muc.validate_room(room) or _muc.validate_nick(nick)
+        if problem is None and password:
+            problem = _muc.validate_room_password(password)
         if problem is not None:
             return {"ok": False, "code": problem[0], "detail": problem[1],
                     "value": None}
-        return self._noting_room(self._muc_call("create_room", room, nick),
+        args = (room, nick, password) if password else (room, nick)
+        return self._noting_room(self._muc_call("create_room", *args),
                                  room, joined=True)
 
     def leave_room(self, room: str, nick: str) -> Dict[str, Any]:

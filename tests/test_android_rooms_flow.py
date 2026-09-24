@@ -86,7 +86,7 @@ class FakeTransport:
     def join_room(self, room, nick, password=""):
         return self._room("join_room", room, nick, password)
 
-    def create_room(self, room, nick):
+    def create_room(self, room, nick, password=""):
         return self._room("create_room", room, nick)
 
     def leave_room(self, room, nick):

@@ -8,9 +8,14 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import org.otrv4plus.android.RoomsViewModel
+import org.otrv4plus.android.chat.RoomPassword
 
 /**
  * Rooms: what this server hosts, and which of them you are in.
@@ -208,6 +213,33 @@ fun RoomsScreen(
             enabled = busy == null,
             modifier = Modifier.fillMaxWidth(),
         )
+        // PASSWORD-PROTECTED CREATE. `remember`, not `rememberSaveable`: a
+        // password must not be written into the saved-instance Bundle.
+        var protect by remember { mutableStateOf(false) }
+        var roomPassword by remember { mutableStateOf("") }
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Checkbox(checked = protect, enabled = busy == null,
+                     onCheckedChange = { protect = it; if (!it) roomPassword = "" })
+            Text("Password protect a new room",
+                 style = MaterialTheme.typography.bodyMedium)
+        }
+        if (protect) {
+            OutlinedTextField(
+                value = roomPassword,
+                onValueChange = { roomPassword = it },
+                label = { Text("Room password") },
+                supportingText = {
+                    Text("Only people who enter this password can join. " +
+                             RoomPassword.NOT_ENCRYPTION,
+                         style = MaterialTheme.typography.bodySmall)
+                },
+                singleLine = true,
+                enabled = busy == null,
+                visualTransformation = PasswordVisualTransformation(),
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                modifier = Modifier.fillMaxWidth(),
+            )
+        }
         val canAct = busy == null && address.isNotBlank() && nick.isNotBlank()
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Button(
@@ -219,9 +251,52 @@ fun RoomsScreen(
             // same reason: joining is the common case and creating happens
             // once.
             OutlinedButton(
-                enabled = canAct,
-                onClick = { model.create(address.trim(), nick.trim()) },
+                enabled = canAct && (!protect || roomPassword.isNotBlank()),
+                onClick = {
+                    model.create(address.trim(), nick.trim(),
+                                 if (protect) roomPassword else "")
+                },
             ) { Text("Create") }
+        }
+
+        // THE PROMPT. Opened only when the service refused a join for want
+        // of a password (not-authorized); nothing retries without the user.
+        model.passwordPrompt?.let { prompt ->
+            var entered by remember(prompt) { mutableStateOf("") }
+            AlertDialog(
+                onDismissRequest = { model.cancelPassword() },
+                title = { Text("Room password") },
+                text = {
+                    Column {
+                        Text(prompt.message,
+                             color = if (prompt.retry) MaterialTheme.colorScheme.error
+                                     else MaterialTheme.colorScheme.onSurface)
+                        Spacer(Modifier.height(8.dp))
+                        OutlinedTextField(
+                            value = entered,
+                            onValueChange = { entered = it },
+                            label = { Text("Password") },
+                            singleLine = true,
+                            visualTransformation = PasswordVisualTransformation(),
+                            keyboardOptions = KeyboardOptions(
+                                keyboardType = KeyboardType.Password),
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                        Spacer(Modifier.height(4.dp))
+                        Text(RoomPassword.NOT_ENCRYPTION,
+                             style = MaterialTheme.typography.bodySmall)
+                    }
+                },
+                confirmButton = {
+                    TextButton(enabled = entered.isNotBlank() && busy == null,
+                               onClick = { model.submitPassword(entered) }) {
+                        Text("Enter")
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { model.cancelPassword() }) { Text("Cancel") }
+                },
+            )
         }
 
         // ── What the service advertises ───────────────────────────────────

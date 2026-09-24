@@ -18,6 +18,7 @@ import org.otrv4plus.android.bridge.RoomOutcome
 import org.otrv4plus.android.bridge.RoomStanding
 import org.otrv4plus.android.bridge.RoomSummary
 import org.otrv4plus.android.chat.RoomAddress
+import org.otrv4plus.android.chat.RoomPassword
 
 /**
  * Rooms: finding the service, listing what it advertises, and being in one.
@@ -154,14 +155,46 @@ class RoomsViewModel : ViewModel() {
      */
     fun join(typed: String, nick: String, password: String = "") {
         val jid = resolve(typed) ?: return
-        enter("Joining...", jid) { c -> c.joinRoom(jid, nick, password) }
+        passwordPrompt = null
+        enter("Joining...", jid, onDone = { outcome ->
+            // The service refused for want of a password: ask for it. The
+            // password itself is never stored here -- only the question.
+            passwordPrompt = RoomPassword.afterJoin(
+                jid, nick, outcome, triedPassword = password.isNotEmpty())
+        }) { c -> c.joinRoom(jid, nick, password) }
     }
 
-    /** Create a room the user named. [typed] may be a bare name. */
-    fun create(typed: String, nick: String) {
+    /**
+     * Create a room the user named. [typed] may be a bare name. A non-empty
+     * [password] makes it password-protected; the bridge confirms the service
+     * applied it and removes the room if it did not.
+     */
+    fun create(typed: String, nick: String, password: String = "") {
+        if (password.isNotEmpty()) {
+            RoomPassword.problem(password)?.let {
+                last = RoomOutcome(false, "bad_request", it)
+                return
+            }
+        }
         val jid = resolve(typed) ?: return
-        enter("Creating the room...", jid) { c -> c.createRoom(jid, nick) }
+        enter("Creating the room...", jid) { c -> c.createRoom(jid, nick, password) }
     }
+
+    /** The password question for a room that refused us, or null. */
+    var passwordPrompt by mutableStateOf<RoomPassword.Prompt?>(null)
+        internal set
+
+    /** The user typed the password and pressed Enter. */
+    fun submitPassword(password: String) {
+        val prompt = passwordPrompt ?: return
+        RoomPassword.problem(password)?.let {
+            passwordPrompt = prompt.copy(message = it)
+            return
+        }
+        join(prompt.room, prompt.nick, password)
+    }
+
+    fun cancelPassword() { passwordPrompt = null }
 
     /**
      * Turn what was typed into a room JID, or report why not and stop.
@@ -183,6 +216,7 @@ class RoomsViewModel : ViewModel() {
     private fun enter(
         label: String,
         room: String,
+        onDone: ((RoomOutcome) -> Unit)? = null,
         call: (ChaquopyOtrCore) -> Pair<RoomOutcome, RoomStanding>,
     ) {
         val c = core ?: return
@@ -203,6 +237,7 @@ class RoomsViewModel : ViewModel() {
                 // on success and only from the authoritative outcome, so a
                 // refused join cannot open a room the user is not in.
                 if (outcome.ok) entered = room
+                onDone?.invoke(outcome)
             } finally {
                 // THE PERMANENT SPINNER. This was the last line of the
                 // coroutine body, so a throw crossing from Chaquopy -- which
