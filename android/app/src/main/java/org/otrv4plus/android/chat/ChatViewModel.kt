@@ -31,6 +31,7 @@ import org.otrv4plus.android.crypto.MlsProvider
 import org.otrv4plus.android.crypto.Omemo2Provider
 import org.otrv4plus.android.crypto.OtrAvailability
 import org.otrv4plus.android.crypto.OtrV4PlusProvider
+import org.otrv4plus.android.crypto.SafeView
 import org.otrv4plus.android.crypto.TransferUi
 import org.otrv4plus.android.crypto.Verification
 
@@ -905,6 +906,49 @@ class ChatViewModel : ViewModel() {
         val bare = ChatState.bare(jid)
         return runCatching { core.transfers() }.getOrDefault(emptyList())
             .filter { ChatState.bare(it.peer) == bare }
+    }
+
+    /** A verified received file the user asked to view, or null. */
+    var viewing: FileTransferView? by mutableStateOf(null)
+        private set
+
+    private var receivedDir: String? = null
+
+    /**
+     * Whether [transfer] may be opened in the viewer: received, verified by
+     * the engine, and inside the private received directory.
+     */
+    fun canOpen(transfer: FileTransferView): Boolean {
+        if (transfer.outgoing || transfer.state != TransferUi.State.RECEIVED) return false
+        val dir = receivedDir ?: core?.let { c ->
+            runCatching { c.receivedFileDir() }.getOrDefault("").also {
+                if (it.isNotBlank()) receivedDir = it
+            }
+        } ?: return false
+        return SafeView.openable(transfer.path, dir)
+    }
+
+    /** Explicit tap only; nothing is ever opened on arrival. */
+    fun openReceived(transfer: FileTransferView) {
+        if (canOpen(transfer)) viewing = transfer
+    }
+
+    fun closeViewer() { viewing = null }
+
+    private val rates = TransferUi.RateMeter()
+
+    /**
+     * The row for [transfer], with speed and ETA while bytes are moving.
+     * The rate is sampled here, on each redraw, from the engine's own
+     * progress; nothing is estimated for a transfer that is not moving.
+     */
+    fun transferRow(transfer: FileTransferView): TransferUi.Row {
+        val moving = transfer.state == TransferUi.State.ACCEPTED &&
+            transfer.progress > 0f && transfer.progress < 1f
+        val rate = if (moving) rates.sample(
+            transfer.id, (transfer.sizeBytes * transfer.progress).toLong(),
+            transfer.sizeBytes, System.currentTimeMillis()) else null
+        return TransferUi.row(transfer, rate)
     }
 
     /**

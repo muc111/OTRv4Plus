@@ -448,6 +448,14 @@ class FileBridge:
             "progress": float(getattr(transfer, "progress", 0.0) or 0.0),
             "state": str(getattr(transfer, "state", "")),
             "reason": str(getattr(transfer, "reason", "")),
+            # Only for a file this device RECEIVED and the engine verified:
+            # `final_path` is set after every hash check and the atomic
+            # commit into the private directory, and never otherwise. Never
+            # the partial file, never the sender's own path.
+            "path": (str(getattr(transfer, "final_path", "") or "")
+                     if not outgoing and
+                     str(getattr(transfer, "state", "")) == "received"
+                     else ""),
         }
 
     def received_dir(self) -> str:

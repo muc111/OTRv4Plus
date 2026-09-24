@@ -304,6 +304,12 @@ data class FileTransferView(
     val state: String = "",
     /** The engine's `TransferReason` code, for FAILED/CANCELLED/DECLINED. */
     val reason: String = "",
+    /**
+     * The received file in app-private storage, set only once the engine has
+     * verified every hash and committed it. Empty otherwise -- and always
+     * empty for a file this device sent.
+     */
+    val path: String = "",
 )
 
 data class SmpProgress(val step: Int, val total: Int, val state: SmpState)

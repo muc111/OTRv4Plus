@@ -850,3 +850,60 @@ class TestTheMetadataChoiceOnAndroid:
                 assert line.startswith("import org.otrv4plus."), line
         assert os.path.exists(os.path.join(ANDROID_TESTS, "crypto",
                                            "MetadataChoiceTest.kt"))
+
+
+# ── opening a received file: only a verified one has a path ─────────────────
+
+class TestOnlyAVerifiedFileCanBeOpened:
+    """The row carries `path` for a file this device RECEIVED after every
+    hash check and the atomic commit -- and for nothing else. The in-app
+    viewer opens only that path."""
+
+    def _wait(self, predicate):
+        for _ in range(300):
+            if predicate():
+                return True
+            time.sleep(0.02)
+        return False
+
+    def test_the_received_row_names_the_verified_file(self, verified, landing,
+                                                       a_file):
+        assert verified.alice.send_file(verified.bob_jid, a_file) == \
+            FileOutcome.STARTED
+        offered = verified.bob.transfers()[0]
+        assert offered["path"] == "", "an unanswered offer had a path"
+        verified.bob.accept_file(offered["id"])
+        assert self._wait(lambda: any(
+            r["state"] == "received" for r in verified.bob.transfers()))
+        row = [r for r in verified.bob.transfers() if r["state"] == "received"][0]
+        assert row["path"], "a verified file had no path to open"
+        assert os.path.realpath(os.path.dirname(row["path"])) == \
+            os.path.realpath(landing.path)
+        assert open(row["path"], "rb").read() == open(a_file, "rb").read()
+        assert os.stat(row["path"]).st_mode & 0o077 == 0, \
+            "the received file is readable by others"
+
+    def test_the_sender_never_gets_a_path(self, verified, landing, a_file):
+        verified.alice.send_file(verified.bob_jid, a_file)
+        verified.bob.accept_file(verified.bob.transfers()[0]["id"])
+        self._wait(lambda: any(r["state"] == "received"
+                               for r in verified.bob.transfers()))
+        assert all(r["path"] == "" for r in verified.alice.transfers())
+
+
+class TestTheMetadataDialogOffersThreeChoices:
+    """Strip (primary, the default), Keep, Cancel -- and dismissing sends
+    nothing. Read from the Compose source, which only CI can compile."""
+
+    def test_the_dialog(self):
+        screen = open(os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            "android/app/src/main/java/org/otrv4plus/android/ui/ConversationScreen.kt"),
+            encoding="utf-8").read()
+        dialog = screen[screen.index("model.pendingMetadata"):]
+        dialog = dialog[:dialog.index("for (transfer in transfers)")]
+        confirm = dialog[dialog.index("confirmButton"):dialog.index("dismissButton")]
+        assert "answerMetadata(strip = true)" in confirm
+        assert "MetadataChoice.STRIP" in confirm
+        assert "MetadataChoice.KEEP" in dialog and "MetadataChoice.CANCEL" in dialog
+        assert "onDismissRequest = { model.cancelMetadata() }" in dialog

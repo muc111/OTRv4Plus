@@ -81,7 +81,57 @@ object TransferUi {
         val finished: Boolean = false,
         /** Ended badly. Rendered in the error colour. */
         val failed: Boolean = false,
+        /** One of [Phase]: the state in a single word, for the badge. */
+        val phase: String = "",
     )
+
+    /**
+     * The transfer phases the screen names, one word each. Derived from the
+     * engine's state and progress; never from a timer.
+     */
+    object Phase {
+        const val WAITING = "Waiting"
+        const val ACCEPTED = "Accepted"
+        const val PREPARING = "Preparing"
+        const val SENDING = "Sending"
+        const val RECEIVING = "Receiving"
+        const val VERIFYING = "Verifying"
+        const val COMPLETED = "Completed"
+        const val FAILED = "Failed"
+        const val CANCELLED = "Cancelled"
+        const val DECLINED = "Declined"
+    }
+
+    /** The phase for [transfer]. */
+    @JvmStatic
+    fun phase(transfer: FileTransferView): String {
+        val state = transfer.state.ifBlank {
+            when {
+                transfer.cancelled -> State.CANCELLED
+                transfer.accepted -> State.ACCEPTED
+                transfer.outgoing -> State.WAITING
+                else -> State.OFFERED
+            }
+        }
+        val p = transfer.progress
+        return when (state) {
+            State.OFFERED, State.WAITING -> Phase.WAITING
+            State.ACCEPTED -> when {
+                // Accepted, nothing moved yet: the sealed file is being set up.
+                p <= 0f -> if (transfer.outgoing) Phase.PREPARING else Phase.ACCEPTED
+                // Every chunk is here; the hashes are being checked.
+                p >= 1f && !transfer.outgoing -> Phase.VERIFYING
+                transfer.outgoing -> Phase.SENDING
+                else -> Phase.RECEIVING
+            }
+            // Ours is out; theirs is checking it against the hashes.
+            State.SENT -> Phase.VERIFYING
+            State.DELIVERED, State.RECEIVED -> Phase.COMPLETED
+            State.DECLINED -> Phase.DECLINED
+            State.FAILED -> Phase.FAILED
+            else -> Phase.CANCELLED
+        }
+    }
 
     /**
      * What to show for one transfer. DRIVEN BY THE ENGINE'S STATE, never by a
@@ -93,10 +143,14 @@ object TransferUi {
      * a second Accept would be a button that does nothing.
      */
     @JvmStatic
-    fun row(transfer: FileTransferView): Row {
+    fun row(transfer: FileTransferView, rate: Rate? = null): Row =
+        baseRow(transfer, rate).copy(phase = phase(transfer))
+
+    private fun baseRow(transfer: FileTransferView, rate: Rate?): Row {
         val name = transfer.filename.ifBlank { "a file" }
         val size = humanBytes(transfer.sizeBytes)
-        val moving = progressDetail(transfer.progress, transfer.sizeBytes)
+        val moving = progressDetail(transfer.progress, transfer.sizeBytes) +
+            (rate?.let { " · " + it.text() } ?: "")
         fun ended(label: String, failed: Boolean = false) =
             Row(label, false, false, 0f, false, size, finished = true, failed = failed)
         val state = transfer.state.ifBlank {
@@ -136,6 +190,79 @@ object TransferUi {
         val p = progress.coerceIn(0f, 1f)
         val done = (sizeBytes * p).toLong()
         return "${humanBytes(done)} of ${humanBytes(sizeBytes)} · ${(p * 100).toInt()}%"
+    }
+
+    // -- speed and ETA ---------------------------------------------------------
+
+    /**
+     * Speed and time remaining, as far as they can honestly be said.
+     *
+     * [bytesPerSecond] is null until two samples a real interval apart have
+     * been seen ("Calculating ETA…"); [stalled] means nothing has moved for
+     * [RateMeter.STALL_MS] and any ETA would be invented ("ETA unavailable").
+     */
+    data class Rate(
+        val bytesPerSecond: Double?,
+        val etaSeconds: Long?,
+        val stalled: Boolean = false,
+    ) {
+        fun text(): String = when {
+            stalled -> "ETA unavailable"
+            bytesPerSecond == null || etaSeconds == null -> "Calculating ETA…"
+            else -> "${humanBytes(bytesPerSecond.toLong())}/s · ETA ${duration(etaSeconds)}"
+        }
+    }
+
+    /**
+     * A rolling, exponentially weighted transfer rate per transfer id.
+     *
+     * Fed the engine's progress on every redraw; an EWMA rather than
+     * "bytes so far / time so far" so a transfer that slows down over I2P
+     * shows its CURRENT speed, and rather than the last interval alone so
+     * one bursty chunk does not swing the ETA by minutes.
+     */
+    class RateMeter(private val alpha: Double = 0.3) {
+        private class Track(var bytes: Long, var at: Long, var movedAt: Long,
+                            var ewma: Double? = null)
+
+        private val tracks = HashMap<String, Track>()
+
+        fun sample(id: String, bytesDone: Long, total: Long, nowMs: Long): Rate {
+            val t = tracks[id] ?: Track(bytesDone, nowMs, nowMs).also { tracks[id] = it }
+            val dt = nowMs - t.at
+            if (bytesDone > t.bytes && dt >= MIN_INTERVAL_MS) {
+                val instant = (bytesDone - t.bytes) * 1000.0 / dt
+                t.ewma = t.ewma?.let { alpha * instant + (1 - alpha) * it } ?: instant
+                t.bytes = bytesDone
+                t.at = nowMs
+                t.movedAt = nowMs
+            } else if (bytesDone < t.bytes) {
+                // Restarted from the start: forget the old rate.
+                tracks[id] = Track(bytesDone, nowMs, nowMs)
+                return Rate(null, null)
+            }
+            if (nowMs - t.movedAt >= STALL_MS) return Rate(t.ewma, null, stalled = true)
+            val rate = t.ewma ?: return Rate(null, null)
+            if (rate <= 0.0) return Rate(null, null)
+            val remaining = (total - bytesDone).coerceAtLeast(0L)
+            return Rate(rate, kotlin.math.ceil(remaining / rate).toLong())
+        }
+
+        /** Stop tracking anything not in [live]. */
+        fun retain(live: Set<String>) { tracks.keys.retainAll(live) }
+
+        companion object {
+            const val MIN_INTERVAL_MS = 250L
+            const val STALL_MS = 15_000L
+        }
+    }
+
+    /** "45 s", "3 min 20 s", "1 h 05 min". */
+    @JvmStatic
+    fun duration(seconds: Long): String = when {
+        seconds < 60 -> "$seconds s"
+        seconds < 3600 -> "${seconds / 60} min ${seconds % 60} s"
+        else -> "${seconds / 3600} h %02d min".format((seconds % 3600) / 60)
     }
 
     /** Why a transfer ended badly, for a person. From a fixed set of codes. */

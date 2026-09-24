@@ -161,6 +161,8 @@ object WipeAndExit {
               "cache: outbox/", Category.TEMPORARY, Step.CLEAR_CACHE),
         Store("Exported diagnostic reports",
               "cache: diagnostics/", Category.TEMPORARY, Step.CLEAR_CACHE),
+        Store("A received file copied for \"Open with another app\"",
+              "cache: handoff/", Category.TEMPORARY, Step.CLEAR_CACHE),
         Store("Python event trace and error log (in memory)",
               "Python process", Category.SENSITIVE_EPHEMERAL, Step.EXIT),
         Store("Recents-screen snapshot of the app",

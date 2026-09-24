@@ -799,6 +799,10 @@ class IncomingTransfer:
     rate_allowance: int = 0
     state: str = "offered"
     reason: str = ""
+    #: Where the file was committed, once `_finish` has verified every hash
+    #: and moved it into `state_dir()`. None for anything unverified: only
+    #: a verified file ever has a path to open.
+    final_path: Optional[str] = None
 
     @property
     def progress(self) -> float:
@@ -1318,6 +1322,7 @@ class FileTransferManager:
         # file under the final name.
         os.replace(transfer.tmp_path, final)
         transfer.tmp_path = None
+        transfer.final_path = final
         self._destroy_incoming(transfer)
         return final
 

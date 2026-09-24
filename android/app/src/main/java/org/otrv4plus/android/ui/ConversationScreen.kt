@@ -26,6 +26,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -576,19 +577,44 @@ private fun TransferBar(model: ChatViewModel, jid: String) {
                 }
             },
             dismissButton = {
-                TextButton(onClick = { model.answerMetadata(strip = false) }) {
-                    Text(MetadataChoice.KEEP)
+                Row {
+                    TextButton(onClick = { model.cancelMetadata() }) {
+                        Text(MetadataChoice.CANCEL)
+                    }
+                    TextButton(onClick = { model.answerMetadata(strip = false) }) {
+                        Text(MetadataChoice.KEEP)
+                    }
                 }
             },
         )
     }
 
+    model.viewing?.let { file ->
+        FileViewerDialog(path = file.path, name = file.filename,
+                         onClose = { model.closeViewer() })
+    }
+
     for (transfer in transfers) {
-        val row = TransferUi.row(transfer)
+        val row = model.transferRow(transfer)
         // An ended transfer is a persisted line in the conversation already
         // (`TransferUi.statusLine`); a second, live copy of it here would say
-        // the same thing twice and outlive nothing.
-        if (row.finished) continue
+        // the same thing twice and outlive nothing. The one exception is a
+        // received file the engine VERIFIED: it gets an explicit "Open".
+        if (row.finished) {
+            if (model.canOpen(transfer)) {
+                Surface(color = MaterialTheme.colorScheme.surfaceVariant) {
+                    Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically) {
+                        Text("${row.phase} · ${transfer.filename.ifBlank { "a file" }} — hashes verified",
+                             modifier = Modifier.weight(1f),
+                             style = MaterialTheme.typography.bodySmall,
+                             maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        TextButton(onClick = { model.openReceived(transfer) }) { Text("Open") }
+                    }
+                }
+            }
+            continue
+        }
         Surface(color = MaterialTheme.colorScheme.surfaceVariant) {
             Row(
                 Modifier.fillMaxWidth().padding(horizontal = 12.dp,
@@ -597,6 +623,11 @@ private fun TransferBar(model: ChatViewModel, jid: String) {
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 Column(Modifier.weight(1f)) {
+                    // The phase in one word, then the sentence: the state is
+                    // said in text, never by colour or a bar alone.
+                    Text(row.phase,
+                         style = MaterialTheme.typography.labelMedium,
+                         fontWeight = FontWeight.SemiBold)
                     Text(row.label,
                          maxLines = 2,
                          overflow = TextOverflow.Ellipsis,

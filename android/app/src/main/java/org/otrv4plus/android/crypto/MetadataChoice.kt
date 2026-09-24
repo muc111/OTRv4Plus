@@ -48,7 +48,17 @@ object MetadataChoice {
     const val STRIP = "Remove and send"
 
     /** The button that keeps it. The user's call, and honoured exactly. */
-    const val KEEP = "Send as it is"
+    const val KEEP = "Keep and send"
+
+    /** Send nothing, and delete the staged copy. Same as dismissing. */
+    const val CANCEL = "Cancel"
+
+    /**
+     * What happens when the user makes no choice at all (a dismissed dialog):
+     * nothing is sent. When a choice is made, [STRIP] is the default -- the
+     * primary button -- and [KEEP] must be picked deliberately.
+     */
+    const val DEFAULT_STRIP = true
 
     const val UNCHECKED =
         "The app cannot check this kind of file for hidden information. " +

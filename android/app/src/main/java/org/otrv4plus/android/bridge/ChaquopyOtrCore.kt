@@ -1013,6 +1013,7 @@ class ChaquopyOtrCore(private val appContext: Context) : OtrCore {
                     progress = row.get("progress")?.toFloat() ?: 0f,
                     state = row.get("state")?.toString().orEmpty(),
                     reason = row.get("reason")?.toString().orEmpty(),
+                    path = row.get("path")?.toString().orEmpty(),
                 )
             }
         }.getOrDefault(emptyList())

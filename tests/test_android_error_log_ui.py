@@ -108,10 +108,13 @@ class TestNoRawPathLeavesTheApp:
         one that does the job."""
         root = ET.parse(os.path.join(MAIN, "res", "xml",
                                      "file_paths.xml")).getroot()
-        paths = list(root)
-        assert len(paths) == 1
-        assert paths[0].tag == "cache-path"
-        assert paths[0].get("path") == "diagnostics/"
+        # Exactly two, both single cache subdirectories: diagnostics/ for the
+        # report export and handoff/ for the one received file a user chose
+        # to open elsewhere. Never files-path (the private received
+        # directory), external storage, or the whole cache.
+        paths = [p for p in root if isinstance(p.tag, str)]
+        assert [(p.tag, p.get("path")) for p in paths] == [
+            ("cache-path", "diagnostics/"), ("cache-path", "handoff/")]
 
     def test_the_authority_matches_the_manifest(self, exporter):
         manifest = _read(MAIN, "AndroidManifest.xml")

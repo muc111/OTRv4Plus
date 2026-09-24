@@ -69,4 +69,11 @@ class MetadataChoiceTest {
         assertTrue(MetadataChoice.KEEP.isNotBlank())
         assertTrue(MetadataChoice.STRIP != MetadataChoice.KEEP)
     }
+
+    @Test
+    fun `three distinct choices, and strip is the default`() {
+        val all = setOf(MetadataChoice.STRIP, MetadataChoice.KEEP, MetadataChoice.CANCEL)
+        assertTrue(all.size == 3 && all.all { it.isNotBlank() })
+        assertTrue(MetadataChoice.DEFAULT_STRIP)
+    }
 }
