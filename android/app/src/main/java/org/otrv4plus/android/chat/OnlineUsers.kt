@@ -187,18 +187,36 @@ object OnlineUsers {
     }
 
     /**
-     * What the screen says about discovery itself. Null when the server
-     * listed who is online; otherwise why only contacts are shown.
+     * What the screen says about discovery itself, or null when there is
+     * nothing to add. The Welcome room is the primary source; the server's
+     * admin-only list is an extra where it exists.
      */
     @JvmStatic
-    fun discoveryNote(discovery: org.otrv4plus.android.bridge.OnlineDiscovery?,
-                      connected: Boolean): String? = when {
-        !connected -> "Not connected: nobody's presence is known."
-        discovery == null -> "Asking the server who is online…"
-        discovery.available -> null
-        else -> "This server does not list its online users to this account " +
-            "(XEP-0133 is admin-only on Prosody). Showing your contacts and " +
-            "requests; add someone by address to see them here."
+    fun discoveryNote(welcome: org.otrv4plus.android.bridge.WelcomeView,
+                      discovery: org.otrv4plus.android.bridge.OnlineDiscovery?,
+                      connected: Boolean): String? {
+        val W = org.otrv4plus.android.bridge.WelcomeView
+        if (!connected) return "Not connected: nobody's presence is known."
+        return when (welcome.state) {
+            W.JOINED ->
+                if (welcome.hidden > 0)
+                    "${welcome.hidden} people in the OTRv4Plus Welcome room " +
+                        "have hidden addresses (the room does not show " +
+                        "members' addresses), so they cannot be added from here."
+                else null
+            W.SEARCHING, W.JOINING, W.NOT_CONNECTED ->
+                "Joining the OTRv4Plus Welcome room…"
+            W.NOT_FOUND ->
+                if (discovery?.available == true) null
+                else "This server has no public room named \u201cOTRv4Plus " +
+                    "Welcome\u201d, so only your contacts and requests are " +
+                    "shown. Add someone by address, or ask the server admin " +
+                    "to create the room."
+            W.AMBIGUOUS -> "More than one room is named \u201cOTRv4Plus " +
+                "Welcome\u201d on this server; none was joined."
+            W.LEFT -> "You are no longer in the OTRv4Plus Welcome room."
+            else -> "Could not join the OTRv4Plus Welcome room."
+        }
     }
 
     /** The header: "ONLINE USERS (3)". */

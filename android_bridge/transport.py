@@ -48,6 +48,7 @@ import time
 from typing import Any, Callable, Dict, List, Optional
 
 import otrv4plus_caps as _caps
+from . import welcome as _welcome
 import otrv4plus_fragment as _fragment
 import otrv4plus_muc as _muc
 import otrv4plus_ping as _ping
@@ -301,6 +302,8 @@ class XmppTransport(Transport):
         #: Which resources speak OTRv4Plus. See otrv4plus_caps: OTRv4+
         #: traffic goes only to a resource this has confirmed.
         self._caps = _caps.CapabilityBook()
+        #: The OTRv4Plus Welcome room: discovery only. See android_bridge.welcome.
+        self._welcome = _welcome.WelcomeDirectory()
         #: Called with a bare JID whenever its capability may have changed,
         #: and whether the resource an OTRv4+ session was pinned to left.
         self._on_capability: Optional[Callable[[str, bool], None]] = None
@@ -1893,6 +1896,80 @@ class XmppTransport(Transport):
                         out.append(bare)
         return out
 
+    # -- the OTRv4Plus Welcome room ---------------------------------------------
+
+    def start_welcome(self, nick: str) -> None:
+        """Find and join the Welcome room in the background. Never blocks.
+
+        Called once the stream is up. Joining is an I2P round trip plus the
+        room's presences; the caller must not wait for it.
+        """
+        if not self.is_connected or not nick:
+            return
+        try:
+            loop = self._ensure_loop()
+            asyncio.run_coroutine_threadsafe(self._welcome_flow(nick), loop)
+        except Exception:
+            self._welcome.failed("unexpected_error")
+
+    async def _welcome_flow(self, nick: str) -> None:
+        """disco the server -> its MUC services -> their public rooms ->
+        the one named ROOM_NAME -> its disco#info -> join. Nothing else is
+        asked of anybody: no occupant is queried, no JID is tried."""
+        self._welcome.searching()
+        try:
+            services = await self._discover_services()
+            rooms = {}
+            for service in services:
+                if service.get("category") != "conference":
+                    continue
+                try:
+                    rooms[service["jid"]] = await self._discover_rooms(
+                        service["jid"])
+                except Exception:
+                    rooms[service["jid"]] = []
+            room, reason = _welcome.find_room(services, rooms)
+            if room is None:
+                self._welcome.not_found(reason)
+                _TRACE.record("welcome", reason, "info")
+                return
+            info = await self._client["xep_0030"].get_info(
+                jid=room, timeout=CALL_TIMEOUT)
+            features = [str(f) for f in info["disco_info"]["features"]]
+            self._welcome.joining(room, features, nick)
+            muc = self._client["xep_0045"]
+            try:
+                await muc.join_muc_wait(room, nick, timeout=CONNECT_TIMEOUT)
+            except Exception as exc:
+                code, _detail = _muc.classify(exc)
+                if code != "conflict":
+                    raise
+                # Our nickname is taken (another of our own resources, or
+                # somebody else). One retry with a random suffix: this picks
+                # OUR name, it does not probe anybody else's.
+                import secrets as _secrets
+                nick = "%s-%s" % (nick, _secrets.token_hex(2))
+                self._welcome.nick = nick
+                await muc.join_muc_wait(room, nick, timeout=CONNECT_TIMEOUT)
+            self._welcome.joined(nick)
+            # Occupants whose presence arrived before our own self-presence
+            # are already in slixmpp's room roster; read them from there.
+            for other in list(muc.get_roster(room) or []):
+                if other == nick:
+                    continue
+                real = muc.get_jid_property(room, other, "jid") or ""
+                self._welcome.occupant(other, str(real), True)
+            _TRACE.record("welcome", "joined", "info",
+                          anonymity=self._welcome.props.get("anonymity"))
+        except Exception as exc:
+            code, _detail = _muc.classify(exc)
+            self._welcome.failed(code)
+            _TRACE.record("welcome", "failed", "warning", code=code)
+
+    def welcome_view(self) -> dict:
+        """The Welcome room's state and discoverable people, for the UI."""
+        return self._welcome.view(self._profile.jid)
+
     #: disco#info features that bear on deleting history from a SERVER.
     #: Read, never acted on: see `archive_support`.
     ARCHIVE_FEATURES = {
@@ -2176,7 +2253,65 @@ class XmppTransport(Transport):
         except Exception:
             return ""
 
+    MUC_USER_NS = "http://jabber.org/protocol/muc#user"
+
+    def _is_room_presence(self, stanza) -> bool:
+        """A presence from a ROOM occupant (`room@service/nick`), not a peer.
+
+        Recognised by the `<x xmlns='muc#user'/>` every MUC service adds, or
+        by coming from a room this session joined. Such a presence is about a
+        nickname in a room: its `from` is the room's JID, so it must never be
+        read as a contact coming online, and never feed the OTRv4Plus
+        capability book -- which would otherwise record the ROOM as a peer
+        and send a disco#info through the room to every occupant.
+        """
+        try:
+            if stanza.xml.find("{%s}x" % self.MUC_USER_NS) is not None:
+                return True
+        except Exception:
+            pass
+        try:
+            bare = str(stanza["from"]).split("/", 1)[0]
+            if self._welcome.is_room(bare):
+                return True
+            joined = self._client["xep_0045"].get_joined_rooms()
+            return bare in {str(r) for r in (joined or ())}
+        except Exception:
+            return False
+
+    def _room_presence(self, stanza, online: bool) -> None:
+        """Feed a Welcome-room occupant presence to the directory."""
+        try:
+            full = str(stanza["from"])
+        except Exception:
+            return
+        room, _, nick = full.partition("/")
+        if not self._welcome.is_room(room):
+            return
+        real, is_self = "", False
+        try:
+            x = stanza.xml.find("{%s}x" % self.MUC_USER_NS)
+            if x is not None:
+                item = x.find("{%s}item" % self.MUC_USER_NS)
+                if item is not None:
+                    # Written by the MUC service, present only when the room
+                    # reveals real JIDs to us. Never derived from the nick.
+                    real = str(item.get("jid") or "")
+                is_self = any(str(s.get("code")) == "110" for s in
+                              x.findall("{%s}status" % self.MUC_USER_NS))
+        except Exception:
+            real = ""
+        if nick and nick == self._welcome.nick:
+            is_self = True
+        self._welcome.occupant(nick, real, online, is_self=is_self)
+
     def _presence(self, stanza, online: bool) -> None:
+        if self._is_room_presence(stanza):
+            try:
+                self._room_presence(stanza, online)
+            except Exception:
+                _log.warning("could not read a room presence")
+            return
         try:
             self._track_caps(stanza, online)
         except Exception:
@@ -2222,8 +2357,10 @@ class XmppTransport(Transport):
         _TRACE.record("transport", "stream_closed_by_slixmpp", "warning",
                       quiet_for=round(self._stream_quiet_for()))
         self._connected.clear()
-        # Every resource's presence is unknown now; capability goes with it.
+        # Every resource's presence is unknown now; capability goes with it,
+        # and so does who was in the Welcome room.
         self._caps.clear()
+        self._welcome.clear()
         self._emit_state("disconnected")
 
     def _emit_state(self, state: str) -> None:

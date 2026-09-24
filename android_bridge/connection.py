@@ -512,6 +512,15 @@ class ConnectionController:
             return self._fail(code, detail)
 
         self._enter("connected")
+        # The OTRv4Plus Welcome room, joined in the background after every
+        # successful sign-in (each connect builds a fresh transport, so a
+        # reconnect rejoins). Discovery only: see android_bridge.welcome.
+        start = getattr(self._transport, "start_welcome", None)
+        if start is not None:
+            try:
+                start(self._profile.jid.split("@", 1)[0])
+            except Exception:
+                _TRACE.record("welcome", "start_failed", "warning")
         self._last = {"ok": True, "stage": "connected", "code": "ok",
                       "detail": "Connected to %s as %s"
                                 % (self._profile.effective_server,
@@ -816,6 +825,22 @@ class ConnectionController:
     def room_occupants(self, room: str) -> Dict[str, Any]:
         """Who is in [room], as `{nick, role, affiliation}` rows."""
         return self._muc_call("room_occupants", room)
+
+    def welcome_directory(self) -> Dict[str, Any]:
+        """The Welcome room's state and discoverable people. Local state
+        only: no network, so no `_muc_call`."""
+        transport = self._transport
+        view = getattr(transport, "welcome_view", None)
+        if transport is None or view is None:
+            return {"state": "not_connected", "room": "", "detail": "",
+                    "anonymity": "unknown", "public": False,
+                    "persistent": False, "people": [], "hidden": 0}
+        try:
+            return view()
+        except Exception:
+            return {"state": "failed", "room": "", "detail": "unexpected_error",
+                    "anonymity": "unknown", "public": False,
+                    "persistent": False, "people": [], "hidden": 0}
 
     def discover_online_users(self) -> Dict[str, Any]:
         """Server-wide online users, when Prosody lets this account ask.

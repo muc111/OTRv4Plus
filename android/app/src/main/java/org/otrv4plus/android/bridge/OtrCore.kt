@@ -679,6 +679,37 @@ data class RoomStanding(
 data class RoomOccupant(val nick: String, val role: String, val affiliation: String)
 
 /**
+ * The OTRv4Plus Welcome room, as the bridge sees it (`android_bridge.welcome`).
+ *
+ * [people] are bare JIDs the MUC SERVICE revealed in occupant presence --
+ * never nicknames turned into addresses. [hidden] counts occupants whose
+ * address the room did not reveal (a semi-anonymous room). Being listed here
+ * means discoverable, nothing more: no trust, no verification, no call, no file.
+ */
+data class WelcomeView(
+    val state: String,
+    val room: String,
+    val anonymity: String,
+    val people: List<String>,
+    val hidden: Int,
+) {
+    val joined: Boolean get() = state == JOINED
+
+    companion object {
+        const val JOINED = "joined"
+        const val NOT_FOUND = "not_found"
+        const val AMBIGUOUS = "ambiguous"
+        const val SEARCHING = "searching"
+        const val JOINING = "joining"
+        const val FAILED = "failed"
+        const val LEFT = "left"
+        const val NOT_CONNECTED = "not_connected"
+        const val SEMI_ANONYMOUS = "semi_anonymous"
+        val NONE = WelcomeView(NOT_CONNECTED, "", "unknown", emptyList(), 0)
+    }
+}
+
+/**
  * What the SERVER said about who is online, when it would say.
  *
  * [mechanism] is "xep-0133" when the server ran its admin online-users

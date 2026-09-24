@@ -55,6 +55,110 @@ of these. None of them can be done from the client:
 * run a user directory (XEP-0055 search, `mod_vjud`), which would need client
   support that does not exist yet.
 
+## 2a. The OTRv4Plus Welcome room: primary discovery for ordinary accounts
+
+**What it is.** A public, persistent MUC named exactly `OTRv4Plus Welcome`.
+Its occupants are the people who are discoverable right now. It is a
+discovery room and not a secure channel: its messages are ordinary MUC
+traffic, readable by the server. Appearing in it grants nothing — no OTR
+trust, no fingerprint, no SMP, no call and no file transfer.
+
+**How the app finds it.** The room's JID is not written anywhere in the code.
+The app looks it up after every successful sign-in (`android_bridge/welcome.py`,
+`XmppTransport._welcome_flow`):
+
+1. It sends disco#items to the account's own server and, for each item,
+   disco#info. It keeps only services whose identity category is
+   `conference`, meaning a MUC service.
+2. It sends disco#items to each MUC service, which lists that service's
+   **public** rooms.
+3. It picks the room whose advertised name is **exactly** `OTRv4Plus Welcome`.
+   If none matches, the state is `not_found`. If more than one matches, the
+   state is `ambiguous`. In both cases nothing is joined.
+4. It sends disco#info to that room to learn whether it is public, persistent
+   and anonymous.
+5. It joins the room under the account's localpart as nickname. If that
+   nickname is taken, it retries once with a random suffix on **our own**
+   nickname.
+
+Nothing else is sent. The app queries no occupant, tries no JID, and
+enumerates no user. Each sign-in builds a fresh transport, so a reconnect
+repeats the whole lookup. When our stream drops, all occupant knowledge is
+dropped with it.
+
+**Where an address comes from.** An address comes only from the
+`<item jid='…'/>` that the MUC **service** writes into an occupant's presence.
+The service writes it, so an occupant cannot forge it. The room shows it to
+ordinary occupants only when the room is **non-anonymous**
+(`muc_nonanonymous`; in Prosody, `whois = "anyone"`).
+
+In a **semi-anonymous** room, which is Prosody's default, only moderators see
+real JIDs. Ordinary occupants see nicknames, and a nickname is not an address.
+Those occupants are only counted. The People list says "N people in the
+OTRv4Plus Welcome room have hidden addresses" and offers no Add button for
+them.
+
+**In the People list.** Revealed occupants merge by bare JID into the one list:
+
+- someone not on the roster appears as **Online — Add**;
+- a roster contact keeps its roster state: **Online — Added**,
+  **Offline — Added**, **Pending**, or **Accept** for an incoming request.
+
+Roster state always wins over what the room shows. Several resources or
+nicknames of one account produce one row, and our own account never appears.
+**Add** is the normal roster add plus `subscribe` (`add_contact`).
+
+**Security.** Room presence is not contact presence. Before this change,
+every occupant presence (`room@service/nick`) reached two places:
+
+- the contact-presence handler, which made the room look like an online
+  contact;
+- the OTRv4Plus capability book, which then sent a disco#info **through the
+  room** to each occupant.
+
+Both paths are now closed (`XmppTransport._is_room_presence`). OTRv4Plus
+capability is still learned only from a contact's own direct presence and
+disco#info, per resource (`OTRV4PLUS_CAPABILITY.md`). Being in the Welcome
+room never starts OTRv4+.
+
+**What the server must provide (not verified on the live server).** The
+live Prosody is reachable only over I2P and could not be inspected, so its MUC
+service JID, whether the room exists, and its anonymity setting are all
+**unknown** here. For discovery to work for ordinary accounts, the server
+admin creates one room on the existing MUC component with these XEP-0045
+configuration fields, from any XMPP client or with the room-config form:
+
+| Field | Value |
+|---|---|
+| `muc#roomconfig_roomname` | `OTRv4Plus Welcome` (exact) |
+| `muc#roomconfig_publicroom` | `1` (listed in disco#items) |
+| `muc#roomconfig_persistentroom` | `1` |
+| `muc#roomconfig_whois` | `anyone` (non-anonymous; needed for **Add**) |
+| `muc#roomconfig_membersonly` | `0` |
+| `muc#roomconfig_passwordprotectedroom` | `0` |
+
+In Prosody, the MUC component must be loaded, for example
+`Component "<service>" "muc"`. Prosody's `muc_room_default_public`,
+`muc_room_default_persistent` and `muc_room_default_public_jids` options set
+the same defaults for new rooms. Check them against the installed Prosody
+version.
+
+**Privacy cost.** In a non-anonymous room:
+
+- every occupant sees every other occupant's **full JID, including the
+  resource**, plus when they join and leave;
+- auto-joining tells everyone in the room when you are online;
+- if the room has an archive (`mod_muc_mam`), messages sent there are kept on
+  the server.
+
+The operator and the users should accept that trade knowingly. A
+semi-anonymous room avoids it but gives no addresses, so only the counted
+"hidden" note appears.
+
+**Server-wide list (optional).** The XEP-0133 admin command (§2) is still
+used where the account is allowed to run it. It adds to the Welcome room and
+never replaces it.
+
 ## 3. The People list
 
 There is one list: the old "Online users" section was removed. It has one row

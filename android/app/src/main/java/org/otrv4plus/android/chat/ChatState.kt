@@ -108,6 +108,7 @@ class ChatState(
         sessionStates.clear()
         capabilities.clear()
         discovery = null
+        welcome = org.otrv4plus.android.bridge.WelcomeView.NONE
         // A call belongs to the account that placed it. Carrying one into the
         // next account would show somebody else's conversation as in a call.
         // A call ringing for the old account must stop ringing for the new
@@ -600,10 +601,28 @@ class ChatState(
         discovery = if (account.isAuthenticated) result else null
     }
 
-    /** The server-listed online users, while that list can still be true. */
-    fun discoveredOnline(): Set<String> =
-        if (!canSend()) emptySet()
-        else discovery?.users?.map { bare(it) }?.toSet() ?: emptySet()
+    /** The Welcome room, as last read from the bridge. */
+    var welcome: org.otrv4plus.android.bridge.WelcomeView =
+        org.otrv4plus.android.bridge.WelcomeView.NONE
+        private set
+
+    fun applyWelcome(view: org.otrv4plus.android.bridge.WelcomeView) {
+        welcome = if (account.isAuthenticated) view
+                  else org.otrv4plus.android.bridge.WelcomeView.NONE
+    }
+
+    /**
+     * Who is discoverably online: the Welcome room's revealed occupants (the
+     * primary source for ordinary accounts) plus the server's own list where
+     * an admin account may read it. Empty while our stream is down.
+     */
+    fun discoveredOnline(): Set<String> {
+        if (!canSend()) return emptySet()
+        val fromServer = discovery?.users?.map { bare(it) } ?: emptyList()
+        val fromWelcome = if (welcome.joined) welcome.people.map { bare(it) }
+                          else emptyList()
+        return (fromServer + fromWelcome).filter { it.isNotEmpty() }.toSet()
+    }
 
     /**
      * The one list of people: roster, requests, and who the server says is

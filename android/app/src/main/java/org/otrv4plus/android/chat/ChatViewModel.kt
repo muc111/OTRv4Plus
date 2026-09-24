@@ -199,6 +199,7 @@ class ChatViewModel : ViewModel() {
                 revision++
                 autoSecure()
                 refreshDiscovery()
+                refreshWelcome()
                 delay(REDRAW_INTERVAL_MS)
             }
         }
@@ -255,8 +256,30 @@ class ChatViewModel : ViewModel() {
         get() {
             observe()
             val s = state ?: return null
-            return OnlineUsers.discoveryNote(s.discovery, s.canSend())
+            return OnlineUsers.discoveryNote(s.welcome, s.discovery, s.canSend())
         }
+
+    private var lastWelcome = 0L
+
+    /**
+     * Re-read the Welcome room's state from the bridge, at most every
+     * [WELCOME_INTERVAL_MS]. Local state only -- the bridge keeps it current
+     * from room presence -- so this is cheap and sends nothing.
+     */
+    private fun refreshWelcome() {
+        val state = this.state ?: return
+        val core = this.core ?: return
+        val now = System.currentTimeMillis()
+        if (now - lastWelcome < WELCOME_INTERVAL_MS) return
+        lastWelcome = now
+        viewModelScope.launch {
+            val view = withContext(Dispatchers.IO) {
+                runCatching { core.welcomeDirectory() }.getOrNull()
+            } ?: return@launch
+            state.applyWelcome(view)
+            revision++
+        }
+    }
 
     private var lastDiscovery = 0L
     private var discovering = false
@@ -1127,5 +1150,6 @@ class ChatViewModel : ViewModel() {
         /** How long an automatic OTRv4+ start gets before it is retried. */
         const val AUTO_RETRY_MS = 45_000L
         const val DISCOVERY_INTERVAL_MS = 120_000L
+        const val WELCOME_INTERVAL_MS = 3_000L
     }
 }

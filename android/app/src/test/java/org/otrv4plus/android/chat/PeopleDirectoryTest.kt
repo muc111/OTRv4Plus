@@ -77,9 +77,13 @@ class PeopleDirectoryTest {
         val s = state(contact(alice, PeerPresence.ONLINE))
         s.applyDiscovery(OnlineDiscovery(OnlineDiscovery.NONE, emptyList()))
         assertEquals(mapOf(alice to OnlineUsers.Relation.ADDED_ONLINE), relations(s))
-        val note = OnlineUsers.discoveryNote(s.discovery, s.canSend())
+        // No Welcome room and no server list: the note says why only
+        // contacts are shown, and names the room that would fix it.
+        s.applyWelcome(org.otrv4plus.android.bridge.WelcomeView(
+            "not_found", "", "unknown", emptyList(), 0))
+        val note = OnlineUsers.discoveryNote(s.welcome, s.discovery, s.canSend())
         assertNotNull(note)
-        assertTrue("XEP-0133" in note, "the reason was not stated")
+        assertTrue("OTRv4Plus" in note && "Welcome" in note, "the reason was not stated")
     }
 
     @Test

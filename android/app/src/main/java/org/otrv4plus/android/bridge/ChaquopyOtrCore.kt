@@ -446,6 +446,21 @@ class ChaquopyOtrCore(private val appContext: Context) : OtrCore {
         return outcome to mam
     }
 
+    /** The Welcome room's state and discoverable people. No network. */
+    fun welcomeDirectory(): WelcomeView {
+        val v = call("welcome_directory") ?: return WelcomeView.NONE
+        return runCatching {
+            WelcomeView(
+                state = entry(v, "state").ifBlank { WelcomeView.NOT_CONNECTED },
+                room = entry(v, "room"),
+                anonymity = entry(v, "anonymity").ifBlank { "unknown" },
+                people = v.callAttr("get", "people")?.asList()
+                    ?.map { it.toString() } ?: emptyList(),
+                hidden = v.callAttr("get", "hidden")?.toInt() ?: 0,
+            )
+        }.getOrDefault(WelcomeView.NONE)
+    }
+
     /**
      * Ask the server who is online (XEP-0133), if it offers that to us.
      * Null value on failure; see [OnlineDiscovery] for what "none" means.

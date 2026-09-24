@@ -32,6 +32,8 @@ REQUIRED_APP_MODULES = ("otrv4_.py", "otrv4plus_xmpp.py", "otrv4plus_voice.py",
                         # of the Termux (opuslib) hooks.
                         "otrv4plus_audio.py", "android_bridge/android_audio.py",
                         "otrv4plus_caps.py",
+                        # Welcome-room discovery for the People list.
+                        "android_bridge/welcome.py",
                         "android_bridge/voice.py")
 
 #: Never in the APK: terminal-only programs, test scaffolding, the retired
