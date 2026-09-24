@@ -672,6 +672,27 @@ data class RoomStanding(
 /** One person in a room, as the room reports them. */
 data class RoomOccupant(val nick: String, val role: String, val affiliation: String)
 
+/**
+ * What the SERVER said about who is online, when it would say.
+ *
+ * [mechanism] is "xep-0133" when the server ran its admin online-users
+ * command for this account, "none" when it offers no such thing (every
+ * ordinary Prosody account) -- and then [users] is empty, never guessed.
+ * Bare JIDs, as the server listed them.
+ */
+data class OnlineDiscovery(
+    val mechanism: String,
+    val users: List<String>,
+) {
+    /** Whether the server has any way to answer, for this account. */
+    val available: Boolean get() = mechanism == XEP_0133
+
+    companion object {
+        const val XEP_0133 = "xep-0133"
+        const val NONE = "none"
+    }
+}
+
 data class RoomOutcome(
     val ok: Boolean,
     val code: String,

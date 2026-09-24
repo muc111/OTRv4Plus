@@ -1808,6 +1808,91 @@ class XmppTransport(Transport):
                                                timeout=CALL_TIMEOUT)
         return {}
 
+    #: XEP-0133 node Prosody's mod_admin_adhoc serves for "list online users".
+    ONLINE_USERS_NODE = "http://jabber.org/protocol/admin#get-online-users-list"
+    COMMANDS_NODE = "http://jabber.org/protocol/commands"
+
+    def discover_online_users(self) -> "tuple[str, str, dict]":
+        """Who is online on this server, if the SERVER will say. Never guessed.
+
+        A roster is not a server directory, and XMPP has no standard way for
+        an ordinary account to list every online user. The one real
+        mechanism is XEP-0133 `get-online-users-list`, which Prosody serves
+        through `mod_admin_adhoc` to ADMIN accounts only. So:
+
+          1. ask the server which ad-hoc commands it offers THIS account
+             (XEP-0050 disco#items on the commands node);
+          2. if the online-users command is among them, run it and return
+             the JIDs it lists -- the server's answer, as given;
+          3. otherwise return code "unavailable" and say what the server
+             would need. Nothing is invented, probed or brute-forced.
+
+        value: {"mechanism": str, "users": [bare jid], "offered": [nodes]}.
+        """
+        return self._room_call(self._discover_online_users())
+
+    async def _discover_online_users(self):
+        client = self._client
+        domain = str(client.boundjid.domain)
+        items = await client["xep_0030"].get_items(
+            jid=domain, node=self.COMMANDS_NODE, timeout=CALL_TIMEOUT)
+        offered = [str(node) for _jid, node, _name in
+                   items["disco_items"].get_items()]
+        if self.ONLINE_USERS_NODE not in offered:
+            return {"mechanism": "none", "users": [], "offered": offered}
+        users = await self._run_online_users_command(domain)
+        return {"mechanism": "xep-0133", "users": users, "offered": offered}
+
+    async def _run_online_users_command(self, domain: str):
+        """Execute the XEP-0133 command; submit its form with its own defaults."""
+        commands = self._client["xep_0050"]
+        first = await commands.send_command(
+            domain, self.ONLINE_USERS_NODE, action="execute",
+            timeout=CALL_TIMEOUT)
+        users = self._jids_from_command(first)
+        if users is not None:
+            return users
+        # A form to fill: accept its defaults (Prosody asks for max_items).
+        form = first["command"]["form"]
+        submit = self._client["xep_0004"].make_form(ftype="submit")
+        for var, field in form.get_fields().items():
+            value = field["value"]
+            if var == "max_items":
+                options = [o["value"] for o in (field["options"] or [])]
+                if "all" in options:
+                    value = "all"
+            if var:
+                submit.add_field(var=var, ftype=field["type"], value=value)
+        done = await commands.send_command(
+            domain, self.ONLINE_USERS_NODE, action="complete",
+            payload=submit, sessionid=first["command"]["sessionid"],
+            timeout=CALL_TIMEOUT)
+        return self._jids_from_command(done) or []
+
+    @staticmethod
+    def _jids_from_command(iq):
+        """The online JIDs from a completed command, or None if not complete."""
+        try:
+            command = iq["command"]
+            if command["status"] != "completed":
+                return None
+            # get_fields(), not ["fields"]: slixmpp answers the latter
+            # with a list of field stanzas, not a mapping.
+            fields = command["form"].get_fields()
+        except Exception:
+            return None
+        out = []
+        for var, field in fields.items():
+            if var in ("onlineuserjids", "onlineusers", "online-users"):
+                values = field["value"] or []
+                if isinstance(values, str):
+                    values = values.split()
+                for jid in values:
+                    bare = str(jid).split("/", 1)[0].strip().lower()
+                    if bare and "@" in bare and bare not in out:
+                        out.append(bare)
+        return out
+
     #: disco#info features that bear on deleting history from a SERVER.
     #: Read, never acted on: see `archive_support`.
     ARCHIVE_FEATURES = {
@@ -2215,7 +2300,10 @@ def _default_client_factory():
         # pulled in implicitly is one that can stop being pulled in.
         # xep_0115: entity capabilities, so peers learn we speak OTRv4Plus
         # from our presence and we learn theirs without asking each time.
-        for plugin in ("xep_0030", "xep_0004", "xep_0045", "xep_0115"):
+        # xep_0050: ad-hoc commands, for the one server-supported way to list
+        # online users (XEP-0133, admins only on Prosody).
+        for plugin in ("xep_0030", "xep_0004", "xep_0045", "xep_0115",
+                       "xep_0050"):
             try:
                 client.register_plugin(plugin)
             except Exception:

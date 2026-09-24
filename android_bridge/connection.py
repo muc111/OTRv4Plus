@@ -817,6 +817,11 @@ class ConnectionController:
         """Who is in [room], as `{nick, role, affiliation}` rows."""
         return self._muc_call("room_occupants", room)
 
+    def discover_online_users(self) -> Dict[str, Any]:
+        """Server-wide online users, when Prosody lets this account ask.
+        See `XmppTransport.discover_online_users`: never guessed."""
+        return self._muc_call("discover_online_users")
+
     def archive_support(self, jid: str = "") -> Dict[str, Any]:
         """What the server says about archiving [jid]'s history. See
         `XmppTransport.archive_support`: reported, never acted on."""

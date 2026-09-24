@@ -446,6 +446,22 @@ class ChaquopyOtrCore(private val appContext: Context) : OtrCore {
         return outcome to mam
     }
 
+    /**
+     * Ask the server who is online (XEP-0133), if it offers that to us.
+     * Null value on failure; see [OnlineDiscovery] for what "none" means.
+     */
+    fun discoverOnlineUsers(): Pair<RoomOutcome, OnlineDiscovery?> {
+        val result = call("discover_online_users") ?: return notPrepared() to null
+        val outcome = outcomeOf(result)
+        if (!outcome.ok) return outcome to null
+        val value = listValue(result) ?: return outcome to null
+        val mechanism = entry(value, "mechanism").ifBlank { OnlineDiscovery.NONE }
+        val users = runCatching {
+            value.callAttr("get", "users")?.asList()?.map { it.toString() }
+        }.getOrNull() ?: emptyList()
+        return outcome to OnlineDiscovery(mechanism, users)
+    }
+
     /** Who is in [room]. Moderators first, as the bridge orders them. */
     fun roomOccupants(room: String): Pair<RoomOutcome, List<RoomOccupant>> {
         val result = call("room_occupants", room) ?: return notPrepared() to emptyList()

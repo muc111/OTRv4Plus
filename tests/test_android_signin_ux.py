@@ -113,7 +113,16 @@ class TestTheAccountFieldAsksForAUsername:
         assert 'label = { Text("Username") }' in screen
 
     def test_the_placeholder_is_a_username_not_an_address(self, screen):
-        assert 'placeholder = { Text("alice") }' in screen
+        # The hint names nobody (no "alice": first launch must not suggest a
+        # demo identity -- see test_android_first_launch.py) and is still a
+        # username rather than a full address.
+        assert "placeholder = { Text(SignIn.USERNAME_HINT) }" in screen
+        signin = open(os.path.join(
+            ROOT, "android/app/src/main/java/org/otrv4plus/android/connection/SignIn.kt"),
+            encoding="utf-8").read()
+        hint = re.search(r'USERNAME_HINT\s*=\s*"([^"]*)"', signin).group(1)
+        assert hint and "@" not in hint
+        assert "alice" not in hint.lower()
         assert "you@server.i2p" not in screen
 
     def test_the_resolved_address_is_shown_back(self, screen):

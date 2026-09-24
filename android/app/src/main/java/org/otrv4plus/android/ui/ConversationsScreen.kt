@@ -123,13 +123,18 @@ fun ConversationsScreen(
                 )
             }
 
-            // ONLINE USERS, from real presence. Collapsed by default so it
-            // does not push the conversations off a small screen; the count
-            // is live either way.
+            // PEOPLE: one list -- roster, requests, and who the server says
+            // is online -- with Add / Pending / Accept / Added per row.
+            // Collapsed by default so it does not push the conversations off
+            // a small screen; the counts are live either way.
             if (model.canSend()) {
-                OnlineUsersSection(
-                    rows = OnlineUsers.rows(conversations),
+                PeopleSection(
+                    entries = model.directory,
+                    note = model.discoveryNote,
                     onOpen = onOpen,
+                    onAdd = { model.addContact(it) },
+                    onAccept = { model.answerSubscription(it, true) },
+                    onRefresh = { model.refreshDiscovery(force = true) },
                 )
             }
 
@@ -601,11 +606,21 @@ private fun DeleteChatDialog(
 }
 
 /**
- * "ONLINE USERS (n)", expandable. Each row says four things separately --
- * online, OTR, SMP, call -- and a tap opens that person's one conversation.
+ * "PEOPLE (n · m online)", expandable. Each row names the relation in words
+ * (Online — Add, Pending, Wants to add you — Accept, Online/Offline — Added)
+ * and, separately, the security facts; a tap opens that person's one
+ * conversation. The action button, when there is one, is the only thing on
+ * the row that changes anything.
  */
 @Composable
-private fun OnlineUsersSection(rows: List<OnlineUsers.Row>, onOpen: (String) -> Unit) {
+private fun PeopleSection(
+    entries: List<OnlineUsers.Entry>,
+    note: String?,
+    onOpen: (String) -> Unit,
+    onAdd: (String) -> Unit,
+    onAccept: (String) -> Unit,
+    onRefresh: () -> Unit,
+) {
     var expanded by rememberSaveable { mutableStateOf(false) }
     Surface(color = MaterialTheme.colorScheme.surfaceVariant) {
         Column(Modifier.fillMaxWidth()) {
@@ -615,29 +630,52 @@ private fun OnlineUsersSection(rows: List<OnlineUsers.Row>, onOpen: (String) -> 
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Text(OnlineUsers.title(rows.size),
+                Text(OnlineUsers.directoryTitle(entries),
                      style = MaterialTheme.typography.labelLarge)
                 Text(if (expanded) "Hide" else "Show",
                      style = MaterialTheme.typography.labelSmall)
             }
             if (expanded) {
-                if (rows.isEmpty()) {
-                    Text("Nobody in your contacts is online right now.",
+                note?.let {
+                    Text(it, style = MaterialTheme.typography.bodySmall,
+                         modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp))
+                }
+                TextButton(onClick = onRefresh,
+                           modifier = Modifier.padding(horizontal = 4.dp)) {
+                    Text("Ask the server again")
+                }
+                if (entries.isEmpty()) {
+                    Text("Nobody yet. Add someone by address with +.",
                          style = MaterialTheme.typography.bodySmall,
                          modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp))
                 }
-                for (row in rows) {
-                    Column(
-                        Modifier.fillMaxWidth().clickable { onOpen(row.jid) }
+                for (entry in entries) {
+                    Row(
+                        Modifier.fillMaxWidth().clickable { onOpen(entry.jid) }
                             .padding(horizontal = 12.dp, vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        Text(row.displayName, style = MaterialTheme.typography.bodyMedium)
-                        Text(
-                            row.facts.joinToString(" · "),
-                            style = MaterialTheme.typography.labelSmall,
-                            color = if (row.verified) VerifiedBlue
-                                    else MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
+                        Column(Modifier.weight(1f)) {
+                            Text(entry.displayName,
+                                 style = MaterialTheme.typography.bodyMedium)
+                            Text(
+                                entry.facts.joinToString(" · "),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = if (entry.verified) VerifiedBlue
+                                        else MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        when (entry.relation) {
+                            OnlineUsers.Relation.ONLINE_ADD ->
+                                OutlinedButton(onClick = { onAdd(entry.jid) }) {
+                                    Text(entry.relation.action ?: "Add")
+                                }
+                            OnlineUsers.Relation.ACCEPT ->
+                                Button(onClick = { onAccept(entry.jid) }) {
+                                    Text(entry.relation.action ?: "Accept")
+                                }
+                            else -> {}
+                        }
                     }
                 }
             }

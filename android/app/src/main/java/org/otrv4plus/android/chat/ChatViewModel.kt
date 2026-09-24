@@ -197,6 +197,7 @@ class ChatViewModel : ViewModel() {
                 // here as well would be two drainers on one destructive queue.
                 revision++
                 autoSecure()
+                refreshDiscovery()
                 delay(REDRAW_INTERVAL_MS)
             }
         }
@@ -239,6 +240,50 @@ class ChatViewModel : ViewModel() {
         lastAutoAttempt[jid] = now
         viewModelScope.launch(Dispatchers.IO) {
             runCatching { core.ensureOtr(jid) }
+        }
+    }
+
+    // -- the one list of people ------------------------------------------------
+
+    /** Roster, requests and server-listed online users, one row each. */
+    val directory: List<OnlineUsers.Entry>
+        get() { observe(); return state?.directory() ?: emptyList() }
+
+    /** Why the list shows only contacts, or null when the server listed users. */
+    val discoveryNote: String?
+        get() {
+            observe()
+            val s = state ?: return null
+            return OnlineUsers.discoveryNote(s.discovery, s.canSend())
+        }
+
+    private var lastDiscovery = 0L
+    private var discovering = false
+
+    /**
+     * Ask the server who is online (XEP-0133), at most every
+     * [DISCOVERY_INTERVAL_MS]. One round trip to our own server; nothing is
+     * sent to any user. A server that does not offer it answers "none" and
+     * is asked again only on the same slow interval.
+     */
+    fun refreshDiscovery(force: Boolean = false) {
+        val state = this.state ?: return
+        val core = this.core ?: return
+        if (!state.canSend()) { lastDiscovery = 0L; return }
+        val now = System.currentTimeMillis()
+        if (discovering || (!force && now - lastDiscovery < DISCOVERY_INTERVAL_MS)) return
+        lastDiscovery = now
+        discovering = true
+        viewModelScope.launch {
+            val (outcome, found) = withContext(Dispatchers.IO) {
+                runCatching { core.discoverOnlineUsers() }.getOrNull()
+                    ?: (org.otrv4plus.android.bridge.RoomOutcome(false, "network", "") to null)
+            }
+            discovering = false
+            // A failed ask leaves the last answer alone rather than claiming
+            // that nobody is online.
+            if (outcome.ok) state.applyDiscovery(found)
+            revision++
         }
     }
 
@@ -1037,5 +1082,6 @@ class ChatViewModel : ViewModel() {
 
         /** How long an automatic OTRv4+ start gets before it is retried. */
         const val AUTO_RETRY_MS = 45_000L
+        const val DISCOVERY_INTERVAL_MS = 120_000L
     }
 }

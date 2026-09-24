@@ -107,6 +107,7 @@ class ChatState(
         smpStates.clear()
         sessionStates.clear()
         capabilities.clear()
+        discovery = null
         // A call belongs to the account that placed it. Carrying one into the
         // next account would show somebody else's conversation as in a call.
         // A call ringing for the old account must stop ringing for the new
@@ -584,6 +585,36 @@ class ChatState(
     private val capabilities = mutableMapOf<String, String>()
 
     fun capabilityOf(jid: String): String = capabilities[bare(jid)] ?: "unknown"
+
+    /**
+     * The server's last answer to "who is online", or null before one.
+     *
+     * Only ever what the server said (`OnlineDiscovery`). Dropped when the
+     * account changes and whenever our own stream is down: a list of who was
+     * online over a connection that has since died is a stale claim.
+     */
+    var discovery: org.otrv4plus.android.bridge.OnlineDiscovery? = null
+        private set
+
+    fun applyDiscovery(result: org.otrv4plus.android.bridge.OnlineDiscovery?) {
+        discovery = if (account.isAuthenticated) result else null
+    }
+
+    /** The server-listed online users, while that list can still be true. */
+    fun discoveredOnline(): Set<String> =
+        if (!canSend()) emptySet()
+        else discovery?.users?.map { bare(it) }?.toSet() ?: emptySet()
+
+    /**
+     * The one list of people: roster, requests, and who the server says is
+     * online, each once. See [OnlineUsers.directory].
+     */
+    fun directory(): List<OnlineUsers.Entry> = OnlineUsers.directory(
+        conversations = conversations(),
+        requests = pendingSubscriptions,
+        discovered = discoveredOnline(),
+        self = account.bareJid,
+    )
 
     /**
      * A VERIFIED that the session no longer carries is dropped. Verification
