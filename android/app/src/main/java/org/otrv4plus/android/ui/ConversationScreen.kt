@@ -857,7 +857,7 @@ private fun SecurityLine(state: SecurityState) {
                 "have not verified it in person." to
                 MaterialTheme.colorScheme.onSurfaceVariant
         SecurityState.SMP_VERIFIED ->
-            "Encrypted and verified." to MaterialTheme.colorScheme.primary
+            "Encrypted and verified." to VerifiedBlue
         // The loudest state in the app. Not a footnote and not a neutral
         // colour: the key is not the one pinned for this contact.
         SecurityState.FINGERPRINT_MISMATCH ->

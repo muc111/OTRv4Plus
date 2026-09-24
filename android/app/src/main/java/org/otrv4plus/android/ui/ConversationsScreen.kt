@@ -26,6 +26,7 @@ import org.otrv4plus.android.chat.ChatDeletion
 import org.otrv4plus.android.chat.ChatState
 import org.otrv4plus.android.chat.ChatViewModel
 import org.otrv4plus.android.chat.Conversation
+import org.otrv4plus.android.chat.OnlineUsers
 import org.otrv4plus.android.chat.Presence
 import org.otrv4plus.android.chat.RowSecurity
 
@@ -119,6 +120,16 @@ fun ConversationsScreen(
                     color = MaterialTheme.colorScheme.error,
                     style = MaterialTheme.typography.bodySmall,
                     modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
+                )
+            }
+
+            // ONLINE USERS, from real presence. Collapsed by default so it
+            // does not push the conversations off a small screen; the count
+            // is live either way.
+            if (model.canSend()) {
+                OnlineUsersSection(
+                    rows = OnlineUsers.rows(conversations),
+                    onOpen = onOpen,
                 )
             }
 
@@ -441,7 +452,7 @@ private fun SecurityBadge(conversation: Conversation) {
         color = when (badge.tone) {
             RowSecurity.Tone.ALARM -> MaterialTheme.colorScheme.error
             RowSecurity.Tone.NEUTRAL -> MaterialTheme.colorScheme.onSurfaceVariant
-            RowSecurity.Tone.GOOD -> MaterialTheme.colorScheme.primary
+            RowSecurity.Tone.GOOD -> VerifiedBlue
         },
     )
 }
@@ -587,4 +598,49 @@ private fun DeleteChatDialog(
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text(ChatDeletion.CANCEL) } },
     )
+}
+
+/**
+ * "ONLINE USERS (n)", expandable. Each row says four things separately --
+ * online, OTR, SMP, call -- and a tap opens that person's one conversation.
+ */
+@Composable
+private fun OnlineUsersSection(rows: List<OnlineUsers.Row>, onOpen: (String) -> Unit) {
+    var expanded by rememberSaveable { mutableStateOf(false) }
+    Surface(color = MaterialTheme.colorScheme.surfaceVariant) {
+        Column(Modifier.fillMaxWidth()) {
+            Row(
+                Modifier.fillMaxWidth().clickable { expanded = !expanded }
+                    .padding(horizontal = 12.dp, vertical = 8.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(OnlineUsers.title(rows.size),
+                     style = MaterialTheme.typography.labelLarge)
+                Text(if (expanded) "Hide" else "Show",
+                     style = MaterialTheme.typography.labelSmall)
+            }
+            if (expanded) {
+                if (rows.isEmpty()) {
+                    Text("Nobody in your contacts is online right now.",
+                         style = MaterialTheme.typography.bodySmall,
+                         modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp))
+                }
+                for (row in rows) {
+                    Column(
+                        Modifier.fillMaxWidth().clickable { onOpen(row.jid) }
+                            .padding(horizontal = 12.dp, vertical = 6.dp),
+                    ) {
+                        Text(row.displayName, style = MaterialTheme.typography.bodyMedium)
+                        Text(
+                            row.facts.joinToString(" · "),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = if (row.verified) VerifiedBlue
+                                    else MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+            }
+        }
+    }
 }

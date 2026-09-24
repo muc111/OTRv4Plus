@@ -439,12 +439,30 @@ class TestTheSecurityBoundaryHoldsInTheUi:
         assert "connected" not in line, (
             "the security line reads connection state")
 
-    def test_there_is_no_padlock(self, conversation):
-        """A padlock is read as "safe". ENCRYPTED without verification means
-        the traffic is encrypted to somebody -- the DAKE ran, nobody checked
-        who answered -- and no icon distinguishes those."""
-        assert "\N{LOCK}" not in conversation
+    def test_the_padlock_is_the_otr_state_and_verified_has_its_own(self, conversation):
+        """Was `test_there_is_no_padlock`. The owner asked for a padlock for
+        OTR and the blue verified treatment for SMP (rc.2), matching the
+        Termux client. What that test protected still holds, more strictly:
+
+        * the padlock comes ONLY from the engine's level (`SecurityLevel`),
+          never from connection state and never a hard-coded icon here;
+        * encrypted-unverified and verified carry DIFFERENT padlocks -- the
+          same glyph for both was the reason there was none;
+        * plaintext and a changed key never carry a padlock at all.
+        """
+        assert "\N{LOCK}" not in conversation, "a padlock hard-coded in the screen"
         assert "Icons.Filled.Lock" not in conversation
+        level = _read(ANDROID, "crypto", "SecurityLevel.kt")
+        marks = dict(re.findall(r'(\w+)\("([^"]*)", "', level))
+        decode = lambda m: m.encode().decode("unicode_escape").encode(
+            "utf-16", "surrogatepass").decode("utf-16")
+        marks = {k: decode(v) for k, v in marks.items()}
+        assert marks["ENCRYPTED_UNVERIFIED"] == "\N{LOCK}"
+        assert "\N{CLOSED LOCK WITH KEY}" in marks["VERIFIED"]
+        assert "\N{LOCK}" not in marks["VERIFIED"]
+        for loud in ("NOT_ENCRYPTED", "KEY_CHANGED"):
+            assert "\N{LOCK}" not in marks[loud]
+            assert "\N{CLOSED LOCK WITH KEY}" not in marks[loud]
 
     def test_unencrypted_is_stated_not_omitted(self, conversation):
         assert "Not encrypted" in conversation

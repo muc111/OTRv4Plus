@@ -22,21 +22,23 @@ import org.otrv4plus.android.bridge.SecurityState
  * whatever the screen shows: this model describes the gate, it is not the
  * gate.
  *
- * WHY A MARK AND A WORD, NOT A PADLOCK
- * ------------------------------------
- * The padlock decision was left open; this is the decision, and why. A
- * padlock is the icon users have been taught means "safe", and it reads the
- * same whether the other end was verified or not -- which is exactly the
- * distinction levels 2 and 3 exist to draw. So each level gets a WORD, which
- * is the primary indication, and a MARK whose SHAPE differs by level, so the
- * three are distinguishable without colour (colour-blind users, monochrome
- * displays, a screenshot described over the phone). Colour is applied by the
- * caller as a supplement and never carries the meaning alone.
+ * A PADLOCK FOR OTR, AND A DIFFERENT ONE FOR VERIFIED
+ * ---------------------------------------------------
+ * Decided by the project owner for 0.7.0-experimental.rc.2, and chosen to
+ * match what the Termux client already shows (`otrv4plus_xmpp._otr_prefix`):
+ * an encrypted session IS encrypted, so a padlock on it is not a lie, but
+ * the SAME padlock on verified and unverified would give one reassurance for
+ * two different facts. So:
  *
- *   NOT_ENCRYPTED         "!"  open alarm
- *   ENCRYPTED_UNVERIFIED  "○"  an empty circle: encrypted, identity unfilled
- *   VERIFIED              "✓"  the only tick in the application
- *   KEY_CHANGED           "⚠"  the warning sign
+ *   NOT_ENCRYPTED         "!"    open alarm. Never a padlock.
+ *   ENCRYPTED_UNVERIFIED  "🔒"   OTR is running; nobody checked who answered
+ *   VERIFIED              "🔐✓"  lock with key, and the only tick in the app,
+ *                               in the verified blue (Termux's 🔵 SMP colour)
+ *   KEY_CHANGED           "⚠"    the warning sign. Never a padlock.
+ *
+ * The WORD stays the primary indication and the shapes differ by level, so
+ * the levels remain distinguishable without colour. The padlock is derived
+ * from the engine's security state only -- never from connection state.
  *
  * Plain Kotlin, executed by `SecurityLevelTest`; both the conversation list
  * (`RowSecurity`) and the conversation screen take their level from here, so
@@ -46,8 +48,8 @@ object SecurityLevel {
 
     enum class Level(val mark: String, val label: String) {
         NOT_ENCRYPTED("!", "Not encrypted"),
-        ENCRYPTED_UNVERIFIED("○", "Encrypted, unverified"),
-        VERIFIED("✓", "Verified"),
+        ENCRYPTED_UNVERIFIED("\uD83D\uDD12", "Encrypted, unverified"),
+        VERIFIED("\uD83D\uDD10\u2713", "Verified"),
         KEY_CHANGED("⚠", "KEY CHANGED"),
     }
 
