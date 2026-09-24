@@ -18,7 +18,7 @@
 # proved all three against a Termux peer (recorded in
 # ANDROID_CALL_AND_FILE_DEVICE_TEST.md and the rc.2 CHANGELOG entry). That
 # line was no longer true. Corrected again when the owner reported two-way
-# app-to-app calls working; app-to-Termux calls are still open.
+# calls working app to app and app to Termux.
 #
 # THE BODY OF THIS FILE IS THE EMAIL. GitHub sends release notes to watchers,
 # so what is written below is what somebody reads before deciding whether to
@@ -94,7 +94,7 @@ dependency audit is clean, the documentation licence is decided, the icon's
 origin is recorded, and the release variant is built and its contents
 inspected on this run. It is still **not a release** and it is still
 EXPERIMENTAL: encrypted chat, identity verification, file transfer and
-two-way voice calls between two copies of the app have been proved on
+two-way voice calls (app to app, and app to Termux) have been proved on
 handsets, and the smaller items below are still open.
 
 ---
@@ -113,6 +113,8 @@ against the live server over I2P, with a Termux client as the peer:
   completes, with the file's hashes checked on arrival;
 - **two-way voice calls between two handsets running this app** (accounts
   Alice and Bob): both directions heard, over I2P;
+- **two-way voice calls between this app and the Termux client**, on two
+  phones in different rooms, over I2P, including on a poor route;
 - **OTRv4+ between two handsets running this app** completes; over I2P it
   takes a minute or more, and this build shows the handshake's progress;
 - the APK installs and launches; Chaquopy starts CPython 3.12 and
@@ -156,9 +158,6 @@ Asserted on every run rather than assumed:
 
 ## NOT verified, and the reason this is still experimental
 
-- **Voice calls between the app and a Termux client.** App-to-app calls
-  work (above); a call with the Termux client on the other end has not been
-  run yet.
 - **What this version adds on top**, not yet run on a handset: automatic
   OTRv4+ only toward clients that advertise OTRv4Plus, the People list, file
   progress with ETA, the in-app viewer, Wipe & Exit from the conversation

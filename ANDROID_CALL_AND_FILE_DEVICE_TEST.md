@@ -55,8 +55,12 @@ Two handsets, both running this app (accounts Alice and Bob), over I2P:
 two-way voice calls work, heard in both directions. OTRv4+ between the two
 apps completes but takes a minute or more with, until this build, nothing on
 screen to show it was working. Password-protected rooms can be created; the
-join prompt was missing and is fixed in this build. Not yet run: a call
-between the app and a Termux client.
+join prompt was missing and is fixed in this build. A call between the app
+and a Termux client, on two phones in different rooms, also worked in both
+directions, including on a poor I2P route (5 min 18 s, ~1.2 s mouth to ear).
+That Termux client printed "0.0% of audio delivered" at hang-up; it was
+running `main`, which still has the rekey-overflow bug fixed on this branch
+in `c90d612` (the summary now prints frame counts).
 
 ### What the rc.1 handset run established (reported by the owner)
 

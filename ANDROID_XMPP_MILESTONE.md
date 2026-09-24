@@ -495,8 +495,9 @@ not been run.
 
 Two handsets running the app made **two-way voice calls** to each other over
 I2P, heard in both directions. That closes **item 10** (the audio is real,
-not silence) for app-to-app calls. A call between the app and a Termux client
-has not been run. Items 1–3 and 5–9 remain open.
+not silence) for app-to-app calls, and a call between the app and a Termux
+client on another phone worked in both directions too. Items 1–3 and 5–9
+remain open.
 
 ### 7.1 The list
 

@@ -137,14 +137,21 @@ class TestTheOpenGatesAreStillDeclaredOpen:
                 "a call is claimed and the record it rests on is gone")
             assert "7.0b" in milestone
             assert "two handsets running this app" in device
-            assert "Termux" not in device.split("voice calls", 1)[1][:120], (
-                "the device section claims calls with Termux")
+            if "Termux client" in device.split("voice calls", 1)[1][:400]:
+                assert "call between the app and a Termux client" in \
+                    " ".join(record.split()), (
+                    "a Termux call is claimed and was never recorded")
 
-    def test_voice_is_named_as_unverified(self, unverified):
-        """App-to-app calls are reported working; a call between the app
-        and a Termux client has not been run, and stays on this list."""
-        assert "Voice" in unverified
-        assert "Termux" in unverified
+    def test_voice_left_the_open_list_only_with_its_record(self, unverified):
+        """Voice was the last headline gate. The owner reported two-way
+        calls app to app and app to Termux; it may leave this list only while
+        the device record says so."""
+        record = _read(os.path.join(ROOT, "ANDROID_CALL_AND_FILE_DEVICE_TEST.md"))
+        if "Voice" not in unverified:
+            assert "A call between the app\nand a Termux client" in record or \
+                "call between the app and a Termux client" in \
+                " ".join(record.split()), (
+                "voice left the open list without its device record")
 
     def test_the_gate_document_is_pointed_at(self, notes):
         assert "ANDROID_XMPP_MILESTONE.md" in notes

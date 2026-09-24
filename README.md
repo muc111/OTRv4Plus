@@ -41,9 +41,9 @@ Works on Android 8.0 and newer, including the Pixel 7.
 
 **What has been tested on a phone:** sign-in, contacts, 1:1 chat, rooms,
 OTRv4+ encryption, SMP identity verification, encrypted file transfer with a
-Termux peer, and two-way voice calls between two phones running the app.
-**Not yet tested on a phone:** a call between the app and Termux, and the
-newest additions listed in [CHANGELOG.md](CHANGELOG.md). The step-by-step test list
+Termux peer, and two-way voice calls (app to app, and app to Termux).
+**Not yet tested on a phone:** the newest additions listed in
+[CHANGELOG.md](CHANGELOG.md). The step-by-step test list
 is [ANDROID_CALL_AND_FILE_DEVICE_TEST.md](ANDROID_CALL_AND_FILE_DEVICE_TEST.md).
 
 ## Project status
@@ -55,7 +55,7 @@ is [ANDROID_CALL_AND_FILE_DEVICE_TEST.md](ANDROID_CALL_AND_FILE_DEVICE_TEST.md).
 | Hybrid PQC handshake, ratchet and SMP | Working, not externally reviewed |
 | File transfer | Working (XMPP) |
 | Voice over I2P | Working between two phones, in Termux and in the app; still being tuned |
-| Android app | Chat, OTRv4+, SMP, files and app-to-app calls tested on phones |
+| Android app | Chat, OTRv4+, SMP, files and calls (to the app and to Termux) tested on phones |
 | Group encryption | Not implemented. Rooms are ordinary XMPP rooms that the server can read. See [MLS_FEASIBILITY.md](MLS_FEASIBILITY.md) |
 | External security review | None |
 
