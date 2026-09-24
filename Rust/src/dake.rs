@@ -467,6 +467,11 @@ impl DakeState {
 
         self.peer_identity_pub = Self::extract_identity_from_profile(profile_slice)?;
         self.peer_profile_bytes = Some(profile_slice.to_vec());
+        // The responder's transcript STARTS at the peer's DAKE1. On glare
+        // this object may already have sent its own DAKE1; that message is
+        // not part of the handshake we are now answering, and leaving it in
+        // would make DAKE3 verification fail against a correct initiator.
+        self.transcript.clear();
         self.transcript.extend_from_slice(data);
         self.phase = DakePhase::ReceivedDake1;
         Ok(())
@@ -646,52 +651,62 @@ impl DakeState {
         match mldsa_sig { Some(s) => { msg.push(0x01); msg.extend_from_slice(s); } None => msg.push(0x00), }
         Ok(msg)
     }
-    pub fn process_dake3(&mut self, data: &[u8]) -> Result<()> {
+    /// The Auth-I message both DAKE3 signatures cover:
+    /// `KDF_1(AUTH_I_MSG, DAKE1 || DAKE2, 64)` (OTRv4 section 4.3.3), over
+    /// the transcript this state recorded itself. This is the value every
+    /// OTRv4+ client has signed since v10.6; computing it here is what lets
+    /// Rust, not the caller, decide what is signed and what is verified.
+    fn auth_i_msg(&self) -> Vec<u8> {
+        kdf::kdf_1(usage::AUTH_I_MSG, &self.transcript, 64)
+    }
+
+    /// Initiator: sign and build DAKE3 from this handshake's own transcript.
+    ///
+    /// The ring signature uses the identity key this state already holds
+    /// (A1 = ours, A2 = the responder's). An ML-DSA-87 signature is
+    /// included exactly when the responder committed an ML-DSA key; it is
+    /// then mandatory at the responder (audit H2), so a missing signer is an
+    /// error here rather than a DAKE3 the peer is certain to refuse.
+    pub fn generate_dake3(
+        &mut self,
+        mldsa_sign: Option<&dyn Fn(&[u8]) -> Result<Vec<u8>>>,
+    ) -> Result<Vec<u8>> {
         self.refuse_if_wiped()?;
-        if self.phase != DakePhase::SentDake2 { return Err(OtrError::Dake("wrong phase")); }
-        if data.len() < 1 + RING_SIGMA_SIZE + 1 { return Err(OtrError::TooShort{need:1+RING_SIGMA_SIZE+1,got:data.len()}); }
-        if data[0] != MSG_DAKE3 { return Err(OtrError::WireFormat); }
-        let sigma = &data[1..1+RING_SIGMA_SIZE];
-        let off = 1+RING_SIGMA_SIZE;
-        let flag = data[off];
-
-        // ── Audit H2: ML-DSA-87 downgrade protection ──
-        // If the peer committed an ML-DSA-87 public key earlier (parsed and
-        // MAC-bound in DAKE1/DAKE2), its DAKE3 signature is MANDATORY.  The
-        // ring signature covers only the transcript (DAKE1‖DAKE2), not this
-        // flag byte, so without this check a MITM strips PQ authentication
-        // with a single 0x01 -> 0x00 flip.
-        let mldsa_required = self.peer_mldsa_pub.is_some();
-        if mldsa_required && flag != 0x01 {
-            return Err(OtrError::Dake("ML-DSA signature stripped: peer committed a PQ key"));
+        if !self.is_initiator || self.phase != DakePhase::ReceivedDake2 {
+            return Err(OtrError::Dake("wrong phase"));
         }
+        let msg = self.auth_i_msg();
+        let sigma = crate::ring_sig::ring_sign_bytes(
+            self.our_identity_priv.expose(), &self.our_identity_pub,
+            &self.peer_identity_pub, &msg,
+        ).map_err(OtrError::Dake)?;
+        let mldsa_sig = match (&self.peer_mldsa_pub, mldsa_sign) {
+            (Some(_), Some(sign)) => Some(sign(&msg)?),
+            (Some(_), None) => {
+                return Err(OtrError::Dake("peer committed ML-DSA-87 but no signer was given"))
+            }
+            (None, _) => None,
+        };
+        let dake3 = self.assemble_dake3(&sigma, mldsa_sig.as_deref())?;
+        self.transcript.extend_from_slice(&dake3);
+        self.phase = DakePhase::Established;
+        Ok(dake3)
+    }
 
-        if flag == 0x01 {
-            let start = off+1;
-            if data.len()-start < MLDSA_SIG_SIZE { return Err(OtrError::TooShort{need:start+MLDSA_SIG_SIZE,got:data.len()}); }
-            let mldsa_sig = &data[start..start+MLDSA_SIG_SIZE];
-            let peer_mldsa_pub = self.peer_mldsa_pub.as_ref().ok_or(OtrError::MlDsa)?;
-            Self::mldsa_verify(peer_mldsa_pub, &self.transcript, mldsa_sig)?;
-        } else if flag != 0x00 { return Err(OtrError::WireFormat); }
-
-        // ── Audit H1: single sound ring-signature verifier ──
-        // Route through ring_sig::ring_verify_bytes, whose challenge binds
-        // the usage tag and BOTH public keys and accepts on a single
-        // condition.  The signer (initiator) signs with A1 = its own
-        // identity, A2 = the responder's identity; from the responder's
-        // side that is (peer_identity_pub, our_identity_pub) in that order.
-        // The previous in-module verify_ring_signature was unsound (no
-        // public keys / usage tag in the hash, OR-of-two acceptance) and
-        // has been removed.
-        if !crate::ring_sig::ring_verify_bytes(
-            &self.peer_identity_pub, &self.our_identity_pub, &self.transcript, sigma,
-        ) {
-            return Err(OtrError::SignatureInvalid);
+    /// Responder: verify DAKE3 and, only if it verifies, become established.
+    /// Returns whether the peer was also authenticated with ML-DSA-87.
+    pub fn process_dake3(&mut self, data: &[u8]) -> Result<bool> {
+        self.refuse_if_wiped()?;
+        if self.is_initiator || self.phase != DakePhase::SentDake2 {
+            return Err(OtrError::Dake("wrong phase"));
         }
-
+        let hybrid = verify_dake3(
+            &self.transcript, data, &self.peer_identity_pub, &self.our_identity_pub,
+            self.peer_mldsa_pub.as_deref(),
+        )?;
         self.transcript.extend_from_slice(data);
         self.phase = DakePhase::Established;
-        Ok(())
+        Ok(hybrid)
     }
 
     // ── utility functions ──────────────────────────────────────
@@ -803,6 +818,55 @@ impl DakeState {
 // ─────────────────────────────────────────────────────────────────────────────
 //  PyO3 binding
 // ─────────────────────────────────────────────────────────────────────────────
+
+/// Verify a DAKE3 against the transcript it must sign (DAKE1 || DAKE2).
+///
+/// The one DAKE3 verifier. `initiator_pub` signed with A1 = itself and
+/// A2 = `responder_pub`. If the initiator committed an ML-DSA-87 key, its
+/// signature is mandatory: the ring signature covers the transcript but not
+/// the flag byte, so without this a MITM strips post-quantum authentication
+/// by flipping 0x01 to 0x00 (audit H2). Returns whether ML-DSA verified.
+pub fn verify_dake3(
+    transcript: &[u8], data: &[u8],
+    initiator_pub: &[u8; ED448_PUB_SIZE], responder_pub: &[u8; ED448_PUB_SIZE],
+    initiator_mldsa_pub: Option<&[u8]>,
+) -> Result<bool> {
+    if data.len() < 1 + RING_SIGMA_SIZE + 1 {
+        return Err(OtrError::TooShort { need: 1 + RING_SIGMA_SIZE + 1, got: data.len() });
+    }
+    if data[0] != MSG_DAKE3 { return Err(OtrError::WireFormat); }
+    let sigma = &data[1..1 + RING_SIGMA_SIZE];
+    let off = 1 + RING_SIGMA_SIZE;
+    let flag = data[off];
+    let msg = kdf::kdf_1(usage::AUTH_I_MSG, transcript, 64);
+
+    let hybrid = match (flag, initiator_mldsa_pub) {
+        (0x00, Some(_)) => {
+            return Err(OtrError::Dake("ML-DSA signature stripped: peer committed a PQ key"))
+        }
+        (0x00, None) => {
+            if data.len() != off + 1 { return Err(OtrError::WireFormat); }
+            false
+        }
+        (0x01, Some(pk)) => {
+            let start = off + 1;
+            if data.len() != start + MLDSA_SIG_SIZE {
+                return Err(OtrError::TooShort { need: start + MLDSA_SIG_SIZE, got: data.len() });
+            }
+            DakeState::mldsa_verify(pk, &msg, &data[start..])?;
+            true
+        }
+        // A signature from a key that was never committed authenticates
+        // nothing and is refused rather than ignored.
+        (0x01, None) => return Err(OtrError::MlDsa),
+        _ => return Err(OtrError::WireFormat),
+    };
+
+    if !crate::ring_sig::ring_verify_bytes(initiator_pub, responder_pub, &msg, sigma) {
+        return Err(OtrError::SignatureInvalid);
+    }
+    Ok(hybrid)
+}
 
 #[pyclass(name = "RustDAKE")]
 pub struct PyDake { inner: DakeState }
@@ -1337,7 +1401,27 @@ impl PyDake {
     fn assemble_dake3<'py>(&self, py: Python<'py>, sigma_bytes: &[u8], mldsa_sig_bytes: Option<&[u8]>) -> PyResult<Bound<'py, PyBytes>> {
         Ok(PyBytes::new(py, &self.inner.assemble_dake3(sigma_bytes, mldsa_sig_bytes).map_err(PyErr::from)?))
     }
-    fn process_dake3(&mut self, data: &[u8]) -> PyResult<()> { self.inner.process_dake3(data).map_err(PyErr::from) }
+    /// Initiator: DAKE3, signed inside Rust over this handshake's own
+    /// transcript. `mldsa_handle` signs the same Auth-I message when the
+    /// responder committed an ML-DSA-87 key; its secret stays in Rust.
+    #[pyo3(signature = (mldsa_handle = None))]
+    fn generate_dake3<'py>(
+        &mut self, py: Python<'py>,
+        mldsa_handle: Option<PyRef<'_, crate::mldsa::MlDsa87KeyHandle>>,
+    ) -> PyResult<Bound<'py, PyBytes>> {
+        let signer = mldsa_handle.as_ref().map(|h| {
+            move |m: &[u8]| h.sign_internal(m).map_err(|_| OtrError::MlDsa)
+        });
+        let dake3 = match &signer {
+            Some(f) => self.inner.generate_dake3(Some(f as &dyn Fn(&[u8]) -> Result<Vec<u8>>)),
+            None => self.inner.generate_dake3(None),
+        }.map_err(PyErr::from)?;
+        Ok(PyBytes::new(py, &dake3))
+    }
+
+    /// Responder: verify DAKE3; established only if it verifies. Returns
+    /// True when the initiator was also authenticated with ML-DSA-87.
+    fn process_dake3(&mut self, data: &[u8]) -> PyResult<bool> { self.inner.process_dake3(data).map_err(PyErr::from) }
     fn get_phase(&self) -> String {
         match self.inner.phase {
             DakePhase::Idle => "IDLE", DakePhase::SentDake1 => "SENT_DAKE1", DakePhase::ReceivedDake1 => "RECEIVED_DAKE1",
@@ -1402,5 +1486,87 @@ mod wipe_tests {
         assert!(s.process_dake1(&[0u8; 4000]).is_err());
         assert!(s.generate_dake1(&[0u8; 200], None).is_err());
         assert!(s.process_dake3(&[0u8; 10]).is_err());
+    }
+}
+
+#[cfg(test)]
+mod dake3_tests {
+    //! DAKE3 is verified in Rust over KDF_1(AUTH_I_MSG, DAKE1 || DAKE2).
+    //! The fixture is a handshake recorded from the build before this
+    //! change, when DAKE3 was signed from Python: it must still verify, so
+    //! the wire and what is signed are unchanged for every deployed peer.
+    use super::*;
+
+    const FIXTURE: &str = include_str!("../../tests/fixtures/dake_recorded_v1.json");
+
+    fn field(name: &str) -> Vec<u8> {
+        let key = format!("\"{}\": \"", name);
+        let start = FIXTURE.find(&key).expect("field") + key.len();
+        let end = start + FIXTURE[start..].find('"').expect("end");
+        let hex = &FIXTURE[start..end];
+        hex.as_bytes().chunks(2)
+            .map(|p| u8::from_str_radix(std::str::from_utf8(p).expect("ascii"), 16).expect("hex"))
+            .collect()
+    }
+
+    fn pub57(name: &str) -> [u8; ED448_PUB_SIZE] {
+        field(name).try_into().expect("57 bytes")
+    }
+
+    fn recorded() -> (Vec<u8>, Vec<u8>, [u8; 57], [u8; 57], Vec<u8>) {
+        let mut transcript = field("dake1");
+        transcript.extend_from_slice(&field("dake2"));
+        (transcript, field("dake3"), pub57("initiator_identity_pub"),
+         pub57("responder_identity_pub"), field("initiator_mldsa_pub"))
+    }
+
+    #[test]
+    fn the_recorded_pre_r1_dake3_verifies() {
+        let (t, d3, i, r, m) = recorded();
+        assert_eq!(verify_dake3(&t, &d3, &i, &r, Some(&m)).unwrap(), true);
+    }
+
+    #[test]
+    fn a_stripped_ml_dsa_signature_is_refused() {
+        let (t, d3, i, r, m) = recorded();
+        let mut stripped = d3[..1 + RING_SIGMA_SIZE].to_vec();
+        stripped.push(0x00);
+        assert!(verify_dake3(&t, &stripped, &i, &r, Some(&m)).is_err());
+    }
+
+    #[test]
+    fn tampering_anywhere_is_refused() {
+        let (t, d3, i, r, m) = recorded();
+        for pos in [1, 100, 1 + RING_SIGMA_SIZE + 1, d3.len() - 1] {
+            let mut bad = d3.clone();
+            bad[pos] ^= 0x01;
+            assert!(verify_dake3(&t, &bad, &i, &r, Some(&m)).is_err(), "byte {pos}");
+        }
+        let mut bad_t = t.clone();
+        bad_t[10] ^= 0x01;
+        assert!(verify_dake3(&bad_t, &d3, &i, &r, Some(&m)).is_err(), "transcript");
+    }
+
+    #[test]
+    fn the_roles_and_keys_are_bound() {
+        let (t, d3, i, r, m) = recorded();
+        assert!(verify_dake3(&t, &d3, &r, &i, Some(&m)).is_err(), "swapped roles");
+        assert!(verify_dake3(&t, &d3, &i, &i, Some(&m)).is_err(), "wrong responder");
+        // A signature from a key that was never committed is refused.
+        assert!(verify_dake3(&t, &d3, &i, &r, None).is_err());
+        // Trailing bytes are refused.
+        let mut long = d3.clone();
+        long.push(0);
+        assert!(verify_dake3(&t, &long, &i, &r, Some(&m)).is_err());
+    }
+
+    #[test]
+    fn dake3_needs_the_right_role_and_phase() {
+        let mut s = DakeState::new(&[7u8; 57], &[8u8; ED448_PUB_SIZE],
+                                   &[9u8; 56], &[10u8; X448_PUB_SIZE], None, None, 1)
+            .expect("state");
+        assert!(s.generate_dake3(None).is_err(), "idle initiator");
+        assert!(s.process_dake3(&[0u8; 300]).is_err(), "idle responder");
+        assert!(s.phase != DakePhase::Established);
     }
 }

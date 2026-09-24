@@ -4418,7 +4418,7 @@ class RustDAKEAdapter:
       - DH exchanges (dh1/dh2/dh3) done in Rust, result never returned to Python
       - ML-KEM-1024 encaps/decaps done in Rust
       - KDF_1 session key derivation done in Rust
-      - ring signature still generated in Python, embedded as opaque bytes
+      - DAKE3 signed and verified in Rust over its own transcript
 
     Rust DAKE is the only DAKE implementation; there is no fallback.
     """
@@ -4816,142 +4816,44 @@ class RustDAKEAdapter:
             return self._fail(f"process_dake2 exception: {e }")
 
     def generate_dake3(self) -> Optional[str]:
-        """
-        Generate DAKE3 as initiator.
-        Ring signature is built on the Python side (no ring-sign in Rust yet),
-        then the sigma + optional ML-DSA sig bytes are passed to Rust for
-        canonical wire assembly - or assembled here if Rust doesn't support it.
-        """
+        """Generate DAKE3 as initiator -- signed inside Rust.
 
+        `RustDAKE.generate_dake3` computes the Auth-I message from the
+        transcript it recorded itself (KDF_1(0x05, DAKE1 || DAKE2)), ring-signs
+        it with the identity key it holds, adds the ML-DSA-87 signature
+        through the handle when the responder committed an ML-DSA key, and
+        assembles the wire bytes. Nothing here computes or signs anything, and
+        there is no fallback: a DAKE3 Rust will not produce is not sent.
+        """
         try:
-            if self._raw_dake1_bytes is None or self._raw_dake2_bytes is None:
-                raise ValueError("Transcript bytes missing")
-
-            transcript_msg = kdf_1(
-                KDFUsage.AUTH_I_MSG, self._raw_dake1_bytes + self._raw_dake2_bytes, 64
-            )
-
-            identity_key = self.client_profile.identity_key
-            if identity_key is None:
-                raise ValueError("Local Ed448 identity key not available")
-
-            A1_bytes = self.client_profile.identity_pub_bytes or bytes(identity_key.public_bytes())
-
-            if self.remote_profile is None:
-                raise ValueError("Remote profile not stored")
-            A2_bytes = self.remote_profile.identity_pub_bytes
-            if A2_bytes is None:
-                raise ValueError("Remote identity_pub_bytes not available")
-
-            sigma = RingSignature.sign(identity_key, A1_bytes, A2_bytes, transcript_msg)
-
-            assembled = None
-            if hasattr(self._rust, "assemble_dake3"):
-                try:
-                    mldsa_sig = None
-                    if self._mldsa_auth is not None and self._remote_mldsa_pub is not None:
-                        mldsa_sig = self._mldsa_auth.sign(transcript_msg)
-                    assembled = bytes(
-                        self._rust.assemble_dake3(
-                            sigma_bytes=sigma,
-                            mldsa_sig_bytes=mldsa_sig,
-                        )
-                    )
-                except Exception:
-                    assembled = None
-
-            if assembled is None:
-
-                msg = bytearray([OTRConstants.MESSAGE_TYPE_DAKE3])
-                msg.extend(sigma)
-                if self._mldsa_auth is not None and self._remote_mldsa_pub is not None:
-                    mldsa_sig = self._mldsa_auth.sign(transcript_msg)
-                    msg.append(0x01)
-                    msg.extend(mldsa_sig)
-                    self._log_debug(f"DAKE3 hybrid: ring-sig + ML-DSA-87")
-                else:
-                    msg.append(0x00)
-                    self._log_debug("DAKE3 classical only: ring-sig")
-                assembled = bytes(msg)
-
+            handle = self._mldsa_auth._priv if self._mldsa_auth is not None else None
+            assembled = bytes(self._rust.generate_dake3(mldsa_handle=handle))
             encoded = base64.urlsafe_b64encode(assembled).decode("ascii").rstrip("=")
             self._log_debug(f"DAKE3 (Auth-I) generated: {len (assembled )}B total")
             return f"?OTRv4 {encoded }"
-
         except Exception as e:
             self._log_error(f"DAKE3 (Auth-I) generation failed: {e }")
             return None
 
     def process_dake3(self, dake3_msg: str) -> bool:
-        """
-        Process DAKE3 as responder.
-        Ring-sig verification done in Python (constant-time C ext),
-        ML-DSA-87 verification also in Python, then state transitions.
-        This matches the DAKE3 wire format - keeping verification
-        on the Python/C side where we have OpenSSL 3.5+ EVP access.
-        """
+        """Process DAKE3 as responder -- verified inside Rust.
 
+        `RustDAKE.process_dake3` checks the ring signature and, when the
+        initiator committed an ML-DSA-87 key, the mandatory ML-DSA signature
+        (refusing a stripped flag), both over its own transcript, and only
+        then moves to established. This method decodes the frame and mirrors
+        the outcome; it makes no security decision of its own.
+        """
         try:
             if not dake3_msg.startswith("?OTRv4 "):
                 return self._fail("process_dake3: not an OTRv4 message")
             decoded = _safe_b64decode(dake3_msg[7:].strip())
-
-            SIG_LEN = RingSignature.TOTAL_BYTES
-            if len(decoded) < 1 + SIG_LEN:
-                return self._fail(f"DAKE3 too short: {len (decoded )}")
-
-            if decoded[0] != OTRConstants.MESSAGE_TYPE_DAKE3:
-                return self._fail(f"Not a DAKE3: 0x{decoded [0 ]:02x}")
-
-            sigma = decoded[1 : 1 + SIG_LEN]
-
-            if self._raw_dake1_bytes is None or self._raw_dake2_bytes is None:
-                return self._fail("Transcript bytes missing - cannot verify DAKE3")
-
-            transcript_msg = kdf_1(
-                KDFUsage.AUTH_I_MSG, self._raw_dake1_bytes + self._raw_dake2_bytes, 64
-            )
-
-            if self.remote_profile is None:
-                return self._fail("Remote profile not stored")
-            A1_bytes = self.remote_profile.identity_pub_bytes
-            A2_bytes = self.client_profile.identity_pub_bytes or bytes(
-                self.client_profile.identity_key.public_bytes()
-            )
-            if A1_bytes is None:
-                return self._fail("Remote identity_pub_bytes not available")
-
-            if not RingSignature.verify(A1_bytes, A2_bytes, transcript_msg, sigma):
-                return self._fail("DAKE3 ring signature verification failed")
-
-            _mldsa_off = 1 + SIG_LEN
-            _has_mldsa = _mldsa_off < len(decoded) and decoded[_mldsa_off] == 0x01
-            _pq_auth = "classical only (ring-sig ✓)"
-
-            # ── Audit H2: ML-DSA-87 downgrade protection ──
-            # If the peer committed an ML-DSA-87 key (sent in DAKE1/DAKE2 and
-            # bound in the transcript), its DAKE3 signature is MANDATORY.  The
-            # ring signature covers the transcript but NOT this flag byte, so
-            # without this check a MITM strips post-quantum authentication
-            # with a single 0x01 -> 0x00 flip.
-            _mldsa_committed = self._remote_mldsa_pub is not None
-            if _mldsa_committed and MLDSA87_AVAILABLE and not _has_mldsa:
-                return self._fail(
-                    "DAKE3 ML-DSA-87 signature stripped: peer committed a PQ key "
-                    "but the DAKE3 flag is 0x00 - refusing PQ downgrade"
-                )
-
-            if _has_mldsa and _mldsa_committed and MLDSA87_AVAILABLE:
-                _available = len(decoded) - (_mldsa_off + 1)
-                if _available < MLDSA87Auth.SIG_BYTES:
-                    return self._fail(
-                        f"DAKE3 ML-DSA-87 flag 0x01 but only {_available } bytes remain"
-                    )
-                _mldsa_sig = decoded[_mldsa_off + 1 : _mldsa_off + 1 + MLDSA87Auth.SIG_BYTES]
-                if not MLDSA87Auth.verify(self._remote_mldsa_pub, transcript_msg, _mldsa_sig):
-                    return self._fail("DAKE3 ML-DSA-87 signature verification failed")
-                _pq_auth = "hybrid (ring-sig ✓ + ML-DSA-87 ✓)"
-
+            try:
+                hybrid = bool(self._rust.process_dake3(decoded))
+            except Exception as e:
+                return self._fail(f"DAKE3 refused: {e }")
+            _pq_auth = ("hybrid (ring-sig ✓ + ML-DSA-87 ✓)" if hybrid
+                        else "classical only (ring-sig ✓)")
             self._state = DAKEState.ESTABLISHED
             self._session_created_at = time.time()
             self._trace(
@@ -4959,7 +4861,6 @@ class RustDAKEAdapter:
             )
             self._log_debug(f"DAKE3 (Auth-I) verified - {_pq_auth }")
             return True
-
         except Exception as e:
             return self._fail(f"process_dake3 exception: {e }")
 
