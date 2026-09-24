@@ -37,6 +37,9 @@ on:
       - "android_bridge/**"
       - "Rust/**"
       - ".github/workflows/android.yml"
+      # The APK inspection and the publish script, whose notes are the
+      # release page. Editing either without a build left the page stale.
+      - ".github/scripts/**"
       # THE SHARED ENGINE THE APK ACTUALLY PACKAGES.
       #
       # Android depends on these and this workflow did not watch them, so a

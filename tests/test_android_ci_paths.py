@@ -119,6 +119,13 @@ class TestTheTwoListsAgree:
                          ".github/workflows/android.yml"):
             assert required in watched, "%s is no longer watched" % required
 
+    def test_the_release_scripts_are_watched(self, watched):
+        """The publish script writes the release page and inspect_apk gates
+        what ships. A notes correction that runs no build never reaches the
+        page -- which is how the page stayed stale after the notes were
+        fixed."""
+        assert ".github/scripts/**" in watched
+
     def test_pull_request_uses_the_same_list(self):
         """A push-only widening would leave every PR unchecked, which is the
         gap again with a different trigger."""
