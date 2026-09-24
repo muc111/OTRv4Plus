@@ -111,6 +111,20 @@ epochs are bounded before they reach Rust so that it cannot happen remotely
 `build.rs` unless explicitly allowed; `tests/test_release_guard.py` asserts a
 built artifact exposes neither surface.
 
+## Dependency advisories
+
+`cargo audit` (RustSec) runs weekly and on every lock change with
+`--deny warnings` (`.github/workflows/rust-audit.yml`). As of 2026-09-24:
+**no vulnerabilities**. Five crates are flagged **unmaintained**, and they
+matter here: `pqcrypto-mlkem`, `pqcrypto-mldsa`, `pqcrypto-traits` and
+`pqcrypto-internals` are the ML-KEM-1024 and ML-DSA-87 implementations, and
+the PQClean project they vendor is being archived (`paste` is a compile-time
+helper of `pqcrypto-mldsa`). Unmaintained is not vulnerable, but it means no
+future fix will arrive. Moving to a maintained implementation is a change of
+cryptographic implementation, to be made on its own with the known-answer and
+cross-implementation tests, not as a dependency bump. The decision and its
+reasons are in `Rust/.cargo/audit.toml`.
+
 ## Documentation licence
 
 This document, like the rest of the repository's documentation, is under the
