@@ -228,42 +228,31 @@ def _otrv4plus_info(engine: Any = None) -> Dict[str, Any]:
 
 
 def _at_rest_kdf() -> Dict[str, Any]:
-    """Which KDF actually protects data at rest on this device.
+    """Where at-rest key handling happens on this device.
 
-    The engine falls back from Argon2id to scrypt when argon2-cffi is absent
-    or when a 64 MiB allocation fails, which on a memory-pressured handset it
-    genuinely can. That fallback is deliberate -- losing access to your own
-    SMP secrets is worse than a weaker KDF -- and `_warn_kdf_downgrade` does
-    say so. To stderr. Which on Android is logcat, where nobody will see it.
+    Until 0.7.0 this reported whether argon2-cffi was present, because the
+    engine's Python at-rest KDF fell back to scrypt without it. That code is
+    gone: the one at-rest store with secrets in it (the terminal clients' SMP
+    auto-respond store) is read, sealed and held by the Rust core
+    (`Rust/src/at_rest.rs`), and argon2-cffi is not in the APK at all. The
+    Android app's own at-rest protection is the AndroidKeyStore vault, which is
+    Kotlin's and is not reported here.
 
-    So it is reported here instead. `ANDROID_PHASE2_REPORT.md` §16 named
-    argon2-cffi as the dependency that matters most for exactly this reason,
-    and until now the device report could not answer the question: the
-    native_libraries list below only walks flat .so files on sys.path, which
-    is why otrv4_core.so does not appear in it either despite being loaded.
-
-    Note what this is NOT. The SMP wire stretch under version 0x03 is
-    Argon2id in the Rust core, always present, and has nothing to do with
-    this. A scrypt fallback here weakens stored identity material; it does
-    not change anything on the wire or break interoperability.
+    Reported so an exported report shows which implementation is live, and
+    so a build that somehow lost the Rust store says so.
     """
-    info: Dict[str, Any] = {"available": False, "last_used": "unknown"}
+    info: Dict[str, Any] = {"implementation": "unknown"}
     try:
-        import otrv4_ as otr
-    except Exception:
-        info["error"] = "orchestration layer not importable"
-        return info
-    try:
-        info["available"] = bool(getattr(otr, "ARGON2_AVAILABLE", False))
-        backend = getattr(otr, "kdf_backend", None)
-        if callable(backend):
-            # "unused" until something has actually derived a key, which is
-            # honest: on a fresh start nothing has.
-            info["last_used"] = str(backend())
-        info["expected"] = "argon2id" if info["available"] else "scrypt"
-        info["memory_hard"] = bool(info["available"])
+        import otrv4_core
+        info["implementation"] = ("rust" if hasattr(otrv4_core, "SmpSecretStore")
+                                  else "MISSING -- rebuild the Rust core")
     except Exception as exc:
         info["error"] = type(exc).__name__
+    try:
+        import otrv4_ as otr
+        info["python_kdf_present"] = hasattr(otr, "_derive_key")
+    except Exception:
+        info["python_kdf_present"] = "engine not importable"
     return info
 
 
@@ -282,8 +271,7 @@ def _transport_deps() -> Dict[str, Any]:
     someone will otherwise spend time on it.
     """
     info: Dict[str, Any] = {}
-    for name, required in (("slixmpp", True), ("aiodns", False),
-                           ("argon2", False)):
+    for name, required in (("slixmpp", True), ("aiodns", False)):
         try:
             __import__(name)
             info[name] = "present"

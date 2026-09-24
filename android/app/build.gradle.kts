@@ -254,29 +254,20 @@ chaquopy {
             install("PySocks==1.7.1")
             // slixmpp: the XMPP transport. Pure Python, built from an sdist.
             install("slixmpp==1.17.0")
-            // argon2-cffi: the at-rest KDF. Without it the engine falls back
-            // to scrypt and warns. Chaquopy has prebuilt android wheels for
-            // the whole cffi chain, so a resolution failure here is a real
-            // finding rather than a reason to drop it.
-            install("argon2-cffi==25.1.0")
 
             // -- required by the above, and now named because of --no-deps ---
             //
             // slixmpp -> pyasn1, pyasn1-modules (both pure Python).
             install("pyasn1==0.6.4")
             install("pyasn1-modules==0.4.2")
-            // argon2-cffi -> argon2-cffi-bindings -> cffi -> pycparser, and
-            // cffi's android wheel -> chaquopy-libffi. The last of those is
-            // Chaquopy's own packaging of libffi; it is named here only
-            // because --no-deps stops cffi asking for it. If Chaquopy ever
-            // renames it the build fails loudly at this line, which is the
-            // failure mode to want.
-            install("argon2-cffi-bindings==21.2.0")
-            install("cffi==1.17.1")
-            install("pycparser==3.0")
-            install("chaquopy-libffi==3.3")
 
             // -- deliberately absent -----------------------------------------
+            //
+            // argon2-cffi and its chain (argon2-cffi-bindings, cffi, pycparser,
+            // chaquopy-libffi). It was the at-rest KDF for stores that moved
+            // into the Rust core in 0.7.0 (Rust/src/at_rest.rs), and on
+            // Android it served only a key store nothing used. Removing it
+            // takes two native libraries and a C-binding layer out of the APK.
             //
             // aiodns / pycares. Dropping them costs nothing HERE:
             //   * slixmpp treats aiodns as optional at RUNTIME. resolver.py

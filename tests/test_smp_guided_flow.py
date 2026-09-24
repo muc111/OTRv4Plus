@@ -225,8 +225,8 @@ class _FakeStorage:
         self._secret = secret
         self.stored = []
 
-    def get_secret(self, peer):
-        return self._secret
+    def has_secret(self, peer):
+        return bool(self._secret)
 
     def set_secret(self, peer, secret):
         self._secret = secret
@@ -269,6 +269,14 @@ class _FakeOtr:
     def start_smp(self, peer, secret, question=None):
         self.started.append(peer)
         return "?OTR:SMP1."
+
+    def has_stored_smp_secret(self, peer):
+        return self.smp_storage.has_secret(peer)
+
+    def start_smp_with_stored_secret(self, peer, question=""):
+        if not self.smp_storage.has_secret(peer):
+            return None
+        return self.start_smp(peer, None, question)
 
 
 class _Client:

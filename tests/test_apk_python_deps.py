@@ -30,7 +30,7 @@ GRADLE = "android/app/build.gradle.kts"
 
 #: What the pip block must contain, and why each one is there.
 #:
-#: Three of these were asked for; six are here only because --no-deps means
+#: Three of these were asked for; two are here only because --no-deps means
 #: nothing else will ask for them. The distinction is kept because it is the
 #: thing that goes stale: if slixmpp ever drops pyasn1, this comment is how
 #: someone knows the line can go.
@@ -40,15 +40,15 @@ REQUIRED = {
                   "and there is no Python fallback",
     "PySocks": "imported at module scope by otrv4+.py",
     "slixmpp": "the XMPP transport",
-    "argon2-cffi": "the at-rest KDF; without it the engine falls back to scrypt",
     # transitive, and named because of --no-deps
     "pyasn1": "slixmpp",
     "pyasn1-modules": "slixmpp",
-    "argon2-cffi-bindings": "argon2-cffi",
-    "cffi": "argon2-cffi-bindings",
-    "pycparser": "cffi",
-    "chaquopy-libffi": "cffi's android wheel",
 }
+
+#: Removed in 0.7.0 with the Python at-rest KDF (Rust/src/at_rest.rs owns it
+#: now). They must not come back without a reason written down here.
+RETIRED = {"argon2-cffi", "argon2-cffi-bindings", "cffi", "pycparser",
+           "chaquopy-libffi"}
 
 #: Never in the APK.
 FORBIDDEN = {
@@ -109,17 +109,16 @@ class TestTheClosureIsNamed:
         """
         assert installed() == {_normalise(n) for n in REQUIRED}
 
-    def test_the_transitive_packages_outnumber_the_asked_for_ones(self):
-        """The point of the list, as an assertion.
-
-        Six of the ten entries exist only because resolution is off. Someone
-        reading the block and seeing pycparser or chaquopy-libffi may well
-        wonder what they are doing in a messenger; this is the record that
-        they are cffi's, not ours.
-        """
-        asked_for = {"otrv4-core", "pysocks", "slixmpp", "argon2-cffi"}
+    def test_the_transitive_packages_are_slixmpps(self):
+        """The point of the list, as an assertion: the two entries that
+        exist only because resolution is off are slixmpp's ASN.1 helpers."""
+        asked_for = {"otrv4-core", "pysocks", "slixmpp"}
         assert asked_for < installed()
-        assert len(installed() - asked_for) == 6
+        assert installed() - asked_for == {"pyasn1", "pyasn1-modules"}
+
+    def test_the_retired_at_rest_kdf_chain_stays_out(self):
+        back = sorted(installed() & {_normalise(n) for n in RETIRED})
+        assert back == [], "argon2-cffi's chain is back in the APK: %s" % back
 
 
 class TestTheThingThatForcedIt:

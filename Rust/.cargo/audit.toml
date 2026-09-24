@@ -1,0 +1,31 @@
+# Location matters: cargo-audit reads .cargo/audit.toml. This file used to sit
+# at Rust/audit.toml, where it was never read -- its ignores never applied.
+# cargo-audit configuration for otrv4_core. CI runs `cargo audit --deny warnings`
+# (.github/workflows/rust-audit.yml), so every entry below is a decision, and
+# any advisory NOT listed here fails the build.
+#
+# Audited 2026-09-24 with cargo-audit 0.22.2 against the RustSec advisory
+# database (1267 advisories): 0 vulnerabilities in 134 locked crates.
+#
+# The two pyo3 entries that used to be here (RUSTSEC-2025-0020,
+# RUSTSEC-2026-0177) were removed: neither matches the locked pyo3 0.29.2, and a
+# stale ignore would silently hide a future advisory with the same ID.
+[advisories]
+ignore = [
+  # UNMAINTAINED, not vulnerable: the upstream PQClean project is being
+  # archived, so these crates will receive no further updates. They are the
+  # ML-KEM-1024 (FIPS 203) and ML-DSA-87 (FIPS 204) implementations every PQ
+  # operation in the protocol runs on; replacing them is a change of
+  # cryptographic implementation (candidate: libcrux or RustCrypto ml-kem /
+  # ml-dsa), to be done as its own reviewed change with known-answer and
+  # cross-implementation tests (tests/test_mlkem_cross_implementation.py), not
+  # as a dependency bump. Recorded in LICENSING_AUDIT.md and
+  # CRYPTO_SOURCE_OF_TRUTH.md. Revisit on any new advisory against them.
+  "RUSTSEC-2026-0161",  # pqcrypto-mlkem 0.1.1
+  "RUSTSEC-2026-0162",  # pqcrypto-traits 0.3.5
+  "RUSTSEC-2026-0163",  # pqcrypto-internals 0.2.11
+  "RUSTSEC-2026-0166",  # pqcrypto-mldsa 0.1.2
+  # UNMAINTAINED proc-macro, compile time only, pulled in by pqcrypto-mldsa.
+  # Leaves with it.
+  "RUSTSEC-2024-0436",  # paste 1.0.15
+]

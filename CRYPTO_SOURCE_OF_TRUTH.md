@@ -49,7 +49,8 @@ not retain (`android_bridge/app.py`, `bind_smp_secret`).
 | SMP (hybrid PQ, constant-time modpow) | `crypto-bigint`, `num-bigint`, `argon2` | `smp.rs`, `smp_vault.rs` | `RustSMP`, `RustSMPVault` (no secret getter) |
 | Voice key schedule (HKDF-SHA512) | `hkdf`, `sha2`, `hmac` | `voice.rs` | `RustVoiceKex`, `RustVoiceAgreement`, `RustVoiceRoot`, `RustVoiceCipher` |
 | File-transfer keys and chunk AEAD | `aes-gcm`, `sha3` (via `kdf.rs`) | `filetransfer.rs` | handles, envelopes, ciphertext |
-| Identity sealing (Termux XMPP only) | `aes-gcm` | `identity.rs` | sealed record bytes |
+| Identity sealing (Termux XMPP only) | `aes-gcm` | `identity.rs`, `at_rest.rs` (`FileDek`) | sealed record bytes; the DEK is a Rust `FileDek` |
+| At-rest SMP auto-respond store (Termux) | `aes-gcm`, `sha3`, `argon2` (legacy files only) | `at_rest.rs` (`SmpSecretStore`) | booleans and peer names; no passphrase getter |
 | Randomness for keys | `rand`, `rand_core`, `getrandom` | all of the above (`OsRng`) | — |
 | Zeroisation | `zeroize` | `secure_mem.rs` (`SecretBytes`) and every key type | explicit `zeroize()` / `discard()` methods |
 
@@ -58,7 +59,8 @@ ones were removed in 0.6.0-experimental: voice's pure-Python ML-KEM fallback
 and Python HKDF key derivations, the `MLKEM1024BraceKEM` key wrapper, the
 Python-key DAKE and ratchet paths (`_unpack_session_keys`, the
 `_initialize_ratchet` fallback, `_kdf_ck`), and the archived pre-Rust engine
-under `.attic/`.
+under `.attic/`. 0.7.0 removed the Python at-rest KDF (argon2-cffi /
+`hashlib.scrypt`) with the key store it served.
 
 ## What Python still computes, and why it is not a second implementation
 
@@ -80,21 +82,23 @@ cross-implementation tests. Production may call them only from the startup
 self-test on throwaway keys (`android_bridge/diagnostics.py`);
 `tests/test_rust_owns_secrets.py` enforces that allowlist.
 
-## Residuals — secrets that are still Python objects
+## Residuals — secrets that are still Python or JVM objects
 
-Recorded, not hidden (INV-08 is PARTIAL in `SECURITY_INVARIANTS.md`):
+Recorded, not hidden (INV-08 is PARTIAL in `SECURITY_INVARIANTS.md`). As of
+0.7.0 every remaining item is one Rust cannot own under this design:
 
-1. **At-rest storage keys.** `SecureKeyStorage` derives its master key in
-   Python (argon2-cffi, or scrypt) from a seed file beside it. On Android it
-   protects only the public client profile. `SMPAutoRespondStorage` does the
-   same for Termux auto-respond passphrases; the Android bridge no longer
-   writes to it.
-2. **The Termux identity DEK** (`~/.otrv4plus/xmpp/.identity_dek`) is read
-   into Python to be handed to `identity.rs`. The sealed seed never is.
-3. **MKmac** is returned to Python for the outer MAC check, as above: it is
-   published to the peer after use by design.
-4. **Passphrases and passwords typed by the user** exist as Python and JVM
-   strings for the duration of one call. Neither runtime can wipe a string.
+1. **Passphrases and passwords the user types** exist as a Python `str` or a
+   JVM `String` before anything can copy them, and neither runtime can wipe
+   a string. SMP passphrases are copied into Rust at once. The XMPP account
+   password is held by the transport and by slixmpp (whose SASL needs it on
+   every reconnect) for the life of the connection, and dropped with it.
+2. **MKmac** is returned to Python for the outer MAC check, as above: it is
+   published to the peer after use by design, and it is not retained.
+
+Closed in 0.7.0: the Python at-rest key store (`SecureKeyStorage`, a Python
+master key over a write-only public record) is gone and writes no seed; the
+Termux SMP auto-respond store is `otrv4_core.SmpSecretStore`; the Termux
+identity DEK is `otrv4_core.FileDek`. argon2-cffi is no longer a dependency.
 
 ## Build profile
 

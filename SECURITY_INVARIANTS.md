@@ -76,7 +76,7 @@ SecretBytes<N> and SecretVec derive ZeroizeOnDrop; their Debug impls print [REDA
 ### INV-08 — Python does not receive long-lived private key material that Rust can own instead.
 
 **Status:** `PARTIAL`  
-**Enforced by:** `tests/test_release_guard.py`, `tests/test_rust_zeroization.py`, `tests/test_voice_rust_parity.py`, `tests/test_rust_owns_secrets.py`
+**Enforced by:** `tests/test_release_guard.py`, `tests/test_rust_zeroization.py`, `tests/test_voice_rust_parity.py`, `tests/test_rust_owns_secrets.py`, `tests/test_secret_at_rest.py`, `tests/test_harness_audit.py`
 
 Ed448 seeds, ratchet root/chain/brace keys, SMP scalars, voice media keys and the voice epoch root never cross the PyO3 boundary; the legacy getters are compiled out.
 
@@ -84,7 +84,9 @@ Android 0.6.0 closed the four that still did. The X448 shared secret of every DH
 
 The 0.6.0 production audit then removed the dead paths that still handled keys in Python: voice's Python ML-KEM fallback and HKDF derivations, the `MLKEM1024BraceKEM` key wrapper, the legacy DAKE branches and `_unpack_session_keys`, and the Python-key ratchet fallback. An Android SMP answer is bound into the Rust vault only (`bind_smp_secret`) and no longer persisted.
 
-**Limit:** The typed SMP passphrase and the account password are Python `str` before anything can touch them, and a `str` cannot be wiped.  The identity DEK and the device seeds are Python `bytes` read from disk.  The per-message MAC key is returned to verify the outer MAC; OTRv4 publishes it after use by design, so its secrecy is only ever short-lived.  The Termux auto-respond store (`SMPAutoRespondStorage`) keeps SMP passphrases in a Python dict under a Python-derived key; Android no longer writes to it.  Everything derived from these is Rust-owned.
+0.7.0 finished it for what lives on disk. The terminal clients' SMP auto-respond store used to decrypt into a Python dict of passphrases under a key derived in Python (argon2-cffi, or scrypt); it is now `otrv4_core.SmpSecretStore`, which reads the seed, derives the key, holds the passphrases and binds one into a session's vault entirely in Rust -- there is no getter. The Termux identity DEK is an `otrv4_core.FileDek`, read from its file by Rust. The unused Python key store and its `.device_seed` are gone, and argon2-cffi with them.
+
+**Limit:** What is still a Python or JVM object is what Rust cannot own under this design, and none of it is key material Rust derives. (1) A passphrase or password the user types is a Python `str` (getpass, a prompt) or a JVM `String` (a Compose text field) before anything can copy it, and neither can be wiped. It is copied into Rust at once (SMP) or dropped when the connection ends (the XMPP password, which slixmpp's SASL needs on every reconnect and keeps in its own credentials dict, cleared with the client). (2) The per-message MAC key is returned to verify the outer MAC; OTRv4 publishes it after use by design, so its secrecy is short-lived, and it is not retained. (3) A Termux store written by the old scrypt fallback cannot be read and is moved aside, not migrated through Python.
 
 ### INV-09 — XMPP persistent identity and IRC ephemeral identity are separate stores.
 

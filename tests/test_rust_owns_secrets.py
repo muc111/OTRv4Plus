@@ -283,3 +283,48 @@ class TestTheRatchetIsBuiltOnlyFromTheDake:
         for gone in ("def _unpack_session_keys", "def _kdf_ck",
                      "use_output_api", "legacy v10.6.2 path"):
             assert gone not in src, gone
+
+
+class TestAtRestKeysAreReadByRustOnly:
+    """0.7.0: the SMP auto-respond store and the Termux identity DEK moved into
+    Rust (`Rust/src/at_rest.rs`). No production Python reads a key file, and
+    neither Rust object can hand a key or passphrase back."""
+
+    KEY_FILES = (".smp_seed", ".device_seed")
+
+    @pytest.mark.parametrize("relpath", PRODUCTION)
+    def test_no_python_opens_a_key_file(self, relpath):
+        if not os.path.exists(os.path.join(ROOT, relpath)):
+            pytest.skip("%s not in this checkout" % relpath)
+        tree = ast.parse(open(os.path.join(ROOT, relpath), encoding="utf-8").read())
+        opened = []
+        for n in ast.walk(tree):
+            if isinstance(n, ast.Call) and getattr(n.func, "id", "") == "open":
+                seg = ast.dump(n)
+                if any(k in seg for k in self.KEY_FILES):
+                    opened.append(n.lineno)
+        assert not opened, "%s opens a key file itself at %r" % (relpath, opened)
+
+    def test_the_rust_objects_have_no_secret_getter(self):
+        store = core.SmpSecretStore(None)
+        store.set("a@x", "a long passphrase")
+        public = {n for n in dir(store) if not n.startswith("_")}
+        assert public == {"bind_into", "clear", "clear_memory", "has",
+                          "legacy_unreadable", "migrated", "peers",
+                          "persistent", "remove", "set"}, public
+        assert "a long passphrase" not in repr(store)
+        dek_api = {n for n in dir(core.FileDek) if not n.startswith("_")}
+        assert dek_api == {"destroyed", "load_or_create", "open", "seal", "zeroize"}, dek_api
+
+    def test_the_termux_dek_handle_has_no_raw_key(self):
+        import otrv4plus_identity as I
+        assert not hasattr(I._FileDekHandle, "raw_key_for_rust")
+        src = open(os.path.join(ROOT, "otrv4plus_identity.py"), encoding="utf-8").read()
+        assert "FileDek.load_or_create" in src
+        assert "token_bytes(32)" not in src, "the DEK is generated in Python again"
+
+    def test_a_bytearray_secret_is_zeroed_by_the_store(self):
+        store = core.SmpSecretStore(None)
+        buf = bytearray(b"typed passphrase")
+        store.set("a@x", buf)
+        assert buf == bytearray(len(buf))

@@ -632,3 +632,36 @@ def _connect_in_background(transport):
     outcome.thread.daemon = True
     outcome.thread.start()
     return outcome
+
+
+class TestThePasswordGoesWithTheTransport:
+    """The transport keeps the password because SASL needs it on reconnect.
+    Once closed nothing reconnects, so it must not keep it."""
+
+    def test_close_drops_the_password(self):
+        from android_bridge.transport import XmppTransport
+        from android_bridge.settings import ConnectionProfile
+        t = XmppTransport(ConnectionProfile(jid="me@example.test",
+                                            server="example.test"),
+                          "hunter2hunter2", on_payload=lambda *a: None)
+        t.close()
+        assert t._password == ""
+
+    def test_the_client_credentials_are_cleared_on_abandon(self):
+        import asyncio
+        from android_bridge.transport import XmppTransport
+        from android_bridge.settings import ConnectionProfile
+        t = XmppTransport(ConnectionProfile(jid="me@example.test",
+                                            server="example.test"), "pw-pw-pw-pw",
+                          on_payload=lambda *a: None)
+
+        class Client:
+            def __init__(self):
+                self.credentials = {"password": "pw-pw-pw-pw"}
+
+            def disconnect(self):
+                return None
+        c = Client()
+        t._client = c
+        asyncio.run(t._abandon())
+        assert c.credentials == {}

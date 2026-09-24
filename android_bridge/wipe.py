@@ -5,10 +5,13 @@
 WHAT IS HERE, ON ANDROID
 ------------------------
 Measured by constructing the engine exactly as `ChaquopyOtrCore` does
-(`EnhancedSessionManager(OTRConfig())`) under an empty HOME: the only file it
-writes is `~/.otrv4plus/keys/.device_seed`. (An SMP answer used to add
-`smp_secrets.json` and `.smp_seed`: the bridge went through the terminal
-auto-respond setter. It now binds the answer into the Rust vault only.) Identity and trust are in memory
+(`EnhancedSessionManager(OTRConfig())`) under an empty HOME: as of 0.7.0 it
+writes NO file. (It used to write `~/.otrv4plus/keys/.device_seed` for a key
+store nothing used, removed in 0.7.0; and an SMP answer used to add
+`smp_secrets.json` and `.smp_seed` via the terminal auto-respond setter -- the
+bridge now binds answers into the Rust vault only. A device upgraded from an
+older build may still hold those files, so the wipe still covers the whole
+directory.) Identity and trust are in memory
 (`persist_identity` / `persist_trust` default False). Received files land in
 `otrv4plus_filetransfer.state_dir()` -- `~/.otrv4plus/files` unless
 `OTRV4PLUS_FILE_DIR` says otherwise -- and partial transfers in its

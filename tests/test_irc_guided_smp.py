@@ -104,7 +104,8 @@ class Stub:
         pass
 
     def _start_smp(self, peer, secret):
-        self.started.append((peer, secret))
+        # None = "the stored passphrase" (bound inside Rust by the real code).
+        self.started.append((peer, self.stored.get(peer) if secret is None else secret))
 
     def send_otr_message(self, peer, msg):
         self.sent.append((peer, msg))
@@ -121,8 +122,8 @@ class _Storage:
     def __init__(self, owner):
         self._o = owner
 
-    def get_secret(self, peer):
-        return self._o.stored.get(peer, "")
+    def has_secret(self, peer):
+        return bool(self._o.stored.get(peer))
 
     def set_secret(self, peer, secret):
         self._o.stored[peer] = secret
@@ -135,6 +136,9 @@ class _Manager:
     @property
     def smp_storage(self):
         return _Storage(self._o)
+
+    def has_stored_smp_secret(self, peer):
+        return bool(self._o.stored.get(peer))
 
     def smp_secret_required(self, peer):
         return self._o.held

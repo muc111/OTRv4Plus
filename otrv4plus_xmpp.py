@@ -3334,11 +3334,11 @@ class OTRv4PlusXMPP(ClientXMPP):
                   "prompt.")
             return
 
-        stored = None
+        stored = False
         try:
-            stored = self.otr.smp_storage.get_secret(peer)
+            stored = self.otr.has_stored_smp_secret(peer)
         except Exception:
-            stored = None
+            stored = False
 
         if stored:
             print(_SMP + f" stored passphrase found for {peer} — verifying…")
@@ -4721,20 +4721,20 @@ class OTRv4PlusXMPP(ClientXMPP):
                 self.otr.set_smp_secret(peer, secret)
             except Exception:
                 pass
-        use_secret = secret
-        if use_secret is None:
-            try:
-                use_secret = self.otr.smp_storage.get_secret(peer)
-            except Exception:
-                use_secret = None
-        if not use_secret:
+        # With no secret given, the stored one is used -- bound store -> vault
+        # inside Rust and started with an empty argument. It is never read
+        # back into this process.
+        use_stored = not secret
+        if use_stored and not self.otr.has_stored_smp_secret(peer):
             # Reached only via the explicit forms; `/smp` asks instead.
             print(_SMP + " Verification requires a shared passphrase.")
             print(_SMP + " Run  /smp  and you will be prompted for it.")
             return
         try:
             def _do_start():
-                return self.otr.start_smp(peer, use_secret)
+                if use_stored:
+                    return self.otr.start_smp_with_stored_secret(peer)
+                return self.otr.start_smp(peer, secret)
 
             async def _run():
                 loop = asyncio.get_event_loop()
@@ -4880,7 +4880,7 @@ class OTRv4PlusXMPP(ClientXMPP):
             pass
         has_secret = False
         try:
-            has_secret = bool(self.otr.smp_storage.get_secret(peer))
+            has_secret = self.otr.has_stored_smp_secret(peer)
         except Exception:
             pass
         blocked = peer in self._blocked
@@ -6366,7 +6366,6 @@ _PIP_REQUIREMENTS = (
     ("aiodns", "aiodns"),
     ("cryptography", "cryptography"),
     ("opuslib", "opuslib"),
-    ("argon2", "argon2-cffi"),
     ("socks", "pysocks"),
 )
 

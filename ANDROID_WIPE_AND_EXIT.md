@@ -20,7 +20,7 @@ end-to-end run is step 35–49 of
 | Saved account (JID, password) | kept | forgotten | **destroyed** |
 | Message history, saved contacts | kept | this account's forgotten | **destroyed** |
 | Vault key (AndroidKeyStore) | kept | kept | **deleted** |
-| Received files, engine key-storage file | kept | kept | **destroyed** |
+| Received files; leftovers of older builds under `~/.otrv4plus` | kept | kept | **destroyed** |
 | Identity / fingerprint | per process | per process | **destroyed**; a new one next launch |
 | App | stays open | stays open | **process ends** |
 
@@ -51,8 +51,9 @@ nothing. The process ending is the last step, always attempted.
       garbage collector. In-memory trust pins and SMP auto-respond secrets are
       cleared. The engine then refuses every entry point.
    4. *Transport*: closed (stream, I2P tunnel, loop thread).
-   5. *Python-side files*: `~/.otrv4plus` (the engine's key-storage file,
-      received files, partial transfers) and the configured file directory,
+   5. *Python-side files*: `~/.otrv4plus` (received files, partial transfers,
+      and any leftovers of builds before 0.7.0, which wrote a key-storage
+      seed) and the configured file directory,
       each file overwritten once with random bytes, fsync'd and
       unlinked. Symlinks are removed, never followed.
 3. **Notifications**: all cancelled.
@@ -85,7 +86,7 @@ step that destroys it.
 | Sensitive, persistent | Message history + index | vault `chat.<account>.*` | Vault |
 | Sensitive, persistent | Saved contacts | vault `contacts.<account>` | Vault |
 | Sensitive, persistent | Vault sealing key | AndroidKeyStore `otrv4plus.vault.v1` | Vault |
-| Sensitive, persistent | Engine key-storage file; received files | `~/.otrv4plus/` | Engine |
+| Sensitive, persistent | Received files (the engine itself writes nothing since 0.7.0) | `~/.otrv4plus/` | Engine |
 | Sensitive, ephemeral | Sessions, ratchets, DAKE, SMP | Rust | Engine |
 | Sensitive, ephemeral | Identity and prekey | Rust (not persisted on Android) | Engine |
 | Sensitive, ephemeral | Trust pins, SMP auto-respond | Python engine | Engine |
@@ -115,8 +116,8 @@ record unopenable, from this app, from a backup, or from a flash block the
 controller has not yet erased. This is the strong guarantee and it does not
 depend on the flash.
 
-**Best-effort overwrite, for the Python-side files.** The engine's
-key-storage file and received files are overwritten once and unlinked. On
+**Best-effort overwrite, for the Python-side files.** Received files (and
+any pre-0.7.0 key-storage leftovers) are overwritten once and unlinked. On
 flash, wear levelling and the translation layer may leave the old block until
 the controller erases it; no app can prevent that, and this document does not
 claim otherwise. What bounds the exposure is Android's file-based encryption

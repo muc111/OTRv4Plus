@@ -39,6 +39,10 @@ pub mod usage {
     /// that key for, plus the transfer id.  A separate usage ID so a file
     /// wrap key can never collide with the extra symmetric key itself.
     pub const FILE_TRANSFER_WRAP: u8 = 0x22;
+    /// Key for the terminal clients' SMP auto-respond store, derived from the
+    /// random 32-byte `.smp_seed` beside it (`at_rest.rs`). Its own usage ID so
+    /// it can never equal any protocol key.
+    pub const AT_REST_SMP_STORE: u8 = 0x23;
 }
 
 // ── Core KDF ─────────────────────────────────────────────────────────────────

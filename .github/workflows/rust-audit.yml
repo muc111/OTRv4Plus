@@ -1,0 +1,46 @@
+# SPDX-License-Identifier: AGPL-3.0-only OR LicenseRef-OTRv4Plus-Commercial
+# Copyright (C) 2025-2026 muc111
+#
+# RustSec advisory audit of Rust/Cargo.lock.
+#
+# `--deny warnings`: every advisory against a locked crate fails the job
+# unless Rust/.cargo/audit.toml names it with a reason. Weekly as well as on
+# change, because advisories arrive against code that has not moved.
+name: Rust audit
+
+on:
+  push:
+    branches: [main, "claude/**"]
+    paths:
+      - "Rust/Cargo.toml"
+      - "Rust/Cargo.lock"
+      - "Rust/.cargo/audit.toml"
+      - ".github/workflows/rust-audit.yml"
+  pull_request:
+    paths:
+      - "Rust/Cargo.toml"
+      - "Rust/Cargo.lock"
+      - "Rust/.cargo/audit.toml"
+  schedule:
+    - cron: "17 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    name: cargo audit (RustSec)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/cargo-audit
+          key: cargo-audit-0.22.2
+      - name: Install cargo-audit 0.22.2
+        run: command -v cargo-audit || cargo install cargo-audit --locked --version 0.22.2
+      - name: Audit Rust/Cargo.lock against the RustSec database
+        working-directory: Rust
+        run: cargo audit --deny warnings

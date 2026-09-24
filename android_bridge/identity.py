@@ -287,11 +287,11 @@ class RustSealedIdentityKeyStore(IdentityKeyStore):
     is unwrapped from a Keystore-held wrapping key; here it is whatever the
     provider supplies.
 
-    Known residual, recorded rather than glossed: the DEK itself is a Python
-    `bytes` in this arrangement, because the provider hands it over to be passed
-    down to Rust.  The seed is not, which is what decision B1 required.  Phase 4
-    should shorten that path further by having Kotlin pass the unwrapped DEK
-    straight into Rust over JNI, so Python only ever holds an opaque handle.
+    The DEK: the Termux provider (`otrv4plus_identity.TermuxFileDekProvider`)
+    supplies an opaque `otrv4_core.FileDek`, read from its file by Rust, so
+    neither the seed nor the key is a Python object on that path. A provider
+    that can only produce raw bytes (`raw_key_for_rust`) is still accepted, and
+    for it the DEK is a Python `bytes` -- no such provider ships.
     """
 
     def __init__(self, dek_provider, key_id: int = 1):
@@ -317,13 +317,19 @@ class RustSealedIdentityKeyStore(IdentityKeyStore):
                 )
         return otrv4_core
 
-    def _dek(self) -> bytes:
+    def _dek(self):
+        """The provider's key: a Rust ``FileDek`` when it has one (the
+        Termux provider does), otherwise raw bytes from ``raw_key_for_rust``
+        for providers that have not moved yet."""
         handle = self._dek_provider.current()
+        rust = getattr(handle, "rust_dek", None)
+        if rust is not None:
+            return rust()
         raw = getattr(handle, "raw_key_for_rust", None)
         if raw is None:
             raise IdentityError(
-                "the DekProvider must expose raw_key_for_rust() so the key can "
-                "be handed to the Rust sealing layer"
+                "the DekProvider must expose rust_dek() (preferred) or "
+                "raw_key_for_rust() so the key can reach the Rust sealing layer"
             )
         return raw()
 
@@ -332,7 +338,10 @@ class RustSealedIdentityKeyStore(IdentityKeyStore):
         core = self._core()
         dek = self._dek()
         try:
-            ident, prekey, sealed = core.create_sealed_identity(dek, self._key_id)
+            if isinstance(dek, (bytes, bytearray)):
+                ident, prekey, sealed = core.create_sealed_identity(dek, self._key_id)
+            else:
+                ident, prekey, sealed = core.create_sealed_identity_under(dek, self._key_id)
         except Exception as exc:
             raise IdentityError(f"identity creation failed: {type(exc).__name__}") from None
         return ident, prekey, bytes(sealed)
@@ -346,7 +355,10 @@ class RustSealedIdentityKeyStore(IdentityKeyStore):
         core = self._core()
         dek = self._dek()
         try:
-            ident, prekey = core.unseal_identity(bytes(serialized), dek, self._key_id)
+            if isinstance(dek, (bytes, bytearray)):
+                ident, prekey = core.unseal_identity(bytes(serialized), dek, self._key_id)
+            else:
+                ident, prekey = core.unseal_identity_under(bytes(serialized), dek, self._key_id)
         except Exception:
             raise CorruptIdentity("identity record could not be opened") from None
         return ident, prekey

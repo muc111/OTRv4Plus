@@ -178,22 +178,17 @@ class TestItAnswersWhatTheLibraryListCannot:
             "the incompleteness is load-bearing and must stay documented "
             "where someone reading the list will see it")
 
-    def test_the_at_rest_kdf_is_reported(self):
+    def test_the_at_rest_implementation_is_reported(self):
         from android_bridge import diagnostics
         got = diagnostics._at_rest_kdf()
-        assert "available" in got and "last_used" in got
+        assert got.get("implementation") == "rust", got
 
-    def test_a_scrypt_fallback_would_be_visible(self):
-        """The engine warns to stderr, which on Android is logcat, which the
-        user exporting a report will never see."""
+    def test_no_python_at_rest_kdf_is_live(self):
+        """It could fall back to scrypt and said so only on stderr -- logcat,
+        where nobody exporting a report would see it. It is gone; a report
+        must show that rather than assume it."""
         from android_bridge import diagnostics
-        got = diagnostics._at_rest_kdf()
-        if got.get("available"):
-            assert got.get("expected") == "argon2id"
-            assert got.get("memory_hard") is True
-        else:
-            # Either argon2 is genuinely absent, or the engine did not import.
-            assert "expected" in got or "error" in got
+        assert diagnostics._at_rest_kdf().get("python_kdf_present") is False
 
     def test_transport_dependencies_are_reported(self):
         from android_bridge import diagnostics

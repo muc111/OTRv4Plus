@@ -47,21 +47,23 @@ EXCLUDED_BY_DESIGN = {
               "lookup to lose",
     "pycares": "required by aiodns; compiles c-ares with cmake, which "
                "Chaquopy cannot do",
+    # Since 0.7.0 these arrive only through pycares, excluded above. They used
+    # to be installed for argon2-cffi, which left the APK when the at-rest KDF
+    # moved into the Rust core.
+    "cffi": "required only by pycares (excluded) now that argon2-cffi is gone",
+    "pycparser": "required only by cffi, above",
 }
 
 #: Declared packages that no public index can resolve, so they cannot be used
 #: as roots here.  They still have to be DECLARED, which is asserted below, so
 #: this set cannot quietly become a way to hide a package from the check.
 #:
-#: Neither has Python dependencies of its own -- otrv4_core is a PyO3 extension
-#: and chaquopy-libffi is a packaged C library -- so nothing is lost by not
-#: resolving them.  A pure-Python dependency appearing on either would be
-#: invisible to this check, which is the one gap in it.
+#: otrv4_core is a PyO3 extension with no Python dependencies of its own, so
+#: nothing is lost by not resolving it.  A pure-Python dependency appearing on
+#: it would be invisible to this check, which is the one gap in it.
 NOT_ON_ANY_PUBLIC_INDEX = {
     "otrv4-core": "the Rust core, built from Rust/ into android/app/wheels "
                   "by the `rust` job",
-    "chaquopy-libffi": "Chaquopy's packaging of libffi, required by its cffi "
-                       "wheel",
 }
 
 

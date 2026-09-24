@@ -1069,6 +1069,15 @@ class XmppTransport(Transport):
                 except Exception:
                     _log.warning("could not stop the XMPP client cleanly")
                 break
+            # slixmpp keeps the password in `credentials` for SASL. Drop it
+            # with the client: a `str` cannot be wiped, but a reference that
+            # outlives the connection is one more copy for no reason.
+            try:
+                creds = getattr(client, "credentials", None)
+                if isinstance(creds, dict):
+                    creds.clear()
+            except Exception:
+                pass
         self._release_i2p()
 
     def _release_i2p(self) -> None:
@@ -1476,6 +1485,12 @@ class XmppTransport(Transport):
             if thread.is_alive():
                 _log.warning("the transport's worker thread did not stop")
         self._connected.clear()
+        # Spent: nothing will reconnect with this object again, so it no longer
+        # needs the password it kept for SASL on reconnect. Dropping the
+        # reference is all Python allows -- a str cannot be overwritten -- and
+        # is the difference between one copy for the connection's life and
+        # one for the process's.
+        self._password = ""
         self._emit_state("disconnected")
 
     # -- slixmpp wiring -------------------------------------------------------

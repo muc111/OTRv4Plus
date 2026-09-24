@@ -133,6 +133,7 @@ underlying OTRv4 KDF construction. The OTRv4+ extensions are distinguished by
 | PQ_BRACE_KEY | 0x20 | SMP post-quantum binding key |
 | NONCE_DERIVE | 0x21 | Nonce derivation (reserved; see §5.4) |
 | FILE_TRANSFER_WRAP | 0x22 | File-transfer wrapping key (§9A.2) |
+| AT_REST_SMP_STORE | 0x23 | Local only, never on the wire: key for the terminal clients' SMP auto-respond store, from its random `.smp_seed` (`Rust/src/at_rest.rs`) |
 
 Two usage IDs are defined for OTRv4 compatibility but are not load-bearing in the
 data-message path of this implementation. `MAC_KEY` (0x14) is reserved: data

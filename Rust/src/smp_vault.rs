@@ -162,6 +162,12 @@ impl PySMPVault {
         self.inner.expose_by_name(name)
     }
 
+    /// Rust-internal: store bytes under `name` without them passing through
+    /// Python (`at_rest::SmpSecretStore::bind_into`).
+    pub(crate) fn store_internal(&mut self, name: &str, bytes: &[u8]) -> Result<u64, &'static str> {
+        self.inner.store(name, bytes)
+    }
+
     /// Rust-internal: expose bytes by handle.
     pub fn expose_for_smp_by_handle(&self, handle: u64) -> Option<&[u8]> {
         self.inner.expose_by_handle(handle)

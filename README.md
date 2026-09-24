@@ -542,16 +542,14 @@ For someone who wants to try it in about ten minutes on Termux (Android, aarch64
 
 ```bash
 pkg install python rust openssl clang git
-pip install argon2-cffi
 ```
 
-`argon2-cffi` is not optional in practice. Without it the at-rest key
-derivation for stored SMP secrets and the sealed identity falls back to scrypt
-— which still works and warns loudly on every derivation, but is not
-memory-hard. The warning names the remedy; there is currently no command that
-reports the backend after the fact, so if you scrolled past it, the safe
-assumption is that you are on scrypt until you have installed this and
-restarted.
+`argon2-cffi` is no longer needed. Stored SMP auto-respond passphrases and the
+XMPP identity key file are read, sealed and held by the Rust core
+(`Rust/src/at_rest.rs`); the Python key derivation and its scrypt fallback are
+gone. A store written by an older version is migrated on first start; one the
+core cannot read (only possible if it was written by the old scrypt fallback)
+is moved aside with a warning and never overwritten.
 
 Python **3.12 or newer** is required — `otrv4+.py` uses PEP 701 f-string syntax
 that does not parse on 3.11, so an older interpreter fails with a `SyntaxError`

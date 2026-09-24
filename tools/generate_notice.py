@@ -121,7 +121,14 @@ def exception_text(spdx_id):
 
 
 def licence_text(spdx_id):
-    """The full text for one licence, from the local SPDX corpus."""
+    """The full text for one licence: the repository's LICENSES/ first (REUSE
+    layout, so the NOTICE is the same wherever it is generated), then the
+    local SPDX crate corpus."""
+    vendored = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                            "LICENSES", spdx_id + ".txt")
+    if os.path.isfile(vendored):
+        with open(vendored, encoding="utf-8") as fh:
+            return fh.read().strip()
     return _spdx_text("licenses", spdx_id)
 
 
@@ -268,23 +275,42 @@ def main():
     w("2. Python components bundled with the application")
     w("-" * 76)
     w("")
-    w("Licences read from PyPI metadata; see LICENSING_AUDIT.md §3.")
+    w("Exactly the packages the APK's pip block installs (pinned in")
+    w("android/app/build.gradle.kts), plus the CPython runtime Chaquopy")
+    w("ships with its native libraries. Licence texts are reproduced from")
+    w("each package's own distribution (third_party/python/). Nothing else")
+    w("Python is bundled: aiodns, cryptography and argon2-cffi are not in the")
+    w("APK. See LICENSING_AUDIT.md §3.")
     w("")
     for name, ver, lic, holder in (
-        ("CPython", "3.12+", "PSF-2.0",
+        ("CPython (via Chaquopy, target 3.12.12-0)", "3.12", "PSF-2.0",
          "Copyright (c) 2001-2026 Python Software Foundation. "
          "All Rights Reserved."),
-        ("slixmpp", "1.17.0", "MIT", "Copyright (c) the slixmpp authors"),
-        ("aiodns", "4.0.4", "MIT", "Copyright (c) Saul Ibarra Corretge"),
-        ("PySocks", "1.7.1", "BSD-3-Clause", "Copyright (c) Anorov"),
-        ("argon2-cffi", "25.1.0", "MIT", "Copyright (c) Hynek Schlawack"),
-        ("cffi", "-", "MIT", "Copyright (c) Armin Rigo, Maciej Fijalkowski"),
-        ("cryptography", "-", "Apache-2.0 OR BSD-3-Clause",
-         "Copyright (c) Individual contributors"),
+        ("OpenSSL (libcrypto/libssl shipped with Chaquopy's CPython)", "3.x",
+         "Apache-2.0",
+         "Copyright (c) 1998-2026 The OpenSSL Project Authors"),
+        ("SQLite (libsqlite3 shipped with Chaquopy's CPython)", "3.x",
+         "blessing (public domain)",
+         "The SQLite authors have dedicated the code to the public domain"),
     ):
         w("%s %s" % (name, ver))
         w("    Licence: %s" % lic)
         w("    %s" % holder)
+        w("")
+    tp = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                      "third_party", "python")
+    for name, ver, lic in (
+        ("slixmpp", "1.17.0", "MIT"),
+        ("PySocks", "1.7.1", "BSD-3-Clause"),
+        ("pyasn1", "0.6.4", "BSD-2-Clause"),
+        ("pyasn1-modules", "0.4.2", "BSD-2-Clause"),
+    ):
+        w("%s %s" % (name, ver))
+        w("    Licence: %s" % lic)
+        w("")
+        with open(os.path.join(tp, name, "LICENSE"), encoding="utf-8") as fh:
+            for line in fh.read().rstrip("\n").split("\n"):
+                w(("    " + line).rstrip())
         w("")
 
     w("")
@@ -334,7 +360,7 @@ def main():
         used.update(chosen_licence(pkg.get("license")))
     # The bundled non-Rust components, whose licences are named in the
     # sections above rather than read from a graph.
-    used.update(["MIT", "Apache-2.0", "BSD-3-Clause", "PSF-2.0"])
+    used.update(["MIT", "Apache-2.0", "BSD-2-Clause", "BSD-3-Clause", "PSF-2.0"])
 
     w("")
     w("-" * 76)

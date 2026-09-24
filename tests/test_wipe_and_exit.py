@@ -563,7 +563,9 @@ class TestAnAndroidSmpAnswerIsNotRemembered:
 
     def test_nothing_is_stored_after_a_verification(self, verified):
         engine = verified.bob._engine
-        assert engine.smp_storage._secrets == {}, "the passphrase is held in Python"
+        assert engine.smp_storage.peers() == [], "the passphrase was stored"
+        assert not hasattr(engine.smp_storage, "_secrets"), (
+            "a Python dict of passphrases is back")
         assert not os.path.exists(engine.smp_storage.secrets_path), (
             "the passphrase was written to disk")
 

@@ -4,7 +4,8 @@ during security audit (adapted for Rust SMP backend).
 
 Covers:
   1. SMP full protocol flow using RustSMP
-  2. SecureKeyStorage AES-GCM round-trip
+  2. The Rust at-rest store (INV-08): seed, round-trip, ciphertext on disk,
+     permissions -- the properties SecureKeyStorage was tested for
   3. RustSMPVault
   4. RustBackedDoubleRatchet integration
 """
@@ -131,61 +132,84 @@ class TestSMPProtocolFlow(unittest.TestCase):
         self.assertEqual(alice.get_phase(), "ABORTED")
 
 
-# ═══════════ SecureKeyStorage ════════════════════════════════════
+# ═══════════ At-rest stores (Rust) ═══════════════════════════════
+#
+# These were the SecureKeyStorage tests. That class -- a Python-held master key
+# over one write-only record, the PUBLIC client profile -- is retired, and the
+# at-rest store that holds real secrets (SMP auto-respond passphrases) moved
+# into the Rust core. The same properties are asserted of it here.
 
-class TestSecureKeyStorage(unittest.TestCase):
-    """AES-256-GCM key storage with device seed."""
+class TestRustAtRestStore(unittest.TestCase):
+    """AES-256-GCM store keyed from a Rust-created device seed."""
 
     def setUp(self):
+        import otrv4_core
+        self.core = otrv4_core
         self.tmpdir = tempfile.mkdtemp()
+        self.path = os.path.join(self.tmpdir, "smp_secrets.json")
 
     def tearDown(self):
         shutil.rmtree(self.tmpdir, ignore_errors=True)
 
-    def test_01_auto_initialize(self):
-        ks = otr.SecureKeyStorage(self.tmpdir)
-        seed_path = os.path.join(self.tmpdir, '.device_seed')
+    def test_01_seed_created_on_first_write(self):
+        s = self.core.SmpSecretStore(self.path)
+        s.set("a@x", "a long passphrase")
+        seed_path = os.path.join(self.tmpdir, '.smp_seed')
         self.assertTrue(os.path.exists(seed_path))
         self.assertEqual(os.path.getsize(seed_path), 32)
-        self.assertIsNotNone(ks._master_key)
 
-    def test_02_store_and_load_roundtrip(self):
-        ks = otr.SecureKeyStorage(self.tmpdir)
-        key_data = os.urandom(57)
-        self.assertTrue(ks.store_key("test", "ed448", key_data))
-        loaded = ks.load_key("test", "ed448")
-        self.assertEqual(loaded, key_data)
+    def test_02_round_trip_across_instances(self):
+        self.core.SmpSecretStore(self.path).set("a@x", "a long passphrase")
+        again = self.core.SmpSecretStore(self.path)
+        self.assertTrue(again.has("a@x"))
+        vault = self.core.RustSMPVault()
+        self.assertTrue(again.bind_into("a@x", vault, "smp_secret"))
+        self.assertTrue(vault.has("smp_secret"))
 
     def test_03_wrong_seed_cant_decrypt(self):
-        ks = otr.SecureKeyStorage(self.tmpdir)
-        ks.store_key("id", "test", b"secret_key_data_here")
-        seed_path = os.path.join(self.tmpdir, '.device_seed')
-        with open(seed_path, 'wb') as f:
+        self.core.SmpSecretStore(self.path).set("id", "secret_key_data_here")
+        with open(os.path.join(self.tmpdir, '.smp_seed'), 'wb') as f:
             f.write(os.urandom(32))
-        ks2 = otr.SecureKeyStorage(self.tmpdir)
-        self.assertIsNone(ks2.load_key("id", "test"))
+        again = self.core.SmpSecretStore(self.path)
+        self.assertFalse(again.has("id"))
+        self.assertIsNotNone(again.legacy_unreadable,
+                             "an unreadable store must be reported, not dropped")
+        self.assertTrue(os.path.exists(again.legacy_unreadable),
+                        "an unreadable store must be moved aside, not deleted")
 
-    def test_04_delete_key_overwrites_file(self):
-        ks = otr.SecureKeyStorage(self.tmpdir)
-        ks.store_key("deleteme", "test", b"data")
-        key_file = os.path.join(self.tmpdir, "deleteme.test.bin")
-        self.assertTrue(os.path.exists(key_file))
-        ks.delete_key("deleteme", "test")
-        self.assertFalse(os.path.exists(key_file))
+    def test_04_remove_forgets_it_on_disk(self):
+        s = self.core.SmpSecretStore(self.path)
+        s.set("deleteme", "some passphrase")
+        self.assertTrue(s.remove("deleteme"))
+        self.assertFalse(self.core.SmpSecretStore(self.path).has("deleteme"))
 
-    def test_05_clear_all_removes_everything(self):
-        ks = otr.SecureKeyStorage(self.tmpdir)
-        ks.store_key("a", "test", b"data_a")
-        ks.store_key("b", "test", b"data_b")
-        ks.clear_all()
-        self.assertEqual(len(os.listdir(self.tmpdir)), 0)
+    def test_05_clear_empties_everything(self):
+        s = self.core.SmpSecretStore(self.path)
+        s.set("a", "data_a data_a")
+        s.set("b", "data_b data_b")
+        s.clear()
+        self.assertEqual(self.core.SmpSecretStore(self.path).peers(), [])
 
     def test_06_file_permissions(self):
-        ks = otr.SecureKeyStorage(self.tmpdir)
-        ks.store_key("perm", "test", b"data")
-        key_file = os.path.join(self.tmpdir, "perm.test.bin")
-        mode = os.stat(key_file).st_mode & 0o777
-        self.assertEqual(mode, 0o600)
+        self.core.SmpSecretStore(self.path).set("perm", "some passphrase")
+        for name in ("smp_secrets.json", ".smp_seed"):
+            mode = os.stat(os.path.join(self.tmpdir, name)).st_mode & 0o777
+            self.assertEqual(mode, 0o600, name)
+
+    def test_07_ciphertext_on_disk(self):
+        self.core.SmpSecretStore(self.path).set("a@x", "findable-passphrase")
+        raw = open(self.path, "rb").read()
+        self.assertNotIn(b"findable-passphrase", raw)
+        self.assertNotIn(b"a@x", raw, "even the peer name is sealed")
+
+    def test_08_retired_key_storage_is_removed(self):
+        keys = os.path.join(self.tmpdir, "keys")
+        os.makedirs(keys)
+        for name in (".device_seed", "profile.client.bin"):
+            with open(os.path.join(keys, name), "wb") as f:
+                f.write(os.urandom(32))
+        otr._remove_retired_key_storage(keys)
+        self.assertFalse(os.path.exists(keys))
 
 
 # ═══════════ Rust SMP Vault ══════════════════════════════════════

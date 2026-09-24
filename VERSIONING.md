@@ -11,7 +11,7 @@ the project was on. This document exists so that cannot happen quietly again.
 | Track | Where | Current | Why it is separate |
 |---|---|---|---|
 | **Client** | `otrv4+.py` `VERSION`, `otrv4plus_xmpp.py` `XMPP_VERSION` | `10.30.0` | The thing a user runs and a peer must match. |
-| **Crypto core** | `Rust/Cargo.toml`, `Rust/pyproject.toml` | `0.10.28` | A crate with its own release history; it is `0.x` because its API is not stable for outside consumers. |
+| **Crypto core** | `Rust/Cargo.toml`, `Rust/pyproject.toml` | `0.11.0` | A crate with its own release history; it is `0.x` because its API is not stable for outside consumers. |
 | **Android app** | `android/app/build.gradle.kts` | `0.4.0-experimental+core.<crate>` | An APK at an earlier maturity than the Termux client. Its own track, with the client version it embeds recorded as semver build metadata. |
 
 The crate and the client are bumped together at a release, so a changelog entry
