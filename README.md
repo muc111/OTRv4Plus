@@ -90,24 +90,89 @@ and Kotlin handles the Android screens; neither holds session keys. SMP
 Details, design notes and caveats are in [TECHNICAL.md](TECHNICAL.md) and
 [SPEC.md](SPEC.md).
 
-## Quick start (Termux)
+## Quick start
 
-Termux on Android is the reference client.
+### Termux and Linux (terminal clients)
+
+Termux on Android is the reference client. The same steps work on Linux.
+
+**1. Install the tools.** Python 3.12 or newer is required.
 
 ```bash
+# Termux
 pkg install python rust openssl clang git
+# Debian / Ubuntu: install python3, python3-pip, git, clang and Rust (rustup.rs)
+
+pip install PySocks slixmpp aiodns
+```
+
+For voice calls in Termux, also run `pkg install libopus termux-api` and
+`pip install opuslib`.
+
+**2. Download and build the Rust core** (about 3 minutes on a modern phone):
+
+```bash
 git clone https://github.com/muc111/OTRv4Plus.git
 cd OTRv4Plus/Rust
 cargo build --release --features extension-module,pq-rust
 cp target/release/libotrv4_core.so ../otrv4_core.so
 cd ..
-PYTHONMALLOC=malloc python otrv4+.py --debug
 ```
 
-Python 3.12 or newer is required. For I2P, run an I2P router with the SAM
-bridge on port 7656. For voice, also run `pkg install libopus termux-api` and
-`pip install opuslib`. The XMPP client, voice calls, musl builds and every
-command are covered in [TECHNICAL.md](TECHNICAL.md).
+**3. Update later.** Pull, then rebuild the core, because both the Python
+files and the Rust core change:
+
+```bash
+cd ~/OTRv4Plus
+git pull
+cd Rust && cargo build --release --features extension-module,pq-rust
+cp target/release/libotrv4_core.so ../otrv4_core.so && cd ..
+git log -1 --format='%h %ad'     # check you are on the latest commit
+```
+
+If `git pull` refuses because of local changes, `git status` shows what they
+are; `git reset --hard origin/main` discards them. Keys and settings live in
+`~/.otrv4plus`, outside the repository, and are not touched.
+
+**4. Networks.** For I2P, run an I2P router with the SAM bridge on port 7656
+(for example the I2P app, with "Use SAM bridge" enabled). For Tor, run Orbot
+with SOCKS on port 9050. Plain TLS needs nothing extra.
+
+**5. Run it.**
+
+XMPP over I2P (chat, files and voice):
+
+```bash
+PYTHONMALLOC=malloc python otrv4plus_xmpp.py \
+  --jid you@yourserver.i2p --peer friend@yourserver.i2p
+```
+
+Add `--server <address>.b32.i2p` if your server name does not resolve, and
+`--voice-debug` for call diagnostics every 5 seconds.
+
+IRC (defaults to `irc.postman.i2p` over I2P; `-s irc.libera.chat` for TLS):
+
+```bash
+PYTHONMALLOC=malloc python otrv4+.py
+```
+
+**6. First commands** (XMPP; IRC uses the same `/otr` and `/smp`):
+
+```
+/otr              start an encrypted session
+/smp              verify identity with a passphrase agreed in person
+/call             encrypted voice call (after SMP); /answer, /hangup
+/sendfile <path>  encrypted file transfer (after SMP)
+/status           session, trust and verification state
+/help             every command
+```
+
+The Android app starts OTRv4+ by itself with a Termux client that advertises
+OTRv4Plus, which needs a Termux build from 2026-09-24 or later. With an older
+build, start it from Termux with `/otr`.
+
+Building on musl (Alpine), every option and all commands are in
+[TECHNICAL.md](TECHNICAL.md).
 
 ## Documentation
 

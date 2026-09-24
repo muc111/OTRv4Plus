@@ -304,6 +304,8 @@ class XmppTransport(Transport):
         self._caps = _caps.CapabilityBook()
         #: The OTRv4Plus Welcome room: discovery only. See android_bridge.welcome.
         self._welcome = _welcome.WelcomeDirectory()
+        #: bare room JID (lower case) -> the nickname we joined with.
+        self._room_nicks: Dict[str, str] = {}
         #: Called with a bare JID whenever its capability may have changed,
         #: and whether the resource an OTRv4+ session was pinned to left.
         self._on_capability: Optional[Callable[[str, bool], None]] = None
@@ -1204,10 +1206,38 @@ class XmppTransport(Transport):
         return "".join(out)
 
     def _our_nick(self, room: str) -> str:
+        """Our nickname in *room*, or "".
+
+        slixmpp keeps it as `our_nicks[pfrom][room]` -- TWO levels, with
+        pfrom None for a client -- and the room key may be a JID or a string
+        in whatever case it was joined with. Reading one level (as this
+        did) always found nothing, so our own reflected room messages were
+        shown again as if somebody else had sent them: "hello" from Alice,
+        on Alice's phone. The nickname we joined with is also recorded here
+        on every successful join, as the first answer.
+        """
+        want = str(room).split("/", 1)[0].lower()
+        mine = getattr(self, "_room_nicks", {}).get(want)
         try:
-            return str(self._client["xep_0045"].our_nicks.get(room, ""))
+            table = self._client["xep_0045"].our_nicks
         except Exception:
+            return mine or ""
+
+        def scan(mapping):
+            for key, value in dict(mapping or {}).items():
+                if isinstance(value, dict):
+                    found = scan(value)
+                    if found:
+                        return found
+                elif str(key).split("/", 1)[0].lower() == want and value:
+                    return str(value)
             return ""
+
+        try:
+            # slixmpp's current nickname wins: the service may have changed it.
+            return scan(table) or mine or ""
+        except Exception:
+            return mine or ""
 
     def _on_groupchat(self, stanza) -> None:
         """One room message, up to the handler. Our own echo is dropped.
@@ -1780,6 +1810,7 @@ class XmppTransport(Transport):
         if not password and await self._room_wants_password(room):
             raise TransportError("not_authorized", "this room needs a password")
         await self._join_muc(room, nick, password)
+        self._room_nicks[str(room).split("/", 1)[0].lower()] = nick
         return self._room_standing(room, nick)
 
     async def _room_wants_password(self, room: str) -> bool:
@@ -1882,6 +1913,7 @@ class XmppTransport(Transport):
             form.add_field(var="muc#roomconfig_roomsecret",
                            ftype="text-private", value=password)
         await muc.set_room_config(room, form, timeout=CALL_TIMEOUT)
+        self._room_nicks[str(room).split("/", 1)[0].lower()] = nick
         if password:
             protected = False
             try:
@@ -1912,9 +1944,10 @@ class XmppTransport(Transport):
         # which never saw the join -- means the one this session joined with.
         # Not joined this session: there is no presence to withdraw, and the
         # server has already dropped us with the old stream.
-        nick = nick or dict(getattr(muc, "our_nicks", {}) or {}).get(room, "")
+        nick = nick or self._our_nick(room)
         if nick:
             muc.leave_muc(room, nick)
+        getattr(self, "_room_nicks", {}).pop(str(room).split("/", 1)[0].lower(), None)
         return {}
 
     def destroy_room(self, room: str,
@@ -2075,6 +2108,7 @@ class XmppTransport(Transport):
                 self._welcome.nick = nick
                 await muc.join_muc_wait(room, nick, timeout=CONNECT_TIMEOUT)
             self._welcome.joined(nick)
+            self._room_nicks[str(room).lower()] = nick
             # Occupants whose presence arrived before our own self-presence
             # are already in slixmpp's room roster; read them from there.
             for other in list(muc.get_roster(room) or []):
@@ -2484,6 +2518,7 @@ class XmppTransport(Transport):
         # and so does who was in the Welcome room.
         self._caps.clear()
         self._welcome.clear()
+        self._room_nicks.clear()
         self._emit_state("disconnected")
 
     def _emit_state(self, state: str) -> None:
