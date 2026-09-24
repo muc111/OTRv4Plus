@@ -422,3 +422,120 @@ class TestAddingAndPending:
             assert not re.search(r"(pending|subscri)\w*[^\n]{0,60}"
                                  r"(172800|48\s*\*\s*3600|2\s*\*\s*86400|"
                                  r"timedelta\(days=2\))", src, re.I), name
+
+
+# ── creating the Welcome room, on request ───────────────────────────────────
+
+def _forms(made):
+    real = slixmpp.ClientXMPP("a@b.i2p", "pw")
+    real.register_plugin("xep_0004")
+    made["client"].plugins["xep_0004"] = real.plugin["xep_0004"]
+
+
+class ConfigMuc(RosterMuc):
+    async def set_room_config(self, room, config, timeout=None, **_kw):
+        self.configured.append((str(room), config))
+
+
+def created_disco(features=("http://jabber.org/protocol/muc", "muc_public",
+                            "muc_persistent", "muc_nonanonymous")):
+    """No Welcome room listed; the created room answers disco only after
+    creation (the fake answers from the start, so 'taken' is modelled by
+    a separate fixture)."""
+    d = FakeDisco(
+        items={DOMAIN: [(MUC, None, "Chatrooms")], MUC: []},
+        info={MUC: ([("conference", "text", None, "Chatrooms")],
+                    ["http://jabber.org/protocol/muc"])})
+    created = "%s@%s" % (W.ROOM_LOCALPART, MUC)
+    real = d.get_info
+    state = {"made": False}
+
+    async def get_info(jid=None, timeout=None, **kw):
+        if str(jid) == created:
+            if not state["made"]:
+                raise IqError("item-not-found")
+            from tests.test_android_rooms import Info
+            return Info([("conference", "text", None, W.ROOM_NAME)],
+                        list(features))
+        return await real(jid=jid, timeout=timeout, **kw)
+    d.get_info = get_info
+    return d, state, created
+
+
+class TestCreatingTheWelcomeRoom:
+
+    def _build(self, d, state):
+        muc = ConfigMuc()
+        orig = muc.join_muc_wait
+
+        async def join(room, nick, password=None, timeout=None, **kw):
+            state["made"] = True
+            return await orig(room, nick, password=password, timeout=timeout)
+        muc.join_muc_wait = join
+        t, made = build(d, muc=muc)
+        _forms(made)
+        joined = []
+        t.set_welcome_handler(joined.append)
+        return t, made, muc, joined
+
+    def test_created_with_the_name_and_settings_then_joined(self):
+        d, state, created = created_disco()
+        t, made, muc, joined = self._build(d, state)
+        try:
+            code, _detail, value = t.create_welcome("alice")
+            view = t.welcome_view()
+        finally:
+            t.close()
+        assert code == "ok"
+        assert value == {"room": created, "created": True, "missing": []}
+        fields = muc.configured[0][1].get_fields()
+        assert fields["muc#roomconfig_roomname"]["value"] == W.ROOM_NAME
+        assert fields["muc#roomconfig_whois"]["value"] == "anyone"
+        assert fields["muc#roomconfig_publicroom"]["value"] is True
+        assert fields["muc#roomconfig_persistentroom"]["value"] is True
+        assert view["state"] == W.JOINED and view["room"] == created
+        assert joined == [created], "the app was not told it is a room"
+
+    def test_what_the_server_refused_is_reported(self):
+        d, state, created = created_disco(
+            features=("http://jabber.org/protocol/muc", "muc_semianonymous"))
+        t, made, muc, joined = self._build(d, state)
+        try:
+            _code, _detail, value = t.create_welcome("alice")
+        finally:
+            t.close()
+        assert value["created"] is True
+        assert len(value["missing"]) == 3
+        assert any("Add works" in m for m in value["missing"])
+
+    def test_an_existing_welcome_room_is_joined_not_recreated(self):
+        t, made = build()                    # the default disco lists it
+        _forms(made)
+        try:
+            code, _d, value = t.create_welcome("alice")
+        finally:
+            t.close()
+        assert code == "ok" and value["created"] is False
+        assert made["client"]["xep_0045"].configured == []
+
+    def test_an_address_used_by_another_room_is_never_taken_over(self):
+        d, state, created = created_disco()
+        state["made"] = True                 # something already answers there
+        t, made, muc, joined = self._build(d, state)
+        try:
+            code, _d, value = t.create_welcome("alice")
+        finally:
+            t.close()
+        assert code == "welcome_address_taken"
+        assert muc.joined == [] and muc.configured == []
+
+    def test_signing_in_never_creates_it(self):
+        """Only the explicit button creates; the automatic flow only looks."""
+        d, state, created = created_disco()
+        t, made, muc, joined = self._build(d, state)
+        try:
+            view = run_flow(t)
+        finally:
+            t.close()
+        assert view["state"] == W.NOT_FOUND
+        assert muc.configured == [] and muc.joined == []

@@ -237,6 +237,8 @@ CODES = {
     "ok": "Done.",
     "conflict": "That nickname is already taken in this room.",
     "not_authorized": "This room needs a password.",
+    "welcome_address_taken": "Another room already uses the Welcome room's "
+                             "address on this server. Nothing was changed.",
     "already_in_room": "You are already in this room on this device. Leave it "
                        "first if you want to join again.",
     "password_not_applied": "The server did not password-protect the room, "

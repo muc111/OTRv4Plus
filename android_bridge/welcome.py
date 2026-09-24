@@ -41,6 +41,40 @@ __all__ = ["ROOM_NAME", "WelcomeDirectory", "find_room", "room_properties",
 #: The room's advertised name, as the server lists it. Exact match.
 ROOM_NAME = "OTRv4Plus Welcome"
 
+#: The address used when a user CREATES the room (never when looking for
+#: one: an existing room is found by its name). Plain ASCII, as a room
+#: localpart must be.
+ROOM_LOCALPART = "otrv4plus-welcome"
+
+#: What the room is created with. Every field is XEP-0045 §15.5.3
+#: muc#roomconfig. whois=anyone is what makes addresses visible to ordinary
+#: occupants -- the only way "Add" can work -- and is the privacy cost the
+#: creator is warned about before this is sent.
+ROOM_CONFIG = (
+    ("muc#roomconfig_roomname", "text-single", ROOM_NAME),
+    ("muc#roomconfig_roomdesc", "text-single",
+     "Discovery room for OTRv4Plus users. Not end-to-end encrypted: the "
+     "server can read it, and everyone here sees each other's address."),
+    ("muc#roomconfig_persistentroom", "boolean", True),
+    ("muc#roomconfig_publicroom", "boolean", True),
+    ("muc#roomconfig_whois", "list-single", "anyone"),
+    ("muc#roomconfig_membersonly", "boolean", False),
+    ("muc#roomconfig_passwordprotectedroom", "boolean", False),
+)
+
+#: disco#info features the created room must show, and what each means.
+REQUIRED_FEATURES = (
+    ("muc_public", "listed, so other users can find it"),
+    ("muc_persistent", "kept when empty"),
+    ("muc_nonanonymous", "members' addresses visible, so Add works"),
+)
+
+
+def missing_features(features) -> list:
+    """Which of REQUIRED_FEATURES the room does NOT show, as descriptions."""
+    have = {str(f) for f in (features or ())}
+    return [why for feature, why in REQUIRED_FEATURES if feature not in have]
+
 MUC_FEATURE = "http://jabber.org/protocol/muc"
 
 # States, as stable strings for Kotlin.

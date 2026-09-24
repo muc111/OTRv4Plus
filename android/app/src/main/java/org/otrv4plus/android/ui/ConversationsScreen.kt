@@ -140,6 +140,9 @@ fun ConversationsScreen(
                     onAdd = { model.addContact(it) },
                     onAccept = { model.answerSubscription(it, true) },
                     onRefresh = { model.refreshDiscovery(force = true) },
+                    welcomeMissing = model.welcomeMissing,
+                    creatingWelcome = model.creatingWelcome,
+                    onCreateWelcome = { model.createWelcomeRoom() },
                 )
             }
 
@@ -663,8 +666,12 @@ private fun PeopleSection(
     onAdd: (String) -> Unit,
     onAccept: (String) -> Unit,
     onRefresh: () -> Unit,
+    welcomeMissing: Boolean = false,
+    creatingWelcome: Boolean = false,
+    onCreateWelcome: () -> Unit = {},
 ) {
     var expanded by rememberSaveable { mutableStateOf(false) }
+    var confirmWelcome by remember { mutableStateOf(false) }
     Surface(color = MaterialTheme.colorScheme.surfaceVariant) {
         Column(Modifier.fillMaxWidth()) {
             Row(
@@ -686,6 +693,17 @@ private fun PeopleSection(
                 TextButton(onClick = onRefresh,
                            modifier = Modifier.padding(horizontal = 4.dp)) {
                     Text("Ask the server again")
+                }
+                // Only when the server has none, and only after the warning.
+                if (welcomeMissing) {
+                    OutlinedButton(
+                        enabled = !creatingWelcome,
+                        onClick = { confirmWelcome = true },
+                        modifier = Modifier.padding(horizontal = 12.dp),
+                    ) {
+                        Text(if (creatingWelcome) "Creating the Welcome room…"
+                             else "Create the OTRv4Plus Welcome room")
+                    }
                 }
                 if (entries.isEmpty()) {
                     Text("Nobody yet. Add someone by address with +.",
@@ -723,5 +741,20 @@ private fun PeopleSection(
                 }
             }
         }
+    }
+    if (confirmWelcome) {
+        AlertDialog(
+            onDismissRequest = { confirmWelcome = false },
+            title = { Text("Create the Welcome room?") },
+            text = { Text(OnlineUsers.WELCOME_CREATE_WARNING) },
+            confirmButton = {
+                TextButton(onClick = { confirmWelcome = false; onCreateWelcome() }) {
+                    Text("Create")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmWelcome = false }) { Text("Cancel") }
+            },
+        )
     }
 }

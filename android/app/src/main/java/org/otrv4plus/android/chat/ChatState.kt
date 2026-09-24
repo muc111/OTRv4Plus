@@ -609,6 +609,8 @@ class ChatState(
     fun applyWelcome(view: org.otrv4plus.android.bridge.WelcomeView) {
         welcome = if (account.isAuthenticated) view
                   else org.otrv4plus.android.bridge.WelcomeView.NONE
+        // A room, so it renders as one: plaintext group chat, never OTR.
+        if (welcome.joined && welcome.room.isNotBlank()) noteRoom(welcome.room)
     }
 
     /**
@@ -794,7 +796,11 @@ class ChatState(
         // SHOW, so it is the place that states the rule.
         val jids = (contacts.keys.map { bare(it) }.toSet() +
             store.conversationIds().map { bare(it) } +
-            savedContacts.all().map { bare(it.jid) })
+            savedContacts.all().map { bare(it.jid) } +
+            // The Welcome room is the landing room: listed once joined, even
+            // before anybody has said anything in it.
+            (if (welcome.joined && welcome.room.isNotBlank()) setOf(bare(welcome.room))
+             else emptySet()))
             // A deleted conversation stays out of the list while it is empty,
             // however the roster or the saved list would bring it back.
             .filterNot { deleted.contains(it) && store.lastMessage(it) == null }
@@ -806,7 +812,8 @@ class ChatState(
                     ?: savedContacts.all()
                         .firstOrNull { bare(it.jid) == jid }?.displayName
                         ?.takeIf { it.isNotBlank() }
-                    ?: jid,
+                    ?: (if (welcome.room.isNotBlank() && jid == bare(welcome.room))
+                            "OTRv4Plus Welcome" else jid),
                 presence = Presence.of(
                     // The PEER's own state, not a boolean derived from it.
                     // A boolean cannot say "no stanza has arrived for them

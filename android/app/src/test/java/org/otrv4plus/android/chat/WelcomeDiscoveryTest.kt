@@ -163,4 +163,24 @@ class WelcomeDiscoveryTest {
             assertFalse(clock in src, "OnlineUsers reads a clock ($clock)")
         }
     }
+
+    @Test
+    fun `the joined welcome room is listed in chats as a room`() {
+        val s = state()
+        assertFalse(s.conversations().any { it.displayName == "OTRv4Plus Welcome" })
+        s.applyWelcome(welcome(dave))
+        val row = s.conversations().single { it.jid == "lobby@muc.fixture.i2p" }
+        assertEquals("OTRv4Plus Welcome", row.displayName)
+        assertTrue(s.isRoom(row.jid), "the landing room was treated as a person")
+    }
+
+    @Test
+    fun `creating it says what happened in words`() {
+        assertTrue("ready" in OnlineUsers.welcomeCreated(true, "", emptyList()))
+        val partial = OnlineUsers.welcomeCreated(true, "", listOf("kept when empty"))
+        assertTrue("did not allow" in partial && "kept when empty" in partial)
+        assertTrue("not created" in OnlineUsers.welcomeCreated(false, "refused", emptyList()))
+        val w = OnlineUsers.WELCOME_CREATE_WARNING
+        assertTrue("not end-to-end encrypted" in w && "address" in w)
+    }
 }
