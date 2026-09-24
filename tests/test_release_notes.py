@@ -106,11 +106,31 @@ class TestTheOpenGatesAreStillDeclaredOpen:
         start = notes.index("## NOT verified")
         return notes[start:notes.index("\n## ", start + 4)]
 
-    def test_otr_end_to_end_is_named_as_unverified(self, unverified):
-        """The headline gap. The control that starts a DAKE was dropping the
-        handshake it generated; that is fixed and unit-tested, and fixing a
-        defect is not the same as watching it work."""
-        assert re.search(r"OTR end to end", unverified)
+    def test_otr_smp_and_files_are_claimed_only_as_device_reports(
+            self, notes, unverified):
+        """Closed by the owner's rc.1 handset run with a Termux peer
+        (ANDROID_CALL_AND_FILE_DEVICE_TEST.md, "What the rc.1 handset run
+        established"; milestone 7.0a). They move to the device section, which
+        is attributed to that report -- and nowhere else claims them."""
+        start = notes.index("## Verified on a real device")
+        device = notes[start:notes.index("\n## ", start + 4)]
+        for claim in ("OTRv4+ end to end", "SMP", "file transfer"):
+            assert claim in device, claim
+        assert "OTR end to end" not in unverified, (
+            "OTR is both claimed verified and listed as unverified")
+        record = _read(os.path.join(ROOT, "ANDROID_CALL_AND_FILE_DEVICE_TEST.md"))
+        assert "What the rc.1 handset run established" in record, (
+            "the device claim has lost the record it rests on")
+
+    def test_voice_is_never_claimed_as_device_verified(self, notes):
+        """The direction that matters: a call has not been made from the APK,
+        so the device section must not claim voice or calls."""
+        start = notes.index("## Verified on a real device")
+        device = notes[start:notes.index("\n## ", start + 4)].lower()
+        for word in ("voice", "call", "audio"):
+            assert word not in device, (
+                "the device section mentions %r; no call has run on a "
+                "handset" % word)
 
     def test_voice_is_named_as_unverified(self, unverified):
         """Verified under Termux, which is a different process model. The one
@@ -128,7 +148,7 @@ class TestTheOpenGatesAreStillDeclaredOpen:
         gate = milestone[milestone.index("## 7. The handset gate"):]
         assert "This milestone is not signed off." in gate, (
             "the handset gate reads as closed; the release notes still "
-            "declare OTR and voice unverified, and one of the two is wrong")
+            "declare voice unverified, and one of the two is wrong")
         # Matched on the sentence rather than the status line, which has
         # already moved once -- from "not performed" to "PARTIAL" -- and will
         # move again as items close. It is the sign-off that matters.

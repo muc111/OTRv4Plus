@@ -13,6 +13,12 @@
 # That is no longer the reason, because it is no longer true -- see the body
 # below -- and it is corrected rather than left standing.
 #
+# Corrected a second time for rc.4: the body still said OTR, SMP and file
+# transfer had never run on a device after the owner's rc.1 handset run had
+# proved all three against a Termux peer (recorded in
+# ANDROID_CALL_AND_FILE_DEVICE_TEST.md and the rc.2 CHANGELOG entry). That
+# line was no longer true. Voice calls are the gate still open.
+#
 # THE BODY OF THIS FILE IS THE EMAIL. GitHub sends release notes to watchers,
 # so what is written below is what somebody reads before deciding whether to
 # trust a binary. Every claim in it is either something CI asserts on this run
@@ -86,44 +92,40 @@ secrets the terminal clients keep at rest are held by the Rust core, the
 dependency audit is clean, the documentation licence is decided, the icon's
 origin is recorded, and the release variant is built and its contents
 inspected on this run. It is still **not a release** and it is still
-EXPERIMENTAL, because the handset checks below have not been run. It should
-not be used to protect anything real until they have.
+EXPERIMENTAL: encrypted chat, identity verification and file transfer have
+been proved on a handset, but **voice calls have not**, and a few smaller
+items below are still open.
 
-For a client that is known to work end to end today, including OTR and voice,
-**Termux remains the reference implementation**. See the README.
+For voice today, **Termux remains the reference implementation**. See the
+README.
 
 ---
 
 ## Verified on a real device
 
-Reported from a handset (Android 15, arm64-v8a):
+Reported from a handset (Android 15, arm64-v8a) by the project owner,
+against the live server over I2P, with a Termux client as the peer:
 
-- the APK installs and launches;
-- Chaquopy starts CPython 3.12 and \`import otrv4_core\` succeeds on the real
-  ABI;
-- \`EnhancedSessionManager\` constructs (with a new identity on each
-  launch, by design -- decision B1);
+- **OTRv4+ end to end**: the DAKE completes between the handset and the
+  Termux client, and messages flow encrypted in both directions;
+- **identity verification (SMP)**: SMP completes to verified between the
+  handset and the Termux client, and the Termux client keeps the verified
+  state;
+- **encrypted file transfer** between the handset and the Termux client
+  completes, with the file's hashes checked on arrival;
+- the APK installs and launches; Chaquopy starts CPython 3.12 and
+  \`import otrv4_core\` succeeds on the real ABI; \`EnhancedSessionManager\`
+  constructs (with a new identity on each launch, by design -- decision B1);
 - the SAM probe, the I2P tunnel, the XMPP connection and SASL authentication
   complete against the live server;
-- **signing in**, with the button showing progress for the length of an I2P
-  round trip rather than looking ignored;
-- **the roster loads**: contacts appear, with their real subscription and
-  presence, without a message having to arrive first;
-- **adding a contact** reaches the server and survives the next poll;
-- **1:1 conversations** open and carry messages in both directions;
+- **signing in**, the **roster** (real subscription and presence, without a
+  message having to arrive first), **adding a contact**, and **1:1
+  conversations** in both directions;
 - **rooms**: the MUC service is discovered without anything being typed, a
   room can be created by name, and the app navigates into it.
 
-Two defects found by that session are fixed in this build: the app no longer
-attempts to connect before anybody has signed in, and the OTRv4+ control now
-puts the handshake on the wire instead of generating it and dropping it.
-
-This build also adds **identity verification (SMP)** to the Android UI — a
-Verify Identity control on an encrypted conversation, and an automatic
-passphrase prompt when the other side asks. It uses the same engine the
-terminal client does; no cryptography was added in Kotlin or Python. **It has
-not been run on a device in either direction**, which is why OTR remains on
-the list below.
+No cryptography runs in Kotlin or Python: every session, SMP and file key is
+held by the Rust core.
 
 ## Verified by CI
 
@@ -152,28 +154,23 @@ Asserted on every run rather than assumed:
 
 ## NOT verified, and the reason this is still experimental
 
-- **OTR end to end.** No DAKE has been observed completing between a handset
-  and a peer. The control that asks for one was dropping the handshake it
-  generated; that is fixed and unit-tested in this build, and it has not run
-  on a device. Do not read "the runtime starts" as "OTR works".
-- **Identity verification (SMP), including with a Termux peer.** Newly wired
-  into the UI in this build and unit-tested on both sides, but no run has
-  been performed between two real clients in either direction. Until one has,
-  **a conversation this app calls verified has not been checked end to end** —
-  and an encrypted OTR session is not a verified identity in any case, which
-  is the distinction SMP exists to settle.
-- **Voice.** Verified under Termux, which is a different process model. The
-  test that would show the APK transmits real audio rather than silence
-  cannot run off-device and has never been executed anywhere.
+- **Voice calls on a handset.** The call path (AAudio, Opus in the Rust core,
+  encrypted voice over I2P datagrams) is built and unit-tested, and voice is
+  verified under Termux, but no call has been made from the APK yet. Whether
+  the APK transmits real audio rather than silence can only be shown on a
+  device.
+- **What this version adds on top**, not yet run on a handset: automatic
+  OTRv4+ only toward clients that advertise OTRv4Plus, the People list, file
+  progress with ETA, the in-app viewer, Wipe & Exit from the conversation
+  list, and the theme. See CHANGELOG.md for this version.
 - **Background survival, and reconnect** after a transient failure.
 - **The subscription banner**: what the app shows when somebody else asks to
   see your presence.
 - **A room shared with a second account.** Rooms have been created and
   entered from one handset; the locked-room path needs two.
-- **Calls, file transfer and metadata stripping on a handset**, Wipe & Exit,
-  and a two-device run: \`ANDROID_CALL_AND_FILE_DEVICE_TEST.md\` lists every
-  step, separating what CI has verified from what needs hardware. None of the
-  hardware steps has been run for this build.
+- **Metadata stripping of a handset camera photo**, and a re-run of Wipe &
+  Exit: \`ANDROID_CALL_AND_FILE_DEVICE_TEST.md\` lists every step, separating
+  what CI has verified from what needs hardware.
 
 Also absent by design at this stage: **no in-APK I2P router** (an I2P router
 app with SAM enabled must be running on the phone). The icon is a

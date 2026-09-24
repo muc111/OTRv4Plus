@@ -482,6 +482,15 @@ now the one that matters most**: the defect behind it is fixed and unit-tested,
 and a fix is not an observation. 1–3 (registration), 5–7 (a room shared with a
 second account) and 8 (reading a full export) have not been run.
 
+### 7.0a Status, as of rc.1 (reported by the owner)
+
+A later handset run with a Termux peer proved **OTRv4+ end to end** (the DAKE
+completes and messages flow encrypted both ways), **SMP to verified**, the
+Termux client keeping its verified state, and **encrypted file transfer**
+with hashes checked. That closes **item 11**. Item 10, whether a call from
+the APK carries real audio, is now the gate that matters. Items 1–3, 5–9 have
+not been run.
+
 ### 7.1 The list
 
 This milestone is not signed off. `ANDROID_MESSAGING_DEVICE_TEST.md` is the
