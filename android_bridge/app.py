@@ -253,6 +253,8 @@ class OtrApp:
         #: its text goes out as plaintext group chat and it never gets an OTR
         #: session, SMP, a call or a file. See `note_room_joined`.
         self._rooms: set = set()
+        #: peer -> monotonic time a handshake was first seen, for "elapsed".
+        self._handshake_seen: dict = {}
         #: Set by `wipe` and never cleared. See `wipe` for what it refuses.
         self._wiped = False
         self._wipe_lock = threading.Lock()
@@ -427,6 +429,7 @@ class OtrApp:
     def forget_rooms(self) -> None:
         """The stream went; so did every room membership it carried."""
         self._rooms.clear()
+        self._handshake_seen.clear()
 
     def is_room(self, peer: str) -> bool:
         return self.canonical_peer(peer) in self._rooms
@@ -936,6 +939,85 @@ class OtrApp:
         except BridgeError as exc:
             return getattr(exc, "code", "failed") or "failed"
         return self.ENSURE_STARTED
+
+    #: Handshake stages for the UI. Stable codes: Kotlin maps them to words.
+    HS_IDLE = "idle"
+    HS_RECEIVING_REQUEST = "receiving_request"   # their DAKE1 arriving
+    HS_WAITING_REPLY = "waiting_reply"           # our DAKE1 sent
+    HS_RECEIVING_REPLY = "receiving_reply"       # their DAKE2 arriving
+    HS_REPLYING = "replying"                     # building/sending our DAKE2
+    HS_WAITING_CONFIRM = "waiting_confirm"       # our DAKE2 sent
+    HS_RECEIVING_CONFIRM = "receiving_confirm"   # their DAKE3 arriving
+    HS_ESTABLISHED = "established"
+    HS_FAILED = "failed"
+
+    def handshake_status(self, peer: str) -> dict:
+        """Where an OTRv4+ handshake with *peer* has got to.
+
+        From the engine's own DAKE state and the transport's count of
+        fragments received -- nothing estimated, nothing timed except the
+        elapsed seconds since this handshake was first seen. Over I2P the
+        11 KB DAKE2 and DAKE3 arrive in parts, which is where the minutes go,
+        so "1 of 2 parts" is the part worth showing.
+
+        Keys: stage, step (1-3), steps (3), have, of (fragments; 0 when none
+        are in flight), elapsed (seconds). No key material, no payload.
+        """
+        peer = self.canonical_peer(peer)
+        out = {"stage": self.HS_IDLE, "step": 0, "steps": 3,
+               "have": 0, "of": 0, "elapsed": 0}
+        if peer in self._rooms:
+            return out
+        if self.security_state(peer) is not SecurityState.PLAINTEXT:
+            self._handshake_seen.pop(peer, None)
+            out["stage"], out["step"] = self.HS_ESTABLISHED, 3
+            return out
+        # The DAKE ADAPTER's state is authoritative for both roles: the
+        # responder's session object stays IDLE while its adapter moves
+        # RECEIVED_DAKE1 -> SENT_DAKE2 (observed against the real engine).
+        dake = "IDLE"
+        try:
+            engines = getattr(self._engine, "dake_engines", {}) or {}
+            adapter = engines.get(peer)
+            if adapter is not None:
+                state = adapter.get_state() if hasattr(adapter, "get_state") \
+                    else getattr(adapter, "state", None)
+                dake = getattr(state, "name", "IDLE")
+            if dake == "IDLE":
+                session = self._engine.get_session(peer)
+                if session is not None:
+                    dake = getattr(getattr(session, "dake_state", None),
+                                   "name", "IDLE")
+        except Exception:
+            dake = "IDLE"
+        parts = None
+        transport = self._transport
+        if transport is not None and hasattr(transport, "inbound_progress"):
+            try:
+                parts = transport.inbound_progress(peer)
+            except Exception:
+                parts = None
+        if parts:
+            out["have"], out["of"] = int(parts[0]), int(parts[1])
+        stage = {
+            "SENT_DAKE1": self.HS_RECEIVING_REPLY if parts
+                          else self.HS_WAITING_REPLY,
+            "RECEIVED_DAKE1": self.HS_REPLYING,
+            "SENT_DAKE2": self.HS_RECEIVING_CONFIRM if parts
+                          else self.HS_WAITING_CONFIRM,
+            "FAILED": self.HS_FAILED,
+        }.get(dake, self.HS_RECEIVING_REQUEST if parts else self.HS_IDLE)
+        step = {self.HS_RECEIVING_REQUEST: 1, self.HS_WAITING_REPLY: 1,
+                self.HS_RECEIVING_REPLY: 2, self.HS_REPLYING: 2,
+                self.HS_WAITING_CONFIRM: 2, self.HS_RECEIVING_CONFIRM: 3,
+                self.HS_FAILED: 0}.get(stage, 0)
+        if stage in (self.HS_IDLE, self.HS_FAILED):
+            self._handshake_seen.pop(peer, None)
+        else:
+            started = self._handshake_seen.setdefault(peer, time.monotonic())
+            out["elapsed"] = int(time.monotonic() - started)
+        out["stage"], out["step"] = stage, step
+        return out
 
     def start_session(self, peer: str) -> None:
         """Begin the DAKE.  Completes in roughly 20s over XMPP/I2P.

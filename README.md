@@ -40,10 +40,10 @@ to two minutes while I2P builds its tunnels.
 Works on Android 8.0 and newer, including the Pixel 7.
 
 **What has been tested on a phone:** sign-in, contacts, 1:1 chat, rooms,
-OTRv4+ encryption, SMP identity verification and encrypted file transfer
-with a Termux peer.
-**Not yet tested on a phone:** voice calls from the app, and the newest
-additions listed in [CHANGELOG.md](CHANGELOG.md). The step-by-step test list
+OTRv4+ encryption, SMP identity verification, encrypted file transfer with a
+Termux peer, and two-way voice calls between two phones running the app.
+**Not yet tested on a phone:** a call between the app and Termux, and the
+newest additions listed in [CHANGELOG.md](CHANGELOG.md). The step-by-step test list
 is [ANDROID_CALL_AND_FILE_DEVICE_TEST.md](ANDROID_CALL_AND_FILE_DEVICE_TEST.md).
 
 ## Project status
@@ -54,8 +54,8 @@ is [ANDROID_CALL_AND_FILE_DEVICE_TEST.md](ANDROID_CALL_AND_FILE_DEVICE_TEST.md).
 | Chat over Tor | Implemented, not yet tested against a real hidden service |
 | Hybrid PQC handshake, ratchet and SMP | Working, not externally reviewed |
 | File transfer | Working (XMPP) |
-| Voice over I2P | Working between two Android phones in Termux; still being tuned |
-| Android app | Chat, OTRv4+, SMP and files tested on a phone; calls not yet |
+| Voice over I2P | Working between two phones, in Termux and in the app; still being tuned |
+| Android app | Chat, OTRv4+, SMP, files and app-to-app calls tested on phones |
 | Group encryption | Not implemented. Rooms are ordinary XMPP rooms that the server can read. See [MLS_FEASIBILITY.md](MLS_FEASIBILITY.md) |
 | External security review | None |
 
@@ -92,8 +92,7 @@ Details, design notes and caveats are in [TECHNICAL.md](TECHNICAL.md) and
 
 ## Quick start (Termux)
 
-Termux on Android is the reference client and the only way to make voice
-calls today.
+Termux on Android is the reference client.
 
 ```bash
 pkg install python rust openssl clang git

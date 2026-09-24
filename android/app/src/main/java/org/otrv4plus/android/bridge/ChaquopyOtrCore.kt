@@ -822,6 +822,18 @@ class ChaquopyOtrCore(private val appContext: Context) : OtrCore {
         runCatching { requireApp().callAttr("ensure_otr", peer).toString() }
             .getOrDefault("unknown")
 
+    /** Where an OTRv4+ handshake with [peer] has got to. No key material. */
+    fun handshakeStatus(peer: String): org.otrv4plus.android.crypto.HandshakeUi.Status =
+        runCatching {
+            val v = requireApp().callAttr("handshake_status", peer)
+            fun int(k: String) = v.callAttr("get", k)?.toInt() ?: 0
+            org.otrv4plus.android.crypto.HandshakeUi.Status(
+                stage = v.callAttr("get", "stage")?.toString() ?: "idle",
+                step = int("step"), steps = int("steps").takeIf { it > 0 } ?: 3,
+                have = int("have"), of = int("of"), elapsed = int("elapsed"),
+            )
+        }.getOrDefault(org.otrv4plus.android.crypto.HandshakeUi.Status.IDLE)
+
     /** unknown / offline / checking / available / unavailable. */
     fun otrCapability(peer: String): String =
         runCatching { requireApp().callAttr("otr_capability", peer).toString() }

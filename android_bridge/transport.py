@@ -1305,6 +1305,15 @@ class XmppTransport(Transport):
         """One of otrv4plus_caps.STATES for *peer*'s bare JID."""
         return self._caps.state(_caps.split_jid(peer)[0])
 
+    def inbound_progress(self, peer: str):
+        """(parts received, parts expected) of a frame still arriving from
+        *peer* in fragments, or None. For the handshake progress bar."""
+        try:
+            return self._reassembler.progress(peer) or \
+                self._reassembler.progress(str(peer).lower())
+        except Exception:
+            return None
+
     def otr_resources(self, peer: str) -> Dict[str, Optional[bool]]:
         return self._caps.resources(_caps.split_jid(peer)[0])
 

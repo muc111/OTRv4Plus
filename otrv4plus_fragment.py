@@ -221,6 +221,17 @@ class Reassembler:
         """How many incomplete sets are being held."""
         return len(self._buffers)
 
+    def progress(self, peer: str) -> Optional[Tuple[int, int]]:
+        """(parts held, parts expected) of the largest incomplete set from
+        *peer*, or None. Counts only -- never the parts themselves."""
+        best = None
+        for (who, _msg_id, total), buf in self._buffers.items():
+            if who != peer:
+                continue
+            if best is None or total > best[1]:
+                best = (len(buf["parts"]), total)
+        return best
+
     def clear(self) -> None:
         """Drop every partial set.
 

@@ -17,7 +17,8 @@
 # transfer had never run on a device after the owner's rc.1 handset run had
 # proved all three against a Termux peer (recorded in
 # ANDROID_CALL_AND_FILE_DEVICE_TEST.md and the rc.2 CHANGELOG entry). That
-# line was no longer true. Voice calls are the gate still open.
+# line was no longer true. Corrected again when the owner reported two-way
+# app-to-app calls working; app-to-Termux calls are still open.
 #
 # THE BODY OF THIS FILE IS THE EMAIL. GitHub sends release notes to watchers,
 # so what is written below is what somebody reads before deciding whether to
@@ -92,12 +93,9 @@ secrets the terminal clients keep at rest are held by the Rust core, the
 dependency audit is clean, the documentation licence is decided, the icon's
 origin is recorded, and the release variant is built and its contents
 inspected on this run. It is still **not a release** and it is still
-EXPERIMENTAL: encrypted chat, identity verification and file transfer have
-been proved on a handset, but **voice calls have not**, and a few smaller
-items below are still open.
-
-For voice today, **Termux remains the reference implementation**. See the
-README.
+EXPERIMENTAL: encrypted chat, identity verification, file transfer and
+two-way voice calls between two copies of the app have been proved on
+handsets, and the smaller items below are still open.
 
 ---
 
@@ -113,6 +111,10 @@ against the live server over I2P, with a Termux client as the peer:
   state;
 - **encrypted file transfer** between the handset and the Termux client
   completes, with the file's hashes checked on arrival;
+- **two-way voice calls between two handsets running this app** (accounts
+  Alice and Bob): both directions heard, over I2P;
+- **OTRv4+ between two handsets running this app** completes; over I2P it
+  takes a minute or more, and this build shows the handshake's progress;
 - the APK installs and launches; Chaquopy starts CPython 3.12 and
   \`import otrv4_core\` succeeds on the real ABI; \`EnhancedSessionManager\`
   constructs (with a new identity on each launch, by design -- decision B1);
@@ -154,11 +156,9 @@ Asserted on every run rather than assumed:
 
 ## NOT verified, and the reason this is still experimental
 
-- **Voice calls on a handset.** The call path (AAudio, Opus in the Rust core,
-  encrypted voice over I2P datagrams) is built and unit-tested, and voice is
-  verified under Termux, but no call has been made from the APK yet. Whether
-  the APK transmits real audio rather than silence can only be shown on a
-  device.
+- **Voice calls between the app and a Termux client.** App-to-app calls
+  work (above); a call with the Termux client on the other end has not been
+  run yet.
 - **What this version adds on top**, not yet run on a handset: automatic
   OTRv4+ only toward clients that advertise OTRv4Plus, the People list, file
   progress with ETA, the in-app viewer, Wipe & Exit from the conversation

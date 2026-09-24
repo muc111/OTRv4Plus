@@ -491,6 +491,13 @@ with hashes checked. That closes **item 11**. Item 10, whether a call from
 the APK carries real audio, is now the gate that matters. Items 1–3, 5–9 have
 not been run.
 
+### 7.0b Status, as of rc.4 (reported by the owner)
+
+Two handsets running the app made **two-way voice calls** to each other over
+I2P, heard in both directions. That closes **item 10** (the audio is real,
+not silence) for app-to-app calls. A call between the app and a Termux client
+has not been run. Items 1–3 and 5–9 remain open.
+
 ### 7.1 The list
 
 This milestone is not signed off. `ANDROID_MESSAGING_DEVICE_TEST.md` is the

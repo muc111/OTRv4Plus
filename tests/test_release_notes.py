@@ -122,21 +122,29 @@ class TestTheOpenGatesAreStillDeclaredOpen:
         assert "What the rc.1 handset run established" in record, (
             "the device claim has lost the record it rests on")
 
-    def test_voice_is_never_claimed_as_device_verified(self, notes):
-        """The direction that matters: a call has not been made from the APK,
-        so the device section must not claim voice or calls."""
+    def test_calls_are_claimed_only_as_the_owner_reported_them(self, notes):
+        """App-to-app calls were reported working by the owner (milestone
+        7.0b, and the rc.4 record in ANDROID_CALL_AND_FILE_DEVICE_TEST.md).
+        The device section may say so only while that record exists, and
+        only for app-to-app: a call with Termux on the other end has not
+        been run."""
         start = notes.index("## Verified on a real device")
-        device = notes[start:notes.index("\n## ", start + 4)].lower()
-        for word in ("voice", "call", "audio"):
-            assert word not in device, (
-                "the device section mentions %r; no call has run on a "
-                "handset" % word)
+        device = notes[start:notes.index("\n## ", start + 4)]
+        record = _read(os.path.join(ROOT, "ANDROID_CALL_AND_FILE_DEVICE_TEST.md"))
+        milestone = _read(MILESTONE)
+        if "voice" in device.lower() or "call" in device.lower():
+            assert "What the rc.4 handset runs established" in record, (
+                "a call is claimed and the record it rests on is gone")
+            assert "7.0b" in milestone
+            assert "two handsets running this app" in device
+            assert "Termux" not in device.split("voice calls", 1)[1][:120], (
+                "the device section claims calls with Termux")
 
     def test_voice_is_named_as_unverified(self, unverified):
-        """Verified under Termux, which is a different process model. The one
-        test that would show the APK transmits audio rather than silence
-        cannot run off-device -- see SKIP_AUDIT.md."""
+        """App-to-app calls are reported working; a call between the app
+        and a Termux client has not been run, and stays on this list."""
         assert "Voice" in unverified
+        assert "Termux" in unverified
 
     def test_the_gate_document_is_pointed_at(self, notes):
         assert "ANDROID_XMPP_MILESTONE.md" in notes

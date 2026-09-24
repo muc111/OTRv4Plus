@@ -200,6 +200,7 @@ class ChatViewModel : ViewModel() {
                 autoSecure()
                 refreshDiscovery()
                 refreshWelcome()
+                refreshHandshake()
                 delay(REDRAW_INTERVAL_MS)
             }
         }
@@ -258,6 +259,41 @@ class ChatViewModel : ViewModel() {
             val s = state ?: return null
             return OnlineUsers.discoveryNote(s.welcome, s.discovery, s.canSend())
         }
+
+    /** The open conversation's handshake, as last read. */
+    private var handshake by mutableStateOf(
+        org.otrv4plus.android.crypto.HandshakeUi.Status.IDLE)
+    private var handshakeFor: String? = null
+    private var lastHandshake = 0L
+
+    /** The handshake status for [jid], or IDLE when it is not the one open. */
+    fun handshake(jid: String): org.otrv4plus.android.crypto.HandshakeUi.Status {
+        observe()
+        return if (handshakeFor == ChatState.bare(jid)) handshake
+               else org.otrv4plus.android.crypto.HandshakeUi.Status.IDLE
+    }
+
+    /**
+     * Re-read the open conversation's handshake about once a second while it
+     * is not encrypted. A local read of engine state; nothing is sent.
+     */
+    private fun refreshHandshake() {
+        val state = this.state ?: return
+        val core = this.core ?: return
+        val jid = state.openConversation ?: run { handshakeFor = null; return }
+        if (state.isRoom(jid)) return
+        val now = System.currentTimeMillis()
+        if (now - lastHandshake < HANDSHAKE_INTERVAL_MS) return
+        lastHandshake = now
+        viewModelScope.launch {
+            val s = withContext(Dispatchers.IO) {
+                runCatching { core.handshakeStatus(jid) }.getOrNull()
+            } ?: return@launch
+            handshake = s
+            handshakeFor = ChatState.bare(jid)
+            revision++
+        }
+    }
 
     private var lastWelcome = 0L
 
@@ -1151,5 +1187,6 @@ class ChatViewModel : ViewModel() {
         const val AUTO_RETRY_MS = 45_000L
         const val DISCOVERY_INTERVAL_MS = 120_000L
         const val WELCOME_INTERVAL_MS = 3_000L
+        const val HANDSHAKE_INTERVAL_MS = 1_000L
     }
 }

@@ -49,6 +49,15 @@ not what would merely look right.
 Do not mark a row passed until its hardware steps have been run on this build
 and reported as below.
 
+### What the rc.4 handset runs established (reported by the owner)
+
+Two handsets, both running this app (accounts Alice and Bob), over I2P:
+two-way voice calls work, heard in both directions. OTRv4+ between the two
+apps completes but takes a minute or more with, until this build, nothing on
+screen to show it was working. Password-protected rooms can be created; the
+join prompt was missing and is fixed in this build. Not yet run: a call
+between the app and a Termux client.
+
 ### What the rc.1 handset run established (reported by the owner)
 
 Android OTR works. Android SMP works. The Termux client's stored SMP

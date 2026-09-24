@@ -45,6 +45,7 @@ import org.otrv4plus.android.crypto.EncryptionKind
 import org.otrv4plus.android.crypto.MetadataChoice
 import org.otrv4plus.android.crypto.MicPermission
 import org.otrv4plus.android.crypto.TransferUi
+import org.otrv4plus.android.crypto.HandshakeUi
 import org.otrv4plus.android.crypto.Verification
 
 /**
@@ -144,6 +145,11 @@ fun ConversationScreen(
                 RoomHeader(model, jid)
             } else {
             SecurityLine(conversation.security, conversation.otrCapability)
+            // The handshake, while it runs: step, parts received, elapsed.
+            // Without it a DAKE over I2P looked like nothing happening.
+            if (conversation.security == SecurityState.PLAINTEXT) {
+                HandshakeCard(model.handshake(jid))
+            }
 
             // Directly under the security line, because it is the same
             // subject: what this conversation is, and what it lets you do.
@@ -1099,4 +1105,24 @@ fun IncomingFileDialog(model: ChatViewModel) {
             }
         },
     )
+}
+
+
+/** Progress of an OTRv4+ handshake. Words first; the bar only confirms. */
+@Composable
+private fun HandshakeCard(status: HandshakeUi.Status) {
+    val view = HandshakeUi.view(status) ?: return
+    Surface(color = MaterialTheme.colorScheme.secondaryContainer) {
+        Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp)) {
+            Text(view.title, style = MaterialTheme.typography.labelLarge,
+                 color = MaterialTheme.colorScheme.onSecondaryContainer)
+            Text(view.detail, style = MaterialTheme.typography.bodySmall,
+                 color = MaterialTheme.colorScheme.onSecondaryContainer)
+            LinearProgressIndicator(progress = { view.progress },
+                                    modifier = Modifier.fillMaxWidth()
+                                        .padding(vertical = 4.dp))
+            Text(view.elapsed, style = MaterialTheme.typography.labelSmall,
+                 color = MaterialTheme.colorScheme.onSecondaryContainer)
+        }
+    }
 }
