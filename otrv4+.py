@@ -3940,22 +3940,6 @@ class RustBackedDoubleRatchet:
         """Original send chain key (set at construction, never advanced)."""
         return self._rks_send_init
 
-    def _kdf_ck(self, ck: bytes, label: bytes = b"MESSAGE_KEY"):
-        """Advance a chain key per OTRv4 spec §4.4.2.
-
-        Returns (new_ck, MKenc, MKmac).
-
-        L1: the third element was a hardcoded ``bytes(32)`` documented as
-        "extra_zeros". §4.4.2 puts MKmac there, so anything reading this
-        position as a MAC key got 32 zero bytes. It is now derived per spec:
-        ``MKmac = KDF(usage_MAC_key, MKenc, 64)`` — from the message key, not
-        the chain key, and 64 bytes.
-        """
-        new_ck = kdf_1(KDFUsage.CHAIN_KEY, ck, 32)
-        mk = kdf_1(KDFUsage.MESSAGE_KEY, ck, 32)
-        mkmac = kdf_1(KDFUsage.MAC_KEY, mk, 64)
-        return new_ck, mk, mkmac
-
     def encrypt_message(self, plaintext):
         """Encrypt a message (Spec §4.4.3). Same return signature as Python."""
         with self.lock:
@@ -4727,36 +4711,20 @@ class RustDAKEAdapter:
 
         try:
 
-            use_output_api = hasattr(self._rust, "generate_dake2_output")
+            output = self._rust.generate_dake2_output(
+                our_prekey_priv_bytes=None,
+                mldsa_pub_bytes=self._mldsa_auth.pub_bytes if self._mldsa_auth else None,
+            )
+            raw = bytes(output.dake2_bytes)
+            self._raw_dake2_bytes = raw
 
-            if use_output_api:
-                output = self._rust.generate_dake2_output(
-                    our_prekey_priv_bytes=None,
-                    mldsa_pub_bytes=self._mldsa_auth.pub_bytes if self._mldsa_auth else None,
-                )
-                raw = bytes(output.dake2_bytes)
-                self._raw_dake2_bytes = raw
-
-                self._session_keys = {
-                    "_dake_output": output,
-                    "session_id": bytes(output.ssid) + b"\x00" * 24,
-                    "is_initiator": False,
-                    "peer_long_term_pub": self.remote_identity_pub_bytes,
-                    "peer_long_term_key": self.remote_identity_key,
-                }
-            else:
-
-                result = self._rust.generate_dake2(
-                    our_prekey_priv_bytes=None,
-                    mldsa_pub_bytes=self._mldsa_auth.pub_bytes if self._mldsa_auth else None,
-                )
-                if not result.success:
-                    return self._fail_str(f"generate_dake2: {result .error }")
-
-                raw = bytes(result.dake2_bytes)
-                self._raw_dake2_bytes = raw
-
-                self._session_keys = self._unpack_session_keys(result, is_initiator=False)
+            self._session_keys = {
+                "_dake_output": output,
+                "session_id": bytes(output.ssid) + b"\x00" * 24,
+                "is_initiator": False,
+                "peer_long_term_pub": self.remote_identity_pub_bytes,
+                "peer_long_term_key": self.remote_identity_key,
+            }
 
             self._state = DAKEState.SENT_DAKE2
             self._trace("DAKE", "STATE", "RECEIVED_DAKE1", "SENT_DAKE2", "generated DAKE2 (Auth-R)")
@@ -4783,63 +4751,34 @@ class RustDAKEAdapter:
             raw = _safe_b64decode(dake2_msg[7:].strip())
             self._raw_dake2_bytes = raw
 
-            use_output_api = hasattr(self._rust, "process_dake2_output")
+            output = self._rust.process_dake2_output(raw, None)
 
-            if use_output_api:
-                output = self._rust.process_dake2_output(raw, None)
+            self.remote_identity_pub_bytes = (
+                bytes(output.remote_identity_pub) if output.remote_identity_pub else None
+            )
+            self._remote_mldsa_pub = (
+                bytes(output.remote_mldsa_pub) if output.remote_mldsa_pub else None
+            )
 
-                self.remote_identity_pub_bytes = (
-                    bytes(output.remote_identity_pub) if output.remote_identity_pub else None
-                )
-                self._remote_mldsa_pub = (
-                    bytes(output.remote_mldsa_pub) if output.remote_mldsa_pub else None
-                )
+            if self.remote_identity_pub_bytes:
 
-                if self.remote_identity_pub_bytes:
+                self.remote_identity_key = self.remote_identity_pub_bytes
 
-                    self.remote_identity_key = self.remote_identity_pub_bytes
+            if output.remote_profile_bytes:
+                try:
+                    self.remote_profile = ClientProfile.decode(
+                        bytes(output.remote_profile_bytes)
+                    )
+                except Exception:
+                    self.remote_profile = None
 
-                if output.remote_profile_bytes:
-                    try:
-                        self.remote_profile = ClientProfile.decode(
-                            bytes(output.remote_profile_bytes)
-                        )
-                    except Exception:
-                        self.remote_profile = None
-
-                self._session_keys = {
-                    "_dake_output": output,
-                    "session_id": bytes(output.ssid) + b"\x00" * 24,
-                    "is_initiator": True,
-                    "peer_long_term_pub": self.remote_identity_pub_bytes,
-                    "peer_long_term_key": self.remote_identity_key,
-                }
-            else:
-
-                result = self._rust.process_dake2(raw, None)
-                if not result.success:
-                    return self._fail(f"process_dake2: {result .error }")
-
-                self.remote_identity_pub_bytes = (
-                    bytes(result.remote_identity_pub) if result.remote_identity_pub else None
-                )
-                self._remote_mldsa_pub = (
-                    bytes(result.remote_mldsa_pub) if result.remote_mldsa_pub else None
-                )
-
-                if self.remote_identity_pub_bytes:
-
-                    self.remote_identity_key = self.remote_identity_pub_bytes
-
-                if result.remote_profile_bytes:
-                    try:
-                        self.remote_profile = ClientProfile.decode(
-                            bytes(result.remote_profile_bytes)
-                        )
-                    except Exception:
-                        self.remote_profile = None
-
-                self._session_keys = self._unpack_session_keys(result, is_initiator=True)
+            self._session_keys = {
+                "_dake_output": output,
+                "session_id": bytes(output.ssid) + b"\x00" * 24,
+                "is_initiator": True,
+                "peer_long_term_pub": self.remote_identity_pub_bytes,
+                "peer_long_term_key": self.remote_identity_key,
+            }
 
             # ── Audit PY1/H3: never establish on an unverified responder
             # profile.  ClientProfile.decode (above) verifies the Ed448
@@ -5027,39 +4966,6 @@ class RustDAKEAdapter:
 
         except Exception as e:
             return self._fail(f"process_dake3 exception: {e }")
-
-    def _unpack_session_keys(self, result, is_initiator: bool) -> Dict[str, Any]:
-        """
-        Convert the Rust DAKE result into the session_keys dict format that
-        _establish_session / _initialize_ratchet expect.
-
-        Critically: all key bytes were derived inside Rust.  We receive them
-        as opaque byte arrays here and immediately wrap root_key in SecureMemory.
-        The raw bytes for chain_key_send/recv and brace_key are short-lived
-        Python objects that will be consumed by RustBackedDoubleRatchet.__init__
-        and then set to None in _initialize_ratchet().
-        """
-        root_raw = bytes(result.root_key)
-        ck_a = bytes(result.chain_key_a)
-        ck_b = bytes(result.chain_key_b)
-        brace_key = bytes(result.brace_key)
-        ssid = bytes(result.ssid)
-        mac_key = bytes(result.mac_key)
-
-        root_key_mem = SecureMemory(32)
-        root_key_mem.write(root_raw)
-
-        return {
-            "root_key": root_key_mem,
-            "chain_key_send": ck_a if is_initiator else ck_b,
-            "chain_key_recv": ck_b if is_initiator else ck_a,
-            "mac_key": mac_key,
-            "session_id": ssid + b"\x00" * 24,
-            "brace_key": brace_key,
-            "is_initiator": is_initiator,
-            "peer_long_term_pub": self.remote_identity_pub_bytes,
-            "peer_long_term_key": self.remote_identity_key,
-        }
 
     def get_session_keys(self) -> Optional[Dict[str, Any]]:
         if self._state != DAKEState.ESTABLISHED:
@@ -6848,30 +6754,16 @@ class EnhancedOTRSession:
                 )
                 return
 
-            if self.root_key is None:
-                raise RuntimeError("Root key not available")
-
-            _ratchet_args = dict(
-                root_key=self.root_key,
-                is_initiator=self.is_initiator,
-                ad=b"OTRv4-DATA",
-                logger=self.logger,
-                chain_key_send=self._dake_chain_key_send,
-                chain_key_recv=self._dake_chain_key_recv,
-                brace_key=self._dake_brace_key,
-                rekey_interval=OTRConstants.REKEY_INTERVAL,
-                rekey_timeout=OTRConstants.REKEY_TIMEOUT,
-            )
-
-            self.ratchet = RustBackedDoubleRatchet(**_ratchet_args)
-            self._ratchet_backend = "rust"
-
-            self._dake_chain_key_send = None
-            self._dake_chain_key_recv = None
-            self._dake_brace_key = None
-
-            _backend_label = "Rust (zeroize-on-drop; legacy v10.6.2 path)"
-            self.tracer.trace(self.peer, "RATCHET", None, "ACTIVE", f"ratchet: {_backend_label }")
+            # No fallback. There used to be one: build the ratchet from a
+            # Python-held root key and chain keys (`self.root_key`,
+            # `_dake_chain_key_*`), deriving any missing chain keys with the
+            # Python SHAKE-256 KDF. Those values came only from the legacy
+            # DAKE getters, which are not compiled into a production core
+            # (`legacy-dake-keys`), and the branches that called them are
+            # gone -- so the fallback could only ever run on keys that had
+            # already crossed into Python. A session without a DakeOutput is
+            # a session the DAKE did not establish.
+            raise RuntimeError("no DAKE output to initialise the ratchet from")
         finally:
             self._release_lock()
 

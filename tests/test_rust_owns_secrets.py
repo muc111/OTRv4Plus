@@ -255,3 +255,31 @@ class TestTheRatchetRunsOnHandles:
         assert otr.MLDSA87Auth.verify(auth.pub_bytes, b"transcript", sig)
         auth.zeroize()
         assert auth._priv is None
+
+
+class TestTheRatchetIsBuiltOnlyFromTheDake:
+    """`RustBackedDoubleRatchet(root_key=..., chain_key_send=...)` builds a
+    ratchet from keys already in Python, deriving missing chain keys with the
+    Python SHAKE-256 KDF. The test suite needs that -- it is how a ratchet is
+    built from known keys -- but production must only ever use
+    `from_dake_output`, which moves the keys Rust-to-Rust. The legacy DAKE
+    branches, `_unpack_session_keys`, the Python-key fallback in
+    `_initialize_ratchet` and the uncalled `_kdf_ck` were removed; this keeps
+    a direct construction from coming back."""
+
+    @pytest.mark.parametrize("relpath", PRODUCTION)
+    def test_no_production_code_constructs_a_ratchet_from_keys(self, relpath):
+        if not os.path.exists(os.path.join(ROOT, relpath)):
+            pytest.skip("%s not in this checkout" % relpath)
+        tree = ast.parse(open(os.path.join(ROOT, relpath), encoding="utf-8").read())
+        made = [n.lineno for n in ast.walk(tree)
+                if isinstance(n, ast.Call)
+                and (getattr(n.func, "id", "") or getattr(n.func, "attr", ""))
+                in ("RustBackedDoubleRatchet", "DoubleRatchet")]
+        assert not made, "%s builds a ratchet from raw keys at %r" % (relpath, made)
+
+    def test_the_legacy_paths_are_gone(self):
+        src = open(os.path.join(ROOT, "otrv4+.py"), encoding="utf-8").read()
+        for gone in ("def _unpack_session_keys", "def _kdf_ck",
+                     "use_output_api", "legacy v10.6.2 path"):
+            assert gone not in src, gone

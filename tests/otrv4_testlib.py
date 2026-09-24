@@ -300,3 +300,20 @@ def rust_vault_readback_available():
     """
     import otrv4_core as _c
     return hasattr(_c.RustSMPVault, "load")
+
+
+def kdf_ck(ck: bytes):
+    """Reference model of the OTRv4 §4.4.2 chain step: (new_ck, MKenc, MKmac).
+
+        new_ck = KDF(usage_chain_key,   ck,    32)
+        MKenc  = KDF(usage_message_key, ck,    32)
+        MKmac  = KDF(usage_MAC_key,     MKenc, 64)
+
+    This lived in production as `RustBackedDoubleRatchet._kdf_ck`, uncalled:
+    the ratchet steps its chains in Rust. A spec model the tests check against
+    belongs with the tests, not in the shipped engine as a second
+    implementation of the chain KDF.
+    """
+    new_ck = kdf_1(KDFUsage.CHAIN_KEY, ck, 32)
+    mk = kdf_1(KDFUsage.MESSAGE_KEY, ck, 32)
+    return new_ck, mk, kdf_1(KDFUsage.MAC_KEY, mk, 64)
