@@ -1820,6 +1820,15 @@ class XmppTransport(Transport):
         """Seconds since the stream last delivered anything."""
         return max(0.0, time.monotonic() - self._last_inbound)
 
+    #: Longest single 1:1 body accepted. Every OTRv4+ sender -- this app and
+    #: both terminal clients -- fragments anything over
+    #: `otrv4plus_fragment.MAX_FRAGMENT` (6000), so no legitimate frame comes
+    #: near this; only a plaintext message from some other client could, and
+    #: 64 KiB of it is more than any screen shows. Without a bound a single
+    #: stanza of whatever size the server allows went to the engine and then
+    #: across the JNI boundary into the UI.
+    MAX_DIRECT_BODY = 64 * 1024
+
     def _on_message(self, stanza) -> None:
         """Hand the body up, whatever it is.
 
@@ -1835,9 +1844,19 @@ class XmppTransport(Transport):
             body = stanza.get("body") or ""
             if not body:
                 return
-            peer = str(stanza.get("from")).split("/", 1)[0]
+            sender = stanza.get("from")
+            peer = str(sender).split("/", 1)[0] if sender else ""
         except Exception:
             _log.warning("could not read an inbound stanza")
+            return
+        if not peer or peer == "None":
+            # No sender, no conversation to put it in -- and str(None) used
+            # to make one called "None".
+            return
+        if len(body) > self.MAX_DIRECT_BODY:
+            # Dropped, not truncated: a cut OTR frame is garbage, and a cut
+            # plaintext message is a different message from the one sent.
+            _log.warning("dropped an oversized inbound body (%d chars)", len(body))
             return
         # Reassembly BEFORE the engine, and before any decision about what the
         # body is. A Termux peer fragments anything over 6000 bytes, which

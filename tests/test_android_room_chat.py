@@ -249,3 +249,45 @@ class TestMembershipFollowsTheServer:
         ctl.join_room(ROOM, "me")
         ctl._on_transport_state("disconnected", "")
         assert not app.is_room(ROOM)
+
+
+# -- the 1:1 path's bounds -------------------------------------------------------
+
+class TestTheDirectPathIsBounded:
+
+    def _t(self):
+        from android_bridge import transport as tmod
+        t = XmppTransport.__new__(XmppTransport)
+        t._reassembler = tmod._fragment.Reassembler()
+        got = []
+        t._on_payload = lambda peer, body: got.append((peer, body))
+        return t, got
+
+    def _stanza(self, body, kind="chat"):
+        return {"type": kind, "body": body, "from": "bob@example.test/phone"}
+
+    def test_an_ordinary_body_is_delivered(self):
+        t, got = self._t()
+        t._on_message(self._stanza("hi"))
+        assert got == [("bob@example.test", "hi")]
+
+    def test_an_oversized_body_is_dropped_not_truncated(self):
+        t, got = self._t()
+        t._on_message(self._stanza("x" * (XmppTransport.MAX_DIRECT_BODY + 1)))
+        assert got == []
+
+    def test_the_limit_is_well_above_any_fragment(self):
+        from otrv4plus_fragment import MAX_FRAGMENT
+        assert XmppTransport.MAX_DIRECT_BODY > 4 * MAX_FRAGMENT
+
+    def test_error_and_groupchat_stanzas_are_not_one_to_one(self):
+        t, got = self._t()
+        t._on_message(self._stanza("?OTRv4 AAAA.", kind="error"))
+        t._on_message(self._stanza("?OTRv4 AAAA.", kind="groupchat"))
+        assert got == []
+
+    def test_a_malformed_stanza_does_not_raise(self):
+        t, got = self._t()
+        t._on_message({"type": "chat", "body": "hi"})    # no "from"
+        t._on_message(None)
+        assert got == [], "a stanza with no sender was delivered"

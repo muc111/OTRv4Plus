@@ -576,3 +576,45 @@ class TestAnAndroidSmpAnswerIsNotRemembered:
         p.alice.smp_start(p.bob_jid, SECRET)
         assert p.bob.smp_secret_required(p.alice_jid), (
             "the second challenge was answered from a remembered passphrase")
+
+
+# ---------------------------------------------------------------------------
+# The call/file gate, against the real engine, across session changes
+# ---------------------------------------------------------------------------
+
+class TestTheMediaGateFollowsTheSession:
+    """The call and file gate reads `_smp_query_default`. A verification is a
+    proof about ONE session's keys; nothing may carry it to another."""
+
+    @staticmethod
+    def _gate(app, peer):
+        import otrv4plus_voice as V
+        return V._smp_query_default(app._engine, peer)[0]
+
+    def test_verified_opens_the_gate(self, verified):
+        assert self._gate(verified.alice, verified.bob_jid)
+        assert self._gate(verified.bob, verified.alice_jid)
+
+    def test_a_new_dake_closes_it(self, verified):
+        p = verified
+        p.alice._engine.sessions.pop(p.bob_jid, None)
+        p.bob._engine.sessions.pop(p.alice_jid, None)
+        otr._dake1_rate_limiter._attempts.clear()
+        p.alice.start_session(p.bob_jid)
+        assert p.alice.security_state(p.bob_jid) is not SecurityState.PLAINTEXT
+        assert not self._gate(p.alice, p.bob_jid), "verification outlived its session"
+        assert not self._gate(p.bob, p.alice_jid), "verification outlived its session"
+
+    def test_a_failed_proof_does_not_open_it(self, pair):
+        pair.alice.smp_start(pair.bob_jid, SECRET)
+        pair.bob.smp_respond(pair.alice_jid, "a different secret entirely")
+        assert pair.alice.smp_state(pair.bob_jid) is not SmpState.VERIFIED
+        assert not self._gate(pair.alice, pair.bob_jid)
+        assert not self._gate(pair.bob, pair.alice_jid)
+
+    def test_an_encrypted_unverified_session_does_not_open_it(self, pair):
+        assert not self._gate(pair.alice, pair.bob_jid)
+
+    def test_a_cleared_session_closes_it(self, verified):
+        verified.alice._engine.sessions.pop(verified.bob_jid, None)
+        assert not self._gate(verified.alice, verified.bob_jid)
