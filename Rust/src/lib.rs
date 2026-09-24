@@ -47,6 +47,7 @@ fn otrv4_core(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<smp_vault::PySMPVault>()?;
     // Ratchet
     m.add_class::<ratchet::RustDoubleRatchet>()?;
+    m.add_class::<ratchet::MessageMacKey>()?;
 
     // v10.13.2: media keys and the voice X448 scalar leave Python.
     m.add_class::<voice::PyVoiceCipher>()?;

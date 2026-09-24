@@ -173,7 +173,7 @@ class TestReplayPublishesNothing:
         bob.decrypt_message(h, ct, n, t)
 
         first = _published(bob, b"reply 1")
-        assert bytes(mkmac) in first
+        assert any(mkmac.matches(k) for k in first)
 
         with pytest.raises(Exception):
             bob.decrypt_message(h, ct, n, t)
@@ -192,9 +192,9 @@ class TestValidMessagePublishesTheRightKey:
         _pt, bob_mkmac = bob.decrypt_message(h, ct, n, t)
 
         published = _published(bob)
-        assert published == [bytes(alice_mkmac)], \
+        assert len(published) == 1 and alice_mkmac.matches(published[0]), \
             f"expected exactly the authenticating key, got {len(published)} keys"
-        assert bytes(bob_mkmac) == bytes(alice_mkmac)
+        assert bob_mkmac.matches(published[0])
 
     def test_nothing_is_published_before_the_message_arrives(self):
         """Bob has authenticated nothing yet."""
@@ -207,9 +207,11 @@ class TestValidMessagePublishesTheRightKey:
         for i in range(3):
             ct, h, n, t, _e, _r, mkmac = alice.encrypt_message(b"m%d" % i)
             bob.decrypt_message(h, ct, n, t)
-            expected.append(bytes(mkmac))
+            expected.append(mkmac)
 
-        assert _published(bob) == expected
+        published = _published(bob)
+        assert len(published) == 3
+        assert all(h.matches(k) for h, k in zip(expected, published)), "order"
 
 
 # ── 5. A forgery after a valid message leaves earlier state intact ───────────
@@ -231,9 +233,9 @@ class TestEarlierStateSurvivesAForgery:
         msg.ratchet_id, msg.message_id = 1, 0
         msg.ecdh_pub, msg.nonce = bytes(56), n1
         msg.ciphertext, msg.revealed_mac_keys = ct1, []
-        msg.mac = msg.compute_mac(published[0])
+        msg.mac = msg.compute_mac(otrv4_core.MessageMacKey.from_revealed(published[0]))
 
-        assert msg.verify_mac(bytes(mkmac1)), \
+        assert msg.verify_mac(mkmac1), \
             "the earlier message's key stopped verifying after a forgery"
 
     def test_the_conversation_continues_in_both_directions(self):
@@ -260,4 +262,5 @@ class TestEarlierStateSurvivesAForgery:
         with pytest.raises(Exception):
             bob.decrypt_message(h1, _flip(ct1), n1, t1)
 
-        assert _published(bob) == [bytes(mkmac1)]
+        published = _published(bob)
+        assert len(published) == 1 and mkmac1.matches(published[0])

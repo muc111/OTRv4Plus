@@ -108,6 +108,12 @@ def digest(b):
     return hashlib.sha256(bytes(b)).hexdigest()[:16]
 
 
+def _h(key):
+    """A Rust MessageMacKey over a key the test treats as published."""
+    import otrv4_core
+    return otrv4_core.MessageMacKey.from_revealed(bytes(key))
+
+
 def build_message(mac_key, ciphertext=b"ciphertext-under-test",
                   revealed=()):
     m = DataMessage()
@@ -121,7 +127,7 @@ def build_message(mac_key, ciphertext=b"ciphertext-under-test",
     m.nonce = bytes(12)
     m.ciphertext = ciphertext
     m.revealed_mac_keys = list(revealed)
-    m.mac = m.compute_mac(mac_key)
+    m.mac = m.compute_mac(_h(mac_key))
     return m
 
 
@@ -185,19 +191,19 @@ class TestForgeability(unittest.TestCase):
         mkmac = kdf_1(KDFUsage.MAC_KEY, mkenc, 64)
 
         original = build_message(mkmac, b"the original ciphertext")
-        self.assertTrue(original.verify_mac(mkmac))
+        self.assertTrue(original.verify_mac(_h(mkmac)))
 
         # The sender later publishes mkmac. A third party now alters the
         # message and re-MACs it with the published key.
         forged = build_message(mkmac, b"a DIFFERENT ciphertext entirely")
         self.assertNotEqual(forged.ciphertext, original.ciphertext)
         self.assertTrue(
-            forged.verify_mac(mkmac),
+            forged.verify_mac(_h(mkmac)),
             "a revealed key must authenticate a forgery — that is deniability")
 
         # And it survives a wire round trip.
         decoded = DataMessage.decode(forged.encode())
-        self.assertTrue(decoded.verify_mac(mkmac))
+        self.assertTrue(decoded.verify_mac(_h(mkmac)))
         self.assertEqual(decoded.ciphertext, forged.ciphertext)
 
 
@@ -211,20 +217,22 @@ class TestWrongKey(unittest.TestCase):
         mkmac = kdf_1(KDFUsage.MAC_KEY, b"\x55" * 32, 64)
         other = kdf_1(KDFUsage.MAC_KEY, b"\x66" * 32, 64)
         m = build_message(mkmac)
-        self.assertTrue(m.verify_mac(mkmac))
-        self.assertFalse(m.verify_mac(other))
+        self.assertTrue(m.verify_mac(_h(mkmac)))
+        self.assertFalse(m.verify_mac(_h(other)))
 
     def test_all_zero_key_does_not_verify(self):
         mkmac = kdf_1(KDFUsage.MAC_KEY, b"\x77" * 32, 64)
         m = build_message(mkmac)
-        self.assertFalse(m.verify_mac(bytes(64)),
+        self.assertFalse(m.verify_mac(_h(bytes(64))),
                          "the old revealed value was 64 zero bytes")
 
     def test_truncated_key_does_not_verify(self):
         mkmac = kdf_1(KDFUsage.MAC_KEY, b"\x88" * 32, 64)
         m = build_message(mkmac)
-        self.assertFalse(m.verify_mac(mkmac[:32]),
-                         "the old code truncated the MAC key to 32 bytes")
+        # The old code truncated the MAC key to 32 bytes. A 32-byte key can
+        # no longer even be made into a MAC key.
+        with self.assertRaises(ValueError):
+            m.verify_mac(_h(mkmac[:32]))
 
 
 # ===========================================================================

@@ -87,11 +87,9 @@ pub struct EncryptResult {
     pub tag: [u8; 16],
     pub ratchet_id: u32,
     pub reveal_mac_keys: Vec<Vec<u8>>,
-    /// MKmac for THIS message (64 B, OTRv4 §4.4.2). The caller authenticates
-    /// the assembled data message with it, then drops it; this ratchet keeps
-    /// its own copy in `last_mac_key` for later revelation. MKmac is designed
-    /// to become public, so handing it across the FFI boundary costs nothing
-    /// that revelation would not publish anyway.
+    /// MKmac for THIS message (64 B, OTRv4 §4.4.2). Rust-internal: Python
+    /// receives a `MessageMacKey` handle, never these bytes. This ratchet
+    /// keeps its own copy in `last_mac_key` for later revelation.
     pub mac_key: Vec<u8>,
 }
 
@@ -104,8 +102,17 @@ pub struct EncryptResult {
 /// queued after successful authentication.
 pub struct DecryptResult {
     pub plaintext: Vec<u8>,
-    /// MKmac for this message (64 B), so the caller can verify the outer MAC.
+    /// MKmac for this message (64 B). Rust-internal; Python gets a handle.
     pub mac_key: Vec<u8>,
+}
+
+// MKmac is secret until the ratchet reveals it; the transient copies in the
+// results are wiped when the result goes.
+impl Drop for EncryptResult {
+    fn drop(&mut self) { self.mac_key.zeroize(); }
+}
+impl Drop for DecryptResult {
+    fn drop(&mut self) { self.mac_key.zeroize(); }
 }
 
 // ── Double Ratchet ──────────────────────────────────────────────────
@@ -655,6 +662,81 @@ fn state_tag(label: &[u8], key: &[u8; 32]) -> [u8; 32] {
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict};
 
+/// One data message's MAC key (MKmac), held in Rust.
+///
+/// The OTRv4 outer MAC is SHA3-512(MKmac || authenticated region). The
+/// region -- header fields, nonce, ciphertext -- is public and is framed by
+/// the caller; the key is not, until the ratchet publishes it after use
+/// (OTRv4 section 4.4.2, deniability). So the caller gets this handle, never
+/// the bytes: it can seal or verify a region, and ask whether a revealed key
+/// is this one. It has no getter, is single-message, and zeroizes on drop.
+#[pyclass(name = "MessageMacKey")]
+pub struct MessageMacKey {
+    key: Option<crate::secure_mem::SecretVec>,
+}
+
+impl MessageMacKey {
+    fn new(key: &[u8]) -> Self {
+        Self { key: Some(crate::secure_mem::SecretVec::from_slice(key)) }
+    }
+
+    fn tag(&self, region: &[u8]) -> PyResult<[u8; 64]> {
+        use sha3::{Digest, Sha3_512};
+        let key = self.key.as_ref().ok_or_else(|| {
+            pyo3::exceptions::PyValueError::new_err("MAC key already destroyed")
+        })?;
+        let mut h = Sha3_512::new();
+        h.update(key.expose());
+        h.update(region);
+        let mut out = [0u8; 64];
+        out.copy_from_slice(&h.finalize());
+        Ok(out)
+    }
+}
+
+#[pymethods]
+impl MessageMacKey {
+    /// A handle on a key the peer has already PUBLISHED (a revealed MKmac).
+    /// Revealed keys are public by design -- this is what lets a third
+    /// party re-MAC a transcript (deniability) -- so accepting their bytes
+    /// costs nothing; it keeps every MAC computation in one place.
+    #[staticmethod]
+    fn from_revealed(key: &[u8]) -> PyResult<Self> {
+        if key.len() != 64 {
+            return Err(pyo3::exceptions::PyValueError::new_err("a revealed MKmac is 64 bytes"));
+        }
+        Ok(Self::new(key))
+    }
+
+    /// SHA3-512(MKmac || region): the 64-byte MAC to put on the wire.
+    fn seal<'py>(&self, py: Python<'py>, region: &[u8]) -> PyResult<Bound<'py, PyBytes>> {
+        Ok(PyBytes::new(py, &self.tag(region)?))
+    }
+
+    /// Constant-time check of a received MAC over `region`.
+    fn verify(&self, region: &[u8], mac: &[u8]) -> PyResult<bool> {
+        if mac.len() != 64 { return Ok(false); }
+        Ok(crate::secure_mem::ct_eq(&self.tag(region)?, mac))
+    }
+
+    /// Whether `key` (a key the peer revealed) is this message's MKmac.
+    /// One bit out; the comparison is constant-time.
+    fn matches(&self, key: &[u8]) -> bool {
+        match self.key.as_ref() {
+            Some(k) => crate::secure_mem::ct_eq(k.expose(), key),
+            None => false,
+        }
+    }
+
+    /// Destroy the key now. Idempotent.
+    fn zeroize(&mut self) { self.key = None; }
+
+    #[getter]
+    fn destroyed(&self) -> bool { self.key.is_none() }
+
+    fn __repr__(&self) -> &'static str { "MessageMacKey(<held in Rust>)" }
+}
+
 #[pyclass(name = "RustDoubleRatchet")]
 pub struct RustDoubleRatchet {
     inner: DoubleRatchet,
@@ -904,7 +986,7 @@ impl RustDoubleRatchet {
         let mac_list: Vec<Bound<'_, PyBytes>> = result.reveal_mac_keys.iter()
             .map(|k| PyBytes::new(py, k)).collect();
         d.set_item("reveal_mac_keys", mac_list)?;
-        d.set_item("mac_key", PyBytes::new(py, &result.mac_key))?;
+        d.set_item("mac_key", Py::new(py, MessageMacKey::new(&result.mac_key))?)?;
         Ok(d)
     }
 
@@ -918,7 +1000,7 @@ impl RustDoubleRatchet {
             .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
         let d = PyDict::new(py);
         d.set_item("plaintext", PyBytes::new(py, &r.plaintext))?;
-        d.set_item("mac_key", PyBytes::new(py, &r.mac_key))?;
+        d.set_item("mac_key", Py::new(py, MessageMacKey::new(&r.mac_key))?)?;
         Ok(d)
     }
 
@@ -955,7 +1037,7 @@ impl RustDoubleRatchet {
             .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
         let d = PyDict::new(py);
         d.set_item("plaintext", PyBytes::new(py, &r.plaintext))?;
-        d.set_item("mac_key", PyBytes::new(py, &r.mac_key))?;
+        d.set_item("mac_key", Py::new(py, MessageMacKey::new(&r.mac_key))?)?;
         Ok(d)
     }
 
@@ -1025,6 +1107,15 @@ impl RustDoubleRatchet {
     /// not prove.
     fn knows_revealed_mac_key(&self, key: &[u8]) -> bool {
         self.inner.knows_derived_mac(key)
+    }
+
+    /// The same question for a key held in a `MessageMacKey` handle: did
+    /// this ratchet derive it? One bit out; the key never leaves Rust.
+    fn knows_mac_key_handle(&self, handle: PyRef<'_, MessageMacKey>) -> bool {
+        match handle.key.as_ref() {
+            Some(k) => self.inner.knows_derived_mac(k.expose()),
+            None => false,
+        }
     }
 
     // ── Corrected: returns Python bytes object ────────────────
@@ -1144,7 +1235,7 @@ mod tests {
     fn deliver(rx: &mut DoubleRatchet, m: &EncryptResult)
         -> Result<Vec<u8>, RatchetError> {
         rx.decrypt_same_dh(&m.header, &m.ciphertext, &m.nonce, &m.tag)
-          .map(|r| r.plaintext)
+          .map(|r| r.plaintext.clone())
     }
 
     /// Deliver and keep the receive-side MKmac.

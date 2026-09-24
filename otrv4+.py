@@ -1677,23 +1677,30 @@ class OTRv4DataMessage:
         except (struct.error, TypeError, ValueError) as e:
             raise ValueError(f"Failed to build auth header: {e }")
 
-    def compute_mac(self, mac_key: bytes) -> bytes:
-        """SHA3-512(mac_key ‖ auth_header ‖ uint32(len(ciphertext)) ‖ ciphertext)."""
+    def auth_region(self) -> bytes:
+        """The public bytes the outer MAC covers:
+        auth_header || uint32(len(ciphertext)) || ciphertext."""
         try:
             ah = self._auth_header()
-            ct = struct.pack("!I", len(self.ciphertext)) + self.ciphertext
-            return hashlib.sha3_512(mac_key + ah + ct).digest()
+            return ah + struct.pack("!I", len(self.ciphertext)) + self.ciphertext
         except (TypeError, ValueError, struct.error) as e:
-            raise ValueError(f"Failed to compute MAC: {e }")
+            raise ValueError(f"Failed to build MAC region: {e }")
 
-    def verify_mac(self, mac_key: bytes) -> bool:
-        """Constant-time MAC verification."""
+    def compute_mac(self, mac_key) -> bytes:
+        """SHA3-512(MKmac || auth_region), computed in Rust.
+
+        `mac_key` is the ratchet's `MessageMacKey` handle: the key stays in
+        Rust, and this only frames the public region it covers.
+        """
+        return bytes(mac_key.seal(self.auth_region()))
+
+    def verify_mac(self, mac_key) -> bool:
+        """Constant-time MAC check, in Rust, against the `MessageMacKey`."""
         try:
             if len(self.mac) != self.MAC_LEN:
                 return False
-            computed = self.compute_mac(mac_key)
-            return hmac.compare_digest(self.mac, computed)
-        except (TypeError, ValueError) as e:
+            return bool(mac_key.verify(self.auth_region(), self.mac))
+        except (TypeError, ValueError, AttributeError) as e:
             if DEBUG_MODE:
                 print("[OTRv4DataMessage] MAC verification failed")
             return False
@@ -3969,10 +3976,10 @@ class RustBackedDoubleRatchet:
     def decrypt_message(self, header_bytes, ciphertext, nonce, tag):
         """Decrypt a message (OTRv4 §4.4.4).
 
-        Returns ``(plaintext, mkmac)``. The MAC key is returned so the
-        caller can verify the outer OTRv4 MAC with the key that actually
-        keyed it; the engine has already queued its own copy for later
-        revelation.
+        Returns ``(plaintext, mac_key)`` where ``mac_key`` is a Rust
+        ``MessageMacKey`` handle, not bytes: the caller verifies the outer
+        OTRv4 MAC through it and the key never becomes a Python object. The
+        engine has already queued its own copy for later revelation.
         """
         with self.lock:
 
@@ -4050,7 +4057,9 @@ class RustBackedDoubleRatchet:
 
         Only public values cross the boundary: a revealed key in, one bit out.
         """
-        return bool(self._rust.knows_revealed_mac_key(bytes(key)))
+        if isinstance(key, (bytes, bytearray, memoryview)):
+            return bool(self._rust.knows_revealed_mac_key(bytes(key)))
+        return bool(self._rust.knows_mac_key_handle(key))
 
     def _decrypt_new_dh(self, header_bytes, ciphertext, nonce, tag):
         """Handle decrypt with DH ratchet step.
@@ -6410,10 +6419,8 @@ class EnhancedOTRSession:
             # so it authenticated nothing an attacker holding session_id could
             # not reproduce — and it was not the key that got revealed, which
             # is why revelation proved nothing.
-            if len(mac_key) != OTRv4DataMessage.REVEALED_MAC_KEY_LEN:
-                raise ValueError(
-                    f"MKmac must be {OTRv4DataMessage .REVEALED_MAC_KEY_LEN } "
-                    f"bytes, got {len (mac_key )}")
+            # MKmac stays in Rust: `mac_key` is a MessageMacKey handle with no
+            # getter. It seals the public region below and is then destroyed.
 
             dmsg = OTRv4DataMessage()
             dmsg.sender_tag = self._sender_tag
@@ -6431,7 +6438,10 @@ class EnhancedOTRSession:
             dmsg.kem_ct = _kem_ct
             dmsg.kem_ek = _kem_ek
 
-            dmsg.mac = dmsg.compute_mac(mac_key)
+            try:
+                dmsg.mac = dmsg.compute_mac(mac_key)
+            finally:
+                mac_key.zeroize()
             # L1: no length filter. The old `if len(k) == 32` silently dropped
             # every spec-sized key; a key the engine queued for revelation must
             # either be revealed or raise, never vanish.
@@ -6571,8 +6581,7 @@ class EnhancedOTRSession:
                     "Peer revealed an all-zero MAC key - revelation is "
                     "supposed to publish the key that authenticated a real "
                     "message")
-            if this_message_mac_key is not None and hmac.compare_digest(
-                    bytes(k), bytes(this_message_mac_key)):
+            if this_message_mac_key is not None and this_message_mac_key.matches(bytes(k)):
                 raise ValueError(
                     "Peer revealed the MAC key of the message carrying the "
                     "revelation - a key is only ever revealed once the "
@@ -6625,15 +6634,18 @@ class EnhancedOTRSession:
             rh_bytes, ct, dmsg.nonce, tag)
         _did_dh_ratchet = self.ratchet.ratchet_id != _rid_before
 
-        if not dmsg.verify_mac(mac_key):
-            raise ValueError("MAC verification failed - message may be forged or replayed")
+        try:
+            if not dmsg.verify_mac(mac_key):
+                raise ValueError("MAC verification failed - message may be forged or replayed")
 
-        # Keys the peer revealed for previously-authenticated messages. They
-        # are public by design; record them so the deniability property is
-        # observable rather than nominal, and bound the store.
-        if dmsg.revealed_mac_keys:
-            self._record_revealed_mac_keys(dmsg.revealed_mac_keys,
-                                           this_message_mac_key=mac_key)
+            # Keys the peer revealed for previously-authenticated messages. They
+            # are public by design; record them so the deniability property is
+            # observable rather than nominal, and bound the store.
+            if dmsg.revealed_mac_keys:
+                self._record_revealed_mac_keys(dmsg.revealed_mac_keys,
+                                               this_message_mac_key=mac_key)
+        finally:
+            mac_key.zeroize()
 
         if dmsg.kem_ct is not None:
             self.ratchet.process_incoming_kem_ct(dmsg.kem_ct)
