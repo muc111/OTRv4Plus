@@ -45,6 +45,15 @@ object SignIn {
      */
     const val DEFAULT_DOMAIN = "xmpp-elite.i2p"
 
+    /**
+     * The username field on first launch: EMPTY. Never a demo, test or admin
+     * identity -- a prefilled name is one tap from signing in as somebody.
+     */
+    const val INITIAL_USERNAME = ""
+
+    /** The field's hint: says what goes there, names nobody. */
+    const val USERNAME_HINT = "your username"
+
     /** What the dropdown offers. */
     enum class Choice {
         /** The shipped server. Its b32 route is applied internally. */

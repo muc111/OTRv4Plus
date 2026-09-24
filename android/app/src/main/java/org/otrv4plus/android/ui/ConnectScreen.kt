@@ -82,7 +82,7 @@ fun ConnectScreen(
     // dropdown, because making somebody type a domain they just picked from a
     // list is the kind of thing that makes an app feel like a config file. A
     // full address is still accepted and respected -- see SignIn.resolve.
-    var account by rememberSaveable { mutableStateOf("") }
+    var account by rememberSaveable { mutableStateOf(SignIn.INITIAL_USERNAME) }
     var password by remember { mutableStateOf("") }
     // Stored as a Boolean rather than the enum: `rememberSaveable` puts this
     // in a Bundle, and a primitive needs no argument about whether a custom
@@ -200,7 +200,7 @@ fun ConnectScreen(
             value = account,
             onValueChange = { account = it },
             label = { Text("Username") },
-            placeholder = { Text("alice") },
+            placeholder = { Text(SignIn.USERNAME_HINT) },
             supportingText = {
                 // Says where they are about to end up, without making them
                 // assemble it themselves.
