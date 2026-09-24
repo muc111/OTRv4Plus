@@ -4,6 +4,46 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.3 — 2026-09-24 — the APK gets a voice codec (core 0.11.0)
+
+*rc.2 was not fit for the call test, and it is superseded. Nothing else
+changes; the handset checklist (§12–§17) still applies, and §14 is now worth
+running.*
+
+**Root cause of "Call unavailable — opuslib not installed".**
+
+- The Android call bridge imports the Termux client (`otrv4plus_xmpp`) for
+  its SAM helpers. That import also binds the Termux codec and availability
+  hooks into the voice engine, and the bridge then asked those hooks.
+- `otrv4plus_xmpp.voice_available()` begins with `import opuslib`, a Python
+  wrapper over Termux's `libopus.so`. An APK has neither, and cannot load
+  Android's private libopus.
+- So the answer was always "not installed", and the remedy shown was a pip
+  command.
+- rc.1 asked the device question before the security one, which is why the
+  message appeared before OTR.
+- rc.2 asked it last, which only hid the message until SMP had passed.
+- In both releases the APK contained **no Opus codec at all**. Every Android
+  call would have failed at `_build_codec`. Inspecting the published rc.2 APK
+  confirms it: no libopus, no opuslib, no codec in `otrv4_core`.
+
+**The fix.**
+
+- `otrv4_core` for the APK now carries upstream **libopus 1.5.2**
+  (BSD-3-Clause), statically linked (feature `android-opus`). CMake builds it
+  with the NDK toolchain in CI.
+- It is exposed as `OpusEncoder` / `OpusDecoder` with opuslib's interface,
+  so the voice pipeline is unchanged.
+- The libopus FFI lives in a separate crate (`Rust/opus-codec`), so the
+  crypto core keeps `#![forbid(unsafe_code)]`.
+- `android_bridge.android_audio` binds that codec, pins **AAudio** (no
+  PulseAudio fallback), and answers availability from those two alone.
+- Termux is unchanged: `opuslib` plus Termux `libopus.so`, and AAudio or
+  PulseAudio. The Termux build does not enable the feature.
+- Voice cryptography, rekey and the I2P datagram transport are untouched.
+- The APK inspector now fails any APK whose core lacks the codec or libopus,
+  or that carries `opuslib`. It fails on the published rc.2 APK.
+
 ## Android 0.7.0-experimental.rc.2 — 2026-09-24 — what the rc.1 handset run found (core 0.11.0)
 
 *The rc.1 handset run proved OTR and SMP on Android, the Termux client's

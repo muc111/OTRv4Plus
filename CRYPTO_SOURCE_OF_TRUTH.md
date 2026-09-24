@@ -100,6 +100,15 @@ master key over a write-only public record) is gone and writes no seed; the
 Termux SMP auto-respond store is `otrv4_core.SmpSecretStore`; the Termux
 identity DEK is `otrv4_core.FileDek`. argon2-cffi is no longer a dependency.
 
+## Native code that is not cryptography
+
+The Android build of `otrv4_core` (feature `android-opus`) statically links
+**libopus 1.5.2** (BSD-3-Clause) as the voice codec. It holds no key: it
+turns PCM into Opus frames before `voice.rs` seals them, and back after it
+opens them. Its FFI is in the separate `Rust/opus-codec` crate, so
+`otrv4_core` itself keeps `#![forbid(unsafe_code)]`. Termux uses `opuslib`
+over Termux's libopus instead, and its build does not enable the feature.
+
 ## Build profile
 
 `Rust/Cargo.toml` release profile: `panic = "abort"`, `overflow-checks =

@@ -34,7 +34,13 @@ android {
         // devices. Left at 26, with the biometric path feature-detected.
         minSdk = 26
         targetSdk = 35
-        versionCode = 12
+        versionCode = 13
+        // rc.2 -> rc.3: the APK had no voice codec. The Android call path
+        // asked the Termux client's "is opuslib installed?" and showed its
+        // pip remedy; every Android call would also have failed at
+        // _build_codec. The core now carries libopus for the APK
+        // (feature android-opus) and the bridge binds it with AAudio.
+        //
         // rc.1 -> rc.2: the handset run of rc.1 proved OTR, SMP, Termux SMP
         // state and Termux file transfer, and found UI gaps: Wipe & Exit left
         // conversations behind, no per-chat delete, no incoming-file prompt,
@@ -75,7 +81,7 @@ android {
         //
         // core.10.14.0 was wrong for sixteen releases; the Rust core is read
         // from Rust/Cargo.toml so it cannot drift again.
-        versionName = "0.7.0-experimental.rc.2+core.$rustCoreVersion"
+        versionName = "0.7.0-experimental.rc.3+core.$rustCoreVersion"
 
         // Which build this is, surfaced in the diagnostic report.
         //

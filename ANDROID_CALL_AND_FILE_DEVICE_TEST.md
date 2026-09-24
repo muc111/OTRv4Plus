@@ -3,8 +3,8 @@
 
 # Android device test: the release candidate
 
-**Build under test:** the release APK of `0.7.0-experimental.rc.2` (versionCode
-12), published by CI with its SHA-256 in the release notes. Check the hash
+**Build under test:** the release APK of `0.7.0-experimental.rc.3` (versionCode
+13), published by CI with its SHA-256 in the release notes. Check the hash
 before installing. Steps that need `adb shell run-as` (45, and the file
 listings) need the **debug** APK from the same release, because a release
 build is not debuggable.
@@ -43,6 +43,7 @@ not what would merely look right.
 | Incoming-file prompt, progress, outcomes | `test_file_transfer_states.py` (real ratchets), `TransferStatesTest` | §13 steps 79–85 | NOT RUN |
 | Call control visible when verified; two-way audio | `TestTheCallGateAndroidRenders`, `SecurityTransitionsTest` | §14 steps 86–89 | NOT RUN |
 | Online users | `OnlineUsersTest` | §15 step 90 | NOT RUN |
+| Android audio backend (rc.3 fix: Rust libopus + AAudio, no opuslib) | `test_android_voice_backend.py`; `inspect_apk.py` checks libopus and the codec in each ABI's core and that `opuslib` is absent | §14 steps 86–88 | NOT RUN |
 | No secrets in Android persistence | `WipeAndExit.STORES` audit, vault-only persistence | §17 step 98 | NOT RUN |
 
 Do not mark a row passed until its hardware steps have been run on this build
@@ -329,7 +330,8 @@ listing.
 ## 14. Calls, Android ↔ Termux (Test E) — handset + Termux
 
 86. Before OTR: open the Termux conversation. **Expect:** a disabled "Call —
-    start encryption first". Start OTR: **Expect:** "Call — verify this contact
+    start encryption first", and **never** any mention of opuslib or pip
+    (that was rc.1/rc.2's Termux check leaking into Android). Start OTR: **Expect:** "Call — verify this contact
     first" and a padlock mark. Run SMP to VERIFIED: **Expect:** the blue
     lock-with-key mark and an enabled **Call**. This must hold even if Termux
     is **not** on the Android roster.
@@ -338,6 +340,10 @@ listing.
     → connected. **Talk both ways and confirm you can hear each other** (a
     visible button is not a pass). Transport stays I2P datagrams; do not
     change it.
+    If instead the control reads "Call unavailable — Android audio (AAudio)
+    is not available on this device" or "… no Android voice codec", stop and
+    report it: that is the device/build answer, and it would be wrong on any
+    Android 8.0+ phone running this APK.
 88. End from Android. **Expect:** both sides return to idle; the conversation
     stays encrypted and verified; Call is available again.
 89. End the OTR session (or restart Termux, which makes a new session).
