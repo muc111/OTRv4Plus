@@ -95,7 +95,8 @@ class TestTheDocumentationSaysSo:
         assert "Argon2id (at rest)" in joined
 
     def test_readme_no_longer_claims_it_runs_in_the_rust_core(self):
-        doc = self._doc("README.md")
+        # The paragraph moved with the full reference out of the README.
+        doc = self._doc("TECHNICAL.md")
         i = doc.index("One cryptographic surface for chat.")
         para = doc[i:i + 1400]
         assert "Argon2id-class KDF protecting the SMP vault — runs inside" not in para

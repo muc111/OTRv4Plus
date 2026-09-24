@@ -56,6 +56,7 @@ path = [
     "MONERO_ESCROW_AUDIT.md",
     "OPUS_AUDIT.md",
     "README.md",
+    "TECHNICAL.md",
     "ROADMAP.md",
     "RUST_SECURITY_PATCHES.md",
     "Rust/VOICE_TUNING.md",

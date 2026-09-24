@@ -215,16 +215,19 @@ class TestTheDefinitionIsCorrect:
 class TestItIsDocumentedWhereSomeoneWillLook:
 
     def test_the_readme_explains_the_musl_failure(self):
-        readme = io.open(os.path.join(ROOT, "README.md"),
+        readme = io.open(os.path.join(ROOT, "TECHNICAL.md"),
                          encoding="utf-8").read()
         assert "Building on musl" in readme
         assert "__GNUC_PREREQ" in readme
+        # And the short README still sends people there.
+        short = io.open(os.path.join(ROOT, "README.md"), encoding="utf-8").read()
+        assert "musl" in short and "TECHNICAL.md" in short
 
     def test_the_readme_warns_that_cargo_must_run_from_rust(self):
         """cargo finds .cargo/config.toml by walking up from its working
         directory, not from the manifest. `--manifest-path Rust/Cargo.toml`
         run at the repository root silently skips the fix."""
-        readme = io.open(os.path.join(ROOT, "README.md"),
+        readme = io.open(os.path.join(ROOT, "TECHNICAL.md"),
                          encoding="utf-8").read()
         assert "manifest-path" in readme
 

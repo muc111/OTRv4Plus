@@ -124,7 +124,9 @@ class TestTheFlagIsNoLongerNeeded:
 
     def test_no_documented_i2p_command_passes_it(self):
         """A flag nobody has to type is the point of the change."""
-        readme = open(os.path.join(ROOT, "README.md"), encoding="utf-8").read()
+        readme = "".join(
+            open(os.path.join(ROOT, name), encoding="utf-8").read()
+            for name in ("README.md", "TECHNICAL.md"))
         for block in readme.split("```"):
             if "otrv4plus_xmpp.py" not in block:
                 continue
