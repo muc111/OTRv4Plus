@@ -1420,7 +1420,11 @@ class OtrApp:
         abort = getattr(self._engine, "abort_smp", None)
         if abort is None:
             raise BridgeError("smp_abort_unsupported")
-        self._safe(lambda: abort(peer))
+        payload = self._safe(lambda: abort(peer))
+        # Tell the peer. Without the SMP_ABORT their side waits out its own
+        # timeout, still showing a verification in progress.
+        if isinstance(payload, (str, bytes, bytearray)) and payload:
+            self._send_protocol(peer, payload)
         self._emit(SmpResult(peer=peer, state=self.smp_state(peer)))
 
     def note_fingerprint_mismatch(self, peer: str, stored: str, received: str) -> None:

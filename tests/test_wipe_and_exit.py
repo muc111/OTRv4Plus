@@ -368,6 +368,19 @@ class TestNothingComesBack:
         assert pair.alice_wire.closed
         assert pair.alice._transport is None
 
+    def test_stored_auto_respond_secrets_leave_rust_memory(self, pair):
+        """Android never stores one, but an engine that has one -- a device
+        upgraded from a build that did -- must not keep it past a wipe."""
+        engine = pair.alice._engine
+        engine.smp_storage._store.set("someone@example.test", "a stored passphrase")
+        pair.alice.wipe()
+        assert engine.smp_storage.peers() == []
+
+    def test_a_wiped_engine_cannot_bind_a_stored_secret(self, pair):
+        pair.alice.wipe()
+        with pytest.raises(Exception):
+            pair.alice._engine.bind_stored_smp_secret(pair.bob_jid)
+
 
 # ---------------------------------------------------------------------------
 # Disk

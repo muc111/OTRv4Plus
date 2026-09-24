@@ -81,6 +81,7 @@ class TermuxPeer:
     def __init__(self, directory, jid):
         self.jid = jid
         self.mgr = otr.EnhancedSessionManager(config=_termux_config(directory))
+        self.mgr.smp_guided_prompt = True      # as otrv4plus_xmpp sets it
         self.reassembler = frag.Reassembler()
         self.seq = 0
         self.android = None          # (OtrApp, android_jid, reassembler)
@@ -199,3 +200,158 @@ class TestTheTwoConfigurationsInteroperate:
         again = otr.EnhancedSessionManager(config=_termux_config(w.dir))
         assert again.get_fingerprint() == w.termux.mgr.get_fingerprint()
         assert _android_manager().get_fingerprint() != w.app._engine.get_fingerprint()
+
+
+# ---------------------------------------------------------------------------
+# Termux <-> Termux, the ratchet over many messages, reconnects, and the gate
+# ---------------------------------------------------------------------------
+
+import otrv4plus_voice as _V                                          # noqa: E402
+
+
+def _fp(s):
+    return (s or "").replace(" ", "").upper()
+
+
+def _gate(mgr, peer):
+    """The call/file gate: exactly what VoiceCallManager._smp_verified reads."""
+    return _V._smp_query_default(mgr, peer)[0]
+
+
+class TermuxToTermux(TermuxPeer):
+    """A Termux-configured engine whose other end is another one."""
+
+    other = None
+
+    def _send(self, payload):
+        parts, self.seq = frag.fragment(payload, self.seq)
+        for part in parts:
+            self.other.deliver(self.jid, part)
+
+
+@pytest.fixture
+def termux_pair():
+    otr._dake1_rate_limiter._attempts.clear()
+    tag = uuid.uuid4().hex[:8]
+    a = TermuxToTermux(tempfile.mkdtemp(), "ta-%s@example.test" % tag)
+    b = TermuxToTermux(tempfile.mkdtemp(), "tb-%s@example.test" % tag)
+    a.other, b.other = b, a
+    return a, b
+
+
+class TestTermuxToTermux:
+
+    def test_dake_text_and_fragmentation(self, termux_pair):
+        a, b = termux_pair
+        a.say(b.jid, "")
+        assert a.mgr.has_session(b.jid) and b.mgr.has_session(a.jid)
+        a.say(b.jid, "hello " + "y" * 9000)
+        assert b.received[-1] == "hello " + "y" * 9000
+        b.say(a.jid, "back")
+        assert a.received[-1] == "back"
+
+    def test_fingerprints_agree_across_the_two(self, termux_pair):
+        a, b = termux_pair
+        a.say(b.jid, "")
+        assert _fp(a.mgr.get_peer_fingerprint(b.jid)) == _fp(b.mgr.get_fingerprint())
+        assert _fp(b.mgr.get_peer_fingerprint(a.jid)) == _fp(a.mgr.get_fingerprint())
+
+    def test_auto_respond_smp_through_the_rust_store(self, termux_pair):
+        """Both sides store the passphrase (the Termux auto-respond feature);
+        the responder answers from the Rust store without a prompt."""
+        a, b = termux_pair
+        a.say(b.jid, "")
+        b.mgr.set_smp_secret(a.jid, SECRET)            # stored for auto-respond
+        a.mgr.set_smp_secret(b.jid, SECRET)
+        smp1 = a.mgr.start_smp_with_stored_secret(b.jid)
+        assert smp1
+        a._send(smp1)
+        assert a.mgr.get_smp_status(b.jid)["verified"]
+        assert b.mgr.get_smp_status(a.jid)["verified"]
+        assert _gate(a.mgr, b.jid) and _gate(b.mgr, a.jid)
+
+
+class TestTheRatchetAcrossPlatforms:
+
+    def test_sixty_alternating_messages(self, world):
+        w = world
+        w.app.start_session(w.termux_jid)
+        for i in range(30):
+            w.app.send_message(w.termux_jid, "d%d" % i)
+            assert w.termux.received[-1] == "d%d" % i
+            w.termux.say(w.android_jid, "t%d" % i)
+            assert _texts(w.sink)[-1] == "t%d" % i
+
+    def test_bursts_in_one_direction_then_the_other(self, world):
+        w = world
+        w.app.start_session(w.termux_jid)
+        for i in range(12):
+            w.app.send_message(w.termux_jid, "burst%d" % i)
+        assert w.termux.received[-12:] == ["burst%d" % i for i in range(12)]
+        for i in range(12):
+            w.termux.say(w.android_jid, "reply%d" % i)
+        assert _texts(w.sink)[-12:] == ["reply%d" % i for i in range(12)]
+
+    def test_fingerprints_agree_across_the_two(self, world):
+        w = world
+        w.app.start_session(w.termux_jid)
+        assert _fp(w.termux.mgr.get_peer_fingerprint(w.android_jid)) == _fp(w.app._engine.get_fingerprint())
+        assert _fp(w.app._engine.get_peer_fingerprint(w.termux_jid)) == _fp(w.termux.mgr.get_fingerprint())
+
+
+class TestTheGateAcrossPlatforms:
+    """Calls and files are gated by the backend predicate on BOTH platforms."""
+
+    def _verify(self, w):
+        w.app.start_session(w.termux_jid)
+        w.termux.mgr.set_smp_secret(w.android_jid, SECRET)
+        w.app.smp_start(w.termux_jid, SECRET)
+        assert _gate(w.app._engine, w.termux_jid) and _gate(w.termux.mgr, w.android_jid)
+
+    def test_unverified_is_denied(self, world):
+        world.app.start_session(world.termux_jid)
+        assert not _gate(world.app._engine, world.termux_jid)
+        assert not _gate(world.termux.mgr, world.android_jid)
+
+    def test_a_reconnect_needs_verifying_again(self, world):
+        w = world
+        self._verify(w)
+        w.app._engine.sessions.pop(w.termux_jid, None)
+        w.termux.mgr.sessions.pop(w.android_jid, None)
+        otr._dake1_rate_limiter._attempts.clear()
+        w.app.start_session(w.termux_jid)
+        w.app.send_message(w.termux_jid, "after reconnect")
+        assert w.termux.received[-1] == "after reconnect"
+        assert not _gate(w.app._engine, w.termux_jid)
+        assert not _gate(w.termux.mgr, w.android_jid)
+
+    def test_an_aborted_smp_is_denied(self, world):
+        w = world
+        w.app.start_session(w.termux_jid)
+        # Nothing stored on the Termux side: its SMP1 is parked and we abort.
+        w.app.smp_start(w.termux_jid, SECRET)
+        assert w.termux.mgr.smp_secret_required(w.android_jid)
+        w.app.smp_abort(w.termux_jid)
+        assert not _gate(w.app._engine, w.termux_jid)
+        assert not _gate(w.termux.mgr, w.android_jid)
+        # The peer was told: its parked request is gone, not left waiting.
+        assert not w.termux.mgr.smp_secret_required(w.android_jid)
+
+    def test_a_changed_key_is_not_verified(self, world):
+        """The Termux side comes back with a different identity (a new state
+        directory). Android's pin no longer matches; nothing carries the old
+        verification over."""
+        w = world
+        self._verify(w)
+        new = TermuxPeer(tempfile.mkdtemp(), w.termux_jid)
+        new.android = w.termux.android
+        w.app._transport.termux = new
+        w.app._engine.sessions.pop(w.termux_jid, None)
+        otr._dake1_rate_limiter._attempts.clear()
+        try:
+            w.app.start_session(w.termux_jid)
+        except Exception:
+            pass
+        assert new.mgr.get_fingerprint() != w.termux.mgr.get_fingerprint()
+        assert not _gate(w.app._engine, w.termux_jid)
+        assert w.app.security_state(w.termux_jid) is not SecurityState.SMP_VERIFIED

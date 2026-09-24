@@ -7454,6 +7454,39 @@ class EnhancedOTRSession:
         finally:
             self._release_lock()
 
+    def abort_smp(self) -> Optional[str]:
+        """Cancel an SMP run in either direction, at any stage, and tell the peer.
+
+        The local user pressed Cancel. The Rust run is aborted, any parked
+        SMP1 is discarded, the bound passphrase is dropped from the vault, and
+        the returned OTR message carries SMP_ABORT so the peer stops waiting.
+        None when there is nothing to abort. An aborted run proves nothing,
+        so it leaves the session unverified.
+        """
+        if not self._acquire_lock():
+            return None
+        try:
+            if self.rust_smp is None:
+                return None
+            try:
+                self.rust_smp.abort()
+            except Exception:
+                self.logger.debug("rust_smp.abort failed")
+            try:
+                self.rust_smp.discard_held_smp1()
+            except Exception:
+                pass
+            if self.smp_vault is not None:
+                try:
+                    self.smp_vault.remove("smp_secret")
+                except Exception:
+                    pass
+            self._smp_secret_required = False
+            self.smp_step = 0
+            return self.encrypt_with_tlvs("", [OTRv4TLV(OTRv4TLV.SMP_ABORT, b"")])
+        finally:
+            self._release_lock()
+
     def decline_held_smp1(self, reason: bytes = b"") -> Optional[str]:
         """Drop the parked SMP1 and tell the peer.
 
@@ -9390,6 +9423,19 @@ class EnhancedSessionManager:
         with self.lock:
             sess = self.sessions.get(peer)
         return bool(sess is not None and sess.smp_secret_required())
+
+    def abort_smp(self, peer: str) -> Optional[str]:
+        """Cancel *peer*'s SMP run. Returns the SMP_ABORT message to send.
+
+        The Android bridge's Cancel called this for a year of tests against a
+        fake engine that had it; the real one did not, so Cancel raised
+        `smp_abort_unsupported` on a device.
+        """
+        with self.lock:
+            sess = self.sessions.get(peer)
+        if sess is None:
+            return None
+        return sess.abort_smp()
 
     def resume_held_smp1(self, peer: str) -> Optional[str]:
         """Answer a parked SMP1 for *peer*.  Returns the SMP2 to send."""

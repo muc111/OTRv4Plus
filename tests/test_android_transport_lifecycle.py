@@ -665,3 +665,72 @@ class TestThePasswordGoesWithTheTransport:
         t._client = c
         asyncio.run(t._abandon())
         assert c.credentials == {}
+
+
+class TestNoFailureFallsBackToADirectConnection:
+    """I2P fails closed. Whatever goes wrong -- the router is absent, SAM
+    refuses, the tunnel times out, the user cancels, the app shuts down -- the
+    XMPP client must never be pointed at the server's own address. The only
+    endpoint it may ever dial is the local end of the SAM tunnel."""
+
+    @staticmethod
+    def _only_local(h):
+        dialled = [c.connected_to for c in h.clients
+                   if getattr(c, "connected_to", None)]
+        assert all(host == "127.0.0.1" for host, _ in dialled), (
+            "a client dialled something other than the local tunnel: %r" % dialled)
+        assert all(host != SERVER for host, _ in dialled)
+
+    def test_sam_refused(self, no_leaked_threads):
+        async def refused(*_a, **_kw):
+            raise ConnectionRefusedError("SAM not listening")
+        h = Harness(forwarder=refused)
+        with pytest.raises(TransportError) as caught:
+            h.transport.connect()
+        assert caught.value.code == "sam_unavailable"
+        assert h.clients == [] or all(
+            getattr(c, "connected_to", None) is None for c in h.clients), (
+            "SAM failed and a client was still started")
+        h.transport.close()
+
+    def test_timeout(self, short_connect_timeout, no_leaked_threads):
+        h = Harness()
+        with pytest.raises(TransportError):
+            h.transport.connect()
+        self._only_local(h)
+        h.transport.close()
+
+    def test_cancel(self, no_leaked_threads):
+        h = Harness()
+        outcome = _connect_in_background(h.transport)
+        _settle(lambda: len(h.tunnels) == 1)
+        h.transport.cancel()
+        outcome.thread.join(timeout=SETTLE)
+        self._only_local(h)
+        h.transport.close()
+
+    def test_reconnect_and_shutdown(self, no_leaked_threads):
+        h = Harness(completes=True)
+        h.transport.connect()
+        h.transport.disconnect()
+        h.transport.connect()
+        assert len(h.tunnels) == 2, "a reconnect reused nothing: it built a tunnel"
+        self._only_local(h)
+        h.transport.close()
+        assert all(h.tunnel_closed(i) for i in range(len(h.tunnels)))
+
+    def test_android_never_builds_a_clearnet_profile(self):
+        """`use_i2p=False` exists for the terminal clients' clearnet row. No
+        Kotlin source names it, so the app's profiles always take the I2P
+        default -- and a stored profile without the key reads back as I2P."""
+        import os
+        from android_bridge.settings import ConnectionProfile
+        root = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                            "android", "app", "src", "main")
+        for dirpath, _, files in os.walk(root):
+            for f in files:
+                if f.endswith((".kt", ".py")):
+                    src = open(os.path.join(dirpath, f), encoding="utf-8").read()
+                    assert "use_i2p" not in src and "useI2p" not in src, f
+        assert ConnectionProfile(jid="a@b.i2p", server="b.i2p").use_i2p is True
+        assert ConnectionProfile.from_dict({"jid": "a@b.i2p", "server": "b.i2p"}).use_i2p is True

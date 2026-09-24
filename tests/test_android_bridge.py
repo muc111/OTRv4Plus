@@ -516,6 +516,9 @@ class TestFacadeMatchesRealEngine:
             "is_peer_trusted", "trust_fingerprint", "get_or_create_session",
             "clear_all_sessions", "handle_outgoing_message",
             "handle_incoming_message", "start_smp", "bind_smp_secret",
+            # abort_smp was faked and never existed on the real engine, so
+            # the Cancel button raised smp_abort_unsupported on a device.
+            "abort_smp", "resume_held_smp1", "smp_secret_required",
         ]
         missing = [m for m in used if not hasattr(real, m)]
         assert not missing, f"OtrApp calls methods the engine does not have: {missing}"
