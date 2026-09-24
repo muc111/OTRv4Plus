@@ -71,7 +71,7 @@ other on their rosters.
    **Expect:** no Call control and no Send-a-file control. The plaintext
    banner offers the handshake.
 2. Start OTR. Do not verify.
-   **Expect:** "Call — verify this contact first" and "Send a file — verify
+   **Expect:** "Call — SMP verification required" and "Send a file — SMP verification
    this contact first", both **disabled**. The conversation list row reads
    "Encrypted, unverified".
 3. Run SMP to completion on both sides.
@@ -330,9 +330,8 @@ listing.
 ## 14. Calls, Android ↔ Termux (Test E) — handset + Termux
 
 86. Before OTR: open the Termux conversation. **Expect:** a disabled "Call —
-    start encryption first", and **never** any mention of opuslib or pip
-    (that was rc.1/rc.2's Termux check leaking into Android). Start OTR: **Expect:** "Call — verify this contact
-    first" and a padlock mark. Run SMP to VERIFIED: **Expect:** the blue
+    secure session required", and **never** any mention of opuslib or pip
+    (that was rc.1/rc.2's Termux check leaking into Android). Start OTR: **Expect:** "Call — SMP verification required" and a padlock mark. Run SMP to VERIFIED: **Expect:** the blue
     lock-with-key mark and an enabled **Call**. This must hold even if Termux
     is **not** on the Android roster.
 87. Android taps Call. **Expect:** Termux receives the call signalling and
@@ -340,8 +339,8 @@ listing.
     → connected. **Talk both ways and confirm you can hear each other** (a
     visible button is not a pass). Transport stays I2P datagrams; do not
     change it.
-    If instead the control reads "Call unavailable — Android audio (AAudio)
-    is not available on this device" or "… no Android voice codec", stop and
+    If instead the control reads "Android audio unavailable: Android audio
+    (AAudio) is not available on this device" or "… no Android voice codec", stop and
     report it: that is the device/build answer, and it would be wrong on any
     Android 8.0+ phone running this APK.
 88. End from Android. **Expect:** both sides return to idle; the conversation

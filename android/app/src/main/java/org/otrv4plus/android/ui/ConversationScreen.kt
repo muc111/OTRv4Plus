@@ -637,7 +637,7 @@ private fun TransferBar(model: ChatViewModel, jid: String) {
             }
         is TransferUi.Offer.NeedsVerification ->
             TextButton(enabled = false, onClick = {}) {
-                Text("Send a file — verify this contact first")
+                Text("Send a file — SMP verification required")
             }
         // The plaintext banner above already offers the handshake; a second
         // disabled control would be noise.

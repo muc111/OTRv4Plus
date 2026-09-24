@@ -134,16 +134,16 @@ object CallUi {
      */
     @JvmStatic
     fun control(gate: Gate, reason: String = ""): Control = when (gate) {
-        Gate.AVAILABLE -> Control(true, true, "Call")
+        Gate.AVAILABLE -> Control(true, true, "Call available — tap to call")
         Gate.ROOM -> Control(false, false, "")
         Gate.WIPED -> Control(true, false, "Call unavailable — the app was wiped")
         Gate.NOT_CONNECTED -> Control(true, false, "Call — connect first")
-        Gate.NO_SESSION -> Control(true, false, "Call — start encryption first")
+        Gate.NO_SESSION -> Control(true, false, "Call — secure session required")
         Gate.FINGERPRINT_CHANGED ->
             Control(true, false, "Call unavailable — their key changed")
-        Gate.NOT_VERIFIED -> Control(true, false, "Call — verify this contact first")
+        Gate.NOT_VERIFIED -> Control(true, false, "Call — SMP verification required")
         Gate.VOICE_UNAVAILABLE -> Control(true, false,
-            "Call unavailable — " + reason.ifBlank { "voice cannot run on this device" })
+            "Android audio unavailable: " + reason.ifBlank { "voice cannot run on this device" })
         Gate.UNKNOWN -> Control(true, false, "Call unavailable")
     }
 
