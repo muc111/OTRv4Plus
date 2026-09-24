@@ -180,7 +180,7 @@ an identifier. Both are pinned by tests.
   documentation licence, so that independent implementations can quote it
   freely, is **the author's decision** and has not been taken. Nothing here
   asserts that it has.
-* **Icon provenance.** `icon.png` was committed by the author (`8665c51`,
+* **Icon provenance — RELEASE BLOCKER (open).** `icon.png` was committed by the author (`8665c51`,
   2026-08-28) and the launcher icons are derived from it by rule
   (`4b00046`). Who created the original artwork, and under what terms, is not
   recorded anywhere in the repository. **The author should record it** (their

@@ -143,13 +143,22 @@ INVARIANTS: Tuple[Invariant, ...] = (
                   "secret (MlKem1024Keypair + brace_encapsulate/decapsulate), "
                   "both voice shared secrets and the voice decapsulation key "
                   "(RustVoiceAgreement), and the ML-DSA-87 DAKE signing key "
-                  "(MlDsa87KeyHandle).",
+                  "(MlDsa87KeyHandle).  The production audit then removed "
+                  "the dead paths that still handled keys in Python: voice's "
+                  "Python ML-KEM fallback and HKDF derivations, the "
+                  "MLKEM1024BraceKEM key wrapper, the legacy DAKE branches "
+                  "and _unpack_session_keys, and the Python-key ratchet "
+                  "fallback.  An Android SMP answer is bound into the Rust "
+                  "vault only and no longer persisted.",
         limits="The typed SMP passphrase and the account password are Python "
                "`str` before anything can touch them, and a `str` cannot be "
                "wiped.  The identity DEK and the device seeds are Python "
                "`bytes` read from disk.  The per-message MAC key is returned "
                "to verify the outer MAC; OTRv4 publishes it after use by "
                "design, so its secrecy is only ever short-lived.  "
+               "The Termux auto-respond store (SMPAutoRespondStorage) keeps "
+               "SMP passphrases in a Python dict under a Python-derived key; "
+               "Android no longer writes to it.  "
                "Everything derived from these is Rust-owned.",
     ),
     Invariant(

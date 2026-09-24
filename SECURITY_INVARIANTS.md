@@ -82,7 +82,9 @@ Ed448 seeds, ratchet root/chain/brace keys, SMP scalars, voice media keys and th
 
 Android 0.6.0 closed the four that still did. The X448 shared secret of every DH ratchet step was returned by `X448KeyHandle.dh` and passed back to Rust; the method is gone and the ratchet agrees from key handles. The brace rotation's ML-KEM decapsulation key and shared secret were a Python `bytearray` and `bytes`; they live in `MlKem1024Keypair` and `brace_encapsulate`/`brace_decapsulate`. Both voice shared secrets and the voice decapsulation key were Python buffers; the exchange returns a `RustVoiceAgreement` that can only become a root. The ML-DSA-87 DAKE signing key was a `bytearray` for the life of the session; it is an `MlDsa87KeyHandle`.
 
-**Limit:** The typed SMP passphrase and the account password are Python `str` before anything can touch them, and a `str` cannot be wiped.  The identity DEK and the device seeds are Python `bytes` read from disk.  The per-message MAC key is returned to verify the outer MAC; OTRv4 publishes it after use by design, so its secrecy is only ever short-lived.  Everything derived from these is Rust-owned.
+The 0.6.0 production audit then removed the dead paths that still handled keys in Python: voice's Python ML-KEM fallback and HKDF derivations, the `MLKEM1024BraceKEM` key wrapper, the legacy DAKE branches and `_unpack_session_keys`, and the Python-key ratchet fallback. An Android SMP answer is bound into the Rust vault only (`bind_smp_secret`) and no longer persisted.
+
+**Limit:** The typed SMP passphrase and the account password are Python `str` before anything can touch them, and a `str` cannot be wiped.  The identity DEK and the device seeds are Python `bytes` read from disk.  The per-message MAC key is returned to verify the outer MAC; OTRv4 publishes it after use by design, so its secrecy is only ever short-lived.  The Termux auto-respond store (`SMPAutoRespondStorage`) keeps SMP passphrases in a Python dict under a Python-derived key; Android no longer writes to it.  Everything derived from these is Rust-owned.
 
 ### INV-09 — XMPP persistent identity and IRC ephemeral identity are separate stores.
 
