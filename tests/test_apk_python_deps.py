@@ -88,7 +88,7 @@ def _normalise(name):
 
 def installed():
     return {_normalise(m)
-            for m in re.findall(r'install\(\s*"([^"]+)"', _pip_block())}
+            for m in re.findall(r'install\(\s*"([A-Za-z0-9_.-]+)', _pip_block())}
 
 
 class TestTheClosureIsNamed:
@@ -180,3 +180,14 @@ class TestTheCheckThatNeedsAnIndex:
                 "%s is forbidden here but not excluded in the CI script, "
                 "which will therefore report it as a missing dependency"
                 % name)
+
+
+class TestTheThirdPartyVersionsArePinned:
+
+    def test_every_third_party_install_names_an_exact_version(self):
+        lines = re.findall(r'install\(\s*"([^"]+)"', _pip_block())
+        unpinned = [l for l in lines
+                    if not l.startswith("otrv4_core") and "==" not in l]
+        assert unpinned == [], (
+            "an unpinned package ships whatever the index serves on build "
+            "day: %s" % unpinned)

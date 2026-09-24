@@ -40,6 +40,11 @@ fsync and unlink, and its documentation no longer claims NIST SP 800-88
 compliance or that wear-levelled blocks hold only ciphertext: on flash, the
 old blocks hold the old data and no file-level call reaches them.
 
+**The APK's Python dependencies are pinned.** Every third-party package the
+APK installs (slixmpp, PySocks, argon2-cffi and their closure) now names the
+exact version CI built and tested; before, each build took whatever the index
+served that day. The Rust side was already locked by `Cargo.lock`.
+
 **Wipe & Exit (INV-28).** Separate from Disconnect and Sign out. Destroys
 every session secret in Rust explicitly -- not by garbage collection -- on
 the transport's loop thread (where unsendable DAKE outputs live), deletes the

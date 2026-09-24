@@ -92,7 +92,7 @@ def pip_block(source):
 
 
 def declared(block):
-    return {normalise(m) for m in re.findall(r'install\(\s*"([^"]+)"', block)}
+    return {normalise(m) for m in re.findall(r'install\(\s*"([A-Za-z0-9_.-]+)', block)}
 
 
 def no_deps(block):

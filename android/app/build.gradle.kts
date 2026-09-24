@@ -235,6 +235,15 @@ chaquopy {
             // app -- but it is an unhelpful sentence, so: build the wheels.
             options("--find-links", project.file("wheels").absolutePath)
 
+            // -- PINNED. Every third-party package below names an exact version:
+            // the ones CI resolved and tested at 0.6.0-experimental. Unpinned,
+            // each build took whatever PyPI and Chaquopy's index served that
+            // day, so two APKs from the same commit could ship different
+            // code, and a compromised or broken upstream release reached
+            // users without a commit anyone could review. Changing a version
+            // is now a diff. `tests/test_apk_python_deps.py` asserts every
+            // third-party line carries a pin. (otrv4_core is built from this
+            // repository and comes from --find-links, so it is not pinned.)
             // -- asked for directly ------------------------------------------
             //
             // otrv4_core: the Rust core. Every cryptographic operation in the
@@ -242,30 +251,30 @@ chaquopy {
             // since v10.13.2.
             install("otrv4_core")
             // PySocks: imported at module scope by otrv4+.py. Pure Python.
-            install("PySocks")
+            install("PySocks==1.7.1")
             // slixmpp: the XMPP transport. Pure Python, built from an sdist.
-            install("slixmpp")
+            install("slixmpp==1.17.0")
             // argon2-cffi: the at-rest KDF. Without it the engine falls back
             // to scrypt and warns. Chaquopy has prebuilt android wheels for
             // the whole cffi chain, so a resolution failure here is a real
             // finding rather than a reason to drop it.
-            install("argon2-cffi")
+            install("argon2-cffi==25.1.0")
 
             // -- required by the above, and now named because of --no-deps ---
             //
             // slixmpp -> pyasn1, pyasn1-modules (both pure Python).
-            install("pyasn1")
-            install("pyasn1-modules")
+            install("pyasn1==0.6.4")
+            install("pyasn1-modules==0.4.2")
             // argon2-cffi -> argon2-cffi-bindings -> cffi -> pycparser, and
             // cffi's android wheel -> chaquopy-libffi. The last of those is
             // Chaquopy's own packaging of libffi; it is named here only
             // because --no-deps stops cffi asking for it. If Chaquopy ever
             // renames it the build fails loudly at this line, which is the
             // failure mode to want.
-            install("argon2-cffi-bindings")
-            install("cffi")
-            install("pycparser")
-            install("chaquopy-libffi")
+            install("argon2-cffi-bindings==21.2.0")
+            install("cffi==1.17.1")
+            install("pycparser==3.0")
+            install("chaquopy-libffi==3.3")
 
             // -- deliberately absent -----------------------------------------
             //
