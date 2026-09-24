@@ -358,7 +358,7 @@ class ChatViewModel : ViewModel() {
                 left = left,
                 server = ChatDeletion.serverArchive(
                     answered = probe?.ok == true && mam != null, mam = mam == true),
-            ).message)
+            ).notice)
             revision++
         }
     }

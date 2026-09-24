@@ -151,7 +151,7 @@ class ChatDeletionTest {
     fun `no outcome ever claims the server deleted anything`() {
         for (kind in ChatDeletion.Kind.entries) for (server in ChatDeletion.ServerArchive.entries)
             for (left in listOf(null, true, false)) for (local in listOf(true, false)) {
-                val text = ChatDeletion.Outcome(kind, local, left, server).message
+                val text = ChatDeletion.Outcome(kind, local, left, server).notice
                 assertTrue("Server-side deletion is not supported" in text, text)
                 assertFalse("deleted from the server" in text.lowercase(), text)
             }
@@ -166,14 +166,14 @@ class ChatDeletionTest {
         assertEquals(ChatDeletion.ServerArchive.NOT_ADVERTISED,
                      ChatDeletion.serverArchive(answered = true, mam = false))
         val text = ChatDeletion.Outcome(ChatDeletion.Kind.DIRECT, true, null,
-            ChatDeletion.ServerArchive.UNKNOWN).message
+            ChatDeletion.ServerArchive.UNKNOWN).notice
         assertTrue("could not be checked" in text)
     }
 
     @Test
     fun `a room is never said to be destroyed, and leaving says it still exists`() {
         val text = ChatDeletion.Outcome(ChatDeletion.Kind.ROOM, true, true,
-            ChatDeletion.ServerArchive.NOT_ADVERTISED).message
+            ChatDeletion.ServerArchive.NOT_ADVERTISED).notice
         assertTrue("still exists" in text)
         for (s in listOf(ChatDeletion.confirmBody(ChatDeletion.Kind.ROOM), text,
                          ChatDeletion.CONFIRM, ChatDeletion.CONFIRM_AND_LEAVE)) {

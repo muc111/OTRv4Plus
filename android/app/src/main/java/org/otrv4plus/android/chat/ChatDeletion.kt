@@ -50,7 +50,7 @@ object ChatDeletion {
         val server: ServerArchive,
     ) {
         /** One sentence for the notice banner. Never says the server deleted anything. */
-        val message: String
+        val notice: String
             get() = buildString {
                 append(if (deletedLocally) "Deleted from this device." else "Nothing to delete on this device.")
                 when (left) {
