@@ -3,8 +3,8 @@
 
 # Android device test: the release candidate
 
-**Build under test:** the release APK of `0.7.0-experimental.rc.3` (versionCode
-13), published by CI with its SHA-256 in the release notes. Check the hash
+**Build under test:** the release APK of `0.7.0-experimental.rc.4` (versionCode
+14), published by CI with its SHA-256 in the release notes. Check the hash
 before installing. Steps that need `adb shell run-as` (45, and the file
 listings) need the **debug** APK from the same release, because a release
 build is not debuggable.
@@ -378,8 +378,59 @@ listing.
 98. After some chats, a transfer and a verified session: `adb shell run-as
     org.otrv4plus.android find files cache -type f`. **Expect:** only
     `files/vault/*` (AES-GCM records), Chaquopy runtime files, and received
-    files you accepted. No `shared_prefs`, no database, no `smp_secrets`,
+    files you accepted. No database; `shared_prefs` holds only `otrv4plus.ui.xml`
+    (the theme choice, one line, nothing else), and nothing if the theme was
+    never changed. No `smp_secrets`,
     `.smp_seed`, `.device_seed` or `identity.sealed`. Record the listing.
+
+## 18. Automatic OTRv4+ and capability (rc.4) — handset + Termux, handset + ordinary client
+
+99. Termux client (this build) online, handset signed in, open the
+    conversation. **Expect:** "OTRv4Plus available — establishing…", then
+    "🔒" encrypted **without tapping Start**. No SMP, no call and no file
+    until SMP.
+100. Sign the same account into an **ordinary XMPP client** (for example
+     Conversations) with no Termux client running. Open the conversation.
+     **Expect:** "OTRv4Plus unavailable — this contact is using a client that
+     does not support OTRv4Plus", **no** `?OTRv4` text arriving in the
+     ordinary client, and no Start button.
+101. Both clients online at once. **Expect:** OTRv4+ goes to the Termux
+     resource only; the ordinary client never shows OTR data.
+102. Stop the Termux client mid-session. **Expect:** the session ends and the
+     line does not claim encryption; typed messages are not sent in
+     plaintext.
+103. Contact offline, then comes online. **Expect:** "offline" first, then
+     automatic OTRv4+ once they return.
+
+## 19. People list (rc.4) — handset
+
+104. Open PEOPLE. **Expect:** one row per contact, with Added (online/offline),
+     Pending, or "Wants to add you — Accept". On an ordinary account the note
+     says the server does not list online users (XEP-0133 is admin-only).
+     Record whether the live Prosody offers the command to this account.
+105. Add someone by address. **Expect:** Pending until they accept, then
+     Added. Record how long a request stays pending on the live server.
+
+## 20. Files (rc.4) — handset + Termux, verified
+
+106. Send a photo with EXIF. **Expect:** a dialog with Remove and send
+     (primary) / Keep and send / Cancel; Cancel sends nothing.
+107. Send a file of several MB. **Expect:** the phase word (Preparing →
+     Sending → Verifying → Completed), bytes, %, speed, and "Calculating ETA…"
+     followed by an ETA. Pause the network. **Expect:** "ETA unavailable".
+108. Receive an image, a text file, a PDF, an audio file and a video.
+     **Expect:** nothing opens by itself; "Open" appears only after
+     "hashes verified"; each renders inside the app. Rename an executable to
+     `x.jpg` and send it. **Expect:** "cannot be shown inside the app".
+109. "Open with another app…". **Expect:** a warning first, then the chooser.
+
+## 21. Wipe & Exit from the conversation list, and theme (rc.4) — handset
+
+110. First launch: the app is dark purple and the username field is blank.
+111. Theme → Light, restart. **Expect:** still Light. Theme → Follow system,
+     toggle the system dark mode. **Expect:** it follows.
+112. Wipe & Exit from the foot of the conversation list. **Expect:** the same
+     confirmation as on the connection screen, then §16's results.
 
 ## What this does not cover
 

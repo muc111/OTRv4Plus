@@ -4,6 +4,49 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.4 — 2026-09-24 — automatic OTRv4+ only where OTRv4Plus is, one People list, files you can see (core 0.11.0)
+
+*Supersedes rc.3; the release page now keeps only the newest APK. None of
+this has run on a handset yet. The new checklist steps are §18–§21 of
+`ANDROID_CALL_AND_FILE_DEVICE_TEST.md`.*
+
+**Automatic OTRv4+, gated on real capability** (`OTRV4PLUS_CAPABILITY.md`)
+
+- Both clients advertise `https://github.com/muc111/OTRv4Plus#otrv4plus-1`
+  in XEP-0030 and XEP-0115. Capability is learned per resource from
+  disco#info, the caps hash, or an OTRv4+ frame that resource sent.
+- OTRv4+ frames go only to a capable full JID. The transport refuses
+  otherwise. It never sends to the bare JID and never runs a DAKE to probe.
+- The open conversation secures itself when the peer is capable. When it is
+  not: "OTRv4Plus unavailable", no traffic and no downgrade.
+- Capability is not trust: SMP still gates calls and files.
+
+**People list** (`PROSODY_USER_DISCOVERY.md`)
+
+- Roster, subscription requests and the server's own online list are merged
+  into one list: Accept / Online — Added / Online (Add) / Pending /
+  Offline — Added.
+- Server discovery uses XEP-0133 only when Prosody offers it, which is to
+  admins only. Otherwise it says so.
+- Nothing is guessed. There is no client-side pending expiry.
+
+**Files**
+
+- Named phases, with speed and an ETA from a rolling average ("Calculating
+  ETA…", "ETA unavailable").
+- Metadata dialog: Remove and send / Keep and send / Cancel.
+- A verified received file can be opened in an in-app viewer (image, text,
+  PDF, audio, video), with the type taken from its bytes. It never opens on
+  its own. Handing it to another app is explicit and warns first.
+
+**Also**
+
+- Wipe & Exit at the foot of the conversation list.
+- Dark purple theme by default, with Light and Follow system; WCAG AA
+  contrast is checked in tests.
+- Blank username on first launch.
+- `MLS_FEASIBILITY.md`: a study only; no MLS is implemented.
+
 ## Android 0.7.0-experimental.rc.3 — 2026-09-24 — the APK gets a voice codec (core 0.11.0)
 
 *rc.2 was not fit for the call test, and it is superseded. Nothing else
