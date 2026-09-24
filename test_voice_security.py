@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """Adversarial tests for the OTRv4+ voice subsystem (protocol v3).
 
-Run:  OTRV4PLUS_ALLOW_PYTHON_MLKEM=1 python3 -m unittest test_voice_security -v
+Run:  python3 -m unittest test_voice_security -v
 
-Requires ``cryptography``.  ML-KEM-1024 comes from ``otrv4_core`` when the
-Rust core is loaded; otherwise from ``kyber-py``, which is a real FIPS 203
-implementation, so these tests exercise the genuine hybrid exchange rather
-than a stub.  There is deliberately no stub KEM anywhere in this file: a
+Requires the Rust core (``otrv4_core``): ML-KEM-1024, X448 and every voice
+key derivation run there and nowhere else -- the pure-Python ``kyber-py``
+fallback was removed -- so these tests exercise the genuine hybrid exchange
+rather than a stub. ``cryptography`` is used only as an independent reference
+implementation to check the core's output against.  There is deliberately no stub KEM anywhere in this file: a
 placeholder that returns constant bytes would make every hybrid test pass
 while proving nothing.
 
@@ -16,7 +17,6 @@ Nothing here needs opuslib, PulseAudio, slixmpp or I2P.
 import os
 import unittest
 
-os.environ.setdefault("OTRV4PLUS_ALLOW_PYTHON_MLKEM", "1")
 
 import otrv4plus_voice as V
 
@@ -68,6 +68,32 @@ def reference_root(x448_shared, mlkem_shared, transcript):
                 salt=salt, info=info).derive(ikm)
 
 
+def _ref_hkdf(ikm, salt, info, length):
+    """HKDF-SHA512 from the `cryptography` package: an INDEPENDENT reference.
+
+    The production module no longer derives keys in Python at all -- every
+    media key is derived inside Rust from a root handle. These references
+    exist so the spec's properties can be checked on bytes, and
+    `tests/test_voice_rust_parity.py` checks the Rust schedule against the
+    same construction.
+    """
+    from cryptography.hazmat.primitives import hashes
+    from cryptography.hazmat.primitives.kdf.hkdf import HKDF
+    return HKDF(algorithm=hashes.SHA512(), length=length,
+                salt=salt, info=info).derive(ikm)
+
+
+def _ref_media_key(root, call_id, epoch, direction):
+    import struct
+    info = (b"OTRv4+Voice/Media/v1" + V._lp(call_id)
+            + struct.pack(">Q", epoch) + struct.pack(">B", direction))
+    return _ref_hkdf(bytes(root), call_id, info, 32)
+
+
+def _ref_ratchet(key):
+    return _ref_hkdf(bytes(key), b"", b"OTRv4+Voice/Ratchet/v1", 32)
+
+
 def make_pair(call_id=CALL_ID, epoch=0):
     """Run one honest hybrid exchange.  Returns (root_initiator, root_responder).
 
@@ -78,17 +104,17 @@ def make_pair(call_id=CALL_ID, epoch=0):
     ini = V.VoiceKeyExchange(True)
     res = V.VoiceKeyExchange(False)
 
-    r_x, r_k, ct = res.responder_agree(ini.public, ini.mlkem_ek)
+    agreement_r, ct = res.responder_agree(ini.public, ini.mlkem_ek)
     transcript_r = V.build_transcript(call_id, OTR_BINDING, FP_B, FP_A,
                                       ini.public, res.public,
                                       ini.mlkem_ek, ct, epoch)
-    root_r = V.derive_voice_root(r_x, r_k, transcript_r)
+    root_r = agreement_r.into_root(transcript_r)
 
-    i_x, i_k = ini.initiator_agree(res.public, ct)
+    agreement_i = ini.initiator_agree(res.public, ct)
     transcript_i = V.build_transcript(call_id, OTR_BINDING, FP_A, FP_B,
                                       ini.public, res.public,
                                       ini.mlkem_ek, ct, epoch)
-    root_i = V.derive_voice_root(i_x, i_k, transcript_i)
+    root_i = agreement_i.into_root(transcript_i)
     return root_i, root_r, ini, res, ct
 
 
@@ -99,24 +125,33 @@ def make_pair(call_id=CALL_ID, epoch=0):
 class TestInitialKeyEstablishment(unittest.TestCase):
 
     def test_kem_is_real_mlkem1024(self):
-        kem = V.kem_provider()
-        ek, dk = kem.keygen()
+        # The raw primitive, called on the Rust core directly: the voice
+        # module no longer exposes one (its exchange keeps the keys in Rust).
+        import otrv4_core as C
+        ek, dk = C.mlkem1024_keygen()
         self.assertEqual(len(ek), V.MLKEM_EK_LEN)
         self.assertEqual(len(dk), 3168)
-        ct, ss = kem.encaps(ek)
+        ct, ss = C.mlkem1024_encaps(bytes(ek))
         self.assertEqual(len(ct), V.MLKEM_CT_LEN)
         self.assertEqual(len(ss), V.MLKEM_SS_LEN)
-        self.assertEqual(bytes(kem.decaps(ct, dk)), bytes(ss))
+        self.assertEqual(bytes(C.mlkem1024_decaps(bytes(ct), bytes(dk))), bytes(ss))
 
     def test_kem_encaps_returns_ciphertext_first(self):
         # The Rust wrapper inverts pqcrypto's (ss, ct) to (ct, ss).  Getting
         # this backwards silently desynchronises the key agreement, so the
         # order is pinned by length rather than by trusting the docstring.
-        kem = V.kem_provider()
-        ek, _ = kem.keygen()
-        first, second = kem.encaps(ek)
+        import otrv4_core as C
+        ek, _ = C.mlkem1024_keygen()
+        first, second = C.mlkem1024_encaps(bytes(ek))
         self.assertEqual(len(first), V.MLKEM_CT_LEN)
         self.assertEqual(len(second), V.MLKEM_SS_LEN)
+
+    def test_the_voice_capability_is_the_rust_core_only(self):
+        kem = V.kem_provider()
+        self.assertEqual(kem.name, "otrv4_core/pqcrypto-mlkem")
+        for gone in ("keygen", "encaps", "decaps"):
+            self.assertFalse(hasattr(kem, gone),
+                             "the provider hands out raw KEM keys again")
 
     def test_valid_exchange_agrees(self):
         root_i, root_r, _, _, _ = make_pair()
@@ -148,17 +183,15 @@ class TestInitialKeyEstablishment(unittest.TestCase):
         ini = V.VoiceKeyExchange(True)
         res = V.VoiceKeyExchange(False)
         evil = V.VoiceKeyExchange(False)
-        r_x, r_k, ct = res.responder_agree(ini.public, ini.mlkem_ek)
-        root_r = V.derive_voice_root(
-            r_x, r_k, V.build_transcript(CALL_ID, OTR_BINDING, FP_B, FP_A,
-                                         ini.public, res.public,
-                                         ini.mlkem_ek, ct, 0))
+        agreement_r, ct = res.responder_agree(ini.public, ini.mlkem_ek)
+        root_r = agreement_r.into_root(
+            V.build_transcript(CALL_ID, OTR_BINDING, FP_B, FP_A,
+                               ini.public, res.public, ini.mlkem_ek, ct, 0))
         # Initiator is fed the wrong peer public.
-        i_x, i_k = ini.initiator_agree(evil.public, ct)
-        root_i = V.derive_voice_root(
-            i_x, i_k, V.build_transcript(CALL_ID, OTR_BINDING, FP_A, FP_B,
-                                         ini.public, evil.public,
-                                         ini.mlkem_ek, ct, 0))
+        agreement_i = ini.initiator_agree(evil.public, ct)
+        root_i = agreement_i.into_root(
+            V.build_transcript(CALL_ID, OTR_BINDING, FP_A, FP_B,
+                               ini.public, evil.public, ini.mlkem_ek, ct, 0))
         self.assertNotEqual(_root_id(root_i), _root_id(root_r))
 
     def test_malformed_x448_rejected(self):
@@ -189,14 +222,17 @@ class TestInitialKeyEstablishment(unittest.TestCase):
         # than failing, so the roots must simply differ.
         ini = V.VoiceKeyExchange(True)
         res = V.VoiceKeyExchange(False)
-        _, _, ct = res.responder_agree(ini.public, ini.mlkem_ek)
+        agreement_r, ct = res.responder_agree(ini.public, ini.mlkem_ek)
         other = V.VoiceKeyExchange(False)
-        _, _, ct2 = other.responder_agree(
+        _, ct2 = other.responder_agree(
             V.VoiceKeyExchange(True).public,
             V.VoiceKeyExchange(True).mlkem_ek)
-        i_x, i_k = ini.initiator_agree(res.public, ct2)
-        self.assertEqual(len(i_k), 32)
-        self.assertNotEqual(bytes(i_k), b"\x00" * 32)
+        agreement_i = ini.initiator_agree(res.public, ct2)
+        # Same transcript on both sides, so only the KEM secret differs.
+        t = V.build_transcript(CALL_ID, OTR_BINDING, FP_A, FP_B,
+                               ini.public, res.public, ini.mlkem_ek, ct, 0)
+        self.assertNotEqual(_root_id(agreement_i.into_root(t)),
+                            _root_id(agreement_r.into_root(t)))
 
     def test_transcript_mismatch_produces_different_roots(self):
         base = V.build_transcript(CALL_ID, OTR_BINDING, FP_A, FP_B,
@@ -269,12 +305,30 @@ class TestInitialKeyEstablishment(unittest.TestCase):
     def test_private_keys_are_single_use(self):
         ini = V.VoiceKeyExchange(True)
         res = V.VoiceKeyExchange(False)
-        _, _, ct = res.responder_agree(ini.public, ini.mlkem_ek)
+        _, ct = res.responder_agree(ini.public, ini.mlkem_ek)
         ini.initiator_agree(res.public, ct)
         with self.assertRaises(RuntimeError):
             ini.initiator_agree(res.public, ct)
         with self.assertRaises(RuntimeError):
             res.responder_agree(ini.public, ini.mlkem_ek)
+
+    def test_the_agreement_does_not_give_up_its_secrets(self):
+        # The exchange used to return the X448 and ML-KEM shared secrets as
+        # bytearrays. It returns a Rust handle now, whose only outputs are a
+        # root handle and short one-way digests.
+        ini = V.VoiceKeyExchange(True)
+        res = V.VoiceKeyExchange(False)
+        agreement, ct = res.responder_agree(ini.public, ini.mlkem_ek)
+        self.assertNotIsInstance(agreement, (bytes, bytearray, tuple))
+        public = {n for n in dir(agreement) if not n.startswith("_")}
+        self.assertEqual(public, {"into_root", "into_rekey_root", "digests",
+                                  "zeroize", "spent"})
+        x_digest, k_digest = agreement.digests()
+        self.assertEqual((len(x_digest), len(k_digest)), (12, 12))
+        agreement.into_root(b"t")
+        self.assertTrue(agreement.spent)
+        with self.assertRaises(RuntimeError):
+            agreement.into_root(b"t")
 
     def test_role_confusion_rejected(self):
         with self.assertRaises(RuntimeError):
@@ -292,17 +346,28 @@ class TestInitialKeyEstablishment(unittest.TestCase):
 class TestDirectionalKeys(unittest.TestCase):
 
     def test_directions_have_independent_keys(self):
+        # The spec, on the reference; and the product, by its ciphertext:
+        # the same plaintext at the same counter under the two directions'
+        # keys must differ, which it can only do if the keys differ.
         root = b"\x37" * V.ROOT_LEN
-        a = bytes(V.derive_media_key(root, CALL_ID, 0, V.DIR_INITIATOR))
-        b = bytes(V.derive_media_key(root, CALL_ID, 0, V.DIR_RESPONDER))
-        self.assertNotEqual(a, b)
+        self.assertNotEqual(_ref_media_key(root, CALL_ID, 0, V.DIR_INITIATOR),
+                            _ref_media_key(root, CALL_ID, 0, V.DIR_RESPONDER))
+        plain = bytes(V.pad_opus(b"x"))
+        ini = V.VoiceFrameCrypto(root, CALL_ID, 0, True).seal(plain)
+        res = V.VoiceFrameCrypto(root, CALL_ID, 0, False).seal(plain)
+        self.assertNotEqual(ini, res)
 
     def test_keys_change_per_epoch_and_per_call(self):
         root = b"\x37" * V.ROOT_LEN
-        k0 = bytes(V.derive_media_key(root, CALL_ID, 0, V.DIR_INITIATOR))
-        k1 = bytes(V.derive_media_key(root, CALL_ID, 1, V.DIR_INITIATOR))
-        k2 = bytes(V.derive_media_key(root, b"\xff" * 16, 0, V.DIR_INITIATOR))
-        self.assertEqual(len({k0, k1, k2}), 3)
+        refs = {_ref_media_key(root, CALL_ID, 0, V.DIR_INITIATOR),
+                _ref_media_key(root, CALL_ID, 1, V.DIR_INITIATOR),
+                _ref_media_key(root, b"\xff" * 16, 0, V.DIR_INITIATOR)}
+        self.assertEqual(len(refs), 3)
+        plain = bytes(V.pad_opus(b"x"))
+        sealed = {V.VoiceFrameCrypto(root, CALL_ID, 0, True).seal(plain)[-40:],
+                  V.VoiceFrameCrypto(root, CALL_ID, 1, True).seal(plain)[-40:],
+                  V.VoiceFrameCrypto(root, b"\xff" * 16, 0, True).seal(plain)[-40:]}
+        self.assertEqual(len(sealed), 3)
 
     def test_both_endpoints_counters_start_at_zero_without_collision(self):
         # The v2 hazard: one shared key and two counters both starting at 0
@@ -576,10 +641,13 @@ class TestFrameReplay(unittest.TestCase):
 class TestMediaRatchet(unittest.TestCase):
 
     def test_ratchet_is_one_way_and_deterministic(self):
+        # The construction, on the reference; the product's ratchet is
+        # exercised across the interval by the test below and pinned to this
+        # construction by test_voice_rust_parity.
         k = b"\x01" * 32
-        a, b = V.ratchet_key(k), V.ratchet_key(k)
-        self.assertEqual(bytes(a), bytes(b))
-        self.assertNotEqual(bytes(a), k)
+        a, b = _ref_ratchet(k), _ref_ratchet(k)
+        self.assertEqual(a, b)
+        self.assertNotEqual(a, k)
 
     def test_ratchet_advances_across_the_interval(self):
         root = b"\x99" * V.ROOT_LEN
@@ -623,14 +691,14 @@ def rekey_once(sched_i, sched_r, epoch, call_id=CALL_ID):
     """One honest hybrid rekey between two schedules.  Returns confirm tags."""
     ini = V.VoiceKeyExchange(True)
     res = V.VoiceKeyExchange(False)
-    r_x, r_k, ct = res.responder_agree(ini.public, ini.mlkem_ek)
+    agreement_r, ct = res.responder_agree(ini.public, ini.mlkem_ek)
     t = V.build_transcript(call_id, OTR_BINDING, FP_A, FP_B,
                            ini.public, res.public, ini.mlkem_ek, ct, epoch)
-    root_r = V.derive_rekey_root(sched_r.current_root(), r_x, r_k, t)
+    root_r = agreement_r.into_rekey_root(sched_r.current_root(), t)
     sched_r.begin_rekey(epoch, root_r)
 
-    i_x, i_k = ini.initiator_agree(res.public, ct)
-    root_i = V.derive_rekey_root(sched_i.current_root(), i_x, i_k, t)
+    agreement_i = ini.initiator_agree(res.public, ct)
+    root_i = agreement_i.into_rekey_root(sched_i.current_root(), t)
     sched_i.begin_rekey(epoch, root_i)
     # Captured while pending: commit_rekey clears the pending state, so
     # the tags must be read before either side commits — which is exactly
@@ -1532,8 +1600,8 @@ class TestEndToEnd(unittest.TestCase):
         """Two calls must not share a media key.
 
         Asserted through the ciphertext rather than by extracting the keys:
-        media keys are Rust-owned and `derive_media_key` refuses a root
-        handle by design.  Sealing the same plaintext at the same counter
+        media keys are Rust-owned and have no accessor (`derive_media_key`
+        no longer exists).  Sealing the same plaintext at the same counter
         under two roots gives identical bytes only if the keys are identical,
         so this is the same statement made from outside.
         """

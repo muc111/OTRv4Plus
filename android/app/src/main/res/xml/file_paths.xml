@@ -12,4 +12,9 @@
 -->
 <paths>
     <cache-path name="diagnostics" path="diagnostics/" />
+    <!-- A copy of ONE received file, made only when the user taps "Open with
+         another app" and confirms the warning (ui/FileViewer.kt). Cleared on
+         each handoff and by Wipe & Exit. The private received directory
+         itself is never a provider path. -->
+    <cache-path name="handoff" path="handoff/" />
 </paths>

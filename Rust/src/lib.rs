@@ -30,6 +30,9 @@ pub mod aead;             // v10.6.19: AES-256-GCM PyO3 bindings (Phase 5.3h, pa
 pub mod mlkem;            // v10.7.3: ML-KEM-1024 PyO3 bindings (Phase 5.3i-C)
 pub mod identity;         // Android B1 (option B): Rust-owned identity sealing (additive)
 pub mod voice;            // v10.13.2: Rust-owned media keys and voice X448
+#[cfg(feature = "android-opus")]
+pub mod opus_codec;       // libopus for the APK only; Termux uses opuslib
+pub mod at_rest;          // Rust-owned at-rest secrets (SMP auto-respond store, identity DEK)
 pub mod filetransfer;     // v10.14.0: Rust-owned /sendfile keys and chunk AEAD
 
 use pyo3::prelude::*;
@@ -49,6 +52,7 @@ fn otrv4_core(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<voice::PyVoiceCipher>()?;
     m.add_class::<voice::PyVoiceKex>()?;
     m.add_class::<voice::PyVoiceRoot>()?;
+    m.add_class::<voice::PyVoiceAgreement>()?;
 
     // v10.14.0: /sendfile.  The FileKey is generated, wrapped, used and
     // zeroized entirely inside Rust; Python holds handles and opaque bytes.
@@ -65,6 +69,7 @@ fn otrv4_core(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(mldsa::mldsa87_keygen, m)?)?;
     m.add_function(wrap_pyfunction!(mldsa::mldsa87_sign,   m)?)?;
     m.add_function(wrap_pyfunction!(mldsa::mldsa87_verify, m)?)?;
+    m.add_class::<mldsa::MlDsa87KeyHandle>()?;
     // AES-256-GCM (Phase 5.3h-B, v10.6.19): replaces cryptography.AESGCM
     m.add_function(wrap_pyfunction!(aead::aes256gcm_encrypt, m)?)?;
     m.add_function(wrap_pyfunction!(aead::aes256gcm_decrypt, m)?)?;
@@ -73,6 +78,7 @@ fn otrv4_core(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(mlkem::mlkem1024_keygen, m)?)?;
     m.add_function(wrap_pyfunction!(mlkem::mlkem1024_encaps, m)?)?;
     m.add_function(wrap_pyfunction!(mlkem::mlkem1024_decaps, m)?)?;
+    m.add_class::<mlkem::MlKemKeypair>()?;
     // Phase 5.3e (v10.6.12): Rust-owned long-term identity key handles
     m.add_class::<key_handles::Ed448KeyHandle>()?;
     m.add_class::<key_handles::X448KeyHandle>()?;
@@ -86,6 +92,15 @@ fn otrv4_core(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(identity::unseal_identity,         m)?)?;
     m.add_function(wrap_pyfunction!(identity::create_sealed_identity,  m)?)?;
     m.add_function(wrap_pyfunction!(identity::identity_record_version, m)?)?;
+    m.add_class::<at_rest::FileDek>()?;
+    m.add_class::<at_rest::SmpSecretStore>()?;
+    m.add_function(wrap_pyfunction!(at_rest::create_sealed_identity_under, m)?)?;
+    m.add_function(wrap_pyfunction!(at_rest::unseal_identity_under,        m)?)?;
+    // The Android APK's Opus codec. Present only in builds with the
+    // `android-opus` feature; `hasattr(otrv4_core, "OpusEncoder")` is how the
+    // Android host tells.
+    #[cfg(feature = "android-opus")]
+    opus_codec::register(m)?;
 
     Ok(())
 }

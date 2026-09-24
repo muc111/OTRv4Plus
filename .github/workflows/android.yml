@@ -32,17 +32,56 @@ name: Android
 on:
   push:
     branches: [main, "claude/**"]
-    paths:
+    paths: &android_paths
       - "android/**"
       - "android_bridge/**"
       - "Rust/**"
       - ".github/workflows/android.yml"
+      # The APK inspection and the publish script, whose notes are the
+      # release page. Editing either without a build left the page stale.
+      - ".github/scripts/**"
+      # THE SHARED ENGINE THE APK ACTUALLY PACKAGES.
+      #
+      # Android depends on these and this workflow did not watch them, so a
+      # change to the engine ran no Android job at all. That is not
+      # hypothetical: b6e82b8 fixed the DAKE1 rate limiter -- live on the
+      # Android path, proved by driving it through OtrApp -- touched only
+      # `otrv4+.py`, matched nothing here, and had to be dispatched by hand.
+      #
+      # NOT "every Python file". This is exactly the list `syncPythonSources`
+      # in android/app/build.gradle.kts copies into the APK, which is itself
+      # the computed module-scope import closure of otrv4+.py and
+      # otrv4plus_xmpp.py. A file the APK does not ship cannot break it.
+      #
+      # GitHub path filters cannot run code, so the list is duplicated here
+      # rather than derived. `tests/test_android_ci_paths.py` asserts the two
+      # agree, so adding a module to the build without adding it here is a
+      # test failure rather than a silently unwatched dependency.
+      - "otrv4+.py"
+      - "otrv4plus_address.py"
+      - "otrv4plus_admin.py"
+      - "otrv4plus_alias.py"
+      - "otrv4plus_audio.py"
+      - "otrv4plus_caps.py"
+      - "otrv4plus_coreapi.py"
+      - "otrv4plus_filetransfer.py"
+      - "otrv4plus_fragment.py"
+      - "otrv4plus_identity.py"
+      - "otrv4plus_log.py"
+      - "otrv4plus_mediapath.py"
+      - "otrv4plus_mode.py"
+      - "otrv4plus_muc.py"
+      - "otrv4plus_omemo.py"
+      - "otrv4plus_ping.py"
+      - "otrv4plus_presence.py"
+      - "otrv4plus_registration.py"
+      - "otrv4plus_smpflow.py"
+      - "otrv4plus_tip.py"
+      - "otrv4plus_trade.py"
+      - "otrv4plus_voice.py"
+      - "otrv4plus_xmpp.py"
   pull_request:
-    paths:
-      - "android/**"
-      - "android_bridge/**"
-      - "Rust/**"
-      - ".github/workflows/android.yml"
+    paths: *android_paths
   workflow_dispatch:
 
 permissions:
@@ -108,6 +147,32 @@ jobs:
         # not the "What went wrong" summary at the end.
         run: ../.github/scripts/gradle.sh ./gradlew :app:dependencies --configuration debugRuntimeClasspath --no-daemon --console=plain
 
+      - name: No copyleft dependency in the shipped Android graph
+        working-directory: android
+        # The Android counterpart of the cargo check in
+        # tests/test_licence_declarations_agree.py. It resolves the debug and
+        # release runtime classpaths, reads each module's POM and fails on
+        # anything with no permissive option -- or on anything whose licence
+        # it cannot determine.
+        #
+        # It runs HERE rather than in the dev environment because resolving
+        # AndroidX needs dl.google.com, which is the reason this whole
+        # workflow exists. It is also wired into `check`, so a developer who
+        # can reach Google gets it from `./gradlew check` as well.
+        #
+        # One copyleft dependency does not merely add an obligation: it makes
+        # the commercial half of the dual licence unsellable. See
+        # LICENSING_AUDIT.md §0.
+        run: ../.github/scripts/gradle.sh ./gradlew :app:checkRuntimeDependencyLicences --no-daemon --console=plain
+
+      - name: Keep the licence report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dependency-licences
+          path: android/app/build/reports/licences/
+          if-no-files-found: ignore
+
   # ---------------------------------------------------------------------------
   # Proves: the APK's hand-written pip list is the full dependency closure.
   #
@@ -166,6 +231,11 @@ jobs:
           echo "CARGO_TARGET_${UPPER}_LINKER=$NDK_BIN/${{ matrix.cc }}" >> "$GITHUB_ENV"
           echo "CC_${{ matrix.target }}=$NDK_BIN/${{ matrix.cc }}" >> "$GITHUB_ENV"
           echo "AR_${{ matrix.target }}=$NDK_BIN/llvm-ar" >> "$GITHUB_ENV"
+          # The APK's Opus codec (feature android-opus): opusic-sys builds
+          # upstream libopus with CMake and, given ANDROID_NDK_HOME, uses the
+          # NDK's own android.toolchain.cmake for this ABI at API 26.
+          echo "ANDROID_NDK_HOME=$ANDROID_NDK_LATEST_HOME" >> "$GITHUB_ENV"
+          echo "ANDROID_PLATFORM=android-26" >> "$GITHUB_ENV"
 
       - name: Android libpython, because the linker demands one
         # `ld.lld: error: unable to find library -lpython3`, run #1.
@@ -227,7 +297,7 @@ jobs:
           pip install maturin
           maturin build --release \
             --target ${{ matrix.target }} \
-            --features pyo3/extension-module \
+            --features pyo3/extension-module,android-opus \
             --interpreter python${{ env.PYTHON_VERSION }} \
             --out dist
 
@@ -358,12 +428,143 @@ jobs:
             exit 1
           fi
 
+      - name: The APK must carry the third-party NOTICE
+        # Same class of silent failure as the core check above, and the same
+        # remedy: inspect the artifact.
+        #
+        # Every dependency in this build is permissive, and every permissive
+        # licence requires its notice to travel with the binary. If
+        # :app:syncNoticeAsset stopped being wired to the asset merge, the
+        # build would still go green, the APK would ship with the obligation
+        # undischarged, and the licences screen would show its "could not be
+        # read" state -- which nobody would see until a user opened it.
+        #
+        # So: assert the asset is there, and that it is the real file rather
+        # than an empty placeholder.
+        run: |
+          set -euo pipefail
+          APK=$(find android/app/build/outputs/apk -name '*.apk' | head -1)
+          test -n "$APK" || { echo "::error::no APK to inspect"; exit 1; }
+
+          if ! unzip -l "$APK" | grep -qE '[[:space:]]assets/NOTICE$'; then
+            echo "::error::the APK does not contain assets/NOTICE -- third-party attribution is not being distributed with the binary"
+            echo "--- assets the APK does contain:"
+            unzip -l "$APK" | grep 'assets/' | head -20
+            exit 1
+          fi
+
+          rm -rf /tmp/notice-check && mkdir -p /tmp/notice-check
+          unzip -q -o "$APK" 'assets/NOTICE' -d /tmp/notice-check
+          SIZE=$(stat -c%s /tmp/notice-check/assets/NOTICE)
+          echo "assets/NOTICE is $SIZE bytes"
+          # A truncated or placeholder NOTICE discharges nothing. The real one
+          # is ~60 KB; 10 KB is a floor that no plausible real file falls below
+          # and no plausible stub reaches.
+          test "$SIZE" -gt 10000 || {
+            echo "::error::assets/NOTICE is only $SIZE bytes -- that is not the generated notice file"; exit 1; }
+          # And it must be the attribution file, not something else that landed
+          # under the same name.
+          grep -q "third-party notices" /tmp/notice-check/assets/NOTICE || {
+            echo "::error::assets/NOTICE is not the generated third-party notice file"; exit 1; }
+          echo "third-party attribution is packaged and non-empty"
+
+      - name: Inspect the debug APK's contents
+        run: |
+          set -euo pipefail
+          APK=$(find android/app/build/outputs/apk -name '*.apk' | head -1)
+          python .github/scripts/inspect_apk.py "$APK" --variant debug
+
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: apk-debug
           path: android/app/build/outputs/apk/**/*.apk
           if-no-files-found: warn
+
+  # ---------------------------------------------------------------------------
+  # The RELEASE variant: R8-minified, android.util.Log calls stripped
+  # (proguard-rules.pro), the debug diagnostics screen not compiled in
+  # (src/debug/). This is the release candidate.
+  #
+  # Signing: with the owner's release keystore when the repository secrets
+  # OTRV4PLUS_RELEASE_KEYSTORE_B64 / _STORE_PASSWORD / _KEY_ALIAS /
+  # _KEY_PASSWORD are set; otherwise the variant is signed with the runner's
+  # debug key and the release notes say so. The keystore is decoded into the
+  # runner's temp directory, never the workspace, and never uploaded.
+  # ---------------------------------------------------------------------------
+  apk-release:
+    name: Assemble and inspect the release APK
+    runs-on: ubuntu-latest
+    needs: [configure, rust]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: otrv4_core-*
+          path: android/app/wheels
+          merge-multiple: true
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Accept SDK licences
+        run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
+
+      - name: Release signing key, if the owner has provided one
+        env:
+          KS_B64: ${{ secrets.OTRV4PLUS_RELEASE_KEYSTORE_B64 }}
+        run: |
+          set -euo pipefail
+          if [ -n "${KS_B64:-}" ]; then
+            printf '%s' "$KS_B64" | base64 -d > "$RUNNER_TEMP/release.jks"
+            echo "OTRV4PLUS_RELEASE_KEYSTORE=$RUNNER_TEMP/release.jks" >> "$GITHUB_ENV"
+            echo "signing with the owner's release key"
+          else
+            echo "no release key configured: signing with the debug key"
+          fi
+
+      - name: assembleRelease
+        working-directory: android
+        env:
+          OTRV4PLUS_RELEASE_STORE_PASSWORD: ${{ secrets.OTRV4PLUS_RELEASE_STORE_PASSWORD }}
+          OTRV4PLUS_RELEASE_KEY_ALIAS: ${{ secrets.OTRV4PLUS_RELEASE_KEY_ALIAS }}
+          OTRV4PLUS_RELEASE_KEY_PASSWORD: ${{ secrets.OTRV4PLUS_RELEASE_KEY_PASSWORD }}
+        run: ../.github/scripts/gradle.sh ./gradlew :app:assembleRelease --no-daemon --console=plain
+
+      - name: Inspect the release APK's contents, signature and manifest
+        run: |
+          set -euo pipefail
+          APK=$(find android/app/build/outputs/apk/release -name '*.apk' | head -1)
+          test -n "$APK" || { echo "::error::assembleRelease produced no APK"; exit 1; }
+          mkdir -p release-out
+          python .github/scripts/inspect_apk.py "$APK" --variant release \
+              --manifest release-out/apk-contents.sha256.txt
+          BT=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)
+          "$BT/apksigner" verify --verbose --print-certs "$APK" | tee release-out/signature.txt
+          "$BT/aapt2" dump badging "$APK" | tee release-out/badging.txt | head -5
+          if "$BT/aapt2" dump xmltree --file AndroidManifest.xml "$APK" | grep -q 'debuggable.*=true'; then
+            echo "::error::the release APK is debuggable"; exit 1
+          fi
+          echo "not debuggable" | tee -a release-out/badging.txt
+          if [ -n "${OTRV4PLUS_RELEASE_KEYSTORE:-}" ]; then echo owner > release-out/signing-key.txt
+          else echo debug > release-out/signing-key.txt; fi
+          cp "$APK" release-out/
+          rm -f "$RUNNER_TEMP/release.jks"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: apk-release
+          path: release-out/
+          if-no-files-found: error
 
   # ---------------------------------------------------------------------------
   # Proves: the Kotlin security layer still passes. The tests themselves are
@@ -448,7 +649,7 @@ jobs:
     # EVERY job, not just `apk`. A build whose tests failed must not be
     # published, and `apk` alone would not notice: it does not depend on
     # kotlin-tests or python-deps.
-    needs: [configure, python-deps, rust, apk, kotlin-tests]
+    needs: [configure, python-deps, rust, apk, apk-release, kotlin-tests]
     if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/claude/otrv4plus-android-spec-a3oq4d'
     permissions:
       # Narrower than it looks: this replaces the workflow-level `contents:
@@ -461,6 +662,11 @@ jobs:
         with:
           name: apk-debug
           path: apk
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: apk-release
+          path: apk-release
 
       - name: Publish the rolling experimental prerelease
         env:

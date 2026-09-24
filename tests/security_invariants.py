@@ -132,16 +132,42 @@ INVARIANTS: Tuple[Invariant, ...] = (
                   "that Rust can own instead.",
         status="PARTIAL",
         tests=("test_release_guard.py", "test_rust_zeroization.py",
-               "test_voice_rust_parity.py"),
-        rationale="Ed448 seeds, ratchet keys, SMP scalars and -- since "
-                  "v10.13.2 -- voice media keys, the voice epoch root and "
-                  "the voice X448 scalar never cross the PyO3 boundary; the "
-                  "legacy getters are compiled out.",
-        limits="The typed SMP passphrase and the account password are Python "
-               "`str` before anything can touch them, and a `str` cannot be "
-               "wiped.  The identity DEK and the device seeds are Python "
-               "`bytes` read from disk.  Everything derived from them is "
-               "Rust-owned.",
+               "test_secret_at_rest.py", "test_harness_audit.py",
+               "test_voice_rust_parity.py", "test_rust_owns_secrets.py"),
+        rationale="Ed448 seeds, ratchet root/chain/brace keys, SMP scalars, "
+                  "voice media keys and the voice epoch root never cross the "
+                  "PyO3 boundary; the legacy getters are compiled out.  "
+                  "Android 0.6.0 closed the four that still did: the X448 "
+                  "shared secret of every DH ratchet step "
+                  "(X448KeyHandle.dh is gone; the ratchet agrees from "
+                  "handles), the brace ML-KEM decapsulation key and shared "
+                  "secret (MlKem1024Keypair + brace_encapsulate/decapsulate), "
+                  "both voice shared secrets and the voice decapsulation key "
+                  "(RustVoiceAgreement), and the ML-DSA-87 DAKE signing key "
+                  "(MlDsa87KeyHandle).  The production audit then removed "
+                  "the dead paths that still handled keys in Python: voice's "
+                  "Python ML-KEM fallback and HKDF derivations, the "
+                  "MLKEM1024BraceKEM key wrapper, the legacy DAKE branches "
+                  "and _unpack_session_keys, and the Python-key ratchet "
+                  "fallback.  An Android SMP answer is bound into the Rust "
+                  "vault only and no longer persisted.",
+        limits="What is still a Python or JVM object is what Rust cannot own "
+               "under this design, and none of it is key material Rust "
+               "derives.  (1) A passphrase or password the user types is a "
+               "Python `str` (from getpass or a prompt) or a JVM `String` "
+               "(from a Compose text field) before anything can copy it; "
+               "neither can be wiped.  It is copied into Rust at once (SMP) or "
+               "dropped when the connection ends (the XMPP password, which "
+               "slixmpp's SASL needs on every reconnect and keeps in its own "
+               "credentials dict, cleared with the client).  (2) The "
+               "per-message MAC key is returned to verify the outer MAC; "
+               "OTRv4 publishes it after use by design, so its secrecy is "
+               "short-lived and it is not retained.  (3) A Termux store written "
+               "by the old scrypt fallback cannot be read and is moved aside, "
+               "not migrated through Python.  Since 0.7.0 the SMP auto-respond "
+               "store, its seed and the Termux identity DEK are read, held and "
+               "written by Rust (`at_rest.rs`), and the retired Python key "
+               "store no longer creates a seed at all.",
     ),
     Invariant(
         id="INV-09",
@@ -401,6 +427,63 @@ INVARIANTS: Tuple[Invariant, ...] = (
                   "matters at least as much as a request, because it is a "
                   "string the client is about to show the user as somewhere "
                   "to send money.",
+    ),
+    Invariant(
+        id="INV-27",
+        statement="Per-peer security state is reachable under exactly one "
+                  "key, whatever spelling of the JID is used.",
+        status="ENFORCED",
+        tests=("test_jid_canonicalisation.py", "test_presence_state.py",
+               "test_removing_a_contact.py"),
+        rationale="RFC 6122 makes the localpart and domain case-insensitive "
+                  "and the resource no part of an identity, so the same "
+                  "person arrives spelled several ways: typed into Add "
+                  "Contact, normalised by slixmpp on the server's echo, and "
+                  "carried per-device on a stanza.  OtrMode -- which decides "
+                  "whether a conversation may send in the clear -- was keyed "
+                  "by whatever string the caller passed, so a conversation "
+                  "that had asked for OTR reported that plaintext was "
+                  "permitted under three other spellings of the same peer.  "
+                  "OtrApp.canonical_peer folds at the boundary and every "
+                  "public per-peer method applies it; ChatState.bare, "
+                  "AccountScope.normalise and otrv4plus_presence._bare fold "
+                  "identically.  Folding is one-way safe: it can merge two "
+                  "spellings of one account and can never split one or join "
+                  "two, which the tests hold in both directions.  Scope: "
+                  "canonicalisation decides which BUCKET a peer's state "
+                  "lives in.  It is not consulted by the engine, does not "
+                  "touch key material, and never decides trust -- a "
+                  "fingerprint comparison is still byte-for-byte.  That is "
+                  "the boundary of the claim, not a gap in it, so this is "
+                  "ENFORCED with no `limits`.",
+    ),
+    Invariant(
+        id="INV-28",
+        statement="Wipe & Exit destroys every session secret in Rust, and "
+                  "nothing it destroyed can be used or rebuilt afterwards.",
+        status="PARTIAL",
+        tests=("test_wipe_and_exit.py", "test_rust_owns_secrets.py"),
+        rationale="Every Rust object holding a secret is told to zeroize "
+                  "before its Python reference is dropped -- ratchets, the "
+                  "ratchet DH handle, the pending brace keypair, SMP state "
+                  "and vault, in-flight DAKE state and any unconsumed "
+                  "DakeOutput, the identity and prekey handles, voice key "
+                  "schedules, file-transfer keys -- so the wipe does not "
+                  "depend on garbage collection; the tests hold references "
+                  "and check each object reports itself destroyed.  The "
+                  "engine is wiped on the transport's loop thread, where "
+                  "unsendable DAKE outputs are created.  A wiped engine, "
+                  "facade and controller refuse every entry point and emit "
+                  "nothing.  On Android the vault's AndroidKeyStore key is "
+                  "deleted, which is cryptographic erasure of every sealed "
+                  "record.",
+        limits="Files the Python side wrote (the device seed, received "
+               "files) are overwritten once and unlinked; on flash that "
+               "overwrite is best effort, because wear levelling may leave "
+               "the old block until the controller erases it.  No test can "
+               "show that no copy of a key survives elsewhere in process "
+               "memory; that is the Rust core's ZeroizeOnDrop contract, and "
+               "the process exits after the wipe.",
     ),
 )
 

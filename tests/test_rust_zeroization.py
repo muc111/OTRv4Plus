@@ -126,16 +126,16 @@ class TestPythonDoesNotHoldWhatRustShould:
         src = open(os.path.join(ROOT, "otrv4+.py"), encoding="utf-8").read()
         assert "get_session_keys" not in src or "legacy" in src.lower()
 
-    def test_voice_key_material_is_at_least_wipeable(self):
-        """Voice IS Python-owned -- a documented gap, INV-08's `limits`.
+    def test_voice_derives_no_key_in_python(self):
+        """Voice media keys are Rust-owned; Python derives none.
 
-        bytearray is used rather than bytes precisely so `_wipe` can overwrite
-        it.  Switching to bytes would make even best-effort wiping impossible.
+        This test used to assert the opposite -- that `derive_media_key`
+        existed and returned a wipeable bytearray, "a documented gap". The
+        gap is closed: every cipher comes from a root handle's `make_cipher`,
+        and the Python HKDF that duplicated the Rust schedule is gone.
         """
         src = open(os.path.join(ROOT, "otrv4plus_voice.py"),
                    encoding="utf-8").read()
-        assert "def derive_media_key(root, call_id: bytes, epoch: int, " \
-               "direction: int) -> bytearray:" in src, (
-            "media keys are no longer bytearray, so they cannot be wiped at "
-            "all")
-        assert "def _wipe(" in src
+        for gone in ("def derive_media_key(", "def ratchet_key(", "def _hkdf(",
+                     "from cryptography", "kyber_py"):
+            assert gone not in src, "%s is back in the voice module" % gone

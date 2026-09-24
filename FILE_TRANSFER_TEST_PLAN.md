@@ -93,6 +93,20 @@ Completion is announced on both sides, and this is the line to look for:
 [file] received holiday-photo.jpg (1.9 MB) — hashes verified, saved to ~/.otrv4plus/files/…
 ```
 
+From 0.7.0-experimental.rc.2 the receiver also tells the sender, inside the
+OTR session, once those checks have passed (the `RECEIVED` control verb), and
+the sender prints:
+
+```
+[file] bob@… received holiday-photo.jpg and verified it
+```
+
+A sender that never sees this line either has a peer on an older build, which
+ignores the verb, or has a peer that discarded the file. A discarded file now
+sends `CANCEL`, so the sender also sees `transfer …: the peer cancelled`.
+Before this change the sender stopped at "sent … waiting for … to verify it"
+with no way to tell which had happened.
+
 **"hashes verified" is the part that matters.** The file is only placed once
 the plaintext and ciphertext hashes both check out; a transfer that ends any
 other way says so instead. Before v10.18.0 none of this was printed, so a

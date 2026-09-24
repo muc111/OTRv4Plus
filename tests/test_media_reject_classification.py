@@ -89,8 +89,11 @@ class TestTheRaiseSitesAreClassified:
 
     def test_the_tag_failure_is_classified_as_auth(self):
         src = self._src()
-        i = src.index("except _INVALID_TAG:")
-        window = src[i:i + 700]
+        # The tag check is inside the Rust core; its ValueError is classified
+        # where the core is called (`VoiceFrameCrypto.open`). The old
+        # `except _INVALID_TAG:` site went with the Python AES-GCM path.
+        i = src.index("plaintext = self._rust.open(sealed, aad, counter)")
+        window = src[i:i + 500]
         assert "FrameError.AUTH" in window, (
             "the AES-256-GCM tag failure is not classified as an "
             "authentication failure, which is the one thing it is")
@@ -128,8 +131,11 @@ class TestNothingIsAccepted:
     def test_no_reason_bypasses_the_aead(self):
         """The tag check must be unconditional."""
         src = self._src()
-        i = src.index("except _INVALID_TAG:")
-        window = src[i:i + 700]
+        # The tag check is inside the Rust core; its ValueError is classified
+        # where the core is called (`VoiceFrameCrypto.open`). The old
+        # `except _INVALID_TAG:` site went with the Python AES-GCM path.
+        i = src.index("plaintext = self._rust.open(sealed, aad, counter)")
+        window = src[i:i + 500]
         assert "return" not in window.split("raise")[0], (
             "a frame that failed its tag can reach a return")
 

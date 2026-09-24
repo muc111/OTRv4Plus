@@ -1,0 +1,21 @@
+# SPDX-License-Identifier: AGPL-3.0-only OR LicenseRef-OTRv4Plus-Commercial
+# Copyright (C) 2025-2026 muc111
+#
+# A safe wrapper over libopus, for the Android APK's voice codec.
+#
+# SEPARATE FROM otrv4_core ON PURPOSE: it is the only place that needs
+# `unsafe` (the libopus FFI), and otrv4_core keeps #![forbid(unsafe_code)].
+# Like pqcrypto's C reference code, the unsafety lives in a dependency with a
+# narrow, safe interface. Not cryptography -- a codec. It holds no key.
+[package]
+name = "otrv4-opus-codec"
+version = "0.1.0"
+edition = "2021"
+license = "AGPL-3.0-only OR LicenseRef-OTRv4Plus-Commercial"
+publish = false
+
+[dependencies]
+# Upstream libopus 1.5.2 (BSD-3-Clause), built from source with CMake and
+# linked statically; the NDK toolchain file is used when ANDROID_NDK_HOME is
+# set. Pinned exactly: a codec update is a reviewed change, not a lock bump.
+opusic-sys = { version = "=0.5.6" }

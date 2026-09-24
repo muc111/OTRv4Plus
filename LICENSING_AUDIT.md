@@ -10,9 +10,34 @@ for qualified legal review rather than answered. Nothing was removed or
 relicensed during this task.
 
 **Method.** Rust licences from `cargo license --avoid-build-deps` over the full
-resolved graph in `Cargo.lock` (134 packages). Python licences from the PyPI JSON
-API (`license_expression` field). Android licences from the published project
-terms. The repository licence from the `LICENSE` file itself.
+resolved graph in `Cargo.lock` (134 packages **as that graph stood when this
+section was written**; see "Counting the dependencies" below for what the
+various figures in this document count and what they are today). Python licences
+from the PyPI JSON API (`license_expression` field). Android licences from the
+published project terms. The repository licence from the `LICENSE` file itself.
+
+### Counting the dependencies
+
+Four different numbers for "how many Rust dependencies" appear across this
+document, the README and `NOTICE`, and they are not interchangeable. They count
+different things, and the graph has also changed over time. Stated once, here:
+
+| Figure | What it counts | How to reproduce |
+|---|---|---|
+| **104** | **Shipped crates** — reachable from `otrv4_core` through *normal* dependency edges only, so build-script helpers and dev/test-only crates are excluded. This is what is compiled into the artifact, and therefore exactly the set `NOTICE` §1 must attribute. | `tools/generate_notice.py` → `shipped_packages()` |
+| **133** | Third-party crates in the **full resolved graph**, including build and dev dependencies. Larger than 104 because a `cc` or a `criterion` is resolved but not shipped. | `cargo metadata --all-features`, minus `otrv4_core` |
+| **134** | The same full resolved graph **including `otrv4_core` itself**. This is the raw package count, and the figure the Method paragraph above quotes. | `grep -c '^name = ' Rust/Cargo.lock` |
+| **137** | The third-party full-graph count **at v10.17.0**, when the dual-licence decision was taken. The graph has since lost four packages, so the equivalent figure today is 133. | `git show 080a60d:Rust/Cargo.lock \| grep -c '^name = '` → 138, minus `otrv4_core` |
+
+The number that matters for attribution is **104**: those are the crates whose
+notices must travel with a binary. The number that mattered for the licensing
+decision is the full-graph one, because a copyleft build dependency would still
+have been a problem to think about — and, as §2–§5 record, there were none in
+either set.
+
+`NOTICE` states 104 and regenerates it from the graph, so it cannot drift.
+Prose figures can, which is why the README points at `NOTICE` rather than
+restating a count of its own.
 
 ---
 
@@ -34,8 +59,9 @@ in §1 below.
 | SPDX in `Cargo.toml` / `pyproject.toml` | `AGPL-3.0-only OR LicenseRef-OTRv4Plus-Commercial` |
 
 **What the audit's own finding made possible.** §2-§5 establish that no
-dependency imposes copyleft — 137 Rust packages, the Python layer, Chaquopy
-(MIT since 12.0.1) and i2pd (BSD-3-Clause) are all permissive. The only
+dependency imposes copyleft — 137 Rust packages at the time (133 today, of
+which 104 actually ship; see "Counting the dependencies" below), the Python
+layer, Chaquopy (MIT since 12.0.1) and i2pd (BSD-3-Clause) are all permissive. The only
 copyleft in play was the project's own. That is precisely the condition under
 which dual licensing works: a sole copyright holder with an all-permissive
 dependency graph can grant both halves. Had one AGPL or GPL dependency been in
@@ -120,10 +146,23 @@ an identifier. Both are pinned by tests.
 
 ### Still open
 
-* ~~**Attribution/NOTICE file.**~~ Done at v10.17.2 — see above. What
-  remains is a *delivery* requirement rather than an audit one: the APK must
-  render it on a licences screen, and i2pd's own dependencies (Boost,
-  OpenSSL 3.x) must be attributed by whoever bundles them.
+* ~~**Attribution/NOTICE file.**~~ Done at v10.17.2 — see above.
+* ~~**NOTICE delivery: the APK must render it on a licences screen.**~~ Done
+  2026-09-14. `:app:syncNoticeAsset` copies `NOTICE` into the APK's assets and
+  fails the build if it is missing or empty; `ui/AboutScreen.kt` renders it,
+  reachable from both the connection screen and the contact list. The same
+  screen carries the AGPL §5(d) Appropriate Legal Notices — copyright line,
+  warranty disclaimer, which licence applies, and where the source is.
+  i2pd's own dependencies (Boost, OpenSSL 3.x) remain the obligation of
+  whoever bundles them; i2pd is **not** currently bundled, so `NOTICE` §4 is
+  forward-looking rather than a live obligation.
+* ~~**No copyleft guard on the Android dependency graph.**~~ Done 2026-09-14.
+  `:app:checkRuntimeDependencyLicences` resolves the debug and release runtime
+  classpaths, reads each module's POM (following `<parent>` where licences are
+  inherited), and fails on any module with no permissive option — or on any
+  module whose licence it cannot determine. Test-only dependencies are outside
+  the runtime classpaths and are not checked, which is why JUnit's EPL is not
+  a finding. It is wired into `check` and runs in the `configure` CI job.
 * **Copyrightability of AI-generated code.** The README states the codebase is
   AI-generated under the author's direction. Several jurisdictions require
   human authorship for copyright to subsist. This does not affect the AGPL side
@@ -134,19 +173,60 @@ an identifier. Both are pinned by tests.
 * **App-store terms versus AGPL §6.** Unchanged from §1 below, and the reason
   the commercial licence exists: a store build that cannot satisfy the AGPL
   takes the commercial route instead.
+* **Documentation licence — DECIDED (2026-09-24).** The author chose
+  CC BY-SA 4.0 for the project's documentation and specifications, so that
+  independent implementations can quote the protocol freely. Scope is in
+  `LICENSING.md` and, per path, `REUSE.toml`: documents and README
+  screenshots are CC BY-SA 4.0 (code in them also under the software licence);
+  source code keeps the software licence; legal instruments, licence texts,
+  third-party material and the icon are outside both. Earlier revisions
+  remain available under the software licence. The CLA's relicensing grant
+  covers contributed documents.
+* **Icon provenance — ESTABLISHED (2026-09-24); placeholder.** The author
+  stated that `icon.png` was generated by them with Grok (xAI) on their
+  personal free-tier account. That closes the provenance blocker: the source
+  is known and it is not third-party artwork. It does not give the project a
+  copyright it can license — AI-generated imagery may not be protected at all,
+  and use of the output is governed by the xAI terms the author accepted — so
+  no licence is asserted in it (`REUSE.toml`: `LicenseRef-OTRv4Plus-NoLicense`).
+  It is a **placeholder for development and the author's own testing**, and
+  must be replaced with artwork the project can license **before any public or
+  store release**. `ASSETS.md` holds the record and hashes; a test keeps it
+  current.
 
 ---
 
-## 1. The finding that governs everything else
+## 1. The finding that governed the decision (pre-v10.17.0 — historical)
 
-**The project is GPL-3.0, and that is the binding constraint — not any
-dependency.**
+> **Superseded by §0. Read that first.**
+>
+> Everything in this section describes the position **before v10.17.0**, when
+> the project was licensed GPL-3.0 and the licensing question was still open.
+> The GPL-3.0 statements below — in the prose, in the evidence table, and in
+> the three options at the end — are a record of what was true at the time and
+> of the reasoning that led to the decision. They are **not** a description of
+> the project's current licence.
+>
+> **The project is now dual-licensed: AGPL-3.0-only, or
+> `LicenseRef-OTRv4Plus-Commercial`.** `LICENSE`, `Rust/Cargo.toml` and
+> `Rust/pyproject.toml` all declare that, and `LICENSE-COMMERCIAL.md` sets out
+> the commercial terms. Option 3 below is the one that was taken.
+>
+> This section is kept rather than rewritten because it is the working. A
+> decision with its reasoning deleted is indistinguishable from a decision
+> taken at random, and the copyleft-dependency finding in §2–§5 is what made
+> the commercial half possible at all.
 
-| Evidence | Value |
+**[Historical, pre-v10.17.0.] The project is GPL-3.0, and that is the binding
+constraint — not any dependency.**
+
+| Evidence **as it stood before v10.17.0** | Value at that time |
 |---|---|
 | `LICENSE` (repository root) | GNU General Public License v3, full 674-line text |
 | `Rust/Cargo.toml` | `license = "GPL-3.0"` |
 | `cargo license` classification of the crate itself | `GPL-3.0 (1): otrv4_core` |
+
+*(All three now read AGPL-3.0-only OR LicenseRef-OTRv4Plus-Commercial. See §0.)*
 
 Every third-party dependency examined is permissive. **No dependency imposes
 copyleft on this project.** The copyleft in play is the project's own, chosen by
@@ -253,19 +333,23 @@ of them is copyleft.
 
 | Component | Version | Licence | Direct/transitive | Relationship | Compatible? |
 |---|---|---|---|---|---|
-| `PySocks` | 1.7.1 | BSD | direct, required | bundled in APK | Yes |
+| `PySocks` | 1.7.1 | BSD-3-Clause | direct, required | bundled in APK | Yes |
 | `slixmpp` | 1.17.0 | MIT | direct, required | bundled in APK | Yes |
-| `aiodns` | 4.0.4 | MIT | direct, required | bundled in APK | Yes |
-| `argon2-cffi` | 25.1.0 | MIT | direct, optional | bundled in APK | Yes |
-| CPython | 3.12+ | PSF-2.0 | bundled by Chaquopy | bundled in APK | Yes |
+| `pyasn1` | 0.6.4 | BSD-2-Clause | transitive (slixmpp) | bundled in APK | Yes |
+| `pyasn1-modules` | 0.4.2 | BSD-2-Clause | transitive (slixmpp) | bundled in APK | Yes |
+| CPython | 3.12 (Chaquopy 3.12.12-0) | PSF-2.0 | bundled by Chaquopy | bundled in APK | Yes |
+| OpenSSL | 3.x (Chaquopy's CPython) | Apache-2.0 | bundled by Chaquopy | bundled in APK | Yes |
+| SQLite | 3.x (Chaquopy's CPython) | public domain | bundled by Chaquopy | bundled in APK | Yes |
+
+Not in the APK: `aiodns`/`pycares` (excluded by design, see the pip block),
+and, since 0.7.0, `argon2-cffi` with `argon2-cffi-bindings`, `cffi`,
+`pycparser` and `chaquopy-libffi` (the at-rest KDF moved into the Rust core).
+All versions are pinned in `android/app/build.gradle.kts`, and each bundled
+package's own licence text is reproduced in `NOTICE` from `third_party/python/`.
 
 Licences read from the PyPI `license_expression` metadata field, not inferred.
 
-**`argon2-cffi` pulls `cffi`** (MIT) and, at build time, `pycparser` (BSD).
-Neither is copyleft. **Not yet verified**: the full transitive Python graph as
-resolved *for Android by Chaquopy*, which cannot be enumerated here because the
-Chaquopy repository is unreachable from this environment. That enumeration is a
-Phase 3 task once the toolchain is available.
+**The full transitive Python graph is now enumerated**: `.github/scripts/verify_python_closure.py` resolves the pinned roots with dependencies on and fails CI unless every resolved package is either installed or excluded with a reason.
 
 **CPython's PSF-2.0 licence** is permissive and permits redistribution in a
 proprietary product, with attribution. Chaquopy bundles the interpreter, so the
@@ -331,12 +415,15 @@ That check is a Phase 3 task, gated behind building `libi2pd` for arm64-v8a.
 Regardless of the licensing route chosen, the shipped app must reproduce notices
 for every bundled component. Concretely:
 
-- **~120 permissive Rust crates** — Apache-2.0 requires the NOTICE file where one
+- **104 shipped Rust crates** (the §count table's authoritative figure; the
+  full resolved graph is 133 third-party packages, `Cargo.lock` lists 134
+  including `otrv4_core`) — Apache-2.0 requires the NOTICE file where one
   exists; MIT and BSD require the copyright notice and permission text.
 - **CPython** — PSF-2.0 notice.
 - **AndroidX / Compose / Kotlin** — Apache-2.0 notices.
 - **Chaquopy** — MIT notice.
-- **slixmpp, aiodns, argon2-cffi, PySocks** — MIT / BSD notices.
+- **slixmpp, PySocks, pyasn1, pyasn1-modules** — MIT / BSD notices, full texts.
+- **OpenSSL, SQLite** (inside Chaquopy's CPython) — Apache-2.0 / public-domain notices.
 - **i2pd**, if bundled — BSD-3 notice.
 
 **Recommended mechanism**: generate the attribution set from

@@ -1,6 +1,6 @@
 [package]
 name        = "otrv4_core"
-version     = "0.10.28"
+version     = "0.11.0"
 edition     = "2021"
 authors     = ["OTRv4+ contributors"]
 description = "Post-quantum OTRv4 cryptographic core (Rust/PyO3)"
@@ -44,6 +44,15 @@ crate-type = ["cdylib", "rlib"]
 # documented resolution.
 default          = ["pq-rust"]
 extension-module = ["pyo3/extension-module"]
+
+# The Opus codec for the ANDROID APK (src/opus_codec.rs): upstream libopus
+# 1.5.2, BSD-3-Clause, built from source by opusic-sys with CMake (the NDK's
+# toolchain file when ANDROID_NDK_HOME is set) and linked statically. The FFI
+# is in Rust/opus-codec so this crate keeps #![forbid(unsafe_code)].
+# Enabled by .github/workflows/android.yml only. The Termux build does not
+# enable it: Termux gets Opus from `opuslib` over Termux's libopus.so.
+# Not cryptography -- a codec. It holds no key.
+android-opus = ["dep:otrv4-opus-codec"]
 
 pq-rust = [
     "num-bigint",
@@ -126,6 +135,7 @@ rand         = { version = "0.8"  }
 dashmap      = { version = "5.5"  }
 thiserror    = { version = "1.0"  }
 libc         = { version = "0.2"  }
+otrv4-opus-codec = { path = "opus-codec", optional = true }
 
 # Optional, gated by the pq-rust feature.
 # v10.6.14: lazy_static (1.5) removed; SMP constants migrated to

@@ -285,10 +285,25 @@ class TestSecurityPropertiesSurvived:
 # X448
 # --------------------------------------------------------------------------
 
+def _ek():
+    """A real ML-KEM-1024 encapsulation key to agree against."""
+    return bytes(C.RustVoiceKex(True).mlkem_ek)
+
+
 class TestTheKexMatchesTheLibraryItReplaced:
+    """The Rust exchange, checked without the shared secret leaving Rust.
+
+    These used to call `RustVoiceKex.agree`, which returned the X448 shared
+    secret to Python. That method is gone: the exchange returns a
+    `RustVoiceAgreement`, whose `digests()` are truncated SHA-256 of each
+    secret. Comparing a digest against the digest of the independent
+    library's result proves the agreement is right while the secret stays
+    where it is.
+    """
 
     def test_agreement_matches_python_cryptography(self):
-        crypto = pytest.importorskip("cryptography")
+        import hashlib
+        pytest.importorskip("cryptography")
         from cryptography.hazmat.primitives.asymmetric import x448
         from cryptography.hazmat.primitives import serialization as ser
 
@@ -297,50 +312,69 @@ class TestTheKexMatchesTheLibraryItReplaced:
         peer_pub = peer.public_key().public_bytes(
             ser.Encoding.Raw, ser.PublicFormat.Raw)
 
-        ours = bytes(rust.agree(peer_pub))
+        agreement, _ct = rust.responder_agree(peer_pub, _ek())
         theirs = peer.exchange(
             x448.X448PublicKey.from_public_bytes(bytes(rust.public)))
-        assert ours == theirs, (
+        assert agreement.digests()[0] == hashlib.sha256(theirs).hexdigest()[:12], (
             "the Rust X448 disagrees with the library it replaced, so no "
             "call would ever key")
 
-    def test_the_shared_secret_is_wipeable(self):
-        """A bytes return would have made it unwipeable and undone the point."""
-        rust = C.RustVoiceKex()
-        peer = C.RustVoiceKex()
-        shared = rust.agree(bytes(peer.public))
-        assert isinstance(shared, bytearray)
+    def test_both_ends_agree_on_both_secrets(self):
+        initiator = C.RustVoiceKex(True)
+        responder = C.RustVoiceKex()
+        from_responder, ct = responder.responder_agree(
+            bytes(initiator.public), bytes(initiator.mlkem_ek))
+        from_initiator = initiator.initiator_agree(bytes(responder.public), bytes(ct))
+        assert from_initiator.digests() == from_responder.digests()
+
+    def test_the_shared_secret_is_never_returned(self):
+        """`agree` handed the X448 secret to Python; `agree_into_root` the root."""
+        kex = C.RustVoiceKex(True)
+        assert not hasattr(kex, "agree")
+        assert not hasattr(kex, "agree_into_root")
+        agreement, _ = C.RustVoiceKex().responder_agree(
+            bytes(kex.public), bytes(kex.mlkem_ek))
+        assert not isinstance(agreement, (bytes, bytearray))
 
     def test_the_scalar_is_single_use(self):
         rust = C.RustVoiceKex()
-        peer = C.RustVoiceKex()
+        peer = C.RustVoiceKex(True)
         assert rust.spent is False
-        rust.agree(bytes(peer.public))
+        rust.responder_agree(bytes(peer.public), bytes(peer.mlkem_ek))
         assert rust.spent is True
         with pytest.raises(RuntimeError):
-            rust.agree(bytes(peer.public))
+            rust.responder_agree(bytes(peer.public), bytes(peer.mlkem_ek))
 
     def test_reflection_is_refused(self):
         rust = C.RustVoiceKex()
         with pytest.raises(ValueError, match="echoed"):
-            rust.agree(bytes(rust.public))
+            rust.responder_agree(bytes(rust.public), _ek())
 
     def test_an_all_zero_peer_key_is_refused(self):
         rust = C.RustVoiceKex()
         with pytest.raises(ValueError, match="all-zero"):
-            rust.agree(b"\x00" * 56)
+            rust.responder_agree(b"\x00" * 56, _ek())
 
     def test_a_refused_agreement_still_spends_the_scalar(self):
         """Retrying with a different peer key is a small-subgroup probe."""
         rust = C.RustVoiceKex()
         with pytest.raises(ValueError):
-            rust.agree(b"\x00" * 56)
+            rust.responder_agree(b"\x00" * 56, _ek())
         assert rust.spent is True
 
     def test_a_wrong_length_peer_key_is_refused(self):
         rust = C.RustVoiceKex()
         with pytest.raises(ValueError):
-            rust.agree(b"\x01" * 32)
+            rust.responder_agree(b"\x01" * 32, _ek())
+
+    def test_the_decapsulation_key_is_single_use(self):
+        initiator = C.RustVoiceKex(True)
+        responder = C.RustVoiceKex()
+        _, ct = responder.responder_agree(bytes(initiator.public),
+                                          bytes(initiator.mlkem_ek))
+        initiator.initiator_agree(bytes(responder.public), bytes(ct))
+        with pytest.raises(RuntimeError):
+            initiator.initiator_agree(bytes(responder.public), bytes(ct))
 
     def test_two_exchanges_have_different_public_keys(self):
         assert bytes(C.RustVoiceKex().public) != bytes(C.RustVoiceKex().public)
@@ -508,6 +542,7 @@ class TestTheRootStaysInRust:
         assert isinstance(sched.current_root(), C.RustVoiceRoot)
 
     def test_a_media_key_cannot_be_extracted_from_a_handle(self):
-        root = C.RustVoiceRoot.from_initial_agreement(X_SS, K_SS, TRANSCRIPT)
-        with pytest.raises(TypeError, match="point of the handle"):
-            V.derive_media_key(root, CALL, 0, V.DIR_INITIATOR)
+        # There is no Python function that derives a media key at all now,
+        # from a handle or from bytes.
+        assert not hasattr(V, "derive_media_key")
+        assert not hasattr(V, "ratchet_key")

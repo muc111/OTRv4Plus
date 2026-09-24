@@ -216,13 +216,23 @@ class TestProtocolStateMachine:
         assert alice.ratchet_id() == rid
 
     def test_send_ratchet_updates_state(self):
+        # The step takes a key HANDLE and a peer public key; the agreement
+        # happens inside Rust. There is no shared secret to pass in.
+        from otrv4_core import generate_x448_keypair
         alice, _ = create_matching_pair()
         old_pub = bytes(alice.local_pub())
-        dh = secrets.token_bytes(56)
-        new_pub = secrets.token_bytes(56)
-        alice.send_ratchet(dh, new_pub)
-        assert bytes(alice.local_pub()) == new_pub
-        assert old_pub != new_pub
+        old_root = bytes(alice.state_tags()["root"])
+        new_local = generate_x448_keypair()
+        peer = generate_x448_keypair()
+        alice.send_ratchet(new_local, bytes(peer.public_bytes()))
+        assert bytes(alice.local_pub()) == bytes(new_local.public_bytes())
+        assert old_pub != bytes(alice.local_pub())
+        assert bytes(alice.state_tags()["root"]) != old_root
+
+    def test_send_ratchet_refuses_a_raw_secret(self):
+        alice, _ = create_matching_pair()
+        with pytest.raises(TypeError):
+            alice.send_ratchet(secrets.token_bytes(56), secrets.token_bytes(56))
 
 
 if __name__ == "__main__":

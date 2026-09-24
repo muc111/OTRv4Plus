@@ -1,6 +1,15 @@
 # Security
 
+> OTRv4+ is an I2P-first private communications client: end-to-end encrypted
+> messaging, file transfer and voice over I2P, with Tor and TLS available as
+> alternative transports for messaging. See [README.md](README.md) for the overview.
+
 Threat model, known issues, and reporting.
+
+Two layers, and they are independent: **I2P protects the network
+relationship; OTRv4+ protects the communication itself.** Neither substitutes
+for the other, and the tables below are about the second one except where they
+name a transport.
 
 ## What OTRv4+ tries to defend against
 
@@ -414,7 +423,7 @@ be is a way for one side to store something the other refuses.
    - **v10.7.4 (5.3i-D)** — `aead.rs` migrated off the deprecated `aes-gcm` `GenericArray::from_slice` helper to `Aes256Gcm::new_from_slice` and `Nonce::from(*&[u8;12])`.  Zero-warning Rust build restored.
    - **v10.7.4 (5.3k)** — the `otr4_ed448_ct` import was deleted (it had no callers; it was loaded as a defensive ground-truth but every Ed448 operation already ran in Rust).  The `.c`/`.h`/`.so` files and `setup_otr4.py` were removed from the repository.  Seven test files in `tests/` were rewritten onto Rust `otrv4_core` (the C-extension-only `test_otr.py` was deleted; the pre-broken `test_v10_4_security_fixes.py` is unrelated and tracked separately).
 
-   The architectural consequence: there is a **single cryptographic implementation surface** for chat.  No second backend to drift against, no compile-time conditionals selecting between paths, no "Rust verified against C" comparison checks.  Whatever the Rust core computes is what gets transmitted on a chat message; there is nothing else for a reviewer to look at.  *(This was true of the whole project when written.  The voice subsystem added at v10.11.0 broke it by carrying a second AES-256-GCM and its own key schedule in Python; v10.13.2 moved them into the same core, and the only remaining `AESGCM(` call sites in the repository are in `.attic/`.  See caveat 11.)*
+   The architectural consequence: there is a **single cryptographic implementation surface** for chat.  No second backend to drift against, no compile-time conditionals selecting between paths, no "Rust verified against C" comparison checks.  Whatever the Rust core computes is what gets transmitted on a chat message; there is nothing else for a reviewer to look at.  *(This was true of the whole project when written.  The voice subsystem added at v10.11.0 broke it by carrying a second AES-256-GCM and its own key schedule in Python; v10.13.2 moved them into the same core, and there are no remaining `AESGCM(` call sites in the repository (the last, in an archived pre-Rust copy of the engine under `.attic/`, were deleted in 0.6.0-experimental along with that copy).  See caveat 11.)*
 
 5. **Ephemeral identity is a deliberate design choice for IRC, not a missing feature.** IRC regenerates identity keys at every launch; fingerprints do not persist across sessions. **XMPP does not do this** (caveat 5b). Rationale for IRC:
    - **Threat model fits ephemeral.** OTRv4+ runs over I2P for an IRC channel; the assumption is short-lived sessions, not long-term identity binding.
@@ -550,6 +559,6 @@ There is no bug bounty. The project is solo and unfunded.
 8. Fragment buffer collision when same nick sends two parallel fragmented messages (closed at v10.5)
 9. SMP secret stored as Python `bytes` (closed at v10.5, now lives in `RustSMPVault`)
 10. Skipped message keys not zeroized (closed at v10.5)
-11. NIST SP 800-88r1 secure file destruction missing (closed at v10.5)
+11. NIST SP 800-88r1 secure file destruction missing (closed at v10.5) — *restated in 0.6.0-experimental: what shipped is a one-pass random overwrite, fsync and unlink. That is not SP 800-88 sanitisation of flash, and the claim that it was has been withdrawn; on flash, wear-levelling can keep old blocks the application cannot reach. Only a full-disk-encryption key erase (the OS's factory reset) reaches them.*
 
 Phase 5.x changes since v10.6.3 are architectural hardening beyond audit scope. The audit count remains at 11/11 closed.

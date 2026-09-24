@@ -14,9 +14,13 @@ Feasibility background, including why depending on the separately installed
 i2pd app does not work, is in `ANDROID_I2P_FEASIBILITY.md`. This document
 answers the twelve structural questions the decision asks.
 
-**Scope note.** The specification is explicit that the calculator-disguise /
-foreground-notification UX problem is *not* to be solved yet. §9 states the
-constraint that shapes the design and stops there. Nothing here proposes hiding
+**Scope note.** This was written while the calculator-disguise /
+foreground-notification UX problem was deliberately left unsolved. **It is
+solved now, on 2026-09-14: the disguise is withdrawn** (Play's Deceptive Behavior
+policy — `ANDROID_PHASE2_REPORT.md` §15.7), and the notification simply stays.
+Read the passages below that weigh the two against each other as history; the
+design they produced is unaffected, because it never depended on hiding
+anything. Nothing here proposes hiding
 or faking a notification: Android requires a visible notification for a
 foreground service, and this design does not attempt to evade that.
 
@@ -163,11 +167,11 @@ tunnels is precisely the case foreground services exist for.
   it as something else, or use any mechanism to evade the platform requirement.
   Doing so would violate Android platform requirements and likely Play policy,
   and the specification forbids it.
-- **The tension with the calculator disguise is real and unresolved**, and is
-  deliberately left unresolved here. The plausible shapes are: run the router
-  only while a conversation or call is active (shortening but not removing the
-  window), accept a visible notification, or reconsider the disguise. **This is a
-  product decision for a later phase.**
+- **The tension with the calculator disguise is resolved on 2026-09-14**: of the
+  three shapes listed here — run the router only while a conversation or call is
+  active, accept a visible notification, or reconsider the disguise — the third
+  was taken, and it makes the second free. The router may run whenever the app
+  needs it, with an honest notification saying so.
 - **Battery**: maintaining tunnels costs power continuously; Doze and App
   Standby will restrict a backgrounded app, and the foreground service is what
   keeps the router alive. Actual consumption **[requires measurement]** — no
@@ -184,8 +188,13 @@ tunnels is precisely the case foreground services exist for.
 | Both killed | Everything is lost; the next launch starts LOCKED and the router is not started until after unlock |
 | Device reboot | Nothing auto-starts. No `BOOT_COMPLETED` receiver: a router starting before the user has unlocked the app would put them on the network without their knowledge. |
 
-**Identity survives all of these** — it is sealed on disk (decision B1) and does
-not depend on the router. Tunnels and SAM sessions are ephemeral by design;
+**Identity does not survive a process death.** Decision B1 as built: the
+engine is constructed with `OTRConfig()` (`persist_identity=False`), so every
+launch generates a new identity and nothing of the old one is kept. (An
+earlier revision of this document said the identity was sealed on disk; the
+Rust sealing path exists and the Termux XMPP client uses it, but the Android
+app does not.) Losing the router alone does not change the identity, which
+does not depend on it. Tunnels and SAM sessions are ephemeral by design;
 losing them costs reconnection time, not identity.
 
 ---

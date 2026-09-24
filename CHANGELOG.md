@@ -4,6 +4,304 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.4 — 2026-09-24 — automatic OTRv4+ only where OTRv4Plus is, one People list, files you can see (core 0.11.0)
+
+*Supersedes rc.3; the release page now keeps only the newest APK. None of
+this has run on a handset yet. The new checklist steps are §18–§21 of
+`ANDROID_CALL_AND_FILE_DEVICE_TEST.md`.*
+
+**Automatic OTRv4+, gated on real capability** (`OTRV4PLUS_CAPABILITY.md`)
+
+- Both clients advertise `https://github.com/muc111/OTRv4Plus#otrv4plus-1`
+  in XEP-0030 and XEP-0115. Capability is learned per resource from
+  disco#info, the caps hash, or an OTRv4+ frame that resource sent.
+- OTRv4+ frames go only to a capable full JID. The transport refuses
+  otherwise. It never sends to the bare JID and never runs a DAKE to probe.
+- The open conversation secures itself when the peer is capable. When it is
+  not: "OTRv4Plus unavailable", no traffic and no downgrade.
+- Capability is not trust: SMP still gates calls and files.
+
+**People list** (`PROSODY_USER_DISCOVERY.md`)
+
+- Roster, subscription requests and the server's own online list are merged
+  into one list: Accept / Online — Added / Online (Add) / Pending /
+  Offline — Added.
+- Server discovery uses XEP-0133 only when Prosody offers it, which is to
+  admins only. Otherwise it says so.
+- Nothing is guessed. There is no client-side pending expiry.
+
+**Files**
+
+- Named phases, with speed and an ETA from a rolling average ("Calculating
+  ETA…", "ETA unavailable").
+- Metadata dialog: Remove and send / Keep and send / Cancel.
+- A verified received file can be opened in an in-app viewer (image, text,
+  PDF, audio, video), with the type taken from its bytes. It never opens on
+  its own. Handing it to another app is explicit and warns first.
+
+**Also**
+
+- Wipe & Exit at the foot of the conversation list.
+- Dark purple theme by default, with Light and Follow system; WCAG AA
+  contrast is checked in tests.
+- Blank username on first launch.
+- `MLS_FEASIBILITY.md`: a study only; no MLS is implemented.
+
+## Android 0.7.0-experimental.rc.3 — 2026-09-24 — the APK gets a voice codec (core 0.11.0)
+
+*rc.2 was not fit for the call test, and it is superseded. Nothing else
+changes; the handset checklist (§12–§17) still applies, and §14 is now worth
+running.*
+
+**Root cause of "Call unavailable — opuslib not installed".**
+
+- The Android call bridge imports the Termux client (`otrv4plus_xmpp`) for
+  its SAM helpers. That import also binds the Termux codec and availability
+  hooks into the voice engine, and the bridge then asked those hooks.
+- `otrv4plus_xmpp.voice_available()` begins with `import opuslib`, a Python
+  wrapper over Termux's `libopus.so`. An APK has neither, and cannot load
+  Android's private libopus.
+- So the answer was always "not installed", and the remedy shown was a pip
+  command.
+- rc.1 asked the device question before the security one, which is why the
+  message appeared before OTR.
+- rc.2 asked it last, which only hid the message until SMP had passed.
+- In both releases the APK contained **no Opus codec at all**. Every Android
+  call would have failed at `_build_codec`. Inspecting the published rc.2 APK
+  confirms it: no libopus, no opuslib, no codec in `otrv4_core`.
+
+**The fix.**
+
+- `otrv4_core` for the APK now carries upstream **libopus 1.5.2**
+  (BSD-3-Clause), statically linked (feature `android-opus`). CMake builds it
+  with the NDK toolchain in CI.
+- It is exposed as `OpusEncoder` / `OpusDecoder` with opuslib's interface,
+  so the voice pipeline is unchanged.
+- The libopus FFI lives in a separate crate (`Rust/opus-codec`), so the
+  crypto core keeps `#![forbid(unsafe_code)]`.
+- `android_bridge.android_audio` binds that codec, pins **AAudio** (no
+  PulseAudio fallback), and answers availability from those two alone.
+- Termux is unchanged: `opuslib` plus Termux `libopus.so`, and AAudio or
+  PulseAudio. The Termux build does not enable the feature.
+- Voice cryptography, rekey and the I2P datagram transport are untouched.
+- The APK inspector now fails any APK whose core lacks the codec or libopus,
+  or that carries `opuslib`. It fails on the published rc.2 APK.
+
+## Android 0.7.0-experimental.rc.2 — 2026-09-24 — what the rc.1 handset run found (core 0.11.0)
+
+*The rc.1 handset run proved OTR and SMP on Android, the Termux client's
+stored SMP state, and Termux file transfer with the hashes checked. It also
+found UI gaps, and this release fixes them. It stays `-experimental`: the rc.2
+checklist in `ANDROID_CALL_AND_FILE_DEVICE_TEST.md` (§12–§17) has not been run
+yet. The OTR wire format is unchanged. File transfer adds one control verb,
+`RECEIVED`, which older peers ignore.*
+
+**Wipe & Exit really wipes before anything slow.** Conversations came back
+after a wipe for these reasons:
+
+- The chat memory and vault steps ran *after* the engine teardown. That step
+  closes calls, the XMPP stream and the I2P tunnel under network timeouts,
+  which can take tens of seconds.
+- For all of that window the app still showed everything if it was reopened.
+- A process death in that window left the records on disk.
+
+The order is now memory, vault and cache first, then the engine. The vault
+is latched so a late write cannot land after it. A screen opened during a
+wipe closes at once. A test reproduces the report and inspects the vault. If
+you sign in to the same account again after a wipe, the *server's roster*
+returns, but no history.
+
+**Delete chat.** Long-press a conversation and confirm.
+
+- One-to-one: the history is deleted from the vault and the index, and the
+  row stays gone across restarts until the chat has something in it again.
+- Rooms (XEP-0045 MUC): a local delete, with an optional "Delete and leave
+  room". Delete **never** destroys a room.
+- Server-side deletion is not supported, because no XEP lets a client delete
+  a server archive, and the app says so. It reports whether the server
+  advertises a message archive (disco#info) and never claims the server
+  deleted anything. See `ANDROID_CHAT_DELETION.md`.
+
+**File transfer finishes on screen.**
+
+- An "Incoming file" prompt shows the name and size, with Accept and
+  Decline. Nothing is auto-accepted.
+- Rows show a progress bar, bytes and a percentage.
+- Every ending leaves a lasting line: "File received successfully — …",
+  "File sent successfully — …" or "File transfer failed — …".
+- The engine now reports structured states. The receiver confirms `RECEIVED`
+  only after its integrity checks pass, so "sent" and "delivered" are
+  different claims.
+- A receiver that discards a file tells the sender.
+- Cancel on a sending row works. It used to call decline, which did nothing.
+
+**The call control follows the engine.** It was hidden for a verified peer:
+
+- the screen read security only from the roster poll and dropped the
+  engine's session events;
+- a peer not on the roster was therefore "plaintext";
+- plaintext hid the control without a word.
+
+A single engine-computed gate (`call_gate`) now decides. It returns one
+reason from a fixed set, and every closed state shows a disabled control
+that says why. A stale "verified" is dropped when the session ends, is
+replaced, or its key changes.
+
+**Online users.** A live list built from XMPP presence. Online, OTR, SMP and
+call-available stay four separate facts, and a tap opens the one
+conversation for that person.
+
+**Security marks.** A padlock for an OTR session, and a lock-with-key and
+tick in the verified blue for an SMP-verified one, as the Termux client
+shows. Plaintext and a changed key never carry a padlock.
+
+## Android 0.7.0-experimental.rc.1 — 2026-09-24 — release candidate (core 0.11.0)
+
+*The first release candidate: every repository-level gate is closed. It stays
+`-experimental`, per VERSIONING.md, because the handset checklist in
+`ANDROID_CALL_AND_FILE_DEVICE_TEST.md` has not been run. Wire format
+unchanged; interoperates with 0.6.0 and with the Termux client.*
+
+**Verification Cancel works.** The bridge's Cancel called an engine method
+that did not exist -- only the unit tests' fake engine had it -- so cancelling
+an SMP run raised on a device. The engine now aborts the Rust run, drops the
+bound passphrase and tells the peer.
+
+**At-rest secrets are Rust's (INV-08).** Rust core 0.11.0 adds `at_rest.rs`:
+the terminal clients' SMP auto-respond store (`SmpSecretStore`, no getter,
+legacy files migrated in Rust) and the Termux identity key (`FileDek`). The
+unused Python key store and its `.device_seed` are gone; the Android engine
+writes no file at all. The XMPP password is dropped when the transport closes.
+argon2-cffi and its native chain (cffi, pycparser, libffi) leave the APK.
+
+**Release build.** CI now builds, inspects and publishes the R8-minified,
+log-stripped, non-debuggable release variant next to the debug build, with
+the release APK's full content list and SHA-256s. It is signed with the
+owner's release key when one is configured in the repository secrets, and
+otherwise with the debug key, and the release notes say which.
+
+**Dependencies and licences.** RustSec audit: 0 vulnerabilities; the five
+"unmaintained" warnings (the PQClean-based ML-KEM/ML-DSA crates) are recorded
+with reasons and a weekly `cargo audit --deny warnings` job catches anything
+new. NOTICE now lists exactly what the APK bundles, with each package's own
+licence text. Documentation is CC BY-SA 4.0 (`LICENSING.md`). The icon is
+recorded as an AI-generated placeholder (`ASSETS.md`).
+
+**Tests.** Termux↔Termux and Android↔Termux runs (DAKE, fragmentation,
+ratchet, SMP, abort, reconnect, changed key, call/file gate); I2P never falls
+back to a direct connection in any failure mode; an APK inspector runs on
+both variants.
+
+## Android 0.6.0-experimental — 2026-09-24 — Rust owns the secrets; Wipe & Exit
+
+*The Rust core's Python API changed; the wire format did not. Every DH
+agreement, KEM encapsulation and signature computes the same bytes as before,
+so a peer on 0.5.0 or on the Termux client interoperates unchanged. None of
+this has run on a handset yet -- see `ANDROID_CALL_AND_FILE_DEVICE_TEST.md`
+steps 35-54.*
+
+**Four session secrets stopped crossing into Python (INV-08).** The X448
+shared secret of every DH ratchet step (`X448KeyHandle.dh` is gone; the
+ratchet agrees from handles inside Rust), the brace rotation's ML-KEM
+decapsulation key and shared secret (`MlKem1024Keypair`,
+`brace_encapsulate`/`brace_decapsulate`), both voice shared secrets and the
+voice decapsulation key (`RustVoiceAgreement`), and the ML-DSA-87 DAKE signing
+key (`MlDsa87KeyHandle`). A Python-derived "extra symmetric key" built from
+public inputs and read by nothing was removed.
+
+**Answering a verification on Android remembered the passphrase.** The
+bridge's `smp_respond` went through the terminal clients' auto-respond setter,
+which wrote the SMP secret to `smp_secrets.json`, kept it in a Python dict for
+the life of the process, and re-bound it into every later session -- so the
+peer's NEXT challenge was answered without the dialog appearing. The bridge
+now binds the answer into the Rust vault only (`bind_smp_secret`).
+
+**Production audit: dead and duplicate crypto removed.** Voice's pure-Python
+ML-KEM fallback (`kyber-py`) and its Python HKDF key derivations
+(`derive_media_key`, `ratchet_key`) are gone; voice key material is derived
+only in the Rust core. `MLKEM1024BraceKEM` is reduced to wire-size constants.
+A v5 "legacy" data-message parser that fed the ratchet without the outer MAC
+or instance-tag checks (and had stopped working) is removed. `.attic/` -- a
+pre-Rust copy of the engine and two prebuilt `.so` files of unrecorded
+provenance -- is deleted. File destruction is a one-pass random overwrite,
+fsync and unlink, and its documentation no longer claims NIST SP 800-88
+compliance or that wear-levelled blocks hold only ciphertext: on flash, the
+old blocks hold the old data and no file-level call reaches them.
+
+**The APK's Python dependencies are pinned.** Every third-party package the
+APK installs (slixmpp, PySocks, argon2-cffi and their closure) now names the
+exact version CI built and tested; before, each build took whatever the index
+served that day. The Rust side was already locked by `Cargo.lock`.
+
+**Wipe & Exit (INV-28).** Separate from Disconnect and Sign out. Destroys
+every session secret in Rust explicitly -- not by garbage collection -- on
+the transport's loop thread (where unsendable DAKE outputs live), deletes the
+AndroidKeyStore vault key (cryptographic erasure of history, contacts and
+credentials), overwrites and removes the engine's files and received files,
+clears notifications and cache, and ends the process. Idempotent; nothing can
+resurrect a session afterwards. `ANDROID_WIPE_AND_EXIT.md` states exactly what
+is and is not guaranteed.
+
+**The Connect screen's "Sign out" only disconnected.** It is now labelled
+Disconnect; Sign out (forget this account) is reachable at last.
+
+**Rooms are group chat.** They opened as a one-to-one conversation with the
+room's JID: sends were rejected by the server while shown as sent, and
+nothing said in a room appeared. Room text is now plaintext group chat,
+labelled so on every line, with the sender shown and a participant list;
+OTR, SMP, calls and files are refused for rooms by the bridge.
+
+**Security levels** are one model for list and screen: a word plus a
+shape-distinct mark (`!`, `○`, `✓`, `⚠`), colour only as a supplement.
+
+**Metadata**: WebP is scrubbed; HEIC and video remain "cannot check".
+Pillow- and PyYAML-dependent checks fail rather than skip in CI.
+
+## Android 0.5.0-experimental — 2026-09-23 — calls, files, and what they gave away
+
+*Android only. No client `VERSION` bump: no engine, protocol or cryptographic
+code changed. Everything below is wiring onto engines that already shipped,
+plus the defects that wiring exposed. None of it has run on a handset --
+`ANDROID_CALL_AND_FILE_DEVICE_TEST.md` is the open list.*
+
+**Calls.** `VoiceCallManager` and the AAudio backend were packaged and
+unreachable. `android_bridge/voice.py` wires them, on a loop of its own so a
+30-120 s tunnel build cannot stall the XMPP stream. The SMP gate is the
+manager's; nothing restates it. RECORD_AUDIO is declared at last and asked for
+at the point of use, including the permanent-denial case where Android stops
+showing the dialog. An incoming call now raises an "Incoming call"
+notification in the background (hidden on the lock screen, never naming the
+caller); only an SMP-verified peer can reach the ringing state at all.
+
+**Files.** Same shape: `android_bridge/files.py` wires `otrv4plus_filetransfer`
+and reads the *voice* manager's verification predicate, as the terminal
+client does -- one gate, one definition of verified. Picked with the system
+document picker; no storage permission.
+
+**Metadata.** New, and the only new logic: `android_bridge/metadata.py`
+removes EXIF/XMP/IPTC/comments from JPEG and text/time chunks from PNG, keeps
+the colour profile, and refuses to promise anything about formats it does not
+understand. The user chooses; dismissing the question sends nothing.
+
+**Three defects the wiring exposed.** Call, file and trade control messages
+(`?OTRv4-CALL:`, `?OTRv4-FILE:`, `?OTRv4-TRADE:`) were all displayed in the
+conversation as text from the contact -- measured through two real bridges.
+Each is now routed or suppressed, and a test enumerates every control prefix
+the project defines so a fourth cannot be added unrouted.
+
+**CI.** `test_suite_integrity` rejected the maturin wheel CI installs, where
+`otrv4_core` is a package re-exporting its compiled submodule; it now accepts
+either layout and still fails a pure-Python stand-in.
+
+**Earlier in the same sprint:** one contact, one key (INV-27) -- `OtrMode`
+reported plaintext as permitted under other spellings of a JID that had asked
+for OTR; logout and disconnect teardowns that raced their own cancellation;
+a transport loop thread leaked per reconnect; removing a contact left their
+presence showing and their row in the list; the conversation list said
+nothing about security.
+
+---
+
 ## v10.30.0 — server administration, driven by the server's own forms
 
 *2026-09-10.  `VERSION → 10.30.0`.  `otrv4_core` unchanged at 0.10.28.*

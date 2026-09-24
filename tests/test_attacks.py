@@ -973,12 +973,12 @@ class TestPostCompromiseSecurity:
             alice.encrypt_message(b"advance")
         ck_mid = alice.chain_key_send.read()
         # Step forward from stolen key
-        ck_next, enc_next, _ = alice._kdf_ck(ck_mid, b"MESSAGE_KEY")
+        ck_next, enc_next, _ = otr.kdf_ck(ck_mid)
         # Verify we CAN step forward (attacker window)
         assert ck_next != ck_mid, "Chain must advance"
         # Verify we CANNOT reverse: kdf is one-way, ck_mid cannot recover prior CK
         # (test the property: kdf(ck_mid) != ck_mid for any prior value)
-        ck_prior_attempt, _, _ = alice._kdf_ck(ck_next, b"MESSAGE_KEY")
+        ck_prior_attempt, _, _ = otr.kdf_ck(ck_next)
         assert ck_prior_attempt != ck_mid, "KDF must be one-way — cannot reverse chain"
 
     def test_pcs_ratchet_id_increments_on_dh_ratchet(self):
@@ -1029,7 +1029,7 @@ class TestPostCompromiseSecurity:
         # new_recv = KDF(root, DH_secret + brace_key)[32:]
         # This is completely independent of stolen_send_ck
         # We verify: deriving from stolen_send_ck does NOT reproduce root-key material
-        ck_derived, _, _ = alice._kdf_ck(stolen_send_ck, b"MESSAGE_KEY")
+        ck_derived, _, _ = otr.kdf_ck(stolen_send_ck)
         root_data = alice.root_key.read()
         assert ck_derived != root_data[:32], \
             "Chain-key-derived value must not equal root key material"
@@ -1108,7 +1108,7 @@ class TestForwardSecrecyErasure:
         # Steal Bob's recv chain key AFTER all 5 decryptions (advanced past msg 0)
         stolen_ck = bob.chain_key_recv.read()
         ct0, h0, n0, t0 = old_cts[0]
-        _, stale_key, _ = bob._kdf_ck(stolen_ck, b"MESSAGE_KEY")
+        _, stale_key, _ = otr.kdf_ck(stolen_ck)
         with pytest.raises(Exception):
             _AESGCM(stale_key).decrypt(n0, ct0 + t0, h0 + bob.ad)
 

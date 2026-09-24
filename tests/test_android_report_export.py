@@ -35,7 +35,12 @@ def source():
 
 def test_the_export_button_is_not_behind_a_failure_check():
     src = source()
-    assert "Export report" in src, "the export button is gone entirely"
+    # Renamed when the error log landed: this one is the LAUNCH snapshot,
+    # and the new "Share error log" button is the live event trace. Both are
+    # always offered; the invariant guarded here is that neither is hidden
+    # behind a failure check.
+    assert "Export start-up report" in src, "the export button is gone entirely"
+    assert "Share error log" in src, "the error-log export is gone entirely"
     # Any `if (!r.ok)` block is the shape that hid it before.
     assert not re.search(r'if\s*\(\s*!\s*r\.ok\s*\)\s*\{', src), (
         "the buttons are inside a failure-only branch again; a successful "

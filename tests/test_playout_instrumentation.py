@@ -213,11 +213,29 @@ class TestTheCallLogsThePlayoutDevice:
         The setup line can only say the device buffer is small. The hangup
         summary says how much audio this call actually destroyed locally,
         which is the number the 1960 s diagnosis needed and never had.
+
+        RUN rather than read. This used to assert that the string
+        "shed locally" appeared in `_call_summary_inner`'s source, which
+        broke when the wording moved into `otrv4plus_mediapath.delivery_line`
+        even though the behaviour was unchanged. A source-string test cannot
+        tell a refactor from a regression; this one calls the summary and
+        reads what it produced.
         """
-        src = inspect.getsource(voice.VoiceCallManager._call_summary_inner)
-        assert 'get("drift"' in src, (
-            "the summary no longer reads the local-shed counter")
-        assert "shed locally" in src
+        from tests.test_voice_call_summary import FakeSession, manager
+
+        line = manager()._call_summary(
+            FakeSession(oneway=50.0, queued=1000, gaps=0, drift=330))[0]
+        assert "330 shed locally" in line, (
+            "the summary no longer reports the local-shed counter")
+
+    def test_a_call_that_shed_nothing_does_not_mention_shedding(self):
+        """Zero is not a finding. A counter that has nothing to report says
+        nothing rather than printing a confident zero."""
+        from tests.test_voice_call_summary import FakeSession, manager
+
+        line = manager()._call_summary(
+            FakeSession(oneway=50.0, queued=1000, gaps=0, drift=0))[0]
+        assert "shed locally" not in line
 
     def test_it_never_takes_the_call_down(self):
         """Both playout lines sit inside a try.

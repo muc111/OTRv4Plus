@@ -201,14 +201,10 @@ _sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
 
 MLDSA87_AVAILABLE = True
 
-try:
-    import argon2
-
-    ARGON2_AVAILABLE = True
-except ImportError:
-    print("WARNING: argon2-cffi not installed. Using weaker key derivation.")
-    print("For secure storage: pip install argon2-cffi")
-    ARGON2_AVAILABLE = False
+# No argon2-cffi. The at-rest key handling it served (the SMP auto-respond
+# store and the unused SecureKeyStorage) moved into the Rust core
+# (`Rust/src/at_rest.rs`), which has its own Argon2id for reading the legacy
+# store format; the Python derivation and its scrypt fallback are gone.
 
 
 def secure_compare(a: str, b: str) -> bool:
@@ -371,115 +367,58 @@ def _secure_wipe_bytes(b: bytes) -> None:
 
 
 def _secure_file_destroy(filepath: str) -> None:
-    """Cryptographically destroy a file on disk.
+    """Overwrite a file once with random bytes, fsync it, and unlink it.
 
-    NIST SP 800-88r1 compliant for non-magnetic media (flash, SSD):
-    single-pass cryptographic overwrite is sufficient.
+    WHAT THIS DOES NOT DO: guarantee the old contents are gone from flash.
+    On flash storage (every phone, most laptops) the controller's
+    wear-levelling writes the overwrite to NEW physical blocks and leaves the
+    old ones -- holding the old plaintext -- to be erased whenever it chooses.
+    Neither this function nor any other file-level call can reach them. An
+    earlier version of this docstring claimed NIST SP 800-88 compliance and
+    that surviving blocks would be "ciphertext whose key has been destroyed";
+    both were wrong, because the old blocks were never encrypted by the
+    overwrite. What this does achieve: the file's logical contents are
+    replaced before unlink, so the data is not recoverable through the file
+    system, by undelete tools, or from a copy-on-write-free journal.
 
-    Method:
-      1. Read file size
-      2. Generate a 256-bit AES key from os.urandom (kernel CSPRNG)
-      3. Generate a 96-bit nonce from os.urandom
-      4. Encrypt `size` bytes of zeros with AES-256-GCM (produces ciphertext
-         indistinguishable from random, plus authentication tag)
-      5. Overwrite the file with ciphertext + tag
-      6. fsync to force write to storage controller
-      7. Zero the key via OPENSSL_cleanse
-      8. Unlink the file
-
-    Even if wear-leveling preserves old blocks, the recovered data is
-    AES-256-GCM ciphertext whose key has been destroyed.
+    The overwrite bytes come straight from the kernel CSPRNG. (It used to
+    AES-GCM-encrypt zeros under a throwaway Python-held key to get the same
+    thing: a key in a Python bytearray bought nothing os.urandom does not.)
     """
     size = os.path.getsize(filepath)
     if size == 0:
         os.remove(filepath)
         return
 
-    key = bytearray(os.urandom(32))
-    nonce = os.urandom(12)
+    with open(filepath, "r+b") as f:
+        written = 0
+        while written < size:
+            chunk = os.urandom(min(65536, size - written))
+            f.write(chunk)
+            written += len(chunk)
+        f.flush()
+        os.fsync(f.fileno())
 
-    try:
-
-        plaintext_len = max(size - 16, 1)
-        ct = _RustDAKE_module.aes256gcm_encrypt(bytes(key), nonce, b"\x00" * plaintext_len, b"wipe")
-
-        with open(filepath, "r+b") as f:
-
-            written = 0
-            while written < size:
-                chunk = (
-                    ct[written : written + 65536]
-                    if written < len(ct)
-                    else os.urandom(min(65536, size - written))
-                )
-                f.write(chunk)
-                written += len(chunk)
-            f.flush()
-            os.fsync(f.fileno())
-
-        os.remove(filepath)
-    finally:
-
-        _secure_wipe(key)
-        del key
+    os.remove(filepath)
 
 
 class MLKEM1024BraceKEM:
-    """ML-KEM-1024 keypair for the OTRv4 post-quantum brace KEM.
+    """ML-KEM-1024 (FIPS 203) wire sizes for the OTRv4 post-quantum brace KEM.
 
-    NIST Level 5 (~256-bit post-quantum security).
-
-    v10.7.3 (Phase 5.3i-C): backed by Rust pqcrypto-mlkem (FIPS 203
-    ML-KEM-1024) via the otrv4_core PyO3 module.  Previously used the
-    otr4_crypto_ext C extension.  This was the last otr4_crypto_ext
-    dependency; after this migration the C extension has no callers.
-    The same pqcrypto-mlkem crate powers the DAKE's ML-KEM in dake.rs,
-    so the brace KEM and the DAKE KEM now run on one code path.
-
-    Usage (initiator side):
-        kem = MLKEM1024BraceKEM()
-        kem.encap_key_bytes
-        K = kem.decapsulate(ct_bytes)
-
-    Usage (responder side - class method):
-        ct, K = MLKEM1024BraceKEM.encapsulate(ek_bytes)
+    Sizes only. The brace KEM runs entirely in the Rust core
+    (`otrv4_core.MlKem1024Keypair`, `RustDoubleRatchet.brace_encapsulate` /
+    `brace_decapsulate`), so its decapsulation key and shared secret never
+    become Python objects. This class used to wrap the raw
+    `mlkem1024_keygen` / `encaps` / `decaps` primitives and hand the shared
+    secret back as Python bytes; nothing in production used it, and a
+    Python-side key holder that nothing uses is only somewhere for a future
+    change to put a secret. The primitives remain in the core for
+    known-answer tests, which call them directly.
     """
 
     EK_BYTES = 1568
     CT_BYTES = 1568
     SS_BYTES = 32
-
-    def __init__(self):
-        """Generate a fresh ML-KEM-1024 keypair via the Rust core."""
-        ek, self._dk_handle = _RustDAKE_module.mlkem1024_keygen()
-        self.encap_key_bytes: bytes = ek
-
-    @classmethod
-    def encapsulate(cls, ek_bytes: bytes) -> Tuple[bytes, bytes]:
-        """Encapsulate to a peer's ek.  Returns (ciphertext, shared_secret)."""
-        if len(ek_bytes) != cls.EK_BYTES:
-            raise ValueError(
-                f"ML-KEM-1024 encap key must be {cls .EK_BYTES } bytes, got {len (ek_bytes )}"
-            )
-
-        ct, ss = _RustDAKE_module.mlkem1024_encaps(ek_bytes)
-        return ct, ss
-
-    def decapsulate(self, ct_bytes: bytes) -> bytes:
-        """Decapsulate a ciphertext with our private key.  Returns shared_secret."""
-        if len(ct_bytes) != self.CT_BYTES:
-            raise ValueError(
-                f"ML-KEM-1024 ciphertext must be {self .CT_BYTES } bytes, got {len (ct_bytes )}"
-            )
-        return _RustDAKE_module.mlkem1024_decaps(ct_bytes, bytes(self._dk_handle))
-
-    def zeroize(self):
-        """Overwrite the private key material (v10.7.2: ctypes.memset)."""
-        if self._dk_handle is not None:
-            if isinstance(self._dk_handle, bytearray):
-                _secure_wipe(self._dk_handle)
-            self._dk_handle = None
-        self.encap_key_bytes = b"\x00" * self.EK_BYTES
 
 
 class MLDSA87Auth:
@@ -505,7 +444,7 @@ class MLDSA87Auth:
 
     Key sizes (FIPS 204 §4):
       Public key:  2592 bytes
-      Private key: 4896 bytes (mutable bytearray; cleansed on zeroize)
+      Private key: 4896 bytes (held in Rust by MlDsa87KeyHandle)
       Signature:   4627 bytes
     """
 
@@ -514,16 +453,21 @@ class MLDSA87Auth:
     SIG_BYTES = 4627
 
     def __init__(self):
-        """Generate a fresh ML-DSA-87 keypair via Rust pqcrypto-mldsa."""
-        pub, priv = _RustDAKE_module.mldsa87_keygen()
-        self.pub_bytes: bytes = pub
-        self._priv: bytearray = priv
+        """Generate a fresh ML-DSA-87 keypair inside Rust.
+
+        The secret key is held by an opaque `MlDsa87KeyHandle` and never
+        becomes a Python object: `mldsa87_keygen` would return it as a
+        bytearray and `mldsa87_sign` would need it passed back as `bytes`
+        -- a fresh unwipeable copy per signature. `_priv` is the handle.
+        """
+        self._priv = _RustDAKE_module.MlDsa87KeyHandle()
+        self.pub_bytes: bytes = bytes(self._priv.public_bytes)
 
     def sign(self, msg: bytes) -> bytes:
         """Sign a message.  Returns 4627-byte signature."""
         if self._priv is None:
             raise RuntimeError("ML-DSA-87 private key has been zeroized")
-        return _RustDAKE_module.mldsa87_sign(bytes(self._priv), msg)
+        return bytes(self._priv.sign(msg))
 
     @classmethod
     def verify(cls, pub_bytes: bytes, msg: bytes, sig: bytes) -> bool:
@@ -538,9 +482,12 @@ class MLDSA87Auth:
             return False
 
     def zeroize(self):
-        """Overwrite private key material (v10.7.2: ctypes.memset)."""
+        """Destroy the signing key inside Rust, then drop the handle."""
         if self._priv is not None:
-            _secure_wipe(self._priv)
+            try:
+                self._priv.zeroize()
+            except Exception:
+                pass
             self._priv = None
         self.pub_bytes = b"\x00" * self.PUB_BYTES
 
@@ -3729,9 +3676,19 @@ class _RatchetKeyStore:
 class RustBackedDoubleRatchet:
     """OTRv4 Double Ratchet - Rust crypto core.
 
-    X448 key exchange and ML-KEM brace rotation stay in Python.
-    KDF, AES-256-GCM, chain advancement, skip keys, and replay
-    detection are handled by the Rust otrv4_core module.
+    Python orchestrates; Rust owns every secret. The X448 ratchet keys are
+    opaque `X448KeyHandle`s and the agreement happens inside
+    `RustDoubleRatchet.send_ratchet` / `decrypt_new_dh`; the ML-KEM brace
+    rotation holds its decapsulation key in an opaque `MlKem1024Keypair`
+    and folds the shared secret in via `brace_encapsulate` /
+    `brace_decapsulate`. No DH output, KEM shared secret, decapsulation key,
+    root, chain or brace key is a Python object on the production path.
+
+    `root_key`, `chain_key_send`, `chain_key_recv` and `_brace_key` are
+    OBSERVATION MIRRORS: after every operation they hold one-way SHA3 tags
+    of the corresponding Rust key (`RustDoubleRatchet.state_tags`), so a
+    caller can see that a key moved, or that two ends agree, without
+    holding it. They are not keys and cannot be used as keys.
 
     Deterministic zeroization: Rust's Zeroize trait guarantees all
     secret key material is overwritten on drop - unlike Python's GC
@@ -3814,6 +3771,7 @@ class RustBackedDoubleRatchet:
         self._next_expected_recv_num: int = 0
         self._current_recv_dh_pub: Optional[bytes] = None
 
+        self._sync_mirrors()
         self.logger.debug(f"RustBackedDoubleRatchet initialized (initiator={is_initiator })")
 
     @classmethod
@@ -3909,6 +3867,7 @@ class RustBackedDoubleRatchet:
         self._current_recv_dh_pub = None
 
         self._dake_output_consumed = True
+        self._sync_mirrors()
 
         self.logger.debug(
             f"RustBackedDoubleRatchet.from_dake_output (initiator={is_initiator }) "
@@ -3977,22 +3936,6 @@ class RustBackedDoubleRatchet:
         """Original send chain key (set at construction, never advanced)."""
         return self._rks_send_init
 
-    def _kdf_ck(self, ck: bytes, label: bytes = b"MESSAGE_KEY"):
-        """Advance a chain key per OTRv4 spec §4.4.2.
-
-        Returns (new_ck, MKenc, MKmac).
-
-        L1: the third element was a hardcoded ``bytes(32)`` documented as
-        "extra_zeros". §4.4.2 puts MKmac there, so anything reading this
-        position as a MAC key got 32 zero bytes. It is now derived per spec:
-        ``MKmac = KDF(usage_MAC_key, MKenc, 64)`` — from the message key, not
-        the chain key, and 64 bytes.
-        """
-        new_ck = kdf_1(KDFUsage.CHAIN_KEY, ck, 32)
-        mk = kdf_1(KDFUsage.MESSAGE_KEY, ck, 32)
-        mkmac = kdf_1(KDFUsage.MAC_KEY, mk, 64)
-        return new_ck, mk, mkmac
-
     def encrypt_message(self, plaintext):
         """Encrypt a message (Spec §4.4.3). Same return signature as Python."""
         with self.lock:
@@ -4011,9 +3954,7 @@ class RustBackedDoubleRatchet:
 
             enc = self._rust.encrypt(plaintext)
             self.message_counter_send += 1
-
-            new_ck_s, _, _ = self._kdf_ck(self._rks_send.read())
-            self._rks_send.write(new_ck_s)
+            self._sync_mirrors()
 
             return (
                 enc["ciphertext"],
@@ -4091,8 +4032,7 @@ class RustBackedDoubleRatchet:
                         self.skipped_keys.pop((hdr_dh_pub, hdr_msg_num), None)
 
                 self.message_num_recv += 1
-                new_ck_r, _, _ = self._kdf_ck(self._rks_recv.read())
-                self._rks_recv.write(new_ck_r)
+                self._sync_mirrors()
                 return pt, _mkmac
 
             except Exception as e:
@@ -4118,21 +4058,17 @@ class RustBackedDoubleRatchet:
         Called only when is_new_dh=True AND dh_ratchet_remote_pub is not None
         (i.e. a genuine second or later DH epoch, not the first message).
 
-        Rust kdf_root signature:  kdf_1(ROOT_KEY, root_key || dh_secret, 64)
-        The Python-side mirror must use the SAME inputs so the two stay in
-        sync.  A previous version erroneously appended self._brace_key to
-        the KDF input, which diverged from Rust after the first ratchet step.
+        Both agreements -- ours-current with the header key (receive chain)
+        and ours-next with it (send chain) -- happen inside Rust from the two
+        key handles. Python passes handles and receives plaintext.
         """
         dh_pub = self._rust.header_dh_pub(header_bytes)
 
-        dh_secret_recv = self.dh_ratchet_local.dh(dh_pub)
-
         new_local = _RustDAKE_module.generate_x448_keypair()
         new_local_pub = new_local.public_bytes()
-        dh_secret_send = new_local.dh(dh_pub)
 
         _res = self._rust.decrypt_new_dh(
-            header_bytes, ciphertext, nonce, tag, dh_secret_recv, dh_secret_send, new_local_pub
+            header_bytes, ciphertext, nonce, tag, self.dh_ratchet_local, new_local
         )
 
         if self.dh_ratchet_remote_pub is not None:
@@ -4147,50 +4083,49 @@ class RustBackedDoubleRatchet:
         self.ratchet_id = self._dh_epoch
         self.message_counter_send = 0
 
-        _cur_root = self._rks_root.read()
-        _seed_r = kdf_1(KDFUsage.ROOT_KEY, _cur_root + bytes(dh_secret_recv), 64)
-        _new_root_r = _seed_r[:32]
-        _new_ck_recv = _seed_r[32:64]
-
-        _seed_s = kdf_1(KDFUsage.ROOT_KEY, _new_root_r + bytes(dh_secret_send), 64)
-        _new_root_s = _seed_s[:32]
-        _new_ck_send = _seed_s[32:64]
-
-        self._rks_root.write(_new_root_s)
-        self._rks_send.write(_new_ck_send)
-        self._rks_recv.write(_new_ck_recv)
-
+        self._sync_mirrors()
         self.prepare_brace_rotation()
         return _res["plaintext"], _res["mac_key"]
 
     def _ratchet(self, dh_pub):
-        """Send-side forced DH ratchet step."""
+        """Send-side forced DH ratchet step. The agreement is Rust's."""
         with self.lock:
 
-            self.dh_ratchet_local = _RustDAKE_module.generate_x448_keypair()
-            self.dh_ratchet_local_pub = self.dh_ratchet_local.public_bytes()
-            dh_secret = self.dh_ratchet_local.dh(dh_pub)
-
-            self._rust.send_ratchet(dh_secret, self.dh_ratchet_local_pub)
+            new_local = _RustDAKE_module.generate_x448_keypair()
+            self._rust.send_ratchet(new_local, dh_pub)
+            self.dh_ratchet_local = new_local
+            self.dh_ratchet_local_pub = new_local.public_bytes()
 
             self._dh_epoch += 1
             self.ratchet_id = self._dh_epoch
             self.message_counter_send = 0
 
-            _combined = bytes(dh_secret) + self._brace_key
-            _seed = kdf_1(KDFUsage.ROOT_KEY, self._rks_root.read() + _combined, 64)
-            self._rks_root.write(_seed[:32])
-            self._rks_send.write(_seed[32:64])
-
+            self._sync_mirrors()
             self.prepare_brace_rotation()
+
+    def _sync_mirrors(self):
+        """Refresh the observation mirrors from Rust's one-way state tags.
+
+        See the class docstring: tags, not keys. A core too old to provide
+        `state_tags` leaves the mirrors as they were rather than inventing
+        values for them.
+        """
+        tags_of = getattr(self._rust, "state_tags", None)
+        if tags_of is None:
+            return
+        tags = tags_of()
+        self._rks_root.write(bytes(tags["root"]))
+        self._rks_send.write(bytes(tags["chain_send"]))
+        self._rks_recv.write(bytes(tags["chain_recv"]))
+        self._brace_key = bytes(tags["brace"])
 
     def prepare_brace_rotation(self):
         if self._brace_kem_local is not None:
             return
         if self._brace_kem_ct_out is not None:
             return
-        self._brace_kem_local = MLKEM1024BraceKEM()
-        self._brace_kem_ek_out = self._brace_kem_local.encap_key_bytes
+        self._brace_kem_local = _RustDAKE_module.MlKem1024Keypair()
+        self._brace_kem_ek_out = bytes(self._brace_kem_local.encap_key)
 
     def consume_outgoing_kem_ek(self):
         ek = self._brace_kem_ek_out
@@ -4203,24 +4138,48 @@ class RustBackedDoubleRatchet:
         return ct
 
     def process_incoming_kem_ek(self, ek):
-        ct, ss = MLKEM1024BraceKEM.encapsulate(ek)
-        self._brace_kem_ct_out = ct
-        self._rust.rotate_brace_key(ss)
-
-        self._brace_key = kdf_1(KDFUsage.BRACE_KEY_ROTATE, self._brace_key + ss, 32)
+        """Encapsulate to the peer's brace key; the shared secret stays in Rust."""
+        if len(ek) != MLKEM1024BraceKEM.EK_BYTES:
+            raise ValueError(
+                f"ML-KEM-1024 encap key must be {MLKEM1024BraceKEM .EK_BYTES } bytes, got {len (ek )}"
+            )
+        self._brace_kem_ct_out = bytes(self._rust.brace_encapsulate(bytes(ek)))
+        self._sync_mirrors()
 
     def process_incoming_kem_ct(self, ct):
+        """Decapsulate with our pending keypair, inside Rust, consuming it."""
         if self._brace_kem_local is None:
             raise ValueError("Received KEM ct but no local keypair pending")
-        ss = self._brace_kem_local.decapsulate(ct)
-        self._brace_kem_local.zeroize()
+        if len(ct) != MLKEM1024BraceKEM.CT_BYTES:
+            raise ValueError(
+                f"ML-KEM-1024 ciphertext must be {MLKEM1024BraceKEM .CT_BYTES } bytes, got {len (ct )}"
+            )
+        keypair = self._brace_kem_local
         self._brace_kem_local = None
-        self._rust.rotate_brace_key(ss)
-
-        self._brace_key = kdf_1(KDFUsage.BRACE_KEY_ROTATE, self._brace_key + ss, 32)
+        try:
+            self._rust.brace_decapsulate(keypair, bytes(ct))
+        finally:
+            keypair.zeroize()
+        self._sync_mirrors()
 
     def zeroize(self):
+        """Destroy every secret this ratchet holds, then drop the handles.
+
+        EXPLICIT, not left to reference counting. `self._rust = None` frees
+        the Rust ratchet only if nothing else holds it -- a traceback frame, a
+        test, a debugger -- and a wipe must not depend on that. So the Rust
+        objects are told to zeroize themselves first: the ratchet replaces its
+        keys (ZeroizeOnDrop runs on the old ones), the X448 handle zeroes its
+        scalar in place, the pending ML-KEM keypair drops its decapsulation
+        key. Releasing the Python references afterwards is only tidying.
+        """
         with self.lock:
+            for holder in (self._rust, self.dh_ratchet_local):
+                if holder is not None:
+                    try:
+                        holder.zeroize()
+                    except Exception:
+                        pass
             self._rust = None
             self.dh_ratchet_local = None
             self.dh_ratchet_remote = None
@@ -4330,16 +4289,92 @@ class DAKE1RateLimiter:
     MAX_ATTEMPTS: int = 5
     WINDOW_SECONDS: float = 60.0
 
+    #: Distinct peers tracked before pruning evicts the least recently seen.
+    #:
+    #: NECESSARY BECAUSE THE BUCKETS BECAME PER-PEER. While every caller shared
+    #: the default key there was exactly one bucket and the table could not
+    #: grow; keying on the peer turns it into one deque per distinct sender,
+    #: kept forever. Measured on the unbounded version: 5000 unique peers left
+    #: 5000 buckets and the map never shed a key.
+    #:
+    #: That would have traded a lockout for a slow memory exhaustion, which is
+    #: not a fix. `otrv4plus_voice.RateLimiter` already had this problem and
+    #: already solved it; the same two-stage approach is used here rather than
+    #: a second one invented.
+    MAX_TRACKED: int = 512
+
     def __init__(self):
         self._lock = threading.Lock()
         self._attempts: Dict[str, deque] = defaultdict(deque)
+        self._last_prune: float = 0.0
+
+    @staticmethod
+    def _canonical(peer_key: str) -> str:
+        """One person, one bucket, however their address is spelled.
+
+        A rate limiter keyed on an un-normalised string can be widened by the
+        peer it is limiting. Measured on the raw version, one contact spelled
+        four ways produced four buckets and therefore four times the
+        allowance:
+
+            alice@x.test  Alice@X.test  alice@x.test/phone  alice@x.test/laptop
+
+        Resource stripped and case folded, which is how every other layer of
+        this project already identifies a peer -- `msg["from"].bare` in the
+        XMPP client, `str(stanza["from"]).split("/", 1)[0]` in the Android
+        transport, `AccountScope.normalise` and `ChatState.bare` in Kotlin.
+
+        Done HERE rather than at the call sites deliberately: a future caller
+        that forgets cannot split a bucket, and normalising in one place
+        cannot drift between two. Folding is always the safe direction -- it
+        can only merge allowance, never multiply it.
+
+        An empty or unusable key keeps the historical "unknown" bucket rather
+        than becoming its own per-caller namespace.
+        """
+        key = str(peer_key or "").strip().split("/", 1)[0].casefold()
+        return key or "unknown"
+
+    def _prune(self, now: float) -> None:
+        """Bound the tracking table.
+
+        Expiry first: a bucket with nothing left inside the window is free to
+        drop and costs an attacker nothing to avoid. Then a hard cap evicting
+        the least recently seen, because a flood of distinct senders inside a
+        single window is all current and expiry alone would keep every one.
+
+        THE CAP IS A DELIBERATE TRADE, and the reasoning differs from the
+        voice limiter's. There, reaching the limiter costs an attacker a full
+        OTR session per identity. DAKE1 is pre-session, so anyone who can get
+        a stanza to us can create a bucket -- eviction is cheaper to force
+        here, and the cap matters more.
+
+        What eviction actually costs is small: a real peer pushed out regains
+        a fresh allowance, which is no worse than the behaviour this whole
+        change replaces, where every peer permanently shared one allowance.
+        Unbounded memory is the worse failure.
+        """
+        cutoff = now - self.WINDOW_SECONDS
+        for key in [k for k, dq in self._attempts.items()
+                    if not dq or dq[-1] < cutoff]:
+            self._attempts.pop(key, None)
+        if len(self._attempts) > self.MAX_TRACKED:
+            ordered = sorted(self._attempts.items(),
+                             key=lambda kv: kv[1][-1] if kv[1] else 0.0)
+            for key, _dq in ordered[:len(self._attempts) - self.MAX_TRACKED]:
+                self._attempts.pop(key, None)
+        self._last_prune = now
 
     def is_allowed(self, peer_key: str) -> bool:
         """Return True and record the attempt if the peer is within quota."""
         now = time.monotonic()
         cutoff = now - self.WINDOW_SECONDS
+        key = self._canonical(peer_key)
         with self._lock:
-            dq = self._attempts[peer_key]
+            if (now - self._last_prune > self.WINDOW_SECONDS
+                    or len(self._attempts) > self.MAX_TRACKED):
+                self._prune(now)
+            dq = self._attempts[key]
             while dq and dq[0] < cutoff:
                 dq.popleft()
             if len(dq) >= self.MAX_ATTEMPTS:
@@ -4348,9 +4383,24 @@ class DAKE1RateLimiter:
             return True
 
     def reset(self, peer_key: str) -> None:
-        """Clear the rate-limit bucket for a peer (call after DAKE success)."""
+        """Clear the rate-limit bucket for a peer.
+
+        NOT CALLED FROM PRODUCTION, AND DELIBERATELY STILL NOT. The
+        parenthetical this docstring used to carry -- "call after DAKE
+        success" -- described an intention that was never implemented, and
+        implementing it now would weaken the control rather than complete it:
+        a completed DAKE costs MORE responder CPU than a rejected DAKE1, so
+        clearing the budget on success hands unlimited DAKE1 processing to any
+        peer able to finish one handshake. Nothing in the tests, the
+        changelog or the M-4 note establishes that as intended.
+
+        Its real use is test hygiene -- `tests/test_otrv4_integration.py` and
+        `tests/test_smp_android_interop.py` clear state between handshakes so
+        they measure the protocol rather than the quota -- and it keeps that
+        use unchanged.
+        """
         with self._lock:
-            self._attempts.pop(peer_key, None)
+            self._attempts.pop(self._canonical(peer_key), None)
 
 
 _dake1_rate_limiter = DAKE1RateLimiter()
@@ -4481,6 +4531,38 @@ class RustDAKEAdapter:
                 "IDLE",
                 f"DAKE engine initialized, initiator={explicit_initiator }",
             )
+
+    def zeroize(self) -> None:
+        """Destroy this handshake's secrets inside Rust. Idempotent.
+
+        The ephemeral X448 scalar, the ML-KEM decapsulation key and the
+        identity copies inside `RustDAKE`; any `DakeOutput` produced but not
+        yet consumed into a ratchet (a handshake abandoned between DAKE2 and
+        DAKE3); and the ML-DSA-87 signing key. `DakeOutput` is unsendable, so
+        this must run on the thread that drove the handshake -- the caller is
+        responsible for that, and `EnhancedSessionManager.wipe` documents it.
+        """
+        keys = getattr(self, "_session_keys", None)
+        output = keys.get("_dake_output") if isinstance(keys, dict) else None
+        if output is not None:
+            try:
+                output.discard()
+            except Exception:
+                pass
+        self._session_keys = None
+        rust = getattr(self, "_rust", None)
+        if rust is not None and hasattr(rust, "zeroize"):
+            try:
+                rust.zeroize()
+            except Exception:
+                pass
+        auth = getattr(self, "_mldsa_auth", None)
+        if auth is not None:
+            try:
+                auth.zeroize()
+            except Exception:
+                pass
+        self._mldsa_auth = None
 
     @property
     def state(self) -> DAKEState:
@@ -4625,36 +4707,20 @@ class RustDAKEAdapter:
 
         try:
 
-            use_output_api = hasattr(self._rust, "generate_dake2_output")
+            output = self._rust.generate_dake2_output(
+                our_prekey_priv_bytes=None,
+                mldsa_pub_bytes=self._mldsa_auth.pub_bytes if self._mldsa_auth else None,
+            )
+            raw = bytes(output.dake2_bytes)
+            self._raw_dake2_bytes = raw
 
-            if use_output_api:
-                output = self._rust.generate_dake2_output(
-                    our_prekey_priv_bytes=None,
-                    mldsa_pub_bytes=self._mldsa_auth.pub_bytes if self._mldsa_auth else None,
-                )
-                raw = bytes(output.dake2_bytes)
-                self._raw_dake2_bytes = raw
-
-                self._session_keys = {
-                    "_dake_output": output,
-                    "session_id": bytes(output.ssid) + b"\x00" * 24,
-                    "is_initiator": False,
-                    "peer_long_term_pub": self.remote_identity_pub_bytes,
-                    "peer_long_term_key": self.remote_identity_key,
-                }
-            else:
-
-                result = self._rust.generate_dake2(
-                    our_prekey_priv_bytes=None,
-                    mldsa_pub_bytes=self._mldsa_auth.pub_bytes if self._mldsa_auth else None,
-                )
-                if not result.success:
-                    return self._fail_str(f"generate_dake2: {result .error }")
-
-                raw = bytes(result.dake2_bytes)
-                self._raw_dake2_bytes = raw
-
-                self._session_keys = self._unpack_session_keys(result, is_initiator=False)
+            self._session_keys = {
+                "_dake_output": output,
+                "session_id": bytes(output.ssid) + b"\x00" * 24,
+                "is_initiator": False,
+                "peer_long_term_pub": self.remote_identity_pub_bytes,
+                "peer_long_term_key": self.remote_identity_key,
+            }
 
             self._state = DAKEState.SENT_DAKE2
             self._trace("DAKE", "STATE", "RECEIVED_DAKE1", "SENT_DAKE2", "generated DAKE2 (Auth-R)")
@@ -4681,63 +4747,34 @@ class RustDAKEAdapter:
             raw = _safe_b64decode(dake2_msg[7:].strip())
             self._raw_dake2_bytes = raw
 
-            use_output_api = hasattr(self._rust, "process_dake2_output")
+            output = self._rust.process_dake2_output(raw, None)
 
-            if use_output_api:
-                output = self._rust.process_dake2_output(raw, None)
+            self.remote_identity_pub_bytes = (
+                bytes(output.remote_identity_pub) if output.remote_identity_pub else None
+            )
+            self._remote_mldsa_pub = (
+                bytes(output.remote_mldsa_pub) if output.remote_mldsa_pub else None
+            )
 
-                self.remote_identity_pub_bytes = (
-                    bytes(output.remote_identity_pub) if output.remote_identity_pub else None
-                )
-                self._remote_mldsa_pub = (
-                    bytes(output.remote_mldsa_pub) if output.remote_mldsa_pub else None
-                )
+            if self.remote_identity_pub_bytes:
 
-                if self.remote_identity_pub_bytes:
+                self.remote_identity_key = self.remote_identity_pub_bytes
 
-                    self.remote_identity_key = self.remote_identity_pub_bytes
+            if output.remote_profile_bytes:
+                try:
+                    self.remote_profile = ClientProfile.decode(
+                        bytes(output.remote_profile_bytes)
+                    )
+                except Exception:
+                    self.remote_profile = None
 
-                if output.remote_profile_bytes:
-                    try:
-                        self.remote_profile = ClientProfile.decode(
-                            bytes(output.remote_profile_bytes)
-                        )
-                    except Exception:
-                        self.remote_profile = None
-
-                self._session_keys = {
-                    "_dake_output": output,
-                    "session_id": bytes(output.ssid) + b"\x00" * 24,
-                    "is_initiator": True,
-                    "peer_long_term_pub": self.remote_identity_pub_bytes,
-                    "peer_long_term_key": self.remote_identity_key,
-                }
-            else:
-
-                result = self._rust.process_dake2(raw, None)
-                if not result.success:
-                    return self._fail(f"process_dake2: {result .error }")
-
-                self.remote_identity_pub_bytes = (
-                    bytes(result.remote_identity_pub) if result.remote_identity_pub else None
-                )
-                self._remote_mldsa_pub = (
-                    bytes(result.remote_mldsa_pub) if result.remote_mldsa_pub else None
-                )
-
-                if self.remote_identity_pub_bytes:
-
-                    self.remote_identity_key = self.remote_identity_pub_bytes
-
-                if result.remote_profile_bytes:
-                    try:
-                        self.remote_profile = ClientProfile.decode(
-                            bytes(result.remote_profile_bytes)
-                        )
-                    except Exception:
-                        self.remote_profile = None
-
-                self._session_keys = self._unpack_session_keys(result, is_initiator=True)
+            self._session_keys = {
+                "_dake_output": output,
+                "session_id": bytes(output.ssid) + b"\x00" * 24,
+                "is_initiator": True,
+                "peer_long_term_pub": self.remote_identity_pub_bytes,
+                "peer_long_term_key": self.remote_identity_key,
+            }
 
             # ── Audit PY1/H3: never establish on an unverified responder
             # profile.  ClientProfile.decode (above) verifies the Ed448
@@ -4926,39 +4963,6 @@ class RustDAKEAdapter:
         except Exception as e:
             return self._fail(f"process_dake3 exception: {e }")
 
-    def _unpack_session_keys(self, result, is_initiator: bool) -> Dict[str, Any]:
-        """
-        Convert the Rust DAKE result into the session_keys dict format that
-        _establish_session / _initialize_ratchet expect.
-
-        Critically: all key bytes were derived inside Rust.  We receive them
-        as opaque byte arrays here and immediately wrap root_key in SecureMemory.
-        The raw bytes for chain_key_send/recv and brace_key are short-lived
-        Python objects that will be consumed by RustBackedDoubleRatchet.__init__
-        and then set to None in _initialize_ratchet().
-        """
-        root_raw = bytes(result.root_key)
-        ck_a = bytes(result.chain_key_a)
-        ck_b = bytes(result.chain_key_b)
-        brace_key = bytes(result.brace_key)
-        ssid = bytes(result.ssid)
-        mac_key = bytes(result.mac_key)
-
-        root_key_mem = SecureMemory(32)
-        root_key_mem.write(root_raw)
-
-        return {
-            "root_key": root_key_mem,
-            "chain_key_send": ck_a if is_initiator else ck_b,
-            "chain_key_recv": ck_b if is_initiator else ck_a,
-            "mac_key": mac_key,
-            "session_id": ssid + b"\x00" * 24,
-            "brace_key": brace_key,
-            "is_initiator": is_initiator,
-            "peer_long_term_pub": self.remote_identity_pub_bytes,
-            "peer_long_term_key": self.remote_identity_key,
-        }
-
     def get_session_keys(self) -> Optional[Dict[str, Any]]:
         if self._state != DAKEState.ESTABLISHED:
             return None
@@ -4968,466 +4972,107 @@ class RustDAKEAdapter:
         return keys.copy()
 
 
-_KDF_LAST_BACKEND = "unused"
-_KDF_DOWNGRADE_WARNED = False
+def _remove_retired_key_storage(storage_dir: Optional[str]) -> None:
+    """Remove what the retired `SecureKeyStorage` left behind.
 
-
-def kdf_backend() -> str:
-    """Which at-rest KDF the most recent :func:`_derive_key` call really used.
-
-    ``"argon2id"`` or ``"scrypt"``.  This exists so the downgrade is
-    inspectable rather than something you have to infer from an import-time
-    warning that scrolled past twenty minutes ago.
+    It wrote one record -- `profile.client.bin`, the PUBLIC client profile,
+    AES-GCM sealed under a key derived in Python from `.device_seed` -- and
+    nothing ever read it back. The store is gone, so the seed and the record
+    protect nothing; leaving them would leave a key file on disk that the
+    documentation no longer mentions. Only those two names are touched.
     """
-    return _KDF_LAST_BACKEND
-
-
-def _warn_kdf_downgrade(reason: str) -> None:
-    """Say out loud, once, that at-rest storage is no longer memory-hard."""
-    global _KDF_DOWNGRADE_WARNED
-    if _KDF_DOWNGRADE_WARNED:
+    if not storage_dir:
         return
-    _KDF_DOWNGRADE_WARNED = True
-    print(
-        "WARNING: at-rest key derivation fell back to scrypt (%s).\n"
-        "         scrypt n=16384 r=8 p=1 costs an attacker ~16 MiB per guess;\n"
-        "         Argon2id t=3 m=64MiB p=4 costs ~64 MiB and resists GPUs "
-        "better.\n"
-        "         Install it with:  pip install argon2-cffi" % reason,
-        file=sys.stderr,
-    )
-
-
-def _derive_key(password: bytes, salt: bytes, dklen: int = 32) -> bytes:
-    """Derive an encryption key from password material.
-
-    Uses Argon2id when available (memory-hard, GPU/ASIC resistant).
-    Falls back to scrypt if argon2-cffi is not installed, or if Argon2 itself
-    fails -- on a memory-pressured handset a 64 MiB allocation genuinely can
-    fail.  That fallback is deliberate (losing access to your own SMP secrets
-    is worse than a weaker KDF here), but it is no longer silent: it warns,
-    with the reason, and :func:`kdf_backend` reports what was actually used.
-
-    This is the AT-REST KDF only, and must not be confused with the protocol
-    KDF that stretches the SMP passphrase on the wire in ``Rust/src/smp.rs``.
-    Under wire versions 0x01 and 0x02 that stretch is 50,000 iterated rounds
-    of SHAKE-256, which is CPU-hard but NOT memory-hard, and this docstring
-    used to add that "Argon2 is not involved there and putting it there would
-    be a wire break".  Half of that is now out of date: the wire break was
-    taken deliberately at v10.13.0, and wire version 0x03 -- the default for
-    new sessions -- stretches with Argon2id over a salt binding the session id
-    and both fingerprints.  0x02 still exists for older peers, so both
-    derivations are live.  See SPEC 6.4.
-
-    The two Argon2id cost profiles are deliberately identical (m=64 MiB, t=3,
-    p=4); ``tests/test_kdf_claims_are_true.py`` fails if they diverge.
-
-    Argon2id parameters: time_cost=3, memory_cost=65536 (64MB), parallelism=4
-    scrypt parameters: n=16384, r=8, p=1 (Termux memory safe)
-    """
-    global _KDF_LAST_BACKEND
-    if ARGON2_AVAILABLE:
+    for name in (".device_seed", "profile.client.bin"):
+        path = os.path.join(storage_dir, name)
         try:
-            from argon2.low_level import hash_secret_raw, Type as _ArgonType
-
-            key = hash_secret_raw(
-                secret=password,
-                salt=salt,
-                time_cost=3,
-                memory_cost=65536,
-                parallelism=4,
-                hash_len=dklen,
-                type=_ArgonType.ID,
-            )
-            _KDF_LAST_BACKEND = "argon2id"
-            return key
-        except Exception as exc:
-            _warn_kdf_downgrade("argon2 raised %s" % type(exc).__name__)
-    else:
-        _warn_kdf_downgrade("argon2-cffi is not installed")
-
-    _KDF_LAST_BACKEND = "scrypt"
-    return hashlib.scrypt(password, salt=salt, n=16384, r=8, p=1, dklen=dklen)
-
-
-class SecureKeyStorage:
-    """Secure storage for cryptographic keys.
-
-    Keys are encrypted at rest with AES-256-GCM.  The encryption key
-    is derived via scrypt from a random 32-byte device seed stored in
-    the key directory.  No password is required - the seed file IS the
-    credential.  If the seed file is deleted, stored keys become
-    unrecoverable (new identity keys are generated on next launch).
-
-    On first run, a fresh seed is generated and written to `.device_seed`.
-    On subsequent runs, the seed is read back to derive the same master
-    key, allowing stored Ed448/X448 identity keys to persist across
-    sessions with a stable fingerprint.
-    """
-
-    def __init__(self, storage_dir: Optional[str] = None):
-        self._lock = threading.RLock()
-        self.storage_dir = storage_dir or os.path.expanduser("~/.otrv4plus/keys")
-        os.makedirs(self.storage_dir, exist_ok=True)
-        try:
-            os.chmod(self.storage_dir, 0o700)
+            if os.path.isfile(path) and not os.path.islink(path):
+                _secure_file_destroy(path)
         except Exception:
             pass
-
-        self._master_key = None
-        self._auto_initialize()
-
-        self._migrate_remove_legacy_private_blobs()
-
-    def _migrate_remove_legacy_private_blobs(self):
-        """Overwrite-and-unlink legacy identity.ed448.bin and
-        prekey.x448.bin blobs that previous versions wrote.  Silent on
-        failure - the file may not exist, the FS may be read-only,
-        permissions may prevent it.  None of those is fatal."""
-        for legacy_name in ("identity.ed448.bin", "prekey.x448.bin"):
-            path = os.path.join(self.storage_dir, legacy_name)
-            if not os.path.exists(path):
-                continue
-            try:
-                size = os.path.getsize(path)
-
-                with open(path, "r+b") as f:
-                    f.write(b"\x00" * size)
-                    f.flush()
-                    try:
-                        os.fsync(f.fileno())
-                    except Exception:
-                        pass
-                os.unlink(path)
-                if DEBUG_MODE:
-                    try:
-                        _sys.stderr.write(
-                            f"[Phase 5.3b migration] removed legacy private-key blob: {legacy_name }\n"
-                        )
-                    except Exception:
-                        pass
-            except Exception:
-
-                pass
-
-    def _auto_initialize(self):
-        """Derive master key from a device seed file (no password needed).
-
-        Same approach as SMPAutoRespondStorage._master_passphrase():
-        a random 32-byte seed is stored in the key directory on first
-        run, then reused on subsequent runs to derive the same key.
-        """
-        seed_path = os.path.join(self.storage_dir, ".device_seed")
-        seed = None
-
-        if os.path.exists(seed_path):
-            try:
-                with open(seed_path, "rb") as f:
-                    seed = f.read(32)
-                if len(seed) != 32:
-                    seed = None
-            except Exception:
-                seed = None
-
-        if seed is None:
-            seed = secrets.token_bytes(32)
-            try:
-                with open(seed_path, "wb") as f:
-                    f.write(seed)
-                os.chmod(seed_path, 0o600)
-            except Exception:
-                pass
-
-        salt = hashlib.sha3_256(b"OTRv4+KeyStorage:v1" + seed).digest()
-        try:
-            self._master_key = _derive_key(seed, salt, 32)
-        except Exception:
-            self._master_key = None
-
-    def _encrypt_key(self, key_data: bytes) -> bytes:
-        """Encrypt key data with AES-256-GCM.
-
-        v10.6.19 (Phase 5.3h-B): now uses Rust otrv4_core.aes256gcm_encrypt
-        instead of cryptography.AESGCM.  Wire format unchanged.
-        """
-        if self._master_key is None:
-            raise RuntimeError("Storage not initialized")
-
-        nonce = secrets.token_bytes(12)
-        ciphertext = _RustDAKE_module.aes256gcm_encrypt(
-            self._master_key, nonce, key_data, b"otrv4+key"
-        )
-
-        return nonce + ciphertext
-
-    def _decrypt_key(self, encrypted_data: bytes) -> bytes:
-        """Decrypt key data with AES-256-GCM.
-
-        v10.6.19 (Phase 5.3h-B): now uses Rust otrv4_core.aes256gcm_decrypt.
-        """
-        if self._master_key is None:
-            raise RuntimeError("Storage not initialized")
-
-        if len(encrypted_data) < 12:
-            raise ValueError("Invalid encrypted data")
-
-        nonce = encrypted_data[:12]
-        ciphertext = encrypted_data[12:]
-
-        return _RustDAKE_module.aes256gcm_decrypt(self._master_key, nonce, ciphertext, b"otrv4+key")
-
-    @staticmethod
-    def _safe_key_component(s: str, max_len: int = 64) -> str:
-        """Validate a key_id or key_type component: alphanumeric + hyphen/underscore only.
-
-        Raises ValueError if the component contains path-traversal characters,
-        spaces, or any character outside [A-Za-z0-9_-].  This prevents a
-        future caller from accidentally constructing a path like
-        '../../../etc/passwd.bin' through key_id injection.
-        """
-        import re as _re_kc
-
-        if not s or len(s) > max_len:
-            raise ValueError(f"Key component empty or too long: {s !r }")
-        if not _re_kc.match(r"^[A-Za-z0-9_\-]+$", s):
-            raise ValueError(f"Key component contains invalid characters: {s !r }")
-        return s
-
-    def store_key(self, key_id: str, key_type: str, key_data: bytes) -> bool:
-        """Store a key encrypted with AES-256-GCM."""
-        with self._lock:
-            if self._master_key is None:
-                return False
-
-            try:
-                key_id = self._safe_key_component(key_id)
-                key_type = self._safe_key_component(key_type)
-                encrypted = self._encrypt_key(key_data)
-
-                key_file = os.path.join(self.storage_dir, f"{key_id }.{key_type }.bin")
-                with open(key_file, "wb") as f:
-                    f.write(encrypted)
-                os.chmod(key_file, 0o600)
-                return True
-
-            except Exception as e:
-                if DEBUG_MODE:
-                    print("Failed to store key")
-                return False
-
-    def load_key(self, key_id: str, key_type: str) -> Optional[bytes]:
-        """Load and decrypt a key from storage."""
-        with self._lock:
-            if self._master_key is None:
-                return None
-
-            try:
-                key_id = self._safe_key_component(key_id)
-                key_type = self._safe_key_component(key_type)
-            except ValueError:
-                return None
-            key_file = os.path.join(self.storage_dir, f"{key_id }.{key_type }.bin")
-            if not os.path.exists(key_file):
-                return None
-
-            try:
-                with open(key_file, "rb") as f:
-                    encrypted = f.read()
-
-                return self._decrypt_key(encrypted)
-
-            except Exception as e:
-                if DEBUG_MODE:
-                    print("Failed to load key")
-                return None
-
-    def delete_key(self, key_id: str, key_type: str) -> bool:
-        """Cryptographically destroy a key file."""
-        with self._lock:
-            try:
-                key_id = self._safe_key_component(key_id)
-                key_type = self._safe_key_component(key_type)
-            except ValueError:
-                return False
-            key_file = os.path.join(self.storage_dir, f"{key_id }.{key_type }.bin")
-            if os.path.exists(key_file):
-                try:
-                    _secure_file_destroy(key_file)
-                    return True
-                except Exception:
-                    return False
-            return False
-
-    def clear_all(self):
-        """Cryptographically destroy all stored keys and the device seed."""
-        with self._lock:
-            for filename in os.listdir(self.storage_dir):
-                filepath = os.path.join(self.storage_dir, filename)
-                try:
-                    if os.path.isfile(filepath):
-                        _secure_file_destroy(filepath)
-                except Exception:
-                    pass
-
-            if self._master_key:
-                master_key_ba = bytearray(self._master_key)
-                _secure_wipe(master_key_ba)
-                self._master_key = None
+    try:
+        os.rmdir(storage_dir)        # only if now empty
+    except OSError:
+        pass
 
 
 class SMPAutoRespondStorage:
-    """Secure storage for SMP auto-respond secrets"""
+    """Per-peer SMP auto-respond passphrases -- held by the Rust core.
 
-    def __init__(self, secrets_path: Optional[str] = None):
-        self._secrets: Dict[str, str] = {}
+    A thin handle on `otrv4_core.SmpSecretStore`. It used to be the store
+    itself: it read `.smp_seed` into Python, derived the file key with
+    argon2-cffi (or scrypt) in Python, decrypted a JSON file into a Python dict
+    of `{peer: passphrase}` that lived as long as the process, and handed
+    passphrases out through `get_secret()`. Now the seed, the key and the
+    passphrases are Rust memory; this class can say WHETHER a passphrase is
+    stored and bind it into a session, and has no way to return one.
+
+    AUTO-RESPOND IS AN EXPLICIT USER CHOICE. A passphrase is only here because
+    the terminal user stored it for that peer (`/smp-secret`, or `/smp` with a
+    secret, on the clients that persist). Later sessions with that peer bind it
+    because that is what the user asked for. The Android bridge never writes
+    here (`bind_smp_secret`); tests/test_wipe_and_exit.py holds that.
+
+    `secrets_path=None` keeps the store in memory only.
+    """
+
+    def __init__(self, secrets_path: Optional[str] = None, *, memory_only: bool = False):
+        import otrv4_core as _core
         self._lock = threading.RLock()
-        self.secrets_path = secrets_path or os.path.expanduser("~/.otrv4plus/smp_secrets.json")
-        try:
-            _smp_dir = os.path.dirname(self.secrets_path)
-            if _smp_dir:
-                os.makedirs(_smp_dir, exist_ok=True)
-                os.chmod(_smp_dir, 0o700)
-        except Exception:
-            pass
-        self._load()
-
-    def _load(self):
-        """Load secrets from encrypted storage (AES-256-GCM, Argon2id/scrypt key).
-
-        v10.6.19 (Phase 5.3h-B): AES-GCM operations now go through the Rust
-        otrv4_core.aes256gcm_decrypt PyO3 helper instead of the Python
-        cryptography library's AESGCM class.  Wire format unchanged; an
-        encrypted secrets file written by an older build decrypts cleanly.
-        """
-        with self._lock:
-            if not os.path.exists(self.secrets_path):
-                self._secrets = {}
-                return
+        self.secrets_path = None if memory_only else (
+            secrets_path or os.path.expanduser("~/.otrv4plus/smp_secrets.json"))
+        if self.secrets_path:
             try:
-                with open(self.secrets_path, "rb") as f:
-                    raw = f.read()
-                if len(raw) < 44:
-                    self._secrets = {}
-                    return
-                salt = raw[:16]
-                nonce = raw[16:28]
-                ct_tag = raw[28:]
-                key = _derive_key(self._master_passphrase(), salt, 32)
-                plaintext = _RustDAKE_module.aes256gcm_decrypt(
-                    key, nonce, ct_tag, b"smp_secrets_v1"
-                )
-                self._secrets = json.loads(plaintext.decode("utf-8"))
-            except Exception:
-
-                try:
-                    key = hashlib.scrypt(
-                        self._master_passphrase(), salt=salt, n=16384, r=8, p=1, dklen=32
-                    )
-                    plaintext = _RustDAKE_module.aes256gcm_decrypt(
-                        key, nonce, ct_tag, b"smp_secrets_v1"
-                    )
-                    self._secrets = json.loads(plaintext.decode("utf-8"))
-                except Exception:
-                    self._secrets = {}
-            finally:
-                try:
-                    del key
-                except Exception:
-                    pass
-
-    def _master_passphrase(self) -> bytes:
-        """Derive a stable per-device passphrase from the machine-id or a stored secret."""
-        seed_path = os.path.join(os.path.dirname(self.secrets_path), ".smp_seed")
-        if os.path.exists(seed_path):
-            try:
-                with open(seed_path, "rb") as f:
-                    return f.read(32)
+                _smp_dir = os.path.dirname(self.secrets_path)
+                if _smp_dir:
+                    os.makedirs(_smp_dir, exist_ok=True)
+                    os.chmod(_smp_dir, 0o700)
             except Exception:
                 pass
-        seed = secrets.token_bytes(32)
-        try:
-            os.makedirs(os.path.dirname(seed_path) or ".", exist_ok=True)
-            with open(seed_path, "wb") as f:
-                f.write(seed)
-            os.chmod(seed_path, 0o600)
-        except Exception:
-            pass
-        return seed
+        self._store = _core.SmpSecretStore(self.secrets_path)
+        moved = self._store.legacy_unreadable
+        if moved:
+            print("[smp] WARNING: the stored auto-respond passphrases could not "
+                  "be read and were moved aside to %s. Store them again with "
+                  "/smp-secret." % moved, file=sys.stderr)
 
-    def _save(self):
-        """Save secrets encrypted with AES-256-GCM (Argon2id/scrypt key).
-
-        v10.6.19 (Phase 5.3h-B): AES-GCM operations now go through the Rust
-        otrv4_core.aes256gcm_encrypt PyO3 helper.  Wire format unchanged.
-        """
+    def set_secret(self, peer: str, secret) -> None:
+        """Store `secret` (str, or a bytearray this zeroes) for `peer`."""
         with self._lock:
-            try:
-                plaintext = json.dumps(self._secrets, separators=(",", ":")).encode("utf-8")
-                salt = secrets.token_bytes(16)
-                nonce = secrets.token_bytes(12)
-                key = _derive_key(self._master_passphrase(), salt, 32)
-                ct_tag = _RustDAKE_module.aes256gcm_encrypt(
-                    key, nonce, plaintext, b"smp_secrets_v1"
-                )
-                blob = salt + nonce + ct_tag
-                _tmp_path = None
-                with tempfile.NamedTemporaryFile(
-                    mode="wb", dir=os.path.dirname(self.secrets_path) or ".", delete=False
-                ) as f:
-                    _tmp_path = f.name
-                    f.write(blob)
-                    f.flush()
-                    os.fsync(f.fileno())
-                os.chmod(_tmp_path, 0o600)
-                os.replace(_tmp_path, self.secrets_path)
-            except Exception:
-                if _tmp_path:
-                    try:
-                        os.unlink(_tmp_path)
-                    except Exception:
-                        pass
-            finally:
-                try:
-                    del key, plaintext, blob
-                except Exception:
-                    pass
+            self._store.set(peer, secret)
 
-    def set_secret(self, peer: str, secret: str) -> None:
-        """Set secret for auto-respond"""
+    def has_secret(self, peer: str) -> bool:
         with self._lock:
-            self._secrets[peer] = secret
-            self._save()
-
-    def get_secret(self, peer: str) -> str:
-        """Get secret for auto-respond"""
-        with self._lock:
-            return self._secrets.get(peer, "")
+            return self._store.has(peer)
 
     def remove_secret(self, peer: str) -> bool:
-        """Remove secret for auto-respond"""
         with self._lock:
-            if peer in self._secrets:
-                del self._secrets[peer]
-                self._save()
-                return True
-            return False
+            return self._store.remove(peer)
+
+    def peers(self) -> List[str]:
+        with self._lock:
+            return list(self._store.peers())
+
+    def bind_into(self, peer: str, session) -> bool:
+        """Bind `peer`'s stored passphrase into `session`'s Rust SMP engine.
+
+        False when none is stored. The passphrase goes store -> vault -> SMP
+        inside Rust.
+        """
+        with self._lock:
+            if not self._store.has(peer):
+                return False
+            return bool(session.set_smp_secret_from_store(self._store, peer))
+
+    def clear_memory(self) -> None:
+        """Forget every passphrase in memory (the file is the wipe's job)."""
+        with self._lock:
+            self._store.clear_memory()
 
     def clear_all(self) -> None:
-        """Clear all secrets"""
+        """Forget every passphrase, in memory and on disk."""
         with self._lock:
-            self._secrets.clear()
-            self._save()
-
-    def list_secrets(self) -> Dict[str, str]:
-        """List all secrets (masked)"""
-        with self._lock:
-            masked = {}
-            for peer, secret in self._secrets.items():
-                if len(secret) > 3:
-                    masked[peer] = secret[:1] + "*" * (len(secret) - 2) + secret[-1]
-                else:
-                    masked[peer] = "*" * len(secret)
-            return masked
+            self._store.clear()
 
 
 class TrustDatabase:
@@ -6528,8 +6173,6 @@ class EnhancedOTRSession:
         self._sender_tag: int = _generate_instance_tag()
         self._receiver_tag: int = 0
         self._peer_disconnected: bool = False
-        self._last_extra_sym_key: Optional[bytes] = None
-        self._extra_sym_key_cb = None
         self._queued_smp_response: Optional[str] = None
 
         self.auto_smp_secret: bool = False
@@ -6746,30 +6389,16 @@ class EnhancedOTRSession:
                 )
                 return
 
-            if self.root_key is None:
-                raise RuntimeError("Root key not available")
-
-            _ratchet_args = dict(
-                root_key=self.root_key,
-                is_initiator=self.is_initiator,
-                ad=b"OTRv4-DATA",
-                logger=self.logger,
-                chain_key_send=self._dake_chain_key_send,
-                chain_key_recv=self._dake_chain_key_recv,
-                brace_key=self._dake_brace_key,
-                rekey_interval=OTRConstants.REKEY_INTERVAL,
-                rekey_timeout=OTRConstants.REKEY_TIMEOUT,
-            )
-
-            self.ratchet = RustBackedDoubleRatchet(**_ratchet_args)
-            self._ratchet_backend = "rust"
-
-            self._dake_chain_key_send = None
-            self._dake_chain_key_recv = None
-            self._dake_brace_key = None
-
-            _backend_label = "Rust (zeroize-on-drop; legacy v10.6.2 path)"
-            self.tracer.trace(self.peer, "RATCHET", None, "ACTIVE", f"ratchet: {_backend_label }")
+            # No fallback. There used to be one: build the ratchet from a
+            # Python-held root key and chain keys (`self.root_key`,
+            # `_dake_chain_key_*`), deriving any missing chain keys with the
+            # Python SHAKE-256 KDF. Those values came only from the legacy
+            # DAKE getters, which are not compiled into a production core
+            # (`legacy-dake-keys`), and the branches that called them are
+            # gone -- so the fallback could only ever run on keys that had
+            # already crossed into Python. A session without a DakeOutput is
+            # a session the DAKE did not establish.
+            raise RuntimeError("no DAKE output to initialise the ratchet from")
         finally:
             self._release_lock()
 
@@ -6937,7 +6566,12 @@ class EnhancedOTRSession:
     def decrypt_message(self, encrypted_msg: str) -> bytes:
         """Decrypt an OTRv4 DATA message; return human-readable text as UTF-8 bytes.
 
-        Handles both v6 OTRv4DataMessage format and v5 legacy format.
+        Only the current OTRv4DataMessage frame is accepted. The v5 "legacy"
+        branch that used to sit here is gone: nothing has emitted that format
+        since the data-message rewrite, it fed the ratchet without the outer
+        MAC or instance-tag checks, and it no longer even ran (it treated the
+        ratchet's (plaintext, mkmac) tuple as bytes). A second parser for a
+        format no peer sends is attack surface and nothing else.
         All TLVs in the payload are routed to their protocol handlers.
         """
         if not self._acquire_lock():
@@ -6959,12 +6593,9 @@ class EnhancedOTRSession:
             raw = encrypted_msg[7:].strip()
             decoded = _safe_b64decode(raw)
 
-            if (
-                OTRv4DataMessage.looks_like_data_frame(decoded)
-            ):
-                text_bytes = self._enh_dec_v6(decoded)
-            else:
-                text_bytes = self._enh_dec_legacy(decoded)
+            if not OTRv4DataMessage.looks_like_data_frame(decoded):
+                raise ValueError("unsupported data message format")
+            text_bytes = self._enh_dec_v6(decoded)
 
             self.tracer.trace(
                 self.peer, "DECRYPT", "ENCRYPTED", "PLAINTEXT", f"len={len (text_bytes )}"
@@ -7115,26 +6746,6 @@ class EnhancedOTRSession:
         self._enh_route_tlvs(payload_obj.tlvs)
         return payload_obj.text.encode("utf-8")
 
-    def _enh_dec_legacy(self, decoded: bytes) -> bytes:
-        """Decrypt v5 legacy format (backward compatibility)."""
-        if not decoded or decoded[0] != OTRConstants.MESSAGE_TYPE_DATA:
-            raise ValueError(f"Not a DATA message: 0x{decoded [0 ]if decoded else 0 :02x}")
-        off = 1
-        sid = decoded[off : off + OTRConstants.SESSION_ID_BYTES]
-        off += OTRConstants.SESSION_ID_BYTES
-        if not hmac.compare_digest(sid, self.session_id):
-            raise ValueError("Session ID mismatch (legacy)")
-        hdr = decoded[off : off + 64]
-        off += 64
-        non = decoded[off : off + 12]
-        off += 12
-        tag = decoded[off : off + 16]
-        off += 16
-        ct = decoded[off:]
-        pt = self.ratchet.decrypt_message(hdr, ct, non, tag)
-        null_pos = pt.find(b"\x00")
-        return pt[:null_pos] if null_pos != -1 else pt
-
     def _enh_route_tlvs(self, tlvs: List["OTRv4TLV"]) -> None:
         """Route TLVs from decrypted payload to protocol handlers."""
         for tlv in tlvs:
@@ -7167,15 +6778,20 @@ class EnhancedOTRSession:
                                           "0x%04x" % tlv.type, str(exc)[:80])
 
                 elif tlv.type == OTRv4TLV.EXTRA_SYMMETRIC_KEY:
-                    key = hashlib.sha3_512(
-                        self.session_id + b"OTRv4-EXTRA-SYM" + tlv.value
-                    ).digest()[:32]
-                    self._last_extra_sym_key = key
-                    if self._extra_sym_key_cb:
-                        try:
-                            self._extra_sym_key_cb(self.peer, tlv.value, key)
-                        except Exception:
-                            pass
+                    # Consumed and deliberately NOT turned into a key here.
+                    #
+                    # This used to derive SHA3-512(session_id || label ||
+                    # tlv.value) in Python and kept it on the session. Two
+                    # things were wrong with that:
+                    # every input is visible to anyone who saw the session
+                    # (the SSID is displayed for verification, the TLV value
+                    # is the peer's plaintext context), so the "key" was not
+                    # secret at all; and it was a Python object nothing ever
+                    # read. The real OTRv4 extra symmetric key is derived in
+                    # the DAKE and never leaves Rust -- it keys file transfer
+                    # inside `RustDoubleRatchet.file_sender/file_receiver`.
+                    self.tracer.trace(self.peer, "DEBUG", "TLV",
+                                      "EXTRA_SYMMETRIC_KEY", "ignored")
 
             except Exception as e:
                 self.tracer.trace(self.peer, "ERROR", "TLV", f"0x{tlv .type :04x}", str(e)[:80])
@@ -7682,6 +7298,16 @@ class EnhancedOTRSession:
     def _cleanup_resources(self):
         """Clean up all resources"""
         try:
+            # A handshake that produced session keys but never built a ratchet
+            # from them leaves them here. Destroy them explicitly.
+            pending = getattr(self, "_dake_output", None)
+            if pending is not None:
+                try:
+                    pending.discard()
+                except Exception:
+                    pass
+                self._dake_output = None
+
             if self.ratchet:
                 self.ratchet.zeroize()
                 self.ratchet = None
@@ -7825,6 +7451,39 @@ class EnhancedOTRSession:
             )
             return self.encrypt_with_tlvs(
                 "", [OTRv4TLV(OTRv4TLV.SMP_MSG_2, bytes(smp2))])
+        finally:
+            self._release_lock()
+
+    def abort_smp(self) -> Optional[str]:
+        """Cancel an SMP run in either direction, at any stage, and tell the peer.
+
+        The local user pressed Cancel. The Rust run is aborted, any parked
+        SMP1 is discarded, the bound passphrase is dropped from the vault, and
+        the returned OTR message carries SMP_ABORT so the peer stops waiting.
+        None when there is nothing to abort. An aborted run proves nothing,
+        so it leaves the session unverified.
+        """
+        if not self._acquire_lock():
+            return None
+        try:
+            if self.rust_smp is None:
+                return None
+            try:
+                self.rust_smp.abort()
+            except Exception:
+                self.logger.debug("rust_smp.abort failed")
+            try:
+                self.rust_smp.discard_held_smp1()
+            except Exception:
+                pass
+            if self.smp_vault is not None:
+                try:
+                    self.smp_vault.remove("smp_secret")
+                except Exception:
+                    pass
+            self._smp_secret_required = False
+            self.smp_step = 0
+            return self.encrypt_with_tlvs("", [OTRv4TLV(OTRv4TLV.SMP_ABORT, b"")])
         finally:
             self._release_lock()
 
@@ -8035,6 +7694,46 @@ class EnhancedOTRSession:
         _MIN_LEN = 8
         if len(secret) < _MIN_LEN:
             raise ValueError(f"SMP secret must be at least {_MIN_LEN } characters.")
+
+        def _fill(vault):
+            raw = bytearray(secret.encode("utf-8"))
+            try:
+                # store_from_bytearray, not store(bytes(raw)).
+                #
+                # The bytearray exists so it can be wiped -- but `bytes(raw)`
+                # would make an immutable copy that nothing can overwrite.
+                # Handing the bytearray straight down means Rust copies it into
+                # a ZeroizeOnDrop entry and zeroes our buffer before returning.
+                vault.store_from_bytearray("smp_secret", raw)
+            finally:
+                # Belt and braces: store_from_bytearray already zeroed it, and
+                # this still runs if the call raised before reaching Rust.
+                for i in range(len(raw)):
+                    raw[i] = 0
+                del raw
+
+        self._bind_smp_secret(_fill)
+
+    def set_smp_secret_from_store(self, store, peer: str) -> bool:
+        """Bind `peer`'s passphrase from a Rust `SmpSecretStore`.
+
+        The auto-respond path. The passphrase goes store -> this session's
+        `RustSMPVault` -> `RustSMP` without becoming a Python object; there is
+        no way for this method to see it. Returns False when none is stored.
+        """
+        if not store.has(peer):
+            return False
+
+        def _fill(vault):
+            if not store.bind_into(peer, vault, "smp_secret"):
+                raise RuntimeError("the stored passphrase disappeared while binding")
+
+        self._bind_smp_secret(_fill)
+        return True
+
+    def _bind_smp_secret(self, fill) -> None:
+        """Phase checks, then `fill(vault)`, then bind the vault entry into SMP
+        with this session's id and both fingerprints. Shared by both setters."""
         if not self._acquire_lock():
             return
         try:
@@ -8069,29 +7768,12 @@ class EnhancedOTRSession:
                 pass
             remote_fp = self._remote_long_term_pub_bytes or b""
 
-            raw = bytearray(secret.encode("utf-8"))
-            try:
-                # store_from_bytearray, not store(bytes(raw)).
-                #
-                # The bytearray exists so it can be wiped, and the `finally`
-                # below does wipe it -- but `bytes(raw)` had already made an
-                # immutable copy that nothing can overwrite, so the wipe was
-                # cleaning the one object that no longer mattered.  Handing
-                # the bytearray straight down means Rust copies it into a
-                # ZeroizeOnDrop entry and zeroes our buffer before returning.
-                self.smp_vault.store_from_bytearray("smp_secret", raw)
-
-                ok = self.rust_smp.set_secret_from_vault(
-                    self.smp_vault, "smp_secret", sid, local_fp, remote_fp
-                )
-                if not ok:
-                    raise RuntimeError("Vault key not found after store - internal error")
-            finally:
-                # Belt and braces: store_from_bytearray already zeroed it, and
-                # this still runs if the call raised before reaching Rust.
-                for i in range(len(raw)):
-                    raw[i] = 0
-                del raw
+            fill(self.smp_vault)
+            ok = self.rust_smp.set_secret_from_vault(
+                self.smp_vault, "smp_secret", sid, local_fp, remote_fp
+            )
+            if not ok:
+                raise RuntimeError("Vault key not found after store - internal error")
 
             if not self.rust_smp.check_secret_set():
                 raise RuntimeError("Rust SMP secret not stored after set_secret_from_vault")
@@ -8178,7 +7860,7 @@ class SessionManager:
         self.trust_db = TrustDatabase(self.config.trust_db_path,
                                       persistent=self.config.persist_trust)
         self.smp_storage = SMPAutoRespondStorage(self.config.smp_secrets_path)
-        self.key_storage = SecureKeyStorage(self.config.key_storage_path)
+        _remove_retired_key_storage(self.config.key_storage_path)
 
         # Identity.  Ephemeral unless the caller explicitly asked otherwise,
         # because ephemeral is the IRC contract and IRC must not acquire a
@@ -8192,8 +7874,6 @@ class SessionManager:
         self.pending_dakes: Dict[str, RustDAKEAdapter] = {}
         self._disconnect_callbacks: list = []
 
-        if not self.config.test_mode:
-            self._store_identity()
 
     def _acquire_lock(self, timeout: float = 5.0) -> bool:
         """Acquire lock with timeout"""
@@ -8256,40 +7936,6 @@ class SessionManager:
                 tracer.trace("SYSTEM", "IDENTITY", None, state, detail)
             except Exception:
                 pass
-    def _store_identity(self):
-        """Store client profile in secure storage.
-
-        Phase 5.3b (v10.6.8): the private-key extraction calls
-        (identity_key.private_bytes / prekey.private_bytes) were removed
-        because:
-          1. They extracted long-term private bytes out of the
-             cryptography library at session start AND wrote them to
-             disk on every launch, even when no corresponding load_key
-             path existed to read them back.
-          2. Nothing in the codebase calls
-             SecureKeyStorage.load_key('identity', ...) or
-             ('prekey', ...).  The stored encrypted blobs accumulated
-             without ever being used.
-          3. The DAKE adapter (RustDAKEAdapter.__init__) is the only
-             code that legitimately needs the private bytes; it
-             extracts them there and immediately wipes the Python
-             bytearrays after Rust copies into SecretBytes
-             (Phase 5.1/5.2/5.3a-cleanup).  Re-extracting them here for
-             a write-only code path was wasted exposure.
-
-        We still persist the public ClientProfile (which is signed,
-        intended to be shareable, and useful for fingerprint display
-        across launches if a future feature reads it back).  No
-        private material is written to disk.
-        """
-        try:
-
-            profile_bytes = self.client_profile.encode()
-            self.key_storage.store_key("profile", "client", profile_bytes)
-        except Exception as e:
-            if DEBUG_MODE:
-                print(f"Warning: Could not store profile: {e }")
-
     def get_fingerprint(self) -> str:
         """Get local fingerprint"""
         return self.client_profile.get_fingerprint()
@@ -8329,7 +7975,10 @@ class SessionManager:
             )
 
             try:
-                success = dake.process_dake1(dake1_msg)
+                # `peer`, not the default. Omitting it put every peer in one
+                # bucket, so the "per-peer" limit was process-wide and one
+                # sender could lock out DAKE1 from everybody else.
+                success = dake.process_dake1(dake1_msg, peer)
                 if success:
                     dake2 = dake.generate_dake2()
                     self.pending_dakes[peer] = dake
@@ -8549,9 +8198,7 @@ class SessionManager:
         try:
             session = self.sessions[peer]
 
-            auto_secret = self.smp_storage.get_secret(peer)
-            if auto_secret and hasattr(session, "set_smp_secret"):
-                session.set_smp_secret(auto_secret)
+            self.smp_storage.bind_into(peer, session)
 
             if hasattr(session, "process_smp_message"):
                 return session.process_smp_message(smp_tlv)
@@ -8576,7 +8223,7 @@ class SessionManager:
                 "should_auto_start_smp": False,
                 "has_question": False,
                 "question": "",
-                "auto_smp_secret": bool(self.smp_storage.get_secret(peer)),
+                "auto_smp_secret": self.smp_storage.has_secret(peer),
                 "auto_smp_started": False,
                 "auto_smp_completed": False,
                 "can_retry": False,
@@ -8590,7 +8237,7 @@ class SessionManager:
             status = session.get_smp_status()
             if "is_initiator" not in status:
                 status["is_initiator"] = getattr(session, "is_initiator", False)
-            status["auto_smp_secret"] = bool(self.smp_storage.get_secret(peer))
+            status["auto_smp_secret"] = self.smp_storage.has_secret(peer)
             status["auto_smp_started"] = getattr(session, "auto_smp_started", False)
             status["auto_smp_completed"] = getattr(session, "auto_smp_completed", False)
             status["should_auto_start_smp"] = False
@@ -8612,7 +8259,7 @@ class SessionManager:
             "should_auto_start_smp": False,
             "has_question": False,
             "question": "",
-            "auto_smp_secret": bool(self.smp_storage.get_secret(peer)),
+            "auto_smp_secret": self.smp_storage.has_secret(peer),
             "auto_smp_started": False,
             "auto_smp_completed": False,
             "can_retry": False,
@@ -8751,7 +8398,7 @@ class EnhancedSessionManager:
         self.trust_db = TrustDatabase(self.config.trust_db_path,
                                       persistent=self.config.persist_trust)
         self.smp_storage = SMPAutoRespondStorage(self.config.smp_secrets_path)
-        self.key_storage = SecureKeyStorage(self.config.key_storage_path)
+        _remove_retired_key_storage(self.config.key_storage_path)
 
         # Identity.  Ephemeral unless the caller explicitly asked otherwise,
         # because ephemeral is the IRC contract and IRC must not acquire a
@@ -8766,8 +8413,6 @@ class EnhancedSessionManager:
 
         self.smp_notify_factory = None
 
-        if not self.config.test_mode:
-            self._store_identity()
 
         self.tracer.trace("SYSTEM", "MANAGER", None, "READY", "session manager initialized")
 
@@ -8818,28 +8463,10 @@ class EnhancedSessionManager:
                 tracer.trace("SYSTEM", "IDENTITY", None, state, detail)
             except Exception:
                 pass
-    def _store_identity(self):
-        """Store client identity in secure storage.
-
-        Phase 5.3b (v10.6.8): see the first _store_identity above for
-        the rationale.  This second copy (on EnhancedOTRManager) was
-        also extracting private bytes for a write-only path with no
-        corresponding load.  Removed.
-        """
-        try:
-            self.tracer.trace(
-                "SYSTEM",
-                "STORAGE",
-                None,
-                "READY",
-                "identity stored (Phase 5.3b: no private material persisted)",
-            )
-        except Exception as e:
-            self.tracer.trace("SYSTEM", "ERROR", "STORAGE", "FAILED", str(e))
-
     def get_or_create_session(self, peer: str, is_initiator: bool = False) -> EnhancedOTRSession:
         """Get existing session or create new one"""
         with self.lock:
+            self._refuse_if_wiped()
             if peer in self.sessions:
                 session = self.sessions[peer]
 
@@ -8942,6 +8569,7 @@ class EnhancedSessionManager:
         Returns: (encrypted_message_or_dake_message, should_send)
         """
         with self.lock:
+            self._refuse_if_wiped()
             session = self.get_or_create_session(peer, is_initiator=True)
 
             if session.is_encrypted():
@@ -9017,6 +8645,7 @@ class EnhancedSessionManager:
         Returns decrypted plaintext if applicable.
         """
         with self.lock:
+            self._refuse_if_wiped()
             if message.startswith("?OTRv4 "):
                 return self._handle_otr_message(peer, message)
 
@@ -9105,7 +8734,11 @@ class EnhancedSessionManager:
             dake_engine = session.initialize_dake(self.client_profile, explicit_initiator=False)
             self.dake_engines[peer] = dake_engine
 
-            success = dake_engine.process_dake1(dake1_msg)
+            # `peer`, not the default. This is the live path -- both terminal
+            # clients and the Android bridge reach DAKE1 through
+            # EnhancedSessionManager -- and without the key every sender
+            # shared one allowance.
+            success = dake_engine.process_dake1(dake1_msg, peer)
             if not success:
                 return None
 
@@ -9291,12 +8924,10 @@ class EnhancedSessionManager:
                 return None
 
             try:
-                auto_secret = self.smp_storage.get_secret(peer)
-                if auto_secret and hasattr(session, "set_smp_secret"):
+                if self.smp_storage.has_secret(peer):
                     needs_bind = session.rust_smp is None or not session.rust_smp.check_secret_set()
                     if needs_bind:
-                        session.set_smp_secret(auto_secret)
-                        auto_secret = None
+                        self.smp_storage.bind_into(peer, session)
             except Exception as _se:
                 self.logger.debug(
                     f"_handle_data_message: smp_storage pre-load failed for {peer }: {_se }"
@@ -9333,11 +8964,9 @@ class EnhancedSessionManager:
                 session.initialize_smp()
 
             try:
-                auto_secret = self.smp_storage.get_secret(peer)
-                if auto_secret and hasattr(session, "set_smp_secret"):
+                if self.smp_storage.has_secret(peer):
                     if not session.rust_smp.check_secret_set():
-                        session.set_smp_secret(auto_secret)
-                        auto_secret = None
+                        self.smp_storage.bind_into(peer, session)
             except Exception as _se:
                 self.logger.debug(
                     f"_handle_smp_message: smp_storage pre-load failed for {peer }: {_se }"
@@ -9450,19 +9079,145 @@ class EnhancedSessionManager:
             self.tracer.trace(peer, "END_SESSION", "ACTIVE", "ENDED", reason)
             return True
 
-    def clear_all_sessions(self, reason: str = "cleanup"):
-        """Clear all sessions"""
-        with self.lock:
-            for peer in list(self.sessions.keys()):
-                self.terminate_session(peer, reason)
+    #: Set by `wipe`. Checked by every entry point that could create or use
+    #: session state, so nothing -- a late inbound frame, a queued send, a UI
+    #: retry -- can bring a wiped engine back.
+    _wiped = False
 
+    class EngineWiped(RuntimeError):
+        """The engine was wiped; it will not create or use sessions again."""
+
+    def _refuse_if_wiped(self) -> None:
+        if self._wiped:
+            raise EnhancedSessionManager.EngineWiped("engine wiped")
+
+    @property
+    def wiped(self) -> bool:
+        return self._wiped
+
+    def wipe(self, reason: str = "wipe") -> Dict[str, int]:
+        """Destroy every secret this engine holds, then refuse all further use.
+
+        The authoritative teardown for Wipe & Exit, distinct from
+        `clear_all_sessions` (a logout: sessions go, the engine stays usable)
+        in three ways:
+
+          * EXPLICIT RUST DESTRUCTION. Every Rust object that holds a secret
+            is told to zeroize before its Python reference is dropped: each
+            ratchet (keys, DH handle, pending brace keypair), each SMP state
+            machine and vault, each in-flight DAKE (ephemeral scalar, ML-KEM
+            key, ML-DSA key, any unconsumed `DakeOutput`), and the long-term
+            identity and prekey handles. Python garbage collection is not the
+            wipe; it only frees wrappers around keys that are already zero.
+          * NO RESURRECTION. `_wiped` is set FIRST, so a frame arriving while
+            this runs cannot create a session behind it, and every entry point
+            (`get_or_create_session`, `handle_incoming_message`,
+            `handle_outgoing_message`, `start_smp`) raises `EngineWiped` from
+            then on.
+          * IN-MEMORY TRUST AND SMP SECRETS GO TOO. Logout keeps pinned
+            fingerprints deliberately; a wipe does not.
+
+        THREAD. `DakeOutput` is unsendable: PyO3 lets only the creating thread
+        touch it, and a drop from any other thread LEAKS it rather than
+        zeroizing it. Call this on the thread that processes inbound OTR
+        (the transport loop on Android), which is where DAKE outputs are made.
+
+        Idempotent. Returns counts for the caller's report.
+        """
+        with self.lock:
+            already = self._wiped
+            self._wiped = True
+            report = {"sessions": 0, "handshakes": 0, "identity_keys": 0,
+                      "already_wiped": int(already)}
+
+            for peer, engine in list(self.dake_engines.items()):
+                try:
+                    engine.zeroize()
+                    report["handshakes"] += 1
+                except Exception:
+                    pass
+            for peer, session in list(self.sessions.items()):
+                try:
+                    session.terminate(reason)
+                    report["sessions"] += 1
+                except Exception:
+                    try:
+                        session._cleanup_resources()
+                    except Exception:
+                        pass
+            self.sessions.clear()
+            self.dake_engines.clear()
+
+            profile = getattr(self, "client_profile", None)
+            for name in ("identity_key", "prekey"):
+                handle = getattr(profile, name, None) if profile else None
+                if handle is not None and hasattr(handle, "zeroize"):
+                    try:
+                        handle.zeroize()
+                        report["identity_keys"] += 1
+                    except Exception:
+                        pass
+
+            try:
+                with self.trust_db._lock:
+                    self.trust_db._db.clear()
+            except Exception:
+                pass
+            try:
+                self.smp_storage.clear_memory()
+            except Exception:
+                pass
+
+            self.tracer.trace("SYSTEM", "WIPE", "LIVE", "WIPED", reason)
+            return report
+
+    def clear_all_sessions(self, reason: str = "cleanup"):
+        """Forget every session. Used only on shutdown and logout paths.
+
+        IT DID NOT CLEAR THEM. This looped over `terminate_session`, and that
+        method's limitation is written down thirty lines above: it "terminates
+        the session object but leaves the entry in `self.sessions`, so the
+        next `get_or_create_session` hands back the dead one". So the table
+        survived, and with it the security level -- measured through the
+        Android facade:
+
+            after OtrApp.shutdown()          : ENCRYPTED
+            engine has_session('bob@x.test') : True
+
+        Every production caller is a teardown -- `android_bridge.app.shutdown`,
+        the XMPP client's shutdown, the IRC client's shutdown -- and all three
+        mean it. On Android the consequence was the worst of the three:
+        nothing tears the engine down on logout either, so a second account
+        signing in on the same device inherited the first account's live OTR
+        session with any shared peer.
+
+        `end_session` is the method that actually forgets, and it is used here
+        for that reason. The wire behaviour is unchanged: neither it nor
+        `terminate_session` sends a DISCONNECTED TLV, so this is a local
+        teardown exactly as before -- it now simply is one.
+
+        The trust database is untouched, deliberately. A pinned fingerprint is
+        long-term identity and survives a session ending; forgetting it here
+        would turn every shutdown into a fresh trust-on-first-use decision,
+        which is the failure mode TOFU exists to make visible.
+        """
+        with self.lock:
+            held = len(self.sessions)
+            for peer in list(self.sessions.keys()):
+                self.end_session(peer, reason)
+
+            self.sessions.clear()
             self.dake_engines.clear()
 
             self.tracer.trace(
                 "SYSTEM",
                 "CLEANUP",
+                # The count BEFORE, which is the number that tells a reader
+                # whether anything was actually torn down. Reading it after
+                # the loop used to print the unchanged total, which looked
+                # like a successful cleanup of nothing.
+                str(held),
                 str(len(self.sessions)),
-                "0",
                 f"all sessions cleared: {reason }",
             )
 
@@ -9605,10 +9360,7 @@ class EnhancedSessionManager:
                 )
                 if needs_bind:
 
-                    auto_secret = self.smp_storage.get_secret(peer) or ""
-                    if auto_secret and hasattr(sess, "set_smp_secret"):
-                        sess.set_smp_secret(auto_secret)
-                        auto_secret = None
+                    self.smp_storage.bind_into(peer, sess)
             except Exception as _pe:
                 self.logger.debug("decrypt_message: SMP pre-load failed")
             plaintext = sess.decrypt_message(encrypted_msg)
@@ -9645,6 +9397,7 @@ class EnhancedSessionManager:
     def start_smp(self, peer: str, secret: str, question: str = "") -> Optional[str]:
         """Start SMP verification on the session."""
         with self.lock:
+            self._refuse_if_wiped()
             sess = self.sessions.get(peer)
             if not sess:
                 raise RuntimeError(f"start_smp: no session for {peer }")
@@ -9670,6 +9423,19 @@ class EnhancedSessionManager:
         with self.lock:
             sess = self.sessions.get(peer)
         return bool(sess is not None and sess.smp_secret_required())
+
+    def abort_smp(self, peer: str) -> Optional[str]:
+        """Cancel *peer*'s SMP run. Returns the SMP_ABORT message to send.
+
+        The Android bridge's Cancel called this for a year of tests against a
+        fake engine that had it; the real one did not, so Cancel raised
+        `smp_abort_unsupported` on a device.
+        """
+        with self.lock:
+            sess = self.sessions.get(peer)
+        if sess is None:
+            return None
+        return sess.abort_smp()
 
     def resume_held_smp1(self, peer: str) -> Optional[str]:
         """Answer a parked SMP1 for *peer*.  Returns the SMP2 to send."""
@@ -9716,6 +9482,50 @@ class EnhancedSessionManager:
             except Exception as _se:
                 self.logger.debug("set_smp_secret: session bind FAILED")
         return True
+
+    def has_stored_smp_secret(self, peer: str) -> bool:
+        """Whether an auto-respond passphrase is stored for *peer*."""
+        return self.smp_storage.has_secret(peer)
+
+    def bind_stored_smp_secret(self, peer: str) -> bool:
+        """Bind *peer*'s stored auto-respond passphrase into its live session.
+
+        Store -> vault -> SMP inside Rust; the passphrase is never returned
+        to Python. False when none is stored or there is no session.
+        """
+        with self.lock:
+            self._refuse_if_wiped()
+            sess = self.sessions.get(peer)
+        if sess is None:
+            return False
+        return self.smp_storage.bind_into(peer, sess)
+
+    def start_smp_with_stored_secret(self, peer: str, question: str = "") -> Optional[str]:
+        """Start SMP using the stored passphrase. None when none is stored."""
+        if not self.bind_stored_smp_secret(peer):
+            return None
+        return self.start_smp(peer, "", question)
+
+    def bind_smp_secret(self, peer: str, secret: str) -> None:
+        """Bind an SMP secret to *peer*'s live session, and nothing else.
+
+        `set_smp_secret` is the terminal clients' AUTO-RESPOND setter: it also
+        writes the secret to `smp_storage` (a file, and a Python dict for the
+        life of the process), and the DATA/SMP handlers re-bind that stored
+        secret into every later session -- so a later SMP1 from the peer is
+        answered without anybody being asked. That is the feature on a
+        terminal. It is not acceptable for a one-off answer typed into a
+        dialog: the Android bridge used `set_smp_secret`, so answering one
+        challenge silently persisted the passphrase and pre-answered every
+        future one. This goes to the Rust vault only, and raises rather than
+        swallowing a failure.
+        """
+        with self.lock:
+            self._refuse_if_wiped()
+            sess = self.sessions.get(peer)
+        if sess is None:
+            raise RuntimeError("bind_smp_secret: no session for this peer")
+        sess.set_smp_secret(secret)
 
     def display_fingerprints(self, peer: str) -> str:
         """Return remote fingerprint string."""
@@ -13629,21 +13439,14 @@ class OTRv4IRCClient:
 
     def _fire_auto_smp(self, peer: str):
         """Attempt to start SMP with the stored secret for peer."""
-        secret = (
-            self.session_manager.smp_storage.get_secret(peer)
-            if hasattr(self.session_manager, "smp_storage")
-            else ""
-        )
-        if not secret:
+        start = getattr(self.session_manager, "start_smp_with_stored_secret", None)
+        if start is None:
             return
-        try:
-            tlv = self.session_manager.start_smp(peer, secret)
-            if tlv:
-                enc = self.session_manager.encrypt_message(peer, "")
-                if enc:
-                    self.send_otr_message(peer, enc)
-        finally:
-            secret = None
+        tlv = start(peer)
+        if tlv:
+            enc = self.session_manager.encrypt_message(peer, "")
+            if enc:
+                self.send_otr_message(peer, enc)
 
     def schedule_auto_smp(self, peer: str, delay: float = 2.0):
         if peer not in self.smp_schedule_timers:
@@ -15154,8 +14957,7 @@ class EnhancedOTRv4IRCClient(OTRv4IRCClient):
                 flow.running()
             except _smpflow.SmpFlowError:
                 pass
-            stored = self.session_manager.smp_storage.get_secret(peer)
-            self._start_smp(peer, stored)
+            self._start_smp(peer, None)      # the passphrase just stored
         return True
 
     def _smp_verify(self, peer: str) -> None:
@@ -15174,11 +14976,11 @@ class EnhancedOTRv4IRCClient(OTRv4IRCClient):
                 "prompt.", "yellow"), self._panel_sec(peer))
             return
 
-        stored = ""
+        stored = False
         try:
-            stored = self.session_manager.smp_storage.get_secret(peer) or ""
+            stored = self.session_manager.has_stored_smp_secret(peer)
         except Exception:
-            stored = ""
+            stored = False
         if stored:
             self.add_message(peer, colorize(
                 "🔐 Stored passphrase found for %s — verifying…" % peer,
@@ -15187,7 +14989,7 @@ class EnhancedOTRv4IRCClient(OTRv4IRCClient):
                 flow.running()
             except _smpflow.SmpFlowError:
                 pass
-            self._start_smp(peer, stored)
+            self._start_smp(peer, None)
             return
 
         try:
@@ -16199,7 +16001,15 @@ class EnhancedOTRv4IRCClient(OTRv4IRCClient):
         )
         self.panel_manager.update_smp_progress(peer, 1, 4)
 
-        if hasattr(self.session_manager, "set_smp_secret"):
+        if secret is None:
+            # The stored auto-respond passphrase: bound store -> vault inside
+            # Rust, never read back into this process.
+            if not self.session_manager.bind_stored_smp_secret(peer):
+                self.add_message("system", colorize(
+                    "❌ No stored passphrase for %s" % peer, "red"))
+                self.panel_manager.update_smp_progress(peer, 0, 0)
+                return
+        elif hasattr(self.session_manager, "set_smp_secret"):
             self.session_manager.set_smp_secret(peer, secret)
 
         secret = None
@@ -16499,21 +16309,15 @@ class EnhancedOTRv4IRCClient(OTRv4IRCClient):
             self.debug(f"Error clearing screen: {e }")
 
     def _secure_wipe_data(self):
-        """Cryptographically destroy all persisted OTR data.
+        """Overwrite and remove all persisted OTR data under ~/.otrv4plus.
 
-        Method: each file is overwritten with AES-256-GCM ciphertext keyed by
-        a fresh 256-bit key from os.urandom (kernel CSPRNG - /dev/urandom on
-        Linux, CryptGenRandom on Windows).  The key is used once then zeroed
-        via OPENSSL_cleanse.  This is superior to random-byte overwrite because:
-
-          1. Even if the overwritten bytes are recovered from flash wear-leveling
-             or journaled FS snapshots, they are AES-256-GCM ciphertext whose
-             key no longer exists.
-          2. A single cryptographic pass is sufficient on modern storage - NIST
-             SP 800-88r1 recommends one-pass overwrite for non-magnetic media.
-          3. fsync ensures the overwrite hits the storage controller before unlink.
-
-        After overwriting, the file is unlinked and the directory removed.
+        Each file is overwritten once with random bytes, fsynced and
+        unlinked (`_secure_file_destroy`), then the directory is removed.
+        That makes the data unrecoverable through the file system. It does
+        NOT guarantee the old physical blocks are erased on flash storage:
+        wear-levelling keeps them out of reach of any file-level call. The
+        earlier claim here -- that recovered blocks would be ciphertext
+        under a destroyed key -- was wrong; the old blocks hold the old data.
         """
         import glob
 
@@ -16553,7 +16357,7 @@ class EnhancedOTRv4IRCClient(OTRv4IRCClient):
 
                 shutil.rmtree(otrv4plus_dir, ignore_errors=True)
 
-                status = f"🗑  ~/.otrv4plus wiped - {wiped } file(s) cryptographically destroyed"
+                status = f"🗑  ~/.otrv4plus wiped - {wiped } file(s) overwritten and removed"
                 if failed:
                     status += f" ({failed } fallback)"
                 self.add_message("system", colorize(status, "green"))
@@ -16711,7 +16515,7 @@ def main():
             if os.path.exists(_orphan):
                 _secure_file_destroy(_orphan)
                 if DEBUG_MODE:
-                    print(f"[startup] securely destroyed legacy file: {_orphan }")
+                    print(f"[startup] overwrote and removed legacy file: {_orphan }")
         except Exception as _e:
             if DEBUG_MODE:
                 print(f"[startup] could not destroy legacy file {_orphan }: {_e }")

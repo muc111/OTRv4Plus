@@ -240,6 +240,31 @@ class TestTheNoticeCoversWhatShips:
         """The generator says so rather than silently omitting a text."""
         assert "must be added before distribution" not in notice
 
+    def test_the_crate_count_it_states_is_the_count_it_attributes(self, notice):
+        """NOTICE's §1 heading carries a number, and four different numbers
+        for "how many dependencies" were in circulation across this file, the
+        README and LICENSING_AUDIT.md -- 104, 109, 134 and 137. They count
+        different things (shipped versus fully resolved, with and without the
+        crate itself), and nothing said so.
+
+        The one that matters for attribution is the shipped count, because
+        those are the crates whose notices must travel with a binary. Pinning
+        the stated number to the generator's own answer means the heading
+        cannot drift from the list beneath it.
+        """
+        gen = self._generator()
+        try:
+            meta = gen.cargo_metadata()
+        except Exception:
+            pytest.skip("cargo metadata unavailable")
+        shipped = len(gen.shipped_packages(meta))
+        m = re.search(r"Rust crates compiled into otrv4_core \((\d+)\)", notice)
+        assert m, "NOTICE §1 no longer states a crate count"
+        assert int(m.group(1)) == shipped, (
+            "NOTICE §1 says %s crates ship; the graph says %d. Regenerate: "
+            "python3 tools/generate_notice.py > NOTICE"
+            % (m.group(1), shipped))
+
     def test_a_declined_copyleft_option_is_not_reproduced(self, notice):
         """`r-efi` offers MIT OR Apache-2.0 OR LGPL-2.1-or-later. Printing
         the LGPL text would imply an obligation not accepted, and would
@@ -393,3 +418,156 @@ class TestTheManifestsParseUnderAStrictTomlParser:
         with open(os.path.join(ROOT, "Rust", "pyproject.toml"), "rb") as fh:
             pyproject = tomllib.load(fh)
         assert pyproject["project"]["license"] == SPDX
+
+
+class TestTheNoticeActuallyReachesTheArtifact:
+    """Attribution is discharged by what a recipient gets, not by what is in
+    the repository.
+
+    NOTICE existed from v10.17.2 and satisfied nobody: an APK carried none of
+    it. LICENSING_AUDIT.md listed "the APK must render it on a licences
+    screen" as the one remaining delivery requirement for two releases. These
+    are that requirement, written down so it cannot quietly regress -- someone
+    deleting the asset copy or the screen has to delete a test too.
+    """
+
+    @staticmethod
+    @pytest.fixture(scope="class")
+    def build_script():
+        return _read("android", "app", "build.gradle.kts")
+
+    @staticmethod
+    @pytest.fixture(scope="class")
+    def about_screen():
+        return _read("android", "app", "src", "main", "java", "org",
+                     "otrv4plus", "android", "ui", "AboutScreen.kt")
+
+    def test_notice_is_copied_into_the_apk_assets(self, build_script):
+        assert "syncNoticeAsset" in build_script
+        assert 'include("NOTICE")' in build_script
+        assert "assets.srcDir(noticeAssetDir)" in build_script
+
+    def test_the_copy_is_ordered_before_the_asset_merge(self, build_script):
+        """The same class of bug the Python source sync hit: Gradle will not
+        infer an edge between a task that writes a directory and one that
+        reads it as a source. The losing order packages nothing, and the build
+        stays green."""
+        assert 'Regex("merge[A-Z]\\\\w*Assets")' in build_script
+
+    def test_a_missing_notice_fails_the_build(self, build_script):
+        """Rather than producing an APK whose licences screen is empty, which
+        looks like a working screen with nothing to show."""
+        assert "The APK must " in build_script
+        assert "carry third-party attribution" in build_script
+
+    def test_the_meta_inf_exclusion_says_what_it_removes(self, build_script):
+        """`resources.excludes += setOf("/META-INF/{AL2.0,LGPL2.1}")` reads,
+        to anyone auditing the build, like attribution being stripped. It is
+        not -- those are empty duplicate marker stubs -- but an unexplained
+        line that looks like a licence violation costs someone an afternoon."""
+        assert "MARKER STUBS" in build_script
+        assert "WHAT THIS DOES NOT DO: remove anyone's attribution" in build_script
+        # And it must point at where the real attribution went, or the
+        # explanation is only half of one.
+        assert "syncNoticeAsset" in build_script.split("MARKER STUBS")[0] or \
+            "NOTICE file" in build_script
+
+    def test_ci_checks_the_built_apk_actually_contains_it(self):
+        """The wiring above can be correct and the artifact still wrong. An
+        assembleDebug that goes green proves an APK exists, not what is in
+        it -- exactly the failure mode that shipped APKs with no Rust core
+        for several commits. So CI unzips the APK and looks."""
+        workflow = _read(".github", "workflows", "android.yml")
+        assert "The APK must carry the third-party NOTICE" in workflow
+        assert "assets/NOTICE" in workflow
+        # And checks it is the real file, not an empty placeholder that
+        # satisfies a presence test while discharging nothing.
+        assert "third-party notices" in workflow
+
+    def test_the_screen_renders_the_packaged_notice(self, about_screen):
+        """From the asset, not from a copy pasted into the source. A second
+        copy in Kotlin would be one more thing to go stale, and it would go
+        stale silently."""
+        assert 'assets.open("NOTICE")' in about_screen
+
+    def test_the_screen_carries_the_appropriate_legal_notices(self, about_screen):
+        """AGPL §5(d): a copyright notice, the absence of warranty, which
+        licence applies, and how to see it."""
+        assert "Copyright (C) 2025-2026 muc111" in about_screen
+        assert "NO WARRANTY" in about_screen
+        assert "Affero" in about_screen
+        assert "LICENSE-COMMERCIAL.md" in about_screen
+
+    def test_the_screen_does_not_pretend_the_old_licence_was_withdrawn(
+            self, about_screen):
+        """The same promise LICENSE makes, made where a user of a binary can
+        actually read it."""
+        assert "v10.16.2" in about_screen
+        assert "withdraws nothing" in about_screen
+
+    def test_the_screen_names_where_the_source_is(self, about_screen):
+        """AGPL §13 is the reason this licence was chosen over the GPL. An
+        app that offers no route to its source undercuts the point."""
+        assert "github.com/muc111/OTRv4Plus" in about_screen
+
+    def test_the_screen_is_reachable(self):
+        """A licences screen nothing navigates to discharges nothing. It is
+        reached from the connection screen, which is the first thing the app
+        shows, and from the contact list."""
+        activity = _read("android", "app", "src", "main", "java", "org",
+                         "otrv4plus", "android", "MainActivity.kt")
+        assert "AboutScreen(" in activity
+        for screen in ("ConnectScreen.kt", "ConversationsScreen.kt"):
+            text = _read("android", "app", "src", "main", "java", "org",
+                         "otrv4plus", "android", "ui", screen)
+            assert "onOpenAbout" in text, "%s cannot reach it" % screen
+
+
+class TestTheDocumentationDoesNotContradictItself:
+    """A repository that states its own licence two ways is worse than one
+    that states it badly: a reader cannot tell which is current."""
+
+    def test_the_superseded_audit_section_says_so(self):
+        """LICENSING_AUDIT.md §1 concluded, in the present tense, that the
+        project is GPL-3.0. It is the working that led to the AGPL decision
+        and is worth keeping -- but a reader landing mid-file saw the
+        repository contradicting its own LICENSE."""
+        audit = _read("LICENSING_AUDIT.md")
+        heading = "## 1. The finding that governed the decision"
+        assert heading in audit, "the §1 heading no longer marks itself historical"
+        assert "historical" in audit.split(heading)[1][:400].lower()
+        assert "Superseded by §0" in audit
+
+    def test_the_audit_still_contains_the_working(self):
+        """Marked historical, NOT deleted. The copyleft finding in §2-§5 is
+        what made the commercial half possible, and a decision with its
+        reasoning removed is indistinguishable from one taken at random."""
+        audit = _read("LICENSING_AUDIT.md")
+        assert "1. **Ship under GPL-3.0.**" in audit
+        assert "3. **Dual-license.**" in audit
+
+    def test_the_dependency_counts_are_reconciled(self):
+        """Four numbers were in circulation with nothing saying they counted
+        different things."""
+        audit = _read("LICENSING_AUDIT.md")
+        assert "### Counting the dependencies" in audit
+        for figure in ("104", "133", "134", "137"):
+            assert figure in audit, "%s is unexplained" % figure
+
+    def test_the_readme_does_not_restate_a_count_of_its_own(self):
+        """It said "109 crates", which matched nothing. A prose number drifts;
+        NOTICE regenerates."""
+        readme = _read("README.md")
+        assert "109 crates" not in readme
+        assert re.search(r"\d+ crates compiled into", readme) is None, (
+            "the README is restating a crate count again; point at NOTICE")
+
+    def test_the_readme_states_the_spdx_expression(self):
+        readme = _read("README.md")
+        assert SPDX in readme
+
+    def test_the_readme_explains_the_gpl_transition_without_withdrawing_it(self):
+        readme = _read("README.md")
+        assert "v10.16.2" in readme
+        assert "permanently" in readme
+        assert "does not, and could not" in readme

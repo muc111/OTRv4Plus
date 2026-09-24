@@ -1,0 +1,1054 @@
+// SPDX-License-Identifier: AGPL-3.0-only OR LicenseRef-OTRv4Plus-Commercial
+// Copyright (C) 2025-2026 muc111
+package org.otrv4plus.android.connection
+
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
+import android.app.Service
+import android.content.Context
+import android.content.Intent
+import android.content.pm.ServiceInfo
+import android.os.Binder
+import android.os.Build
+import android.os.IBinder
+import androidx.core.app.NotificationCompat
+import androidx.core.app.ServiceCompat
+import androidx.core.content.ContextCompat
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import org.otrv4plus.android.MainActivity
+import org.otrv4plus.android.R
+import org.otrv4plus.android.bridge.ChaquopyOtrCore
+import org.otrv4plus.android.bridge.ConnectionStatus
+import org.otrv4plus.android.chat.AccountScope
+import org.otrv4plus.android.chat.ChatState
+import org.otrv4plus.android.chat.InboundAlerts
+import org.otrv4plus.android.chat.PersistentMessageStore
+import org.otrv4plus.android.crypto.CallAlert
+import org.otrv4plus.android.security.Credentials
+import org.otrv4plus.android.security.CredentialStore
+import org.otrv4plus.android.security.KeystoreVault
+import org.otrv4plus.android.security.LatchedVault
+import org.otrv4plus.android.security.Vault
+import org.otrv4plus.android.security.VaultCredentialStore
+import org.otrv4plus.android.security.WipeAndExit
+import java.util.concurrent.atomic.AtomicBoolean
+
+/**
+ * The one owner of the connection, and it outlives every screen.
+ *
+ * WHY A SERVICE AND NOT A VIEWMODEL
+ * ---------------------------------
+ * `ConnectionViewModel` survives Activity recreation, which covers a rotation
+ * and a theme change. It does not survive the process, and Android kills a
+ * backgrounded process with nothing holding it up -- so a conversation that
+ * was working stopped working the moment the user looked at something else,
+ * and every message sent to them in the meantime was gone.
+ *
+ * A foreground service is the platform's answer to "this app is doing
+ * something the user asked for and can see", and an XMPP connection over an
+ * I2P tunnel is exactly that. It is also the honest answer: the notification
+ * says the connection is up, because it is, and the user can stop it.
+ *
+ * WHAT IT OWNS
+ * ------------
+ * [ChaquopyOtrCore], and therefore the Python interpreter, the engine, the
+ * SAM tunnel, the XMPP stream, the keepalive and the inbound path. ONE of
+ * each, for the life of the service. Nothing else in the application may
+ * construct a core -- two would be two engines over one identity file and one
+ * set of trust records.
+ *
+ * IT ALSO OWNS THE CONVERSATION, AND THAT IS NOT SCOPE CREEP
+ * ----------------------------------------------------------
+ * `ChatViewModel` used to drain the engine's event queue. The queue is
+ * DESTRUCTIVE -- a drain removes what it returns -- so whoever drains it is the
+ * only one who will ever see those events, and a ViewModel does not exist
+ * while the UI is gone. A message arriving with the app backgrounded was
+ * therefore either dropped from the bounded queue or sitting in it unread, and
+ * "background delivery" could not work however the persistence was written.
+ *
+ * So the drain loop is here, feeding a [ChatState] that the service owns and
+ * the UI merely renders. One state object, one store, one drainer, all living
+ * as long as the connection does.
+ */
+class OtrConnectionService : Service() {
+
+    /**
+     * The handle a bound client gets.
+     *
+     * Deliberately NOT a copy of anything: the caller reads live state from
+     * the service. A snapshot handed out at bind time is a snapshot that is
+     * wrong by the time it is read.
+     */
+    inner class LocalBinder : Binder() {
+        val service: OtrConnectionService get() = this@OtrConnectionService
+    }
+
+    private val binder = LocalBinder()
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private val reconnect = ReconnectPolicy()
+
+    /** The one core. Built on first use, never rebuilt. */
+    val core: ChaquopyOtrCore by lazy { ChaquopyOtrCore(applicationContext) }
+
+    /**
+     * Sealed storage, opened once and shared.
+     *
+     * One vault for credentials and history alike: they are protected by the
+     * same key and separated by the entry name, which is bound into each
+     * record's authenticated data so one cannot be replayed as the other.
+     */
+    val vault: LatchedVault by lazy { LatchedVault(KeystoreVault.open(applicationContext)) }
+
+    /** The remembered account, so a dropped tunnel is not a password prompt. */
+    val credentials: CredentialStore by lazy { VaultCredentialStore(vault) }
+
+    /**
+     * Conversation history, owned by the SERVICE and not by a screen.
+     *
+     * Here rather than in `ChatViewModel` because a message that arrives while
+     * the UI is gone still has to be written down. A store owned by a
+     * ViewModel is a store that does not exist when it matters most.
+     */
+    val messages: PersistentMessageStore by lazy {
+        // History written before histories had owners cannot be attributed to
+        // anyone -- the old scheme recorded no account at all -- so it is
+        // deleted rather than migrated. Handing it to whoever signs in next is
+        // exactly the defect this boundary removes. Idempotent, and a no-op on
+        // an installation that never had any.
+        runCatching { PersistentMessageStore.purgeLegacy(vault) }
+        PersistentMessageStore(vault)
+    }
+
+    /**
+     * The conversation, owned here so it outlives every screen.
+     *
+     * The UI reads it and never replaces it. Rotating the phone, navigating
+     * away, or Android destroying the Activity changes nothing about this
+     * object or the loop that feeds it.
+     */
+    val chat: ChatState by lazy { ChatState(messages) }
+
+    /**
+     * Whether an arrival is worth interrupting the user about, and nothing else.
+     *
+     * Every rule is in [InboundAlerts], which has no Android import and is
+     * tested by being run. This class does the platform half only.
+     */
+    val alerts = InboundAlerts()
+
+    @Volatile
+    var phase: LinkPhase = LinkPhase.STOPPED
+        private set
+
+    /**
+     * Change [phase] and say why, in the same log as Python's own events.
+     *
+     * An unexplained DISCONNECTING on a handset was a real report, and the
+     * answer needed two things nobody had: which component moved the state,
+     * and what happened immediately before. Every transition goes through
+     * here so the first is always recorded.
+     */
+    private fun enter(next: LinkPhase, why: String) {
+        val previous = phase
+        phase = next
+        if (previous != next) {
+            runCatching {
+                core.note("service", "phase_change",
+                          if (next == LinkPhase.FAILED) "error" else "info",
+                          "$previous -> $next ($why)")
+            }
+        }
+        updateNotification()
+    }
+
+    /** The last status the transport reported. */
+    @Volatile
+    var status: ConnectionStatus = ConnectionStatus()
+        private set
+
+    /** A stable code for the last failure, or null. Never exception text. */
+    @Volatile
+    var failure: String? = null
+        private set
+
+    private var worker: Job? = null
+    private var watcher: Job? = null
+    private var drainer: Job? = null
+
+    /** Python and the engine start once, not once per reconnect. */
+    @Volatile
+    private var initialised: Boolean = false
+
+    /**
+     * Credentials for THIS run, held in memory only.
+     *
+     * Never written here. Durable storage is `security/CredentialStore`, which
+     * seals them under the Keystore; this is the working copy the reconnect
+     * loop needs so a transient drop does not stop to ask the user to type
+     * their password again.
+     */
+    private var jid: String = ""
+    private var password: String = ""
+
+    /**
+     * The route, or "" for the compiled-in default.
+     *
+     * Not a secret and not in the vault beside the credentials: it is
+     * derivable from the JID's domain for every custom server, and for the
+     * default it is the thing the app ships knowing. Remembered for the life
+     * of the service so a reconnect goes back to the same place.
+     */
+    private var server: String = ""
+
+    override fun onBind(intent: Intent?): IBinder = binder
+
+    override fun onCreate() {
+        super.onCreate()
+        createChannel()
+    }
+
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (wipeStarted.get()) {
+            // Nothing starts, resumes or reconnects once a wipe has begun --
+            // a queued ACTION_START from a screen that had not caught up
+            // would otherwise rebuild what the wipe is destroying.
+            return START_NOT_STICKY
+        }
+        when (intent?.action) {
+            ACTION_WIPE -> {
+                wipeAndExit()
+                return START_NOT_STICKY
+            }
+            ACTION_STOP -> {
+                // Recorded because this is one of only three ways the app can
+                // reach DISCONNECTING, and telling them apart afterwards is
+                // the whole question.
+                runCatching { core.note("service", "stop_requested", "info",
+                                        "the user asked to disconnect") }
+                stopConnection(explicit = true)
+                stopSelf()
+                return START_NOT_STICKY
+            }
+            ACTION_LOGOUT -> {
+                runCatching { core.note("service", "logout_requested") }
+                // Explicit logout: stop, and forget. The history goes with the
+                // credentials -- leaving a conversation behind for the next
+                // person to sign in on this phone would be worse than useless.
+                stopConnection(explicit = true)
+                runCatching { credentials.clear() }
+                // This account's history, not the whole vault: another
+                // account's entries live under another prefix and are not
+                // ours to delete. `enterAccount(NONE)` then leaves the
+                // service holding nothing at all.
+                runCatching { messages.forgetAccount() }
+                runCatching { chat.forgetAccountRecords() }
+                runCatching { enterAccount(AccountScope.NONE) }
+                // AND THE ENGINE, which nothing told until now.
+                //
+                // `shutdown()` existed on the core and had no caller
+                // anywhere. Logout cleared the credentials, the history, the
+                // chat state and the badge -- and left the OTR engine holding
+                // every session from the account that just signed out. Those
+                // sessions are keyed by PEER JID, so a second account signing
+                // in on the same device inherited the first account's
+                // encrypted session with any shared contact.
+                //
+                // Off the main thread: this crosses into Python and tears
+                // down sessions. The same reason `stopConnection` dispatches
+                // its own teardown to IO.
+                //
+                // The trust database is deliberately NOT cleared. A pinned
+                // fingerprint is long-term identity about a PEER, not about
+                // the account that happened to pin it, and discarding it
+                // would turn the next conversation into a fresh
+                // trust-on-first-use decision -- which is exactly the moment
+                // TOFU exists to make visible.
+                // NOT `scope`. The `stopSelf()` at the end of this branch
+                // leads to `onDestroy`, which calls `scope.cancel()` -- so a
+                // teardown launched on the service's own scope is a coroutine
+                // racing the thing that cancels it, and if cancellation wins
+                // it never starts. Losing it restores the defect this call
+                // exists to fix: the engine keeps the signed-out account's
+                // sessions, keyed by peer JID, for the next account to
+                // inherit.
+                //
+                // `teardown` outlives the service for exactly this window.
+                // `shutdown()` is idempotent, so a teardown that overlaps
+                // another is harmless.
+                teardown.launch {
+                    withContext(Dispatchers.IO) {
+                        runCatching { core.shutdown() }
+                    }
+                }
+                // And take the notification down with them. A count of unread
+                // messages left in the shade after a sign-out is a statement
+                // about an account that is no longer on this device.
+                alerts.clear()
+                cancelArrivalNotification()
+                cancelCallNotification()
+                jid = ""
+                password = ""
+                server = ""
+                stopSelf()
+                return START_NOT_STICKY
+            }
+            ACTION_START -> {
+                // Required within seconds of `startForegroundService`,
+                // whatever we decide below, or the system kills the process.
+                goForeground()
+                val account = intent.getStringExtra(EXTRA_JID).orEmpty()
+                val secret = intent.getStringExtra(EXTRA_PASSWORD).orEmpty()
+                val explicit = account.isNotBlank()
+                // Read once. `load()` decrypts, and asking twice would mean
+                // the decision and the credentials could come from different
+                // reads of the vault.
+                val stored = if (explicit) null
+                             else runCatching { credentials.load() }.getOrNull()
+
+                // THE STARTUP STATE MACHINE, and the whole of the fix.
+                //
+                // `startConnection()` used to be called unconditionally here.
+                // On a first launch `credentials.load()` returned null, `jid`
+                // stayed "", and the service connected as nobody -- tunnels,
+                // a failure, and then a BACKOFF LOOP that the user had to
+                // press Cancel to escape before they could sign in.
+                //
+                // `Startup` is plain Kotlin and decides both halves from one
+                // call, so "connect?" and "as whom?" cannot disagree.
+                val chosen = Startup.accountFor(
+                    intentJid = account, intentPassword = secret,
+                    storedJid = stored?.jid, storedPassword = stored?.password)
+
+                // The Intent is done with the password the moment it is read.
+                // Intents can be logged by the system, so it does not sit in
+                // one any longer than it must.
+                intent.removeExtra(EXTRA_PASSWORD)
+
+                if (chosen == null) {
+                    // Nothing to connect as. NOT a failure: on a first launch
+                    // nothing is wrong, and reporting one would put a red
+                    // line above an empty login form. The service stays bound
+                    // so the UI can talk to it, and stops pretending to be
+                    // doing work in the shade.
+                    runCatching {
+                        core.note("service", "start_without_account", "info",
+                                  if (explicit) "the request carried no usable account"
+                                  else "nothing stored yet")
+                    }
+                    idle()
+                    return START_NOT_STICKY
+                }
+
+                jid = chosen.jid
+                password = chosen.password
+                server = if (explicit) {
+                    intent.getStringExtra(EXTRA_SERVER).orEmpty()
+                } else {
+                    // A remembered account on anything but the default server
+                    // routes to its own domain. The default is the blank
+                    // case, which is what the bridge already means by "use
+                    // the compiled-in destination".
+                    if (SignIn.choiceFor(chosen.jid) == SignIn.Choice.CUSTOM)
+                        SignIn.domainOf(chosen.jid) else ""
+                }
+                if (explicit) {
+                    // Remembered so a reconnect -- or a restart of this
+                    // service -- does not have to stop and ask.
+                    runCatching {
+                        credentials.save(Credentials(chosen.jid, chosen.password))
+                    }
+                }
+                startConnection()
+            }
+            else -> goForeground()
+        }
+        // START_STICKY would have Android restart the service with a null
+        // Intent after a kill, and we would have no credentials -- so it would
+        // come back as a notification attached to nothing. The UI restarts it
+        // deliberately instead.
+        return START_NOT_STICKY
+    }
+
+    override fun onDestroy() {
+        // The third route to DISCONNECTING, and the one that is never a
+        // deliberate user action -- Android reclaiming the service, or the
+        // last client unbinding from one that was never started.
+        runCatching { core.note("service", "destroyed", "warning",
+                                "the service is being torn down") }
+        stopConnection(explicit = true)
+        drainer?.cancel()
+        drainer = null
+        scope.cancel()
+        super.onDestroy()
+    }
+
+    // ── Wipe & Exit ─────────────────────────────────────────────────────────
+
+    private val wipeStarted = AtomicBoolean(false)
+
+    /** The last wipe's engine report, for the diagnostics that outlive it. */
+    @Volatile
+    var lastWipe: org.otrv4plus.android.bridge.WipeReport? = null
+        private set
+
+    /**
+     * Destroy everything sensitive and end the process.
+     *
+     * The order and the policy -- what is destroyed, what is kept, why each
+     * step is where it is -- are in [WipeAndExit], which is plain Kotlin and
+     * executed by `WipeAndExitTest`. This supplies the platform half of each
+     * step and nothing else.
+     *
+     * Foreground first: this was started with `startForegroundService`, and
+     * the system kills a process that does not call `startForeground` in
+     * time. Then off the main thread, on `teardown` rather than `scope`,
+     * because the EXIT step ends the service and must not be racing the
+     * cancellation that would cause.
+     */
+    private fun wipeAndExit() {
+        if (!wipeStarted.compareAndSet(false, true)) return
+        WipeAndExit.begin()
+        goForeground()
+        reconnect.onUserDisconnect()
+        val context = applicationContext
+        val runner = WipeAndExit.Runner(mapOf(
+            WipeAndExit.Step.STOP_BACKGROUND to {
+                // Before the loops are cancelled: cancelling does not wait for
+                // a write already under way, and the latch does.
+                vault.latch()
+                worker?.cancel(); worker = null
+                watcher?.cancel(); watcher = null
+                drainer?.cancel(); drainer = null
+            },
+            WipeAndExit.Step.WIPE_ENGINE to {
+                val report = core.wipe()
+                lastWipe = report
+                if (!report.ok) error("engine wipe reported ${report.errors}")
+            },
+            WipeAndExit.Step.CLEAR_NOTIFICATIONS to {
+                alerts.clear()
+                getSystemService(NotificationManager::class.java)?.cancelAll()
+            },
+            WipeAndExit.Step.CLEAR_MEMORY to {
+                jid = ""
+                password = ""
+                server = ""
+                chat.bindAccount(AccountScope.NONE)
+            },
+            WipeAndExit.Step.DESTROY_VAULT to {
+                // The in-memory fallback vault has no key to delete; clearing
+                // it is the whole of its erasure.
+                runCatching { vault.clear() }
+                if (!KeystoreVault.destroy(context) && vault.inner is KeystoreVault) {
+                    error("the vault key could not be confirmed deleted")
+                }
+            },
+            WipeAndExit.Step.CLEAR_CACHE to {
+                context.cacheDir.listFiles()?.forEach { it.deleteRecursively() }
+            },
+            WipeAndExit.Step.EXIT to {
+                enter(LinkPhase.STOPPED, "wiped")
+                ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
+                stopSelf()
+                // The process ending is the last step, not a courtesy. It is
+                // what finally releases the interpreter, every Python object
+                // and every Rust handle still reachable from one; a service
+                // that merely stopped would leave them all in memory until
+                // Android got round to reclaiming it. Stopped first, so the
+                // system does not restart a sticky service into the void.
+                android.os.Process.killProcess(android.os.Process.myPid())
+            },
+        ))
+        teardown.launch {
+            withContext(Dispatchers.IO) { runner.run() }
+        }
+    }
+
+    // ── connection ──────────────────────────────────────────────────────────
+
+    /** Begin, or do nothing if an attempt is already running. */
+    fun startConnection() {
+        // THE ACCOUNT BOUNDARY, and it is here rather than in the UI because
+        // this is the one place every route to an authenticated session goes
+        // through: a fresh sign-in, a resume from stored credentials, and a
+        // reconnect. Binding before anything starts means no listener, no
+        // poll and no screen can read the previous account's state, not even
+        // for the moment it takes the connection to come up.
+        //
+        // `bindAccount` is a no-op when the account has not changed, so a
+        // reconnect costs nothing and keeps a half-typed message.
+        enterAccount(AccountScope.of(jid))
+        reconnect.onUserConnect()
+        startDraining()
+        if (worker?.isActive == true) return
+        worker = scope.launch { connectLoop() }
+    }
+
+    /**
+     * Make [next] the account this service is holding state for.
+     *
+     * Everything private to an account is dropped and rebound in one place:
+     * the conversation, the roster, the drafts, the history store and the
+     * unread badge. Ordered so nothing belonging to the old account is
+     * readable at any point after the first line.
+     *
+     * The arrival notification goes too. A count of unread messages left in
+     * the shade across a sign-in is a statement about an account that is no
+     * longer the one on this device.
+     */
+    private fun enterAccount(next: AccountScope) {
+        if (next == chat.account) return
+        runCatching {
+            // No JID: the trace names nobody, and this event is about a
+            // transition rather than about who made it.
+            core.note("service", "account_boundary", "info",
+                      if (next.isAuthenticated) "bound" else "cleared")
+        }
+        alerts.clear()
+        cancelArrivalNotification()
+        chat.bindAccount(next)
+    }
+
+    /**
+     * Stop, and mean it.
+     *
+     * `explicit` latches the reconnect policy, which is what separates "the
+     * user pressed Disconnect" from "the stream dropped". Only the first
+     * should stop the app coming back.
+     */
+    fun stopConnection(explicit: Boolean) {
+        runCatching {
+            core.note("service", "stop_connection",
+                      if (explicit) "info" else "warning",
+                      if (explicit) "explicit" else "not user-requested")
+        }
+        if (explicit) reconnect.onUserDisconnect()
+        worker?.cancel()
+        worker = null
+        watcher?.cancel()
+        watcher = null
+        enter(LinkPhase.DISCONNECTING,
+              if (explicit) "the user asked to stop" else "teardown")
+        // Off the main thread: this crosses into Python and blocks.
+        //
+        // AND OFF `scope`, for the same reason the engine teardown is. Both
+        // callers that matter here are followed immediately by the end of the
+        // service: ACTION_STOP calls `stopSelf()` on the next line, and
+        // `onDestroy` calls `scope.cancel()` two lines later. A disconnect
+        // launched on the service's own scope is a coroutine racing the thing
+        // that cancels it, and losing that race leaves the transport's worker
+        // thread, its authenticated XMPP stream and its I2P tunnel alive with
+        // nothing holding a reference that could ever close them -- a live
+        // I2P lease belonging to an app the user has closed, which is the
+        // exact failure `ChaquopyOtrCore.shutdown` documents and orders its
+        // own calls to avoid.
+        teardown.launch {
+            withContext(Dispatchers.IO) {
+                runCatching { core.cancelConnect() }
+                runCatching { core.disconnect() }
+            }
+            enter(LinkPhase.STOPPED, "teardown finished")
+        }
+    }
+
+    private suspend fun connectLoop() {
+        while (scope.isActive) {
+            if (!reconnect.beginAttempt()) return
+            enter(if (reconnect.attempts == 0) LinkPhase.CONNECTING
+                  else LinkPhase.RECONNECTING,
+                  "attempt ${reconnect.attempts + 1}")
+
+            // initialize -> prepareConnection -> connect, in that order and
+            // all on the IO dispatcher: every one of them is a blocking call
+            // into Python and Chaquopy's JNI calls are not interruptible by
+            // coroutine cancellation.
+            //
+            // `prepareConnection` is repeated on each attempt on purpose. A
+            // reconnect needs a controller whose transport is not the dead
+            // one, and building it is cheap next to a tunnel.
+            val result = withContext(Dispatchers.IO) {
+                runCatching {
+                    if (!initialised) {
+                        val init = core.initialize()
+                        if (!init.ok) throw IllegalStateException("init_failed")
+                        initialised = true
+                    }
+                    core.prepareConnection(jid.trim(), server.trim())
+                    core.connect(password)
+                }
+            }
+            reconnect.endAttempt()
+
+            val ok = result.getOrNull()?.connected == true
+            if (ok) {
+                reconnect.onConnected()
+                status = result.getOrNull() ?: ConnectionStatus()
+                failure = null
+                enter(LinkPhase.CONNECTED, "the transport reported connected")
+                watchUntilDropped()
+                // watchUntilDropped returns when the stream is gone. Fall
+                // through to the backoff rather than returning: a drop we did
+                // not ask for is exactly what reconnect exists for.
+                if (reconnect.suppressed) return
+            } else {
+                failure = result.exceptionOrNull()?.let { codeOf(it) }
+                    ?: result.getOrNull()?.code.orEmpty().ifBlank { "connect_failed" }
+                status = result.getOrNull() ?: status
+            }
+
+            val wait = reconnect.nextDelayMs() ?: return
+            enter(LinkPhase.RECONNECTING, "backing off ${wait}ms")
+            delay(wait)
+        }
+    }
+
+    /**
+     * Poll the transport's own view until it stops being connected.
+     *
+     * The transport's `connected`, not ours: the keepalive clears it when a
+     * round trip stops being answered, which over I2P is the only reliable
+     * evidence that a stream that still accepts writes is actually dead.
+     */
+    /**
+     * Drain the engine's queue and feed the conversation, forever.
+     *
+     * Started once and never restarted: it must keep running across a
+     * reconnect, because the queue is where a message that arrived during the
+     * gap is waiting. Tied to the service's scope, so it ends when the service
+     * does and not before.
+     *
+     * Every read is guarded separately for the reason the poll loop is: one
+     * failing call must not discard the others, and a roster that will not
+     * load must not stop messages being delivered.
+     */
+    private fun startDraining() {
+        if (drainer?.isActive == true) return
+        drainer = scope.launch {
+            while (isActive) {
+                withContext(Dispatchers.IO) {
+                    runCatching { core.connectionStatus() }.getOrNull()
+                        ?.let { chat.applyConnection(it) }
+                        ?: chat.noteLinkFailure("status")
+                    runCatching { core.contacts() }.getOrNull()
+                        ?.let { chat.applyRoster(it) }
+                    runCatching { core.eventsDropped() }.getOrNull()
+                        ?.let { chat.applyDropped(it) }
+                    runCatching { core.drainEvents() }.getOrDefault(emptyList())
+                        .forEach { event ->
+                            // handle() returns whether a NEW message was
+                            // stored. Notifying on anything else -- a
+                            // duplicate, a presence change, a session state --
+                            // would let a peer buzz the phone at will.
+                            if (chat.handle(event)) announceArrival()
+                            // A call is not a message, and rings through its
+                            // own path. Only a verified peer can reach
+                            // RINGING -- see CallAlert.
+                            for (change in chat.takeRingChanges()) {
+                                when (change) {
+                                    CallAlert.Change.START -> announceCall()
+                                    CallAlert.Change.STOP -> cancelCallNotification()
+                                }
+                            }
+                        }
+                }
+                delay(DRAIN_INTERVAL_MS)
+            }
+        }
+    }
+
+    private suspend fun watchUntilDropped() {
+        while (scope.isActive) {
+            delay(WATCH_INTERVAL_MS)
+            val current = withContext(Dispatchers.IO) {
+                runCatching { core.connectionStatus() }.getOrNull()
+            } ?: continue
+            status = current
+            if (!current.connected) {
+                // The transport's own flag went false. Python has already
+                // recorded WHY -- keepalive, or slixmpp closing the stream --
+                // so this line is where the two halves meet.
+                enter(LinkPhase.RECONNECTING,
+                      "the transport is no longer connected")
+                return
+            }
+        }
+    }
+
+    private fun codeOf(t: Throwable): String =
+        t::class.simpleName ?: "error"
+
+    // ── telling the user something arrived ──────────────────────────────────
+
+    /**
+     * A screen came to the front, or went away.
+     *
+     * Called from the Activity's `onStart`/`onStop`, not from a bind: the
+     * binding is held for the ViewModel's whole life and so stays up while the
+     * app is backgrounded, which is precisely the state a notification is for.
+     */
+    fun setUiVisible(visible: Boolean) {
+        // The conversation state needs it too, and for a different reason:
+        // `openConversation` outlives the UI now, so without this a message
+        // arriving with the phone in a pocket is marked read because a
+        // conversation the user cannot see happens to be the open one.
+        chat.setUiVisible(visible)
+        if (alerts.setUiVisible(visible)) cancelArrivalNotification()
+    }
+
+    /**
+     * Post, or update, the "something arrived" notification.
+     *
+     * Silent when [InboundAlerts] says the user is already looking. One
+     * notification for everything, replaced in place as more arrive -- a
+     * notification per conversation would make the shade a contact list even
+     * with every name removed, because the number of entries is the number of
+     * people who messaged.
+     */
+    private fun announceArrival() {
+        val alert = alerts.note() ?: return
+        runCatching {
+            getSystemService(NotificationManager::class.java)
+                ?.notify(MESSAGE_NOTIFICATION_ID, buildArrivalNotification(alert))
+        }
+    }
+
+    /**
+     * Ring for an incoming call. Says "incoming call" and not one word more.
+     *
+     * The same rules as [buildArrivalNotification]: no caller, no name, and
+     * hidden entirely on a locked screen, because a lock-screen line naming
+     * the caller announces exactly who talks to this device. Posted whether
+     * or not the app is on screen: unlike a message, a call that is missed
+     * because the phone stayed silent cannot be read later.
+     *
+     * Heads-up through a HIGH-importance channel, NOT a full-screen intent.
+     * A full-screen intent needs USE_FULL_SCREEN_INTENT, which Play restricts
+     * to calling and alarm apps and which the user has to grant separately
+     * on Android 14+; that is a later decision, not one to make silently.
+     */
+    private fun announceCall() {
+        val open = PendingIntent.getActivity(
+            this, 3,
+            Intent(this, MainActivity::class.java)
+                .setFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP),
+            PendingIntent.FLAG_IMMUTABLE,
+        )
+        val notification = NotificationCompat.Builder(this, CALL_CHANNEL_ID)
+            .setContentTitle(getString(R.string.app_name))
+            .setContentText(getString(R.string.call_incoming))
+            .setSmallIcon(android.R.drawable.stat_sys_phone_call)
+            .setContentIntent(open)
+            .setAutoCancel(true)
+            .setShowWhen(false)
+            .setCategory(NotificationCompat.CATEGORY_CALL)
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setVisibility(NotificationCompat.VISIBILITY_SECRET)
+            .build()
+        runCatching {
+            getSystemService(NotificationManager::class.java)
+                ?.notify(CALL_NOTIFICATION_ID, notification)
+        }
+    }
+
+    private fun cancelCallNotification() {
+        runCatching {
+            getSystemService(NotificationManager::class.java)
+                ?.cancel(CALL_NOTIFICATION_ID)
+        }
+    }
+
+    private fun cancelArrivalNotification() {
+        runCatching {
+            getSystemService(NotificationManager::class.java)
+                ?.cancel(MESSAGE_NOTIFICATION_ID)
+        }
+    }
+
+    /**
+     * How many, and not one word more.
+     *
+     * No peer, no display name, no body, no preview, and no big-text style to
+     * expand into one. See [InboundAlerts] for why: a lock-screen line naming
+     * who just messaged this device defeats the anonymity the transport under
+     * it exists to provide.
+     */
+    private fun buildArrivalNotification(alert: InboundAlerts.Alert): Notification {
+        val open = PendingIntent.getActivity(
+            this, 2,
+            Intent(this, MainActivity::class.java)
+                .setFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP),
+            PendingIntent.FLAG_IMMUTABLE,
+        )
+        val text = if (alert.count == 1) getString(R.string.message_arrived_one)
+                   else getString(R.string.message_arrived_many, alert.count)
+        return NotificationCompat.Builder(this, MESSAGE_CHANNEL_ID)
+            .setContentTitle(getString(R.string.app_name))
+            .setContentText(text)
+            .setSmallIcon(android.R.drawable.stat_notify_chat)
+            .setContentIntent(open)
+            .setAutoCancel(true)
+            .setShowWhen(false)
+            // Hidden entirely on a locked screen -- not "hidden contents",
+            // which still shows the app's name and therefore that this device
+            // is running this app and just received something.
+            .setVisibility(NotificationCompat.VISIBILITY_SECRET)
+            // Only the first of a run makes a sound. A conversation arriving
+            // message by message must not become a burst of alerts.
+            .setOnlyAlertOnce(!alert.first)
+            .build()
+    }
+
+    // ── the notification ────────────────────────────────────────────────────
+
+    private fun goForeground() {
+        ServiceCompat.startForeground(
+            this, NOTIFICATION_ID, buildNotification(),
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q)
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC else 0,
+        )
+    }
+
+    /**
+     * Started, but with no account to be. Stand down without claiming a fault.
+     *
+     * The foreground notification goes: a persistent "OTRv4+ — stopped" in
+     * the shade of somebody who has not signed in yet is a statement about
+     * work that is not happening.
+     *
+     * The phase is set to [LinkPhase.STOPPED] rather than [LinkPhase.FAILED].
+     * Nothing failed. A first launch with no stored account is the ordinary
+     * case, and FAILED would put an error above an empty login form and feed
+     * `LoginProgress.problemToShow` a failure the user never caused.
+     *
+     * `stopSelf` is deliberately NOT called. The UI is bound to this service
+     * and is about to send a real ACTION_START; tearing it down between the
+     * two would run [onDestroy], which reports a teardown it did not ask for.
+     */
+    private fun idle() {
+        if (phase != LinkPhase.STOPPED) enter(LinkPhase.STOPPED, "no account yet")
+        ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
+    }
+
+    private fun createChannel() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
+        val channel = NotificationChannel(
+            CHANNEL_ID,
+            getString(R.string.connection_channel_name),
+            // LOW: the connection notification is a persistent fact, not an
+            // event. It must not make a sound every time a tunnel rebuilds.
+            NotificationManager.IMPORTANCE_LOW,
+        ).apply {
+            description = getString(R.string.connection_channel_description)
+            setShowBadge(false)
+        }
+        // A SEPARATE channel for arrivals, so the user can silence one without
+        // silencing the other. Silencing the connection channel must not also
+        // silence the only signal that somebody is trying to reach them, and
+        // silencing arrivals must not stop the foreground notification that
+        // keeps the connection alive at all.
+        val messages = NotificationChannel(
+            MESSAGE_CHANNEL_ID,
+            getString(R.string.message_channel_name),
+            // DEFAULT: an arrival IS an event, and is the one thing in this app
+            // worth interrupting somebody for.
+            NotificationManager.IMPORTANCE_DEFAULT,
+        ).apply {
+            description = getString(R.string.message_channel_description)
+            // No badge and no preview on the lock screen. The count alone is
+            // already the most this may say.
+            setShowBadge(false)
+            lockscreenVisibility = Notification.VISIBILITY_SECRET
+        }
+        // A THIRD channel, for calls, and HIGH so it can appear heads-up: a
+        // call that waits in the shade for somebody to look is a missed call.
+        // Separate so the user can silence messages without silencing calls,
+        // or the other way round.
+        val calls = NotificationChannel(
+            CALL_CHANNEL_ID,
+            getString(R.string.call_channel_name),
+            NotificationManager.IMPORTANCE_HIGH,
+        ).apply {
+            description = getString(R.string.call_channel_description)
+            setShowBadge(false)
+            lockscreenVisibility = Notification.VISIBILITY_SECRET
+        }
+        getSystemService(NotificationManager::class.java)
+            ?.createNotificationChannels(listOf(channel, messages, calls))
+    }
+
+    /**
+     * What the notification says.
+     *
+     * The PHASE and nothing else. No JID, no server, no contact name, no
+     * message: a notification is visible on a locked screen and over the
+     * user's shoulder, and "who this person talks to" is the thing an
+     * anonymity-oriented client is protecting.
+     */
+    private fun buildNotification(): Notification {
+        val open = PendingIntent.getActivity(
+            this, 0,
+            Intent(this, MainActivity::class.java)
+                .setFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP),
+            PendingIntent.FLAG_IMMUTABLE,
+        )
+        val stop = PendingIntent.getService(
+            this, 1,
+            Intent(this, OtrConnectionService::class.java).setAction(ACTION_STOP),
+            PendingIntent.FLAG_IMMUTABLE,
+        )
+        return NotificationCompat.Builder(this, CHANNEL_ID)
+            .setContentTitle(getString(R.string.app_name))
+            .setContentText(getString(phaseText()))
+            .setSmallIcon(android.R.drawable.stat_sys_upload)
+            .setContentIntent(open)
+            .addAction(0, getString(R.string.connection_stop), stop)
+            .setOngoing(true)
+            .setShowWhen(false)
+            // Nothing about this notification may appear on a lock screen
+            // beyond the app's own name.
+            .setVisibility(NotificationCompat.VISIBILITY_SECRET)
+            .setPriority(NotificationCompat.PRIORITY_LOW)
+            .build()
+    }
+
+    private fun phaseText(): Int = when (phase) {
+        LinkPhase.STOPPED -> R.string.connection_stopped
+        LinkPhase.STARTING -> R.string.connection_starting
+        LinkPhase.CONNECTING -> R.string.connection_connecting
+        LinkPhase.CONNECTED -> R.string.connection_connected
+        LinkPhase.RECONNECTING -> R.string.connection_reconnecting
+        LinkPhase.DISCONNECTING -> R.string.connection_disconnecting
+        LinkPhase.FAILED -> R.string.connection_failed
+    }
+
+    private fun updateNotification() {
+        runCatching {
+            getSystemService(NotificationManager::class.java)
+                ?.notify(NOTIFICATION_ID, buildNotification())
+        }
+    }
+
+    companion object {
+        /**
+         * Where work that must survive the service runs.
+         *
+         * TEARDOWN ONLY, and it should stay that way. Two things use it: the
+         * engine shutdown on an explicit logout, and the connection teardown
+         * in `stopConnection`. Both are started and then the service ends --
+         * `ACTION_STOP` and `ACTION_LOGOUT` call `stopSelf()` on the next
+         * line, and `onDestroy` calls `scope.cancel()` two lines after its
+         * own `stopConnection`. Anything launched on the service's own scope
+         * there is a coroutine racing the thing that cancels it, and the
+         * losers are an engine still holding the signed-out account's
+         * sessions and an I2P tunnel with nothing left to close it.
+         *
+         * Deliberately NOT a general-purpose escape from the service
+         * lifecycle. Connection work belongs on `scope` and must stop when
+         * the service stops; a connect ATTEMPT that outlived its service
+         * would be tunnels nobody is watching, which is the failure this is
+         * meant to prevent rather than cause. What runs here is short,
+         * bounded and idempotent: give back what we took, and stop.
+         */
+        private val teardown =
+            CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+        private const val CHANNEL_ID = "otrv4plus.connection"
+        private const val NOTIFICATION_ID = 1
+
+        private const val MESSAGE_CHANNEL_ID = "otrv4plus.messages"
+
+        /**
+         * ONE id for every arrival.
+         *
+         * Not one per conversation: the shade would then have one entry per
+         * person who messaged, which is a contact graph by cardinality even
+         * with every name stripped out.
+         */
+        private const val MESSAGE_NOTIFICATION_ID = 2
+
+        private const val CALL_CHANNEL_ID = "otrv4plus.calls"
+
+        /** One id for a ringing call. Only one call can ring at a time. */
+        private const val CALL_NOTIFICATION_ID = 3
+
+        const val ACTION_START = "org.otrv4plus.android.START"
+        const val ACTION_STOP = "org.otrv4plus.android.STOP"
+        const val ACTION_LOGOUT = "org.otrv4plus.android.LOGOUT"
+        const val ACTION_WIPE = "org.otrv4plus.android.WIPE"
+        const val EXTRA_JID = "jid"
+        const val EXTRA_PASSWORD = "password"
+
+        /** The route, or absent for the compiled-in default. Not a secret. */
+        const val EXTRA_SERVER = "server"
+
+        /** How often to ask the transport whether it is still up. */
+        const val WATCH_INTERVAL_MS = 5_000L
+
+        /**
+         * How often to drain the engine's queue.
+         *
+         * The same 500ms the UI used, and for the same reason: events are
+         * emitted on the transport's asyncio loop thread and pulled from here,
+         * so this is what decides how quickly a message appears.
+         */
+        const val DRAIN_INTERVAL_MS = 500L
+
+        /** Start the service and ask it to connect. */
+        fun start(context: Context, jid: String, password: String,
+                  server: String = "") {
+            val intent = Intent(context, OtrConnectionService::class.java)
+                .setAction(ACTION_START)
+                .putExtra(EXTRA_JID, jid)
+                .putExtra(EXTRA_PASSWORD, password)
+                .putExtra(EXTRA_SERVER, server)
+            ContextCompat.startForegroundService(context, intent)
+        }
+
+        /** Stop it, and latch the reconnect policy so it stays stopped. */
+        fun stop(context: Context) {
+            val intent = Intent(context, OtrConnectionService::class.java)
+                .setAction(ACTION_STOP)
+            ContextCompat.startForegroundService(context, intent)
+        }
+
+        /**
+         * Wipe & Exit. Destroys every session secret and every sensitive
+         * record, then ends the process. See [WipeAndExit].
+         */
+        fun wipeAndExit(context: Context) {
+            val intent = Intent(context, OtrConnectionService::class.java)
+                .setAction(ACTION_WIPE)
+            ContextCompat.startForegroundService(context, intent)
+        }
+
+        /** Stop, and forget the account and its history. */
+        fun logout(context: Context) {
+            val intent = Intent(context, OtrConnectionService::class.java)
+                .setAction(ACTION_LOGOUT)
+            ContextCompat.startForegroundService(context, intent)
+        }
+
+        /**
+         * Resume with stored credentials, if there are any.
+         *
+         * No password in the Intent: the service reads it from the vault. This
+         * is what the UI calls on launch so a user who has signed in before
+         * does not see a login screen again.
+         */
+        fun resume(context: Context) {
+            val intent = Intent(context, OtrConnectionService::class.java)
+                .setAction(ACTION_START)
+            ContextCompat.startForegroundService(context, intent)
+        }
+    }
+}

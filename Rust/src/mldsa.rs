@@ -89,6 +89,59 @@ pub fn mldsa87_verify(pub_bytes: &[u8], msg: &[u8], sig_bytes: &[u8]) -> PyResul
     Ok(mldsa87::verify_detached_signature(&sig, msg, &pk).is_ok())
 }
 
+/// An ML-DSA-87 signing key that never leaves Rust.
+///
+/// `mldsa87_keygen` returns the 4896-byte secret key to Python, and the DAKE
+/// held it in a `bytearray` for the life of every session -- then passed
+/// `bytes(priv)` to `mldsa87_sign`, making a fresh, unwipeable copy on each
+/// signature. This handle replaces that: Python can read the public key and
+/// ask for a signature, and nothing else.
+#[pyclass(name = "MlDsa87KeyHandle")]
+pub struct MlDsa87KeyHandle {
+    public: Vec<u8>,
+    secret: Option<crate::secure_mem::SecretVec>,
+}
+
+#[pymethods]
+impl MlDsa87KeyHandle {
+    #[new]
+    fn new() -> Self {
+        let (pk, sk) = mldsa87::keypair();
+        Self {
+            public: pk.as_bytes().to_vec(),
+            secret: Some(crate::secure_mem::SecretVec::from_slice(sk.as_bytes())),
+        }
+    }
+
+    /// The 2592-byte public key.
+    #[getter]
+    fn public_bytes<'py>(&self, py: Python<'py>) -> Bound<'py, PyBytes> {
+        PyBytes::new(py, &self.public)
+    }
+
+    /// A 4627-byte detached signature over `msg`.
+    fn sign<'py>(&self, py: Python<'py>, msg: &[u8]) -> PyResult<Bound<'py, PyBytes>> {
+        let secret = self.secret.as_ref().ok_or_else(|| {
+            pyo3::exceptions::PyRuntimeError::new_err(
+                "ML-DSA-87 signing key has been destroyed")
+        })?;
+        let sk = mldsa87::SecretKey::from_bytes(secret.expose())
+            .map_err(|_| PyValueError::new_err("internal: invalid ML-DSA-87 secret key"))?;
+        let sig = mldsa87::detached_sign(msg, &sk);
+        Ok(PyBytes::new(py, sig.as_bytes()))
+    }
+
+    /// Destroy the signing key. Idempotent.
+    fn zeroize(&mut self) { self.secret = None; }
+
+    #[getter]
+    fn destroyed(&self) -> bool { self.secret.is_none() }
+
+    fn __repr__(&self) -> String {
+        format!("<MlDsa87KeyHandle destroyed={}>", self.secret.is_none())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

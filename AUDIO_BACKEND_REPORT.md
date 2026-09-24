@@ -1,5 +1,10 @@
 # OTRv4+ audio backend: PulseAudio → AAudio
 
+> **0.6.0-experimental:** the pure-Python `kyber-py` ML-KEM provider and the
+> `OTRV4PLUS_ALLOW_PYTHON_MLKEM` switch described below no longer exist. Voice
+> ML-KEM-1024, X448 and every HKDF step run only in the Rust core; without it
+> voice is unavailable.
+
 > **Status note (v10.12.0) — historical report, conclusions not retracted.** The
 > AAudio backend described here shipped and is in production use. One figure has
 > moved: the report speaks of 40 ms frames, which was the default at the time.

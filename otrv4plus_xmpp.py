@@ -152,7 +152,11 @@ import time
 import threading
 from concurrent.futures import ThreadPoolExecutor
 
+import otrv4plus_address as _address
 import otrv4plus_coreapi as _coreapi
+import otrv4plus_fragment as _frag
+import otrv4plus_ping as _ping
+from otrv4plus_mode import OtrMode as _OtrMode
 import otrv4plus_smpflow as _smpflow
 
 # ---------------------------------------------------------------------------
@@ -892,8 +896,13 @@ except ImportError:
     _LOG_AVAILABLE = False
 
 
-OTR_PREFIX = "?OTRv4 "
-OTR_PREFIX_B = b"?OTRv4 "
+# One definition, shared with android_bridge. Re-exported under the names this
+# module and its tests have always used, so nothing here changes shape -- but
+# the two clients can no longer drift apart on what counts as protocol
+# traffic, which is precisely how the Android side ended up with no notion of
+# it at all.
+OTR_PREFIX = _frag.OTR_PREFIX
+OTR_PREFIX_B = OTR_PREFIX.encode("utf-8")
 
 # SMP passphrase length bounds enforced before passing to the Rust engine.
 # Defined in the engine (otrv4+.py) since v10.23.0 so both clients agree;
@@ -1116,7 +1125,8 @@ _TOR_FORWARDERS = []
 
 
 async def start_i2p_sam_forwarder(
-    dest_b32: str, dest_port: int, sam_host: str = "127.0.0.1", sam_port: int = 7656
+    dest_b32: str, dest_port: int, sam_host: str = "127.0.0.1", sam_port: int = 7656,
+    *, resources=None, log=None,
 ):
     """
     Open an I2P SAM stream to `dest_b32` and expose it as a local TCP endpoint.
@@ -1125,12 +1135,34 @@ async def start_i2p_sam_forwarder(
     does STARTTLS normally; bytes are piped over the SAM stream to the I2P
     destination. The SAM connection, local server, and writer are kept alive on
     the loop so they are not garbage-collected.
+
+    `resources` and `log` exist for the Android bridge and change nothing when
+    they are omitted, which is how the terminal client calls this.
+
+    **resources** -- a list to append the SAM session, the local server and the
+    writer to, INSTEAD of stashing them on `loop._i2p_keep`. The stash is a
+    keep-alive with no way to let go: it grows by three on every connection and
+    nothing ever closes what is in it. In a terminal process that runs one
+    session and exits, that is invisible. In an app where the user presses
+    Connect, fails, and presses it again, every attempt leaves a live I2P
+    tunnel and a listening local socket behind. Handing the caller the list
+    makes releasing them possible; passing nothing keeps the old behaviour
+    exactly.
+
+    **log** -- where the progress lines go, defaulting to `print`. The default
+    is the terminal's. Android needs a different one because Chaquopy routes
+    stdout into logcat, and these lines name the destination -- which is the
+    one thing CONTRIBUTING.md's rejection list says must not be logged. A
+    destination in a terminal a user is looking at is feedback; the same string
+    in a system log that any `adb logcat` reads is a disclosure.
     """
     if I2PSAMConnection is None:
         raise RuntimeError(
             "I2PSAMConnection not available from the OTR module; "
             "cannot use I2P SAM transport."
         )
+
+    say = log if log is not None else print
 
     loop = asyncio.get_event_loop()
     sam = I2PSAMConnection(sam_host=sam_host, sam_port=sam_port)
@@ -1145,13 +1177,13 @@ async def start_i2p_sam_forwarder(
     # the substitution read as though the alias had been ignored.
     resolved, _alias_src = I2PSAMConnection._apply_i2p_alias(dest_b32)
     if resolved != dest_b32:
-        print(f"[i2p] opening SAM stream to {dest_b32} -> {resolved} "
-              "(a cold tunnel can take 30-90s)...")
+        say(f"[i2p] opening SAM stream to {dest_b32} -> {resolved} "
+            "(a cold tunnel can take 30-90s)...")
     else:
-        print(f"[i2p] opening SAM stream to {dest_b32} "
-              "(a cold tunnel can take 30-90s)...")
+        say(f"[i2p] opening SAM stream to {dest_b32} "
+            "(a cold tunnel can take 30-90s)...")
     sam_sock = await loop.run_in_executor(None, _do_sam)
-    print("[i2p] SAM stream established.")
+    say("[i2p] SAM stream established.")
 
     sam_reader, sam_writer = await asyncio.open_connection(sock=sam_sock)
 
@@ -1206,10 +1238,14 @@ async def start_i2p_sam_forwarder(
 
     server = await asyncio.start_server(_handle_local, "127.0.0.1", 0)
     host, port = server.sockets[0].getsockname()[:2]
-    if not hasattr(loop, "_i2p_keep"):
-        loop._i2p_keep = []
-    loop._i2p_keep.extend([sam, server, sam_writer])
-    print(f"[i2p] local bridge ready at {host}:{port} -> {dest_b32}")
+    # Somewhere to keep these alive. Either place works as a keep-alive; only
+    # the caller's list can also be used to let go. See the docstring.
+    if resources is None:
+        if not hasattr(loop, "_i2p_keep"):
+            loop._i2p_keep = []
+        resources = loop._i2p_keep
+    resources.extend([sam, server, sam_writer])
+    say(f"[i2p] local bridge ready at {host}:{port} -> {dest_b32}")
     return host, port
 
 
@@ -1535,6 +1571,10 @@ class OTRv4PlusXMPP(ClientXMPP):
         # unresolved. Presence in this map refuses voice for that peer.
         self._fingerprint_changed = {}
         self._encrypted = set()    # peers whose DAKE has completed
+        # Which conversations have had OTR asked for -- by us with /otr,
+        # or by the peer sending a protocol frame. NOT a security state:
+        # it says whether OTR is wanted here, not whether it is working.
+        self._otr_mode = _OtrMode()
         self._smp_reported = set() # (peer, state) already announced
         # Display only.  Populated by _tui_route_output matching
         # substrings such as "SMP VERIFIED" in printed lines, which
@@ -1783,6 +1823,18 @@ class OTRv4PlusXMPP(ClientXMPP):
     # -------------------------------------------------------------------------
 
     async def _on_start(self, event):
+        # Advertise OTRv4Plus (XEP-0030 feature, XEP-0115 caps) BEFORE the
+        # first presence, so an OTRv4Plus peer -- the Android app -- can
+        # confirm this resource speaks the protocol before it sends a DAKE.
+        # See otrv4plus_caps; the identifier must match on both clients.
+        try:
+            import otrv4plus_caps as _caps
+            self["xep_0030"].add_feature(_caps.FEATURE)
+            self["xep_0115"].caps_node = _caps.CAPS_NODE
+            await self["xep_0115"].update_caps(broadcast=False)
+        except Exception:
+            print("[xmpp] could not advertise OTRv4Plus capability; peers "
+                  "will not start OTRv4+ automatically")
         self.send_presence()
         # Initialize voice call manager now that we have an event loop
         if self._voice_manager is None:
@@ -2005,17 +2057,37 @@ class OTRv4PlusXMPP(ClientXMPP):
         alive: a server replying `service-unavailable` to a ping has proven
         the stream works, which is the only thing being asked here. Treating
         it as death would reconnect against a perfectly good session.
+
+        The round trip moved into `otrv4plus_ping`, shared with the Android
+        transport, because this line was calling `async_ping` -- a method
+        **slixmpp 1.17 does not have.** It was removed upstream in favour of
+        `ping`, so on a current slixmpp this raised AttributeError, the bare
+        `except Exception` read that as "no answer", and every probe reported
+        a dead stream.
+
+        Here the damage was hidden: the keepalive loop skips the probe
+        entirely while the stream is delivering traffic, so an active
+        conversation never pinged at all. A QUIET session -- one waiting on a
+        reply, or holding a call open -- would still have been reconnected
+        every couple of minutes for no reason. On Android, which had no such
+        gate, it killed working sessions outright.
+
+        A missing or unusable ping API is now `PingUnsupported` and counts as
+        ALIVE. A client that cannot ask the question has learned nothing, and
+        manufacturing a disconnect out of that is precisely the bug.
         """
         try:
-            await self["xep_0199"].async_ping(
-                self.boundjid.host, timeout=self.KEEPALIVE_PING_TIMEOUT_S)
+            return await _ping.round_trip(
+                self["xep_0199"], self.boundjid.host,
+                self.KEEPALIVE_PING_TIMEOUT_S)
+        except _ping.PingUnsupported:
             return True
-        except IqError:
-            return True
-        except (IqTimeout, asyncio.TimeoutError):
-            return False
+        except asyncio.CancelledError:
+            raise
         except Exception:
-            return False
+            # Reaching the plugin at all failed -- not an answer about the
+            # server. Fail safe rather than reconnecting on our own confusion.
+            return True
 
     def _declare_stream_dead(self, why: str) -> None:
         """Give up on the stream and let the reconnect logic take over.
@@ -2740,6 +2812,14 @@ class OTRv4PlusXMPP(ClientXMPP):
             body = full
 
         if body.startswith(OTR_PREFIX):
+            # The peer has asked for OTR, so nothing more goes to them in the
+            # clear -- including while this handshake is still in flight.
+            # Marked here rather than on completion: the gap between their
+            # DAKE1 and an established session is exactly where a downgrade
+            # would fit.
+            _m = getattr(self, "_otr_mode", None)
+            if _m is not None:
+                _m.request(peer)
             # OTR processing (especially SMP) can run multi-minute 3072-bit DH
             # computations that BLOCK. Offload to a thread to keep the asyncio
             # event loop free so keepalive and network stay responsive.
@@ -3266,11 +3346,11 @@ class OTRv4PlusXMPP(ClientXMPP):
                   "prompt.")
             return
 
-        stored = None
+        stored = False
         try:
-            stored = self.otr.smp_storage.get_secret(peer)
+            stored = self.otr.has_stored_smp_secret(peer)
         except Exception:
-            stored = None
+            stored = False
 
         if stored:
             print(_SMP + f" stored passphrase found for {peer} — verifying…")
@@ -4243,9 +4323,16 @@ class OTRv4PlusXMPP(ClientXMPP):
         `_file_fragments_sent`. The file pump paces on that: what costs the
         receiver's rate-limit budget is stanzas, not chunks.
         """
-        MAX_FRAGMENT = 6000  # bytes per fragment (safely under I2P cliff)
+        # The format itself lives in otrv4plus_fragment, because the Android
+        # transport has to produce exactly these bytes and a second
+        # implementation of a wire format is a second implementation to keep
+        # in step. What stays here is everything that is this client's own
+        # voice: its debug lines and its stanza counter.
+        parts, self._frag_seq = _frag.fragment(
+            payload, getattr(self, "_frag_seq", 0))
+        total = len(parts)
 
-        if len(payload) <= MAX_FRAGMENT:
+        if total == 1:
             self.send_message(mto=peer, mbody=payload, mtype="chat")
             self._dbg(f"[otr-send] 1 frame ({len(payload)} bytes) -> {peer}")
             # getattr rather than a plain +=, and inline rather than a
@@ -4256,20 +4343,14 @@ class OTRv4PlusXMPP(ClientXMPP):
                 getattr(self, "_file_fragments_sent", 0) + 1
             return 1
 
-        chunks = [
-            payload[i : i + MAX_FRAGMENT]
-            for i in range(0, len(payload), MAX_FRAGMENT)
-        ]
-        total = len(chunks)
-        self._frag_seq = (self._frag_seq + 1) & 0xFFFFFFFF
-        msg_id = "%08x" % self._frag_seq
-
+        # Recovered from the first fragment rather than tracked separately, so
+        # there is exactly one place that decides what a msg_id is.
+        msg_id = parts[0].split("|", 2)[1]
         self._dbg(
             f"[otr-send] fragmenting {len(payload)} bytes into {total} "
             f"fragments (id {msg_id}) -> {peer}"
         )
-        for i, chunk in enumerate(chunks, 1):
-            frag = f"?OTRv4F|{msg_id}|{i}|{total}|{chunk}"
+        for i, frag in enumerate(parts, 1):
             self.send_message(mto=peer, mbody=frag, mtype="chat")
             self._dbg(f"[otr-send]   sent fragment {i}/{total} (id {msg_id})")
         self._dbg(f"[otr-send] all {total} fragments sent (id {msg_id}) -> {peer}")
@@ -4291,77 +4372,49 @@ class OTRv4PlusXMPP(ClientXMPP):
     def _reassemble_fragment(self, peer, body):
         """Feed one inbound fragment to the buffer. Returns the fully
         reassembled '?OTRv4 ...' string when the last fragment arrives,
-        otherwise None."""
-        try:
-            _, msg_id, n_s, total_s, chunk = body.split("|", 4)
-            n = int(n_s)
-            total = int(total_s)
-        except Exception:
-            self._dbg(f"[otr-recv] malformed fragment from {peer}; dropping")
-            return None
+        otherwise None.
 
-        # Reject nonsensical indices before they can corrupt a buffer.
-        MAX_FRAGMENTS = 4096
-        if total < 1 or total > MAX_FRAGMENTS or n < 1 or n > total:
-            self._dbg(f"[otr-recv] fragment index out of range from {peer}; dropping")
-            return None
+        The buffering, the bounds and the stitching moved to
+        otrv4plus_fragment so the Android transport reassembles with the same
+        code rather than a second copy of it. What stays here is this client's
+        own output: `_dbg`, and the progress line that is suppressed in probe
+        mode and passes the peer through `_sanitise`.
 
-        if not hasattr(self, "_frag_buffers"):
-            self._frag_buffers = {}
+        `_frag_buffers` is still created lazily and still lives on the
+        instance, because the fragmentation tests drive this method against a
+        bare stub that never ran `__init__`.
+        """
+        reassembler = getattr(self, "_frag_reassembler", None)
+        if reassembler is None:
+            def on_progress(peer_, have, total):
+                """The "receiving n/total" line, with this client's rules.
 
-        MAX_INFLIGHT      = 64
-        MAX_BUFFER_BYTES  = 8 * 1024 * 1024   # one reassembly set
-        MAX_TOTAL_BYTES   = 32 * 1024 * 1024  # all in-flight sets combined
+                Suppressed in probe mode and for a single-fragment set,
+                exactly as before. This is why reassembly takes a callback
+                instead of printing for itself: `print` is shadowed at module
+                scope here to route through the session log, and `_sanitise`
+                is this client's policy on what a peer address may look like
+                in output. Neither belongs in a module Android imports.
 
-        # Evict oldest entries when inflight set count is exceeded.
-        while len(self._frag_buffers) > MAX_INFLIGHT:
-            del self._frag_buffers[next(iter(self._frag_buffers))]
+                A closure over `self` rather than a method, and that is not a
+                style choice: the fragmentation tests drive
+                `_reassemble_fragment` as an unbound method against a stub
+                that never ran `__init__`, so this may only touch what the
+                original touched -- `_dbg` and `_probe`. Naming a new method
+                here broke seven of them.
+                """
+                if not self._probe and total > 1:
+                    print("[otr] receiving %d/%d fragments from %s"
+                          % (have, total, _sanitise(peer_, 48)))
 
-        key = (peer, msg_id, total)
-        buf = self._frag_buffers.setdefault(
-            key, {"parts": {}, "total": total, "bytes": 0}
-        )
-        # Adjust byte tally for a resent fragment so a peer cannot inflate it.
-        prev = buf["parts"].get(n)
-        if prev is not None:
-            buf["bytes"] -= len(prev)
-        buf["parts"][n] = chunk
-        buf["bytes"] += len(chunk)
-
-        if buf["bytes"] > MAX_BUFFER_BYTES:
-            self._frag_buffers.pop(key, None)
-            self._dbg(
-                f"[otr-recv] reassembly from {peer} exceeded "
-                f"{MAX_BUFFER_BYTES} bytes; dropping"
-            )
-            return None
-        agg = sum(b["bytes"] for b in self._frag_buffers.values())
-        while agg > MAX_TOTAL_BYTES and self._frag_buffers:
-            k = next(iter(self._frag_buffers))
-            agg -= self._frag_buffers[k]["bytes"]
-            del self._frag_buffers[k]
-
-        have = len(buf["parts"])
-        self._dbg(
-            f"[otr-recv]   fragment {n}/{total} from {peer} "
-            f"(id {msg_id}; have {have}/{total})"
-        )
-
-        if have < total:
-            if not self._probe and total > 1:
-                print("[otr] receiving %d/%d fragments from %s"
-                      % (have, total, _sanitise(peer, 48)))
-            return None
-        # Verify every index present before stitching.
-        if any(i not in buf["parts"] for i in range(1, total + 1)):
-            return None
-        ordered = "".join(buf["parts"][i] for i in range(1, total + 1))
-        self._frag_buffers.pop(key, None)
-        self._dbg(
-            f"[otr-recv] reassembled {total} fragments "
-            f"({len(ordered)} bytes, id {msg_id}) from {peer}"
-        )
-        return ordered
+            reassembler = _frag.Reassembler(
+                on_debug=self._dbg, on_progress=on_progress)
+            self._frag_reassembler = reassembler
+            # Kept as an alias rather than a copy: anything that inspected
+            # `_frag_buffers` -- a diagnostic, a test -- still sees the live
+            # dict, because it IS the live dict.
+            self._frag_buffers = reassembler.buffers
+        return reassembler.feed(peer, body)
 
     # -------------------------------------------------------------------------
     # OTR session control
@@ -4371,6 +4424,12 @@ class OTRv4PlusXMPP(ClientXMPP):
         self.send_message(mto=peer, mbody=text, mtype="chat")
 
     def start_otr(self, peer):
+        # Recorded BEFORE anything can fail. From here on this conversation
+        # does not send in the clear, and a handshake that goes wrong must not
+        # quietly restore that possibility.
+        _m = getattr(self, "_otr_mode", None)
+        if _m is not None:
+            _m.request(peer)
         try:
             msg, should_send = self.otr.handle_outgoing_message(peer, "")
         except Exception as e:
@@ -4437,6 +4496,34 @@ class OTRv4PlusXMPP(ClientXMPP):
         path uses, and a padlock on a message that never left would be a
         false claim about the one thing this client exists to be right about.
         """
+        # PLAINTEXT BEFORE OTR.
+        #
+        # `handle_outgoing_message` is opportunistic: for a peer with no
+        # session it creates one, starts a DAKE, queues the text and returns
+        # DAKE1. So reaching it at all would turn "hello" into an 11 KB
+        # handshake frame and deliver nothing -- which is what happened, and
+        # is why an ordinary XMPP conversation was impossible in either
+        # direction.
+        #
+        # `OtrMode` fails closed: an established session, or one either side
+        # has asked for, never comes down this branch.
+        # `getattr`, and the default is None on purpose. Test stubs drive this
+        # method unbound against objects that never ran `__init__`, and so
+        # would a partially constructed client. The safe answer for "I do not
+        # know whether OTR was asked for here" is to NOT take the plaintext
+        # branch: fall through to the engine, which is the old behaviour and
+        # cannot leak. An `_OtrMode()` default would have done the opposite.
+        _mode = getattr(self, "_otr_mode", None)
+        if _mode is not None and _mode.may_send_plaintext(
+                peer, peer in getattr(self, "_encrypted", ())):
+            try:
+                self.send_otr_fragmented(peer, text)
+            except Exception as e:
+                print(f"[send error] to {peer}: {e}")
+                return
+            self._echo_plain_sent(peer, text)
+            return
+
         try:
             msg, should_send = self.otr.handle_outgoing_message(peer, text)
         except Exception as e:
@@ -4449,6 +4536,28 @@ class OTRv4PlusXMPP(ClientXMPP):
             self._echo_sent(peer, text)
         elif not should_send:
             print(f"[queued] will send once OTR with {peer} is ready")
+
+    def _echo_plain_sent(self, peer, text):
+        """Echo a message that went in the CLEAR.
+
+        Deliberately not `_echo_sent`, and deliberately without a padlock:
+        this one was readable by the server and by anything between it and the
+        peer, and it appears under the same `[plain]` tag the inbound side
+        uses so both halves of an unencrypted conversation look alike.
+
+        The body is `_sanitise`d exactly as an inbound body is. Being our own
+        words is not a reason to print them differently, and the redaction
+        allowlist has to treat both directions the same or a session log keeps
+        half a conversation.
+        """
+        try:
+            mine = self.boundjid.bare
+        except Exception:
+            mine = ""
+        self._erase_plain_echo(text)
+        print("[plain] %s: %s"
+              % (_colorize(_sanitise(mine or "me", 128), "cyan"),
+                 _sanitise(text)))
 
     def _echo_sent(self, peer, text):
         """Print our own message in the same shape as an incoming one.
@@ -4624,20 +4733,20 @@ class OTRv4PlusXMPP(ClientXMPP):
                 self.otr.set_smp_secret(peer, secret)
             except Exception:
                 pass
-        use_secret = secret
-        if use_secret is None:
-            try:
-                use_secret = self.otr.smp_storage.get_secret(peer)
-            except Exception:
-                use_secret = None
-        if not use_secret:
+        # With no secret given, the stored one is used -- bound store -> vault
+        # inside Rust and started with an empty argument. It is never read
+        # back into this process.
+        use_stored = not secret
+        if use_stored and not self.otr.has_stored_smp_secret(peer):
             # Reached only via the explicit forms; `/smp` asks instead.
             print(_SMP + " Verification requires a shared passphrase.")
             print(_SMP + " Run  /smp  and you will be prompted for it.")
             return
         try:
             def _do_start():
-                return self.otr.start_smp(peer, use_secret)
+                if use_stored:
+                    return self.otr.start_smp_with_stored_secret(peer)
+                return self.otr.start_smp(peer, secret)
 
             async def _run():
                 loop = asyncio.get_event_loop()
@@ -4783,7 +4892,7 @@ class OTRv4PlusXMPP(ClientXMPP):
             pass
         has_secret = False
         try:
-            has_secret = bool(self.otr.smp_storage.get_secret(peer))
+            has_secret = self.otr.has_stored_smp_secret(peer)
         except Exception:
             pass
         blocked = peer in self._blocked
@@ -5991,7 +6100,8 @@ class OTRv4PlusXMPP(ClientXMPP):
         except Exception:
             pass
 
-        # 4. Cryptographically destroy ~/.otrv4plus (fingerprints, trust DB, SMP)
+        # 4. Overwrite and remove ~/.otrv4plus (fingerprints, trust DB, SMP).
+        #    File-level only: on flash the old blocks are beyond our reach.
         #    Uses the same _secure_file_destroy function the IRC client uses.
         try:
             secure_destroy = getattr(_otr, "_secure_file_destroy", None)
@@ -6268,7 +6378,6 @@ _PIP_REQUIREMENTS = (
     ("aiodns", "aiodns"),
     ("cryptography", "cryptography"),
     ("opuslib", "opuslib"),
-    ("argon2", "argon2-cffi"),
     ("socks", "pysocks"),
 )
 
@@ -6532,7 +6641,7 @@ def _request_microphone_permission():
     and cannot raise a runtime permission dialog; only the Termux:API bridge
     can. A one-second recording is therefore started purely to make the system
     dialog appear, then stopped, and the resulting file is destroyed with the
-    OTR engine's cryptographic shredder. It contains a second of ambient audio
+    OTR engine's overwrite-and-unlink (file-level only). It contains a second of ambient audio
     at most and never survives this function.
     """
     target = os.path.join(
@@ -7097,26 +7206,12 @@ def main():
               "will arrive.\n")
 
     def _check_jid(value, label):
-        if not value:
-            return
-        if "@" not in value or value.count("@") != 1:
-            sys.exit("Invalid %s: %r\n"
-                     "  Expected  user@server.b32.i2p" % (label, value))
-        local, _, domain = value.partition("@")
-        if not local or not domain:
-            sys.exit("Invalid %s: %r\n"
-                     "  Both a username and a server are required." 
-                     % (label, value))
-        if "..." in value or ".." in domain:
-            sys.exit("Invalid %s: %r\n"
-                     "  This looks like an abbreviated address. Use the full "
-                     "server name, not one shortened with '...'." 
-                     % (label, value))
-        for part in domain.split("."):
-            if not part:
-                sys.exit("Invalid %s: %r\n"
-                         "  The server name has an empty part — check for a "
-                         "stray or doubled dot." % (label, value))
+        # The rules live in otrv4plus_address so the Android settings screen
+        # can apply the same ones without exiting a process it does not own.
+        # The wording is unchanged; only who chooses to call sys.exit is.
+        err = _address.jid_error(value, label)
+        if err is not None:
+            sys.exit(err)
 
     _check_jid(args.jid, "--jid")
     _check_jid(args.peer, "--peer")

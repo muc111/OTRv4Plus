@@ -12,6 +12,11 @@ val rustCoreVersion: String = rootProject.projectDir.parentFile
     .first { it.trimStart().startsWith("version") }
     .substringAfter('"').substringBefore('"')
 
+// Where the generated copy of NOTICE lands before it is packaged as an asset.
+// Declared here because the `android { sourceSets }` block below reads it.
+val noticeAssetDir: Provider<Directory> =
+    layout.buildDirectory.dir("generated/notice/assets")
+
 android {
     namespace = "org.otrv4plus.android"
     compileSdk = 35
@@ -29,10 +34,61 @@ android {
         // devices. Left at 26, with the biometric path feature-detected.
         minSdk = 26
         targetSdk = 35
-        versionCode = 7
+        versionCode = 14
+        // rc.3 -> rc.4: capability-gated automatic OTRv4+ (XEP-0030/0115,
+        // per resource), one People list with server discovery where
+        // Prosody offers it, file phases/ETA/three-way metadata choice and
+        // a safe in-app viewer, Wipe & Exit on the conversation list, the
+        // dark purple theme. Still `-experimental`: none of it has run on
+        // a handset yet.
+        //
+        // rc.2 -> rc.3: the APK had no voice codec. The Android call path
+        // asked the Termux client's "is opuslib installed?" and showed its
+        // pip remedy; every Android call would also have failed at
+        // _build_codec. The core now carries libopus for the APK
+        // (feature android-opus) and the bridge binds it with AAudio.
+        //
+        // rc.1 -> rc.2: the handset run of rc.1 proved OTR, SMP, Termux SMP
+        // state and Termux file transfer, and found UI gaps: Wipe & Exit left
+        // conversations behind, no per-chat delete, no incoming-file prompt,
+        // transfers never finished on screen, the call control hidden for a
+        // verified peer, no online list. All fixed here; still
+        // `-experimental` because the rc.2 handset checklist has not run.
+        //
+        // 0.6.0 -> 0.7.0-experimental.rc.1: the first release CANDIDATE. Every
+        // repository-level gate is closed (INV-08's at-rest secrets in Rust,
+        // documentation licence decided, icon provenance recorded, dependency
+        // audit clean, release variant built and inspected). `-experimental`
+        // stays, per VERSIONING.md, because the handset list in
+        // ANDROID_CALL_AND_FILE_DEVICE_TEST.md has not been run; `.rc.1` says
+        // nothing else is known to be missing.
+        //
+        // 0.4.0 -> 0.5.0: MINOR, per VERSIONING.md. New capability reachable
+        // from the APK for the first time: SMP-gated voice calls (the engine
+        // and the AAudio backend were already packaged; nothing could reach
+        // them), SMP-gated file transfer through the system document picker,
+        // and a metadata choice before a photo is sent. None of it has run on
+        // a handset: ANDROID_CALL_AND_FILE_DEVICE_TEST.md is the open list,
+        // and the AAudio gate in tests/test_android_audio_path.py stays shut.
+        //
+        // 0.3.0 -> 0.4.0: MINOR, per VERSIONING.md. Not a new feature, but
+        // the capability the whole track exists for. At 0.3.0 nothing in this
+        // APK had been run on a handset. At 0.4.0 sign-in, the roster,
+        // contacts, presence, 1:1 conversations, rooms and room navigation
+        // have all been exercised on a real device against the live server,
+        // with no Termux peer needed to make anything appear.
+        //
+        // NOT 1.0 and not out of -experimental: OTR end to end has not been
+        // observed between a handset and a peer, and voice on the APK has
+        // never run. ANDROID_XMPP_MILESTONE.md §7 is the open list.
+        //
+        // The `-experimental` suffix replaces `-phase2`, which named a
+        // programme rather than a maturity and had stopped meaning anything
+        // to a reader of the version string.
+        //
         // core.10.14.0 was wrong for sixteen releases; the Rust core is read
         // from Rust/Cargo.toml so it cannot drift again.
-        versionName = "0.3.0-phase2+core.$rustCoreVersion"
+        versionName = "0.7.0-experimental.rc.4+core.$rustCoreVersion"
 
         // Which build this is, surfaced in the diagnostic report.
         //
@@ -84,6 +140,23 @@ android {
     //
     // splits { abi { ... } }  -- see above
 
+    // Release signing comes from the environment, never the repository: CI
+    // decodes the owner's keystore from secrets into the runner's temp dir
+    // (.github/workflows/android.yml, apk-release). Without it the release
+    // variant is signed with the debug key, and the published notes say so.
+    val releaseKeystore = System.getenv("OTRV4PLUS_RELEASE_KEYSTORE")
+        ?.takeIf { it.isNotBlank() && file(it).isFile }
+    signingConfigs {
+        if (releaseKeystore != null) {
+            create("release") {
+                storeFile = file(releaseKeystore)
+                storePassword = System.getenv("OTRV4PLUS_RELEASE_STORE_PASSWORD")
+                keyAlias = System.getenv("OTRV4PLUS_RELEASE_KEY_ALIAS")
+                keyPassword = System.getenv("OTRV4PLUS_RELEASE_KEY_PASSWORD")
+            }
+        }
+    }
+
     buildTypes {
         debug {
             isMinifyEnabled = false
@@ -95,6 +168,9 @@ android {
         release {
             isMinifyEnabled = true
             isShrinkResources = true
+            isDebuggable = false
+            signingConfig = if (releaseKeystore != null)
+                signingConfigs.getByName("release") else signingConfigs.getByName("debug")
             buildConfigField("boolean", "DEV_DIAGNOSTICS", "false")
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
@@ -123,7 +199,30 @@ android {
     }
 
     packaging {
+        // WHAT THIS DOES NOT DO: remove anyone's attribution.
+        //
+        // `AL2.0` and `LGPL2.1` under META-INF are zero-byte MARKER STUBS that
+        // kotlinx-coroutines ships to declare which of its dual-licence options
+        // a consumer took. They carry no licence text and no copyright line.
+        // Several dependencies ship the same two paths, so the APK packager
+        // hits a duplicate-resource conflict and the build fails; excluding
+        // them is the standard fix and is what every AGP template does.
+        //
+        // Actual attribution is NOT in those stubs and is not affected by this
+        // line. It lives in the repository's NOTICE file, which is copied into
+        // the APK's assets by :app:syncNoticeAsset below and rendered by the
+        // licences screen (ui/AboutScreen.kt). Removing a real notice would be
+        // a distribution defect; removing a duplicate empty marker is not.
         resources.excludes += setOf("/META-INF/{AL2.0,LGPL2.1}")
+    }
+
+    sourceSets {
+        getByName("main") {
+            // NOTICE reaches the APK from here. Generated rather than
+            // committed under src/, for the same reason the Python sources
+            // are: a second copy in the tree goes stale and nothing fails.
+            assets.srcDir(noticeAssetDir)
+        }
     }
 }
 
@@ -184,6 +283,15 @@ chaquopy {
             // app -- but it is an unhelpful sentence, so: build the wheels.
             options("--find-links", project.file("wheels").absolutePath)
 
+            // -- PINNED. Every third-party package below names an exact version:
+            // the ones CI resolved and tested at 0.6.0-experimental. Unpinned,
+            // each build took whatever PyPI and Chaquopy's index served that
+            // day, so two APKs from the same commit could ship different
+            // code, and a compromised or broken upstream release reached
+            // users without a commit anyone could review. Changing a version
+            // is now a diff. `tests/test_apk_python_deps.py` asserts every
+            // third-party line carries a pin. (otrv4_core is built from this
+            // repository and comes from --find-links, so it is not pinned.)
             // -- asked for directly ------------------------------------------
             //
             // otrv4_core: the Rust core. Every cryptographic operation in the
@@ -191,32 +299,23 @@ chaquopy {
             // since v10.13.2.
             install("otrv4_core")
             // PySocks: imported at module scope by otrv4+.py. Pure Python.
-            install("PySocks")
+            install("PySocks==1.7.1")
             // slixmpp: the XMPP transport. Pure Python, built from an sdist.
-            install("slixmpp")
-            // argon2-cffi: the at-rest KDF. Without it the engine falls back
-            // to scrypt and warns. Chaquopy has prebuilt android wheels for
-            // the whole cffi chain, so a resolution failure here is a real
-            // finding rather than a reason to drop it.
-            install("argon2-cffi")
+            install("slixmpp==1.17.0")
 
             // -- required by the above, and now named because of --no-deps ---
             //
             // slixmpp -> pyasn1, pyasn1-modules (both pure Python).
-            install("pyasn1")
-            install("pyasn1-modules")
-            // argon2-cffi -> argon2-cffi-bindings -> cffi -> pycparser, and
-            // cffi's android wheel -> chaquopy-libffi. The last of those is
-            // Chaquopy's own packaging of libffi; it is named here only
-            // because --no-deps stops cffi asking for it. If Chaquopy ever
-            // renames it the build fails loudly at this line, which is the
-            // failure mode to want.
-            install("argon2-cffi-bindings")
-            install("cffi")
-            install("pycparser")
-            install("chaquopy-libffi")
+            install("pyasn1==0.6.4")
+            install("pyasn1-modules==0.4.2")
 
             // -- deliberately absent -----------------------------------------
+            //
+            // argon2-cffi and its chain (argon2-cffi-bindings, cffi, pycparser,
+            // chaquopy-libffi). It was the at-rest KDF for stores that moved
+            // into the Rust core in 0.7.0 (Rust/src/at_rest.rs), and on
+            // Android it served only a key store nothing used. Removing it
+            // takes two native libraries and a C-binding layer out of the APK.
             //
             // aiodns / pycares. Dropping them costs nothing HERE:
             //   * slixmpp treats aiodns as optional at RUNTIME. resolver.py
@@ -284,8 +383,61 @@ val syncPythonSources by tasks.registering(Copy::class) {
             //           q += [m + ".py" for m in ms if m.startswith("otrv4plus_")]
             //   print(sorted(seen))
             //   EOF
+            "otrv4plus_address.py",
             "otrv4plus_admin.py",
+            // The `?OTRv4F|` wire format, shared with the terminal client.
+            // android_bridge.transport imports it at module scope, so a
+            // missing entry here is an ImportError at launch rather than a
+            // missing feature -- and without it an Android peer and a Termux
+            // peer cannot complete a DAKE with each other at all.
+            "otrv4plus_fragment.py",
+            // Whether a conversation may send in the clear. Shared with the
+            // terminal client and imported by android_bridge.app at module
+            // scope, so the same rule applies: missing here is an ImportError
+            // at launch, not a missing feature.
+            "otrv4plus_mode.py",
+            // The XEP-0199 round trip, shared with the terminal client, and
+            // imported by android_bridge.transport at module scope. Missing
+            // here is an ImportError at launch. Its absence as a shared module
+            // is also what let the two clients drift apart in the first place:
+            // both called `async_ping`, which slixmpp 1.17 does not have.
+            "otrv4plus_ping.py",
+            // What we know about a peer's availability, and when we know
+            // nothing. Imported by android_bridge.app at module scope, so a
+            // missing entry here is an ImportError at launch. Its three states
+            // are what replaced a bool that could not tell "offline" from
+            // "never heard".
+            "otrv4plus_presence.py",
+            // XEP-0077 in-band registration: what is refused locally, and how
+            // a server's refusal becomes a sentence. Imported by
+            // android_bridge.transport at module scope, so a missing entry
+            // here is an ImportError at launch rather than a Register button
+            // that does nothing.
+            "otrv4plus_registration.py",
+            // XEP-0045 room rules: affiliation and role, and what each
+            // allows. Imported by android_bridge.transport and
+            // android_bridge.connection at module scope, so a missing entry
+            // here is an ImportError at launch.
+            "otrv4plus_muc.py",
+            // XEP-0384 OMEMO 2: who a message must be encrypted TO, derived
+            // from room MEMBERSHIP rather than presence. Contains no
+            // cryptography -- the ratchet belongs to python-omemo/twomemo,
+            // which do not yet have Android wheels. Packaged now because the
+            // bridge imports it and because the rule it enforces is the one
+            // that decides whether a group message reaches everybody.
+            "otrv4plus_omemo.py",
+            // What the voice diagnostics are allowed to claim. Imported by
+            // otrv4plus_voice at module scope, so a missing entry here is an
+            // ImportError at launch rather than a missing metric.
+            "otrv4plus_mediapath.py",
+            // The labels that replace identities in the diagnostic log.
+            // Imported by android_bridge.trace at module scope -- and trace is
+            // imported by the transport, the controller and the bridge, so a
+            // missing entry here is an ImportError at launch rather than a
+            // report that quietly names everybody.
+            "otrv4plus_alias.py",
             "otrv4plus_audio.py",
+            "otrv4plus_caps.py",
             "otrv4plus_coreapi.py",
             "otrv4plus_filetransfer.py",
             "otrv4plus_identity.py",
@@ -352,6 +504,309 @@ tasks.named("preBuild") { dependsOn(syncPythonSources) }
 // is a live view, so configureEach still reaches them.
 tasks.matching { it.name.matches(Regex("merge[A-Z]\\w*PythonSources")) }
     .configureEach { dependsOn(syncPythonSources) }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// NOTICE, into the APK
+//
+// Every third-party component in this build is permissive, and every one of
+// them requires its notice to travel with the binary. NOTICE (generated by
+// tools/generate_notice.py) is that file, and until now it existed only in the
+// repository -- which discharges nothing for someone who receives an APK.
+//
+// Copied rather than committed under src/main/assets for the same reason
+// syncPythonSources copies rather than duplicates: one copy in the repository,
+// regenerated into the build output, so it cannot drift.
+// ─────────────────────────────────────────────────────────────────────────────
+val syncNoticeAsset by tasks.registering(Copy::class) {
+    description = "Copy the third-party NOTICE into the APK's assets."
+    group = "build"
+
+    from(rootProject.projectDir.parentFile) { include("NOTICE") }
+    into(noticeAssetDir)
+
+    // Fail loudly rather than shipping an APK whose licences screen is empty.
+    // A missing NOTICE is an attribution defect, and the only moment it is
+    // cheap to notice is now.
+    doFirst {
+        val src = rootProject.projectDir.parentFile.resolve("NOTICE")
+        require(src.isFile && src.length() > 0L) {
+            "NOTICE is missing or empty at ${src.absolutePath}. The APK must " +
+                "carry third-party attribution. Regenerate it with: " +
+                "python3 tools/generate_notice.py > NOTICE"
+        }
+    }
+}
+
+// Same edge, same reason, as the PythonSources case above: the asset merge
+// READS the directory this task WRITES, and Gradle will not infer the order.
+// Matched by name because there is one merge task per variant and AGP
+// registers them after this script is evaluated.
+tasks.matching { it.name.matches(Regex("merge[A-Z]\\w*Assets")) }
+    .configureEach { dependsOn(syncNoticeAsset) }
+
+// Release builds also run lint-vital, whose model task reads every asset
+// directory -- including the one syncNoticeAsset writes -- and Gradle refuses
+// an undeclared producer. assembleDebug never runs it, which is why this only
+// surfaced when CI began building the release variant.
+tasks.matching { it.name.matches(Regex("(generate|lint)\\w*Lint\\w*|lintVital\\w*")) }
+    .configureEach { dependsOn(syncNoticeAsset, syncPythonSources) }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Dependency licence guard
+//
+// The Rust half of this project has had a copyleft guard since v10.17.2:
+// tests/test_licence_declarations_agree.py walks `cargo metadata` and fails if
+// a crate with no permissive option enters the graph. The Android half had
+// nothing equivalent, so an `implementation("...")` of an LGPL or EPL library
+// would have passed every check in the repository.
+//
+// That matters more here than it looks. One copyleft dependency in the shipped
+// graph does not merely add an obligation: it makes the COMMERCIAL half of the
+// dual licence unsellable, because the project could no longer license every
+// line it distributes under both halves. The audit that chose AGPL-3.0 turned
+// on the finding that nothing in the tree imposed copyleft except the
+// project's own licence. This task is what keeps that finding true.
+//
+// METHOD -- and why it is not a grep over build.gradle.kts:
+//
+//   1. Ask Gradle for the RESOLVED graph of the runtime classpaths, via
+//      `incoming.resolutionResult`. That is the post-conflict-resolution set
+//      of components actually on the classpath, so it includes transitive
+//      dependencies nothing in this file names, and it reflects the versions
+//      Gradle really chose rather than the ones written down.
+//   2. Fetch each module's POM through a detached configuration and read
+//      <licenses><license><name>. Where a POM declares none, walk <parent>,
+//      because Maven licence declarations are commonly inherited.
+//   3. Classify. Multiple <license> entries are a CHOICE, exactly as an SPDX
+//      `OR` is in the cargo check -- if any option is permissive the module is
+//      fine, and only a module with no permissive option is an offender.
+//   4. Fail closed. A module whose licence cannot be determined is an
+//      offender, not a pass: "we could not tell" is the state this guard
+//      exists to surface.
+//
+// Test-only dependencies are NOT checked, and deliberately so. JUnit is
+// Eclipse Public License -- weak copyleft -- and is perfectly fine, because it
+// is not in the artifact anyone receives. The distinction is made by asking
+// Gradle for the runtime classpaths only; it is not a hand-maintained list.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Licence names that grant what this project needs, with no reciprocity. */
+// `\b` around the short ones is load-bearing: without it `mit` matches
+// "permit" and `isc` matches "miscellaneous", and an over-broad permissive
+// pattern is how a guard like this silently stops guarding.
+//
+// Proprietary vendor terms are deliberately NOT listed here, including the
+// Android SDK licence. They are not permissive, and a module carrying them
+// should reach a person as `unknown` rather than be waved through.
+val permissiveLicence = Regex(
+    """apache|\bmit\b|\bbsd|\bisc\b|python software foundation|\bpsf\b|""" +
+        """\bzlib\b|unicode|public domain|\bcc0\b|bouncy castle|\bw3c\b|""" +
+        """universal permissive|\bupl\b""",
+    RegexOption.IGNORE_CASE,
+)
+
+/** Licence names that impose reciprocity, weak or strong. */
+val copyleftLicence = Regex(
+    """\bgpl\b|\blgpl\b|\bagpl\b|gnu general|gnu lesser|gnu affero|affero|""" +
+        """mozilla public|\bmpl\b|eclipse public|\bepl\b|\bcddl\b|""" +
+        """common development and distribution|european union public|""" +
+        """\beupl\b|\bsspl\b|server side public|business source|\bbusl\b""",
+    RegexOption.IGNORE_CASE,
+)
+
+/** `permissive`, `copyleft`, or `unknown` for one module's declared names. */
+fun classifyLicences(names: List<String>): String {
+    val declared = names.map { it.trim() }.filter { it.isNotEmpty() }
+    if (declared.isEmpty()) return "unknown"
+    // A disjunction is a choice and we take the permissive branch -- the same
+    // rule TestNoCopyleftDependencyCreepsIn applies to an SPDX `OR`.
+    if (declared.any { permissiveLicence.containsMatchIn(it) &&
+            !copyleftLicence.containsMatchIn(it) }) return "permissive"
+    if (declared.any { copyleftLicence.containsMatchIn(it) }) return "copyleft"
+    return "unknown"
+}
+
+tasks.register("checkRuntimeDependencyLicences") {
+    description = "Fail if a copyleft dependency enters the shipped Android graph."
+    group = "verification"
+
+    doLast {
+        // The classifier, checked against known answers before it is trusted.
+        // A guard that has been quietly neutered -- an over-broad permissive
+        // pattern, an inverted test -- passes everything and reads as green,
+        // which is the failure mode that matters for this kind of check.
+        val selfTest = listOf(
+            listOf("Apache License, Version 2.0") to "permissive",
+            listOf("The Apache Software License, Version 2.0") to "permissive",
+            listOf("MIT License") to "permissive",
+            listOf("BSD 3-Clause License") to "permissive",
+            listOf("GNU General Public License, version 3") to "copyleft",
+            listOf("GNU Lesser General Public License v2.1") to "copyleft",
+            listOf("GNU Affero General Public License v3.0") to "copyleft",
+            listOf("Eclipse Public License 2.0") to "copyleft",
+            listOf("Mozilla Public License 2.0") to "copyleft",
+            // The disjunction rule, both ways round.
+            listOf("GPL-2.0-with-classpath-exception", "Apache License 2.0")
+                to "permissive",
+            emptyList<String>() to "unknown",
+            listOf("Some Bespoke Vendor Terms") to "unknown",
+        )
+        val wrong = selfTest.filter { (names, want) ->
+            classifyLicences(names) != want
+        }
+        require(wrong.isEmpty()) {
+            "the licence classifier itself is wrong, so its verdict on the " +
+                "real graph means nothing: " + wrong.joinToString { (n, want) ->
+                    "$n -> ${classifyLicences(n)}, expected $want"
+                }
+        }
+
+        // Both runtime classpaths. `release` is the product; `debug` matters
+        // too, because the debug APK is what the release job publishes as the
+        // rolling experimental build, and debugImplementation adds ui-tooling
+        // to it.
+        val classpaths = listOf("debugRuntimeClasspath", "releaseRuntimeClasspath")
+            .mapNotNull { configurations.findByName(it) }
+        require(classpaths.isNotEmpty()) {
+            "no runtime classpath found to check -- the guard would pass " +
+                "vacuously, which is worse than failing"
+        }
+
+        // The ARTIFACT set, not the component set. A BOM (compose-bom) is a
+        // resolved component that contributes no code, and asking it for a
+        // licence would produce an `unknown` verdict about a file nobody
+        // receives. Iterating artifacts keeps the question to "what is
+        // actually in the APK".
+        val modules = linkedMapOf<String, String>()
+        for (cfg in classpaths) {
+            for (artifact in cfg.incoming.artifacts.artifacts) {
+                val id = artifact.id.componentIdentifier
+                if (id is org.gradle.api.artifacts.component.ModuleComponentIdentifier) {
+                    val coord = "${id.group}:${id.module}:${id.version}"
+                    modules[coord] = cfg.name
+                }
+            }
+        }
+
+        /** Resolve `group:name:version@pom` files, keyed by coordinate. */
+        fun pomFiles(coords: Collection<String>): Map<String, java.io.File> {
+            if (coords.isEmpty()) return emptyMap()
+            val deps = coords
+                .map { dependencies.create("$it@pom") }
+                .toTypedArray()
+            val cfg = configurations.detachedConfiguration(*deps)
+            cfg.isTransitive = false
+            // Lenient: one unpublished POM must not abort the whole check.
+            // The module it belonged to then has no readable licence and is
+            // reported as `unknown`, which fails the guard anyway -- but it
+            // fails naming that module rather than as a resolution error.
+            val found = cfg.resolvedConfiguration.lenientConfiguration.artifacts
+            return found.associate {
+                val m = it.moduleVersion.id
+                "${m.group}:${m.name}:${m.version}" to it.file
+            }
+        }
+
+        fun textOf(node: org.w3c.dom.Element, tag: String): String? =
+            node.getElementsByTagName(tag).item(0)?.textContent?.trim()
+
+        val builder = javax.xml.parsers.DocumentBuilderFactory.newInstance()
+            .also { it.isNamespaceAware = false }
+            .newDocumentBuilder()
+
+        /** Declared licence names, following <parent> when a POM declares none. */
+        fun licencesFor(
+            coord: String,
+            pomsByCoord: MutableMap<String, java.io.File>,
+        ): List<String> {
+            var current: String? = coord
+            var hops = 0
+            while (hops < 5) {
+                // Pulled into a non-null local: `current` is a captured var,
+                // so it does not smart-cast, and Map<String, _> will not take
+                // a String? key.
+                val at: String = current ?: return emptyList()
+                val file = pomsByCoord[at]
+                    ?: pomFiles(listOf(at))[at]?.also { pomsByCoord[at] = it }
+                    ?: return emptyList()
+                val doc = builder.parse(file)
+                val names = mutableListOf<String>()
+                val entries = doc.getElementsByTagName("license")
+                for (i in 0 until entries.length) {
+                    val el = entries.item(i) as? org.w3c.dom.Element ?: continue
+                    val name = textOf(el, "name") ?: textOf(el, "url")
+                    if (!name.isNullOrBlank()) names.add(name)
+                }
+                if (names.isNotEmpty()) return names
+                // None here; inherit from the parent POM if there is one.
+                val parents = doc.getElementsByTagName("parent")
+                val parent = parents.item(0) as? org.w3c.dom.Element
+                    ?: return emptyList()
+                val g = textOf(parent, "groupId")
+                val a = textOf(parent, "artifactId")
+                val v = textOf(parent, "version")
+                current = if (g != null && a != null && v != null) "$g:$a:$v" else null
+                hops++
+            }
+            return emptyList()
+        }
+
+        val poms = pomFiles(modules.keys).toMutableMap()
+        val verdicts = linkedMapOf<String, Pair<String, List<String>>>()
+        for (coord in modules.keys) {
+            val names = try {
+                licencesFor(coord, poms)
+            } catch (e: Exception) {
+                logger.warn("could not read the POM for $coord: ${e.message}")
+                emptyList()
+            }
+            verdicts[coord] = classifyLicences(names) to names
+        }
+
+        val report = layout.buildDirectory
+            .file("reports/licences/runtime-dependencies.txt").get().asFile
+        report.parentFile.mkdirs()
+        report.writeText(buildString {
+            appendLine("Resolved Android runtime dependency licences")
+            appendLine("Classpaths: " + classpaths.joinToString { it.name })
+            appendLine("Modules: ${verdicts.size}")
+            appendLine()
+            verdicts.entries.sortedBy { it.key }.forEach { (coord, v) ->
+                appendLine("%-11s %s".format(v.first, coord))
+                v.second.forEach { appendLine("            $it") }
+            }
+        })
+
+        val offenders = verdicts.filterValues { it.first != "permissive" }
+        if (offenders.isNotEmpty()) {
+            throw GradleException(buildString {
+                appendLine(
+                    "Dependency licence guard failed. The shipped Android " +
+                        "graph must contain only permissive third-party code: " +
+                        "one copyleft dependency here makes the commercial " +
+                        "half of the dual licence unsellable.")
+                appendLine()
+                offenders.forEach { (coord, v) ->
+                    appendLine("  ${v.first}: $coord  ${v.second}")
+                }
+                appendLine()
+                appendLine("An `unknown` verdict is NOT a pass: it means the " +
+                    "POM declared no licence this guard could read. Check it " +
+                    "by hand and, if it is genuinely permissive, add the " +
+                    "licence name to permissiveLicence in this file with a " +
+                    "comment saying what was checked.")
+                appendLine("Full report: $report")
+            })
+        }
+        logger.lifecycle(
+            "Dependency licence guard: ${verdicts.size} resolved modules, " +
+                "all permissive. Report: $report")
+    }
+}
+
+// Part of `check`, so it runs with the tests rather than only when someone
+// remembers it exists.
+tasks.named("check") { dependsOn("checkRuntimeDependencyLicences") }
 
 dependencies {
     val composeBom = platform("androidx.compose:compose-bom:2024.10.01")

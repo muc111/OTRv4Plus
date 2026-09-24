@@ -47,7 +47,6 @@ backups or sync tools that capture one file and not the other.
 from __future__ import annotations
 
 import os
-import secrets as _secrets
 import stat
 
 
@@ -65,10 +64,18 @@ class IdentityUnavailable(RuntimeError):
 # ---------------------------------------------------------------------------
 
 class _FileDekHandle:
-    """One device-local DEK, in the shape ``RustSealedIdentityKeyStore`` wants."""
+    """One device-local DEK, in the shape ``RustSealedIdentityKeyStore`` wants.
 
-    def __init__(self, key: bytes, key_id: int):
-        self._key = bytes(key)
+    The key is an ``otrv4_core.FileDek``: read from (or created in) its 0600
+    file by Rust and never handed to Python. It used to be a Python ``bytes``
+    passed down on every seal and unseal -- the residual INV-08 recorded. This
+    object seals and opens records itself, and the identity key store passes
+    the ``FileDek`` to ``create_sealed_identity_under`` /
+    ``unseal_identity_under``.
+    """
+
+    def __init__(self, dek, key_id: int):
+        self._dek = dek
         self._key_id = int(key_id)
         self._counter = 0
 
@@ -76,32 +83,22 @@ class _FileDekHandle:
     def key_id(self) -> int:
         return self._key_id
 
-    def raw_key_for_rust(self) -> bytes:
-        """Hand the raw key down to the Rust sealing layer.
-
-        The DEK is a Python ``bytes`` here.  That is a known residual, recorded
-        in ``android_bridge/identity.py``: decision B1 required the *seed* to
-        stay out of Python, and it does.  The DEK does not.
-        """
-        return self._key
+    def rust_dek(self):
+        """The opaque Rust key object. There is no raw-key accessor."""
+        return self._dek
 
     def next_counter(self) -> int:
         self._counter += 1
         return self._counter
 
     def _seal(self, nonce: bytes, plaintext: bytes, aad: bytes) -> bytes:
-        return _aead(True, self._key, nonce, plaintext, aad)
+        return bytes(self._dek.seal(nonce, plaintext, aad))
 
     def _open(self, nonce: bytes, ciphertext_and_tag: bytes, aad: bytes) -> bytes:
-        return _aead(False, self._key, nonce, ciphertext_and_tag, aad)
+        return bytes(self._dek.open(nonce, ciphertext_and_tag, aad))
 
-
-def _aead(seal: bytes, key: bytes, nonce: bytes, data: bytes, aad: bytes) -> bytes:
-    """AES-256-GCM through the Rust core, which is the only implementation here."""
-    import otrv4_core
-    if seal:
-        return bytes(otrv4_core.aes256gcm_encrypt(key, nonce, data, aad))
-    return bytes(otrv4_core.aes256gcm_decrypt(key, nonce, data, aad))
+    def zeroize(self) -> None:
+        self._dek.zeroize()
 
 
 class TermuxFileDekProvider:
@@ -135,46 +132,22 @@ class TermuxFileDekProvider:
     def begin_epoch(self) -> None:
         """No key rotation on this provider; nothing to roll."""
 
-    def _load_or_create(self) -> bytes:
-        if os.path.exists(self._path):
-            try:
-                with open(self._path, "rb") as fh:
-                    key = fh.read(32)
-            except OSError as exc:
-                raise IdentityUnavailable(
-                    "identity key file unreadable: %s" % exc.__class__.__name__)
-            if len(key) != 32:
-                # Truncated key: refuse rather than pad or regenerate.
-                # Regenerating here would make the sealed identity permanently
-                # unopenable while looking like a successful first run.
-                raise IdentityUnavailable(
-                    "identity key file is %d bytes, expected 32 -- refusing to "
-                    "replace it, because doing so would discard the identity "
-                    "it protects" % len(key))
-            _warn_if_group_or_world_readable(self._path)
-            return key
-        return self._create()
+    def _load_or_create(self):
+        """Read the DEK file, or create it (0600, O_EXCL), inside Rust.
 
-    def _create(self) -> bytes:
-        key = _secrets.token_bytes(32)
-        directory = os.path.dirname(self._path) or "."
+        A key file of the wrong length is refused, never replaced:
+        regenerating it would make the sealed identity permanently
+        unopenable while looking like a successful first run.
+        """
+        import otrv4_core
+        existed = os.path.exists(self._path)
         try:
-            os.makedirs(directory, mode=0o700, exist_ok=True)
-            # O_EXCL: never overwrite a key that appeared between the check and
-            # here, because that key may already be protecting an identity.
-            fd = os.open(self._path,
-                         os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-            try:
-                os.write(fd, key)
-                os.fsync(fd)
-            finally:
-                os.close(fd)
-        except FileExistsError:
-            return self._load_or_create()
+            dek = otrv4_core.FileDek.load_or_create(self._path)
         except OSError as exc:
-            raise IdentityUnavailable(
-                "cannot create identity key file: %s" % exc.__class__.__name__)
-        return key
+            raise IdentityUnavailable("identity key file: %s" % exc)
+        if existed:
+            _warn_if_group_or_world_readable(self._path)
+        return dek
 
 
 def _warn_if_group_or_world_readable(path: str) -> None:

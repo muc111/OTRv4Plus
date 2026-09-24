@@ -5,6 +5,12 @@
 **Companion to:** [SPEC.md](SPEC.md), which specifies the two-party protocol
 this one is built on and does not replace.
 
+**Licence:** [CC BY-SA 4.0](LICENSES/CC-BY-SA-4.0.txt) (from 2026-09-24;
+earlier revisions remain available under the repository's software licence).
+Implement it, quote it and adapt it freely with attribution; code excerpts are
+also available under `AGPL-3.0-only OR LicenseRef-OTRv4Plus-Commercial`. See
+[`LICENSING.md`](LICENSING.md).
+
 ---
 
 ## 0. Preface

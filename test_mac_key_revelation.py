@@ -25,7 +25,7 @@ def _stub_core_if_absent():
 
     The guard checks that the compiled core exposes the DAKE, key-handle and
     PQ symbols. Nothing under test in this file touches any of them — the
-    OTRv4DataMessage codec, `kdf_1` and `_kdf_ck` are all pure Python — so the
+    OTRv4DataMessage codec and `kdf_1` are pure Python — so the
     stub exists solely to get past the import and is refused the moment a real
     core is present.
 
@@ -129,6 +129,13 @@ def build_message(mac_key, ciphertext=b"ciphertext-under-test",
 # TEST 1 — the key itself
 # ===========================================================================
 
+
+def _kdf_ck_model(ck):
+    """OTRv4 §4.4.2 chain step, as the spec states it (see tests/otrv4_testlib.kdf_ck)."""
+    new_ck = kdf_1(KDFUsage.CHAIN_KEY, ck, 32)
+    mk = kdf_1(KDFUsage.MESSAGE_KEY, ck, 32)
+    return new_ck, mk, kdf_1(KDFUsage.MAC_KEY, mk, 64)
+
 class TestMKmacDerivation(unittest.TestCase):
 
     def test_mkmac_is_64_bytes_and_not_zero(self):
@@ -150,10 +157,11 @@ class TestMKmacDerivation(unittest.TestCase):
     def test_usage_id_matches_the_spec(self):
         self.assertEqual(KDFUsage.MAC_KEY, 0x14)
 
-    def test_python_shadow_chain_returns_a_real_mkmac(self):
-        # The regression: _kdf_ck returned bytes(32) in the MKmac position.
-        rb = OTR.RustBackedDoubleRatchet.__new__(OTR.RustBackedDoubleRatchet)
-        new_ck, mkenc, mkmac = rb._kdf_ck(b"\x33" * 32)
+    def test_the_chain_step_model_returns_a_real_mkmac(self):
+        # The regression: the Python shadow chain step (`_kdf_ck`, since
+        # removed from the engine) returned bytes(32) in the MKmac position.
+        # The model is now test-side; the property it states is unchanged.
+        new_ck, mkenc, mkmac = _kdf_ck_model(b"\x33" * 32)
         self.assertEqual(len(new_ck), 32)
         self.assertEqual(len(mkenc), 32)
         self.assertEqual(len(mkmac), 64, "was bytes(32) of zeros")
@@ -325,8 +333,14 @@ def _code_only(src):
 class TestRegressionGuards(unittest.TestCase):
 
     def test_no_zero_placeholder_remains_in_the_chain_kdf(self):
+        # The chain KDF runs in Rust; the Python shadow that carried the
+        # placeholder is gone. If a Python chain step ever returns, it must
+        # not bring the placeholder back.
         import inspect
-        src = _code_only(inspect.getsource(OTR.RustBackedDoubleRatchet._kdf_ck))
+        step = getattr(OTR.RustBackedDoubleRatchet, "_kdf_ck", None)
+        if step is None:
+            return
+        src = _code_only(inspect.getsource(step))
         self.assertNotIn("bytes(32)", src,
                          "the all-zero MKmac placeholder is back")
         self.assertIn("KDFUsage.MAC_KEY", src)

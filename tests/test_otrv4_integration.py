@@ -66,18 +66,19 @@ class TestOTRv4PlusMLKEM(unittest.TestCase):
         """Test ML-KEM-1024 key sizes"""
         print("\n🔬 Test 1: ML-KEM-1024 Key Sizes")
         
-        kem = MLKEM1024BraceKEM()
+        import otrv4_core
+        ek, dk = otrv4_core.mlkem1024_keygen()
         
         # Check sizes
-        self.assertEqual(len(kem.encap_key_bytes), 1568, "ek should be 1568 bytes")
+        self.assertEqual(len(ek), MLKEM1024BraceKEM.EK_BYTES, "ek should be 1568 bytes")
         
         # Test encapsulation
-        ct, ss = MLKEM1024BraceKEM.encapsulate(kem.encap_key_bytes)
+        ct, ss = otrv4_core.mlkem1024_encaps(ek)
         self.assertEqual(len(ct), 1568, "ct should be 1568 bytes")
         self.assertEqual(len(ss), 32, "ss should be 32 bytes")
         
         # Test decapsulation
-        ss2 = kem.decapsulate(ct)
+        ss2 = otrv4_core.mlkem1024_decaps(ct, bytes(dk))
         self.assertEqual(ss, ss2, "Decapsulated key should match")
         
         print(f"  ✅ ek: 1568 bytes ✓")
@@ -306,11 +307,11 @@ class TestOTRv4PlusMLKEM(unittest.TestCase):
         print("\n🔬 Test 7: KEM Failure Handling")
         
         # Create a KEM with known key
-        kem = MLKEM1024BraceKEM()
-        ek = kem.encap_key_bytes
+        import otrv4_core
+        ek, dk = otrv4_core.mlkem1024_keygen()
         
         # Test with wrong ciphertext
-        ct, ss1 = MLKEM1024BraceKEM.encapsulate(ek)
+        ct, ss1 = otrv4_core.mlkem1024_encaps(ek)
         
         # Modify ciphertext
         ct_list = bytearray(ct)
@@ -318,7 +319,7 @@ class TestOTRv4PlusMLKEM(unittest.TestCase):
         ct_bad = bytes(ct_list)
         
         # Decaps should still return a 32-byte value (implicit rejection)
-        ss2 = kem.decapsulate(ct_bad)
+        ss2 = otrv4_core.mlkem1024_decaps(ct_bad, bytes(dk))
         self.assertEqual(len(ss2), 32, "Implicit rejection should return 32 bytes")
         
         # Should be different from original

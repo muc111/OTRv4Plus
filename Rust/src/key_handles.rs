@@ -11,7 +11,8 @@
 //!   - `Ed448KeyHandle` — wraps SecretBytes<57>; exposes `public_bytes()`
 //!     (57-byte compressed Edwards Y) and `sign(msg) -> bytes(114)`.
 //!   - `X448KeyHandle`  — wraps SecretBytes<56>; exposes `public_bytes()`
-//!     (56-byte Curve448 u-coordinate) and `dh(peer_pub) -> bytes(56)`.
+//!     (56-byte Curve448 u-coordinate) only. The agreement is performed by
+//!     the ratchet inside Rust; no shared secret is ever returned.
 //!
 //! ── Factories ──
 //!   - `generate_ed448_keypair() -> Ed448KeyHandle`
@@ -105,6 +106,7 @@ impl Ed448KeyHandle {
     /// Sign `msg` with pure Ed448 (RFC 8032 §5.2, empty context).
     /// Returns the 114-byte signature.
     fn sign<'py>(&self, py: Python<'py>, msg: &[u8]) -> PyResult<Py<PyBytes>> {
+        self.check_live()?;
         let signing_key = SigningKey::try_from(self.seed.expose_slice())
             .map_err(|e| PyValueError::new_err(format!(
                 "Ed448 SigningKey reconstruction failed: {:?}", e
@@ -125,11 +127,23 @@ impl Ed448KeyHandle {
         a2: &[u8],
         msg: &[u8],
     ) -> PyResult<Py<PyBytes>> {
+        self.check_live()?;
         let sig = crate::ring_sig::ring_sign_bytes(
             self.seed.expose_slice(), a1, a2, msg
         ).map_err(PyValueError::new_err)?;
         Ok(PyBytes::new(py, &sig).unbind())
     }
+
+    /// Destroy the seed in place. Idempotent; every later use is refused.
+    ///
+    /// Explicit, rather than left to the handle being garbage-collected: a
+    /// wipe must not depend on no other Python reference to the handle
+    /// surviving somewhere.
+    fn zeroize(&mut self) { self.seed.zeroize(); }
+
+    /// True once `zeroize` has run.
+    #[getter]
+    fn destroyed(&self) -> bool { self.is_destroyed() }
 
     fn __repr__(&self) -> String {
         // Never expose the private bytes in repr.
@@ -138,6 +152,20 @@ impl Ed448KeyHandle {
 }
 
 impl Ed448KeyHandle {
+    /// A zeroized seed is the destroyed marker. Compared in constant time
+    /// so the check says nothing about a live seed's bytes.
+    pub(crate) fn is_destroyed(&self) -> bool {
+        crate::secure_mem::ct_eq(self.seed.expose_slice(), &[0u8; 57])
+    }
+
+    fn check_live(&self) -> PyResult<()> {
+        if self.is_destroyed() {
+            return Err(pyo3::exceptions::PyRuntimeError::new_err(
+                "this Ed448 key has been destroyed"));
+        }
+        Ok(())
+    }
+
     /// Crate-internal accessor for the seed slice.  Used by `dake.rs`'s
     /// `sign_profile_body_and_construct_with_handles` to construct
     /// `DakeState` without going through Python.  NOT a PyO3 method —
@@ -295,26 +323,21 @@ impl X448KeyHandle {
         PyBytes::new(py, &self.pub_bytes).unbind()
     }
 
-    /// X448 Diffie-Hellman with a peer's 56-byte public key.
-    /// Returns the 56-byte shared secret.
-    fn dh<'py>(&self, py: Python<'py>, peer_pub: &[u8]) -> PyResult<Py<PyBytes>> {
-        if peer_pub.len() != 56 {
-            return Err(PyValueError::new_err(format!(
-                "peer X448 public key must be 56 bytes, got {}", peer_pub.len()
-            )));
-        }
-        let priv_arr: [u8; 56] = self.priv_bytes.expose_slice().try_into()
-            .map_err(|_| PyValueError::new_err("internal: priv_bytes wrong length"))?;
-        let sk = x448::Secret::from(priv_arr);
-        let pk_arr: [u8; 56] = peer_pub.try_into()
-            .map_err(|_| PyValueError::new_err("peer_pub wrong length"))?;
-        let pk = x448::PublicKey::from_bytes(&pk_arr)
-            .ok_or_else(|| PyValueError::new_err("invalid X448 public key"))?;
-        let ss = sk.as_diffie_hellman(&pk)
-            .ok_or_else(|| PyValueError::new_err("X448 DH produced all-zero shared secret"))?;
-        let ss_bytes: [u8; 56] = *ss.as_bytes();
-        Ok(PyBytes::new(py, &ss_bytes).unbind())
-    }
+    /// Destroy the private scalar in place. Idempotent; the ratchet refuses
+    /// to agree with a destroyed handle.
+    fn zeroize(&mut self) { self.priv_bytes.zeroize(); }
+
+    /// True once `zeroize` has run.
+    #[getter]
+    fn destroyed(&self) -> bool { self.is_destroyed() }
+
+    // NO `dh` METHOD. There was one, returning the 56-byte X448 shared
+    // secret to Python as `bytes`, and the double ratchet called it on every
+    // DH step -- so each ratchet secret spent its life as an immutable,
+    // unwipeable Python object before being handed straight back to Rust.
+    // The ratchet now takes this handle and performs the agreement itself
+    // (`RustDoubleRatchet.send_ratchet` / `decrypt_new_dh`); the shared
+    // secret exists only inside Rust. See `dh_internal` below.
 
     fn __repr__(&self) -> String {
         format!("X448KeyHandle(pub={})", hex_short(&self.pub_bytes))
@@ -322,6 +345,39 @@ impl X448KeyHandle {
 }
 
 impl X448KeyHandle {
+    /// X448 agreement with a peer public key, kept inside Rust.
+    ///
+    /// Crate-internal on purpose: the result is a session secret, and the
+    /// only callers are Rust code that feeds it straight into a KDF. Rejects
+    /// an off-curve peer key and a degenerate (all-zero) result, per RFC 7748.
+    pub(crate) fn dh_internal(&self, peer_pub: &[u8]) -> PyResult<SecretBytes<56>> {
+        if self.is_destroyed() {
+            return Err(pyo3::exceptions::PyRuntimeError::new_err(
+                "this X448 key has been destroyed"));
+        }
+        let pk_arr: [u8; 56] = peer_pub.try_into().map_err(|_| {
+            PyValueError::new_err(format!(
+                "peer X448 public key must be 56 bytes, got {}", peer_pub.len()))
+        })?;
+        let mut priv_arr: [u8; 56] = self.priv_bytes.expose_slice().try_into()
+            .map_err(|_| PyValueError::new_err("internal: priv_bytes wrong length"))?;
+        let sk = x448::Secret::from(priv_arr);
+        priv_arr.zeroize();
+        let pk = x448::PublicKey::from_bytes(&pk_arr)
+            .ok_or_else(|| PyValueError::new_err("invalid X448 public key"))?;
+        let ss = sk.as_diffie_hellman(&pk)
+            .ok_or_else(|| PyValueError::new_err("X448 DH produced all-zero shared secret"))?;
+        Ok(SecretBytes::new(*ss.as_bytes()))
+    }
+
+    /// The public half, for Rust callers.
+    pub(crate) fn public_array(&self) -> &[u8; 56] { &self.pub_bytes }
+
+    /// A zeroized scalar is the destroyed marker; constant-time compare.
+    pub(crate) fn is_destroyed(&self) -> bool {
+        crate::secure_mem::ct_eq(self.priv_bytes.expose_slice(), &[0u8; 56])
+    }
+
     /// Crate-internal accessor for the private bytes slice.  Used by
     /// `dake.rs`'s `sign_profile_body_and_construct_with_handles`.
     /// NOT a PyO3 method.
@@ -524,4 +580,40 @@ mod tests {
             "X448 DH must be symmetric — ratchet send/recv secrets would not match"
         );
     }
+
+    /// The crate-internal agreement the ratchet uses is symmetric.
+    #[test]
+    fn dh_internal_is_symmetric() {
+        let alice = generate_x448_keypair().expect("alice keygen");
+        let bob   = generate_x448_keypair().expect("bob keygen");
+        let ab = alice.dh_internal(bob.public_array()).expect("a dh");
+        let ba = bob.dh_internal(alice.public_array()).expect("b dh");
+        assert_eq!(ab.expose(), ba.expose());
+    }
+
+    /// An all-zero peer key is a low-order point and must be refused.
+    #[test]
+    fn dh_internal_refuses_a_degenerate_peer() {
+        let alice = generate_x448_keypair().expect("alice keygen");
+        assert!(alice.dh_internal(&[0u8; 56]).is_err());
+        assert!(alice.dh_internal(&[1u8; 10]).is_err());
+    }
+
+    /// A destroyed handle refuses to agree or sign, and says so.
+    #[test]
+    fn a_zeroized_handle_is_refused() {
+        let mut x = generate_x448_keypair().expect("x448");
+        let peer = generate_x448_keypair().expect("peer");
+        assert!(!x.is_destroyed());
+        x.priv_bytes.zeroize();
+        assert!(x.is_destroyed());
+        assert!(x.dh_internal(peer.public_array()).is_err());
+
+        let mut e = generate_ed448_keypair().expect("ed448");
+        assert!(!e.is_destroyed());
+        e.seed.zeroize();
+        assert!(e.is_destroyed());
+        assert!(e.check_live().is_err());
+    }
 }
+

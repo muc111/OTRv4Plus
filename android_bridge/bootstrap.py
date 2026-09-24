@@ -21,9 +21,8 @@ Measured against the actual module-scope imports of otrv4+.py:
 
   * Required third-party: `socks` (PySocks, pure Python) and `otrv4_core` (our
     Rust wheel, built per ABI).
-  * Optional: `argon2` (argon2-cffi).  Absent, the engine falls back to scrypt
-    and prints a warning.  It is wanted on Android for the at-rest KDF, and it
-    needs a native build, so it is reported rather than assumed.
+  * No optional third-party modules.  argon2-cffi was one until 0.7.0, for an
+    at-rest KDF that has since moved into the Rust core.
   * `resource` is imported at module scope but is already wrapped in try/except;
     it is used to set RLIMIT_CORE to 0, which disables core dumps.  That is a
     property worth keeping on Android, not a problem to work around.
@@ -48,7 +47,7 @@ __all__ = ["ensure_runtime", "load_orchestration", "RuntimeUnsupported",
 
 MIN_PYTHON: Tuple[int, int] = (3, 12)
 REQUIRED_MODULES = ("otrv4_core", "socks")
-OPTIONAL_MODULES = ("argon2",)
+OPTIONAL_MODULES: Tuple[str, ...] = ()
 
 _ORCHESTRATION_ALIASES = ("otrv4_", "otrv4plus")
 _CANDIDATE_FILENAMES = ("otrv4+.py", "otrv4_.py", "otrv4plus.py")

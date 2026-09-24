@@ -1,0 +1,1076 @@
+// SPDX-License-Identifier: AGPL-3.0-only OR LicenseRef-OTRv4Plus-Commercial
+// Copyright (C) 2025-2026 muc111
+package org.otrv4plus.android.chat
+
+import org.otrv4plus.android.crypto.TransferUi
+
+import org.otrv4plus.android.bridge.CallState
+import org.otrv4plus.android.crypto.CallAlert
+import org.otrv4plus.android.bridge.ConnectionStatus
+import org.otrv4plus.android.bridge.Contact
+import org.otrv4plus.android.bridge.OtrEvent
+import org.otrv4plus.android.bridge.PeerPresence
+import org.otrv4plus.android.bridge.SecurityState
+import org.otrv4plus.android.bridge.SmpState
+import org.otrv4plus.android.bridge.Subscription
+import org.otrv4plus.android.bridge.SendOutcome
+
+/**
+ * What the chat DECIDES, separated from how Android is told about it.
+ *
+ * WHY THIS IS NOT THE VIEWMODEL
+ * -----------------------------
+ * Every interesting rule in the chat layer is a decision about data: which
+ * conversation an inbound message belongs to, whether a contact's presence is
+ * known or merely unreported, whether an outgoing message is appended once or
+ * twice, what a send outcome means. None of it needs Compose, a Looper, a
+ * coroutine or a device.
+ *
+ * But if it lives in a `ViewModel` it needs all four to run, because
+ * `androidx.lifecycle` and `androidx.compose.runtime` are published only to
+ * Google's Maven repository -- which this development environment cannot reach
+ * (see `.github/workflows/android.yml`). Logic that cannot be compiled outside
+ * an Android build is logic that gets checked by reading it, and reading is how
+ * the routing bug in the first version of this screen survived review.
+ *
+ * So the rules live here, in plain Kotlin against plain data classes, where a
+ * JVM test can drive them directly and a deliberately planted fault -- skip the
+ * append, ignore the roster, route everything to whatever is on screen, send
+ * twice -- makes a test go red rather than a reviewer go quiet.
+ *
+ * [ChatViewModel] owns one of these and does the Android half: polling, the
+ * coroutine scope, and telling Compose when to look again.
+ *
+ * SECURITY BOUNDARY
+ * -----------------
+ * Nothing here decides whether a conversation is secure. Security comes from
+ * the engine, via [Contact.security], and is recorded onto a message as it
+ * arrives. There is no path from "we are connected" to "this is encrypted".
+ */
+class ChatState(
+    private val store: MessageStore = InMemoryMessageStore(),
+) {
+
+    /** Roster entries as the engine reports them, keyed by bare JID. */
+    private val contacts = LinkedHashMap<String, Contact>()
+
+    private val drafts = HashMap<String, String>()
+
+    private var outgoingSequence = 0L
+
+    /**
+     * Whose conversation this is.
+     *
+     * The store enforces the boundary for anything that reaches a disk; this
+     * field is what closes it for the state that never does — the roster, the
+     * drafts, the open conversation, the unread badge. All of it is private
+     * to an account and all of it used to survive a sign-in as somebody else,
+     * because this object is a service singleton and nothing ever told it the
+     * account had changed.
+     */
+    var account: AccountScope = AccountScope.NONE
+        private set
+
+    /**
+     * Bind to an account, dropping everything belonging to the last one.
+     *
+     * ONE CALL, and everything goes in it: the store is rebound, the roster
+     * is emptied, the drafts are dropped, the open conversation is closed and
+     * the connection view is reset. A partial boundary is not a boundary —
+     * leaving the roster behind would show Dave a list of Bob's contacts even
+     * with Bob's messages correctly gone.
+     *
+     * Binding to the same account is a no-op, so a reconnect does not discard
+     * a half-typed message.
+     */
+    fun bindAccount(next: AccountScope) {
+        if (next == account) return
+        account = next
+        rooms.clear()
+        contacts.clear()
+        drafts.clear()
+        openConversation = null
+        connection = ConnectionStatus()
+        link = Link.UNKNOWN
+        readFailure = null
+        notice = null
+        droppedEvents = 0
+        outgoingSequence = 0L
+        // Who asked to watch BOB is not Dave's business, and a banner left
+        // behind here would name a stranger to the new account and offer to
+        // grant them Dave's presence.
+        subscriptionRequests.clear()
+        // Verification is per account AND per peer. Carrying a VERIFIED into
+        // the next account would show somebody else's identity check as this
+        // account's, which is the one claim this application must never make
+        // wrongly.
+        smpStates.clear()
+        sessionStates.clear()
+        capabilities.clear()
+        discovery = null
+        welcome = org.otrv4plus.android.bridge.WelcomeView.NONE
+        // A call belongs to the account that placed it. Carrying one into the
+        // next account would show somebody else's conversation as in a call.
+        // A call ringing for the old account must stop ringing for the new
+        // one: its notification would otherwise sit in the shade inviting a
+        // different person to answer somebody else's call.
+        if (callStates.values.any { it == CallState.RINGING }) {
+            ringChanges.add(CallAlert.Change.STOP)
+        }
+        callStates.clear()
+        // An offer from the last account's peer is not this account's to
+        // answer.
+        fileOffers.clear()
+        postLogin.onSignedOut()
+        savedContacts.bind(next)
+        deleted.bind(next)
+        (store as? PersistentMessageStore)?.bind(next)
+    }
+
+    /**
+     * Whether a message that arrived for [forAccount] may be accepted.
+     *
+     * The ingestion guard. A listener belonging to a session that has been
+     * replaced can still deliver — the callback is held by the old client, not
+     * by us — and without this its message lands in whoever is signed in now.
+     */
+    fun accepts(forAccount: AccountScope): Boolean =
+        account.isAuthenticated && forAccount == account
+
+    /** Which conversation is open, or null for the list. A JID, never an
+     *  object: navigation state must not hold anything mutable or live. */
+    var openConversation: String? = null
+        private set
+
+    /**
+     * Whether the user can actually see the screen.
+     *
+     * Needed because [openConversation] now outlives the UI. This state is
+     * owned by the service, so "alice's conversation is open" stays true after
+     * the user puts the phone in their pocket -- and a message arriving then
+     * was being marked READ, because the only question asked was whether that
+     * conversation was open. The unread badge was gone before they ever
+     * looked, which is worse than a missing notification: nothing afterwards
+     * says a message was there.
+     */
+    var uiVisible: Boolean = false
+        private set
+
+    /** The transport's own view. Only meaningful when [link] is [Link.OK]. */
+    var connection: ConnectionStatus = ConnectionStatus()
+        private set
+
+    /**
+     * Whether we are managing to READ the bridge at all.
+     *
+     * This exists because the app got it badly wrong on a handset: the poll
+     * gathered four things in one `runCatching`, so a single throw discarded
+     * the connection status along with everything else, and the screen fell
+     * back to a default `ConnectionStatus()` whose `connected` is false. The
+     * UI then stated, in red, "Not connected. Messages cannot be sent or
+     * received." about a stream that was up.
+     *
+     * That is a fabricated state, and the wrong kind: an app that says the
+     * network is down when it has merely failed to ask is indistinguishable
+     * from one that knows. So "we have not heard" is now its own answer, and
+     * the only thing entitled to claim a disconnection is [Link.OK] plus a
+     * transport that says so.
+     */
+    var link: Link = Link.UNKNOWN
+        private set
+
+    /**
+     * A stable code for the last failed read, or null.
+     *
+     * A CODE, never exception text: a `PyException` crossing Chaquopy carries
+     * the engine's own message, which can quote what it was handling. This is
+     * for telling a developer which call is failing, and it must not become a
+     * route for engine text to reach a screen.
+     */
+    var linkFailure: String? = null
+        private set
+
+    /** How many events the bounded queue discarded. A gap is worth saying. */
+    var droppedEvents: Int = 0
+        private set
+
+    /** A blocking warning the user must acknowledge, or null. */
+    var fingerprintAlert: OtrEvent.FingerprintChanged? = null
+        private set
+
+    /**
+     * People who have asked to see this account's presence, oldest first.
+     *
+     * NOT blocking, unlike [fingerprintAlert]. A fingerprint change means the
+     * person you are talking to may not be who you think; a subscription
+     * request means somebody wants to know when you are online. Treating the
+     * second like the first trains people to dismiss the first.
+     *
+     * A LIST rather than a single slot, because two requests arriving while
+     * the screen is away is ordinary and the second must not silently replace
+     * the first — that would leave one person waiting forever on a question
+     * the user was never shown.
+     */
+    private val subscriptionRequests =
+        ArrayList<OtrEvent.SubscriptionRequested>()
+
+    /** The pending requests, for the screen to render. A copy, not the list:
+     *  this object is owned by the service and read from the UI thread. */
+    val pendingSubscriptions: List<OtrEvent.SubscriptionRequested>
+        get() = subscriptionRequests.toList()
+
+    /**
+     * Record a request, unless the same peer already has one outstanding.
+     *
+     * DEDUPED BY PEER. A `subscribe` presence is retransmitted by servers and
+     * resent by clients, and without this one persistent asker becomes a
+     * column of identical banners the user has to clear one at a time.
+     *
+     * Not recorded at all when nothing is signed in: a request arriving in the
+     * window between the process starting and an identity being established
+     * belongs to no account, and the only safe thing to do with it is nothing.
+     */
+    fun noteSubscription(event: OtrEvent.SubscriptionRequested): Boolean {
+        if (!account.isAuthenticated) return false
+        val jid = bare(event.peer)
+        if (jid.isEmpty()) return false
+        if (subscriptionRequests.any { bare(it.peer) == jid }) return false
+        subscriptionRequests.add(event)
+        return true
+    }
+
+    /**
+     * Drop a request once it has been answered or dismissed.
+     *
+     * Removed whatever the answer was, and whether or not the stanza left the
+     * device. A request that stays on screen after the user has answered it
+     * reads as the answer not having worked, and the remedy for a failed
+     * answer is the banner coming back on the next request, not one that never
+     * goes away.
+     */
+    fun clearSubscription(jid: String) {
+        val wanted = bare(jid)
+        subscriptionRequests.removeAll { bare(it.peer) == wanted }
+    }
+
+    // -- what the poll loop feeds in -----------------------------------------
+
+    /** The transport answered: this is its view. */
+    fun applyConnection(status: ConnectionStatus) {
+        connection = status
+        link = Link.OK
+        linkFailure = null
+    }
+
+    /**
+     * The status read itself failed, so we do not know the connection state.
+     *
+     * The last known [connection] is deliberately KEPT rather than reset to a
+     * disconnected default. Overwriting it would be inventing the answer we
+     * just failed to obtain, and the direction it invents -- "not connected"
+     * -- is the one that stops the user sending.
+     */
+    fun noteLinkFailure(code: String) {
+        link = Link.FAILING
+        linkFailure = code
+    }
+
+    /**
+     * The most recent failing read of ANY of the four, or null if all four
+     * answered.
+     *
+     * Separate from [link] because a roster that will not load is worth
+     * telling somebody about even while the connection reads fine -- that is
+     * the exact combination that made the contact list look empty on a working
+     * stream, and it was invisible because every failure was swallowed.
+     */
+    var readFailure: String? = null
+        private set
+
+    fun noteReadFailure(code: String?) {
+        readFailure = code
+    }
+
+    /** A notice from the last roster change, or null. Cleared once shown. */
+    var notice: String? = null
+        private set
+
+    fun note(message: String?) {
+        notice = message
+    }
+
+    fun dismissNotice() {
+        notice = null
+    }
+
+    fun applyDropped(count: Int) {
+        droppedEvents = count
+    }
+
+    /**
+     * What has finished since authentication. Observed, never gated on.
+     *
+     * Exists so an empty conversation list can say which empty it is: "the
+     * server says you have no contacts" or "the roster has not arrived yet".
+     * Without it the two render identically, which is what made a handset
+     * report of "contacts do not appear" unanswerable without a log.
+     */
+    val postLogin = PostLogin()
+
+    /**
+     * People this device chose to remember. NOT the roster.
+     *
+     * The server owns subscription and presence; this owns one local fact,
+     * "this account asked to keep this JID". Kept apart so a tap on this
+     * phone can never be rendered as something the server confirmed.
+     */
+    var savedContacts = SavedContacts(null)
+        private set
+
+    /** Conversations the user deleted; see [DeletedConversations]. */
+    var deleted = DeletedConversations(null)
+        private set
+
+    /** Give the saved-contact and deleted-conversation records somewhere to persist. */
+    fun bindVault(vault: org.otrv4plus.android.security.Vault?) {
+        savedContacts = SavedContacts(vault)
+        savedContacts.bind(account)
+        deleted = DeletedConversations(vault)
+        deleted.bind(account)
+    }
+
+    /**
+     * Sign out: forget this account's device-side records other than the
+     * history, which the message store forgets itself. Before this, Sign out
+     * left the saved-contact list behind although the documentation said it
+     * went with the account.
+     */
+    fun forgetAccountRecords() {
+        savedContacts.forgetAccount()
+        deleted.forgetAccount()
+    }
+
+    /**
+     * "Delete chat": this conversation's history, draft and unread count,
+     * from memory and from the vault, and the row stays gone until the
+     * conversation has something in it again. See [ChatDeletion] for what
+     * it does not do -- it removes no contact, destroys no room and deletes
+     * nothing on the server. Returns whether there was history to delete.
+     */
+    fun deleteConversation(jid: String): Boolean {
+        val bare = bare(jid)
+        if (bare.isEmpty() || !account.isAuthenticated) return false
+        val had = store.delete(bare)
+        drafts.remove(bare)
+        if (openConversation == bare) openConversation = null
+        deleted.add(bare)
+        return had
+    }
+
+    /** Whether [jid]'s stored history is room traffic: lines carry a sender nick. */
+    private fun storedAsRoom(jid: String): Boolean =
+        store.messages(jid).any { it.sender.isNotEmpty() }
+
+    /**
+     * Replace the roster with what the engine just reported.
+     *
+     * Entries that vanished are dropped from the contact map but NOT from the
+     * store: a conversation outlives the roster entry, and deleting history
+     * because somebody unsubscribed would be destroying data the user did not
+     * ask to lose.
+     *
+     * The ROSTER REMAINS AUTHORITATIVE. Locally saved contacts are not merged
+     * in here and do not survive being absent from it as roster entries --
+     * they surface through [conversations] as rows with `saved = false`, so
+     * somebody remembered on this device but not confirmed by the server is
+     * visible and is not described as confirmed.
+     *
+     * KEYED THROUGH [bare], like everything else here. The bridge already
+     * canonicalises what it emits, so this agrees with it rather than
+     * correcting it -- but `contacts` is unioned with the message store in
+     * [conversations], the store is keyed by `bare(event.peer)`, and two
+     * spellings of one person there is two rows with separate history. This
+     * is the one place a JID enters this object from outside, so it is the
+     * one place that has to fold.
+     */
+    fun applyRoster(roster: List<Contact>) {
+        for (contact in roster) {
+            val jid = bare(contact.jid)
+            contacts[jid] = contact
+            // A poll is a read of the engine, but it may have been taken
+            // before an event this side already applied. So it may END a
+            // session (PLAINTEXT, a changed key) -- the fail-safe direction --
+            // but may not pull a verified session back to merely ENCRYPTED;
+            // that downgrade arrives as its own event when it is real.
+            val known = sessionStates[jid]
+            val lagging = known == SecurityState.SMP_VERIFIED &&
+                contact.security == SecurityState.ENCRYPTED
+            if (!lagging) sessionStates[jid] = contact.security
+            if (contact.security == SecurityState.PLAINTEXT ||
+                contact.security == SecurityState.FINGERPRINT_MISMATCH) {
+                smpStates.remove(jid)
+            }
+        }
+        val present = roster.map { bare(it.jid) }.toSet()
+        contacts.keys.retainAll { it in present }
+        if (canSend()) {
+            postLogin.onAuthenticated()
+            postLogin.onRoster(roster.size)
+        }
+    }
+
+    /**
+     * Apply one event from the engine.
+     *
+     * Returns whether a NEW inbound message was stored, which is what decides
+     * whether the user gets a notification. False for a duplicate the store
+     * rejected: a peer who resends must not be able to buzz the phone again,
+     * and false for every other kind of event, which the UI shows without
+     * interrupting anybody.
+     */
+    fun handle(event: OtrEvent): Boolean {
+        return when (event) {
+            is OtrEvent.MessageReceived -> receive(event)
+            // Stored, never announced: a busy room would otherwise buzz the
+            // phone for every line strangers type. The unread count still
+            // shows it.
+            is OtrEvent.RoomMessageReceived -> {
+                receiveRoom(event)
+                false
+            }
+            is OtrEvent.FingerprintChanged -> {
+                fingerprintAlert = event
+                // A changed key ends whatever the old one verified.
+                val peer = bare(event.peer)
+                sessionStates[peer] = SecurityState.FINGERPRINT_MISMATCH
+                invalidateStaleVerification(peer)
+                false
+            }
+            // CONSUMED NOW. The bridge has emitted this on every level change
+            // and `ChaquopyOtrCore` has decoded it, and this `when` dropped it
+            // -- so the only security this side knew was the ROSTER POLL's.
+            // A peer not on the roster was plaintext here however encrypted
+            // and verified the session was, which hid the call and file
+            // controls; a peer on it lagged by a poll.
+            is OtrEvent.SessionChanged -> {
+                val peer = bare(event.peer)
+                sessionStates[peer] = event.security
+                invalidateStaleVerification(peer)
+                false
+            }
+            // Returns false: this is not a new message and must not buzz the
+            // phone. Somebody asking to see your presence is worth a banner
+            // when you next look, not a notification that interrupts you.
+            is OtrEvent.SubscriptionRequested -> {
+                noteSubscription(event)
+                false
+            }
+            // Verification moved. Recorded here rather than waited for on the
+            // next roster poll: an incoming request is the case that matters,
+            // and the peer is sitting there while we decide when to notice.
+            //
+            // Returns false. A verification request is not a message and must
+            // not buzz the phone — a peer able to trigger a notification by
+            // running SMP would be a peer with a way to ring somebody at will.
+            // Keyed through `bare`, because [conversations] reads this map
+            // with a bared JID. A key that did not fold would silently miss
+            // and fall back to the last roster poll -- which for a
+            // verification that just FAILED means the row goes on showing the
+            // previous, better state until the poll catches up. Folding here
+            // is the fail-closed direction.
+            is OtrEvent.SmpProgressed -> {
+                smpStates[bare(event.peer)] = event.progress.state
+                false
+            }
+            is OtrEvent.SmpFinished -> {
+                smpStates[bare(event.peer)] = event.state
+                false
+            }
+            // Recorded, and NOT a notification. `ChaquopyOtrCore` has decoded
+            // this event since it was written and nothing consumed it, so the
+            // call screen had no way to learn that a call had moved. Returns
+            // false for the same reason the verification events do: a peer
+            // able to buzz the phone by starting a call is a peer with a way
+            // to ring somebody at will, and the ringing UI is the ring.
+            is OtrEvent.CallChanged -> {
+                val peer = bare(event.peer)
+                val previous = callStates[peer] ?: CallState.IDLE
+                if (event.state == CallState.IDLE) callStates.remove(peer)
+                else callStates[peer] = event.state
+                // Queued rather than returned: `handle`'s answer means "a new
+                // MESSAGE was stored", and a ringing call is not a message.
+                // The service reads these separately and rings for them.
+                CallAlert.change(previous, event.state)?.let(ringChanges::add)
+                false
+            }
+            // An offer IS announced: it is the one file event the user has
+            // to act on, and only an SMP-verified peer can make one (the
+            // engine drops offers from anybody else before they exist).
+            is OtrEvent.FileTransferChanged -> noteTransfer(event)
+            // A capability, not a security state: stored and shown, never
+            // announced.
+            is OtrEvent.CapabilityChanged -> {
+                capabilities[bare(event.peer)] = event.state
+                false
+            }
+            else -> false
+        }
+    }
+
+    // -- file transfers --------------------------------------------------------
+
+    /** Incoming offers nobody has answered, oldest first. Keyed by transfer id. */
+    private val fileOffers = LinkedHashMap<String, OtrEvent.FileTransferChanged>()
+
+    /** What the incoming-file prompt shows. Never auto-accepted. */
+    val pendingFileOffers: List<OtrEvent.FileTransferChanged>
+        get() = fileOffers.values.toList()
+
+    /** The prompt was answered (Accept or Decline) or put aside. */
+    fun dismissFileOffer(transferId: String) {
+        fileOffers.remove(transferId)
+    }
+
+    /**
+     * Record where a transfer has got to. Endings (and SENT) become a line in
+     * the conversation, persisted with the history, with a stable id so a
+     * repeated event is one line, not two. Returns true only for a NEW
+     * incoming offer.
+     */
+    private fun noteTransfer(event: OtrEvent.FileTransferChanged): Boolean {
+        val peer = bare(event.peer)
+        var announce = false
+        if (event.state == TransferUi.State.OFFERED && !event.outgoing) {
+            announce = fileOffers.put(event.transferId, event) == null
+        } else {
+            fileOffers.remove(event.transferId)
+        }
+        val line = TransferUi.statusLine(event.state, event.outgoing,
+                                         event.filename, event.reason)
+        if (line != null && peer.isNotEmpty()) {
+            val added = store.append(Message(
+                id = "file:${event.transferId}:${event.state}",
+                conversationId = peer,
+                body = line,
+                outgoing = false,
+                at = now(),
+                sendState = SendState.NONE,
+                security = SecurityLabel.SYSTEM,
+            ))
+            if (added) deleted.restore(peer)
+        }
+        return announce
+    }
+
+    /**
+     * The latest verification state per peer, from events.
+     *
+     * Not a second source of truth — the engine is, and `contacts` carries
+     * its answer on every roster poll. This is the same answer arriving
+     * sooner, and [conversations] prefers it for exactly that reason. It is
+     * cleared with the account like everything else keyed by peer.
+     *
+     * NOTHING CRYPTOGRAPHIC IS HELD HERE. A coarse state name per JID, and no
+     * passphrase, no proof state, no key material — those never leave Rust.
+     */
+    private val smpStates = mutableMapOf<String, SmpState>()
+
+    /**
+     * The engine's security level per peer: from events as they happen and
+     * from every roster poll, whichever is later. Keyed by [bare]. A coarse
+     * enum per JID and nothing else.
+     */
+    private val sessionStates = mutableMapOf<String, SecurityState>()
+
+    /** OTRv4Plus capability per bare JID, from the transport's events. */
+    private val capabilities = mutableMapOf<String, String>()
+
+    fun capabilityOf(jid: String): String = capabilities[bare(jid)] ?: "unknown"
+
+    /**
+     * The server's last answer to "who is online", or null before one.
+     *
+     * Only ever what the server said (`OnlineDiscovery`). Dropped when the
+     * account changes and whenever our own stream is down: a list of who was
+     * online over a connection that has since died is a stale claim.
+     */
+    var discovery: org.otrv4plus.android.bridge.OnlineDiscovery? = null
+        private set
+
+    fun applyDiscovery(result: org.otrv4plus.android.bridge.OnlineDiscovery?) {
+        discovery = if (account.isAuthenticated) result else null
+    }
+
+    /** The Welcome room, as last read from the bridge. */
+    var welcome: org.otrv4plus.android.bridge.WelcomeView =
+        org.otrv4plus.android.bridge.WelcomeView.NONE
+        private set
+
+    fun applyWelcome(view: org.otrv4plus.android.bridge.WelcomeView) {
+        welcome = if (account.isAuthenticated) view
+                  else org.otrv4plus.android.bridge.WelcomeView.NONE
+    }
+
+    /**
+     * Who is discoverably online: the Welcome room's revealed occupants (the
+     * primary source for ordinary accounts) plus the server's own list where
+     * an admin account may read it. Empty while our stream is down.
+     */
+    fun discoveredOnline(): Set<String> {
+        if (!canSend()) return emptySet()
+        val fromServer = discovery?.users?.map { bare(it) } ?: emptyList()
+        val fromWelcome = if (welcome.joined) welcome.people.map { bare(it) }
+                          else emptyList()
+        return (fromServer + fromWelcome).filter { it.isNotEmpty() }.toSet()
+    }
+
+    /**
+     * The one list of people: roster, requests, and who the server says is
+     * online, each once. See [OnlineUsers.directory].
+     */
+    fun directory(): List<OnlineUsers.Entry> = OnlineUsers.directory(
+        conversations = conversations(),
+        requests = pendingSubscriptions,
+        discovered = discoveredOnline(),
+        self = account.bareJid,
+    )
+
+    /**
+     * A VERIFIED that the session no longer carries is dropped. Verification
+     * is a property of the session it ran in: when that session ends
+     * (PLAINTEXT), is replaced by a fresh unverified one (ENCRYPTED), or its
+     * key changes (FINGERPRINT_MISMATCH), a VERIFIED left in this map would be
+     * a stale claim -- the one this app must never make.
+     */
+    private fun invalidateStaleVerification(peer: String) {
+        // Called for EVENTS, which arrive in the engine's order: a level
+        // other than SMP_VERIFIED after a verification means that session
+        // is over or was replaced.
+        if (sessionStates[peer] != SecurityState.SMP_VERIFIED &&
+            smpStates[peer] == SmpState.VERIFIED) {
+            smpStates.remove(peer)
+        }
+    }
+
+    /**
+     * Where each peer's call has got to, from events.
+     *
+     * NOT a second state machine. `otrv4plus_voice.VoiceCallManager` owns the
+     * call, validates every transition and is the only thing that can move
+     * one; this is the latest answer it gave, so the screen has something to
+     * render between polls.
+     *
+     * NOTHING CRYPTOGRAPHIC IS HELD HERE. A coarse state name per JID -- no
+     * media key, no epoch, no destination. Those never leave Rust and the I2P
+     * destination never leaves the call manager.
+     *
+     * Entries are REMOVED on IDLE rather than stored, so a finished call
+     * leaves no row behind and `callState` falls back to IDLE by absence.
+     */
+    private val callStates = mutableMapOf<String, CallState>()
+
+    /**
+     * Ring changes not yet acted on, oldest first. See [CallAlert] for why
+     * a RINGING call may ring the phone when nothing else in this class may.
+     */
+    private val ringChanges = mutableListOf<CallAlert.Change>()
+
+    /** Take, and clear, the ring changes since the last call. */
+    fun takeRingChanges(): List<CallAlert.Change> {
+        val taken = ringChanges.toList()
+        ringChanges.clear()
+        return taken
+    }
+
+    /** Where [jid]'s call has got to. IDLE when there is no call. */
+    fun callState(jid: String): CallState =
+        callStates[bare(jid)] ?: CallState.IDLE
+
+    /**
+     * An inbound message, routed by the SENDER'S JID.
+     *
+     * Routed, not appended to whatever is open. A message from carol while
+     * bob's conversation is on screen belongs to carol, and putting it in bob's
+     * would be showing the user someone else's words under the wrong name --
+     * and, worse, under bob's security label.
+     *
+     * Returns whether it was stored, which is false for a duplicate.
+     */
+    // -- rooms ---------------------------------------------------------------
+
+    /**
+     * Conversations that are ROOMS. A room's text is plaintext group chat;
+     * the conversation screen shows who wrote each line, says the room is
+     * not end-to-end encrypted, and offers no encryption, verification,
+     * call or file. Learned when a room is opened and from its messages.
+     */
+    private val rooms = mutableSetOf<String>()
+
+    fun noteRoom(jid: String) { rooms.add(bare(jid)) }
+
+    /** Joined, or heard from, in this session: leaving has something to do. */
+    fun inRoomThisSession(jid: String): Boolean = bare(jid) in rooms
+
+    /** We left [jid]. Its stored history, if any, still reads as a room. */
+    fun forgetRoom(jid: String) { rooms.remove(bare(jid)) }
+
+    /**
+     * In a room joined this session, OR history that is room traffic. The
+     * second half is what keeps a room a room after a restart: membership is
+     * forgotten with the stream, and without it a room's stored history came
+     * back looking like a one-to-one conversation with the room's address.
+     */
+    fun isRoom(jid: String): Boolean = bare(jid) in rooms || storedAsRoom(bare(jid))
+
+    fun receiveRoom(event: OtrEvent.RoomMessageReceived): Boolean {
+        val room = bare(event.room)
+        rooms.add(room)
+        val at = if (event.timestamp > 0) (event.timestamp * 1000).toLong()
+                 else now()
+        val added = store.append(
+            Message(
+                id = MessageId.room(room, event.sender, at, event.body),
+                conversationId = room,
+                body = event.body,
+                outgoing = false,
+                at = at,
+                // Always plaintext: XEP-0045 group chat has no end-to-end
+                // encryption, whatever the room's own settings say.
+                security = SecurityLabel.PLAINTEXT,
+                sendState = SendState.NONE,
+                sender = event.sender,
+            )
+        )
+        if (added) deleted.restore(room)
+        if (added && uiVisible && openConversation == room) store.markRead(room)
+        return added
+    }
+
+    fun receive(event: OtrEvent.MessageReceived): Boolean {
+        val jid = bare(event.peer)
+        val at = if (event.timestamp > 0) (event.timestamp * 1000).toLong()
+                 else now()
+        val added = store.append(
+            Message(
+                id = MessageId.inbound(jid, at, event.body),
+                conversationId = jid,
+                body = event.body,
+                outgoing = false,
+                at = at,
+                // What the ENGINE says about that peer, captured now. Not
+                // inferred from the body's shape, which a peer controls.
+                security = SecurityLabel.forInbound(securityOf(jid)),
+                sendState = SendState.NONE,
+            )
+        )
+        // Read as it arrives only if the user is actually looking at it.
+        // Read as it arrives only if the user is actually looking at it --
+        // BOTH that this conversation is the open one and that the screen is
+        // in front of them. Either alone is not "they saw it".
+        if (added) deleted.restore(jid)
+        if (added && uiVisible && openConversation == jid) store.markRead(jid)
+        return added
+    }
+
+    // -- what the UI reads ---------------------------------------------------
+
+    /**
+     * Every conversation, newest first, then unread, then alphabetical.
+     *
+     * Built from the union of the roster and the store: a roster entry with no
+     * history still gets a row, because you have to be able to start a
+     * conversation with somebody you have never spoken to; and history with no
+     * roster entry still gets a row, because a message from a stranger is still
+     * a message.
+     */
+    fun conversations(): List<Conversation> {
+        // Locally saved people are included so somebody remembered on a
+        // previous run has a row before the roster arrives -- but `saved`
+        // below still comes from the ROSTER, so a local record can never
+        // render as a server-confirmed contact.
+        // Every arm of the union is folded, so one person is one row. The
+        // store's ids already are (`receive` bares them) and `SavedContacts`
+        // already lower-cases, but the union is the place the split would
+        // SHOW, so it is the place that states the rule.
+        val jids = (contacts.keys.map { bare(it) }.toSet() +
+            store.conversationIds().map { bare(it) } +
+            savedContacts.all().map { bare(it.jid) })
+            // A deleted conversation stays out of the list while it is empty,
+            // however the roster or the saved list would bring it back.
+            .filterNot { deleted.contains(it) && store.lastMessage(it) == null }
+        return jids.map { jid ->
+            val contact = contacts[jid]
+            Conversation(
+                jid = jid,
+                displayName = contact?.displayName?.takeIf { it.isNotBlank() }
+                    ?: savedContacts.all()
+                        .firstOrNull { bare(it.jid) == jid }?.displayName
+                        ?.takeIf { it.isNotBlank() }
+                    ?: jid,
+                presence = Presence.of(
+                    // The PEER's own state, not a boolean derived from it.
+                    // A boolean cannot say "no stanza has arrived for them
+                    // yet", so it inferred OFFLINE -- and a just-added
+                    // contact read as unknown forever.
+                    peer = contact?.presence ?: PeerPresence.UNKNOWN,
+                    // Nothing is known about anyone while we are disconnected,
+                    // and nothing is known while we cannot read the bridge
+                    // either. A stale "online" from before the stream died is
+                    // a lie with a timestamp.
+                    linkKnown = canSend() && contact != null,
+                    // Says WHY it is unknown when it is. A contact who has
+                    // not approved the request yet is not a broken app.
+                    subscription = contact?.subscription
+                        ?: Subscription.UNKNOWN,
+                ),
+                security = securityOf(jid),
+                // An event beats the last roster poll. `SmpProgressed` and
+                // `SmpFinished` arrive on the drain loop the moment the
+                // engine moves; the roster is re-read on a slower tick, so
+                // reading only `contact.smp` would leave an incoming
+                // verification request unshown until the next poll caught up.
+                smp = effectiveSmp(jid, contact?.smp),
+                otrCapability = capabilityOf(jid),
+                lastMessage = store.lastMessage(jid),
+                unread = store.unread(jid),
+                // A conversation with no roster entry is somebody who
+                // messaged us and was never added. Their presence is
+                // unknowable until they are, which is a thing the screen can
+                // say and act on rather than a silent permanent "unknown".
+                saved = contact != null,
+            )
+        }.sortedWith(
+            compareByDescending<Conversation> { it.lastAt }
+                .thenByDescending { it.unread }
+                .thenBy { it.displayName.lowercase() }
+        )
+    }
+
+    fun conversation(jid: String): Conversation =
+        conversations().firstOrNull { it.jid == bare(jid) }
+            ?: Conversation(
+                jid = bare(jid),
+                displayName = bare(jid),
+                presence = Presence.UNKNOWN,
+                // The ENGINE's word, not a constant: a peer in neither the
+                // roster nor the store can still have a live session, and a
+                // hard-coded PLAINTEXT here hid its call and file controls.
+                security = securityOf(bare(jid)),
+                lastMessage = null,
+                unread = 0,
+                smp = effectiveSmp(bare(jid), null),
+                otrCapability = capabilityOf(jid),
+                // Nothing is known about this JID at all — it is in neither
+                // the roster nor the store. `false` would put a Save button in
+                // front of somebody who may already be a contact whose roster
+                // entry has simply not arrived, so this branch declines to
+                // offer the remedy rather than offering the wrong one.
+                saved = true,
+            )
+
+    // FOLDED ON THE WAY IN, all four of them. The store and the draft map are
+    // written by `receive` and read by the composer, and the two halves have
+    // to agree about what "this conversation" is or a reply is filed away from
+    // the message it answers.
+    fun messages(jid: String): List<Message> = store.messages(bare(jid))
+
+    fun draft(jid: String): String = drafts[bare(jid)] ?: ""
+
+    fun setDraft(jid: String, text: String) {
+        drafts[bare(jid)] = text
+    }
+
+    /**
+     * Whether a message can be sent right now.
+     *
+     * The transport's own `connected`, not "did the user press Connect". The
+     * keepalive clears that flag the moment a round trip stops being answered,
+     * so this goes false when the stream actually dies rather than when the
+     * user gives up.
+     */
+    fun canSend(): Boolean = link == Link.OK && connection.connected
+
+    // -- actions -------------------------------------------------------------
+
+    fun open(jid: String) {
+        // Folded, because `receive` compares this against `bare(event.peer)`
+        // to decide whether an arriving message has been SEEN. Held under a
+        // different spelling, the comparison never matches and the badge
+        // counts up on the conversation the user is reading.
+        openConversation = bare(jid)
+        // Opened on purpose, from the contacts or online list: it is wanted.
+        deleted.restore(bare(jid))
+        // Opening a conversation is looking at it. The service's own signal
+        // can lag a frame behind the Activity's onStart, and a badge that
+        // lingers on the screen you are reading is its own small bug.
+        uiVisible = true
+        store.markRead(bare(jid))
+    }
+
+    /**
+     * The user can, or can no longer, see the screen.
+     *
+     * Coming back reads whatever landed in the conversation that was left
+     * open: it is still on screen, so the composition will not call [open]
+     * again, and without this the badge would sit there while the user reads
+     * the very messages it counts.
+     */
+    fun setUiVisible(visible: Boolean) {
+        uiVisible = visible
+        if (visible) openConversation?.let { store.markRead(it) }
+    }
+
+    fun closeConversation() {
+        openConversation = null
+    }
+
+    fun dismissFingerprintAlert() {
+        fingerprintAlert = null
+    }
+
+    /**
+     * Begin sending the draft for [jid]: validate it, clear it, and record the
+     * optimistic message.
+     *
+     * Returns the message that was stored, or null if there was nothing to
+     * send. The caller performs the actual send and hands the result back to
+     * [completeSend].
+     *
+     * Split in two because the send itself is a blocking call into Python and
+     * must not happen on the main thread, while everything here must happen
+     * before the user can tap again.
+     *
+     * The draft is cleared BEFORE the call, not after: if it were cleared when
+     * the send returned, a second tap during the round trip would find the text
+     * still there and send it twice.
+     *
+     * The message is appended ONCE, with a stable id, and [completeSend]
+     * updates it in place. Appending the result as well is how an optimistic
+     * echo and its own confirmation become two bubbles.
+     */
+    fun beginSend(jid: String): Message? {
+        @Suppress("NAME_SHADOWING") val jid = bare(jid)
+        val body = draft(jid)
+        if (body.isBlank()) return null
+        // Refused here as well as disabled in the composer, because the button
+        // is not the only route in: the keyboard's Send action is the other,
+        // and a guard on only one of them is a guard on neither. The draft is
+        // deliberately NOT cleared on this path -- the user's text stays in
+        // the box rather than vanishing into a message that cannot go.
+        if (!canSend()) return null
+        drafts[jid] = ""
+        val message = Message(
+            id = MessageId.outgoing(jid, ++outgoingSequence),
+            conversationId = jid,
+            body = body,
+            outgoing = true,
+            at = now(),
+            sendState = SendState.SENDING,
+            // Not ENCRYPTED. We have not sent it yet, and only the engine's
+            // answer can promote it.
+            security = SecurityLabel.UNKNOWN,
+        )
+        store.append(message)
+        deleted.restore(jid)
+        return message
+    }
+
+    /**
+     * Record what the engine did with [message].
+     *
+     * QUEUED is not a failure. The engine holds the text until a session
+     * exists, exactly as the terminal client reports `[queued] will send once
+     * OTR is ready`, and reporting that as "not sent" is what made the first
+     * version of this screen look broken during a DAKE.
+     */
+    fun completeSend(message: Message, outcome: SendOutcome): Boolean =
+        store.update(
+            message.copy(
+                sendState = when (outcome) {
+                    SendOutcome.ENCRYPTED -> SendState.SENT
+                    SendOutcome.PLAINTEXT -> SendState.SENT
+                    SendOutcome.QUEUED -> SendState.QUEUED
+                    SendOutcome.FAILED -> SendState.FAILED
+                },
+                security = when (outcome) {
+                    // The engine reported ciphertext. Nothing else here may
+                    // set this label.
+                    SendOutcome.ENCRYPTED -> SecurityLabel.ENCRYPTED
+                    // It went, and it went in the clear. Distinct from
+                    // UNKNOWN: we know exactly what happened to this one, and
+                    // the user is entitled to be told.
+                    SendOutcome.PLAINTEXT -> SecurityLabel.PLAINTEXT
+                    else -> SecurityLabel.UNKNOWN
+                },
+            )
+        )
+
+    /** Whether [jid] is worth sending to the engine as a contact. */
+    fun validContact(jid: String): Boolean {
+        val bare = bare(jid.trim())
+        return bare.isNotBlank() && bare.contains('@') && !bare.startsWith("@") &&
+            !bare.endsWith("@")
+    }
+
+    private fun securityOf(jid: String): SecurityState =
+        sessionStates[jid] ?: contacts[jid]?.security ?: SecurityState.PLAINTEXT
+
+    /**
+     * What verification to show. Never VERIFIED over a session that has
+     * ended or whose key changed, whichever source still remembers the run.
+     * (A just-finished run may show before the level catches up; the call
+     * and file gates read the ENGINE, not this.)
+     */
+    private fun effectiveSmp(jid: String, polled: SmpState?): SmpState {
+        val smp = smpStates[jid] ?: polled ?: SmpState.NOT_VERIFIED
+        val security = securityOf(jid)
+        val ended = security == SecurityState.PLAINTEXT ||
+            security == SecurityState.FINGERPRINT_MISMATCH
+        return if (smp == SmpState.VERIFIED && ended) SmpState.NOT_VERIFIED else smp
+    }
+
+    /** Overridable so tests are not at the mercy of the wall clock. */
+    internal var now: () -> Long = { System.currentTimeMillis() }
+
+    /**
+     * How well we can read the bridge, which is not the same question as
+     * whether the stream is up.
+     */
+    enum class Link {
+        /** Nothing has been read yet. Say so; do not guess. */
+        UNKNOWN,
+
+        /** The last read succeeded, so [connection] means what it says. */
+        OK,
+
+        /** The read itself is failing. The connection state is unknown. */
+        FAILING,
+    }
+
+    companion object {
+        /**
+         * The bare JID, case-folded. One contact, one key.
+         *
+         * Resources come and go with each reconnect and each device, and a
+         * conversation keyed by a full JID would fork every time the peer's
+         * client restarted -- one thread per resource, none of them the whole
+         * conversation.
+         *
+         * CASE WAS THE HALF THIS MISSED. slixmpp normalises an inbound
+         * stanza's `from`, so everything arriving from the server is already
+         * lower-case; a JID the USER types is not. Add `Bob@Example.test` and
+         * the roster echoes `bob@example.test`, so `conversations()` -- which
+         * unions the roster, the message store and the saved list -- showed
+         * the same person twice, and the two rows had separate history.
+         *
+         * XMPP says the localpart and domain are case-insensitive, so folding
+         * is correct rather than merely convenient. It is also the safe
+         * direction: it can only merge two keys into one, never split one
+         * into two. `OtrApp.canonical_peer` applies the same rule on the
+         * Python side, where the consequence of splitting was a conversation
+         * that had asked for OTR reporting that plaintext was allowed.
+         */
+        fun bare(jid: String): String =
+            jid.trim().substringBefore('/').lowercase()
+    }
+}

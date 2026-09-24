@@ -34,6 +34,12 @@ __all__ = ["collect", "SENSITIVE_KEY_HINTS"]
 SENSITIVE_KEY_HINTS = (
     "seed", "private", "secret", "password", "passphrase", "credential",
     "session_key", "chain_key", "root_key", "brace_key", "mac_key", "ratchet",
+    # Added when the shareable error log landed: that export leaves the device
+    # and goes wherever the user sends it, so the list has to cover the rest of
+    # what an authenticator can look like. NOT bare "auth" -- `authenticating`
+    # and `auth_failed` are STATES, and they are among the most useful things
+    # a connection report can say.
+    "token", "cookie", "apikey", "api_key", "privkey",
 )
 
 
@@ -166,7 +172,7 @@ def _rust_selftest() -> Dict[str, Any]:
     return result
 
 
-def _otrv4plus_info() -> Dict[str, Any]:
+def _otrv4plus_info(engine: Any = None) -> Dict[str, Any]:
     """Whether the Python orchestration layer imports and initialises.
 
     This is the part that fails first on Android: otrv4+.py pulls in Termux-only
@@ -194,7 +200,20 @@ def _otrv4plus_info() -> Dict[str, Any]:
     info["has_session_manager"] = hasattr(otr, "EnhancedSessionManager")
 
     try:
-        engine = otr.EnhancedSessionManager(config=otr.OTRConfig(test_mode=True))
+        # REUSE THE CALLER'S ENGINE WHEN THERE IS ONE.
+        #
+        # This probe built its own `EnhancedSessionManager` and dropped it,
+        # which cost ~106ms of a ~298ms startup path -- identity key work done
+        # twice per launch, because `ChaquopyOtrCore.initialize` then built the
+        # engine it actually uses.
+        #
+        # Building one is still the fallback, and that is the important half:
+        # when the caller has no engine BECAUSE construction failed, this is
+        # the probe that finds out why, and the report is most valuable exactly
+        # then. `reused` records which happened so a reader can tell.
+        info["engine_reused"] = engine is not None
+        if engine is None:
+            engine = otr.EnhancedSessionManager(config=otr.OTRConfig(test_mode=True))
         fingerprint = engine.get_fingerprint() or ""
         info["engine_constructed"] = True
         # Public fingerprint, truncated: enough to confirm an identity exists and
@@ -208,11 +227,73 @@ def _otrv4plus_info() -> Dict[str, Any]:
     return info
 
 
+def _at_rest_kdf() -> Dict[str, Any]:
+    """Where at-rest key handling happens on this device.
+
+    Until 0.7.0 this reported whether argon2-cffi was present, because the
+    engine's Python at-rest KDF fell back to scrypt without it. That code is
+    gone: the one at-rest store with secrets in it (the terminal clients' SMP
+    auto-respond store) is read, sealed and held by the Rust core
+    (`Rust/src/at_rest.rs`), and argon2-cffi is not in the APK at all. The
+    Android app's own at-rest protection is the AndroidKeyStore vault, which is
+    Kotlin's and is not reported here.
+
+    Reported so an exported report shows which implementation is live, and
+    so a build that somehow lost the Rust store says so.
+    """
+    info: Dict[str, Any] = {"implementation": "unknown"}
+    try:
+        import otrv4_core
+        info["implementation"] = ("rust" if hasattr(otrv4_core, "SmpSecretStore")
+                                  else "MISSING -- rebuild the Rust core")
+    except Exception as exc:
+        info["error"] = type(exc).__name__
+    try:
+        import otrv4_ as otr
+        info["python_kdf_present"] = hasattr(otr, "_derive_key")
+    except Exception:
+        info["python_kdf_present"] = "engine not importable"
+    return info
+
+
+def _transport_deps() -> Dict[str, Any]:
+    """Whether the XMPP transport's imports resolve on this device.
+
+    slixmpp has never been imported on a handset. If it cannot be, Connect
+    fails at the transport stage carrying nothing but an exception class name,
+    and finding out costs a rebuild, a reinstall and a round trip. One line in
+    a report the user already exports costs nothing.
+
+    aiodns is checked and is deliberately NOT required: slixmpp's resolver
+    imports it inside a try/except and degrades to the standard library, and
+    the transport connects by address rather than by name, so no DNS lookup
+    happens at all. It is reported because "absent" is the expected answer and
+    someone will otherwise spend time on it.
+    """
+    info: Dict[str, Any] = {}
+    for name, required in (("slixmpp", True), ("aiodns", False)):
+        try:
+            __import__(name)
+            info[name] = "present"
+        except Exception as exc:
+            info[name] = "%s (%s)" % (
+                "MISSING -- the transport cannot work" if required
+                else "absent, not required", type(exc).__name__)
+    return info
+
+
 def _native_libraries(search_paths: Optional[List[str]] = None) -> Dict[str, Any]:
     """List loadable native libraries the app ships.
 
     Names only -- never paths outside the app's own directories, so this cannot
     be used to map the device.
+
+    Incomplete by construction, and worth knowing why: it walks flat `.so`
+    files on `sys.path`, so anything inside a package directory or served from
+    Chaquopy's asset zip is invisible to it. `otrv4_core.so` is loaded on every
+    working device and has never appeared here. Absence from this list is not
+    evidence of absence -- see `_at_rest_kdf` and `_transport_deps`, which ask
+    the questions this list cannot answer.
     """
     paths = search_paths if search_paths is not None else [
         p for p in sys.path if isinstance(p, str) and p
@@ -231,19 +312,27 @@ def _native_libraries(search_paths: Optional[List[str]] = None) -> Dict[str, Any
 
 
 def collect(include_selftest: bool = True,
-            android_build: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+            android_build: Optional[Dict[str, Any]] = None,
+            engine: Any = None) -> Dict[str, Any]:
     """Gather the Phase 2 diagnostic report.
 
     `android_build` is supplied by Kotlin (Build.VERSION.SDK_INT, RELEASE,
     SUPPORTED_ABIS, MODEL); Python cannot read those, and they are passed in
     rather than guessed.
+
+    `engine` is an already-constructed `EnhancedSessionManager` to report on.
+    Passing the one the caller is going to use anyway avoids building a second
+    just to look at it. None keeps the old behaviour and builds a throwaway
+    probe, which is what the failure path needs.
     """
     report: Dict[str, Any] = {
         "android": android_build or {"note": "not supplied by host (not running on Android)"},
         "python": _python_info(),
         "abi": _abi_info(),
         "rust_core": _rust_core_info(),
-        "otrv4plus": _otrv4plus_info(),
+        "otrv4plus": _otrv4plus_info(engine),
+        "at_rest_kdf": _at_rest_kdf(),
+        "transport_deps": _transport_deps(),
         "native_libraries": _native_libraries(),
     }
     if include_selftest:

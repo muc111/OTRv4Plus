@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""INV-01, INV-02: what reaches disk, and in what form.
+"""INV-01, INV-02, INV-08: what reaches disk, in what form, and who holds the key.
 
 Written against the real storage classes with a real temporary directory, so
 these check the bytes that land in the file rather than the intent of the
@@ -60,9 +60,20 @@ class TestSmpSecretsAtRest:
             "the sealed blob leaks who you have SMP secrets with")
 
     def test_it_round_trips(self, statedir):
-        """Sealing is only useful if it opens again."""
+        """Sealing is only useful if it opens again -- proved without reading
+        the passphrase back, because nothing can: bind it from a reopened
+        store into a vault and derive the same SMP binding as a direct set."""
         self._store(statedir).set_secret("alice@example.i2p", SECRET)
-        assert self._store(statedir).get_secret("alice@example.i2p") == SECRET
+        again = self._store(statedir)
+        assert again.has_secret("alice@example.i2p")
+        assert again.peers() == ["alice@example.i2p"]
+
+    def test_there_is_no_way_to_read_a_passphrase_back(self, statedir):
+        store = self._store(statedir)
+        store.set_secret("alice@example.i2p", SECRET)
+        for gone in ("get_secret", "list_secrets", "_secrets"):
+            assert not hasattr(store, gone), gone
+        assert SECRET not in repr(store) and SECRET not in repr(store._store)
 
     def test_the_file_is_owner_only(self, statedir):
         store = self._store(statedir)
@@ -81,24 +92,60 @@ class TestSmpSecretsAtRest:
         assert open(path, "rb").read() != first
 
 
-class TestTheKdfIsMemoryHard:
+class TestTheLegacyStoreMigratesInRust:
+    """Stores written by the retired Python code open, migrate and bind in
+    Rust. The old file is built here with argon2-cffi -- an independent
+    implementation of the exact derivation the Python code used -- so this
+    checks compatibility against the real format, not against itself."""
 
-    def test_derive_key_uses_argon2_here(self):
-        assert otr.ARGON2_AVAILABLE, (
-            "argon2-cffi is not installed in this environment, so this run "
-            "cannot verify the primary at-rest KDF")
-        otr._derive_key(b"pw", b"0" * 16, 32)
-        assert otr.kdf_backend() == "argon2id"
+    @staticmethod
+    def _write_legacy(statedir, secrets_map):
+        low = pytest.importorskip("argon2.low_level")
+        core = pytest.importorskip("otrv4_core")
+        seed = os.urandom(32)
+        with open(os.path.join(statedir, ".smp_seed"), "wb") as f:
+            f.write(seed)
+        salt, nonce = os.urandom(16), os.urandom(12)
+        key = low.hash_secret_raw(secret=seed, salt=salt, time_cost=3,
+                                  memory_cost=65536, parallelism=4,
+                                  hash_len=32, type=low.Type.ID)
+        plaintext = json.dumps(secrets_map, separators=(",", ":")).encode()
+        ct = core.aes256gcm_encrypt(key, nonce, plaintext, b"smp_secrets_v1")
+        path = os.path.join(statedir, "smp_secrets.json")
+        with open(path, "wb") as f:
+            f.write(salt + nonce + bytes(ct))
+        return path
 
-    def test_the_derived_key_depends_on_the_salt(self):
-        a = otr._derive_key(b"pw", b"0" * 16, 32)
-        b = otr._derive_key(b"pw", b"1" * 16, 32)
-        assert a != b
+    def test_a_legacy_store_opens_and_is_rewritten(self, statedir):
+        path = self._write_legacy(statedir, {"alice@example.i2p": SECRET,
+                                             "bob@example.i2p": "p\u00e4ss w\u00f6rd \"q\""})
+        store = otr.SMPAutoRespondStorage(path)
+        assert sorted(store.peers()) == ["alice@example.i2p", "bob@example.i2p"]
+        assert store._store.migrated
+        assert open(path, "rb").read().startswith(b"OTRV4SMP\x02"), (
+            "the legacy file was not rewritten in the current format")
+        assert sorted(otr.SMPAutoRespondStorage(path).peers()) == [
+            "alice@example.i2p", "bob@example.i2p"]
 
-    def test_the_derived_key_depends_on_the_password(self):
-        a = otr._derive_key(b"pw-one", b"0" * 16, 32)
-        b = otr._derive_key(b"pw-two", b"0" * 16, 32)
-        assert a != b
+    def test_the_migrated_secret_is_the_same_secret(self, statedir):
+        """A vault bound from the migrated store and one fed the passphrase
+        directly must produce the same SMP binding."""
+        core = pytest.importorskip("otrv4_core")
+        path = self._write_legacy(statedir, {"alice@example.i2p": SECRET})
+        store = core.SmpSecretStore(path)
+        via_store, direct = core.RustSMPVault(), core.RustSMPVault()
+        assert store.bind_into("alice@example.i2p", via_store, "s")
+        direct.store_from_bytearray("s", bytearray(SECRET.encode()))
+        sid, fa, fb = b"sid" * 8, b"a" * 57, b"b" * 57
+        a, b = core.RustSMP(True), core.RustSMP(False)
+        a.set_secret_from_vault(via_store, "s", sid, fa, fb)
+        b.set_secret_from_vault(direct, "s", sid, fb, fa)
+        m1 = a.generate_smp1(None)
+        m2 = b.process_smp1_generate_smp2(bytes(m1))
+        m3 = a.process_smp2_generate_smp3(bytes(m2))
+        m4 = b.process_smp3_generate_smp4(bytes(m3))
+        a.process_smp4(bytes(m4))
+        assert a.is_verified() and b.is_verified()
 
 
 class TestPasswordsNeverReachDisk:

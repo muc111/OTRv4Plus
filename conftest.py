@@ -75,9 +75,35 @@ def _load_main():
         sys.modules['otrv4_'] = mod
         try:
             spec.loader.exec_module(mod)
+        except SyntaxError:
+            # NOT tolerated. A missing optional extension is somebody else's
+            # absence; a SyntaxError is OUR source failing to parse, and the
+            # engine is the product. Tolerating it left a half-executed module
+            # in `sys.modules` under the engine's name, which is worse than no
+            # module at all: `pytest.importorskip('otrv4_')` SUCCEEDS on a
+            # shell, and every test guarded by `hasattr` then skips quietly --
+            # a run in which nothing works reports no failures.
+            #
+            # Reached for real. `otrv4+.py` uses PEP 701 f-strings and needs
+            # Python >= 3.12 (`Rust/pyproject.toml` says so and CI pins it);
+            # invoked with a 3.11 interpreter it does not parse, and this
+            # branch is what decides whether that is loud or silent.
+            del sys.modules['otrv4_']
+            if sys.version_info < (3, 12):
+                print(
+                    f"[conftest] {path} did not parse under Python "
+                    f"{sys.version_info.major}.{sys.version_info.minor}. "
+                    "The engine requires Python >= 3.12 "
+                    "(Rust/pyproject.toml declares it and CI pins it); "
+                    "run the suite with python3.12 -m pytest.")
+            raise
         except Exception as e:
             # Tolerate import-time errors (missing extensions handled per-test)
+            # -- but do NOT leave the partly-executed module behind under the
+            # engine's name. Removed so `importorskip` skips honestly instead
+            # of handing out a shell that passes for the engine.
             print(f"[conftest] Warning loading {path}: {e}")
+            sys.modules.pop('otrv4_', None)
 
     # Make otrv4plus an alias
     if 'otrv4plus' not in sys.modules and 'otrv4_' in sys.modules:

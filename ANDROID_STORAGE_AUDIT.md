@@ -111,6 +111,38 @@ resources, the manifest, logs, clipboard, screenshots or backups.
 set, so a sealed record cannot be copied off the device to a place where the
 Keystore key that protects it does not exist.
 
+### What `Vault` actually buys, and what it does not
+
+`security/Vault.kt` and `security/KeystoreVault.kt` are the first concrete
+implementation of outcome 1. Two categories now use it: **account credentials**
+(so a dropped tunnel is not a password prompt) and **message history** (so a
+conversation survives the process). The key is AES-256, generated in the
+AndroidKeyStore, and never leaves it — on most current hardware it lives in a
+TEE or a dedicated security chip.
+
+Stated plainly, because "encrypted at rest" is easy to over-read:
+
+| Threat | Covered? |
+|---|---|
+| The file is pulled off the device, out of a backup, or off a desoldered chip | **Yes.** It is ciphertext and stays ciphertext. |
+| Another app reaches this app's data directory | **Yes.** It has the file and not the key. |
+| A record is moved between categories or replayed | **Yes.** The entry name is bound into the AAD. |
+| Code running **as this app** on an unlocked phone | **No.** It can ask the Keystore to decrypt, and will get plaintext. |
+| An attacker who has the file and wants to confirm a guessed contact JID | **No.** Entry names are hashed (FNV-1a), which stops a directory listing being a contact list, but is not a secrecy boundary. |
+
+The fourth row is inherent, not an oversight. `setUserAuthenticationRequired`
+is **false**, deliberately: the connection service reconnects with the screen
+off and nobody present, so a key gated on user authentication could not be used
+to reconnect — which is the entire reason the credential is stored. A
+passphrase-derived key would cover that row and break background reconnect;
+when the app unlock lands it can supply a second layer, and nothing above
+`Vault` changes.
+
+If the Keystore cannot be opened at all, `KeystoreVault.open` returns an
+`InMemoryVault`. It **never** falls back to a plaintext file: a device whose
+Keystore is unavailable is the last place to start writing passwords in the
+clear.
+
 ---
 
 ## What is still open

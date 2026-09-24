@@ -45,10 +45,13 @@ class TestArgon2IsInTheRustCore:
             "without it, and it must not silently fall back to 0x02")
 
     def test_it_is_used_by_smp_and_not_by_the_vault(self):
+        # smp.rs for the 0x03 wire stretch; at_rest.rs only to read store
+        # files written by the retired Python argon2-cffi code.
         users = sorted(f for f, src in _rust_sources().items()
                        if "argon2" in src.lower())
-        assert users == ["smp.rs"], (
-            "argon2 should appear in smp.rs and nowhere else; found %s" % users)
+        assert users == ["at_rest.rs", "smp.rs"], (
+            "argon2 should appear in smp.rs and at_rest.rs only; found %s" % users)
+        assert "argon2" not in _rust_sources()["smp_vault.rs"].lower()
 
     def test_the_low_level_api_is_used_not_the_phc_string(self):
         """A wire protocol needs raw bytes both peers agree on.
@@ -92,24 +95,27 @@ class TestTheDocumentationSaysSo:
         assert "Argon2id (at rest)" in joined
 
     def test_readme_no_longer_claims_it_runs_in_the_rust_core(self):
-        doc = self._doc("README.md")
+        # The paragraph moved with the full reference out of the README.
+        doc = self._doc("TECHNICAL.md")
         i = doc.index("One cryptographic surface for chat.")
         para = doc[i:i + 1400]
         assert "Argon2id-class KDF protecting the SMP vault — runs inside" not in para
 
-    def test_the_scrypt_fallback_is_disclosed(self):
-        assert "scrypt" in self._doc("FEATURES.md"), (
-            "the at-rest KDF silently degrades to scrypt when argon2-cffi is "
-            "missing, and that must be written down somewhere a reader looks")
+    def test_the_scrypt_fallback_is_recorded_as_removed(self):
+        row = [l for l in self._doc("FEATURES.md").split("\n")
+               if l.startswith("| Argon2id (at rest)")][0]
+        assert "scrypt" in row and "removed" in row, (
+            "the at-rest row must say the Python scrypt fallback is gone")
 
 
 class TestWhereTheKdfsReallyAre:
 
-    def test_at_rest_uses_argon2_when_available(self):
-        import inspect
-        src = inspect.getsource(otr._derive_key)
-        assert "hash_secret_raw" in src and "Type as _ArgonType" in src
-        assert "scrypt" in src, "the documented fallback is gone"
+    def test_at_rest_key_handling_is_in_rust(self):
+        src = open(os.path.join(ROOT, "otrv4+.py"), encoding="utf-8").read()
+        for gone in ("def _derive_key(", "hashlib.scrypt", "import argon2",
+                     "hash_secret_raw", "class SecureKeyStorage"):
+            assert gone not in src, gone
+        assert "SmpSecretStore" in src
 
     def test_the_smp_passphrase_derivation_is_memory_hard_under_0x03(self):
         smp = open(os.path.join(ROOT, "Rust", "src", "smp.rs"),
@@ -133,11 +139,12 @@ class TestWhereTheKdfsReallyAre:
         assert "const ARGON2_T_COST:     u32 = 3;" in smp
         assert "const ARGON2_P_COST:     u32 = 4;" in smp
 
-        import inspect
-        at_rest = inspect.getsource(otr._derive_key)
-        assert "memory_cost=65536" in at_rest
-        assert "time_cost=3" in at_rest
-        assert "parallelism=4" in at_rest
+        # The legacy reader must derive exactly what argon2-cffi derived
+        # (memory_cost=65536, time_cost=3, parallelism=4), or old stores
+        # stop opening.
+        at_rest = _rust_sources()["at_rest.rs"]
+        assert "Params::new(65536, 3, 4, Some(KEY_LEN))" in at_rest
+        assert "Algorithm::Argon2id, Version::V0x13" in at_rest
 
     def test_the_spec_documents_the_derivation_that_is_implemented(self):
         spec = open(os.path.join(ROOT, "SPEC.md"), encoding="utf-8").read()
@@ -150,42 +157,33 @@ class TestWhereTheKdfsReallyAre:
         assert "50,000" in section and "SHAKE-256" in section
 
 
-class TestTheDowngradeIsNotSilent:
-    """If at-rest storage stops being memory-hard, you should be told."""
+class TestThereIsNoDowngrade:
+    """The Python at-rest KDF could silently fall to scrypt. It is gone; what
+    replaces the warning is that an unreadable store is never dropped."""
 
-    def _src(self):
-        return open(os.path.join(ROOT, "otrv4+.py"), encoding="utf-8").read()
+    def test_no_python_kdf_or_scrypt(self):
+        src = open(os.path.join(ROOT, "otrv4+.py"), encoding="utf-8").read()
+        assert "hashlib.scrypt" not in src
+        assert "_warn_kdf_downgrade" not in src
+        assert "def kdf_backend(" not in src
 
-    def test_argon2_failure_is_no_longer_swallowed(self):
-        src = self._src()
-        assert "except Exception:\n            pass\n\n    return hashlib.scrypt" not in src, (
-            "an argon2 failure silently degraded to scrypt with no warning")
-        assert "_warn_kdf_downgrade" in src
+    def test_an_unreadable_store_is_moved_aside_and_reported(self):
+        import tempfile
+        core = pytest.importorskip("otrv4_core")
+        d = tempfile.mkdtemp()
+        path = os.path.join(d, "smp_secrets.json")
+        with open(os.path.join(d, ".smp_seed"), "wb") as f:
+            f.write(os.urandom(32))
+        with open(path, "wb") as f:
+            f.write(os.urandom(200))                      # not decryptable
+        store = core.SmpSecretStore(path)
+        assert store.legacy_unreadable, "an unreadable store was dropped silently"
+        assert os.path.exists(store.legacy_unreadable)
+        assert not os.path.exists(path)
 
-    def test_both_downgrade_paths_warn(self):
-        """Missing argon2-cffi AND a raising argon2 must each warn."""
-        src = self._src()
-        body = src.split("def _derive_key(", 1)[1].split("\nclass ", 1)[0]
-        assert body.count("_warn_kdf_downgrade(") == 2, (
-            "one of the two ways to end up on scrypt does not warn")
-
-    def test_the_backend_actually_used_is_reportable(self):
-        src = self._src()
-        assert "def kdf_backend(" in src
-        assert '_KDF_LAST_BACKEND = "argon2id"' in src
-        assert '_KDF_LAST_BACKEND = "scrypt"' in src
-
-    def test_derive_key_docstring_does_not_claim_argon2_protects_smp_wire(self):
-        """The at-rest KDF must not be confused with the protocol KDF."""
-        src = self._src()
-        doc = src.split("def _derive_key(", 1)[1].split('"""', 2)[1]
-        assert "AT-REST" in doc
-        assert "50,000" in doc and "SHAKE-256" in doc, (
-            "the docstring should name the protocol KDF it is NOT")
-
-    def test_warning_names_a_remedy(self):
-        src = self._src()
-        assert "pip install argon2-cffi" in src
+    def test_the_engine_says_so(self):
+        src = open(os.path.join(ROOT, "otrv4+.py"), encoding="utf-8").read()
+        assert "were moved aside to" in src
 
 
 class TestTheSmpStretchIsSalted:

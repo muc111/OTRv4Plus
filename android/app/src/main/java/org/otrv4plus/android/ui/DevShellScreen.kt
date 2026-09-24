@@ -14,45 +14,137 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.otrv4plus.android.BuildConfig
 import org.otrv4plus.android.bridge.ChaquopyOtrCore
+import org.otrv4plus.android.bridge.ConnectionStatus
 import org.otrv4plus.android.bridge.InitResult
+import org.otrv4plus.android.bridge.RouterProbe
 import androidx.compose.ui.platform.LocalContext
-import android.content.Context
-import android.content.Intent
-import androidx.core.content.FileProvider
-import java.io.File
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
 
 /**
- * The Phase 2 development shell.
+ * The Debug screen: everything technical, in one place, off the login path.
  *
- * Shows whether the stack came up, and nothing else. In a debug build it also
- * offers the diagnostics detail; in release, [BuildConfig.DEV_DIAGNOSTICS] is
- * false and the detail screen's source is not even compiled in (it lives in
- * src/debug/).
+ * WHAT MOVED HERE, AND WHY
+ * ------------------------
+ * The login screen used to render the SAM probe's raw output, the failure
+ * code, whether the transport's worker thread was alive, and `inputs` -- the
+ * literal arguments that crossed into the transport. Every one of those is
+ * worth having and none of them belongs in front of somebody trying to sign
+ * in: a login screen that says `stream_failed` and `worker thread: alive`
+ * reads as broken even when it is working, and it teaches people to ignore
+ * the words on it.
+ *
+ * So they are here, along with the start-up snapshot and the event log. The
+ * rule for this screen is the opposite of the login screen's: nothing is
+ * simplified, nothing is hidden, and anything that would help somebody work
+ * out what happened is fair game -- subject to the one constraint that does
+ * not relax, which is that the exported file names nobody. Identities are
+ * replaced with labels by `otrv4plus_alias`, centrally, before anything
+ * reaches the trace.
+ *
+ * In a debug build it also offers the diagnostics detail; in release,
+ * [BuildConfig.DEV_DIAGNOSTICS] is false and the detail screen's source is
+ * not even compiled in (it lives in src/debug/).
  */
 @Composable
-fun DevShellScreen() {
+fun DevShellScreen(
+    core: ChaquopyOtrCore? = null,
+    status: ConnectionStatus = ConnectionStatus(),
+    probe: RouterProbe? = null,
+    busy: String? = null,
+    onCheckRouter: () -> Unit = {},
+) {
     val context = LocalContext.current
     var result by remember { mutableStateOf<InitResult?>(null) }
     var running by remember { mutableStateOf(true) }
 
-    LaunchedEffect(Unit) {
+    // THE SERVICE'S CORE, never a new one.
+    //
+    // This used to do `ChaquopyOtrCore(context).initialize()`, which built a
+    // SECOND Python interpreter and a second engine over the same identity and
+    // trust files -- from the diagnostics screen, whose whole job is to tell
+    // you whether the first one is healthy. Opening it while connected was
+    // enough to have two engines writing the same records.
+    LaunchedEffect(core) {
+        if (core == null) {
+            running = false
+            return@LaunchedEffect
+        }
         // Never on the main thread: interpreter start plus engine construction
-        // is far too slow, and the engine expects a worker thread.
-        result = withContext(Dispatchers.IO) { ChaquopyOtrCore(context).initialize() }
+        // is far too slow, and the engine expects a worker thread. Idempotent
+        // on an already-started core.
+        result = withContext(Dispatchers.IO) {
+            runCatching { core.initialize() }.getOrNull()
+        }
         running = false
     }
 
     Column(
         modifier = Modifier
             .fillMaxSize()
+            // The window no longer fits the decor -- MainActivity turns that
+            // off so the keyboard is handled by exactly one mechanism -- so
+            // every screen that is not a Scaffold has to inset itself. Without
+            // this the title sits under the status bar and the last control
+            // sits under the navigation bar.
+            .systemBarsPadding()
             .verticalScroll(rememberScrollState())
             .padding(24.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        Text("OTRv4+ integration shell", style = MaterialTheme.typography.headlineSmall)
+        Text("Debug", style = MaterialTheme.typography.headlineSmall)
+
+        // ── The connection, in full ───────────────────────────────────────
+        //
+        // FIRST, and before the start-up snapshot, because it is what somebody
+        // reaching this screen is almost always here about. The snapshot below
+        // is taken at launch and is minutes old by the time anything goes
+        // wrong; this is now.
+        Text("Connection", style = MaterialTheme.typography.titleSmall)
+        StatusRow("Stage", status.stage)
+        StatusRow("Connected", status.connected.toString())
+        StatusRow("Worker thread",
+            if (status.workerAlive) "alive" else "not running")
+        if (status.code.isNotBlank()) StatusRow("Last code", status.code)
+        if (status.sam.isNotBlank()) StatusRow("SAM", status.sam)
+        StatusRow("Default server", status.isDefaultServer.toString())
+        if (status.detail.isNotBlank()) {
+            SelectionContainer {
+                Text(status.detail, style = MaterialTheme.typography.bodySmall)
+            }
+        }
+        // "Did the call fail, or did it get the wrong arguments" are two
+        // questions, and from a handset they are indistinguishable without
+        // this. Rendered in Python, where the rule about what a diagnostic may
+        // contain lives; the password appears as present/absent only.
+        if (status.inputs.isNotBlank()) {
+            Text("What reached the transport",
+                style = MaterialTheme.typography.bodySmall)
+            SelectionContainer {
+                Text(status.inputs, style = MaterialTheme.typography.bodySmall)
+            }
+        }
+
+        // ── The router ────────────────────────────────────────────────────
+        //
+        // A SAM HELLO is a local handshake that answers in milliseconds;
+        // building a tunnel takes up to four minutes. Asked separately, it
+        // answers "is there a router at all" without the wait -- which is why
+        // it is a button and not part of connecting.
+        Spacer(Modifier.height(4.dp))
+        OutlinedButton(enabled = busy == null, onClick = onCheckRouter) {
+            Text("Check I2P router")
+        }
+        probe?.let {
+            StatusRow("Reachable", if (it.reachable) "yes" else "no")
+            StatusRow("Code", it.code)
+            if (it.version.isNotBlank()) StatusRow("SAM version", it.version)
+            SelectionContainer {
+                Text(it.detail, style = MaterialTheme.typography.bodySmall)
+            }
+        }
+        busy?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+
+        Spacer(Modifier.height(12.dp))
+        Text("Start-up", style = MaterialTheme.typography.titleSmall)
 
         if (running) {
             CircularProgressIndicator()
@@ -104,26 +196,89 @@ fun DevShellScreen() {
         var exportError by remember { mutableStateOf<String?>(null) }
 
         Spacer(Modifier.height(8.dp))
+
+        // THE ERROR LOG, which is the one that diagnoses a live fault.
+        //
+        // The start-up report below is a snapshot taken at launch: versions,
+        // ABI, whether the Rust core loaded. Useful, and useless for "it was
+        // connected and then it said DISCONNECTING", because by then the
+        // snapshot is minutes old and contains none of what happened since.
+        //
+        // This one is the event trace: every state change, presence event,
+        // roster call, keepalive probe and exception, in order, with the
+        // connection's current state on top. The run-up to a failure is
+        // usually the whole answer.
+        Text("Error log", style = MaterialTheme.typography.titleSmall)
+        Text(
+            "Everything the connection did, in order. No passwords, keys or "
+            + "message contents — see the top of the file.",
+            style = MaterialTheme.typography.bodySmall,
+        )
+        Spacer(Modifier.height(4.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            // Export to a file and hand it to whatever app the user picks.
-            // A 50-line report does not survive being retyped from a photo,
-            // and this screen sets FLAG_SECURE so there is no photo to take.
             Button(onClick = {
                 exportError = try {
-                    shareReport(context, fullReport(r)); null
+                    // Rendered in Python, where the redaction rule lives.
+                    // Off the main thread would be tidier, but this is a
+                    // string build over an in-memory ring and the alternative
+                    // is a button that does nothing for a frame.
+                    DiagnosticsExport.share(
+                        context,
+                        core?.diagnosticReport() ?: NO_CORE,
+                        prefix = "otrv4plus-log",
+                        subject = "OTRv4+ error log",
+                        chooserTitle = "Share error log",
+                    )
+                    null
                 } catch (t: Throwable) {
                     t.javaClass.simpleName
                 }
-            }) { Text("Export report") }
+            }) { Text("Share error log") }
 
+            OutlinedButton(onClick = {
+                clipboard.setText(
+                    AnnotatedString(core?.diagnosticSummary() ?: NO_CORE))
+                copied = true
+            }) { Text(if (copied) "Copied" else "Copy error details") }
+        }
+        exportError?.let {
+            Text("Share failed ($it) — use Copy instead.",
+                style = MaterialTheme.typography.bodySmall)
+        }
+
+        Spacer(Modifier.height(16.dp))
+
+        // The start-up snapshot, kept: it is what closes the environment
+        // gates in ANDROID_PHASE2_REPORT.md §14, and a working run is
+        // evidence too. FLAG_SECURE blocks a screenshot, so if it cannot be
+        // exported it cannot leave the device at all.
+        Text("Start-up report", style = MaterialTheme.typography.titleSmall)
+        Spacer(Modifier.height(4.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedButton(onClick = {
+                exportError = try {
+                    DiagnosticsExport.share(
+                        context, fullReport(r),
+                        prefix = "otrv4plus-startup",
+                        subject = "OTRv4+ start-up report",
+                        chooserTitle = "Export start-up report",
+                    )
+                    null
+                } catch (t: Throwable) {
+                    t.javaClass.simpleName
+                }
+            }) { Text("Export start-up report") }
+
+            // Copy, still offered, and not a duplicate of the one above:
+            // this is the fallback for when no app answers the share intent.
+            // Dropping it in favour of the error-log pair was a regression --
+            // a device with no mail or notes app installed would have had no
+            // way to produce a start-up report at all, and FLAG_SECURE means
+            // there is no screenshot either.
             OutlinedButton(onClick = {
                 clipboard.setText(AnnotatedString(fullReport(r)))
                 copied = true
             }) { Text(if (copied) "Copied" else "Copy") }
-        }
-        exportError?.let {
-            Text("Export failed ($it) — use Copy instead.",
-                style = MaterialTheme.typography.bodySmall)
         }
 
         if (BuildConfig.DEV_DIAGNOSTICS) {
@@ -163,31 +318,14 @@ private fun fullReport(r: InitResult): String = buildString {
     r.diagnosticsText?.let { appendLine(); appendLine(it) }
 }
 
-/**
- * Write the report to the cache and offer it to another app.
- *
- * Via FileProvider, so what leaves is a one-shot read grant for exactly this
- * file. The app holds no storage permission and this adds none.
- */
-private fun shareReport(context: Context, text: String) {
-    val dir = File(context.cacheDir, "diagnostics").apply { mkdirs() }
-    val stamp = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date())
-    val file = File(dir, "otrv4plus-report-$stamp.txt")
-    file.writeText(text)
+/** Shown when the screen is reached before the service has a core. */
+private const val NO_CORE =
+    "No connection has been prepared in this session, so there is no " +
+        "connection state or event history to report.\n"
 
-    val uri = FileProvider.getUriForFile(
-        context, "${context.packageName}.diagnostics", file)
-    val send = Intent(Intent.ACTION_SEND).apply {
-        type = "text/plain"
-        putExtra(Intent.EXTRA_STREAM, uri)
-        putExtra(Intent.EXTRA_SUBJECT, "OTRv4+ Android diagnostic report")
-        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-    }
-    context.startActivity(Intent.createChooser(send, "Export diagnostic report"))
-}
-
+/** Shared with [ConnectScreen]; `private` here would be file-private. */
 @Composable
-private fun StatusRow(label: String, value: String) {
+internal fun StatusRow(label: String, value: String) {
     Row(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.SpaceBetween,

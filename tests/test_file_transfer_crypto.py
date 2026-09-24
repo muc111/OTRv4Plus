@@ -58,17 +58,19 @@ def _relay(first, sender, receiver, sender_id, receiver_id, limit=10):
 def _clear_dake_rate_limit():
     """Reset the engine's DAKE1 limiter between handshakes.
 
-    FOUND WHILE WRITING THESE TESTS, and worth recording: DAKE1RateLimiter
-    documents itself as "per-peer", but both real call sites invoke
-    `process_dake1(dake1_msg)` without the `peer_key` argument, so every peer
-    shares the default bucket "unknown".  It is therefore a GLOBAL limiter of
-    5 attempts per 60 seconds, and one peer exhausting it locks out DAKE1
-    from every other peer.
+    FOUND WHILE WRITING THESE TESTS: DAKE1RateLimiter documented itself as
+    "per-peer", but both real call sites invoked `process_dake1(dake1_msg)`
+    without the `peer_key` argument, so every peer shared the default bucket
+    "unknown" -- a GLOBAL limiter of 5 attempts per 60 seconds in which one
+    peer exhausting it locked out DAKE1 from every other peer.
 
-    That is an engine-wide property affecting IRC and XMPP alike, so it is
-    deliberately NOT changed here -- file transfer has no business altering
-    session establishment.  These tests reset the bucket so they exercise the
-    transfer rather than the limiter.
+    Recorded here rather than patched, because file transfer has no business
+    altering session establishment. It has since been fixed on its own --
+    both call sites now pass the peer, and `tests/test_dake1_rate_limit.py`
+    holds the per-peer property.
+
+    The clear stays: these tests should exercise the transfer rather than the
+    quota.
     """
     try:
         otr._dake1_rate_limiter._attempts.clear()

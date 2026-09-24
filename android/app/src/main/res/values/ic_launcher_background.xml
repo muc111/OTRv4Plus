@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Near-black, so the mascot's yellow and brown carry the mark. A white
+         background would leave a pale shape on a pale launcher. -->
+    <color name="ic_launcher_background">#12161C</color>
+</resources>

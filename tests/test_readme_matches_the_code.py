@@ -30,7 +30,14 @@ def _read(name):
 
 @pytest.fixture(scope="module")
 def readme():
-    return _read("README.md")
+    """The README and the full reference it points to.
+
+    The README was cut to an introduction; the detailed claims (SMP wire
+    version, the voice caveat) moved to TECHNICAL.md unchanged. Checking
+    both keeps every claim pinned wherever it now lives -- and the
+    must-not-say checks apply to both files. The badge tests below still
+    read README.md alone."""
+    return _read("README.md") + "\n" + _read("TECHNICAL.md")
 
 
 class TestTheVersionBadge:
@@ -208,3 +215,35 @@ class TestTheCryptoChainDiagram:
         assert "AES" not in agreement, (
             "AES appears above the ratchet, where no AES runs")
         assert "AES-256-GCM" in rest
+
+
+class TestTheApkIsEasyToFind:
+    """The README linked the APK at `releases/tag/android-experimental`, a
+    tag the publish script had stopped using and then deleted -- so the one
+    link a tester needed was dead. Only the newest Android release is kept,
+    under a tag that changes each version, so the stable link is the
+    Releases page itself."""
+
+    def test_the_download_is_near_the_top_and_points_at_releases(self):
+        readme = _read("README.md")
+        section = readme.index("## Android app")
+        assert section < readme.index("## Project status")
+        assert "https://github.com/muc111/OTRv4Plus/releases)" in \
+            readme[section:section + 600]
+
+    def test_no_link_to_a_release_tag_that_gets_deleted(self):
+        readme = _read("README.md")
+        assert "releases/tag/" not in readme
+
+    def test_it_names_the_file_to_install(self):
+        readme = _read("README.md")
+        assert "-release.apk" in readme
+
+    def test_the_publish_script_still_keeps_only_the_newest(self):
+        script = _read(os.path.join(".github", "scripts",
+                                    "publish-experimental-apk.sh"))
+        assert "gh release delete" in script
+
+    def test_the_readme_stays_short(self):
+        """It was 1,745 lines; the full reference is TECHNICAL.md."""
+        assert len(_read("README.md").splitlines()) < 250

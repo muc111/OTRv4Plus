@@ -150,3 +150,75 @@ class TestBootstrap:
 
     def test_optional_dependencies_are_reported_not_fatal(self):
         assert isinstance(bootstrap.missing_optional(), list)
+
+
+# ── Added with the connect screen ────────────────────────────────────────────
+#
+# Two questions the device report could not previously answer, both discovered
+# while reading a real handset report that looked entirely healthy.
+
+class TestItAnswersWhatTheLibraryListCannot:
+    """`native_libraries` is incomplete by construction, and that misleads.
+
+    It walks flat `.so` files on sys.path, so anything inside a package
+    directory or served from Chaquopy's asset zip is invisible. otrv4_core.so
+    is loaded on every working device and has never appeared in it. A reader
+    checking that list for argon2 would conclude it is missing when it is not,
+    or that it is present when it is not -- the list simply does not carry the
+    information.
+    """
+
+    def test_the_library_list_says_it_is_incomplete(self):
+        import inspect
+        from android_bridge import diagnostics
+        # Whitespace-normalised: the sentence wraps, and a test that breaks on
+        # reflowing a docstring is a test that gets deleted.
+        doc = " ".join((inspect.getdoc(diagnostics._native_libraries) or "").split())
+        assert "not evidence of absence" in doc, (
+            "the incompleteness is load-bearing and must stay documented "
+            "where someone reading the list will see it")
+
+    def test_the_at_rest_implementation_is_reported(self):
+        from android_bridge import diagnostics
+        got = diagnostics._at_rest_kdf()
+        assert got.get("implementation") == "rust", got
+
+    def test_no_python_at_rest_kdf_is_live(self):
+        """It could fall back to scrypt and said so only on stderr -- logcat,
+        where nobody exporting a report would see it. It is gone; a report
+        must show that rather than assume it."""
+        from android_bridge import diagnostics
+        assert diagnostics._at_rest_kdf().get("python_kdf_present") is False
+
+    def test_transport_dependencies_are_reported(self):
+        from android_bridge import diagnostics
+        got = diagnostics._transport_deps()
+        assert "slixmpp" in got and "aiodns" in got
+
+    def test_a_missing_slixmpp_would_say_the_transport_cannot_work(self):
+        """Without this line, Connect fails carrying an exception class name
+        and finding out costs a rebuild, a reinstall and a round trip."""
+        import inspect
+        from android_bridge import diagnostics
+        src = inspect.getsource(diagnostics._transport_deps)
+        assert "the transport cannot work" in src
+
+    def test_aiodns_is_reported_but_not_required(self):
+        """slixmpp imports it in a try/except and the transport connects by
+        address, so no DNS lookup happens. Reported because "absent" is the
+        expected answer and someone will otherwise chase it."""
+        from android_bridge import diagnostics
+        got = diagnostics._transport_deps()
+        assert "not required" in got["aiodns"] or got["aiodns"] == "present"
+
+    def test_both_sections_are_in_the_collected_report(self):
+        from android_bridge import diagnostics
+        report = diagnostics.collect(include_selftest=False)
+        assert "at_rest_kdf" in report and "transport_deps" in report
+
+    def test_neither_section_leaks_a_sensitive_word(self):
+        from android_bridge import diagnostics
+        text = "%r %r" % (diagnostics._at_rest_kdf(),
+                          diagnostics._transport_deps())
+        for hint in diagnostics.SENSITIVE_KEY_HINTS:
+            assert hint not in text.lower(), hint

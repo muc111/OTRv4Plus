@@ -1,6 +1,13 @@
 # Roadmap
 
-What's next for OTRv4+. Ordered roughly by priority, not by ease.
+> OTRv4+ is an I2P-first private communications client: end-to-end encrypted
+> messaging, file transfer and voice over I2P, with Tor and TLS available as
+> alternative transports for messaging. See [README.md](README.md) for the overview.
+
+What's next for OTRv4+. Ordered roughly by priority, not by ease. What already
+works is [FEATURES.md](FEATURES.md); how far each area has been *verified*
+rather than merely implemented is the README's
+[Project status](README.md#project-status).
 
 ## Recently shipped
 
@@ -89,7 +96,7 @@ What was previously labelled "Phase 5.3f" turned out to be larger than a single 
 
 #### Phase 5.3h, parts A2 + B + C — shipped in v10.6.19
 
-- **Part A2 (legacy file cleanup).** Startup migration securely destroying `~/.otrv4_vault`, `~/.otrv4_smp_secrets.json`, and `~/.otrv4_keys/` orphans via `_secure_file_destroy` (NIST SP 800-88r1).
+- **Part A2 (legacy file cleanup).** Startup migration overwriting and removing `~/.otrv4_vault`, `~/.otrv4_smp_secrets.json`, and `~/.otrv4_keys/` orphans via `_secure_file_destroy` (one-pass random overwrite, fsync, unlink — not a flash-sanitisation guarantee).
 - **Part B (AES-GCM swap).** Three live `AESGCM(key)` call sites swapped to `otrv4_core.aes256gcm_{encrypt,decrypt}` via `Rust/src/aead.rs` (`aes-gcm` 0.10 crate). Wire format identical.
 - **Part C (Ed448PublicKey wrap removal).** Six `Ed448PublicKey.from_public_bytes` call sites replaced with raw bytes.
 
@@ -194,23 +201,40 @@ Out of OTRv4 scope. OMEMO or MLS would be a separate project.
 
 ### Native Android APK
 
-**Builds, never run.** A Gradle project, a Chaquopy configuration, a typed
-Kotlin↔Python bridge and a Kotlin application security layer exist under
-`android/` and `android_bridge/`, and the storage and architecture questions have
-been audited (`ANDROID_ARCHITECTURE_AUDIT.md`, `ANDROID_STORAGE_AUDIT.md`,
-`ANDROID_PHASE2_REPORT.md`).
+**Runs on a handset; not yet a finished chat client.** A Gradle project, a
+Chaquopy configuration, a typed Kotlin↔Python bridge and a Kotlin application
+security layer exist under `android/` and `android_bridge/`, and the storage and
+architecture questions have been audited (`ANDROID_ARCHITECTURE_AUDIT.md`,
+`ANDROID_STORAGE_AUDIT.md`, `ANDROID_PHASE2_REPORT.md`,
+`ANDROID_CHAT_ARCHITECTURE.md`).
 
-Since v10.30.0 a **debug APK actually assembles**, on GitHub-hosted runners
-(`.github/workflows/android.yml`) because `dl.google.com` is 403 from the
-development environment. It contains the Rust core cross-compiled for
-arm64-v8a and x86_64, and CI asserts that rather than assuming it. That
-retires the toolchain question and nothing else.
+Since v10.30.0 a **debug APK assembles** on GitHub-hosted runners
+(`.github/workflows/android.yml`), because `dl.google.com` is 403 from the
+development environment. It contains the Rust core cross-compiled for arm64-v8a
+and x86_64, and CI asserts that rather than assuming it.
 
-What does not exist is a signed release APK, an in-APK I2P router, or any
-voice testing inside the APK — voice is verified under Termux, which is a
-different process model. **No device or emulator has ever launched this APK**,
-so "it builds" is not "it runs". Termux remains the supported environment. Do
-not read "voice works" as "voice works in the APK".
+**What has now been verified on a real device**, which the previous wording
+("no device or emulator has ever launched this APK") no longer describes:
+
+- the APK installs and launches;
+- Chaquopy starts CPython and the Rust core loads and initialises;
+- the SAM probe, the I2P tunnel, the XMPP connection and SASL authentication
+  complete against the live server;
+- a message sent from a Termux peer **arrived at the handset over I2P** — it
+  was mishandled once there, but the transport carried it.
+
+**What is still NOT verified on a device**: plaintext messaging in both
+directions (the code for it landed after the last device run), roster and
+presence, background survival, reconnect, and OTR end to end. The fixes for the
+first of those are recent and their device gate is open —
+`ANDROID_MESSAGING_DEVICE_TEST.md` is the procedure.
+
+What does not exist is a signed release APK, an in-APK I2P router, or any voice
+testing inside the APK — voice is verified under Termux, which is a different
+process model. **Do not read "voice works" as "voice works in the APK"**, and do
+not read "the runtime starts" as "the app is ready". Android is a development
+client until the acceptance criteria in `ANDROID_CHAT_ARCHITECTURE.md` §7 are
+met on a handset; Termux remains the reference implementation.
 
 ### Tor onion service transport
 

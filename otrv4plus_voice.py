@@ -6,7 +6,7 @@ could not be tested.  It was reachable only by importing a 6 200-line file
 that pulls in slixmpp, opuslib and PulseAudio at import time, so the key
 agreement, the rekey state machine and the replay window had no test
 coverage at all.  Everything security-relevant in here imports nothing
-beyond the standard library and ``cryptography``, and is exercised by
+beyond the standard library and the Rust core, and is exercised by
 ``test_voice_security.py``.
 
 The audio/SAM host helpers are injected by ``bind_host()`` rather than
@@ -166,6 +166,7 @@ import threading
 import time
 
 import otrv4plus_audio as _audio
+import otrv4plus_mediapath as _mediapath
 
 
 def _env_int(name: str, default: int, lo: int, hi: int) -> int:
@@ -451,7 +452,19 @@ class KemUnavailable(RuntimeError):
 
 
 class _RustKem:
-    """ML-KEM-1024 via otrv4_core (the production path)."""
+    """ML-KEM-1024 capability of the Rust core. The only provider.
+
+    A CAPABILITY, not a key API: it answers "can this device do a hybrid
+    exchange", by running one inside Rust. The call path never asks it for
+    keys -- `VoiceKeyExchange` owns its ML-KEM keypair inside `RustVoiceKex`
+    and gets back an opaque `RustVoiceAgreement`.
+
+    There used to be a second provider, `kyber-py`: pure Python, not
+    constant-time, and holding keys in Python objects. It was reachable only
+    with an environment variable set, and it was a duplicate implementation of
+    a primitive the Rust core owns. It is gone; a device without the Rust core
+    has no voice, which is the honest answer.
+    """
 
     name = "otrv4_core/pqcrypto-mlkem"
     post_quantum = True
@@ -459,61 +472,33 @@ class _RustKem:
     def __init__(self, module):
         self._m = module
 
-    def keygen(self):
-        ek, dk = self._m.mlkem1024_keygen()
-        return bytes(ek), bytearray(dk)
-
-    def encaps(self, ek: bytes):
-        ct, ss = self._m.mlkem1024_encaps(ek)      # already (ct, ss)
-        return bytes(ct), bytearray(ss)
-
-    def decaps(self, ct: bytes, dk) -> bytearray:
-        return bytearray(self._m.mlkem1024_decaps(ct, bytes(dk)))
-
-
-class _PurePythonKem:
-    """ML-KEM-1024 via the pure-Python kyber-py package.
-
-    A real FIPS 203 implementation, used when the Rust core is not loaded —
-    on a workstation running the test suite, for example.  It is orders of
-    magnitude slower than the Rust path and is not constant-time, so it is
-    refused for live calls unless OTRV4PLUS_ALLOW_PYTHON_MLKEM=1 is set.
-    """
-
-    name = "kyber-py (pure Python)"
-    post_quantum = True
-
-    def __init__(self, cls):
-        self._c = cls
-
-    def keygen(self):
-        ek, dk = self._c.keygen()
-        return bytes(ek), bytearray(dk)
-
-    def encaps(self, ek: bytes):
-        ss, ct = self._c.encaps(ek)                # (ss, ct) — inverted here
-        return bytes(ct), bytearray(ss)
-
-    def decaps(self, ct: bytes, dk) -> bytearray:
-        return bytearray(self._c.decaps(bytes(dk), ct))
-
 
 _KEM = None
 _KEM_RESOLVED = False
 
 
-def _kem_self_test(provider) -> bool:
-    """One keygen/encaps/decaps round trip. False if anything is wrong."""
+def _kem_self_test(module) -> bool:
+    """One full hybrid exchange inside Rust. False if anything is wrong.
+
+    Both ends must agree on both secrets, which also catches the
+    (ct, ss)/(ss, ct) inversion that otherwise presents much later as "media
+    keys did not agree". Compared by the agreement's one-way digests: no
+    secret leaves Rust to be compared.
+    """
     try:
-        ek, dk = provider.keygen()
-        if len(ek) != MLKEM_EK_LEN or len(dk) != MLKEM_DK_LEN:
+        initiator = module.RustVoiceKex(True)
+        responder = module.RustVoiceKex(False)
+        ek = bytes(initiator.mlkem_ek)
+        if len(ek) != MLKEM_EK_LEN:
             return False
-        ct, ss = provider.encaps(bytes(ek))
-        if len(ct) != MLKEM_CT_LEN or len(ss) != MLKEM_SS_LEN:
+        from_responder, ct = responder.responder_agree(bytes(initiator.public), ek)
+        if len(bytes(ct)) != MLKEM_CT_LEN:
             return False
-        # Also catches the (ct, ss) vs (ss, ct) inversion, which is otherwise
-        # silent and presents much later as "media keys did not agree".
-        return bytes(provider.decaps(bytes(ct), dk)) == bytes(ss)
+        from_initiator = initiator.initiator_agree(bytes(responder.public), bytes(ct))
+        ok = from_initiator.digests() == from_responder.digests()
+        from_initiator.zeroize()
+        from_responder.zeroize()
+        return ok
     except Exception:
         return False
 
@@ -525,23 +510,13 @@ def _resolve_kem():
     _KEM_RESOLVED = True
     try:
         import otrv4_core                                   # type: ignore
-        if all(hasattr(otrv4_core, n) for n in
-               ("mlkem1024_keygen", "mlkem1024_encaps", "mlkem1024_decaps")):
-            candidate = _RustKem(otrv4_core)
-            # Prove it works before trusting it. Attribute presence is not
-            # evidence: a partially built core, or a stub installed by another
-            # module, satisfies hasattr and then fails at call time — during a
-            # call, after the user has already dialled. One round trip here
-            # costs microseconds and turns that into a clean fallback.
-            if _kem_self_test(candidate):
-                _KEM = candidate
-                return _KEM
-    except Exception:
-        pass
-    try:
-        from kyber_py.ml_kem import ML_KEM_1024              # type: ignore
-        _KEM = _PurePythonKem(ML_KEM_1024)
-        return _KEM
+        # Prove it works before trusting it. Attribute presence is not
+        # evidence: a partially built core, or a stub installed by another
+        # module, satisfies hasattr and then fails at call time -- during a
+        # call, after the user has already dialled.
+        if hasattr(otrv4_core, "RustVoiceKex") and _kem_self_test(otrv4_core):
+            _KEM = _RustKem(otrv4_core)
+            return _KEM
     except Exception:
         pass
     _KEM = None
@@ -549,7 +524,7 @@ def _resolve_kem():
 
 
 def kem_provider():
-    """Return the ML-KEM provider, or raise KemUnavailable.
+    """Return the ML-KEM capability, or raise KemUnavailable.
 
     Voice refuses to run without one.  Falling back to X448-only would give
     a call that reports itself as hybrid while carrying no post-quantum
@@ -558,15 +533,9 @@ def kem_provider():
     kem = _resolve_kem()
     if kem is None:
         raise KemUnavailable(
-            "ML-KEM-1024 unavailable — otrv4_core is not loaded and kyber-py "
-            "is not installed.  Voice requires a hybrid exchange and will "
-            "not fall back to X448 alone.")
-    if isinstance(kem, _PurePythonKem) and not os.environ.get(
-            "OTRV4PLUS_ALLOW_PYTHON_MLKEM"):
-        raise KemUnavailable(
-            "only the pure-Python ML-KEM is available; it is not "
-            "constant-time and is refused for live calls.  Load otrv4_core, "
-            "or set OTRV4PLUS_ALLOW_PYTHON_MLKEM=1 for testing.")
+            "ML-KEM-1024 unavailable -- the Rust core (otrv4_core) is not "
+            "loaded or failed its self-test.  Voice requires a hybrid exchange "
+            "and will not fall back to X448 alone.")
     return kem
 
 
@@ -1357,34 +1326,6 @@ MEDIA_KEY_LEN = 32
 CONFIRM_LEN = 32
 
 
-def _invalid_tag_type():
-    """The exception AESGCM.decrypt raises when a tag does not verify.
-
-    It is NOT a FrameError, so every AEAD failure was landing in the generic
-    handler and being counted as a plain drop: `authfail` only ever counted
-    the structural rejections above the cipher (wrong epoch, bad length,
-    sub-epoch too far). A tampered or mis-keyed frame -- the one event this
-    counter exists to report -- was invisible in it.
-    """
-    try:
-        from cryptography.exceptions import InvalidTag
-        return InvalidTag
-    except Exception:                      # pragma: no cover - no cryptography
-        class _NeverRaised(Exception):
-            pass
-        return _NeverRaised
-
-
-_INVALID_TAG = _invalid_tag_type()
-
-
-def _hkdf(ikm: bytes, salt: bytes, info: bytes, length: int) -> bytes:
-    from cryptography.hazmat.primitives import hashes
-    from cryptography.hazmat.primitives.kdf.hkdf import HKDF
-    return HKDF(algorithm=hashes.SHA512(), length=length,
-                salt=salt, info=info).derive(ikm)
-
-
 def build_transcript(call_id: bytes, otr_binding: bytes,
                      local_fp, remote_fp,
                      initiator_x448_pub: bytes, responder_x448_pub: bytes,
@@ -1441,40 +1382,20 @@ def derive_rekey_root(old_root, x448_shared, mlkem_shared,
     ephemerals gains nothing, and one who holds only the old root is locked
     out by the fresh X448 and ML-KEM secrets.
     """
-    # A root handle chains inside Rust, where neither root is ever a Python
-    # object.  Raw bytes are still accepted for the tests that build a
-    # schedule from a fixed root.
-    if isinstance(old_root, _RustVoiceRoot):
-        return old_root.derive_rekey(bytes(x448_shared), bytes(mlkem_shared),
-                                     transcript)
-    if not old_root or len(old_root) != ROOT_LEN:
-        raise ValueError("old root must be %d bytes" % ROOT_LEN)
-    if not x448_shared or len(x448_shared) != 56:
-        raise ValueError("X448 shared secret must be 56 bytes")
-    if not mlkem_shared or len(mlkem_shared) != MLKEM_SS_LEN:
-        raise ValueError("ML-KEM shared secret must be %d bytes" % MLKEM_SS_LEN)
-    ikm = bytearray()
-    ikm += _lp(bytes(old_root))
-    ikm += _lp(bytes(x448_shared))
-    ikm += _lp(bytes(mlkem_shared))
-    try:
-        return bytearray(_hkdf(bytes(ikm), _salt_for(transcript),
-                               _LABEL_REKEY + transcript, ROOT_LEN))
-    finally:
-        _wipe(ikm)
+    # Chains inside Rust, where neither root is ever a Python object. Raw root
+    # bytes (a test building a schedule from a fixed root) are moved INTO a
+    # Rust handle first -- the safe direction -- and never derived from here.
+    return _as_root_handle(old_root).derive_rekey(
+        bytes(x448_shared), bytes(mlkem_shared), transcript)
 
 
-def derive_media_key(root, call_id: bytes, epoch: int, direction: int) -> bytearray:
-    """One directional AES-256-GCM key for one epoch."""
-    if direction not in (DIR_INITIATOR, DIR_RESPONDER):
-        raise ValueError("direction must be DIR_INITIATOR or DIR_RESPONDER")
-    if isinstance(root, _RustVoiceRoot):
-        raise TypeError(
-            "a media key cannot be extracted from a root handle -- that is "
-            "the point of the handle. Use root.make_cipher(...) instead.")
-    info = (_LABEL_MEDIA + _lp(call_id) + _u64(epoch)
-            + struct.pack(">B", direction))
-    return bytearray(_hkdf(bytes(root), call_id, info, MEDIA_KEY_LEN))
+# `derive_media_key` and `ratchet_key` are GONE. They re-implemented the
+# Rust key schedule in Python -- HKDF-SHA512 through the `cryptography`
+# package -- and returned media keys as bytearrays. Production never called
+# them (every cipher is built from a root handle by `make_cipher`); only
+# tests did, which kept a duplicate implementation of a secret-bearing
+# derivation in the shipped module. The tests now check Rust against a
+# reference written from the spec, inside the test suite.
 
 
 def derive_confirmations(root, call_id: bytes, epoch: int):
@@ -1484,11 +1405,8 @@ def derive_confirmations(root, call_id: bytes, epoch: int):
     one side cannot simply be reflected back to satisfy the other.  Each side
     computes both, transmits its own and checks the peer's.
     """
-    if isinstance(root, _RustVoiceRoot):
-        return root.confirmations(call_id, epoch)
-    info = _LABEL_CONFIRM + _lp(call_id) + _u64(epoch)
-    raw = _hkdf(bytes(root), call_id, info, CONFIRM_LEN * 2)
-    return raw[:CONFIRM_LEN], raw[CONFIRM_LEN:]
+    ci, cr = _as_root_handle(root).confirmations(call_id, epoch)
+    return bytes(ci), bytes(cr)
 
 
 def derive_endpoint_tag(root, call_id: bytes, epoch: int, seq: int,
@@ -1518,24 +1436,8 @@ def derive_endpoint_tag(root, call_id: bytes, epoch: int, seq: int,
       destination  the endpoint itself, so it cannot be substituted
       direction    which side sent it, so it cannot be reflected back
     """
-    if isinstance(root, _RustVoiceRoot):
-        return root.endpoint_tag(call_id, epoch, seq, destination,
-                                 from_initiator)
-    info = (_LABEL_ENDPOINT + _lp(call_id) + _u64(epoch) + _u64(seq)
-            + _lp(destination.encode("ascii"))
-            + struct.pack(">B", 1 if from_initiator else 0))
-    return _hkdf(bytes(root), call_id, info, CONFIRM_LEN)
-
-
-def ratchet_key(key) -> bytearray:
-    """One irreversible step of the symmetric media chain.
-
-    Gives forward secrecy for audio already sent.  It does NOT give
-    post-compromise recovery: an attacker holding the current chain key can
-    step it forward indefinitely.  Recovery comes only from the periodic
-    hybrid rekey.
-    """
-    return bytearray(_hkdf(bytes(key), b"", _LABEL_RATCHET, MEDIA_KEY_LEN))
+    return bytes(_as_root_handle(root).endpoint_tag(
+        call_id, epoch, seq, destination, from_initiator))
 
 
 # ---------------------------------------------------------------------------
@@ -1571,23 +1473,23 @@ class VoiceKeyExchange:
         # retrying with a different peer key is the shape of a small-subgroup
         # probe.
         _require_rust_voice()
-        self._kex = _RustVoiceKex()
+        # With the initiator's ML-KEM keypair inside the same Rust object: the
+        # decapsulation key, and both shared secrets, never become Python
+        # objects. What this class hands back is a `RustVoiceAgreement`,
+        # which can only turn into a root.
+        self._kex = _RustVoiceKex(self.is_initiator)
         self.public = bytes(self._kex.public)
         self._private = self._kex        # legacy attribute name, same object
 
-        # Initiator only: the ML-KEM keypair it will decapsulate with.
-        self.mlkem_ek = b""
-        self._mlkem_dk = None
-        if self.is_initiator:
-            ek, dk = self._kem.keygen()
-            if len(ek) != MLKEM_EK_LEN:
-                raise ValueError("ML-KEM encapsulation key must be %d bytes, "
-                                 "got %d" % (MLKEM_EK_LEN, len(ek)))
-            self.mlkem_ek, self._mlkem_dk = ek, dk
+        # Initiator only: the encapsulation key it publishes. Public.
+        self.mlkem_ek = bytes(self._kex.mlkem_ek) if self.is_initiator else b""
+        if self.is_initiator and len(self.mlkem_ek) != MLKEM_EK_LEN:
+            raise ValueError("ML-KEM encapsulation key must be %d bytes, "
+                             "got %d" % (MLKEM_EK_LEN, len(self.mlkem_ek)))
 
-    # -- X448 -------------------------------------------------------------
+    # -- checks both roles make before agreeing ---------------------------
 
-    def _agree_x448(self, peer_public: bytes) -> bytearray:
+    def _check_peer_x448(self, peer_public: bytes) -> None:
         if self._private is None:
             raise RuntimeError("X448 private key already consumed")
         if not peer_public or len(peer_public) != self.PUB_LEN:
@@ -1599,79 +1501,63 @@ class VoiceKeyExchange:
             raise ValueError("peer echoed our own X448 public key")
         if peer_public == b"\x00" * self.PUB_LEN:
             raise ValueError("peer sent an all-zero X448 public key")
-        # Every check that used to live here is now inside `raw_agree`: the
-        # reflection test, the all-zero peer key, the on-curve check, and the
-        # RFC 7748 requirement that a degenerate (all-zero) shared secret
-        # abort the exchange rather than be used.  They are repeated above
-        # anyway, because a check that runs twice costs nothing and a check
-        # that runs nowhere costs everything.
-        try:
-            shared = bytearray(self._kex.agree(peer_public))
-        finally:
-            self._private = None
-        if len(shared) != 56 or shared == bytearray(56):
-            _wipe(shared)
-            raise ValueError("degenerate X448 shared secret — aborting")
-        return shared
+        # The same checks run again inside Rust (`raw_agree`), together with
+        # the on-curve test and RFC 7748's abort on a degenerate shared
+        # secret. A check that runs twice costs nothing.
 
     # -- initiator --------------------------------------------------------
 
     def initiator_agree(self, peer_x448_pub: bytes, mlkem_ct: bytes):
-        """Complete both halves as the initiator.  Returns (x448_ss, kem_ss)."""
+        """Complete both halves as the initiator.
+
+        Returns a `RustVoiceAgreement`: the X448 and ML-KEM shared secrets,
+        held in Rust, usable only via `into_root` / `into_rekey_root`.
+        """
         if not self.is_initiator:
             raise RuntimeError("initiator_agree called on a responder exchange")
-        if self._mlkem_dk is None:
+        if self._private is None:
             raise RuntimeError("ML-KEM decapsulation key already consumed")
         if not mlkem_ct or len(mlkem_ct) != MLKEM_CT_LEN:
             raise ValueError("ML-KEM ciphertext must be %d bytes" % MLKEM_CT_LEN)
-
-        x_ss = self._agree_x448(peer_x448_pub)
         try:
-            kem_ss = self._kem.decaps(bytes(mlkem_ct), self._mlkem_dk)
-        except Exception:
-            _wipe(x_ss)
-            raise
+            self._check_peer_x448(peer_x448_pub)
+            return self._kex.initiator_agree(bytes(peer_x448_pub), bytes(mlkem_ct))
         finally:
-            _wipe(self._mlkem_dk)
-            self._mlkem_dk = None
-        if len(kem_ss) != MLKEM_SS_LEN:
-            _wipe(x_ss)
-            _wipe(kem_ss)
-            raise ValueError("ML-KEM shared secret has the wrong length")
-        return x_ss, kem_ss
+            self._private = None
 
     # -- responder --------------------------------------------------------
 
     def responder_agree(self, peer_x448_pub: bytes, peer_mlkem_ek: bytes):
         """Complete both halves as the responder.
 
-        Returns (x448_ss, kem_ss, mlkem_ct).  The ciphertext must be sent to
-        the initiator and is part of the transcript on both sides.
+        Returns ``(agreement, mlkem_ct)``. The ciphertext must be sent to the
+        initiator and is part of the transcript on both sides; the agreement
+        holds the secrets, in Rust.
         """
         if self.is_initiator:
             raise RuntimeError("responder_agree called on an initiator exchange")
         if not peer_mlkem_ek or len(peer_mlkem_ek) != MLKEM_EK_LEN:
             raise ValueError("ML-KEM encapsulation key must be %d bytes"
                              % MLKEM_EK_LEN)
-
-        x_ss = self._agree_x448(peer_x448_pub)
         try:
-            ct, kem_ss = self._kem.encaps(bytes(peer_mlkem_ek))
-        except Exception:
-            _wipe(x_ss)
-            raise
-        if len(ct) != MLKEM_CT_LEN or len(kem_ss) != MLKEM_SS_LEN:
-            _wipe(x_ss)
-            _wipe(kem_ss)
+            self._check_peer_x448(peer_x448_pub)
+            agreement, ct = self._kex.responder_agree(bytes(peer_x448_pub),
+                                                      bytes(peer_mlkem_ek))
+        finally:
+            self._private = None
+        ct = bytes(ct)
+        if len(ct) != MLKEM_CT_LEN:
+            agreement.zeroize()
             raise ValueError("ML-KEM encapsulation produced wrong-sized output")
-        return x_ss, kem_ss, bytes(ct)
+        return agreement, ct
 
     def destroy(self) -> None:
         """Release any private material still held.  Idempotent."""
         self._private = None
-        if self._mlkem_dk is not None:
-            _wipe(self._mlkem_dk)
-            self._mlkem_dk = None
+        try:
+            self._kex.zeroize()
+        except Exception:
+            pass
 
 
 # ---------------------------------------------------------------------------
@@ -2386,6 +2272,13 @@ class JitterBuffer:
                       "overflow": 0, "gaps": 0, "drift": 0,
                       "underrun": 0, "burst_drain": 0}
 
+    #: How far the epoch is shifted in a sequence key.
+    #:
+    #: Named rather than repeated, because two places have to agree about it:
+    #: [sequence] builds the key and [epoch_of] takes it apart, and a
+    #: disagreement between them is invisible until a rekey.
+    EPOCH_SHIFT = 62
+
     @staticmethod
     def sequence(epoch: int, counter: int) -> int:
         """A single monotonic ordering key across epoch boundaries.
@@ -2393,8 +2286,19 @@ class JitterBuffer:
         Counters restart at zero each epoch, so ordering on the counter alone
         would replay the whole epoch's worth of audio backwards at every
         rekey.  62 bits of counter space is 5.9 billion years at 40 ms.
+
+        NOTE FOR ANYONE SUBTRACTING TWO OF THESE: the difference is only a
+        frame count WITHIN one epoch.  Across a rekey it is about 4.6e18,
+        because that is what the epoch field is worth -- see [epoch_of] and
+        the guard in [pop].
         """
-        return (int(epoch) << 62) | (int(counter) & ((1 << 62) - 1))
+        return (int(epoch) << JitterBuffer.EPOCH_SHIFT) | (
+            int(counter) & ((1 << JitterBuffer.EPOCH_SHIFT) - 1))
+
+    @staticmethod
+    def epoch_of(seq: int) -> int:
+        """Which epoch a sequence key belongs to."""
+        return int(seq) >> JitterBuffer.EPOCH_SHIFT
 
     def _observe_arrival(self, seq: int, now: float) -> None:
         """Update the jitter estimate and the target depth.
@@ -2612,7 +2516,31 @@ class JitterBuffer:
             self._seqs.discard(seq)
             self.dwell.add((time.monotonic() - arrived) * 1000.0)
             gap = 0
-            if self._last_played >= 0:
+            # A REKEY IS NOT A GAP.
+            #
+            # `sequence()` packs the epoch into the top bits, so subtracting
+            # two keys is a frame count only while the epoch is the same.
+            # Across a rekey the difference is 2**62 -- about 4.6e18 -- and
+            # without this guard every rekey charged the call that many lost
+            # frames.  Two consequences, one cosmetic and one not:
+            #
+            #   * the hangup summary computes delivery as
+            #     queued/(queued+gaps), so a single rekey drove it to
+            #     "0.0% of audio delivered" on a call whose audio was working
+            #     in both directions -- the defect that started this
+            #     investigation;
+            #   * `gap` is handed to concealment, which is bounded to three
+            #     frames, so the audible cost was ~180 ms of synthetic audio
+            #     per rekey rather than a stall.
+            #
+            # `_observe_arrival` already refused deltas >= 200 for exactly
+            # this reason; this is the same rule in the place that missed it.
+            # Counting zero across the boundary is honest rather than
+            # convenient: the counter restarted, so how many frames were lost
+            # in the changeover is genuinely unknown, and zero is off by at
+            # most a handful where the old value was off by 4.6e18.
+            if (self._last_played >= 0
+                    and self.epoch_of(seq) == self.epoch_of(self._last_played)):
                 gap = max(0, seq - self._last_played - 1)
                 if gap:
                     self.stats["gaps"] += gap
@@ -3279,16 +3207,15 @@ class VoiceCallSession:
         if self.schedule.ready:
             raise RuntimeError("media keys already derived")
 
-        x_ss, kem_ss, mlkem_ct = self.kex.responder_agree(
+        agreement, mlkem_ct = self.kex.responder_agree(
             peer_x448_pub, peer_mlkem_ek)
         try:
             transcript = self._transcript(0, peer_x448_pub, self.kex.public,
                                           peer_mlkem_ek, mlkem_ct)
-            self._debug_transcript(x_ss, kem_ss, transcript)
-            root = derive_voice_root(x_ss, kem_ss, transcript)
+            self._debug_transcript(agreement, transcript)
+            root = agreement.into_root(transcript)
         finally:
-            _wipe(x_ss)
-            _wipe(kem_ss)
+            agreement.zeroize()
             self.kex.destroy()
 
         # The schedule owns the handle from here; zeroize() on teardown is
@@ -3312,15 +3239,14 @@ class VoiceCallSession:
         if self.schedule.ready:
             raise RuntimeError("media keys already derived")
 
-        x_ss, kem_ss = self.kex.initiator_agree(peer_x448_pub, mlkem_ct)
+        agreement = self.kex.initiator_agree(peer_x448_pub, mlkem_ct)
         try:
             transcript = self._transcript(0, self.kex.public, peer_x448_pub,
                                           self.kex.mlkem_ek, mlkem_ct)
-            self._debug_transcript(x_ss, kem_ss, transcript)
-            root = derive_voice_root(x_ss, kem_ss, transcript)
+            self._debug_transcript(agreement, transcript)
+            root = agreement.into_root(transcript)
         finally:
-            _wipe(x_ss)
-            _wipe(kem_ss)
+            agreement.zeroize()
             self.kex.destroy()
 
         # The schedule owns the handle from here; zeroize() on teardown is
@@ -3346,8 +3272,10 @@ class VoiceCallSession:
         except Exception:
             self.keys_confirmed.set()
 
-    def _debug_transcript(self, x_ss, kem_ss, transcript) -> None:
-        """Digests only, never raw secrets.
+    def _debug_transcript(self, agreement, transcript) -> None:
+        """Digests only, never raw secrets -- and the secret digests are
+        computed inside Rust (`RustVoiceAgreement.digests`), so the secrets
+        themselves are not in reach of this function.
 
         Comparing these five lines across the two devices names precisely
         which input differs when a confirmation mismatch occurs — that is the
@@ -3361,8 +3289,9 @@ class VoiceCallSession:
                 else str(value).encode()
             return "%s=%s" % (label, hashlib.sha256(bytes(raw)).hexdigest()[:12])
 
-        _print("[voice-bind] role=%s %s %s %s %s"
-               % (self.role, d("x448", x_ss), d("mlkem", kem_ss),
+        x_digest, k_digest = agreement.digests()
+        _print("[voice-bind] role=%s x448=%s mlkem=%s %s %s"
+               % (self.role, x_digest, k_digest,
                   d("transcript", transcript), d("callid", self.call_id)))
 
     # -- rekey ------------------------------------------------------------
@@ -3383,8 +3312,8 @@ class VoiceCallSession:
         """
         kex = VoiceKeyExchange(False)
         try:
-            x_ss, kem_ss, mlkem_ct = kex.responder_agree(peer_x448_pub,
-                                                         peer_mlkem_ek)
+            agreement, mlkem_ct = kex.responder_agree(peer_x448_pub,
+                                                      peer_mlkem_ek)
         finally:
             kex.destroy()
         try:
@@ -3395,13 +3324,12 @@ class VoiceCallSession:
                 # the new one is ever a Python object.  The schedule takes
                 # ownership of the handle, so there is nothing left here to
                 # wipe -- abort_rekey and commit_rekey zeroize it.
-                new_root = self.schedule.current_root().derive_rekey(
-                    x_ss, kem_ss, transcript)
+                new_root = agreement.into_rekey_root(
+                    self.schedule.current_root(), transcript)
                 self.schedule.begin_rekey(epoch, new_root)
                 our_confirm = self.schedule.our_confirm()
         finally:
-            _wipe(x_ss)
-            _wipe(kem_ss)
+            agreement.zeroize()
         return our_confirm, mlkem_ct, kex.public
 
     def rekey_initiator_finish(self, epoch: int, peer_x448_pub: bytes,
@@ -3414,7 +3342,7 @@ class VoiceCallSession:
         if kex is None:
             raise RuntimeError("no rekey in progress")
         try:
-            x_ss, kem_ss = kex.initiator_agree(peer_x448_pub, mlkem_ct)
+            agreement = kex.initiator_agree(peer_x448_pub, mlkem_ct)
         finally:
             kex.destroy()
             self._rekey_kex = None
@@ -3422,14 +3350,13 @@ class VoiceCallSession:
             transcript = self._transcript(epoch, kex.public, peer_x448_pub,
                                           kex.mlkem_ek, mlkem_ct)
             with self._key_lock:
-                new_root = self.schedule.current_root().derive_rekey(
-                    x_ss, kem_ss, transcript)
+                new_root = agreement.into_rekey_root(
+                    self.schedule.current_root(), transcript)
                 self.schedule.begin_rekey(epoch, new_root)
                 return (self.schedule.our_confirm(),
                         self.schedule.expected_peer_confirm())
         finally:
-            _wipe(x_ss)
-            _wipe(kem_ss)
+            agreement.zeroize()
 
     def commit_rekey(self, epoch: int, peer_confirm: bytes) -> bool:
         with self._key_lock:
@@ -3483,14 +3410,26 @@ class VoiceCallSession:
                     # destination without extra signalling. PORT/HOST ask the
                     # router to forward inbound datagrams straight to us
                     # rather than multiplexing them onto the control socket.
+                    #
+                    # The tunnel options are the 3-hop requirement, asked for
+                    # rather than assumed. This client used to send no tunnel
+                    # length at all and print "6 I2P hops" anyway, so a router
+                    # configured with inbound.length=1 -- a common latency
+                    # tweak -- would have been given a 1-hop path with nothing
+                    # noticing. See otrv4plus_mediapath.TUNNEL_OPTIONS for why
+                    # the variance is pinned too (length alone is a midpoint,
+                    # not a floor) and hops_are_confirmed() for why this is
+                    # still only a request: SAM's SESSION STATUS reply carries
+                    # RESULT and DESTINATION and never says what it built.
                     create = ("SESSION CREATE STYLE=DATAGRAM ID=%s "
                               "DESTINATION=TRANSIENT SIGNATURE_TYPE=7 "
-                              "PORT=%d HOST=127.0.0.1\n"
-                              % (session_id, forward_port))
+                              "PORT=%d HOST=127.0.0.1 %s\n"
+                              % (session_id, forward_port,
+                                 _mediapath.tunnel_options()))
                 else:
                     create = ("SESSION CREATE STYLE=STREAM ID=%s "
-                              "DESTINATION=TRANSIENT SIGNATURE_TYPE=7\n"
-                              % session_id)
+                              "DESTINATION=TRANSIENT SIGNATURE_TYPE=7 %s\n"
+                              % (session_id, _mediapath.tunnel_options()))
                 ctrl.sendall(create.encode("ascii"))
                 # i2pd builds a full tunnel set before answering, so this is
                 # minutes rather than seconds on a busy phone.
@@ -4310,16 +4249,10 @@ class VoiceCallSession:
             cipher = self.schedule.cipher_for_epoch(epoch)
             if cipher is None:
                 raise FrameError("no live key for epoch %d" % epoch, FrameError.NO_KEY)
-            try:
-                plaintext = cipher.open(header, sealed)
-            except _INVALID_TAG:
-                # The ONLY rejection that is an authentication failure: a
-                # frame we hold the key for, whose AES-256-GCM tag did not
-                # verify.  Everything else is state -- wrong epoch, retired
-                # epoch, unparseable header -- and counting those here is
-                # what made "authfail=87" unreadable.
-                raise FrameError("frame failed authentication",
-                                 FrameError.AUTH)
+            # A tag that does not verify comes back from the Rust cipher as
+            # FrameError(AUTH) -- `VoiceFrameCrypto.open` classifies it -- and
+            # is the ONLY rejection that is an authentication failure.
+            plaintext = cipher.open(header, sealed)
         return epoch, counter, plaintext, ftype
 
     async def _network_reader(self) -> None:
@@ -7130,10 +7063,16 @@ class VoiceCallManager:
             parts.append("mouth-to-ear not measured"
                          + (" (call too short)" if secs < 10 else ""))
         if delivery is not None:
-            parts.append("%.1f%% of audio delivered" % (100.0 * delivery))
-        if shed:
-            parts.append("%.1f%% shed locally to hold latency down"
-                         % (100.0 * shed))
+            # COUNTS, not a percentage. "0.0% of audio delivered" was printed
+            # to somebody who had just finished a working 41-minute
+            # conversation, because a rekey had added 2**62 to the gap
+            # counter (fixed in JitterBuffer.pop). Even uncorrupted the
+            # phrasing invites the reading "zero audio was received", which
+            # is not what the ratio ever meant.
+            parts.append(_mediapath.delivery_line(_mediapath.MediaCounters(
+                played=played, gaps=gaps,
+                shed=int(session.jitter.stats.get("drift", 0)))))
+
         if sent:
             parts.append("%d frames sent" % sent)
 
@@ -7154,8 +7093,8 @@ class VoiceCallManager:
         the network is two thirds of it.
 
         Only the two parts this client can do anything about are separated
-        out.  The network figure is six I2P hops each way and is not ours;
-        the buffer and the playout path are.
+        out.  The network figure is two three-hop I2P tunnels, one each way,
+        and is not ours; the buffer and the playout path are.
         """
         try:
             if m2e is None:
@@ -7166,8 +7105,17 @@ class VoiceCallManager:
                        + float(session.stages.t["play"].percentile(0.50)))
             if oneway <= 0:
                 return None
-            line = ("[voice]   %.0fms network (6 I2P hops) + %.0fms jitter "
-                    "buffer + %.0fms playout" % (oneway, dwell, playout))
+            # The hop note is NOT a literal any more. `(6 I2P hops)` was
+            # typed into this string by somebody describing the architecture
+            # from memory, at a time when the client sent no tunnel-length
+            # option at all -- so it had never asked the router how many hops
+            # it was using, and "6 hops" reads as one six-hop path rather than
+            # two three-hop ones, a different and worse anonymity story than
+            # the architecture actually has. SESSION CREATE now carries the
+            # request, and the note reports it as a request.
+            line = ("[voice]   %.0fms network (%s) + %.0fms jitter "
+                    "buffer + %.0fms playout"
+                    % (oneway, _mediapath.hop_note(), dwell, playout))
             learned = getattr(session.jitter, "learned_frames", 0)
             if learned:
                 line += ("; buffer holding %d extra frame(s) after "
@@ -7304,7 +7252,7 @@ __all__ = [
     "CallState", "IllegalTransition", "ReplayWindow", "JitterBuffer",
     "RateLimiter", "FrameError", "SignalError", "parse_signal",
     "build_transcript", "derive_voice_root", "derive_rekey_root",
-    "derive_media_key", "derive_confirmations", "ratchet_key",
+    "derive_confirmations",
     "pack_media_header", "parse_media_header", "media_aad", "media_nonce",
     "pad_opus", "unpad_opus", "sorted_fingerprints", "normalise_fingerprint",
     "CALL_PREFIX", "DIR_INITIATOR", "DIR_RESPONDER",

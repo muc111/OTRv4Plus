@@ -77,8 +77,8 @@ class Storage:
     def __init__(self):
         self.secrets = {}
 
-    def get_secret(self, peer):
-        return self.secrets.get(peer, "")
+    def has_secret(self, peer):
+        return bool(self.secrets.get(peer))
 
     def set_secret(self, peer, secret):
         self.secrets[peer] = secret
@@ -184,6 +184,9 @@ class Client:
         return True
 
     def _start_smp(self, peer, secret, question=""):
+        # None = "the stored passphrase" (bound inside Rust by the real code).
+        if secret is None:
+            secret = self.session_manager.smp_storage.secrets.get(peer)
         self.started.append((peer, secret))
 
     def said(self, needle):

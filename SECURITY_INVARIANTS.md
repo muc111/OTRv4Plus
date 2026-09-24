@@ -76,11 +76,17 @@ SecretBytes<N> and SecretVec derive ZeroizeOnDrop; their Debug impls print [REDA
 ### INV-08 — Python does not receive long-lived private key material that Rust can own instead.
 
 **Status:** `PARTIAL`  
-**Enforced by:** `tests/test_release_guard.py`, `tests/test_rust_zeroization.py`, `tests/test_voice_rust_parity.py`
+**Enforced by:** `tests/test_release_guard.py`, `tests/test_rust_zeroization.py`, `tests/test_voice_rust_parity.py`, `tests/test_rust_owns_secrets.py`, `tests/test_secret_at_rest.py`, `tests/test_harness_audit.py`
 
-Ed448 seeds, ratchet keys, SMP scalars and -- since v10.13.2 -- voice media keys, the voice epoch root and the voice X448 scalar never cross the PyO3 boundary; the legacy getters are compiled out.
+Ed448 seeds, ratchet root/chain/brace keys, SMP scalars, voice media keys and the voice epoch root never cross the PyO3 boundary; the legacy getters are compiled out.
 
-**Limit:** The typed SMP passphrase and the account password are Python `str` before anything can touch them, and a `str` cannot be wiped.  The identity DEK and the device seeds are Python `bytes` read from disk.  Everything derived from them is Rust-owned.
+Android 0.6.0 closed the four that still did. The X448 shared secret of every DH ratchet step was returned by `X448KeyHandle.dh` and passed back to Rust; the method is gone and the ratchet agrees from key handles. The brace rotation's ML-KEM decapsulation key and shared secret were a Python `bytearray` and `bytes`; they live in `MlKem1024Keypair` and `brace_encapsulate`/`brace_decapsulate`. Both voice shared secrets and the voice decapsulation key were Python buffers; the exchange returns a `RustVoiceAgreement` that can only become a root. The ML-DSA-87 DAKE signing key was a `bytearray` for the life of the session; it is an `MlDsa87KeyHandle`.
+
+The 0.6.0 production audit then removed the dead paths that still handled keys in Python: voice's Python ML-KEM fallback and HKDF derivations, the `MLKEM1024BraceKEM` key wrapper, the legacy DAKE branches and `_unpack_session_keys`, and the Python-key ratchet fallback. An Android SMP answer is bound into the Rust vault only (`bind_smp_secret`) and no longer persisted.
+
+0.7.0 finished it for what lives on disk. The terminal clients' SMP auto-respond store used to decrypt into a Python dict of passphrases under a key derived in Python (argon2-cffi, or scrypt); it is now `otrv4_core.SmpSecretStore`, which reads the seed, derives the key, holds the passphrases and binds one into a session's vault entirely in Rust -- there is no getter. The Termux identity DEK is an `otrv4_core.FileDek`, read from its file by Rust. The unused Python key store and its `.device_seed` are gone, and argon2-cffi with them.
+
+**Limit:** What is still a Python or JVM object is what Rust cannot own under this design, and none of it is key material Rust derives. (1) A passphrase or password the user types is a Python `str` (getpass, a prompt) or a JVM `String` (a Compose text field) before anything can copy it, and neither can be wiped. It is copied into Rust at once (SMP) or dropped when the connection ends (the XMPP password, which slixmpp's SASL needs on every reconnect and keeps in its own credentials dict, cleared with the client). (2) The per-message MAC key is returned to verify the outer MAC; OTRv4 publishes it after use by design, so its secrecy is short-lived, and it is not retained. (3) A Termux store written by the old scrypt fallback cannot be read and is moved aside, not migrated through Python.
 
 ### INV-09 — XMPP persistent identity and IRC ephemeral identity are separate stores.
 
@@ -214,9 +220,33 @@ otrv4plus_trade.py relays opaque base64 between two wallets it does not run.  It
 **Enforced by:** `tests/test_trade_courier.py`, `tests/test_tip_address_relay.py`
 
 is_smp_verified(peer) is checked on EVERY trade message in both directions, not once when the trade opens -- otherwise a trade agreed at 09:00 and still running at 14:00 spans five hours in which a session teardown goes unnoticed while blobs keep flowing.  Fail-closed like INV-12: a predicate that raises counts as unverified.  The peer's fingerprint is bound when the trade opens and re-checked with it; a change cancels the trade and never re-pins, matching INV-11.  Binding is to the fingerprint and never to the I2P destination, which is TRANSIENT and changes every session by design.  /tip applies the same gate before either branch of its TLV handler: a RESPONSE matters at least as much as a request, because it is a string the client is about to show the user as somewhere to send money.
+### INV-27 — Per-peer security state is reachable under exactly one key, whatever spelling of the JID is used.
+
+**Status:** `ENFORCED`  
+**Enforced by:** `tests/test_jid_canonicalisation.py`, `tests/test_presence_state.py`, `tests/test_removing_a_contact.py`
+
+RFC 6122 makes the localpart and domain case-insensitive and the resource no part of an identity, so the same person arrives spelled several ways: typed into Add Contact, normalised by slixmpp on the server's echo, and carried per-device on a stanza.  `OtrMode` -- which decides whether a conversation may send in the clear -- was keyed by whatever string the caller passed, so a conversation that had asked for OTR reported that plaintext was permitted under three other spellings of the same peer:
+
+    may_send_plaintext(bob@x.test       ) = False
+    may_send_plaintext(Bob@X.test       ) = True   <-- LEAK
+    may_send_plaintext(bob@x.test/phone ) = True   <-- LEAK
+
+`OtrApp.canonical_peer` folds at the boundary and every public per-peer method applies it; `ChatState.bare`, `AccountScope.normalise` and `otrv4plus_presence._bare` fold identically.  Folding is one-way safe: it can merge two spellings of one account and can never split one or join two, and the tests hold both directions.
+
+**Scope:** canonicalisation decides which BUCKET a peer's state lives in.  It is not consulted by the engine, does not touch key material, and never decides trust -- a fingerprint comparison is still byte-for-byte.  That is the boundary of the claim rather than a gap in it.
+
+### INV-28 — Wipe & Exit destroys every session secret in Rust, and nothing it destroyed can be used or rebuilt afterwards.
+
+**Status:** `PARTIAL`  
+**Enforced by:** `tests/test_wipe_and_exit.py`, `tests/test_rust_owns_secrets.py`
+
+Every Rust object holding a secret is told to zeroize before its Python reference is dropped -- ratchets, the ratchet DH handle, the pending brace keypair, SMP state and vault, in-flight DAKE state and any unconsumed `DakeOutput`, the identity and prekey handles, voice key schedules, file-transfer keys -- so the wipe does not depend on garbage collection; the tests hold references and check each object reports itself destroyed. The engine is wiped on the transport's loop thread, where unsendable DAKE outputs are created. A wiped engine, facade and controller refuse every entry point and emit nothing. On Android the vault's AndroidKeyStore key is deleted, which is cryptographic erasure of every sealed record. See [ANDROID_WIPE_AND_EXIT.md](ANDROID_WIPE_AND_EXIT.md).
+
+**Limit:** Files the Python side wrote (the device seed, received files) are overwritten once and unlinked; on flash that overwrite is best effort, because wear levelling may leave the old block until the controller erases it. No test can show that no copy of a key survives elsewhere in process memory; that is the Rust core's `ZeroizeOnDrop` contract, and the process exits after the wipe.
+
 ## Where secrets live
 
-Updated at v10.13.2, when the voice path finished moving.
+Updated at Android 0.6.0, when the ratchet DH, the brace KEM, the voice agreement and the ML-DSA key moved.
 
 | Material | Owner | Representation | Wipeable |
 |---|---|---|---|
@@ -227,7 +257,11 @@ Updated at v10.13.2, when the voice path finished moving.
 | Voice epoch root | Rust | `SecretBytes<64>` | yes, on drop |
 | Voice media keys | Rust | `SecretBytes<32>` | yes, on drop |
 | Voice X448 private scalar | Rust | `SecretBytes<56>` | yes, on drop |
-| X448 / ML-KEM shared secrets | Python → Rust | `bytearray`, wiped by Rust | yes |
+| Ratchet DH shared secrets | Rust | computed from `X448KeyHandle`s inside the ratchet | yes, on drop |
+| Brace ML-KEM decapsulation key and shared secret | Rust | `MlKem1024Keypair` / `SecretBytes<32>` | yes, on drop |
+| Voice X448 / ML-KEM shared secrets | Rust | `RustVoiceAgreement` | yes, on drop |
+| ML-DSA-87 DAKE signing key | Rust | `MlDsa87KeyHandle` (`SecretVec`) | yes, on drop |
+| Per-message MAC key | Rust → Python | `bytes`, published after use by OTRv4 design | no, and not secret for long |
 | SMP passphrase (typed) | Python → Rust | `str` → `bytearray` → Rust | the `str` cannot be |
 | Account password | Python | `str` | **no** |
 | Identity DEK, device seeds | Python | `bytes` from disk | **no** |
