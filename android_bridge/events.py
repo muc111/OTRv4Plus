@@ -37,7 +37,7 @@ __all__ = [
     "Event", "ConnectionStateChanged", "SessionStateChanged", "MessageReceived",
     "RoomMessageReceived", "MessageDelivered", "SmpProgress", "SmpResult", "FingerprintChanged",
     "CallStateChanged", "ErrorOccurred", "SubscriptionRequested",
-    "FileTransferChanged", "EventSink",
+    "FileTransferChanged", "OtrCapabilityChanged", "EventSink",
 ]
 
 
@@ -302,6 +302,19 @@ class CallStateChanged(Event):
     state: CallState = CallState.IDLE
     duration_seconds: int = 0
     muted: bool = False
+
+
+@dataclass(frozen=True)
+class OtrCapabilityChanged(Event):
+    """Whether this contact has a resource that speaks OTRv4Plus.
+
+    `state` is one of `otrv4plus_caps.STATES`: unknown, offline, checking,
+    available, unavailable. A CAPABILITY, not a security state: "available"
+    means a resource has claimed the protocol, not that anything is
+    encrypted, trusted or verified.
+    """
+
+    state: str = "unknown"
 
 
 @dataclass(frozen=True)

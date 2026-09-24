@@ -59,6 +59,7 @@ on:
       - "otrv4plus_admin.py"
       - "otrv4plus_alias.py"
       - "otrv4plus_audio.py"
+      - "otrv4plus_caps.py"
       - "otrv4plus_coreapi.py"
       - "otrv4plus_filetransfer.py"
       - "otrv4plus_fragment.py"

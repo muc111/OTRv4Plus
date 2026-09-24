@@ -729,6 +729,8 @@ sealed interface OtrEvent {
         val state: String,
         val reason: String,
     ) : OtrEvent
+    /** Whether this contact has a resource that speaks OTRv4Plus. See `OtrAvailability`. */
+    data class CapabilityChanged(val peer: String, val state: String) : OtrEvent
     data class SmpProgressed(val peer: String, val progress: SmpProgress) : OtrEvent
     data class SmpFinished(val peer: String, val state: SmpState) : OtrEvent
 

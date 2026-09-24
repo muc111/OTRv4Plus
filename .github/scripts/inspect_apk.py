@@ -31,6 +31,7 @@ REQUIRED_APP_MODULES = ("otrv4_.py", "otrv4plus_xmpp.py", "otrv4plus_voice.py",
                         # module that binds the APK's codec and AAudio instead
                         # of the Termux (opuslib) hooks.
                         "otrv4plus_audio.py", "android_bridge/android_audio.py",
+                        "otrv4plus_caps.py",
                         "android_bridge/voice.py")
 
 #: Never in the APK: terminal-only programs, test scaffolding, the retired

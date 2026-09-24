@@ -274,9 +274,14 @@ class TestItCarriesPayloadsBothWays:
         t, made = build()
         try:
             t.connect()
+            # OTR frames go to a resource confirmed OTRv4Plus-capable, and to
+            # that FULL JID -- never the bare JID (otrv4plus_caps).
+            import otrv4plus_caps
+            t._caps.presence_available("bob@xmpp-elite.i2p/phone")
+            t._caps.disco_result("bob@xmpp-elite.i2p/phone", [otrv4plus_caps.FEATURE])
             t.send("bob@xmpp-elite.i2p", "?OTRv4+ ...frame...")
             assert made["client"].sent == [
-                ("bob@xmpp-elite.i2p", "?OTRv4+ ...frame...", "chat")]
+                ("bob@xmpp-elite.i2p/phone", "?OTRv4+ ...frame...", "chat")]
         finally:
             t.close()
 

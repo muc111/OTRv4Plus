@@ -484,6 +484,12 @@ class ConnectionController:
         receive = getattr(self._app, "receive_room_message", None)
         if attach is not None and receive is not None:
             attach(receive)
+        # OTRv4Plus capability, per resource: the transport learns it from
+        # presence and disco#info and tells the app, which tells the UI.
+        caps = getattr(self._transport, "set_capability_handler", None)
+        note = getattr(self._app, "note_capability", None)
+        if caps is not None and note is not None:
+            caps(note)
         self._enter("connecting")
         try:
             self._transport.connect()

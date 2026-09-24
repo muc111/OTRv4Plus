@@ -138,6 +138,11 @@ class AndroidSide:
             forwarder=forwarder,
         )
         self.transport.connect()
+        # The peer's resource has advertised OTRv4Plus (XEP-0030): OTR frames
+        # go only to a confirmed resource, never to the bare JID.
+        import otrv4plus_caps
+        self.transport._caps.presence_available(PEER + "/res")
+        self.transport._caps.disco_result(PEER + "/res", [otrv4plus_caps.FEATURE])
 
     @property
     def sent(self):

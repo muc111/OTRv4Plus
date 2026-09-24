@@ -1823,6 +1823,18 @@ class OTRv4PlusXMPP(ClientXMPP):
     # -------------------------------------------------------------------------
 
     async def _on_start(self, event):
+        # Advertise OTRv4Plus (XEP-0030 feature, XEP-0115 caps) BEFORE the
+        # first presence, so an OTRv4Plus peer -- the Android app -- can
+        # confirm this resource speaks the protocol before it sends a DAKE.
+        # See otrv4plus_caps; the identifier must match on both clients.
+        try:
+            import otrv4plus_caps as _caps
+            self["xep_0030"].add_feature(_caps.FEATURE)
+            self["xep_0115"].caps_node = _caps.CAPS_NODE
+            await self["xep_0115"].update_caps(broadcast=False)
+        except Exception:
+            print("[xmpp] could not advertise OTRv4Plus capability; peers "
+                  "will not start OTRv4+ automatically")
         self.send_presence()
         # Initialize voice call manager now that we have an event loop
         if self._voice_manager is None:

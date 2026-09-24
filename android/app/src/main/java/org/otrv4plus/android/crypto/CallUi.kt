@@ -92,6 +92,8 @@ object CallUi {
         WIPED("wiped"),
         ROOM("room"),
         NOT_CONNECTED("not_connected"),
+        /** The contact's client does not speak OTRv4Plus. */
+        OTRV4PLUS_UNAVAILABLE("otrv4plus_unavailable"),
         NO_SESSION("no_session"),
         FINGERPRINT_CHANGED("fingerprint_changed"),
         NOT_VERIFIED("not_verified"),
@@ -116,10 +118,13 @@ object CallUi {
         isRoom: Boolean,
         security: SecurityState,
         voiceUnavailableReason: String,
+        capability: String = OtrAvailability.UNKNOWN,
     ): Gate = when {
         isRoom -> Gate.ROOM
         !connected -> Gate.NOT_CONNECTED
         security == SecurityState.FINGERPRINT_MISMATCH -> Gate.FINGERPRINT_CHANGED
+        security == SecurityState.PLAINTEXT &&
+            capability == OtrAvailability.UNAVAILABLE -> Gate.OTRV4PLUS_UNAVAILABLE
         security == SecurityState.PLAINTEXT -> Gate.NO_SESSION
         security != SecurityState.SMP_VERIFIED -> Gate.NOT_VERIFIED
         voiceUnavailableReason.isNotBlank() -> Gate.VOICE_UNAVAILABLE
@@ -138,6 +143,8 @@ object CallUi {
         Gate.ROOM -> Control(false, false, "")
         Gate.WIPED -> Control(true, false, "Call unavailable — the app was wiped")
         Gate.NOT_CONNECTED -> Control(true, false, "Call — connect first")
+        Gate.OTRV4PLUS_UNAVAILABLE -> Control(true, false,
+            "Call unavailable — this contact's client does not support OTRv4Plus")
         Gate.NO_SESSION -> Control(true, false, "Call — secure session required")
         Gate.FINGERPRINT_CHANGED ->
             Control(true, false, "Call unavailable — their key changed")

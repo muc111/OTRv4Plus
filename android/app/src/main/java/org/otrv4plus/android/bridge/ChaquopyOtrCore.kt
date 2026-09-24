@@ -779,6 +779,20 @@ class ChaquopyOtrCore(private val appContext: Context) : OtrCore {
         wrap { requireApp().callAttr("start_session", peer) }
     }
 
+    /**
+     * Automatic OTRv4+ for an open private conversation: starts a DAKE only
+     * if a resource of [peer] is confirmed OTRv4Plus-capable. Returns
+     * "established", "started", "in_progress", or the capability state.
+     */
+    fun ensureOtr(peer: String): String =
+        runCatching { requireApp().callAttr("ensure_otr", peer).toString() }
+            .getOrDefault("unknown")
+
+    /** unknown / offline / checking / available / unavailable. */
+    fun otrCapability(peer: String): String =
+        runCatching { requireApp().callAttr("otr_capability", peer).toString() }
+            .getOrDefault("unknown")
+
     override fun sendUserText(peer: String, body: String): SendOutcome = wrap {
         SendOutcome.fromName(
             requireApp().callAttr("send_user_text", peer, body).toString())
@@ -1209,6 +1223,9 @@ class ChaquopyOtrCore(private val appContext: Context) : OtrCore {
             "SubscriptionRequested" ->
                 OtrEvent.SubscriptionRequested(
                     str("peer"), SubscriptionPolicy.of(str("policy")))
+
+            "OtrCapabilityChanged" ->
+                OtrEvent.CapabilityChanged(str("peer"), str("state"))
 
             "FileTransferChanged" ->
                 OtrEvent.FileTransferChanged(

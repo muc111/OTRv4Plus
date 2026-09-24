@@ -142,7 +142,7 @@ fun ConversationScreen(
             if (room) {
                 RoomHeader(model, jid)
             } else {
-            SecurityLine(conversation.security)
+            SecurityLine(conversation.security, conversation.otrCapability)
 
             // Directly under the security line, because it is the same
             // subject: what this conversation is, and what it lets you do.
@@ -841,13 +841,16 @@ private fun CallBar(model: ChatViewModel, jid: String) {
  * point of SMP, so the two must never read the same.
  */
 @Composable
-private fun SecurityLine(state: SecurityState) {
+private fun SecurityLine(state: SecurityState, capability: String = "unknown") {
     // Exhaustive on purpose -- no `else`. A new SecurityState must not be able
     // to arrive and quietly inherit whatever the fallback branch happened to
     // say; the compiler makes somebody decide what it means here.
     val (text, colour) = when (state) {
+        // WHY it is not encrypted, from the capability: OTRv4+ on its way,
+        // being checked, the contact offline, or their client does not speak
+        // OTRv4Plus at all. Every variant says it is not encrypted.
         SecurityState.PLAINTEXT ->
-            "Not encrypted — anything sent here is readable by the server." to
+            org.otrv4plus.android.crypto.OtrAvailability.plaintextLine(capability) to
                 MaterialTheme.colorScheme.error
         SecurityState.ENCRYPTED ->
             "Encrypted, but you have not verified who is on the other end." to

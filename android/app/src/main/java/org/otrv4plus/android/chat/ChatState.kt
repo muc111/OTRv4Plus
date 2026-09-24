@@ -106,6 +106,7 @@ class ChatState(
         // wrongly.
         smpStates.clear()
         sessionStates.clear()
+        capabilities.clear()
         // A call belongs to the account that placed it. Carrying one into the
         // next account would show somebody else's conversation as in a call.
         // A call ringing for the old account must stop ringing for the new
@@ -504,6 +505,12 @@ class ChatState(
             // to act on, and only an SMP-verified peer can make one (the
             // engine drops offers from anybody else before they exist).
             is OtrEvent.FileTransferChanged -> noteTransfer(event)
+            // A capability, not a security state: stored and shown, never
+            // announced.
+            is OtrEvent.CapabilityChanged -> {
+                capabilities[bare(event.peer)] = event.state
+                false
+            }
             else -> false
         }
     }
@@ -572,6 +579,11 @@ class ChatState(
      * enum per JID and nothing else.
      */
     private val sessionStates = mutableMapOf<String, SecurityState>()
+
+    /** OTRv4Plus capability per bare JID, from the transport's events. */
+    private val capabilities = mutableMapOf<String, String>()
+
+    fun capabilityOf(jid: String): String = capabilities[bare(jid)] ?: "unknown"
 
     /**
      * A VERIFIED that the session no longer carries is dropped. Verification
@@ -768,6 +780,7 @@ class ChatState(
                 // reading only `contact.smp` would leave an incoming
                 // verification request unshown until the next poll caught up.
                 smp = effectiveSmp(jid, contact?.smp),
+                otrCapability = capabilityOf(jid),
                 lastMessage = store.lastMessage(jid),
                 unread = store.unread(jid),
                 // A conversation with no roster entry is somebody who
@@ -796,6 +809,7 @@ class ChatState(
                 lastMessage = null,
                 unread = 0,
                 smp = effectiveSmp(bare(jid), null),
+                otrCapability = capabilityOf(jid),
                 // Nothing is known about this JID at all — it is in neither
                 // the roster nor the store. `false` would put a Save button in
                 // front of somebody who may already be a contact whose roster

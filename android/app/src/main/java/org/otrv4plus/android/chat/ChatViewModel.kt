@@ -29,6 +29,7 @@ import org.otrv4plus.android.crypto.MetadataChoice
 import org.otrv4plus.android.crypto.MicPermission
 import org.otrv4plus.android.crypto.MlsProvider
 import org.otrv4plus.android.crypto.Omemo2Provider
+import org.otrv4plus.android.crypto.OtrAvailability
 import org.otrv4plus.android.crypto.OtrV4PlusProvider
 import org.otrv4plus.android.crypto.TransferUi
 import org.otrv4plus.android.crypto.Verification
@@ -195,6 +196,7 @@ class ChatViewModel : ViewModel() {
                 // No work, just a redraw: the SERVICE reads Python. Doing it
                 // here as well would be two drainers on one destructive queue.
                 revision++
+                autoSecure()
                 delay(REDRAW_INTERVAL_MS)
             }
         }
@@ -210,6 +212,34 @@ class ChatViewModel : ViewModel() {
     fun open(jid: String) {
         state?.open(jid)
         revision++
+        lastAutoAttempt.remove(ChatState.bare(jid))
+        autoSecure()
+    }
+
+    // -- automatic OTRv4+ -------------------------------------------------------
+    //
+    // Contact -> resource -> capability -> OTRv4+. Only for the conversation
+    // on screen, only when the transport has confirmed an OTRv4Plus-capable
+    // resource (`OtrAvailability.mayStart`), and the bridge re-checks that
+    // itself -- this merely asks. Throttled per peer so a DAKE that takes
+    // twenty seconds over I2P is not restarted every redraw.
+
+    private val lastAutoAttempt = HashMap<String, Long>()
+
+    private fun autoSecure() {
+        val state = this.state ?: return
+        val core = this.core ?: return
+        val jid = state.openConversation ?: return
+        if (!state.canSend() || state.isRoom(jid)) return
+        val c = state.conversation(jid)
+        if (c.security != org.otrv4plus.android.bridge.SecurityState.PLAINTEXT) return
+        if (!OtrAvailability.mayStart(c.otrCapability)) return
+        val now = System.currentTimeMillis()
+        if (now - (lastAutoAttempt[jid] ?: 0L) < AUTO_RETRY_MS) return
+        lastAutoAttempt[jid] = now
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching { core.ensureOtr(jid) }
+        }
     }
 
     fun closeConversation() {
@@ -505,12 +535,19 @@ class ChatViewModel : ViewModel() {
      */
     fun encryptionOffered(jid: String): List<EncryptionKind> {
         observe()
+        // No Start button for a contact whose client has not been confirmed
+        // to speak OTRv4Plus: a DAKE is never how that is found out.
+        if (OtrAvailability.noStartReason(capability(jid)) != null) return emptyList()
         return encryption()?.offered(refFor(jid)) ?: emptyList()
     }
 
     fun encryptionUnavailableReason(jid: String): String =
-        encryption()?.unavailableReason(refFor(jid))
+        OtrAvailability.noStartReason(capability(jid))
+            ?: encryption()?.unavailableReason(refFor(jid))
             ?: "The connection is not ready yet."
+
+    private fun capability(jid: String): String =
+        state?.capabilityOf(jid) ?: OtrAvailability.UNKNOWN
 
     /**
      * Ask for encryption on this conversation.
@@ -696,6 +733,7 @@ class ChatViewModel : ViewModel() {
             // Not asked yet is not "voice works": the fallback never offers
             // what it has not checked.
             voiceUnavailableReason = voiceReason ?: "voice has not been checked yet",
+            capability = capability(bare),
         ) to (voiceReason ?: "voice has not been checked yet")
     }
 
@@ -996,5 +1034,8 @@ class ChatViewModel : ViewModel() {
          * quickly a message the service has already received appears on screen.
          */
         const val REDRAW_INTERVAL_MS = 400L
+
+        /** How long an automatic OTRv4+ start gets before it is retried. */
+        const val AUTO_RETRY_MS = 45_000L
     }
 }

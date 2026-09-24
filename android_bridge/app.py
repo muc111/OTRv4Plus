@@ -46,7 +46,7 @@ from otrv4plus_mode import OtrMode
 from .events import (
     CallState, CallStateChanged, ConnectionState, ConnectionStateChanged,
     ErrorOccurred, Event, EventSink, FingerprintChanged, MessageReceived,
-    RoomMessageReceived,
+    OtrCapabilityChanged, RoomMessageReceived,
     SecurityState, SessionStateChanged, SmpProgress, SmpResult, SmpState,
     call_state_from_engine, security_state_from_level, smp_state_from_status,
 )
@@ -855,6 +855,88 @@ class OtrApp:
 
     # -- messaging -------------------------------------------------------------
 
+    # -- OTRv4Plus capability ---------------------------------------------------
+
+    def _capability_enforced(self) -> bool:
+        """Whether the transport tracks per-resource OTRv4Plus capability.
+
+        The real XMPP transport does, and then it is the law: no OTRv4+ frame
+        leaves for a resource that has not been confirmed. Test doubles that
+        model no presence do not, and keep the older behaviour.
+        """
+        return callable(getattr(self._transport, "otr_capability", None))
+
+    def otr_capability(self, peer: str) -> str:
+        """otrv4plus_caps state for *peer*: unknown, offline, checking,
+        available or unavailable. NOT a security state."""
+        fn = getattr(self._transport, "otr_capability", None)
+        if fn is None:
+            return "unknown"
+        try:
+            return str(fn(self.canonical_peer(peer)))
+        except Exception:
+            return "unknown"
+
+    def note_capability(self, peer: str, pinned_left: bool = False) -> None:
+        """The transport's capability changed for *peer*. Called on its loop.
+
+        If the resource an OTRv4+ session lived on went away, that session is
+        over: its state is in that one client process, and frames must not be
+        re-aimed at another device. It is torn down locally (no TLV: there is
+        nobody to send it to) and the conversation STAYS OTR-requested, so the
+        next line is queued for a new handshake, never sent in the clear.
+        """
+        if self._wiped:
+            return
+        peer = self.canonical_peer(peer)
+        if pinned_left:
+            try:
+                ender = getattr(self._engine, "end_session", None)
+                if ender is not None and self._engine.has_session(peer):
+                    ender(peer, "the peer's OTRv4Plus resource went offline")
+                    _TRACE.record("otr", "session_ended_resource_left", "info",
+                                  jid=peer)
+                    self._emit(SessionStateChanged(
+                        peer=peer, security=self.security_state(peer)))
+            except Exception:
+                _log.warning("could not end the session of a departed resource")
+        self._emit(OtrCapabilityChanged(peer=peer, state=self.otr_capability(peer)))
+
+    #: What `ensure_otr` found or did. Stable codes for Kotlin.
+    ENSURE_ESTABLISHED = "established"
+    ENSURE_STARTED = "started"
+    ENSURE_IN_PROGRESS = "in_progress"
+
+    def ensure_otr(self, peer: str) -> str:
+        """Automatic OTRv4+ for a private conversation the user has open.
+
+        Contact -> resource -> capability -> OTRv4+, in that order:
+          * already encrypted: "established";
+          * capability not confirmed: the capability state ("checking",
+            "offline", "unavailable", "unknown") and NOTHING is sent;
+          * a handshake already in flight: "in_progress";
+          * otherwise a DAKE is started: "started".
+        Never SMP, never trust: those stay explicit.
+        """
+        peer = self.canonical_peer(peer)
+        if peer in self._rooms or self._wiped or self._transport is None:
+            return "unavailable"
+        if self.security_state(peer) is not SecurityState.PLAINTEXT:
+            return self.ENSURE_ESTABLISHED
+        capability = self.otr_capability(peer)
+        if self._capability_enforced() and capability != "available":
+            return capability
+        try:
+            if self._engine.has_session(peer):
+                return self.ENSURE_IN_PROGRESS
+        except Exception:
+            pass
+        try:
+            self.start_session(peer)
+        except BridgeError as exc:
+            return getattr(exc, "code", "failed") or "failed"
+        return self.ENSURE_STARTED
+
     def start_session(self, peer: str) -> None:
         """Begin the DAKE.  Completes in roughly 20s over XMPP/I2P.
 
@@ -902,6 +984,14 @@ class OtrApp:
         self._refuse_room(peer, 'room_not_encryptable')
         if self._transport is None:
             raise BridgeError("no_transport")
+        # CAPABILITY FIRST. A DAKE is never how we find out whether the peer
+        # speaks OTRv4Plus; a transport that tracks capability must have
+        # confirmed a resource first. (The transport refuses the frame on
+        # its own too -- this is the answer the UI can explain.)
+        capability = self.otr_capability(peer)
+        if self._capability_enforced() and capability != "available":
+            raise BridgeError("otrv4plus_" + capability,
+                              "OTRv4Plus is not available for this contact")
 
         # BEFORE the send, and deliberately. From here this conversation is
         # OTR-requested, so a failure below leaves it refusing plaintext
@@ -1055,6 +1145,17 @@ class OtrApp:
             except Exception:
                 return self.SEND_FAILED
             return self.SEND_PLAINTEXT
+
+        # A contact whose client speaks OTRv4Plus is never sent plaintext:
+        # the first message starts OTRv4+ and waits for it (QUEUED).
+        if (self._capability_enforced()
+                and self.otr_capability(peer) == "available"
+                and not self._mode.is_otr(peer)
+                and self.security_state(peer) is SecurityState.PLAINTEXT):
+            try:
+                self.start_session(peer)
+            except BridgeError:
+                return self.SEND_FAILED
 
         if self._mode.may_send_plaintext(
                 peer, self.security_state(peer) is not SecurityState.PLAINTEXT):
@@ -1542,7 +1643,8 @@ class OtrApp:
     #: Why a call control is not offered. A FIXED SET, and the order in
     #: `call_gate` is the order they are checked in, so one state has one
     #: answer. Kotlin renders a sentence per code (`CallUi.Gate`).
-    CALL_GATES = ("available", "wiped", "room", "not_connected", "no_session",
+    CALL_GATES = ("available", "wiped", "room", "not_connected",
+                  "otrv4plus_unavailable", "no_session",
                   "fingerprint_changed", "not_verified", "voice_unavailable")
 
     def call_gate(self, peer: str) -> Dict[str, Any]:
@@ -1580,6 +1682,11 @@ class OtrApp:
             encrypted = bool(self._engine.has_encrypted_session(peer))
         except Exception:
             encrypted = False
+        if not encrypted and self._capability_enforced() and \
+                self.otr_capability(peer) == "unavailable":
+            # Nothing to establish: this contact's client does not speak
+            # OTRv4Plus. Said as such, not as "start encryption".
+            return answer("otrv4plus_unavailable")
         if not encrypted:
             return answer("no_session")
         security = self.security_state(peer)

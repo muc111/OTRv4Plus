@@ -153,6 +153,8 @@ data class Conversation(
      * same conversation.
      */
     val smp: SmpState = SmpState.NOT_VERIFIED,
+    /** OTRv4Plus capability of this contact's client. See `OtrAvailability`. */
+    val otrCapability: String = "unknown",
 ) {
     /** What the list row shows under the name. Empty for a fresh contact. */
     val preview: String

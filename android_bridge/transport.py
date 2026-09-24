@@ -47,6 +47,7 @@ import threading
 import time
 from typing import Any, Callable, Dict, List, Optional
 
+import otrv4plus_caps as _caps
 import otrv4plus_fragment as _fragment
 import otrv4plus_muc as _muc
 import otrv4plus_ping as _ping
@@ -297,6 +298,12 @@ class XmppTransport(Transport):
         #: Set by `set_room_handler`; None drops room messages.
         self._on_room_message: Optional[Callable[..., None]] = None
         self._on_presence = on_presence
+        #: Which resources speak OTRv4Plus. See otrv4plus_caps: OTRv4+
+        #: traffic goes only to a resource this has confirmed.
+        self._caps = _caps.CapabilityBook()
+        #: Called with a bare JID whenever its capability may have changed,
+        #: and whether the resource an OTRv4+ session was pinned to left.
+        self._on_capability: Optional[Callable[[str, bool], None]] = None
         self._on_state = on_state
         self._on_subscription_request = on_subscription_request
         self._subscription_policy = subscription_policy
@@ -792,6 +799,9 @@ class XmppTransport(Transport):
         client = self._client
         if client is None:
             return
+        # BEFORE the first presence, so the caps hash in it already carries
+        # the OTRv4Plus feature: peers learn we speak it without asking twice.
+        self._advertise(client)
         try:
             client.send_presence()
             _TRACE.record("presence", "initial_sent", "info")
@@ -1263,7 +1273,81 @@ class XmppTransport(Transport):
     def send(self, peer: str, payload: str) -> None:
         if not self.is_connected:
             raise TransportError("not_connected", "not connected")
+        # THE WIRE-LEVEL RULE. OTRv4+ protocol traffic goes to one full JID
+        # that has been identified as OTRv4Plus-capable, never to the bare
+        # JID (the server would pick a resource) and never to a resource that
+        # has not said it speaks the protocol. Enforced here, where every
+        # frame passes -- DAKE, data, SMP, call and file signalling -- so no
+        # caller can get around it by forgetting to ask.
+        if _caps.is_otr_protocol(payload):
+            target = self._caps.target(_caps.split_jid(peer)[0])
+            if target is None:
+                _TRACE.record("otr", "refused_no_capable_resource", "warning",
+                              jid=peer,
+                              state=self._caps.state(_caps.split_jid(peer)[0]))
+                raise TransportError(
+                    "otrv4plus_unavailable",
+                    "no resource of this contact is known to support OTRv4Plus")
+            self._caps.pin(peer, _caps.split_jid(target)[1])
+            peer = target
         self._run(self._send(peer, payload), CALL_TIMEOUT)
+
+    # -- OTRv4Plus capability -------------------------------------------------
+
+    def set_capability_handler(self, handler) -> None:
+        """`handler(bare_jid, pinned_resource_left)` on any capability change."""
+        self._on_capability = handler
+
+    def otr_capability(self, peer: str) -> str:
+        """One of otrv4plus_caps.STATES for *peer*'s bare JID."""
+        return self._caps.state(_caps.split_jid(peer)[0])
+
+    def otr_resources(self, peer: str) -> Dict[str, Optional[bool]]:
+        return self._caps.resources(_caps.split_jid(peer)[0])
+
+    def _advertise(self, client) -> None:
+        """Add the OTRv4Plus feature to our disco#info (and so our caps)."""
+        try:
+            client["xep_0030"].add_feature(_caps.FEATURE)
+        except Exception:
+            _log.warning("could not advertise OTRv4Plus in service discovery")
+            return
+        try:
+            caps = client["xep_0115"]
+            caps.caps_node = _caps.CAPS_NODE
+            # Async: it computes the new hash and, with broadcast, sends our
+            # presence again carrying it. The first presence may carry the
+            # old hash; the re-broadcast corrects it.
+            result = caps.update_caps()
+            if asyncio.iscoroutine(result) or asyncio.isfuture(result):
+                asyncio.ensure_future(result)
+        except Exception:
+            # Without XEP-0115 peers still find the feature by asking our
+            # disco#info directly; they only lose the cache.
+            _log.warning("could not publish entity capabilities")
+
+    def _notify_capability(self, bare: str, pinned_left: bool = False) -> None:
+        handler = self._on_capability
+        if handler is None:
+            return
+        try:
+            handler(bare, pinned_left)
+        except Exception:
+            _log.warning("the capability handler raised")
+
+    async def _query_caps(self, full_jid: str) -> None:
+        """Ask one resource's disco#info whether it speaks OTRv4Plus."""
+        bare = _caps.split_jid(full_jid)[0]
+        try:
+            info = await self._client["xep_0030"].get_info(
+                jid=full_jid, timeout=CALL_TIMEOUT)
+            features = [str(f) for f in info["disco_info"]["features"]]
+            self._caps.disco_result(full_jid, features)
+        except Exception:
+            self._caps.disco_failed(full_jid)
+        _TRACE.record("otr", "capability_checked", "info", jid=bare,
+                      state=self._caps.state(bare))
+        self._notify_capability(bare)
 
     async def _send(self, peer: str, payload: str) -> None:
         """One stanza per fragment, through the shared wire format.
@@ -1904,6 +1988,7 @@ class XmppTransport(Transport):
                 return
             sender = stanza.get("from")
             peer = str(sender).split("/", 1)[0] if sender else ""
+            full_sender = str(sender) if sender else ""
         except Exception:
             _log.warning("could not read an inbound stanza")
             return
@@ -1926,6 +2011,14 @@ class XmppTransport(Transport):
         # engine until the last fragment lands. Malformed and out-of-range
         # fragments also return None and are dropped, which is the same
         # fail-closed behaviour the terminal client has.
+        # In-band evidence: only OTRv4Plus produces this wire format, so the
+        # RESOURCE that sent it speaks the protocol and is where the session
+        # it belongs to lives.
+        if _caps.is_otr_protocol(body) and "/" in full_sender:
+            before = self._caps.state(peer.lower())
+            self._caps.inband_otr(full_sender)
+            if before != _caps.AVAILABLE:
+                self._notify_capability(peer.lower())
         if _fragment.is_fragment(body):
             body = self._reassembler.feed(peer, body)
             if body is None:
@@ -1959,7 +2052,50 @@ class XmppTransport(Transport):
         except Exception:
             _log.warning("the subscription handler raised")
 
+    def _track_caps(self, stanza, online: bool) -> None:
+        """Per-resource OTRv4Plus capability from a presence stanza."""
+        try:
+            full = str(stanza["from"])
+        except Exception:
+            return
+        bare, resource = _caps.split_jid(full)
+        if not bare or not resource or bare == _caps.split_jid(
+                self._profile.jid)[0] and resource == self._own_resource():
+            return
+        if not online:
+            left = self._caps.presence_unavailable(full)
+            self._notify_capability(bare, left)
+            return
+        ver, priority = "", 0
+        try:
+            ver = str(stanza["caps"]["ver"] or "")
+        except Exception:
+            ver = ""
+        try:
+            priority = int(stanza["priority"] or 0)
+        except Exception:
+            priority = 0
+        if self._caps.presence_available(full, ver, priority):
+            self._notify_capability(bare)          # CHECKING
+            try:
+                asyncio.ensure_future(self._query_caps(full))
+            except Exception:
+                self._caps.disco_failed(full)
+                self._notify_capability(bare)
+        else:
+            self._notify_capability(bare)
+
+    def _own_resource(self) -> str:
+        try:
+            return str(self._client.boundjid.resource or "")
+        except Exception:
+            return ""
+
     def _presence(self, stanza, online: bool) -> None:
+        try:
+            self._track_caps(stanza, online)
+        except Exception:
+            _log.warning("could not track capability from a presence")
         if self._on_presence is None:
             return
         try:
@@ -2001,6 +2137,8 @@ class XmppTransport(Transport):
         _TRACE.record("transport", "stream_closed_by_slixmpp", "warning",
                       quiet_for=round(self._stream_quiet_for()))
         self._connected.clear()
+        # Every resource's presence is unknown now; capability goes with it.
+        self._caps.clear()
         self._emit_state("disconnected")
 
     def _emit_state(self, state: str) -> None:
@@ -2075,7 +2213,9 @@ def _default_client_factory():
         # does not take the other with it. xep_0004 is named explicitly
         # because `create_room` submits a data form and a dependency being
         # pulled in implicitly is one that can stop being pulled in.
-        for plugin in ("xep_0030", "xep_0004", "xep_0045"):
+        # xep_0115: entity capabilities, so peers learn we speak OTRv4Plus
+        # from our presence and we learn theirs without asking each time.
+        for plugin in ("xep_0030", "xep_0004", "xep_0045", "xep_0115"):
             try:
                 client.register_plugin(plugin)
             except Exception:

@@ -430,6 +430,7 @@ val syncPythonSources by tasks.registering(Copy::class) {
             // report that quietly names everybody.
             "otrv4plus_alias.py",
             "otrv4plus_audio.py",
+            "otrv4plus_caps.py",
             "otrv4plus_coreapi.py",
             "otrv4plus_filetransfer.py",
             "otrv4plus_identity.py",
