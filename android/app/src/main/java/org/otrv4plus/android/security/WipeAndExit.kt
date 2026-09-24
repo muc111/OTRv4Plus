@@ -169,6 +169,8 @@ object WipeAndExit {
               "system task list", Category.SENSITIVE_EPHEMERAL, Step.EXIT),
         Store("Chaquopy runtime and bundled Python code",
               "files: chaquopy/", Category.CONFIGURATION, null),
+        Store("Theme choice (Dark purple / Light / Follow system)",
+              "shared_prefs: otrv4plus.ui.xml", Category.CONFIGURATION, null),
         Store("Notification channel settings the user chose",
               "system", Category.CONFIGURATION, null),
         Store("Granted runtime permissions (microphone, notifications)",

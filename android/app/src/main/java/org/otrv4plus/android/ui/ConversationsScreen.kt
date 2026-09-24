@@ -29,6 +29,7 @@ import org.otrv4plus.android.chat.Conversation
 import org.otrv4plus.android.chat.OnlineUsers
 import org.otrv4plus.android.chat.Presence
 import org.otrv4plus.android.chat.RowSecurity
+import org.otrv4plus.android.theme.ThemeTokens
 
 /**
  * The home screen once you are connected: who you can talk to.
@@ -49,7 +50,11 @@ fun ConversationsScreen(
     onOpenRooms: () -> Unit = {},
     onOpenDiagnostics: () -> Unit = {},
     onOpenAbout: () -> Unit = {},
+    onWipeAndExit: (() -> Unit)? = null,
+    theme: ThemeTokens.Mode = ThemeTokens.DEFAULT,
+    onTheme: ((ThemeTokens.Mode) -> Unit)? = null,
 ) {
+    var choosingTheme by rememberSaveable { mutableStateOf(false) }
     val conversations = model.conversations()
     var showAdd by rememberSaveable { mutableStateOf(false) }
     // A JID, not a Conversation: the row can change under an open dialog.
@@ -182,6 +187,18 @@ fun ConversationsScreen(
                 TextButton(onClick = onOpenRooms) { Text("Rooms") }
                 TextButton(onClick = onOpenDiagnostics) { Text("Debug") }
                 TextButton(onClick = onOpenAbout) { Text("About & licences") }
+                if (onTheme != null) {
+                    TextButton(onClick = { choosingTheme = true }) { Text("Theme") }
+                }
+            }
+            // At the foot of the main list, beside Debug and Licences, so it
+            // is reachable without going back to the connection screen. The
+            // same control, confirmation and teardown as there.
+            onWipeAndExit?.let { wipe ->
+                Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp),
+                    horizontalArrangement = Arrangement.End) {
+                    WipeAndExitButton(onWipe = wipe)
+                }
             }
         }
     }
@@ -195,6 +212,32 @@ fun ConversationsScreen(
             canLeave = kind == ChatDeletion.Kind.ROOM && model.inRoom(jid),
             onDelete = { leave -> model.deleteChat(jid, leaveRoom = leave); deleting = null },
             onDismiss = { deleting = null },
+        )
+    }
+
+    if (choosingTheme && onTheme != null) {
+        AlertDialog(
+            onDismissRequest = { choosingTheme = false },
+            title = { Text("Theme") },
+            text = {
+                Column {
+                    for (mode in ThemeTokens.Mode.entries) {
+                        Row(
+                            Modifier.fillMaxWidth().clickable {
+                                onTheme(mode); choosingTheme = false
+                            }.padding(vertical = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            RadioButton(selected = mode == theme,
+                                        onClick = { onTheme(mode); choosingTheme = false })
+                            Text(mode.label + if (mode == ThemeTokens.DEFAULT) " (default)" else "")
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { choosingTheme = false }) { Text("Done") }
+            },
         )
     }
 

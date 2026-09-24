@@ -18,12 +18,15 @@ import androidx.compose.material3.Surface
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewmodel.compose.viewModel
 import org.otrv4plus.android.chat.ChatViewModel
 import org.otrv4plus.android.ui.AboutScreen
+import org.otrv4plus.android.ui.OtrTheme
+import org.otrv4plus.android.ui.ThemeStore
 import org.otrv4plus.android.ui.ConnectScreen
 import org.otrv4plus.android.ui.ConversationScreen
 import org.otrv4plus.android.ui.ConversationsScreen
@@ -187,7 +190,10 @@ class MainActivity : ComponentActivity() {
         )
 
         setContent {
-            MaterialTheme {
+            // Dark purple by default; the user's choice, once made, persists
+            // (ThemeStore: ordinary preferences, not secret).
+            var themeMode by remember { mutableStateOf(ThemeStore.load(this)) }
+            OtrTheme(themeMode) {
                 Surface {
                     // `connection` is the Activity's property above, not a
                     // second `viewModel()` call: one name for one object, so
@@ -293,6 +299,12 @@ class MainActivity : ComponentActivity() {
                                 onOpenRooms = { screen = Screen.ROOMS },
                                 onOpenDiagnostics = { screen = Screen.DIAGNOSTICS },
                                 onOpenAbout = { screen = Screen.ABOUT },
+                                onWipeAndExit = { connection.wipeAndExit() },
+                                theme = themeMode,
+                                onTheme = { mode ->
+                                    themeMode = mode
+                                    ThemeStore.save(this@MainActivity, mode)
+                                },
                             )
                         }
 

@@ -294,8 +294,6 @@ fun ConnectScreen(
         // leaves the app open. Wipe & Exit destroys everything -- see
         // WipeAndExit for exactly what -- and closes the app. Neither is
         // ever described as the other.
-        var confirmWipe by rememberSaveable { mutableStateOf(false) }
-        val activity = LocalContext.current as? android.app.Activity
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             if (status.connected) {
                 OutlinedButton(
@@ -303,36 +301,7 @@ fun ConnectScreen(
                     onClick = { model.logout() },
                 ) { Text("Sign out") }
             }
-            OutlinedButton(
-                onClick = { confirmWipe = true },
-                colors = ButtonDefaults.outlinedButtonColors(
-                    contentColor = MaterialTheme.colorScheme.error),
-            ) { Text("Wipe & Exit") }
-        }
-        if (confirmWipe) {
-            AlertDialog(
-                onDismissRequest = { confirmWipe = false },
-                title = { Text(WipeAndExit.CONFIRM_TITLE) },
-                text = { Text(WipeAndExit.CONFIRM_BODY) },
-                confirmButton = {
-                    TextButton(
-                        onClick = {
-                            confirmWipe = false
-                            model.wipeAndExit()
-                            // The task goes too, and with it the recents
-                            // snapshot of whatever this screen was showing.
-                            activity?.finishAndRemoveTask()
-                        },
-                        colors = ButtonDefaults.textButtonColors(
-                            contentColor = MaterialTheme.colorScheme.error),
-                    ) { Text(WipeAndExit.CONFIRM) }
-                },
-                dismissButton = {
-                    TextButton(onClick = { confirmWipe = false }) {
-                        Text(WipeAndExit.CANCEL)
-                    }
-                },
-            )
+            WipeAndExitButton(onWipe = { model.wipeAndExit() })
         }
 
         // Only while an attempt is actually running. This is the one control

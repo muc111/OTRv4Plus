@@ -549,9 +549,21 @@ class TestTheAndroidSideIsWired:
         screen = _kt("ui", "ConnectScreen.kt")
         assert 'onClick = { model.disconnect() },\n                ) { Text("Disconnect") }' in screen
         assert 'onClick = { model.logout() },\n                ) { Text("Sign out") }' in screen
-        assert "WipeAndExit.CONFIRM_BODY" in screen
-        assert "model.wipeAndExit()" in screen
-        assert "finishAndRemoveTask()" in screen
+        # One shared control (ui/WipeControl.kt) carries the confirmation and
+        # the task removal; both screens use it.
+        assert "WipeAndExitButton(onWipe = { model.wipeAndExit() })" in screen
+        control = _kt("ui", "WipeControl.kt")
+        assert "WipeAndExit.CONFIRM_BODY" in control
+        assert "finishAndRemoveTask()" in control
+        assert control.index("onWipe()") < control.index("finishAndRemoveTask()")
+
+    def test_wipe_is_at_the_foot_of_the_conversation_list(self):
+        """Beside Debug and About & licences, same control, same teardown."""
+        screen = _kt("ui", "ConversationsScreen.kt")
+        footer = screen[screen.index('Text("About & licences")'):]
+        assert "WipeAndExitButton(onWipe = wipe)" in footer[:800]
+        main = _kt("MainActivity.kt")
+        assert "onWipeAndExit = { connection.wipeAndExit() }" in main
 
     def test_the_plan_names_the_python_roots_this_module_destroys(self):
         from android_bridge import wipe as disk
