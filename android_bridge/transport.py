@@ -1751,9 +1751,85 @@ class XmppTransport(Transport):
         return self._room_call(self._join_room(room, nick, password))
 
     async def _join_room(self, room: str, nick: str, password: str):
-        await self._client["xep_0045"].join_muc_wait(
-            room, nick, password=password or None, timeout=CONNECT_TIMEOUT)
+        muc = self._client["xep_0045"]
+        # ALREADY IN IT. A join presence from an account that is already an
+        # occupant is, to the service, a presence update: Prosody runs its
+        # password check only for a NEW occupant, so it succeeds with no
+        # password -- which read as "joined without being asked". Say what is
+        # true instead: we are in it already.
+        try:
+            joined = {str(r).lower() for r in (muc.get_joined_rooms() or ())}
+        except Exception:
+            joined = set()
+        if str(room).lower() in joined:
+            raise TransportError("already_in_room", "already in this room")
+        # PASSWORD FIRST. The room's disco#info says whether it is
+        # password-protected (muc_passwordprotected). Asking for the
+        # password before joining makes the prompt appear whatever the
+        # service would do with a password-less join. If the room will not
+        # answer disco, the join goes ahead and the service decides.
+        if not password and await self._room_wants_password(room):
+            raise TransportError("not_authorized", "this room needs a password")
+        await self._join_muc(room, nick, password)
         return self._room_standing(room, nick)
+
+    async def _room_wants_password(self, room: str) -> bool:
+        try:
+            info = await self._client["xep_0030"].get_info(
+                jid=room, timeout=CALL_TIMEOUT)
+            return "muc_passwordprotected" in {
+                str(f) for f in info["disco_info"]["features"]}
+        except Exception:
+            return False
+
+    async def _join_muc(self, room: str, nick: str, password: str = ""):
+        """`join_muc_wait`, plus ANY error presence from the room.
+
+        slixmpp recognises a join refusal only when the error presence
+        echoes `<x xmlns='http://jabber.org/protocol/muc'/>`. A service that
+        omits it (RFC 6120 allows that) left the join waiting for its full
+        timeout and then reported a timeout -- never "wrong password". The
+        room's error presence is caught here as well, and raised as the
+        PresenceError slixmpp would have raised.
+        """
+        muc = self._client["xep_0045"]
+        loop = asyncio.get_event_loop()
+        refused = loop.create_future()
+        bare = str(room).split("/", 1)[0].lower()
+
+        def on_error(pres):
+            try:
+                if str(pres["from"]).split("/", 1)[0].lower() == bare and \
+                        not refused.done():
+                    refused.set_result(pres)
+            except Exception:
+                pass
+
+        add = getattr(self._client, "add_event_handler", None)
+        remove = getattr(self._client, "del_event_handler", None)
+        if add is not None:
+            add("presence_error", on_error)
+        join = asyncio.ensure_future(muc.join_muc_wait(
+            room, nick, password=password or None, timeout=CONNECT_TIMEOUT))
+        try:
+            done, _ = await asyncio.wait(
+                [join, refused], timeout=CONNECT_TIMEOUT,
+                return_when=asyncio.FIRST_COMPLETED)
+            if join in done:
+                return join.result()
+            join.cancel()
+            if refused in done:
+                from slixmpp.exceptions import PresenceError
+                raise PresenceError(refused.result())
+            raise TimeoutError()
+        finally:
+            if not refused.done():
+                refused.cancel()
+            if remove is not None:
+                try:
+                    remove("presence_error", on_error)
+                except Exception:
+                    pass
 
     def create_room(self, room: str, nick: str,
                     password: str = "") -> "tuple[str, str, dict]":

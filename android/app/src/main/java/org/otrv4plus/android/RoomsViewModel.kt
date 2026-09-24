@@ -237,6 +237,9 @@ class RoomsViewModel : ViewModel() {
                 // on success and only from the authoritative outcome, so a
                 // refused join cannot open a room the user is not in.
                 if (outcome.ok) entered = room
+                // Already in it on this device: open it rather than pretend
+                // to join again (the service would not ask for the password).
+                if (outcome.code == ALREADY_IN_ROOM) entered = room
                 onDone?.invoke(outcome)
             } finally {
                 // THE PERMANENT SPINNER. This was the last line of the
@@ -298,5 +301,9 @@ class RoomsViewModel : ViewModel() {
     /** Dismiss the last result. */
     fun clearLast() {
         last = null
+    }
+
+    companion object {
+        const val ALREADY_IN_ROOM = "already_in_room"
     }
 }
