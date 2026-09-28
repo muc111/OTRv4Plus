@@ -58,8 +58,10 @@ nothing. The process ending is the last step, always attempted.
    verification states and unread count.
 5. **Vault**: the AndroidKeyStore key is deleted, then the vault files.
 6. **C. Stop the subsystems** (`OtrApp.wipe`): call manager, SAM sessions and
-   loop; the XMPP stream, I2P tunnel and loop thread; the Python-side files
-   (`~/.otrv4plus`, i.e. `files/.otrv4plus` under Chaquopy) overwritten once
+   loop; the XMPP stream, I2P tunnel and loop thread; the room memberships
+   and the in-memory diagnostics trace; the Python-side files (`~/.otrv4plus`,
+   i.e. `files/.otrv4plus` under Chaquopy, and the engine's default log
+   directory `~/.otrv4`, which Android does not write today) overwritten once
    with random bytes, fsync'd and unlinked. Bounded by network timeouts, which
    is why every secret is already gone.
 7. **D. Wipe app storage** (`AppDataWipe`): **every entry** in the app's
