@@ -4,6 +4,17 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.7 — 2026-09-28 — Wipe & Exit ends with the system's own "Clear storage" (core 0.11.0)
+
+- Handset on rc.5: after Wipe & Exit, Settings showed 8.19 kB user data and
+  119 kB cache. The app's sweep deletes everything it owns, but while the
+  process is alive the renderer and ART keep writing (a GPU shader cache in
+  code_cache, directory entries). The last step is now
+  `ActivityManager.clearApplicationUserData()`: the system kills the app and
+  clears its whole data directory, cache, code_cache and Keystore entries --
+  what Settings' "Clear storage" does. Killing the process remains the
+  fallback. Includes everything in rc.6. Not yet run on a handset.
+
 ## Android 0.7.0-experimental.rc.6 — 2026-09-28 — clearnet registration: SRV, every address, and a named stage (core 0.11.0)
 
 *Handset report on rc.5: registering on 07f.de and on yax.im (no CAPTCHA)
