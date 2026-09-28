@@ -239,9 +239,16 @@ class TestSubstitutionIsBlocked:
 
     def test_first_connection_pins_A(self, sam):
         pins = SP.ServerPins(None)
-        _connect(sam, pins)
+        # Kept open until the bytes are across: closing at once can tear the
+        # forwarder down before it has pumped them, which made this flaky.
+        t = _transport(sam, pins)
+        try:
+            t.connect()
+            reached = _wait_for(lambda: _password_reached(sam, DEST_A))
+        finally:
+            t.close()
         assert pins.pinned(NAME) == B32_A
-        assert _wait_for(lambda: _password_reached(sam, DEST_A)), (
+        assert reached, (
             "the harness must show the credential DOES flow to a trusted "
             "destination, or the negative test below proves nothing")
 
