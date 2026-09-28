@@ -187,7 +187,11 @@ fun ConnectScreen(
                 label = { Text("Server address") },
                 placeholder = { Text("chat.example.i2p") },
                 supportingText = {
-                    Text("A domain, or a full .b32.i2p destination.")
+                    // The route comes from the name (android_bridge.route):
+                    // .i2p -> I2P, .onion -> Tor, anything else -> clearnet
+                    // TLS with a checked certificate.
+                    Text("A domain (clearnet, .i2p or .onion), or a .b32.i2p " +
+                         "destination.")
                 },
                 singleLine = true,
                 enabled = !status.connected && busy == null,
@@ -372,6 +376,14 @@ fun ConnectScreen(
             }
         }
 
+        model.identityChange?.let { change ->
+            ServerIdentityWarning(
+                change = change,
+                onTrust = { model.trustNewServerAddress() },
+                onKeep = { model.dismissIdentityChange() },
+            )
+        }
+
         if (status.detail.isNotBlank() && status.stage == "failed") {
             Spacer(Modifier.height(4.dp))
             Text("Could not connect",
@@ -445,6 +457,72 @@ fun ConnectScreen(
 }
 
 /**
+ * SECURITY_ISSUES X1, the user-visible half.
+ *
+ * The server's `.i2p` name now resolves to a different I2P destination --
+ * a different key -- than the one this phone trusted. The connection was
+ * stopped before anything reached the new destination, so no password went
+ * to it. Moving to the new address needs TWO deliberate presses (the button,
+ * then the confirmation), and even then nothing connects: the user presses
+ * Log in again themselves.
+ */
+@Composable
+private fun ServerIdentityWarning(
+    change: org.otrv4plus.android.bridge.ServerIdentityChange,
+    onTrust: () -> Unit,
+    onKeep: () -> Unit,
+) {
+    var confirming by remember { mutableStateOf(false) }
+    Spacer(Modifier.height(4.dp))
+    Text(
+        "Security warning: the server's address changed",
+        style = MaterialTheme.typography.titleSmall,
+        color = MaterialTheme.colorScheme.error,
+    )
+    Text(
+        "${change.server} now points at a different I2P destination than " +
+            "the one this phone trusted. The connection was stopped before " +
+            "anything was sent to it, and you were not signed in. This can " +
+            "be the server moving, or someone impersonating it. Check with " +
+            "the server's operator before trusting the new address.",
+        style = MaterialTheme.typography.bodySmall,
+    )
+    SelectionContainer {
+        Column {
+            Text("Trusted: ${change.trusted}",
+                style = MaterialTheme.typography.bodySmall)
+            Text("Now:     ${change.seen}",
+                style = MaterialTheme.typography.bodySmall)
+        }
+    }
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        OutlinedButton(onClick = onKeep) { Text("Keep the old address") }
+        TextButton(onClick = { confirming = true }) { Text("Trust new address\u2026") }
+    }
+    if (confirming) {
+        AlertDialog(
+            onDismissRequest = { confirming = false },
+            title = { Text("Trust the new address?") },
+            text = {
+                Text(
+                    "Only if the operator of ${change.server} confirmed the " +
+                        "move to ${change.seen}. Your password will be used " +
+                        "with that destination the next time you log in.",
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = { confirming = false; onTrust() }) {
+                    Text("Trust it")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirming = false }) { Text("Cancel") }
+            },
+        )
+    }
+}
+
+/**
  * Stage names for a person.
  *
  * Kept distinct rather than collapsed into "connecting", because which stage
@@ -453,8 +531,12 @@ fun ConnectScreen(
  */
 private fun stageLabel(stage: String): String = when (stage) {
     "idle" -> "Not connected"
+    // Only .i2p servers pass through checking_router and only .onion (or an
+    // explicit Tor choice) through checking_tor; a clearnet server goes
+    // straight to connecting (android_bridge.route).
     "checking_router" -> "Checking for an I2P router"
-    "building_tunnels" -> "Building I2P tunnels (this is the slow part)"
+    "checking_tor" -> "Checking for Tor (Orbot)"
+    "building_tunnels" -> "Building the I2P or Tor tunnel (this is the slow part)"
     "connecting" -> "Connecting to the server"
     "authenticating" -> "Signing in"
     "connected" -> "Connected"

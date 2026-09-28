@@ -625,6 +625,10 @@ class OtrConnectionService : Service() {
                 failure = result.exceptionOrNull()?.let { codeOf(it) }
                     ?: result.getOrNull()?.code.orEmpty().ifBlank { "connect_failed" }
                 status = result.getOrNull() ?: status
+                if (reconnect.onFailure(failure)) {
+                    enter(LinkPhase.FAILED, "needs the user: $failure")
+                    return
+                }
             }
 
             val wait = reconnect.nextDelayMs() ?: return

@@ -523,8 +523,9 @@ data class Contact(
  * comes from [OtrCore.securityState], which asks the engine.
  *
  * [stage] is one of the Python controller's stages, in order: idle,
- * checking_router, building_tunnels, connecting, authenticating, connected,
- * failed. They are distinct because their remedies are, and because they are
+ * checking_router (.i2p only) or checking_tor (Tor only), building_tunnels,
+ * connecting, authenticating, connected, failed. A clearnet server skips the
+ * first two. They are distinct because their remedies are, and because they are
  * three orders of magnitude apart in duration -- a refused SAM port answers in
  * milliseconds, a cold I2P tunnel can take four minutes.
  */
@@ -567,6 +568,18 @@ data class ConnectionStatus(
  * still building" look identical for four minutes, and the user restarts the
  * app during the one case where waiting was the right thing to do.
  */
+/**
+ * SECURITY_ISSUES X1: an `.i2p` server name now resolves to a different I2P
+ * destination than the one this device trusted. The attempt was refused
+ * before a single byte reached [seen]; no password was sent to it. Public
+ * values only -- the name and two `.b32.i2p` hashes.
+ */
+data class ServerIdentityChange(
+    val server: String,
+    val trusted: String,
+    val seen: String,
+)
+
 data class RouterProbe(
     val reachable: Boolean,
     val code: String,

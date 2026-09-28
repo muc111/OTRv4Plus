@@ -358,6 +358,33 @@ class ChaquopyOtrCore(private val appContext: Context) : OtrCore {
         )
     }
 
+    /**
+     * The refused I2P destination change for the prepared server, if any
+     * (SECURITY_ISSUES X1). Null when there is none, or nothing prepared.
+     */
+    fun destinationChange(): ServerIdentityChange? {
+        val ctl = controller ?: return null
+        val d = ctl.callAttr("destination_change")
+        fun str(k: String) = d?.callAttr("get", k)?.toString() ?: ""
+        if (str("seen").isBlank()) return null
+        return ServerIdentityChange(str("server"), str("trusted"), str("seen"))
+    }
+
+    /**
+     * The user, shown both addresses, explicitly trusts [seen] for the
+     * prepared server. Nothing connects here; the next Log in or Create
+     * account uses it, and it becomes the pin only if that succeeds. Only the
+     * destination that was actually refused can be approved (Python checks).
+     * Returns null on success, or a sentence saying why not.
+     */
+    fun approveServerDestination(seen: String): String? {
+        val ctl = controller ?: return "not_prepared"
+        val r = ctl.callAttr("approve_server_destination", seen)
+        val ok = r?.callAttr("get", "ok")?.toBoolean() ?: false
+        return if (ok) null
+               else r?.callAttr("get", "detail")?.toString() ?: "unknown"
+    }
+
     fun connectionStatus(): ConnectionStatus {
         val ctl = controller ?: return ConnectionStatus()
         return statusFrom(ctl, null)

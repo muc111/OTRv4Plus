@@ -24,6 +24,7 @@ import org.otrv4plus.android.bridge.ConnectionStatus
 import org.otrv4plus.android.bridge.InitResult
 import org.otrv4plus.android.bridge.RegistrationOutcome
 import org.otrv4plus.android.bridge.RouterProbe
+import org.otrv4plus.android.bridge.ServerIdentityChange
 import org.otrv4plus.android.chat.ChatState
 import org.otrv4plus.android.connection.LinkPhase
 import org.otrv4plus.android.connection.LoginProgress
@@ -81,6 +82,16 @@ class ConnectionViewModel(app: Application) : AndroidViewModel(app) {
      * somebody who has just been told their account was created.
      */
     var registration by mutableStateOf<RegistrationOutcome?>(null)
+        private set
+
+    /**
+     * SECURITY_ISSUES X1: the server's I2P name now points at a different
+     * destination. Set after a login or registration refused for that reason;
+     * the screen shows both addresses and offers an explicit, confirmed
+     * "Trust new address". Nothing retries on its own meanwhile (see
+     * ReconnectPolicy.NEEDS_THE_USER).
+     */
+    var identityChange by mutableStateOf<ServerIdentityChange?>(null)
         private set
 
     /** The service's authoritative phase. */
@@ -224,6 +235,11 @@ class ConnectionViewModel(app: Application) : AndroidViewModel(app) {
                     // from a one-shot action (probe, register). Mirroring the
                     // service into `error` would have wiped a probe failure on
                     // the next tick.
+                    // Looked up once per refusal, on the tick it first appears.
+                    if (it.failure == DESTINATION_CHANGED &&
+                        connectionFailure != DESTINATION_CHANGED) {
+                        loadIdentityChange()
+                    }
                     connectionFailure = it.failure
                     login.observe(it.phase)
                 }
@@ -298,10 +314,48 @@ class ConnectionViewModel(app: Application) : AndroidViewModel(app) {
                     c.register(password)
                 }
             }
-            got.onSuccess { registration = it }
-                .onFailure { error = it.javaClass.simpleName }
+            got.onSuccess {
+                registration = it
+                if (it.code == "server_identity_changed") loadIdentityChange()
+            }.onFailure { error = it.javaClass.simpleName }
             busy = null
         }
+    }
+
+    private fun loadIdentityChange() {
+        val c = core ?: return
+        viewModelScope.launch {
+            identityChange = withContext(Dispatchers.IO) {
+                runCatching { c.destinationChange() }.getOrNull()
+            }
+        }
+    }
+
+    /**
+     * The user confirmed trusting the new destination shown in
+     * [identityChange]. Does NOT connect or sign in: the user presses Log in
+     * (or Create account) again themselves.
+     */
+    fun trustNewServerAddress() {
+        val c = core ?: return
+        val change = identityChange ?: return
+        viewModelScope.launch {
+            val why = withContext(Dispatchers.IO) {
+                runCatching { c.approveServerDestination(change.seen) }
+                    .getOrElse { it.javaClass.simpleName }
+            }
+            if (why == null) {
+                identityChange = null
+                connectionFailure = null
+            } else {
+                error = why
+            }
+        }
+    }
+
+    /** Leave the change refused. The old destination stays trusted. */
+    fun dismissIdentityChange() {
+        identityChange = null
     }
 
     /** Dismiss the last registration result. */
@@ -393,5 +447,8 @@ class ConnectionViewModel(app: Application) : AndroidViewModel(app) {
     companion object {
         /** How often to read the service's state. Cheap: it is in-process. */
         const val POLL_MS = 500L
+
+        /** The transport's code for an X1 refusal (android_bridge.transport). */
+        const val DESTINATION_CHANGED = "i2p_destination_changed"
     }
 }

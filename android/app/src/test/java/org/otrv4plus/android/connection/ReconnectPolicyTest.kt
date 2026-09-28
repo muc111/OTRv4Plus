@@ -147,6 +147,46 @@ class ReconnectPolicyTest {
                 ReconnectPolicy.DEFAULT_FIRST_DELAY_MS)
     }
 
+    // ── security refusals wait for the user (SECURITY_ISSUES X1) ────────────
+
+    @Test
+    fun `a changed I2P destination stops the retry loop`() {
+        val p = policy()
+        assertTrue(p.onFailure("i2p_destination_changed"))
+        assertTrue(p.suppressed)
+        assertNull(p.nextDelayMs())
+        assertFalse(p.beginAttempt())
+    }
+
+    @Test
+    fun `TLS and SASL refusals also wait for the user`() {
+        for (code in listOf("tls_required", "no_safe_auth_mechanism",
+                            "route_refused", "malformed_server")) {
+            val p = policy()
+            assertTrue(p.onFailure(code), code)
+            assertNull(p.nextDelayMs(), code)
+        }
+    }
+
+    @Test
+    fun `ordinary network failures still back off and retry`() {
+        for (code in listOf("timeout", "refused", "stream_failed",
+                            "auth_failed", "tor_unavailable", null)) {
+            val p = policy()
+            assertFalse(p.onFailure(code), code.toString())
+            assertEquals(false, p.suppressed)
+            assertTrue(p.nextDelayMs() != null)
+        }
+    }
+
+    @Test
+    fun `pressing Log in again clears a security refusal`() {
+        val p = policy()
+        p.onFailure("i2p_destination_changed")
+        p.onUserConnect()
+        assertTrue(p.beginAttempt())
+    }
+
     @Test
     fun `the default policy behaves like the tuned one`() {
         val p = ReconnectPolicy()

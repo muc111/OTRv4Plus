@@ -71,6 +71,18 @@ class ReconnectPolicy(
         attempts = 0
     }
 
+    /**
+     * An attempt failed with [code]. Returns true, and latches like
+     * [onUserDisconnect], when retrying cannot help and must not happen
+     * without the user: see [NEEDS_THE_USER].
+     */
+    fun onFailure(code: String?): Boolean {
+        if (code == null || code !in NEEDS_THE_USER) return false
+        suppressed = true
+        attempts = 0
+        return true
+    }
+
     /** A connection succeeded. The next failure starts from the first delay. */
     fun onConnected() {
         attempts = 0
@@ -114,6 +126,22 @@ class ReconnectPolicy(
     }
 
     companion object {
+        /**
+         * Failures a retry would only repeat, and where repeating is itself
+         * wrong. `i2p_destination_changed` above all (SECURITY_ISSUES X1): the
+         * server's I2P name now points at a different key, and a background
+         * loop re-attempting it -- five minutes later, unattended -- is the
+         * opposite of "do not authenticate after a change without the user".
+         * Nothing is sent on any of these attempts, but the decision to go on
+         * belongs to the person looking at the warning.
+         */
+        val NEEDS_THE_USER: Set<String> = setOf(
+            "i2p_destination_changed", // X1: explicit re-approval required
+            "tls_required",            // clearnet server without TLS
+            "no_safe_auth_mechanism",  // over I2P/Tor: no SCRAM offered
+            "route_refused", "malformed_server", "bad_transport", "no_server",
+        )
+
         /** In the order of an I2P tunnel build, not of a clearnet retry. */
         const val DEFAULT_FIRST_DELAY_MS = 30_000L
 
