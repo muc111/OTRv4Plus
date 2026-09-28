@@ -2098,6 +2098,31 @@ mod tests {
     }
 
     #[test]
+    fn three_real_wrong_answers_lock_the_run_for_good() {
+        // Reached by failing, not by setting the counter: three complete
+        // runs with a wrong secret, each after its cooldown.
+        let (sid, fa, fb) = (b"sid-lock", b"fp-a", b"fp-b");
+        let (mut a, mut b) = classical_pair();
+        for attempt in 1..=MAX_ATTEMPTS {
+            if attempt > 1 {
+                cool_down(&mut a);
+                cool_down(&mut b);
+                a.restart_after_failure().expect("restart within the limit");
+                b.restart_after_failure().expect("restart within the limit");
+            }
+            a.set_secret(b"secret-one", sid, fa, fb);
+            b.set_secret(b"secret-TYPO", sid, fb, fa);
+            assert!(!run(&mut a, &mut b), "attempt {attempt} verified with a wrong secret");
+            assert_eq!(a.get_attempt_count(), attempt);
+        }
+        cool_down(&mut a);
+        assert!(a.restart_after_failure().is_err(), "a fourth run was allowed");
+        a.set_secret(b"secret-one", sid, fa, fb);
+        assert!(a.generate_smp1(None).is_err(), "SMP1 after the lock");
+        assert!(!a.is_verified());
+    }
+
+    #[test]
     fn only_a_failed_or_idle_run_restarts() {
         let mut a = SmpState::new(true);
         a.restart_after_failure().expect("idle is a no-op");
