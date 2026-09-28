@@ -456,7 +456,8 @@ class ChaquopyOtrCore(private val appContext: Context) : OtrCore {
         val rooms = mutableListOf<RoomSummary>()
         listValue(result)?.let { items ->
             for (item in items.asList()) {
-                rooms += RoomSummary(entry(item, "jid"), entry(item, "name"))
+                rooms += RoomSummary(entry(item, "jid"), entry(item, "name"),
+                                     entry(item, "occupants").toIntOrNull())
             }
         }
         return outcomeOf(result) to rooms

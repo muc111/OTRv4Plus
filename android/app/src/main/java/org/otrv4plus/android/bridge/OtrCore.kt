@@ -658,7 +658,11 @@ data class DiscoveredService(
 }
 
 /** A room a service advertises. Hidden rooms are absent by design. */
-data class RoomSummary(val jid: String, val name: String) {
+/**
+ * [occupants] is the service's own count (XEP-0045 muc#roominfo_occupants),
+ * or null when it gave none -- which is not the same as zero.
+ */
+data class RoomSummary(val jid: String, val name: String, val occupants: Int? = null) {
     /** The part before the `@`, for a service that advertises no name. */
     val label: String get() = name.ifBlank { jid.substringBefore('@') }
 }

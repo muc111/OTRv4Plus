@@ -541,6 +541,31 @@ class _StreamWatch:
                    "operation finished." % self.stage.replace("_", " "))
 
 
+def _room_occupant_count(info) -> Optional[int]:
+    """`muc#roominfo_occupants` from a room's disco#info, or None.
+
+    Read from the XML rather than through a form plugin, so it works whether
+    or not XEP-0128 is registered. Only a plain non-negative integer is
+    accepted; anything else is "not given"."""
+    try:
+        xml = info["disco_info"].xml
+    except Exception:
+        try:
+            xml = info.xml
+        except Exception:
+            return None
+    for form in xml.iter("{jabber:x:data}x"):
+        for field in form.iter("{jabber:x:data}field"):
+            if field.get("var") != "muc#roominfo_occupants":
+                continue
+            value = field.find("{jabber:x:data}value")
+            text = (value.text or "").strip() if value is not None else ""
+            if text.isdigit() and len(text) <= 7:
+                return int(text)
+            return None
+    return None
+
+
 def _form_field_names(form) -> str:
     """The NAMES of the fields a registration form asks for -- never values."""
     names = []
@@ -2616,11 +2641,37 @@ class XmppTransport(Transport):
         """
         return self._room_call(self._discover_rooms(service))
 
+    #: Rooms whose occupant count is asked for, and how many at once. One
+    #: disco#info per room: bounded so a service listing thousands of rooms
+    #: costs a few seconds, not a flood.
+    ROOM_INFO_LIMIT = 100
+    ROOM_INFO_PARALLEL = 8
+    ROOM_INFO_TIMEOUT = 8
+
     async def _discover_rooms(self, service: str):
-        items = await self._client["xep_0030"].get_items(
-            jid=service, timeout=CALL_TIMEOUT)
-        return [{"jid": str(jid), "name": str(name or "")}
-                for jid, _node, name in items["disco_items"].get_items()]
+        disco = self._client["xep_0030"]
+        items = await disco.get_items(jid=service, timeout=CALL_TIMEOUT)
+        rooms = [{"jid": str(jid), "name": str(name or ""), "occupants": None}
+                 for jid, _node, name in items["disco_items"].get_items()]
+        # XEP-0045 §6.4: disco#info on a room carries a muc#roominfo form
+        # with `muc#roominfo_occupants`. Optional for the service, so a room
+        # whose count is not given shows none -- never a guessed zero.
+        gate = asyncio.Semaphore(self.ROOM_INFO_PARALLEL)
+
+        async def count(room):
+            async with gate:
+                try:
+                    info = await disco.get_info(
+                        jid=room["jid"], timeout=self.ROOM_INFO_TIMEOUT)
+                    room["occupants"] = _room_occupant_count(info)
+                except Exception:
+                    pass
+
+        await asyncio.gather(*(count(r) for r in rooms[:self.ROOM_INFO_LIMIT]))
+        # Occupied rooms first, then the service's own order.
+        order = {id(r): i for i, r in enumerate(rooms)}
+        rooms.sort(key=lambda r: (-(r["occupants"] or 0), order[id(r)]))
+        return rooms
 
     def join_room(self, room: str, nick: str,
                   password: str = "") -> "tuple[str, str, dict]":

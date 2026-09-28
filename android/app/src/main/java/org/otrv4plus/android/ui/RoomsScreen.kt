@@ -346,6 +346,13 @@ fun RoomsScreen(
                             style = MaterialTheme.typography.bodyMedium)
                         Text(room.jid,
                             style = MaterialTheme.typography.bodySmall)
+                        // The service's own count. Absent when it gave none:
+                        // "unknown" is not written as "0 users".
+                        room.occupants?.let { n ->
+                            Text(if (n == 1) "1 user in the room"
+                                 else "$n users in the room",
+                                 style = MaterialTheme.typography.bodySmall)
+                        }
                     }
                     TextButton(
                         enabled = busy == null && nick.isNotBlank() &&
