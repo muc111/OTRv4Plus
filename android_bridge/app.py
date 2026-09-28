@@ -426,7 +426,10 @@ class OtrApp:
     # -- rooms -----------------------------------------------------------------
 
     def note_room_joined(self, room: str) -> None:
-        """We are in [room]: its text is group chat from now on."""
+        """We are in [room]: its text is group chat from now on. A join
+        completing on the loop thread after a wipe began records nothing."""
+        if self._wiped:
+            return
         self._rooms.add(self.canonical_peer(room))
 
     def note_room_left(self, room: str) -> None:
@@ -598,6 +601,17 @@ class OtrApp:
         self._last_activity.clear()
         self._mode = OtrMode()
         self._call_states.clear()
+        # Room memberships (addresses: who this account talks to in groups)
+        # and the diagnostics trace (aliased, but still a record of activity).
+        try:
+            self.forget_rooms()
+        except Exception:
+            report["errors"].append("rooms")
+        try:
+            from .trace import TRACE as _trace
+            _trace.clear()
+        except Exception:
+            report["errors"].append("trace")
 
         from . import wipe as _disk
         destroyed = failed = 0

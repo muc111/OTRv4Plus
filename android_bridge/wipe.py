@@ -61,7 +61,12 @@ def _file_dir() -> str:
 
 def python_state_roots() -> List[str]:
     """Every directory the Python side persists into. Existence not required."""
-    roots = [os.path.join(os.path.expanduser("~"), ".otrv4plus")]
+    home = os.path.expanduser("~")
+    # ~/.otrv4 is the engine's default log directory (OTRLogger, which only
+    # the terminal IRC client instantiates). Listed so that, if anything ever
+    # writes there on Android, it is overwritten before the storage stage
+    # removes it rather than only unlinked.
+    roots = [os.path.join(home, ".otrv4plus"), os.path.join(home, ".otrv4")]
     files = _file_dir()
     real_files = os.path.realpath(files)
     if not any(real_files == os.path.realpath(r)

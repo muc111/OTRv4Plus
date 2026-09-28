@@ -422,6 +422,33 @@ class TestWhatWasOnDisk:
         OtrApp(_manager(), Wire(), Sink()).wipe()
         assert not os.path.exists(elsewhere)
 
+    def test_the_engine_log_directory_is_destroyed_too(self, isolated_home):
+        """~/.otrv4 is OTRLogger's default. Not written on Android today; if
+        it ever is, the wipe overwrites it rather than leaving it to the
+        storage stage's plain unlink."""
+        logs = os.path.join(isolated_home, ".otrv4", "logs")
+        os.makedirs(logs)
+        with open(os.path.join(logs, "otrv4plus.log"), "w") as f:
+            f.write("session with bob@x.i2p")
+        report = OtrApp(_manager(), Wire(), Sink()).wipe()
+        assert not os.path.exists(os.path.join(isolated_home, ".otrv4"))
+        assert report["files_destroyed"] >= 1
+
+    def test_the_diagnostics_trace_and_room_memberships_are_forgotten(self):
+        from android_bridge.trace import TRACE
+        app = OtrApp(_manager(), Wire(), Sink())
+        app.note_room_joined("lobby@rooms.example.test")
+        TRACE.record("test", "something happened", "info")
+        assert TRACE.events()
+        report = app.wipe()
+        assert TRACE.events() == []
+        assert app.joined_room_list() == []
+        assert "trace" not in report["errors"] and "rooms" not in report["errors"]
+        # A join that completes on the loop thread after the wipe records
+        # nothing (the transport calls note_room_joined from there).
+        app.note_room_joined("late@rooms.example.test")
+        assert app.joined_room_list() == []
+
     def test_a_fresh_launch_afterwards_works_and_is_a_new_identity(self, pair):
         old_fp = pair.alice.local_fingerprint()
         pair.alice.wipe()
