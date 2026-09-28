@@ -25,6 +25,7 @@ import org.otrv4plus.android.bridge.InitResult
 import org.otrv4plus.android.bridge.RegistrationOutcome
 import org.otrv4plus.android.bridge.RouterProbe
 import org.otrv4plus.android.bridge.ServerIdentityChange
+import org.otrv4plus.android.bridge.ServerCheck
 import org.otrv4plus.android.chat.ChatState
 import org.otrv4plus.android.connection.LinkPhase
 import org.otrv4plus.android.connection.LoginProgress
@@ -92,6 +93,10 @@ class ConnectionViewModel(app: Application) : AndroidViewModel(app) {
      * ReconnectPolicy.NEEDS_THE_USER).
      */
     var identityChange by mutableStateOf<ServerIdentityChange?>(null)
+        private set
+
+    /** The last "Test server" result, or null. */
+    var serverTest by mutableStateOf<ServerCheck?>(null)
         private set
 
     /** The service's authoritative phase. */
@@ -356,6 +361,30 @@ class ConnectionViewModel(app: Application) : AndroidViewModel(app) {
     /** Leave the change refused. The old destination stays trusted. */
     fun dismissIdentityChange() {
         identityChange = null
+    }
+
+    /**
+     * Reach the server without signing in or creating anything: separates
+     * "not reached" from "reached, but registration refused / needs a
+     * CAPTCHA / not offered". Refused while connected, like register.
+     */
+    fun testServer(jid: String, server: String = "") {
+        val c = core ?: return
+        if (busy != null || status.connected) return
+        error = null
+        serverTest = null
+        busy = "Testing the server..."
+        viewModelScope.launch {
+            val got = withContext(Dispatchers.IO) {
+                runCatching {
+                    c.prepareConnection(jid.trim(), server.trim())
+                    c.testServer()
+                }
+            }
+            got.onSuccess { serverTest = it }
+                .onFailure { error = it.javaClass.simpleName }
+            busy = null
+        }
     }
 
     /** Dismiss the last registration result. */

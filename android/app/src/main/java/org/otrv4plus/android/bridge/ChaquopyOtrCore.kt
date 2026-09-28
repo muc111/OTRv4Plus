@@ -272,10 +272,41 @@ class ChaquopyOtrCore(private val appContext: Context) : OtrCore {
         samHost: String = "",
         samPort: Int = 0,
     ): ConnectionStatus {
+        // The active network's DNS servers, for the clearnet SRV lookup
+        // (android_bridge.dns_srv): Android has no /etc/resolv.conf, and
+        // without SRV an account on yax.im is dialled at the wrong machine.
+        // IP literals only; nothing about the account goes with them.
+        runCatching {
+            python.getModule("android_bridge.dns_srv")
+                .callAttr("set_system_resolvers", activeDnsServers().toTypedArray())
+        }
         val module = python.getModule("android_bridge.connection")
         controller = module.callAttr(
             "controller_for", requireApp(), jid, server, samHost, samPort)
         return connectionStatus()
+    }
+
+    private fun activeDnsServers(): List<String> = runCatching {
+        val cm = appContext.getSystemService(android.net.ConnectivityManager::class.java)
+        val lp = cm?.getLinkProperties(cm.activeNetwork)
+        lp?.dnsServers?.mapNotNull { it.hostAddress } ?: emptyList()
+    }.getOrDefault(emptyList())
+
+    /**
+     * Reach the prepared server and stop: DNS (SRV first), TCP, TLS with the
+     * certificate verified, the XMPP stream, and registration discovery. No
+     * sign-in, no account creation, no password. Never throws.
+     */
+    fun testServer(): ServerCheck {
+        val ctl = controller ?: throw OtrBridgeException("not_prepared")
+        val r = ctl.callAttr("test_server")
+        fun str(k: String) = r?.callAttr("get", k)?.toString() ?: ""
+        return ServerCheck(
+            ok = r?.callAttr("get", "ok")?.toBoolean() ?: false,
+            code = str("code").ifBlank { "unknown" },
+            detail = str("detail"),
+            reached = str("reached"),
+        )
     }
 
     /**

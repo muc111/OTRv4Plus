@@ -138,6 +138,7 @@ class ReconnectPolicy(
         val NEEDS_THE_USER: Set<String> = setOf(
             "i2p_destination_changed", // X1: explicit re-approval required
             "tls_required",            // clearnet server without TLS
+            "certificate_failure",     // clearnet certificate rejected
             "no_safe_auth_mechanism",  // over I2P/Tor: no SCRAM offered
             "route_refused", "malformed_server", "bad_transport", "no_server",
         )

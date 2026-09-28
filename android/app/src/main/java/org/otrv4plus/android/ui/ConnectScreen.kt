@@ -384,6 +384,21 @@ fun ConnectScreen(
             )
         }
 
+        model.serverTest?.let {
+            Spacer(Modifier.height(4.dp))
+            Text(
+                if (it.ok) "Server test: reached" else "Server test: failed",
+                style = MaterialTheme.typography.titleSmall,
+                color = if (it.ok) MaterialTheme.colorScheme.onSurface
+                        else MaterialTheme.colorScheme.error,
+            )
+            SelectionContainer {
+                Text("${it.code}: ${it.detail}" +
+                         (if (it.reached.isNotBlank()) "\nReached: ${it.reached}" else ""),
+                     style = MaterialTheme.typography.bodySmall)
+            }
+        }
+
         if (status.detail.isNotBlank() && status.stage == "failed") {
             Spacer(Modifier.height(4.dp))
             Text("Could not connect",
@@ -447,6 +462,13 @@ fun ConnectScreen(
                 enabled = !status.connected && busy == null,
                 onClick = onOpenDiagnostics,
             ) { Text("Debug") }
+
+            // Reaches the server and stops: no sign-in, no account, no
+            // password. Needs only the address, so it is enabled without one.
+            TextButton(
+                enabled = busy == null && !status.connected && target != null,
+                onClick = { model.testServer(target!!.jid, target.server) },
+            ) { Text("Test server") }
 
             // Never disabled, and reachable before anyone signs in: the
             // licence notice and the third-party attribution are obligations

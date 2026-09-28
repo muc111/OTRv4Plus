@@ -580,6 +580,20 @@ data class ServerIdentityChange(
     val seen: String,
 )
 
+/**
+ * What "Test server" found: how far the connection got (`reached`:
+ * tcp_connected, tls_established, xmpp_stream, registration_form) and a
+ * code -- registration_available, registration_captcha_required,
+ * registration_not_offered, dns_failure, tcp_failure, certificate_failure,
+ * tls_failure, server_closed_connection, tls_required, ... Nothing secret.
+ */
+data class ServerCheck(
+    val ok: Boolean,
+    val code: String,
+    val detail: String,
+    val reached: String,
+)
+
 data class RouterProbe(
     val reachable: Boolean,
     val code: String,
