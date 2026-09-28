@@ -326,6 +326,17 @@ profile's `use_i2p` defaulted to True and nothing looked at the name.
 | `*.onion` | `tor` | Tor, inside SOCKS5 CONNECT | off; SCRAM only |
 | anything else | `clearnet_tls` | system DNS (SRV, then the domain on 5222) | CA-verified, hostname checked |
 
+**Clearnet addresses (rc.6).** RFC 6120 §3.2.1 SRV first:
+`_xmpp-client._tcp.<domain>`, asked of the phone's own DNS servers
+(`android_bridge/dns_srv.py`; the APK has no aiodns, and without this slixmpp
+silently dialled `<domain>:5222` -- the wrong machine for yax.im). Targets in
+RFC 2782 order; `<domain>:5222` only when there is no SRV record. Within a
+target, IPv4 before IPv6, and EVERY address is tried before the attempt is
+called failed (the first failure used to end it). An SRV answer only says
+where to dial: TLS is still verified against the JID's domain, so a forged
+record produces `certificate_failure`, never an impostor. The trace records
+`dns_plan` (SRV status, targets, fallback, address counts) and each stage.
+
 An explicit override is honoured where safe (`tor` for a clearnet name keeps
 certificate checks) and refused where it would leak a name (`.i2p`/`.onion`
 never to DNS). Only `i2p_sam` enters `checking_router`; only `tor` enters

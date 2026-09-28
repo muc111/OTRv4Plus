@@ -4,6 +4,46 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.6 — 2026-09-28 — clearnet registration: SRV, every address, and a named stage (core 0.11.0)
+
+*Handset report on rc.5: registering on 07f.de and on yax.im (no CAPTCHA)
+both ended `clearnet_endpoint srv=true -> registration failed code=network`.
+Reproduced against a real STARTTLS server; not yet re-run on a handset —
+`PHYSICAL_TEST_PLAN.md` §0.*
+
+**Root cause (two faults, both client-side)**
+
+- **No SRV lookup.** slixmpp looks up `_xmpp-client._tcp.<domain>` only
+  through aiodns, which the APK does not ship, so it dialled `<domain>:5222`.
+  yax.im's SRV record points at `xmpp.yax.im`, a different machine; 07f.de's
+  points at `xmpp.07f.de`. The app now asks the SRV question itself
+  (`android_bridge/dns_srv.py`, the phone's own DNS servers via Kotlin),
+  with RFC 2782 ordering and a fallback to `<domain>:5222` only when there
+  is no record.
+- **The first failed address ended the attempt.** slixmpp tries each
+  address and reports each failure; the transport treated the first as
+  final. Both domains publish AAAA records, so a phone without working IPv6
+  never tried IPv4. Now every address is tried (IPv4 first), for login too.
+
+**Reporting**
+
+- `code=network` / "Could not reach the server" is replaced by the stage:
+  `dns_failure`, `tcp_failure` (with the OS reason, e.g. ECONNREFUSED),
+  `tls_failure`, `certificate_failure`, `tls_required`,
+  `xmpp_stream_failure`, `server_closed_connection`,
+  `registration_captcha_required`, `registration_fields_required`,
+  `registration_protocol_error`, and the server's own refusals (`conflict`,
+  `not_allowed`, ...). The trace records the SRV result, targets, address
+  counts, and each stage reached. No password, stanza or key.
+- A CAPTCHA or extra required field is detected from the registration form
+  BEFORE the password is sent; the password is then not sent.
+- **Test server** on the connect screen: DNS, TCP, verified TLS, the XMPP
+  stream and registration discovery, then stop — no sign-in, no account, no
+  password.
+
+Certificate verification is unchanged (required, hostname checked against
+the JID's domain). I2P and Tor paths are unchanged.
+
 ## Android 0.7.0-experimental.rc.5 — 2026-09-28 — clearnet servers work; no password to a substituted I2P server (core 0.11.0)
 
 *Not tested on a handset. `PHYSICAL_TEST_PLAN.md` §0 is the first thing to

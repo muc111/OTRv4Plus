@@ -22,11 +22,21 @@ storage figures.
 Automated coverage: `tests/test_transport_route.py`,
 `tests/test_x1_destination_pinning.py`, `ReconnectPolicyTest`.
 
-1. **Clearnet `07f.de`.** Fresh install. Another server… → `07f.de`,
-   username, strong password, **Create account**. **Pass:** the state line
-   never shows "Checking for an I2P router"; Debug → trace shows `transport
-   selected route=clearnet_tls`, then DNS/TCP/TLS progress; the account is
-   created or the server's own reason is shown. Then **Log in**: connected.
+1. **Clearnet `yax.im` (no CAPTCHA), then `07f.de`.** Fresh install.
+   Another server… → `yax.im`, a new username. First press **Test server**
+   (no password needed). **Pass:** "Server test: reached",
+   `registration_available`, `Reached: tcp_connected,tls_established,
+   xmpp_stream,registration_form`. Then a strong password, **Create
+   account**. **Pass:** "Account created", or a named server refusal
+   (`conflict`, `not_allowed`, ...) -- never `network`. Debug → trace must
+   show `dns_plan srv=found targets=xmpp.yax.im:5222`, `tcp_connected`,
+   `tls_established certificate=verified`, `form_received`, `submitted`,
+   `accepted`. Then **Log in**: connected. Repeat for `07f.de`: expect
+   `dns_plan ... targets=xmpp.07f.de:5222`, and if it wants a CAPTCHA,
+   `registration_captcha_required` with "Your password was not sent".
+   On FAIL, export the diagnostic report: the `failed_at` line names the
+   stage and the OS reason (e.g. `tcp_failure reasons=ENETUNREACH`).
+   Try once on Wi-Fi and once on mobile data (IPv6 differs).
 2. **Clearnet failure is named.** A non-existent domain → a DNS/TCP/TLS
    failure sentence, never a router one.
 3. **Default I2P server, router running.** "Checking for an I2P router" then
