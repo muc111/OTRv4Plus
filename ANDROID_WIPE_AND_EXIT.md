@@ -33,39 +33,79 @@ says that it cannot be undone.
 
 Each step is attempted even if an earlier one failed; a second request does
 nothing. The process ending is the last step, always attempted.
+(`WipeAndExit.Step`; changed 2026-09-28 -- see "The 11.28 MB report" below.)
 
-1. **Stop background work.** The vault is **latched** first (`LatchedVault`:
+1. **A. Stop background work.** The vault is **latched** first (`LatchedVault`:
    from here it refuses every write and read, and the latch waits for a write
    already in progress), then the drain loop (which writes arriving messages
    to the vault) and the reconnect loop are cancelled, so nothing writes back
    or reconnects behind the wipe. From here the service ignores every start
    request, and a screen opened in this process closes at once.
-2. **Notifications**: all cancelled.
-3. **Memory**: the conversation list, drafts, roster, rooms, call states,
-   verification states and unread count.
-4. **Vault**: the AndroidKeyStore key is deleted, then the vault files.
-5. **Cache**: files staged for sending, metadata-scrubbed copies, exported
-   diagnostics.
-6. **Wipe the engine**, while the transport still exists:
-   1. *Calls*: each is ended, then anything left is force-closed, which stops
-      the audio streams and zeroizes the key schedule and key exchange; the
-      call event loop is drained, stopped and closed.
-   2. *Transfers*: each FileKey holder is told to zeroize; each partial file is
-      closed and unlinked.
+2. **B. Destroy every secret in Rust** (`OtrApp.wipe_crypto`), before anything
+   that can wait on the network:
+   1. *Calls*: force-closed, locally (`CallBridge.destroy_keys`): audio
+      streams stopped, key schedule and key exchange zeroized. No END is
+      sent -- it could not be encrypted once the keys are gone.
+   2. *Transfers*: each FileKey holder zeroizes; each partial file is closed
+      and unlinked.
    3. *OTR*, **on the transport's loop thread**: every ratchet (keys, DH
       handle, pending ML-KEM brace keypair), SMP state machine and vault,
       in-flight DAKE state and any unconsumed `DakeOutput`, and the identity
-      and prekey handles are zeroized **in Rust, explicitly** — not left to the
-      garbage collector. In-memory trust pins and SMP auto-respond secrets are
-      cleared. The engine then refuses every entry point.
-   4. *Transport*: closed (stream, I2P tunnel, loop thread).
-   5. *Python-side files*: `~/.otrv4plus` (received files, partial transfers,
-      and any leftovers of builds before 0.7.0, which wrote a key-storage
-      seed) and the configured file directory,
-      each file overwritten once with random bytes, fsync'd and
-      unlinked. Symlinks are removed, never followed.
-7. **Exit**: the service stops (so it is not restarted as sticky), the task is
+      and prekey handles are zeroized **in Rust, explicitly** -- not left to
+      the garbage collector. The engine then refuses every entry point.
+3. **Notifications**: all cancelled.
+4. **Memory**: the conversation list, drafts, roster, rooms, call states,
+   verification states and unread count.
+5. **Vault**: the AndroidKeyStore key is deleted, then the vault files.
+6. **C. Stop the subsystems** (`OtrApp.wipe`): call manager, SAM sessions and
+   loop; the XMPP stream, I2P tunnel and loop thread; the Python-side files
+   (`~/.otrv4plus`, i.e. `files/.otrv4plus` under Chaquopy) overwritten once
+   with random bytes, fsync'd and unlinked. Bounded by network timeouts, which
+   is why every secret is already gone.
+7. **D. Wipe app storage** (`AppDataWipe`): **every entry** in the app's
+   private data directory -- `files/` (the vault, the Python home, the
+   extracted Python runtime), `cache/`, `code_cache/`, `databases/`,
+   `shared_prefs/`, `no_backup/`, any `app_*` directory -- and in the
+   app-specific external directories (`Android/data/org.otrv4plus.android/`).
+   Not a list of known files. Symbolic links are removed, never followed; the
+   system's `lib` link (the installed native libraries) is preserved. Before
+   and after are measured (`AppDataWipe.Result`, sizes only).
+8. **Exit**: the service stops (so it is not restarted as sticky), the task is
    removed from Recents, and the process is killed.
+
+### The 11.28 MB report (2026-09-28)
+
+A handset showed ~11.28 MB of user data and ~254 KB of cache in Settings after
+Wipe & Exit. The wipe then deleted a list of known locations -- the vault
+directory, the contents of `cache/`, and `~/.otrv4plus` -- and **kept by
+design** `files/chaquopy/` (the extracted Python runtime: most of those
+megabytes) and `shared_prefs/` (the theme). It never looked at `code_cache/`
+(which Settings counts as cache), `databases/`, `no_backup/`, `app_*`
+directories a library creates, or app-specific external storage. And the
+Rust destruction ran sixth, after local steps, where the rule is that it runs
+first. Both are fixed: the sweep is generic (step 7) and Rust goes first
+(step 2). `AppDataWipeTest` populates a directory laid out like
+`/data/data/<package>` with ~11.5 MB across all of those locations, plus a
+link planted to point outside, and requires nothing to be left but the
+system `lib` link.
+
+### Verifying it on a device
+
+The unit test proves the sweep; only a device proves the app. With a debug
+build (`run-as` needs one):
+
+```
+adb shell run-as org.otrv4plus.android du -a . | sort -n | tail -40   # before
+# use the app: sign in, chat, verify with SMP, receive a file, open diagnostics
+adb shell run-as org.otrv4plus.android du -a . > before.txt
+# Wipe & Exit in the app; the process ends
+adb shell run-as org.otrv4plus.android find . -mindepth 1 | grep -v '^./lib$'
+# expected: no output (the lib link is the system's)
+adb shell dumpsys package org.otrv4plus.android | grep -i -A3 "dataDir"
+# Settings > Apps > OTRv4+ > Storage: user data and cache should read 0 B
+# (Settings may show a few KB for the empty directories Android recreates).
+# Relaunch: the login screen, no contacts, no history, a new fingerprint.
+```
 
 ### Why local state goes before the engine (the "conversations reappear" report)
 
@@ -102,9 +142,10 @@ handshake on one thread and asserts the wipe ran there with no leak warning.
 ## Storage audit
 
 Every place the app keeps state, classified. The authoritative list is
-`WipeAndExit.STORES`; a store missing from it is a store the wipe does not
-know about, and the test requires every non-configuration entry to name the
-step that destroys it.
+`WipeAndExit.STORES`; the test requires every entry except system-managed
+state to name the step that destroys it. Step 7 does not depend on this list
+being complete -- it removes every entry -- but the list is how a reader
+knows what is there.
 
 | Category | What | Where | Wipe step |
 |---|---|---|---|
@@ -112,26 +153,30 @@ step that destroys it.
 | Sensitive, persistent | Message history + index | vault `chat.<account>.*` | Vault |
 | Sensitive, persistent | Saved contacts | vault `contacts.<account>` | Vault |
 | Sensitive, persistent | Vault sealing key | AndroidKeyStore `otrv4plus.vault.v1` | Vault |
-| Sensitive, persistent | Received files (the engine itself writes nothing since 0.7.0) | `~/.otrv4plus/` | Engine |
-| Sensitive, ephemeral | Sessions, ratchets, DAKE, SMP | Rust | Engine |
-| Sensitive, ephemeral | Identity and prekey | Rust (not persisted on Android) | Engine |
-| Sensitive, ephemeral | Trust pins, SMP auto-respond | Python engine | Engine |
-| Sensitive, ephemeral | Call keys, audio, SAM | Rust / voice manager | Engine |
-| Sensitive, ephemeral | Transfer keys, partial files | Rust / transfer manager | Engine |
-| Sensitive, ephemeral | Stream, tunnel, loop thread | Python transport | Engine |
-| Sensitive, ephemeral | Presence, OTR mode per peer | Python facade | Engine |
+| Sensitive, ephemeral | Sessions, ratchets, DAKE, SMP | Rust | Crypto (B) |
+| Sensitive, ephemeral | Identity and prekey | Rust (not persisted on Android) | Crypto (B) |
+| Sensitive, ephemeral | Call keys, key exchanges | Rust / voice manager | Crypto (B) |
+| Sensitive, ephemeral | Transfer keys, partial files | Rust / transfer manager | Crypto (B) |
+| Sensitive, ephemeral | Trust pins, SMP auto-respond | Python engine | Crypto (B) |
+| Sensitive, persistent | Received files | `files/.otrv4plus/` | Subsystems (C), then storage (D) |
+| Sensitive, ephemeral | Audio, SAM, stream, tunnel, loop thread | Python transport | Subsystems (C) |
+| Sensitive, ephemeral | Presence, OTR mode per peer | Python facade | Subsystems (C) |
 | Sensitive, ephemeral | Conversation, drafts, roster, unread | `ChatState` | Memory |
 | Sensitive, ephemeral | Notifications | NotificationManager | Notifications |
-| Temporary | Outbox, scrubbed copies | cache `outbox/` | Cache |
-| Temporary | Exported diagnostics | cache `diagnostics/` | Cache |
+| Temporary | Outbox, scrubbed copies, diagnostics, "open with" hand-offs | `cache/` | Storage (D) |
+| App data | Python runtime (re-extracted on launch) | `files/chaquopy/` | Storage (D) |
+| App data | Theme | `shared_prefs/otrv4plus.ui.xml` | Storage (D) |
+| App data | Anything else: `code_cache/`, `databases/`, `no_backup/`, `app_*` | data dir | Storage (D) |
+| App data | App-specific external storage | `Android/data/<package>/` | Storage (D) |
 | Sensitive, ephemeral | Python trace and error log | process memory | Exit |
 | Sensitive, ephemeral | Recents snapshot | system | Exit |
-| Configuration (kept) | Chaquopy runtime, bundled code | `files/chaquopy/` | — |
-| Configuration (kept) | Notification channel settings | system | — |
-| Configuration (kept) | Granted permissions | system | — |
+| System-managed (kept) | Notification channel settings | system | -- |
+| System-managed (kept) | Granted permissions | system | -- |
+| System-managed (kept) | Installed APK and its `lib` link | package manager | -- |
 
-The app writes no SharedPreferences, DataStore or SQLite/Room database.
 Ratchet and session keys are never persisted (`RecordType.NEVER_PERSISTED`).
+Files the user explicitly saved to shared storage (Downloads, a document the
+picker chose) are the user's and are not touched.
 
 ## The guarantee, stated precisely
 
@@ -167,7 +212,8 @@ roster and may have offline messages, which are OTR ciphertext).
 
 The next launch is a first launch: login screen, no contacts, no history, a
 new identity and fingerprint. Peers will see the new key and must verify again
-with SMP. Notification channel settings and granted permissions remain.
+with SMP. The theme is back to its default. Notification channel settings and
+granted permissions remain: they are the system's, not app storage.
 
 **Signing in to the same account again brings back the server's roster, not
 the history.** The conversation list shows every roster contact so a

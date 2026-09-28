@@ -645,6 +645,19 @@ class ConnectionController:
         return {"ok": True, "code": "ok",
                 "detail": "Stopping the connection attempt."}
 
+    def wipe_crypto(self) -> Dict[str, Any]:
+        """Wipe & Exit stage B: refuse further connects, then destroy every
+        secret in Rust (`OtrApp.wipe_crypto`). Local and fast; `wipe` does
+        the rest. Idempotent; never raises."""
+        with self._connect_lock:
+            self._wiped = True
+        try:
+            report = dict(self._app.wipe_crypto())
+        except Exception as exc:
+            report = {"errors": ["app:%s" % type(exc).__name__]}
+        report["ok"] = not report.get("errors")
+        return report
+
     def wipe(self) -> Dict[str, Any]:
         """Wipe & Exit: stop any attempt, destroy everything, never reconnect.
 

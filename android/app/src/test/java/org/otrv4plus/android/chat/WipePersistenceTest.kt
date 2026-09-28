@@ -54,11 +54,12 @@ class WipePersistenceTest {
     private fun wipe(p: Process, duringEngine: () -> Unit = {}): WipeAndExit.Report =
         WipeAndExit.Runner(mapOf(
             Step.STOP_BACKGROUND to { p.vault.latch() },
+            Step.DESTROY_CRYPTO to { },
             Step.CLEAR_NOTIFICATIONS to { },
             Step.CLEAR_MEMORY to { p.chat.bindAccount(AccountScope.NONE) },
             Step.DESTROY_VAULT to { p.vault.clear() },
-            Step.CLEAR_CACHE to { },
-            Step.WIPE_ENGINE to duringEngine,
+            Step.STOP_SUBSYSTEMS to duringEngine,
+            Step.WIPE_APP_DATA to { },
             Step.EXIT to { },
         )).run()
 

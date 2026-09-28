@@ -395,6 +395,11 @@ class OtrConnectionService : Service() {
 
     private val wipeStarted = AtomicBoolean(false)
 
+    /** Before/after storage measurement of the last wipe (sizes, no names shown). */
+    @Volatile
+    var lastStorage: org.otrv4plus.android.security.AppDataWipe.Result? = null
+        private set
+
     /** The last wipe's engine report, for the diagnostics that outlive it. */
     @Volatile
     var lastWipe: org.otrv4plus.android.bridge.WipeReport? = null
@@ -429,10 +434,8 @@ class OtrConnectionService : Service() {
                 watcher?.cancel(); watcher = null
                 drainer?.cancel(); drainer = null
             },
-            WipeAndExit.Step.WIPE_ENGINE to {
-                val report = core.wipe()
-                lastWipe = report
-                if (!report.ok) error("engine wipe reported ${report.errors}")
+            WipeAndExit.Step.DESTROY_CRYPTO to {
+                if (!core.wipeCrypto()) error("the engine reported an error destroying keys")
             },
             WipeAndExit.Step.CLEAR_NOTIFICATIONS to {
                 alerts.clear()
@@ -452,8 +455,27 @@ class OtrConnectionService : Service() {
                     error("the vault key could not be confirmed deleted")
                 }
             },
-            WipeAndExit.Step.CLEAR_CACHE to {
-                context.cacheDir.listFiles()?.forEach { it.deleteRecursively() }
+            WipeAndExit.Step.STOP_SUBSYSTEMS to {
+                val report = core.wipe()
+                lastWipe = report
+                if (!report.ok) error("engine teardown reported ${report.errors}")
+            },
+            WipeAndExit.Step.WIPE_APP_DATA to {
+                // Every entry the app owns on disk, not a list of known files
+                // (AppDataWipe). The data directory holds files/, cache/,
+                // code_cache/, databases/, shared_prefs/, no_backup/ and any
+                // app_* directory; the external ones hold app-specific
+                // storage. The system's `lib` link is preserved.
+                val roots = buildList {
+                    add(context.dataDir.toPath())
+                    context.getExternalFilesDirs(null).filterNotNull()
+                        .forEach { add(it.parentFile?.toPath() ?: it.toPath()) }
+                    context.externalCacheDirs.filterNotNull()
+                        .forEach { add(it.parentFile?.toPath() ?: it.toPath()) }
+                }.distinct()
+                val result = org.otrv4plus.android.security.AppDataWipe.wipe(roots)
+                lastStorage = result
+                if (!result.complete) error("storage left: ${result.failed.size} failed")
             },
             WipeAndExit.Step.EXIT to {
                 enter(LinkPhase.STOPPED, "wiped")

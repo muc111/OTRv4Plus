@@ -422,8 +422,25 @@ class CallBridge:
 
     # -- teardown -------------------------------------------------------------
 
-    def shutdown(self) -> None:
+    def destroy_keys(self) -> None:
+        """Wipe & Exit stage B: force-close every call NOW, locally.
+
+        Stops the audio streams and zeroizes each key schedule and key
+        exchange (`cleanup_sync`, the terminal client's routine), without
+        sending anything: this runs before the network teardown so that no
+        timeout stands between the wipe and the keys. `shutdown` still runs
+        afterwards to release SAM and the loop.
+        """
+        with self._lock:
+            manager = self._manager
+        if manager is not None:
+            manager.cleanup_sync()
+
+    def shutdown(self, graceful: bool = True) -> None:
         """End every call and give the loop back. Safe to call twice.
+
+        `graceful=False` (Wipe & Exit, after `destroy_keys`) skips the
+        encrypted END: the keys it would need are already gone.
 
         Reached from `OtrApp.shutdown`, which a logout drives, so a second
         call must be harmless. Ending the calls FIRST matters: the manager
@@ -438,7 +455,7 @@ class CallBridge:
             pending, self._pending = set(self._pending), set()
             self._announced.clear()
             self._active_since.clear()
-        if manager is not None and loop is not None and not loop.is_closed():
+        if graceful and manager is not None and loop is not None and not loop.is_closed():
             for peer in list(getattr(manager, "_calls", {}).keys()):
                 try:
                     future = asyncio.run_coroutine_threadsafe(

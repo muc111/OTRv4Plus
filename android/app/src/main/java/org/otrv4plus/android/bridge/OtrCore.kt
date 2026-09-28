@@ -31,6 +31,14 @@ interface OtrCore {
      */
     fun wipe(): WipeReport
 
+    /**
+     * Wipe & Exit, stage B: destroy every secret in Rust NOW -- sessions,
+     * DAKE and SMP state, identity, call and file keys -- without waiting on
+     * the network (`OtrApp.wipe_crypto`). [wipe] follows with the teardown.
+     * Idempotent; never throws; true when the engine reported no error.
+     */
+    fun wipeCrypto(): Boolean
+
     fun localFingerprint(): String
 
     fun securityState(peer: String): SecurityState

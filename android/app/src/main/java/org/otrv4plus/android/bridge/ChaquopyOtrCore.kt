@@ -710,6 +710,19 @@ class ChaquopyOtrCore(private val appContext: Context) : OtrCore {
      * Every reference is dropped afterwards, `initResult` included, so the
      * core cannot answer as though a wiped engine were alive.
      */
+    override fun wipeCrypto(): Boolean = try {
+        val ctl = controller
+        val a = app
+        val report: PyObject? = when {
+            ctl != null -> ctl.callAttr("wipe_crypto")
+            a != null -> a.callAttr("wipe_crypto")
+            else -> null
+        }
+        report == null || (report.callAttr("get", "errors")?.asList()?.isEmpty() ?: true)
+    } catch (_: Throwable) {
+        false
+    }
+
     override fun wipe(): WipeReport {
         val report: PyObject? = try {
             val ctl = controller

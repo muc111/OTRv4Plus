@@ -518,10 +518,15 @@ class TestTheAndroidSideIsWired:
     def test_each_step_does_what_the_plan_says(self):
         body = _body(_kt("connection", "OtrConnectionService.kt"),
                      "private fun wipeAndExit()")
-        for needle in ("core.wipe()", "KeystoreVault.destroy(context)",
-                       "cancelAll()", "cacheDir", "killProcess",
+        for needle in ("core.wipeCrypto()", "core.wipe()", "KeystoreVault.destroy(context)",
+                       "cancelAll()", "AppDataWipe.wipe(", "context.dataDir",
+                       "getExternalFilesDirs", "externalCacheDirs", "killProcess",
                        "drainer?.cancel()", "worker?.cancel()"):
             assert needle in body, "the wipe does not do %s" % needle
+        # Rust destruction before the network-bound teardown, and the storage
+        # sweep after it (so nothing writes behind it).
+        assert body.index("core.wipeCrypto()") < body.index("core.wipe()")
+        assert body.index("core.wipe()") < body.index("AppDataWipe.wipe(")
         # Stopped, THEN killed, so a sticky service is not restarted.
         assert body.index("stopSelf()") < body.index("killProcess")
 
@@ -645,3 +650,61 @@ class TestTheMediaGateFollowsTheSession:
     def test_a_cleared_session_closes_it(self, verified):
         verified.alice._engine.sessions.pop(verified.bob_jid, None)
         assert not self._gate(verified.alice, verified.bob_jid)
+
+
+# ---------------------------------------------------------------------------
+# Staging: Rust destruction FIRST, before anything that waits on the network
+# ---------------------------------------------------------------------------
+
+class TestCryptoIsDestroyedFirst:
+    """`wipe_crypto` (stage B) runs before the teardown that can block on a
+    network timeout, and `wipe` starts with it."""
+
+    def test_wipe_crypto_destroys_the_ratchet_and_touches_no_network(self, pair):
+        session = pair.alice._engine.sessions[pair.bob_jid]
+        leaked = session.ratchet._rust
+        closed = []
+        pair.alice_wire.close = lambda: closed.append("close")
+        sent_before = len(pair.alice_wire.sent) if hasattr(pair.alice_wire, "sent") else None
+        report = pair.alice.wipe_crypto()
+        assert report["errors"] == []
+        assert _tags(leaked) == _dummy_tags(), "ratchet keys survived stage B"
+        assert closed == [], "stage B closed the transport"
+        if sent_before is not None:
+            assert len(pair.alice_wire.sent) == sent_before, "stage B sent something"
+        assert pair.alice.wiped, "stage B did not refuse further use"
+
+    def test_wipe_runs_the_crypto_stage_before_closing_the_transport(self, pair):
+        order = []
+        real = pair.alice.wipe_crypto
+
+        def crypto():
+            order.append("crypto")
+            return real()
+
+        pair.alice.wipe_crypto = crypto
+        pair.alice_wire.close = lambda: order.append("close")
+        pair.alice.wipe()
+        assert order == ["crypto", "close"]
+
+    def test_the_crypto_stage_is_idempotent(self, pair):
+        first = pair.alice.wipe_crypto()
+        second = pair.alice.wipe_crypto()
+        assert first["already_wiped"] is False and second["already_wiped"] is True
+        report = pair.alice.wipe()           # the full wipe after stage B
+        assert "engine" not in report["errors"]
+
+    def test_no_graceful_call_end_after_the_keys_are_gone(self, pair):
+        """The END would need the keys stage B destroyed."""
+        calls = []
+
+        class Calls:
+            def destroy_keys(self):
+                calls.append("destroy_keys")
+
+            def shutdown(self, graceful=True):
+                calls.append(("shutdown", graceful))
+
+        pair.alice._calls_bridge = Calls()
+        pair.alice.wipe()
+        assert calls == ["destroy_keys", ("shutdown", False)]

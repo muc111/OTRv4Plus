@@ -31,42 +31,61 @@ import java.util.concurrent.atomic.AtomicBoolean
  * drain loop does not wait for a write already in progress, and a latched
  * vault refuses it.
  *
+ * [Step.DESTROY_CRYPTO] second: every secret destroyed in Rust -- OTR
+ * sessions, DAKE and SMP state, identity, call key schedules, file keys
+ * (`OtrApp.wipe_crypto`). Local and fast, and nothing that can wait on the
+ * network comes before it, so the keys are gone whatever happens next.
+ *
  * [Step.CLEAR_NOTIFICATIONS], [Step.CLEAR_MEMORY] and [Step.DESTROY_VAULT]
- * next, BEFORE the engine, and this is the order that makes "wiped" true on
- * a handset. They are local and take milliseconds. [Step.WIPE_ENGINE] ends
- * calls and closes the XMPP stream and I2P tunnel, and each of those is
- * bounded by a network timeout -- tens of seconds over three I2P hops. When
- * the vault came after it, the whole of that time was a window in which the
- * conversation list was still in memory and every record still on disk: a
- * user who reopened the app to check saw every conversation still there, and
- * anything that stopped the process in that window (the system, a force
- * stop, a crash in the teardown) left them there for good. The engine does
- * not read the vault or the chat state, so nothing it does depends on them.
+ * next, BEFORE the subsystems stop, and this is the order that makes "wiped"
+ * true on a handset. They are local and take milliseconds.
+ * [Step.STOP_SUBSYSTEMS] closes calls, the XMPP stream and the I2P tunnel,
+ * and each of those is bounded by a network timeout -- tens of seconds over
+ * three I2P hops. When the vault came after that, the whole of that time was
+ * a window in which the conversation list was still in memory and every
+ * record still on disk (WipePersistenceTest).
  *
  * [Step.DESTROY_VAULT] deletes the AndroidKeyStore key and then the files.
  * The key is what makes this erasure rather than deletion: a sealed record
  * whose key no longer exists cannot be opened, whatever the flash still holds.
  *
- * [Step.CLEAR_CACHE] before the engine too: staged outgoing files are local.
- * A transfer still reading one keeps its open descriptor until the engine
- * step ends it.
- *
- * [Step.WIPE_ENGINE] then, while the transport still exists: the engine must
- * be wiped on the transport's loop thread (see `OtrApp.wipe`), and calls end
- * over the OTR session that step destroys.
+ * [Step.WIPE_APP_DATA] after every subsystem has stopped, so nothing writes
+ * behind it: every entry in app-private storage and the app-specific external
+ * directories ([AppDataWipe]) -- not a list of known files. The ~11.28 MB of
+ * user data and ~254 KB of cache a handset measured after the old wipe were
+ * what that list did not name: the extracted Python runtime, shared_prefs,
+ * code_cache and the rest.
  *
  * [Step.EXIT] last, and always attempted, even when an earlier step failed:
  * the process ending is what finally releases anything a step could not.
  */
 object WipeAndExit {
 
+    /**
+     * The stages, in order:
+     *  A. STOP_BACKGROUND  -- no writer runs from here on (vault latched,
+     *                         loops cancelled), so nothing recreates state.
+     *  B. DESTROY_CRYPTO   -- every secret destroyed IN RUST first: sessions,
+     *                         DAKE, SMP, identity, call and file keys. Local
+     *                         and fast; nothing waits on the network before it.
+     *     CLEAR_NOTIFICATIONS, CLEAR_MEMORY, DESTROY_VAULT -- what is on
+     *                         screen, in memory and sealed on disk (the vault
+     *                         key is deleted: cryptographic erasure).
+     *  C. STOP_SUBSYSTEMS  -- calls, SAM, the XMPP stream and I2P tunnel, the
+     *                         loop thread; Python overwrites what it wrote.
+     *                         Bounded by network timeouts, hence after B.
+     *  D. WIPE_APP_DATA    -- every entry in app-private storage and the
+     *                         app-specific external directories (AppDataWipe).
+     *     EXIT             -- the process ends; nothing reachable survives.
+     */
     enum class Step {
         STOP_BACKGROUND,
+        DESTROY_CRYPTO,
         CLEAR_NOTIFICATIONS,
         CLEAR_MEMORY,
         DESTROY_VAULT,
-        CLEAR_CACHE,
-        WIPE_ENGINE,
+        STOP_SUBSYSTEMS,
+        WIPE_APP_DATA,
         EXIT,
     }
 
@@ -95,6 +114,13 @@ object WipeAndExit {
         SENSITIVE_EPHEMERAL,
         /** Scratch. DELETED. */
         TEMPORARY,
+        /**
+         * Not secret, but app data: regenerated (the Python runtime) or back
+         * to its default (the theme) on the next launch. DELETED -- a wipe
+         * that leaves megabytes behind is not believable, and a list of what
+         * may stay is how the next sensitive file slips through.
+         */
+        APP_DATA,
     }
 
     /**
@@ -130,27 +156,27 @@ object WipeAndExit {
         Store("The vault's sealing key",
               "AndroidKeyStore: otrv4plus.vault.v1",
               Category.SENSITIVE_PERSISTENT, Step.DESTROY_VAULT),
-        Store("Engine key-storage file and received files",
-              "Python home: ~/.otrv4plus (keys/, files/, files/.incoming/)",
-              Category.SENSITIVE_PERSISTENT, Step.WIPE_ENGINE),
         Store("OTR sessions: ratchets, DAKE state, SMP state and secret",
-              "Rust, in memory", Category.SENSITIVE_EPHEMERAL, Step.WIPE_ENGINE),
+              "Rust, in memory", Category.SENSITIVE_EPHEMERAL, Step.DESTROY_CRYPTO),
         Store("Long-term identity and prekey (in memory; not persisted on Android)",
-              "Rust, in memory", Category.SENSITIVE_EPHEMERAL, Step.WIPE_ENGINE),
-        Store("In-memory trust pins and SMP auto-respond secrets",
-              "Python engine, in memory", Category.SENSITIVE_EPHEMERAL,
-              Step.WIPE_ENGINE),
-        Store("Call keys, key exchanges, audio streams, SAM session",
+              "Rust, in memory", Category.SENSITIVE_EPHEMERAL, Step.DESTROY_CRYPTO),
+        Store("Call keys, key schedules and key exchanges",
               "Rust / VoiceCallManager", Category.SENSITIVE_EPHEMERAL,
-              Step.WIPE_ENGINE),
+              Step.DESTROY_CRYPTO),
         Store("File-transfer keys and partial files",
               "Rust / FileTransferManager", Category.SENSITIVE_EPHEMERAL,
-              Step.WIPE_ENGINE),
-        Store("XMPP stream, I2P tunnel, transport loop thread",
-              "Python transport", Category.SENSITIVE_EPHEMERAL, Step.WIPE_ENGINE),
+              Step.DESTROY_CRYPTO),
+        Store("In-memory trust pins and SMP auto-respond secrets",
+              "Python engine, in memory", Category.SENSITIVE_EPHEMERAL,
+              Step.DESTROY_CRYPTO),
+        Store("Engine files and received files (overwritten, then unlinked)",
+              "Python home: ~/.otrv4plus (files/, files/.incoming/)",
+              Category.SENSITIVE_PERSISTENT, Step.STOP_SUBSYSTEMS),
+        Store("Audio streams, SAM sessions, XMPP stream, I2P tunnel, loop thread",
+              "Python transport", Category.SENSITIVE_EPHEMERAL, Step.STOP_SUBSYSTEMS),
         Store("Presence, last activity, OTR mode per peer",
               "Python facade, in memory", Category.SENSITIVE_EPHEMERAL,
-              Step.WIPE_ENGINE),
+              Step.STOP_SUBSYSTEMS),
         Store("Conversation on screen, drafts, roster, call states, unread",
               "ChatState, in memory", Category.SENSITIVE_EPHEMERAL,
               Step.CLEAR_MEMORY),
@@ -158,23 +184,33 @@ object WipeAndExit {
               "NotificationManager", Category.SENSITIVE_EPHEMERAL,
               Step.CLEAR_NOTIFICATIONS),
         Store("Files staged for sending and metadata-scrubbed copies",
-              "cache: outbox/", Category.TEMPORARY, Step.CLEAR_CACHE),
+              "cache: outbox/", Category.TEMPORARY, Step.WIPE_APP_DATA),
         Store("Exported diagnostic reports",
-              "cache: diagnostics/", Category.TEMPORARY, Step.CLEAR_CACHE),
+              "cache: diagnostics/", Category.TEMPORARY, Step.WIPE_APP_DATA),
         Store("A received file copied for \"Open with another app\"",
-              "cache: handoff/", Category.TEMPORARY, Step.CLEAR_CACHE),
+              "cache: handoff/", Category.TEMPORARY, Step.WIPE_APP_DATA),
+        Store("Everything else in app-private storage, the vault directory and "
+              + "the Python home included",
+              "data dir: files/ cache/ code_cache/ databases/ shared_prefs/ "
+              + "no_backup/ app_*/ -- every entry but the system lib link",
+              Category.APP_DATA, Step.WIPE_APP_DATA),
+        Store("Chaquopy runtime and bundled Python code (re-extracted on launch)",
+              "files: chaquopy/", Category.APP_DATA, Step.WIPE_APP_DATA),
+        Store("Theme choice (Dark purple / Light / Follow system)",
+              "shared_prefs: otrv4plus.ui.xml", Category.APP_DATA, Step.WIPE_APP_DATA),
+        Store("App-specific external storage, if any",
+              "Android/data/org.otrv4plus.android/", Category.APP_DATA,
+              Step.WIPE_APP_DATA),
         Store("Python event trace and error log (in memory)",
               "Python process", Category.SENSITIVE_EPHEMERAL, Step.EXIT),
         Store("Recents-screen snapshot of the app",
               "system task list", Category.SENSITIVE_EPHEMERAL, Step.EXIT),
-        Store("Chaquopy runtime and bundled Python code",
-              "files: chaquopy/", Category.CONFIGURATION, null),
-        Store("Theme choice (Dark purple / Light / Follow system)",
-              "shared_prefs: otrv4plus.ui.xml", Category.CONFIGURATION, null),
         Store("Notification channel settings the user chose",
               "system", Category.CONFIGURATION, null),
         Store("Granted runtime permissions (microphone, notifications)",
               "system", Category.CONFIGURATION, null),
+        Store("The installed APK and its native-library link",
+              "package manager: lib ->", Category.CONFIGURATION, null),
     )
 
     /** What a run did. */

@@ -18,10 +18,11 @@ directory.) Identity and trust are in memory
 `.incoming` subdirectory. Everything the Python side persists is therefore
 under `~/.otrv4plus` or the file directory, and that is what is destroyed.
 
-Chaquopy's own runtime also lives under the app's files directory. It is not
-touched: this module walks only the two roots above, and refuses any path that
-resolves outside them (a symlink planted in the tree cannot turn the wipe into
-deletion of something else).
+Chaquopy's own runtime also lives under the app's files directory. This
+module does not touch it: it walks only the two roots above (overwriting what
+Python wrote, best effort), and refuses any path that resolves outside them.
+The Kotlin storage stage (`AppDataWipe`) then removes EVERY entry in app
+storage, the runtime included -- see ANDROID_WIPE_AND_EXIT.md.
 
 WHAT "DESTROYED" MEANS, AND WHAT IT DOES NOT
 --------------------------------------------

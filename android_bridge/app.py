@@ -500,45 +500,26 @@ class OtrApp:
             self._wiped = True
         report: Dict[str, Any] = {"already_wiped": already, "errors": []}
 
+        # STAGE B FIRST: every secret destroyed in Rust before anything that
+        # can wait on the network. See `wipe_crypto`.
+        crypto = self.wipe_crypto()
+        report["errors"].extend(crypto.get("errors", []))
+        report.update({k: v for k, v in crypto.items()
+                       if k not in ("errors", "already_wiped")})
+
+        # STAGE C: stop the subsystems. The calls' keys are already gone, so
+        # no END is attempted -- it could not be encrypted -- and the peer's
+        # side times out; what remains is releasing audio, SAM and the loop.
         calls, self._calls_bridge = self._calls_bridge, None
         if calls is not None:
             try:
+                calls.shutdown(graceful=False)
+            except TypeError:
                 calls.shutdown()
             except Exception:
                 report["errors"].append("calls")
-        files, self._files_bridge = self._files_bridge, None
-        if files is not None:
-            try:
-                files.shutdown()
-            except Exception:
-                report["errors"].append("transfers")
-
-        engine_wipe = getattr(self._engine, "wipe", None)
-
-        def _wipe_engine():
-            if engine_wipe is not None:
-                return engine_wipe("wipe and exit")
-            self._engine.clear_all_sessions("wipe and exit")
-            return {}
 
         transport = self._transport
-        runner = getattr(transport, "run_on_loop_thread", None)
-        try:
-            counts = runner(_wipe_engine) if runner is not None else _wipe_engine()
-        except Exception:
-            # The loop could not run it (stopped mid-teardown, timed out).
-            # Here, then: an output made on that thread may leak rather than
-            # zeroize, which is worse than the right thread and far better
-            # than leaving every session alive.
-            report["errors"].append("engine_off_thread")
-            try:
-                counts = _wipe_engine()
-            except Exception:
-                report["errors"].append("engine")
-                counts = {}
-        report.update({k: v for k, v in (counts or {}).items()
-                       if k != "already_wiped"})
-
         self._transport = None
         if transport is not None:
             closer = getattr(transport, "close", None) or transport.disconnect
@@ -562,6 +543,75 @@ class OtrApp:
         report["files_destroyed"] = destroyed
         report["files_unlinked_only"] = failed
         self._sink = None
+        return report
+
+    def wipe_crypto(self) -> Dict[str, Any]:
+        """Wipe & Exit, STAGE B: destroy every secret in Rust. Local only.
+
+        Runs before anything that can wait on a network timeout, so that the
+        cryptographic state is gone first whatever happens after:
+
+          * each call's key schedule, key exchange and media ciphers,
+            force-closed (`CallBridge.destroy_keys`) -- no END is sent;
+          * each transfer's FileKey, zeroized, and partial files unlinked;
+          * the engine (`EnhancedSessionManager.wipe`): every ratchet, DAKE,
+            SMP state and vault, and the identity and prekey handles -- on
+            the transport's loop thread, because a `DakeOutput` is unsendable
+            and would leak un-zeroized if dropped elsewhere.
+
+        Sets `_wiped` first, so nothing can recreate state meanwhile.
+        Idempotent; never raises. `wipe()` calls it before its own teardown.
+        """
+        with self._wipe_lock:
+            already = getattr(self, "_crypto_wiped", False)
+            self._crypto_wiped = True
+            self._wiped = True
+        report: Dict[str, Any] = {"already_wiped": already, "errors": []}
+        if already:
+            return report
+
+        calls = self._calls_bridge
+        if calls is not None:
+            destroy = getattr(calls, "destroy_keys", None)
+            try:
+                if destroy is not None:
+                    destroy()
+                else:
+                    calls.shutdown()
+                    self._calls_bridge = None
+            except Exception:
+                report["errors"].append("call_keys")
+        files, self._files_bridge = self._files_bridge, None
+        if files is not None:
+            try:
+                files.shutdown()
+            except Exception:
+                report["errors"].append("transfers")
+
+        engine_wipe = getattr(self._engine, "wipe", None)
+
+        def _wipe_engine():
+            if engine_wipe is not None:
+                return engine_wipe("wipe and exit")
+            self._engine.clear_all_sessions("wipe and exit")
+            return {}
+
+        runner = getattr(self._transport, "run_on_loop_thread", None)
+        try:
+            counts = runner(_wipe_engine) if runner is not None else _wipe_engine()
+        except Exception:
+            # The loop could not run it (stopped mid-teardown, timed out).
+            # Here, then: an output made on that thread may leak rather than
+            # zeroize, which is worse than the right thread and far better
+            # than leaving every session alive.
+            report["errors"].append("engine_off_thread")
+            try:
+                counts = _wipe_engine()
+            except Exception:
+                report["errors"].append("engine")
+                counts = {}
+        report.update({k: v for k, v in (counts or {}).items()
+                       if k != "already_wiped"})
         return report
 
     @staticmethod
