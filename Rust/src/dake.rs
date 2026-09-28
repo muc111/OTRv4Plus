@@ -747,6 +747,20 @@ impl DakeState {
         let mut id = [0u8; ED448_PUB_SIZE];
         id.copy_from_slice(id_slice);
 
+        // Audit 2026-09: the identity key is refused if degenerate (the
+        // identity point has discrete log 0, so a profile and a ring
+        // signature under it are forgeable by anyone), and the profile is
+        // refused once expired. Both were previously enforced only by the
+        // Python ClientProfile.decode; Rust is the authority for both.
+        if !crate::ring_sig::is_acceptable_public_key(&id) {
+            return Err(OtrError::SignatureInvalid);
+        }
+        let exp_off = hl + ED448_PUB_SIZE + X448_PUB_SIZE;
+        let exp_bytes = profile.try_slice(exp_off..exp_off + 8)?;
+        let mut exp = [0u8; 8];
+        exp.copy_from_slice(exp_bytes);
+        Self::check_profile_expiry(u64::from_be_bytes(exp), Self::unix_now())?;
+
         // Pure Ed448 (RFC 8032 §5.2, empty context) over the body. Same
         // framing as Ed448KeyHandle::sign / verify_ed448_sig.
         use ed448_goldilocks_plus::{VerifyingKey, Signature};
@@ -755,6 +769,19 @@ impl DakeState {
         let signature = Signature::try_from(sig).map_err(|_| OtrError::SignatureInvalid)?;
         vk.verify_raw(&signature, body).map_err(|_| OtrError::SignatureInvalid)?;
         Ok(id)
+    }
+
+    /// A profile is valid strictly before its expiry second, as in
+    /// `ClientProfile.decode` (`expires <= now` is refused).
+    fn check_profile_expiry(expires: u64, now: u64) -> Result<()> {
+        if expires <= now { Err(OtrError::ProfileExpired) } else { Ok(()) }
+    }
+
+    fn unix_now() -> u64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0)
     }
 
     fn generate_x448_ephemeral() -> Result<(SecretBytes<56>, [u8; X448_PUB_SIZE])> {
@@ -1576,5 +1603,81 @@ mod dake3_tests {
         assert!(s.generate_dake3(None).is_err(), "idle initiator");
         assert!(s.process_dake3(&[0u8; 300]).is_err(), "idle responder");
         assert!(s.phase != DakePhase::Established);
+    }
+}
+
+#[cfg(test)]
+mod profile_tests {
+    //! Audit 2026-09: Rust refuses an expired profile and a degenerate
+    //! identity key itself, rather than relying on the Python decoder.
+    use super::*;
+    use ed448_goldilocks_plus::SigningKey;
+
+    fn profile_signed_by(seed: &[u8; 57], id: &[u8; 57], expires: u64) -> Vec<u8> {
+        let mut body = vec![4u8, 1, 4];
+        body.extend_from_slice(id);
+        body.extend_from_slice(&[9u8; X448_PUB_SIZE]);
+        body.extend_from_slice(&expires.to_be_bytes());
+        let sk = SigningKey::try_from(&seed[..]).expect("seed");
+        let sig: [u8; 114] = sk.sign_raw(&body).to_bytes();
+        body.extend_from_slice(&sig);
+        body
+    }
+
+    fn honest(expires: u64) -> (Vec<u8>, [u8; 57]) {
+        let seed = [0x42u8; 57];
+        let sk = SigningKey::try_from(&seed[..]).expect("seed");
+        let id: [u8; 57] = sk.verifying_key().to_bytes().into();
+        (profile_signed_by(&seed, &id, expires), id)
+    }
+
+    fn now() -> u64 { DakeState::unix_now() }
+
+    #[test]
+    fn a_current_profile_yields_its_identity() {
+        let (p, id) = honest(now() + 3600);
+        assert_eq!(DakeState::extract_identity_from_profile(&p).unwrap(), id);
+    }
+
+    #[test]
+    fn an_expired_profile_is_refused_even_with_a_good_signature() {
+        let (p, _) = honest(now() - 1);
+        assert!(matches!(DakeState::extract_identity_from_profile(&p),
+                         Err(OtrError::ProfileExpired)));
+    }
+
+    #[test]
+    fn expiry_boundary_matches_the_python_decoder() {
+        // ClientProfile.decode refuses `expires <= now`.
+        assert!(DakeState::check_profile_expiry(100, 100).is_err());
+        assert!(DakeState::check_profile_expiry(99, 100).is_err());
+        assert!(DakeState::check_profile_expiry(101, 100).is_ok());
+    }
+
+    #[test]
+    fn a_profile_under_the_identity_point_is_refused() {
+        // Pure Ed448 verification with A = identity reduces to [S]B == R,
+        // which anyone can satisfy. The check refuses the key before that.
+        use ed448_goldilocks_plus::{EdwardsPoint, Scalar,
+            elliptic_curve::ops::MulByGenerator};
+        let ident: [u8; 57] = EdwardsPoint::IDENTITY.compress().0;
+        let mut body = vec![4u8, 1, 4];
+        body.extend_from_slice(&ident);
+        body.extend_from_slice(&[9u8; X448_PUB_SIZE]);
+        body.extend_from_slice(&(now() + 3600).to_be_bytes());
+        let s = Scalar::from(7u32);
+        let r = EdwardsPoint::mul_by_generator(&s).compress().0;
+        let mut sig = [0u8; 114];
+        sig[..57].copy_from_slice(&r);
+        sig[57..].copy_from_slice(&s.to_bytes_rfc_8032());
+        // ed448-goldilocks-plus already refuses this at verify; pinned so a
+        // dependency change cannot silently reopen it.
+        let vk = ed448_goldilocks_plus::VerifyingKey::from_bytes(&ident);
+        let primitive_accepts = vk.map(|vk| vk.verify_raw(
+            &ed448_goldilocks_plus::Signature::try_from(&sig[..]).unwrap(), &body).is_ok())
+            .unwrap_or(false);
+        body.extend_from_slice(&sig);
+        assert!(!primitive_accepts);
+        assert!(DakeState::extract_identity_from_profile(&body).is_err());
     }
 }

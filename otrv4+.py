@@ -4934,9 +4934,11 @@ class RustDAKEAdapter:
             # ── Audit PY1/H3: never establish on an unverified responder
             # profile.  ClientProfile.decode (above) verifies the Ed448
             # self-signature, which covers the prekey, AND the expiry.  If it
-            # raised, remote_profile is None and we MUST abort rather than
-            # trust the Rust-extracted identity bytes (the Rust DAKE extracts
-            # the identity without checking the signature/expiry).
+            # raised, remote_profile is None and we MUST abort. The Rust DAKE
+            # now enforces the same three things itself -- the signature
+            # (H3), the expiry and a non-degenerate identity key (audit
+            # 2026-09, dake.rs extract_identity_from_profile) -- so this is a
+            # second, independent check, not the only one.
             if self.remote_profile is None:
                 return self._fail(
                     "DAKE2: responder ClientProfile verification failed "

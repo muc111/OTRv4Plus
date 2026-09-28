@@ -64,6 +64,7 @@ use ed448_goldilocks_plus::{
 };
 
 use sha3::{Shake256, digest::{Update, ExtendableOutput, XofReader}};
+use subtle::ConstantTimeEq;
 
 use zeroize::Zeroize;
 
@@ -120,6 +121,35 @@ fn decode_point(p57: &[u8]) -> Option<EdwardsPoint> {
     arr.copy_from_slice(p57);
     let compressed = CompressedEdwardsY(arr);
     compressed.decompress().into()
+}
+
+/// Decode a public key and refuse the degenerate ones.
+///
+/// A key whose point has small order (the identity or a pure torsion point)
+/// has discrete log 0 modulo the group order, so anyone can "know" it: a
+/// ring containing such a key is signable by anyone, and a pure Ed448
+/// signature under it is forgeable. A key with a torsion component is not
+/// [s]B for any s, so no honest implementation produces it. Both are refused
+/// wherever a key enters from the wire. Honest keys ([s]B, prime order) are
+/// unaffected, so this changes no valid transcript.
+pub(crate) fn decode_public_key(p57: &[u8]) -> Option<EdwardsPoint> {
+    if p57.len() != ED448_POINT_BYTES { return None; }
+    let p = decode_point(p57)?;
+    let small_order: bool = p.double().double().ct_eq(&EdwardsPoint::IDENTITY).into();
+    let torsion_free: bool = p.is_torsion_free().into();
+    if small_order || !torsion_free { return None; }
+    Some(p)
+}
+
+/// Whether `p57` is a public key the protocol accepts. See `decode_public_key`.
+pub(crate) fn is_acceptable_public_key(p57: &[u8]) -> bool {
+    decode_public_key(p57).is_some()
+}
+
+/// The ring public key for a 57-byte seed (the point the signer occupies).
+/// Public output only; used by tests and the fuzz harnesses.
+pub fn public_key_from_seed(seed: &[u8; 57]) -> [u8; ED448_POINT_BYTES] {
+    encode_point(&EdwardsPoint::mul_by_generator(&derive_signing_scalar(seed)))
 }
 
 /// Encode an Edwards point as 57-byte compressed.
@@ -256,7 +286,7 @@ pub fn ring_sign_bytes(
     let t1_enc   = encode_point(&t1_point);
 
     // ── Step 4: simulate responder (c2, r2 random; T2 = r2·G + c2·A2) ──────
-    let a2_point = decode_point(a2).ok_or("a2 is not a valid Ed448 point")?;
+    let a2_point = decode_public_key(a2).ok_or("a2 is not an acceptable Ed448 public key")?;
 
     let c2 = random_scalar();
     let r2 = random_scalar();
@@ -323,13 +353,23 @@ pub fn ring_verify_bytes(
     if a2.len()  != 57 { return false; }
     if sig.len() != RING_SIG_BYTES { return false; }
 
-    let a1_point = match decode_point(a1) { Some(p) => p, None => return false };
-    let a2_point = match decode_point(a2) { Some(p) => p, None => return false };
+    // Audit 2026-09: degenerate keys refused -- see decode_public_key.
+    let a1_point = match decode_public_key(a1) { Some(p) => p, None => return false };
+    let a2_point = match decode_public_key(a2) { Some(p) => p, None => return false };
 
     let c1 = scalar_from_le57_mod_q(&sig[0*57..1*57]);
     let r1 = scalar_from_le57_mod_q(&sig[1*57..2*57]);
     let c2 = scalar_from_le57_mod_q(&sig[2*57..3*57]);
     let r2 = scalar_from_le57_mod_q(&sig[3*57..4*57]);
+
+    // Audit 2026-09: only canonical scalars (< Q). Reducing silently let
+    // every signature be re-encoded as a different valid one (s + Q); the
+    // signer only ever emits canonical scalars, so honest signatures are
+    // unaffected. Non-malleability is cheap and removes a class of
+    // "distinct bytes, same meaning" surprises from replay caches and logs.
+    for (n, s) in [&c1, &r1, &c2, &r2].into_iter().enumerate() {
+        if scalar_to_le57(s)[..] != sig[n*57..(n+1)*57] { return false; }
+    }
 
     // T1' = r1·G + c1·A1
     let t1p = EdwardsPoint::mul_by_generator(&r1) + (a1_point * c1);
@@ -495,5 +535,130 @@ mod tests {
         // Both still verify (wire compatibility / correctness).
         assert!(ring_verify_bytes(&a1, &a2, b"message A", &sig_a));
         assert!(ring_verify_bytes(&a1, &a2, b"same", &sig_c));
+    }
+}
+
+#[cfg(test)]
+mod audit_identity_point {
+    //! Audit 2026-09: degenerate public keys.
+    //!
+    //! A key of small order has discrete log 0 mod the group order, so the
+    //! ring equation T2 = r2*G + c2*A2 can be satisfied by anyone. Before the
+    //! fix, `ring_verify_bytes` accepted a signature over (victim, identity)
+    //! forged without the victim's secret. These tests pin that the forgery is
+    //! still arithmetically valid (so the check is load-bearing) and that the
+    //! verifier and signer both refuse the key.
+    use super::*;
+
+    fn identity_enc() -> [u8; 57] { encode_point(&EdwardsPoint::IDENTITY) }
+
+    fn victim() -> [u8; 57] {
+        encode_point(&EdwardsPoint::mul_by_generator(&derive_signing_scalar(&[0x11u8; 57])))
+    }
+
+    /// A signature over (victim, degenerate) produced with no secret at all.
+    fn forge(victim: &[u8; 57], degenerate: &[u8; 57], msg: &[u8]) -> ([u8; RING_SIG_BYTES], bool) {
+        let c1 = random_scalar();
+        let r1 = random_scalar();
+        let a1p = decode_point(victim).unwrap();
+        let t1 = EdwardsPoint::mul_by_generator(&r1) + a1p * c1;
+        let t2_nonce = random_scalar();
+        let t2 = EdwardsPoint::mul_by_generator(&t2_nonce);
+        let c = ring_challenge(msg, victim, degenerate, &encode_point(&t1), &encode_point(&t2));
+        let c2 = c - c1;
+        let r2 = t2_nonce;
+        let mut sig = [0u8; RING_SIG_BYTES];
+        sig[0..57].copy_from_slice(&scalar_to_le57(&c1));
+        sig[57..114].copy_from_slice(&scalar_to_le57(&r1));
+        sig[114..171].copy_from_slice(&scalar_to_le57(&c2));
+        sig[171..228].copy_from_slice(&scalar_to_le57(&r2));
+        // The raw equation, without the key check: does the forgery satisfy it?
+        let a2p = decode_point(degenerate).unwrap();
+        let t1c = EdwardsPoint::mul_by_generator(&r1) + a1p * c1;
+        let t2c = EdwardsPoint::mul_by_generator(&r2) + a2p * c2;
+        let eq = ring_challenge(msg, victim, degenerate, &encode_point(&t1c), &encode_point(&t2c)) == c1 + c2;
+        (sig, eq)
+    }
+
+    #[test]
+    fn a_forgery_with_the_identity_key_satisfies_the_equation_but_is_refused() {
+        let (v, o) = (victim(), identity_enc());
+        let (sig, equation_holds) = forge(&v, &o, b"transcript");
+        assert!(equation_holds, "the check below would be untested");
+        assert!(!ring_verify_bytes(&v, &o, b"transcript", &sig));
+        assert!(!ring_verify_bytes(&o, &v, b"transcript", &sig));
+    }
+
+    #[test]
+    fn small_order_and_torsion_keys_are_not_acceptable() {
+        assert!(!is_acceptable_public_key(&identity_enc()));
+        // (0, -1): the point of order 2.
+        let mut order2 = [0u8; 57];
+        order2[0] = 0xfe;
+        for b in order2.iter_mut().take(56).skip(1) { *b = 0xff; }
+        order2[28] = 0xfe;
+        // The library's decompress already refuses any point with a torsion
+        // component, so the identity is the only degenerate key that decodes.
+        // Both layers are pinned: a library change must not reopen this.
+        let t: EdwardsPoint = Option::from(CompressedEdwardsY(order2).decompress_unchecked())
+            .expect("(0,-1) is the y-coordinate of a curve point");
+        assert!(bool::from(t.double().ct_eq(&EdwardsPoint::IDENTITY)), "order 2");
+        assert!(decode_point(&order2).is_none());
+        assert!(!is_acceptable_public_key(&order2));
+        let honest = decode_point(&victim()).unwrap();
+        let mixed = encode_point(&(honest + t));
+        assert!(!is_acceptable_public_key(&mixed));
+        assert!(decode_point(&identity_enc()).is_some(), "identity decodes; our check is what refuses it");
+        assert!(is_acceptable_public_key(&victim()));
+    }
+
+    #[test]
+    fn the_signer_refuses_a_degenerate_ring_member() {
+        assert!(ring_sign_bytes(&[0x11u8; 57], &victim(), &identity_enc(), b"m").is_err());
+    }
+
+    /// Q as 57 little-endian bytes: (Q - 1) + 1.
+    fn q_le57() -> [u8; 57] {
+        let mut q = scalar_to_le57(&(Scalar::ZERO - Scalar::ONE));
+        for b in q.iter_mut() {
+            let (v, carry) = b.overflowing_add(1);
+            *b = v;
+            if !carry { break; }
+        }
+        q
+    }
+
+    fn add_le(a: &[u8], b: &[u8; 57]) -> [u8; 57] {
+        let mut out = [0u8; 57];
+        let mut carry = 0u16;
+        for i in 0..57 {
+            let v = a[i] as u16 + b[i] as u16 + carry;
+            out[i] = v as u8;
+            carry = v >> 8;
+        }
+        assert_eq!(carry, 0, "fits in 57 bytes");
+        out
+    }
+
+    #[test]
+    fn a_non_canonical_scalar_is_refused() {
+        let a2 = encode_point(&EdwardsPoint::mul_by_generator(&derive_signing_scalar(&[0x22u8; 57])));
+        let sig = ring_sign_bytes(&[0x11u8; 57], &victim(), &a2, b"m").unwrap();
+        assert!(ring_verify_bytes(&victim(), &a2, b"m", &sig));
+        for field in 0..4 {
+            let mut bad = sig;
+            let bumped = add_le(&sig[field * 57..(field + 1) * 57], &q_le57());
+            bad[field * 57..(field + 1) * 57].copy_from_slice(&bumped);
+            assert_ne!(bad, sig);
+            // Same scalars mod Q, so the old reduce-and-accept verifier took it.
+            assert!(!ring_verify_bytes(&victim(), &a2, b"m", &bad), "field {field}");
+        }
+    }
+
+    #[test]
+    fn honest_rings_still_verify() {
+        let a2 = encode_point(&EdwardsPoint::mul_by_generator(&derive_signing_scalar(&[0x22u8; 57])));
+        let sig = ring_sign_bytes(&[0x11u8; 57], &victim(), &a2, b"m").unwrap();
+        assert!(ring_verify_bytes(&victim(), &a2, b"m", &sig));
     }
 }

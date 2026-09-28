@@ -19,6 +19,9 @@ pub enum OtrError {
     #[error("Ed448 signature invalid")]
     SignatureInvalid,
 
+    #[error("Client profile has expired")]
+    ProfileExpired,
+
     #[error("ML-KEM operation failed")]
     MlKem,
 
