@@ -599,7 +599,8 @@ private fun TransferBar(model: ChatViewModel, jid: String) {
     }
 
     model.viewing?.let { file ->
-        FileViewerDialog(path = file.path, name = file.filename,
+        FileViewerDialog(container = file.path, name = file.filename,
+                         materialize = { dir -> model.openReceivedTo(file.path, dir) },
                          onClose = { model.closeViewer() })
     }
 

@@ -1146,6 +1146,22 @@ class ChaquopyOtrCore(private val appContext: Context) : OtrCore {
      * the user at that one would point them at the files that are not
      * theirs yet.
      */
+    /**
+     * Decrypt a received `.otrv` container into [directory] (the viewer's
+     * transient copy). Null when it does not open; the reason stays in
+     * Python, as a code.
+     */
+    fun openReceivedTo(container: String, directory: String): String? =
+        runCatching {
+            requireApp().callAttr("open_received_to", container, directory).toString()
+        }.getOrNull()
+
+    /** Explicit Save of a received file's plaintext to [destination]. */
+    fun saveReceived(container: String, destination: String): String =
+        runCatching {
+            requireApp().callAttr("save_received", container, destination).toString()
+        }.getOrDefault("save_failed")
+
     fun receivedFileDir(): String =
         runCatching {
             requireApp().callAttr("received_file_dir").toString()

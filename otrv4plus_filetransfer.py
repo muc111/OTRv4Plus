@@ -503,6 +503,41 @@ _KIND_FOR = {
 }
 
 
+#: A received file at rest on Android: see `seal_at_rest`.
+CONTAINER_SUFFIX = ".otrv"
+AT_REST_DEK_NAME = ".otrv.dek"
+
+
+def at_rest_dek():
+    """The Rust-held key received files are sealed under at rest.
+
+    A 0600 key file beside them, read by Rust (`FileDek`); Python never holds
+    the bytes. Beside the data is the same protection the identity and SMP
+    stores have -- ANDROID_STORAGE_AUDIT -- and Wipe & Exit removes both.
+    """
+    return _core.FileDek.load_or_create(os.path.join(state_dir(), AT_REST_DEK_NAME))
+
+
+def _shred(path: str) -> None:
+    """Overwrite a plaintext file once and unlink it. Best effort: on flash
+    the old blocks may survive until the controller erases them."""
+    try:
+        size = os.path.getsize(path)
+        with open(path, "r+b", buffering=0) as fh:
+            left = size
+            zero = b"\0" * (1 << 16)
+            while left > 0:
+                n = fh.write(zero[:min(left, len(zero))])
+                left -= n
+            os.fsync(fh.fileno())
+    except OSError:
+        pass
+    try:
+        os.remove(path)
+    except OSError:
+        pass
+
+
 def unique_path(directory: str, filename: str) -> str:
     """A path that does not exist yet.  A second file of the same name gets a
     suffix rather than overwriting the first -- a peer should not be able to
@@ -859,7 +894,8 @@ class FileTransferManager:
                  notify: Callable[[str], None],
                  verified: Callable[[str], bool],
                  spawn: Optional[Callable[["OutgoingTransfer"], None]] = None,
-                 on_state: Optional[Callable[[object, bool], None]] = None):
+                 on_state: Optional[Callable[[object, bool], None]] = None,
+                 seal_at_rest: bool = False):
         if _core is None:                        # pragma: no cover
             raise TransferError(
                 "otrv4_core is unavailable, so file transfer cannot run; "
@@ -880,6 +916,10 @@ class FileTransferManager:
         # client reads `notify`. It must not raise into the protocol path, so
         # `_state` swallows what it raises.
         self._on_state = on_state
+        # Keep a received file as a `.otrv` container sealed by Rust under a
+        # device key, rather than as plaintext. On for Android; the terminal
+        # client keeps plaintext until it has a /save command.
+        self._seal_at_rest = bool(seal_at_rest)
         self.outgoing: Dict[str, OutgoingTransfer] = {}
         self.incoming: Dict[str, IncomingTransfer] = {}
         # Transfers we gave up on. A CANCEL goes to the sender, but chunks
@@ -1316,11 +1356,20 @@ class FileTransferManager:
         if digest.digest() != offer.plaintext_sha256:
             raise TransferError("the file on disk does not match its hash")
 
-        final = unique_path(state_dir(), sanitise_filename(offer.filename))
+        name = sanitise_filename(offer.filename)
         os.chmod(transfer.tmp_path, 0o600)
-        # Atomic within the same filesystem, so a reader never sees a partial
-        # file under the final name.
-        os.replace(transfer.tmp_path, final)
+        if self._seal_at_rest:
+            # Sealed by Rust into a `.otrv` container, then the plaintext is
+            # overwritten and unlinked. What rests on disk is ciphertext;
+            # Open decrypts into memory, Save is an explicit export.
+            final = unique_path(state_dir(), name + CONTAINER_SUFFIX)
+            _core.otrv_seal_file(at_rest_dek(), transfer.tmp_path, final)
+            _shred(transfer.tmp_path)
+        else:
+            final = unique_path(state_dir(), name)
+            # Atomic within the same filesystem, so a reader never sees a
+            # partial file under the final name.
+            os.replace(transfer.tmp_path, final)
         transfer.tmp_path = None
         transfer.final_path = final
         self._destroy_incoming(transfer)

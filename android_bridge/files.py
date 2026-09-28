@@ -42,6 +42,7 @@ does not care who chose it.
 from __future__ import annotations
 
 import os
+import tempfile
 import threading
 from typing import Any, Optional
 
@@ -139,6 +140,9 @@ class FileBridge:
                     verified=self._verified,
                     spawn=self._spawn,
                     on_state=self._on_state,
+                    # Received files rest as `.otrv` containers sealed by
+                    # Rust; see `open_received` and `save_received`.
+                    seal_at_rest=True,
                 )
             except Exception:
                 # The engine refuses to construct without `otrv4_core`, and
@@ -476,6 +480,69 @@ class FileBridge:
             return str(ft.state_dir())
         except Exception:
             return ""
+
+    # -- opening, saving, exporting a received file ---------------------------
+
+    #: The most `open_received` decrypts into memory. Larger files, and kinds
+    #: the platform can only read from a file (PDF, video), go through
+    #: `open_received_to` with a transient path the viewer deletes.
+    MAX_OPEN_BYTES = 64 * 1024 * 1024
+
+    def _container(self, path: str) -> str:
+        """`path`, if it is a container inside the received directory.
+
+        Resolved first, so neither `..` nor a link can point this at another
+        file; the viewer's own check is repeated here because a path from
+        Kotlin is input, not a fact."""
+        import otrv4plus_filetransfer as ft
+        real = os.path.realpath(path or "")
+        home = os.path.realpath(self.received_dir() or "/nonexistent")
+        if (os.path.dirname(real) != home or not real.endswith(ft.CONTAINER_SUFFIX)
+                or not os.path.isfile(real)):
+            raise ValueError("not a received file")
+        return real
+
+    def open_received(self, path: str) -> bytes:
+        """Decrypt a received file into memory. No plaintext touches disk."""
+        import otrv4plus_filetransfer as ft
+        return bytes(ft._core.otrv_open_bytes(
+            ft.at_rest_dek(), self._container(path), self.MAX_OPEN_BYTES))
+
+    def open_received_to(self, path: str, directory: str) -> str:
+        """Decrypt to a TRANSIENT file in `directory` (the app cache), for a
+        viewer that can only read a file. The caller deletes it when the
+        viewer closes; the cache is swept at start and by Wipe & Exit."""
+        import otrv4plus_filetransfer as ft
+        src = self._container(path)
+        os.makedirs(directory, mode=0o700, exist_ok=True)
+        name = os.path.basename(src)[:-len(ft.CONTAINER_SUFFIX)] or "file"
+        dst = os.path.join(directory, name)
+        ft._core.otrv_open_file(ft.at_rest_dek(), src, dst)
+        return dst
+
+    def save_received(self, path: str, destination: str) -> int:
+        """Explicit Save: write the plaintext to `destination`, REPLACING a
+        file already there (no silent "name (1)"). Returns bytes written."""
+        import otrv4plus_filetransfer as ft
+        return int(ft._core.otrv_open_file(ft.at_rest_dek(), self._container(path),
+                                           destination))
+
+    def export_received(self, path: str, destination: str, passphrase: str) -> None:
+        """A portable `.otrv` sealed under a passphrase: any OTRv4Plus build,
+        Android or Termux, opens it with `import_container`."""
+        import otrv4plus_filetransfer as ft
+        with tempfile.TemporaryDirectory(dir=self.received_dir()) as tmp:
+            plain = self.open_received_to(path, tmp)
+            try:
+                ft._core.otrv_export_file(passphrase.encode("utf-8"), plain, destination)
+            finally:
+                ft._shred(plain)
+
+    @staticmethod
+    def import_container(source: str, destination: str, passphrase: str) -> int:
+        import otrv4plus_filetransfer as ft
+        return int(ft._core.otrv_import_file(passphrase.encode("utf-8"), source,
+                                             destination))
 
     # -- teardown -------------------------------------------------------------
 

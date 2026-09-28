@@ -46,15 +46,34 @@ import java.io.File
  * with a warning first; see [handOff].
  */
 @Composable
-fun FileViewerDialog(path: String, name: String, onClose: () -> Unit) {
+fun FileViewerDialog(
+    container: String,
+    name: String,
+    materialize: (directory: String) -> String?,
+    onClose: () -> Unit,
+) {
     val context = LocalContext.current
-    var kind by remember(path) { mutableStateOf<SafeView.Kind?>(null) }
+    // The received file rests as a sealed `.otrv` container. It is decrypted
+    // (by Rust, through the bridge) into a TRANSIENT copy under cache/view/,
+    // which is emptied before each open and deleted when this dialog goes;
+    // Wipe & Exit removes the cache as well. No other plaintext copy exists.
+    val viewDir = remember { File(context.cacheDir, VIEW_DIRECTORY) }
+    var path by remember(container) { mutableStateOf<String?>(null) }
+    var kind by remember(container) { mutableStateOf<SafeView.Kind?>(null) }
     var confirmHandoff by remember { mutableStateOf(false) }
-    LaunchedEffect(path) {
-        kind = withContext(Dispatchers.IO) {
+    DisposableEffect(container) {
+        onDispose { viewDir.listFiles()?.forEach { it.delete() } }
+    }
+    LaunchedEffect(container) {
+        val plain = withContext(Dispatchers.IO) {
+            viewDir.listFiles()?.forEach { it.delete() }
+            runCatching { materialize(viewDir.path) }.getOrNull()
+        }
+        path = plain
+        kind = if (plain == null) SafeView.Kind.UNSUPPORTED else withContext(Dispatchers.IO) {
             runCatching {
                 val head = ByteArray(SafeView.HEAD_BYTES)
-                val n = File(path).inputStream().use { it.read(head) }.coerceAtLeast(0)
+                val n = File(plain).inputStream().use { it.read(head) }.coerceAtLeast(0)
                 SafeView.kindOf(head.copyOf(n))
             }.getOrDefault(SafeView.Kind.UNSUPPORTED)
         }
@@ -74,19 +93,21 @@ fun FileViewerDialog(path: String, name: String, onClose: () -> Unit) {
                     TextButton(onClick = onClose) { Text("Close") }
                 }
                 Box(Modifier.weight(1f).fillMaxWidth()) {
-                    when (kind) {
-                        null -> Text("Opening…")
-                        SafeView.Kind.IMAGE -> ImageBody(path)
-                        SafeView.Kind.TEXT -> TextBody(path)
-                        SafeView.Kind.PDF -> PdfBody(path)
-                        SafeView.Kind.AUDIO -> AudioBody(path)
-                        SafeView.Kind.VIDEO -> VideoBody(path)
-                        SafeView.Kind.UNSUPPORTED -> Text(
+                    val p = path
+                    when {
+                        kind == null -> Text("Opening…")
+                        p == null -> Text("The file could not be opened.")
+                        kind == SafeView.Kind.IMAGE -> ImageBody(p)
+                        kind == SafeView.Kind.TEXT -> TextBody(p)
+                        kind == SafeView.Kind.PDF -> PdfBody(p)
+                        kind == SafeView.Kind.AUDIO -> AudioBody(p)
+                        kind == SafeView.Kind.VIDEO -> VideoBody(p)
+                        else -> Text(
                             "This kind of file cannot be shown inside the app. " +
                                 "Nothing in it has been opened or run.")
                     }
                 }
-                OutlinedButton(onClick = { confirmHandoff = true },
+                OutlinedButton(enabled = path != null, onClick = { confirmHandoff = true },
                                modifier = Modifier.fillMaxWidth()) {
                     Text("Open with another app…")
                 }
@@ -101,7 +122,7 @@ fun FileViewerDialog(path: String, name: String, onClose: () -> Unit) {
             confirmButton = {
                 TextButton(onClick = {
                     confirmHandoff = false
-                    handOff(context, path, name, kind ?: SafeView.Kind.UNSUPPORTED)
+                    path?.let { handOff(context, it, name, kind ?: SafeView.Kind.UNSUPPORTED) }
                 }) { Text("Open with another app") }
             },
             dismissButton = {
@@ -284,3 +305,6 @@ private fun handOff(context: Context, path: String, name: String, kind: SafeView
 
 /** The cache subdirectory an explicit handoff copy is placed in. */
 const val HANDOFF_DIRECTORY = "handoff"
+
+/** Where the viewer's transient decrypted copy lives while it is open. */
+const val VIEW_DIRECTORY = "view"

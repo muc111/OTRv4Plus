@@ -34,6 +34,7 @@ pub mod voice;            // v10.13.2: Rust-owned media keys and voice X448
 pub mod opus_codec;
 #[cfg(feature = "mls")]
 pub mod mls_group;        // OTRv4Plus group chat (MLS); see otrv4-mls       // libopus for the APK only; Termux uses opuslib
+pub mod container;         // .otrv: files encrypted at rest and for export
 pub mod at_rest;          // Rust-owned at-rest secrets (SMP auto-respond store, identity DEK)
 pub mod filetransfer;     // v10.14.0: Rust-owned /sendfile keys and chunk AEAD
 
@@ -110,6 +111,7 @@ fn otrv4_core(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<at_rest::SmpSecretStore>()?;
     m.add_function(wrap_pyfunction!(at_rest::create_sealed_identity_under, m)?)?;
     m.add_function(wrap_pyfunction!(at_rest::unseal_identity_under,        m)?)?;
+    container::register(m)?;
     // The Android APK's Opus codec. Present only in builds with the
     // `android-opus` feature; `hasattr(otrv4_core, "OpusEncoder")` is how the
     // Android host tells.

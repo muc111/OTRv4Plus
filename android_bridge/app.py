@@ -2118,6 +2118,44 @@ class OtrApp:
         """
         return self.files.received_dir()
 
+    # A received file rests as a `.otrv` container (Rust-sealed). These open
+    # it without leaving plaintext behind, or save it on an explicit request.
+    # Failures are codes: a container that does not open says so, and never
+    # why in engine words.
+
+    def open_received(self, path: str) -> bytes:
+        """Decrypt into memory for the in-app viewer."""
+        try:
+            return self.files.open_received(path)
+        except Exception:
+            raise BridgeError("open_failed", "the file could not be opened")
+
+    def open_received_to(self, path: str, directory: str) -> str:
+        """Decrypt to a transient file for a viewer that needs one (PDF,
+        video). The caller deletes it when the viewer closes."""
+        try:
+            return self.files.open_received_to(path, directory)
+        except Exception:
+            raise BridgeError("open_failed", "the file could not be opened")
+
+    def save_received(self, path: str, destination: str) -> str:
+        """Explicit Save to `destination`, replacing a file already there."""
+        try:
+            self.files.save_received(path, destination)
+            return "ok"
+        except Exception:
+            return "save_failed"
+
+    def export_received(self, path: str, destination: str, passphrase: str) -> str:
+        """A passphrase-sealed `.otrv` any OTRv4Plus build can import."""
+        if len(passphrase or "") < 8:
+            return "passphrase_too_short"
+        try:
+            self.files.export_received(path, destination, passphrase)
+            return "ok"
+        except Exception:
+            return "export_failed"
+
     def poll_calls(self) -> None:
         """Emit an event for any call whose state moved.
 

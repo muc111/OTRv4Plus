@@ -1123,6 +1123,17 @@ class ChatViewModel : ViewModel() {
 
     fun closeViewer() { viewing = null }
 
+    /**
+     * Decrypt a received container into [directory] for the viewer. Blocking;
+     * the viewer calls it off the main thread. Null when it does not open.
+     */
+    fun openReceivedTo(container: String, directory: String): String? {
+        val c = core ?: return null
+        val transfer = viewing ?: return null
+        if (!canOpen(transfer) || transfer.path != container) return null
+        return c.openReceivedTo(container, directory)
+    }
+
     private val rates = TransferUi.RateMeter()
 
     /**
