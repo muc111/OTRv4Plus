@@ -356,6 +356,14 @@ class XmppTransport(Transport):
         self._welcome = _welcome.WelcomeDirectory()
         #: bare room JID (lower case) -> the nickname we joined with.
         self._room_nicks: Dict[str, str] = {}
+        #: Rooms whose join is in flight -> room messages held until the join
+        #: completes. See `_begin_join`: without this, a room's history burst
+        #: arriving in the same read as our self-presence reached the app
+        #: before the room was registered, and was silently dropped.
+        self._joining: Dict[str, list] = {}
+        #: `handler(room)` once ANY room join succeeds, called on the loop
+        #: thread before that room's held messages are delivered.
+        self._on_room_joined: Optional[Callable[[str], None]] = None
         #: Called with a bare JID whenever its capability may have changed,
         #: and whether the resource an OTRv4+ session was pinned to left.
         self._on_capability: Optional[Callable[[str, bool], None]] = None
@@ -1239,6 +1247,56 @@ class XmppTransport(Transport):
         """`handler(room, nick, body, timestamp)` for each room message."""
         self._on_room_message = handler
 
+    def set_room_joined_handler(self,
+                                handler: Optional[Callable[[str], None]]) -> None:
+        """`handler(room)` when a join succeeds, BEFORE any of that room's
+        messages are delivered. The app registers the room here, so nothing
+        the room sends on arrival can reach it as an unknown room."""
+        self._on_room_joined = handler
+
+    #: Messages held per joining room. A room's history on join is bounded by
+    #: the service (Prosody: 20 by default); this caps a hostile one.
+    MAX_HELD_ROOM_MESSAGES = 200
+
+    @staticmethod
+    def _room_key(room) -> str:
+        return str(room).split("/", 1)[0].strip().lower()
+
+    def _held(self) -> Dict[str, list]:
+        # getattr: several tests build a transport without __init__.
+        held = getattr(self, "_joining", None)
+        if held is None:
+            held = self._joining = {}
+        return held
+
+    def _begin_join(self, room) -> None:
+        """Hold this room's messages until `_end_join`. Idempotent."""
+        self._held().setdefault(self._room_key(room), [])
+
+    def _end_join(self, room, ok: bool) -> None:
+        """Finish a join. On success: register the room with the app (on
+        this, the loop thread), THEN deliver what arrived meanwhile, in
+        order. On failure: drop it -- we are not in that room."""
+        held = self._held().pop(self._room_key(room), None)
+        if not ok:
+            return
+        handler = getattr(self, "_on_room_joined", None)
+        if handler is not None:
+            try:
+                handler(str(room))
+            except Exception:
+                _log.warning("the room-joined handler raised")
+        for args, kwargs in held or ():
+            self._deliver_room_message(*args, **kwargs)
+
+    def _deliver_room_message(self, *args, **kwargs) -> None:
+        if getattr(self, "_on_room_message", None) is None:
+            return
+        try:
+            self._on_room_message(*args, **kwargs)
+        except Exception:
+            _log.warning("the room message handler raised")
+
     @classmethod
     def _clean(cls, text: str, limit: int) -> str:
         """Drop control characters (other than newline and tab) and cap length.
@@ -1321,13 +1379,17 @@ class XmppTransport(Transport):
                 stamp = delay.timestamp()
         except Exception:
             stamp = 0.0
-        try:
-            if own:
-                self._on_room_message(room, nick, body, stamp or time.time(), own=True)
-            else:
-                self._on_room_message(room, nick, body, stamp or time.time())
-        except Exception:
-            _log.warning("the room message handler raised")
+        if own:
+            args, kwargs = (room, nick, body, stamp or time.time()), {"own": True}
+        else:
+            args, kwargs = (room, nick, body, stamp or time.time()), {}
+        held = self._held().get(self._room_key(room))
+        if held is not None:
+            # Our join is still completing: hold it, bounded, for _end_join.
+            if len(held) < self.MAX_HELD_ROOM_MESSAGES:
+                held.append((args, kwargs))
+            return
+        self._deliver_room_message(*args, **kwargs)
 
     def send_room_message(self, room: str, body: str) -> None:
         """Send plaintext to a room we are in. Raises TransportError."""
@@ -1906,6 +1968,8 @@ class XmppTransport(Transport):
         remove = getattr(self._client, "del_event_handler", None)
         if add is not None:
             add("presence_error", on_error)
+        self._begin_join(room)
+        ok = False
         join = asyncio.ensure_future(muc.join_muc_wait(
             room, nick, password=password or None, timeout=CONNECT_TIMEOUT))
         try:
@@ -1913,13 +1977,16 @@ class XmppTransport(Transport):
                 [join, refused], timeout=CONNECT_TIMEOUT,
                 return_when=asyncio.FIRST_COMPLETED)
             if join in done:
-                return join.result()
+                result = join.result()
+                ok = True
+                return result
             join.cancel()
             if refused in done:
                 from slixmpp.exceptions import PresenceError
                 raise PresenceError(refused.result())
             raise TimeoutError()
         finally:
+            self._end_join(room, ok)
             if not refused.done():
                 refused.cancel()
             if remove is not None:
@@ -1957,6 +2024,19 @@ class XmppTransport(Transport):
     ROOMCONFIG = "http://jabber.org/protocol/muc#roomconfig"
 
     async def _create_room(self, room: str, nick: str, password: str = ""):
+        # Messages are held from the join until the room is known to be kept:
+        # a room destroyed below for want of its password is never
+        # registered with the app, so nothing it said is shown.
+        self._begin_join(room)
+        ok = False
+        try:
+            result = await self._create_room_held(room, nick, password)
+            ok = True
+            return result
+        finally:
+            self._end_join(room, ok)
+
+    async def _create_room_held(self, room: str, nick: str, password: str = ""):
         muc = self._client["xep_0045"]
         await muc.join_muc_wait(room, nick, timeout=CONNECT_TIMEOUT)
         # The empty form. `set_room_config` with a form carrying no fields is
@@ -2152,7 +2232,7 @@ class XmppTransport(Transport):
             self._welcome.joining(room, features, nick)
             muc = self._client["xep_0045"]
             try:
-                await muc.join_muc_wait(room, nick, timeout=CONNECT_TIMEOUT)
+                await self._join_muc(room, nick)
             except Exception as exc:
                 code, _detail = _muc.classify(exc)
                 if code != "conflict":
@@ -2163,7 +2243,7 @@ class XmppTransport(Transport):
                 import secrets as _secrets
                 nick = "%s-%s" % (nick, _secrets.token_hex(2))
                 self._welcome.nick = nick
-                await muc.join_muc_wait(room, nick, timeout=CONNECT_TIMEOUT)
+                await self._join_muc(room, nick)
             self._welcome.joined(nick)
             self._room_nicks[str(room).lower()] = nick
             self._notify_welcome(room)

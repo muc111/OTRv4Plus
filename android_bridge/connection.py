@@ -527,6 +527,12 @@ class ConnectionController:
         joined = getattr(self._app, "note_room_joined", None)
         if hook is not None and joined is not None:
             hook(joined)
+        # Every room, not only Welcome: the transport registers a room with
+        # the app the moment its join succeeds, before delivering anything
+        # the room sent on arrival (see XmppTransport._begin_join).
+        any_room = getattr(self._transport, "set_room_joined_handler", None)
+        if any_room is not None and joined is not None:
+            any_room(joined)
         start = getattr(self._transport, "start_welcome", None)
         if start is not None:
             try:
