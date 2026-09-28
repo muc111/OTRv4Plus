@@ -2556,7 +2556,10 @@ class XmppTransport(Transport):
         if self._on_presence is None:
             return
         try:
-            peer = str(stanza["from"]).split("/", 1)[0]
+            # The FULL JID: presence is tracked per resource (see
+            # otrv4plus_presence.PresenceBook.note).
+            full = str(stanza["from"])
+            peer = full.split("/", 1)[0]
         except Exception:
             return
         # RFC 6121 4.7.2.1. Carried because a UI that has it can tell "online"
@@ -2571,7 +2574,7 @@ class XmppTransport(Transport):
         _TRACE.record("presence", "available" if online else "unavailable",
                       "info", peer=peer, show=show)
         try:
-            self._on_presence(peer, online, show)
+            self._on_presence(full, online, show)
         except TypeError:
             # A handler from before `show` existed. Better than dropping the
             # event: availability is the part that matters.

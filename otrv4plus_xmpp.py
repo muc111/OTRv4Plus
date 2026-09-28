@@ -1642,6 +1642,9 @@ class OTRv4PlusXMPP(ClientXMPP):
         # Peers seen to go offline, and when. A peer that never comes back
         # leaves a ratchet that its replacement session cannot use.
         self._peer_gone_at = {}
+        # bare JID -> set of resources currently available. A peer is gone
+        # only when the LAST one leaves (see _on_presence_unavailable).
+        self._peer_resources = {}
         self._peer_gone_task = None
 
         # Voice call manager (initialized lazily after event loop is available)
@@ -2580,12 +2583,32 @@ class OTRv4PlusXMPP(ClientXMPP):
         status = presence["status"] or ""
         status_s = f" ({_sanitise(status, 64)})" if status else ""
         print(f"[presence] {_sanitise(peer, 128)} is {show}{status_s}")
+        resources = self._peer_resources.setdefault(peer, set())
+        if len(resources) < 16:
+            resources.add(str(presence["from"].resource or ""))
         self._peer_is_alive(peer)
 
     def _on_presence_unavailable(self, presence):
+        """One RESOURCE went away; the peer is gone only when none is left.
+
+        Every app launch signs in as a new resource and, over I2P, the server
+        times the previous session out minutes later. Treating that late
+        `unavailable` as "the peer left" reported a live contact offline and
+        armed the abandoned-session teardown on a session in use (device
+        report, 2026-09-24).
+        """
         peer = presence["from"].bare
         if peer == self._own_bare:
             return
+        resource = str(presence["from"].resource or "")
+        resources = self._peer_resources.get(peer, set())
+        if resource:
+            resources.discard(resource)
+        else:
+            resources.clear()
+        if resources:
+            return                       # another resource is still online
+        self._peer_resources.pop(peer, None)
         print(f"[presence] {_sanitise(peer, 128)} went offline")
         self._arm_peer_gone(peer)
 
@@ -2627,6 +2650,8 @@ class OTRv4PlusXMPP(ClientXMPP):
         """
         if self._peer_gone_at:
             self._peer_gone_at.clear()
+        # What we knew about their resources went with our stream.
+        getattr(self, "_peer_resources", {}).clear()
 
     def _start_peer_gone_sweeper(self) -> None:
         task = self._peer_gone_task

@@ -97,6 +97,9 @@ class PresenceBook:
         # refreshed on every `note`, which makes it least-recently-noted.
         self._state: "OrderedDict[str, str]" = OrderedDict()
         self._show: Dict[str, str] = {}
+        #: bare JID -> {resource: show} for every resource currently
+        #: available. A peer is ONLINE while any resource is.
+        self._resources: Dict[str, "OrderedDict[str, str]"] = {}
         self._lock = threading.RLock()
 
     def _prune(self) -> None:
@@ -108,29 +111,55 @@ class PresenceBook:
         while len(self._state) > self.MAX_TRACKED:
             jid, _ = self._state.popitem(last=False)
             self._show.pop(jid, None)
+            self._resources.pop(jid, None)
 
     # -- writing -------------------------------------------------------------
+
+    #: Resources remembered per peer. A handset has one or two; the bound
+    #: is for a peer that invents resources.
+    MAX_RESOURCES = 16
 
     def note(self, peer: str, online: bool, show: str = "") -> None:
         """Record what a presence stanza said.
 
-        `peer` is expected bare; the transport strips the resource before
-        calling, because availability is a property of the account here and
-        not of one of its devices.
+        `peer` should be the FULL JID the stanza came from. Availability is
+        a property of the account -- online while ANY of its resources is --
+        but it has to be tracked per resource to get that right. Keyed by
+        bare JID alone, the last stanza won, and on a real handset that was
+        wrong: every launch signs in as a new resource, and over I2P the
+        server times the previous session out minutes later, so the OLD
+        resource's `unavailable` arrived after the NEW one's `available` and
+        the contact read "offline" while chatting (device report,
+        2026-09-24). A bare JID (no resource) going unavailable means the
+        whole account did, and clears every resource.
         """
         jid = _bare(peer)
         if not jid:
             return
+        resource = _resource(peer)
         show = show if show in _SHOWS else ""
         with self._lock:
-            self._state[jid] = ONLINE if online else OFFLINE
+            online_resources = self._resources.setdefault(jid, OrderedDict())
+            if online:
+                online_resources[resource] = show
+                online_resources.move_to_end(resource)
+                while len(online_resources) > self.MAX_RESOURCES:
+                    online_resources.popitem(last=False)
+            elif resource:
+                online_resources.pop(resource, None)
+            else:
+                online_resources.clear()
+            if online_resources:
+                self._state[jid] = ONLINE
+                # The show of the most recently available resource.
+                self._show[jid] = next(reversed(online_resources.values()))
+            else:
+                self._state[jid] = OFFLINE
+                self._show[jid] = ""
+                self._resources.pop(jid, None)
             # Hearing about a peer makes them the most recently noted, so a
             # contact the server keeps broadcasting is not the one evicted.
             self._state.move_to_end(jid)
-            # A show belongs to an available peer. Keeping a stale "away" on
-            # somebody who has since gone offline would render as "offline
-            # (away)", which is not a thing.
-            self._show[jid] = show if online else ""
             self._prune()
 
     def forget(self, peer: str) -> None:
@@ -144,6 +173,7 @@ class PresenceBook:
         with self._lock:
             self._state.pop(jid, None)
             self._show.pop(jid, None)
+            self._resources.pop(jid, None)
 
     def forget_all(self) -> None:
         """Every peer back to UNKNOWN. Called when the stream goes.
@@ -156,6 +186,7 @@ class PresenceBook:
         with self._lock:
             self._state.clear()
             self._show.clear()
+            self._resources.clear()
 
     # -- reading -------------------------------------------------------------
 
@@ -209,6 +240,15 @@ class PresenceBook:
             online = sum(1 for s in self._state.values() if s == ONLINE)
             return "<PresenceBook known=%d online=%d>" % (len(self._state),
                                                           online)
+
+
+def _resource(peer: str) -> str:
+    """The resource part of a full JID, or "" for a bare one."""
+    try:
+        text = str(peer or "").strip()
+    except Exception:                                        # pragma: no cover
+        return ""
+    return text.split("/", 1)[1] if "/" in text else ""
 
 
 def _bare(peer: str) -> str:

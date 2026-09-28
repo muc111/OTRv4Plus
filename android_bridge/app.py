@@ -615,8 +615,12 @@ class OtrApp:
 
     def note_presence(self, peer: str, online: bool, show: str = "") -> None:
         """A presence stanza arrived. Called from the transport's loop thread."""
-        peer = self.canonical_peer(peer)
-        self._presence.note(peer, online, show)
+        # Keep the resource: availability is tracked per resource so that an
+        # old session timing out cannot mark a live contact offline.
+        text = str(peer or "").strip()
+        resource = text.split("/", 1)[1] if "/" in text else ""
+        key = self.canonical_peer(text)
+        self._presence.note(key + "/" + resource if resource else key, online, show)
 
     def note_presence_lost(self) -> None:
         """The stream went. Everything we knew about availability goes too.

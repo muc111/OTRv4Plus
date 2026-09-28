@@ -281,7 +281,13 @@ class TestTheCaseHalfOfTheDocumentedRule:
         book.note("%s/phone" % ALICE, online=True)
         book.note("%s/Desktop" % ALICE, online=False)
         assert len(book) == 1
-        assert book.state(ALICE) == OFFLINE, "the later stanza did not win"
+        # One peer -- and online while any resource is (RFC 6121): the
+        # desktop leaving does not take the phone offline. This used to assert
+        # "the later stanza wins", which is the bug that showed a live
+        # contact as offline on two handsets (test_presence_per_resource.py).
+        assert book.state(ALICE) == ONLINE
+        book.note("%s/phone" % ALICE, online=False)
+        assert book.state(ALICE) == OFFLINE, "the later stanza for a resource did not win"
 
     def test_two_different_accounts_are_still_two(self, book):
         """Folding is one-way safe: it may merge spellings of one account and
