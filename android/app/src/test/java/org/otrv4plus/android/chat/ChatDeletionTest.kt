@@ -122,6 +122,81 @@ class ChatDeletionTest {
         assertEquals(emptySet(), jids(third))
     }
 
+    private fun roomLine(chat: ChatState, sender: String, body: String, atMs: Long) =
+        chat.receiveRoom(OtrEvent.RoomMessageReceived(room = room, sender = sender,
+                                                      body = body, timestamp = atMs / 1000.0))
+
+    @Test
+    fun `a rejoin's history replay does not bring a deleted room chat back`() {
+        // Every reconnect rejoins the room and the service replays recent
+        // history (with its original timestamps). Before the deletion cutoff
+        // that replay counted as new and resurrected the chat.
+        val disk = Disk()
+        val (chat, _) = process(disk)
+        chat.now = { 10_000L }
+        roomLine(chat, "ann", "old one", 5_000L)
+        roomLine(chat, "bob", "old two", 6_000L)
+        chat.deleteConversation(room)
+        chat.now = { 20_000L }
+        // The rejoin: the same history again.
+        assertFalse(roomLine(chat, "ann", "old one", 5_000L))
+        assertFalse(roomLine(chat, "bob", "old two", 6_000L))
+        assertEquals(emptySet(), jids(chat), "the replay resurrected the deleted chat")
+
+        // After a restart too: the cutoff is sealed with the deletion.
+        val (restarted, _) = process(disk)
+        restarted.now = { 30_000L }
+        assertFalse(roomLine(restarted, "ann", "old one", 5_000L))
+        assertEquals(emptySet(), jids(restarted))
+    }
+
+    @Test
+    fun `a new room message brings it back, and a later replay adds no old lines`() {
+        val disk = Disk()
+        val (chat, store) = process(disk)
+        chat.now = { 10_000L }
+        roomLine(chat, "ann", "old", 5_000L)
+        chat.deleteConversation(room)
+        chat.now = { 20_000L }
+        assertTrue(roomLine(chat, "carl", "new", 15_000L))
+        assertTrue(room in jids(chat))
+        // Reconnect: the service replays both; only what followed the
+        // deletion is in the restored chat.
+        roomLine(chat, "ann", "old", 5_000L)
+        roomLine(chat, "carl", "new", 15_000L)
+        assertEquals(listOf("new"), store.messages(room).map { it.body })
+        val (restarted, restartedStore) = process(disk)
+        restarted.now = { 30_000L }
+        roomLine(restarted, "ann", "old", 5_000L)
+        assertEquals(listOf("new"), restartedStore.messages(room).map { it.body })
+    }
+
+    @Test
+    fun `a deletion recorded before cutoffs existed still suppresses the replay`() {
+        // The old record held bare addresses. Loaded now, it means "deleted at
+        // some point before now", which is everything a replay can carry.
+        val disk = Disk()
+        disk.put(DeletedConversations.RECORD_PREFIX + AccountScope.of(owner).key,
+                 room.toByteArray())
+        val (chat, _) = process(disk)
+        assertTrue(chat.deleted.contains(room))
+        assertFalse(roomLine(chat, "ann", "said last week", System.currentTimeMillis() - 86_400_000L))
+        assertEquals(emptySet(), jids(chat))
+    }
+
+    @Test
+    fun `a one-to-one message is never suppressed by a deletion time`() {
+        // No server replay on direct chats: anything arriving is new to this
+        // device, even an offline message sent before the deletion.
+        val disk = Disk()
+        val (chat, _) = process(disk)
+        chat.applyRoster(listOf(Contact(alice, "Alice")))
+        chat.now = { 10_000L }
+        chat.deleteConversation(alice)
+        chat.receive(OtrEvent.MessageReceived(peer = alice, body = "sent offline", timestamp = 1.0))
+        assertTrue(alice in jids(chat))
+    }
+
     @Test
     fun `marking a deleted chat read leaves no empty record behind`() {
         val disk = Disk()

@@ -336,7 +336,7 @@ class ChatState(
     fun bindVault(vault: org.otrv4plus.android.security.Vault?) {
         savedContacts = SavedContacts(vault)
         savedContacts.bind(account)
-        deleted = DeletedConversations(vault)
+        deleted = DeletedConversations(vault) { now() }
         deleted.bind(account)
     }
 
@@ -777,6 +777,9 @@ class ChatState(
         if (event.encrypted) secureRooms.add(room)
         val at = if (event.timestamp > 0) (event.timestamp * 1000).toLong()
                  else now()
+        // A rejoin replays the room's history. What was said before the user
+        // deleted this chat stays deleted: see DeletedConversations.
+        if (deleted.predatesDeletion(room, at)) return false
         val added = store.append(
             Message(
                 id = MessageId.room(room, event.sender, at, event.body),
