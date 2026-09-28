@@ -61,6 +61,7 @@ path = [
     "ROADMAP.md",
     "RUST_SECURITY_PATCHES.md",
     "Rust/VOICE_TUNING.md",
+    "Rust/fuzz/FUZZING.md",
     "SECURITY.md",
     "SECURITY_INVARIANTS.md",
     "SECURITY_ISSUES.md",
