@@ -131,14 +131,19 @@ impl Header {
         if h.len() != HEADER_LEN || &h[0..4] != MAGIC || h[4] != VERSION || h[54..56] != [0, 0] {
             return Err(ContainerError::Refused);
         }
-        let u32_at = |i: usize| u32::from_be_bytes(h[i..i + 4].try_into().unwrap());
+        // Fixed offsets into a buffer whose length was checked above; the
+        // conversions cannot fail, and refuse rather than panic if they did.
+        fn at<const N: usize>(h: &[u8], i: usize) -> Result<[u8; N]> {
+            h.get(i..i + N).and_then(|s| s.try_into().ok()).ok_or(ContainerError::Refused)
+        }
+        let u32_at = |i: usize| at::<4>(h, i).map(u32::from_be_bytes);
         let header = Header {
             source: h[5],
-            chunk: u32_at(6),
-            length: u64::from_be_bytes(h[10..18].try_into().unwrap()),
-            salt: h[18..34].try_into().unwrap(),
-            prefix: h[34..42].try_into().unwrap(),
-            argon: (u32_at(42), u32_at(46), u32_at(50)),
+            chunk: u32_at(6)?,
+            length: u64::from_be_bytes(at::<8>(h, 10)?),
+            salt: at::<16>(h, 18)?,
+            prefix: at::<8>(h, 34)?,
+            argon: (u32_at(42)?, u32_at(46)?, u32_at(50)?),
         };
         if !(MIN_CHUNK..=MAX_CHUNK).contains(&header.chunk) {
             return Err(ContainerError::Refused);
@@ -147,8 +152,12 @@ impl Header {
             SOURCE_DEVICE if header.argon == (0, 0, 0) => {}
             SOURCE_PASSPHRASE => {
                 let (m, t, p) = header.argon;
-                if m < 8 * p.max(1) || m > ARGON_M_MAX || t == 0 || t > ARGON_T_MAX
-                    || p == 0 || p > ARGON_P_MAX
+                // p is bounded BEFORE it is used in arithmetic: the header is
+                // unauthenticated, and with overflow-checks + panic=abort in
+                // release, `8 * p` on p = 0xffff_ffff killed the process
+                // (found by fuzz/container_header).
+                if p == 0 || p > ARGON_P_MAX || t == 0 || t > ARGON_T_MAX
+                    || m > ARGON_M_MAX || m < 8 * p
                 {
                     return Err(ContainerError::Refused);
                 }
@@ -481,6 +490,26 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
 
 #[cfg(test)]
 mod tests {
+    /// Regression (fuzz/container_header crash-c06dcdab): a passphrase
+    /// header with lanes p = 0xffffffff overflowed `8 * p` before p was
+    /// bounded. With panic = "abort" that was a process kill on `info`.
+    #[test]
+    fn a_huge_lane_count_is_refused_not_an_overflow() {
+        let mut h = [0u8; HEADER_LEN];
+        h[0..4].copy_from_slice(MAGIC);
+        h[4] = VERSION;
+        h[5] = SOURCE_PASSPHRASE;
+        h[6..10].copy_from_slice(&DEFAULT_CHUNK.to_be_bytes());
+        h[42..46].copy_from_slice(&ARGON_M.to_be_bytes());
+        h[46..50].copy_from_slice(&ARGON_T.to_be_bytes());
+        for p in [u32::MAX, u32::MAX / 8 + 1, ARGON_P_MAX + 1, 0] {
+            h[50..54].copy_from_slice(&p.to_be_bytes());
+            assert_eq!(Header::decode(&h), Err(ContainerError::Refused), "p={p}");
+        }
+        h[50..54].copy_from_slice(&ARGON_P.to_be_bytes());
+        assert!(Header::decode(&h).is_ok());
+    }
+
     use super::*;
 
     fn tmpdir() -> PathBuf {
