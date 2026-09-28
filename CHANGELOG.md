@@ -4,6 +4,19 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.8 — 2026-09-28 — room occupant counts; security status stated (core 0.11.0)
+
+*Handset report on rc.7: account creation and login on yax.im work.*
+
+- **Rooms list shows how many people are in each room**, from the server's
+  own count (XEP-0045 `muc#roominfo_occupants`, one bounded disco#info per
+  room, at most 100, 8 at a time). Occupied rooms are listed first. A room
+  whose server gives no count shows none -- never a guessed "0 users".
+- **README and SECURITY.md** now describe the security work actually done
+  (tests, fuzzing, known-answer and cross-implementation checks, audits,
+  physical tests) and state plainly that there has been no paid independent
+  audit.
+
 ## Android 0.7.0-experimental.rc.7 — 2026-09-28 — Wipe & Exit ends with the system's own "Clear storage" (core 0.11.0)
 
 - Handset on rc.5: after Wipe & Exit, Settings showed 8.19 kB user data and
