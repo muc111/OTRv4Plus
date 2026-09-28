@@ -38,6 +38,7 @@ __all__ = [
     "RoomMessageReceived", "MessageDelivered", "SmpProgress", "SmpResult", "FingerprintChanged",
     "CallStateChanged", "ErrorOccurred", "SubscriptionRequested",
     "FileTransferChanged", "OtrCapabilityChanged", "EventSink",
+    "GroupInvite", "GroupChanged",
 ]
 
 
@@ -224,13 +225,44 @@ class MessageReceived(Event):
 
 @dataclass(frozen=True)
 class RoomMessageReceived(Event):
-    """Plaintext group chat. `peer` is the ROOM; `sender` is the nickname the
-    room gave the author, which the room controls and which is not an
-    identity claim."""
+    """Group chat. `peer` is the ROOM; `sender` is the nickname the room gave
+    the author, which the room controls and which is not an identity claim.
+
+    `encrypted` is True only for an OTRv4Plus secure group, where the body was
+    decrypted by MLS; `sender_identity` is then the MLS credential (a bare
+    JID) that signed it -- still not proof of who that is, which is what
+    `verified` answers: True only when that member's MLS key was received
+    over an SMP-verified OTRv4+ session. Every other room is plaintext."""
 
     sender: str = ""
     body: str = ""
     timestamp: float = 0.0
+    encrypted: bool = False
+    sender_identity: str = ""
+    verified: bool = False
+
+
+@dataclass(frozen=True)
+class GroupInvite(Event):
+    """`peer` invited us to the secure group `room`, over an encrypted OTRv4+
+    session. Never accepted automatically."""
+
+    room: str = ""
+    verified: bool = False
+
+
+@dataclass(frozen=True)
+class GroupChanged(Event):
+    """A secure group moved. `peer` is the ROOM.
+
+    `change` is one of: created, joined, member_added, member_removed,
+    removed_us, left, commit_lost (our change lost the race and was dropped;
+    retry), invite_sent, invite_declined, refused (a join or invite was
+    refused; `detail` says which check)."""
+
+    change: str = ""
+    epoch: int = 0
+    detail: str = ""
 
 
 @dataclass(frozen=True)

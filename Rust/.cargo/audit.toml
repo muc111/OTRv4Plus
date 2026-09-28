@@ -6,6 +6,9 @@
 #
 # Audited 2026-09-24 with cargo-audit 0.22.2 against the RustSec advisory
 # database (1267 advisories): 0 vulnerabilities in 134 locked crates.
+# Re-audited 2026-09-28 after linking otrv4-mls (1273 advisories, 333 locked
+# crates across all targets): 0 vulnerabilities; one new unmaintained
+# compile-time crate, below.
 #
 # The two pyo3 entries that used to be here (RUSTSEC-2025-0020,
 # RUSTSEC-2026-0177) were removed: neither matches the locked pyo3 0.29.2, and a
@@ -28,4 +31,12 @@ ignore = [
   # UNMAINTAINED proc-macro, compile time only, pulled in by pqcrypto-mldsa.
   # Leaves with it.
   "RUSTSEC-2024-0436",  # paste 1.0.15
+  # UNMAINTAINED proc-macro, compile time only. In Cargo.lock, NOT in the
+  # build: openmls 0.9's optional reference providers (openmls_rust_crypto,
+  # openmls_libcrux_crypto) -> hpke-rs -> libcrux-sha3 -> hax-lib ->
+  # hax-lib-macros -> proc-macro-error2. Cargo.lock is feature-independent,
+  # so optional dependencies are locked even though the `mls` feature never
+  # enables them; `cargo tree -e normal --features mls --target all` shows
+  # none of these crates. otrv4-mls implements HPKE itself (src/hpke.rs).
+  "RUSTSEC-2026-0173",  # proc-macro-error2 2.0.1
 ]

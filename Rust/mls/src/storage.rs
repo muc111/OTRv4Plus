@@ -18,7 +18,8 @@
 //!     dropping the store does the same.
 //!
 //! Nothing here is reachable from Python: the store lives inside the Rust
-//! MLS client and has no export. Encrypted persistence is a later stage.
+//! MLS client. Its only export is `snapshot`, which the client seals with
+//! AES-256-GCM before anything leaves Rust (`MlsClient::export_sealed`).
 
 use openmls_traits::storage::*;
 use serde::Serialize;
@@ -71,6 +72,37 @@ impl SecureStorage {
 
     pub fn is_empty(&self) -> bool {
         self.len() == 0
+    }
+
+    /// Every entry as one CBOR byte string, for sealing by `MlsClient`.
+    ///
+    /// The output buffer is reserved up front so the encoder never
+    /// reallocates: a reallocation would leave a copy of the secrets in
+    /// freed memory that nothing zeroizes. Entries are borrowed, not cloned.
+    pub(crate) fn snapshot(&self) -> Result<Zeroizing<Vec<u8>>, StorageError> {
+        let values = self.values.read().map_err(|_| StorageError::SerializationError)?;
+        let mut keys: Vec<&Vec<u8>> = values.keys().collect();
+        keys.sort();
+        let pairs: Vec<(&serde_bytes::Bytes, &serde_bytes::Bytes)> = keys
+            .into_iter()
+            .map(|k| (serde_bytes::Bytes::new(k), serde_bytes::Bytes::new(&values[k])))
+            .collect();
+        let need: usize = pairs.iter().map(|(k, v)| k.len() + v.len() + 18).sum::<usize>() + 16;
+        let mut out = Zeroizing::new(Vec::with_capacity(need));
+        ciborium::ser::into_writer(&pairs, &mut *out).map_err(|_| StorageError::SerializationError)?;
+        debug_assert!(out.capacity() == need, "snapshot buffer reallocated");
+        Ok(out)
+    }
+
+    /// Replace every entry with a `snapshot`. Existing entries are zeroized.
+    pub(crate) fn restore(&self, snapshot: &[u8]) -> Result<(), StorageError> {
+        let raw: Vec<(serde_bytes::ByteBuf, serde_bytes::ByteBuf)> = cbor_dec(snapshot)?;
+        let mut values = self.values.write().map_err(|_| StorageError::SerializationError)?;
+        values.clear();
+        for (k, v) in raw {
+            values.insert(k.into_vec(), Zeroizing::new(v.into_vec()));
+        }
+        Ok(())
     }
 
     #[cfg(test)]

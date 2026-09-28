@@ -249,16 +249,19 @@ fun ConversationScreen(
  */
 @Composable
 private fun RoomHeader(model: ChatViewModel, jid: String) {
-    val level = org.otrv4plus.android.crypto.SecurityLevel.Level.NOT_ENCRYPTED
+    val secure = model.isSecureRoom(jid)
+    val level = if (secure) org.otrv4plus.android.crypto.SecurityLevel.Level.ENCRYPTED_UNVERIFIED
+                else org.otrv4plus.android.crypto.SecurityLevel.Level.NOT_ENCRYPTED
     Surface(color = MaterialTheme.colorScheme.surfaceVariant) {
         Text(
-            "${level.mark} Room — not end-to-end encrypted. Everyone in the " +
-                "room and the server can read every message.",
+            "${level.mark} " + org.otrv4plus.android.chat.GroupText.header(secure),
             style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.error,
+            color = if (secure) MaterialTheme.colorScheme.onSurfaceVariant
+                    else MaterialTheme.colorScheme.error,
             modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp),
         )
     }
+    if (secure) SecureGroupPanel(model, jid)
     val expanded = model.occupantsShown(jid)
     val people = model.occupants(jid)
     Row(
@@ -1124,5 +1127,60 @@ private fun HandshakeCard(status: HandshakeUi.Status) {
             Text(view.elapsed, style = MaterialTheme.typography.labelSmall,
                  color = MaterialTheme.colorScheme.onSecondaryContainer)
         }
+    }
+}
+
+/**
+ * Members of a secure group, each with whether you have verified their key,
+ * and an invite field. Invitations go over an encrypted OTRv4+ conversation
+ * with the person invited; the room never sees them.
+ */
+@Composable
+private fun SecureGroupPanel(model: ChatViewModel, jid: String) {
+    var shown by androidx.compose.runtime.saveable.rememberSaveable(jid) {
+        androidx.compose.runtime.mutableStateOf(false)
+    }
+    var invitee by androidx.compose.runtime.saveable.rememberSaveable(jid) {
+        androidx.compose.runtime.mutableStateOf("")
+    }
+    Row(
+        Modifier.fillMaxWidth().padding(horizontal = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text("Group members", style = MaterialTheme.typography.labelMedium,
+             modifier = Modifier.weight(1f))
+        TextButton(onClick = {
+            shown = !shown
+            if (shown) model.refreshGroupMembers(jid)
+        }) { Text(if (shown) "Hide" else "Show") }
+    }
+    if (!shown) return
+    Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp)) {
+        for (m in model.groupMembers(jid)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    org.otrv4plus.android.chat.GroupText.memberLine(
+                        m.jid, m.me, m.verified, m.bound),
+                    style = MaterialTheme.typography.bodySmall,
+                    modifier = Modifier.weight(1f),
+                )
+                if (!m.me) {
+                    TextButton(onClick = { model.removeGroupMember(jid, m.jid) }) {
+                        Text("Remove")
+                    }
+                }
+            }
+        }
+        androidx.compose.material3.OutlinedTextField(
+            value = invitee,
+            onValueChange = { invitee = it },
+            label = { Text("Invite a contact (their address)") },
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth(),
+        )
+        TextButton(
+            enabled = invitee.isNotBlank(),
+            onClick = { model.inviteToGroup(jid, invitee); invitee = "" },
+        ) { Text("Invite over OTRv4+") }
     }
 }

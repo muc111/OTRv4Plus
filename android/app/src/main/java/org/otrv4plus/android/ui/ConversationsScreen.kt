@@ -118,6 +118,29 @@ fun ConversationsScreen(
                 )
             }
 
+            // Secure-group invitations, each answered explicitly. Accepting
+            // joins the room and sends our key over OTRv4+; nothing is
+            // accepted without the user.
+            for (invite in model.groupInvites()) {
+                Surface(color = MaterialTheme.colorScheme.tertiaryContainer) {
+                    Column(Modifier.fillMaxWidth().padding(12.dp)) {
+                        Text(
+                            org.otrv4plus.android.chat.GroupText.invite(invite),
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onTertiaryContainer,
+                        )
+                        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                            TextButton(onClick = { model.acceptGroupInvite(invite.room) }) {
+                                Text("Join")
+                            }
+                            TextButton(onClick = { model.declineGroupInvite(invite.room) }) {
+                                Text("Decline")
+                            }
+                        }
+                    }
+                }
+            }
+
             if (model.droppedEvents > 0) {
                 Text(
                     "${model.droppedEvents} update(s) were dropped while the " +

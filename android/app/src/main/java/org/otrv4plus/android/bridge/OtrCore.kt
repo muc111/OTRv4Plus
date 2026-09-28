@@ -773,13 +773,29 @@ sealed interface OtrEvent {
     data class MessageReceived(val peer: String, val body: String, val timestamp: Double) : OtrEvent
 
     /**
-     * Plaintext group chat. [room] is the room's JID; [sender] is the
-     * nickname the ROOM assigned, which is not an identity claim. Kept a
-     * separate type from [MessageReceived] so nothing can mistake a room's
-     * plaintext for a peer's decrypted text.
+     * Group chat. [room] is the room's JID; [sender] is the nickname the ROOM
+     * assigned, which is not an identity claim. Kept a separate type from
+     * [MessageReceived] so nothing can mistake a room's text for a peer's
+     * decrypted text.
+     *
+     * [encrypted] is true only in an OTRv4Plus secure group, where MLS
+     * decrypted it; [senderIdentity] is then the MLS credential that signed
+     * it, and [verified] says that member's key arrived over an SMP-verified
+     * OTRv4+ session. Every other room is plaintext.
      */
     data class RoomMessageReceived(
         val room: String, val sender: String, val body: String, val timestamp: Double,
+        val encrypted: Boolean = false,
+        val senderIdentity: String = "",
+        val verified: Boolean = false,
+    ) : OtrEvent
+
+    /** [peer] invited us to the secure group [room], over OTRv4+. Never auto-accepted. */
+    data class GroupInvited(val peer: String, val room: String, val verified: Boolean) : OtrEvent
+
+    /** A secure group moved: see `android_bridge.events.GroupChanged` for [change]. */
+    data class GroupChanged(
+        val room: String, val change: String, val epoch: Long, val detail: String,
     ) : OtrEvent
     /**
      * A file transfer moved. [state] and [reason] are the engine's
@@ -882,6 +898,19 @@ enum class SubscriptionPolicy {
 fun interface OtrEventSink {
     fun onEvent(event: OtrEvent)
 }
+
+/**
+ * A member of a secure group. [fingerprint] is public (SHA-384 of the MLS
+ * signature key). [verified] only when that key arrived over an SMP-verified
+ * OTRv4+ session with [jid]; [bound] when it arrived over any OTRv4+ session.
+ */
+data class GroupMember(
+    val jid: String,
+    val fingerprint: String,
+    val me: Boolean,
+    val verified: Boolean,
+    val bound: Boolean,
+)
 
 /** A bridge failure. Carries a code, never engine exception text. */
 class OtrBridgeException(val code: String) : RuntimeException(code) {

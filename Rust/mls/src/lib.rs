@@ -9,7 +9,7 @@
 #![deny(unsafe_code)]
 
 pub mod client;
-pub mod hpke_backend;
+pub mod hpke;
 pub mod mlkem;
 pub mod provider;
 pub mod storage;

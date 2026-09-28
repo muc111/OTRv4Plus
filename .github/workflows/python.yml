@@ -99,7 +99,7 @@ jobs:
           # and production never calls. The release wheel is built and
           # checked on its own after the suite (see "Release wheel").
           OTRV4PLUS_ALLOW_RAW_KEY_TEST_API=1 maturin build --release \
-            --features pyo3/extension-module,android-opus,raw-key-test-api \
+            --features pyo3/extension-module,android-opus,mls,raw-key-test-api \
             --interpreter python${{ env.PYTHON_VERSION }} \
             --out dist
           pip install dist/*.whl
@@ -201,7 +201,7 @@ jobs:
         working-directory: Rust
         run: |
           maturin build --release \
-            --features pyo3/extension-module,android-opus \
+            --features pyo3/extension-module,android-opus,mls \
             --interpreter python${{ env.PYTHON_VERSION }} \
             --out ../dist-release
           pip install --force-reinstall --no-deps ../dist-release/*.whl

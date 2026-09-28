@@ -24,6 +24,7 @@ thread.
 from __future__ import annotations
 
 import logging
+import os
 import threading
 import time
 from dataclasses import dataclass
@@ -40,6 +41,7 @@ import otrv4plus_fragment as _fragment
 from .trace import TRACE as _TRACE
 from .files import FileBridge, FileOutcome, is_file_signal
 from .voice import CallBridge, CallOutcome, is_call_signal
+from .groups import GroupError, SecureGroups, is_group_signal
 import otrv4plus_presence as _presence
 from otrv4plus_mode import OtrMode
 
@@ -232,6 +234,8 @@ class OtrApp:
         self._clock = clock
         #: When each peer last got an automatic recovery handshake.
         self._recovered_at: Dict[str, float] = {}
+        #: Secure groups (MLS), created on first use; see `groups`.
+        self._groups: Optional[SecureGroups] = None
         self._connection = ConnectionState.DISCONNECTED
         #: What we know about each peer's availability, and when we know
         #: nothing. A PresenceBook rather than a dict of bools because
@@ -449,15 +453,74 @@ class OtrApp:
             raise BridgeError(code, "rooms are not end-to-end encrypted")
 
     def receive_room_message(self, room: str, nick: str, body: str,
-                             timestamp: float = 0.0) -> None:
+                             timestamp: float = 0.0, own: bool = False) -> None:
         """A room message from the transport. Emitted as its own event type,
         never as `MessageReceived`: nothing downstream may confuse a room's
-        plaintext with a peer's decrypted text."""
+        plaintext with a peer's decrypted text.
+
+        A SECURE GROUP's room goes to `SecureGroups` and nowhere else: what
+        comes out is MLS-decrypted text or nothing, never the raw body. `own`
+        marks the room reflecting our own message back, which MLS needs (it
+        is how a commit learns it won) and a plain room does not show."""
         room = self.canonical_peer(room)
         if room not in self._rooms:
             return
+        groups = self._groups
+        if groups is not None:
+            try:
+                if groups.on_room_body(room, nick, body, timestamp, own=own):
+                    return
+            except GroupError:
+                return
+        if own:
+            return
         self._emit(RoomMessageReceived(peer=room, sender=nick, body=body,
                                        timestamp=timestamp))
+
+    # -- secure groups (MLS) ---------------------------------------------------
+
+    #: Where the sealed group state lives: the Python home, which on Android
+    #: is app-private storage and is removed by Wipe & Exit's storage stage.
+    GROUP_STATE_DIR = "~/.otrv4plus/groups"
+
+    @property
+    def groups(self) -> SecureGroups:
+        if self._groups is None:
+            self._groups = SecureGroups(
+                send_room=self._send_room_body,
+                send_private=self._send_group_signal,
+                emit=self._emit,
+                peer_security=self.security_state,
+                state_dir=os.path.expanduser(self.GROUP_STATE_DIR),
+                clock=self._clock)
+        return self._groups
+
+    def open_groups(self, account: str) -> bool:
+        """Open this account's secure groups. False when this build has no
+        group encryption, which the UI reports rather than hiding."""
+        try:
+            self.groups.open(self.canonical_peer(account))
+            return True
+        except GroupError as exc:
+            _TRACE.record("groups", "open_failed", "warning", code=exc.code)
+            return False
+
+    def _send_room_body(self, room: str, body: str) -> None:
+        sender = getattr(self._transport, "send_room_message", None)
+        if sender is None:
+            raise GroupError("no_transport")
+        sender(room, body)
+
+    def _send_group_signal(self, peer: str, text: str) -> None:
+        """Group setup goes inside an encrypted OTRv4+ session or not at all:
+        never plaintext, and never a handshake started on its behalf."""
+        has = getattr(self._engine, "has_encrypted_session", None)
+        if has is None or not has(peer):
+            raise GroupError("otr_required")
+        frame, should_send = self._engine.handle_outgoing_message(peer, text)
+        if not (should_send and frame):
+            raise GroupError("otr_required")
+        self._send_protocol_or_raise(peer, frame, "group_send_failed")
 
     def wipe(self) -> Dict[str, Any]:
         """Wipe & Exit, Python side. Idempotent; the app is spent afterwards.
@@ -589,6 +652,13 @@ class OtrApp:
                 files.shutdown()
             except Exception:
                 report["errors"].append("transfers")
+        # Every MLS group secret, pending commit and the signing key, in
+        # Rust, and the sealed state file. Constructed here if it was never
+        # used, so a state file from a previous run is removed too.
+        try:
+            self.groups.wipe()
+        except Exception:
+            report["errors"].append("groups")
 
         engine_wipe = getattr(self._engine, "wipe", None)
 
@@ -1298,6 +1368,14 @@ class OtrApp:
         # method did before rooms were routed -- is rejected by the server
         # while the UI reported it sent.
         if peer in self._rooms:
+            # A SECURE GROUP is MLS or nothing: a failure is SEND_FAILED,
+            # never a plaintext retry.
+            if self._groups is not None and self._groups.is_secure(peer):
+                try:
+                    self._groups.send(peer, body)
+                except (GroupError, Exception):
+                    return self.SEND_FAILED
+                return self.SEND_ENCRYPTED
             sender = getattr(self._transport, "send_room_message", None)
             if sender is None:
                 return self.SEND_FAILED
@@ -1440,6 +1518,17 @@ class OtrApp:
             self._touch(peer)
             self.files.handle_signal(peer, body)
             self._announce_smp_change(peer, before_smp)
+            return None
+
+        # GROUP SETUP: an invitation, a KeyPackage or a Welcome for a secure
+        # group, which only ever travel inside this OTRv4+ session.
+        if is_group_signal(body):
+            self._touch(peer)
+            if not self._wiped:
+                try:
+                    self.groups.on_signal(peer, body)
+                except GroupError:
+                    pass
             return None
 
         # AND THE THIRD ONE. `otrv4plus_trade` carries `?OTRv4-TRADE:` in a

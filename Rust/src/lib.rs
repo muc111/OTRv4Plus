@@ -31,7 +31,9 @@ pub mod mlkem;            // v10.7.3: ML-KEM-1024 PyO3 bindings (Phase 5.3i-C)
 pub mod identity;         // Android B1 (option B): Rust-owned identity sealing (additive)
 pub mod voice;            // v10.13.2: Rust-owned media keys and voice X448
 #[cfg(feature = "android-opus")]
-pub mod opus_codec;       // libopus for the APK only; Termux uses opuslib
+pub mod opus_codec;
+#[cfg(feature = "mls")]
+pub mod mls_group;        // OTRv4Plus group chat (MLS); see otrv4-mls       // libopus for the APK only; Termux uses opuslib
 pub mod at_rest;          // Rust-owned at-rest secrets (SMP auto-respond store, identity DEK)
 pub mod filetransfer;     // v10.14.0: Rust-owned /sendfile keys and chunk AEAD
 
@@ -113,6 +115,9 @@ fn otrv4_core(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     // Android host tells.
     #[cfg(feature = "android-opus")]
     opus_codec::register(m)?;
+    // Group chat. `hasattr(otrv4_core, "RustMlsClient")` is how callers tell.
+    #[cfg(feature = "mls")]
+    m.add_class::<mls_group::RustMlsClient>()?;
 
     Ok(())
 }

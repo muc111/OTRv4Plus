@@ -297,7 +297,7 @@ jobs:
           pip install maturin
           maturin build --release \
             --target ${{ matrix.target }} \
-            --features pyo3/extension-module,android-opus \
+            --features pyo3/extension-module,android-opus,mls \
             --interpreter python${{ env.PYTHON_VERSION }} \
             --out dist
 

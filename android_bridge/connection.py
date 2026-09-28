@@ -512,6 +512,14 @@ class ConnectionController:
             return self._fail(code, detail)
 
         self._enter("connected")
+        # Secure groups for this account: the sealed MLS state reopened, or a
+        # new identity for it. A build without group encryption says so.
+        opener = getattr(self._app, "open_groups", None)
+        if opener is not None:
+            try:
+                opener(self._profile.jid)
+            except Exception:
+                _TRACE.record("groups", "open_failed", "warning")
         # The OTRv4Plus Welcome room, joined in the background after every
         # successful sign-in (each connect builds a fresh transport, so a
         # reconnect rejoins). Discovery only: see android_bridge.welcome.
@@ -838,6 +846,66 @@ class ConnectionController:
         args = (room, nick, password) if password else (room, nick)
         return self._noting_room(self._muc_call("create_room", *args),
                                  room, joined=True)
+
+    # -- secure groups (MLS over a room; see android_bridge.groups) --------
+
+    def _group_call(self, fn, *args) -> Dict[str, Any]:
+        from .groups import GroupError
+        try:
+            value = fn(*args)
+        except GroupError as exc:
+            return {"ok": False, "code": exc.code, "detail": exc.detail, "value": None}
+        except Exception as exc:
+            return {"ok": False, "code": "group_failed",
+                    "detail": type(exc).__name__, "value": None}
+        return {"ok": True, "code": "ok", "detail": "", "value": value}
+
+    def create_secure_group(self, room: str, password: str = "") -> Dict[str, Any]:
+        """A new room that is an OTRv4Plus secure group from its first message.
+
+        The room is created first, then the MLS group. If the MLS step fails
+        the room is left rather than kept as a plaintext room the user thinks
+        is secure."""
+        nick = self._profile.jid.split("@", 1)[0]
+        made = self.create_room(room, nick, password) if password else self.create_room(room, nick)
+        if not made.get("ok"):
+            return made
+        result = self._group_call(self._app.groups.create, room)
+        if not result["ok"]:
+            self.leave_room(room, nick)
+        return result
+
+    def invite_to_group(self, room: str, peer: str) -> Dict[str, Any]:
+        return self._group_call(self._app.groups.invite, room, peer)
+
+    def accept_group_invite(self, room: str) -> Dict[str, Any]:
+        """Join the room, then answer the invitation over OTRv4+."""
+        nick = self._profile.jid.split("@", 1)[0]
+        joined = self.join_room(room, nick)
+        if not joined.get("ok"):
+            return joined
+        return self._group_call(self._app.groups.accept, room)
+
+    def decline_group_invite(self, room: str) -> Dict[str, Any]:
+        return self._group_call(self._app.groups.decline, room)
+
+    def remove_group_member(self, room: str, member: str) -> Dict[str, Any]:
+        return self._group_call(self._app.groups.remove, room, member)
+
+    def leave_secure_group(self, room: str) -> Dict[str, Any]:
+        """Forget the group's keys here, then leave the room."""
+        result = self._group_call(self._app.groups.leave, room)
+        self.leave_room(room, self._profile.jid.split("@", 1)[0])
+        return result
+
+    def group_members(self, room: str) -> Dict[str, Any]:
+        return self._group_call(self._app.groups.members, room)
+
+    def group_invites(self) -> Dict[str, Any]:
+        return self._group_call(self._app.groups.pending_invites)
+
+    def secure_groups(self) -> Dict[str, Any]:
+        return self._group_call(self._app.groups.rooms)
 
     def leave_room(self, room: str, nick: str) -> Dict[str, Any]:
         return self._noting_room(self._muc_call("leave_room", room, nick),

@@ -8,7 +8,7 @@
 # pqcrypto-mldsa, the same crates and versions otrv4_core uses), AES-256-GCM
 # from aes-gcm, HKDF/HMAC/SHA-384 from hkdf/hmac/sha2 -- no second
 # implementation of any primitive the core already has. The MLS protocol is
-# OpenMLS; HPKE composition is hpke-rs over our backend.
+# OpenMLS; HPKE (RFC 9180) is src/hpke.rs on the same primitives.
 #
 # SEPARATE FROM otrv4_core ON PURPOSE, like opus-codec: one small FFI call
 # (PQClean's seeded ML-KEM key generation, which pqcrypto-mlkem compiles but
@@ -33,10 +33,6 @@ openmls_traits = { version = "=0.6.0", features = ["draft-ietf-mls-pq-ciphersuit
 ciborium = "0.2"
 serde = { version = "1", features = ["derive"] }
 serde_bytes = "0.11"
-# "hazmat" only exposes the derived private key bytes so they can be handed
-# to OpenMLS, as the reference provider does; they stay inside Rust.
-hpke-rs = { version = "=0.7.0", default-features = false, features = ["hazmat"] }
-hpke-rs-crypto = { version = "=0.7.0" }
 tls_codec = { version = "0.5", features = ["derive", "serde", "mls"] }
 # The core's versions, so no second copy of a primitive enters the build.
 pqcrypto-mlkem  = { version = "0.1.1", default-features = false, features = ["std"] }
@@ -46,12 +42,18 @@ aes-gcm = { version = "0.10", features = ["aes"] }
 hkdf = "0.12"
 hmac = "0.12"
 sha2 = "0.10"
+# SHAKE256 for HPKE DeriveKeyPair (src/hpke.rs): the core's sha3.
+sha3 = "0.10"
 getrandom = "0.2"
 zeroize = { version = "1.8", features = ["derive", "alloc"] }
 thiserror = "1.0"
-rand_core_hpke = { package = "rand_core", version = "0.10" }
 
 [dev-dependencies]
 # TEST ONLY, never shipped: the reference provider, so our provider is
 # checked against an independent implementation of the same suite.
 openmls_rust_crypto = { version = "=0.6.0", features = ["draft-ietf-mls-pq-ciphersuites"] }
+# TEST ONLY, never shipped: src/hpke.rs replaced hpke-rs (MPL-2.0) in the
+# build; tests/hpke_cross.rs checks it against hpke-rs byte for byte.
+hpke-rs = { version = "=0.7.0", default-features = false, features = ["hazmat"] }
+hpke-rs-crypto = { version = "=0.7.0" }
+rand_core_hpke = { package = "rand_core", version = "0.10" }

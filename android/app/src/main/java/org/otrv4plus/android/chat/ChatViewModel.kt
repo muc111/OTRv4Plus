@@ -177,6 +177,96 @@ class ChatViewModel : ViewModel() {
         }
     }
 
+    // -- secure groups (MLS) ----------------------------------------------------
+
+    /** Whether [jid] is an OTRv4Plus secure group, as the engine reported. */
+    fun isSecureRoom(jid: String): Boolean { observe(); return state?.isSecureRoom(jid) == true }
+
+    fun groupInvites(): List<OtrEvent.GroupInvited> {
+        observe()
+        return state?.pendingGroupInvites.orEmpty()
+    }
+
+    private val groupMembers = mutableMapOf<String, List<org.otrv4plus.android.bridge.GroupMember>>()
+
+    fun groupMembers(jid: String): List<org.otrv4plus.android.bridge.GroupMember> {
+        observe()
+        return groupMembers[jid].orEmpty()
+    }
+
+    private fun groupCall(label: String, onOk: () -> Unit = {},
+                          op: (ChaquopyOtrCore) -> org.otrv4plus.android.bridge.RoomOutcome) {
+        val c = core ?: return
+        val state = this.state ?: return
+        viewModelScope.launch {
+            val outcome = withContext(Dispatchers.IO) {
+                runCatching { op(c) }.getOrElse {
+                    org.otrv4plus.android.bridge.RoomOutcome(false, "group_failed", "")
+                }
+            }
+            if (outcome.ok) onOk()
+            GroupText.outcome(outcome.code)?.let { state.note("$label: $it") }
+            revision++
+        }
+    }
+
+    private var secureRoomsAt = 0L
+
+    /** Which rooms are secure groups, from the engine; at most every 10 s. */
+    private fun refreshSecureRooms() {
+        val c = core ?: return
+        val state = this.state ?: return
+        val now = System.currentTimeMillis()
+        if (now - secureRoomsAt < 10_000L) return
+        secureRoomsAt = now
+        viewModelScope.launch {
+            val rooms = withContext(Dispatchers.IO) {
+                runCatching { c.secureGroups() }.getOrNull()
+            } ?: return@launch
+            state.noteSecureRooms(rooms)
+        }
+    }
+
+    fun acceptGroupInvite(room: String) {
+        state?.clearGroupInvite(room)
+        groupCall("Joining $room", onOk = { state?.noteRoom(room) }) { it.acceptGroupInvite(room) }
+    }
+
+    fun declineGroupInvite(room: String) {
+        state?.clearGroupInvite(room)
+        groupCall("Declining") { it.declineGroupInvite(room) }
+    }
+
+    fun inviteToGroup(room: String, peer: String) {
+        val jid = ChatState.bare(peer.trim())
+        if (state?.validContact(jid) != true) {
+            state?.note("Enter the address of a contact to invite.")
+            revision++
+            return
+        }
+        groupCall("Inviting $jid", onOk = { state?.note("Invitation sent to $jid over OTRv4+.") }) {
+            it.inviteToGroup(room, jid)
+        }
+    }
+
+    fun removeGroupMember(room: String, member: String) {
+        groupCall("Removing $member", onOk = { refreshGroupMembers(room) }) {
+            it.removeGroupMember(room, member)
+        }
+    }
+
+    fun refreshGroupMembers(room: String) {
+        val c = core ?: return
+        viewModelScope.launch {
+            val (outcome, members) = withContext(Dispatchers.IO) {
+                runCatching { c.groupMembers(room) }.getOrNull()
+                    ?: (org.otrv4plus.android.bridge.RoomOutcome(false, "group_failed", "") to emptyList())
+            }
+            if (outcome.ok) groupMembers[room] = members
+            revision++
+        }
+    }
+
     // -- wiring ---------------------------------------------------------------
 
     /**
@@ -202,6 +292,7 @@ class ChatViewModel : ViewModel() {
                 refreshDiscovery()
                 refreshWelcome()
                 refreshHandshake()
+                refreshSecureRooms()
                 delay(REDRAW_INTERVAL_MS)
             }
         }

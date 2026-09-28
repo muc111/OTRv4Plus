@@ -1308,7 +1308,11 @@ class XmppTransport(Transport):
             return
         if not body or not nick:
             return
-        if nick == self._our_nick(room):
+        own = nick == self._our_nick(room)
+        # Our own reflection is dropped -- except a secure group's MLS frames,
+        # which need it: a commit learns it won the epoch by coming back
+        # first (android_bridge.groups). Plain text of ours stays dropped.
+        if own and not body.startswith(("?OTRv4MLS1:", "?OTRv4F|")):
             return
         stamp = 0.0
         try:
@@ -1318,7 +1322,10 @@ class XmppTransport(Transport):
         except Exception:
             stamp = 0.0
         try:
-            self._on_room_message(room, nick, body, stamp or time.time())
+            if own:
+                self._on_room_message(room, nick, body, stamp or time.time(), own=True)
+            else:
+                self._on_room_message(room, nick, body, stamp or time.time())
         except Exception:
             _log.warning("the room message handler raised")
 

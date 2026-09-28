@@ -508,6 +508,16 @@ class ChatState(
             // to act on, and only an SMP-verified peer can make one (the
             // engine drops offers from anybody else before they exist).
             is OtrEvent.FileTransferChanged -> noteTransfer(event)
+            // An invitation is worth a banner, not a buzz: returned false.
+            is OtrEvent.GroupInvited -> {
+                val room = bare(event.room)
+                if (room.isNotEmpty() && room !in secureRooms) groupInvites[room] = event
+                false
+            }
+            is OtrEvent.GroupChanged -> {
+                noteGroupChange(event)
+                false
+            }
             // A capability, not a security state: stored and shown, never
             // announced.
             is OtrEvent.CapabilityChanged -> {
@@ -732,9 +742,39 @@ class ChatState(
      */
     fun isRoom(jid: String): Boolean = bare(jid) in rooms || storedAsRoom(bare(jid))
 
+    // -- secure groups ---------------------------------------------------------
+
+    /** Rooms that are OTRv4Plus secure groups (MLS), as the engine reported. */
+    private val secureRooms = mutableSetOf<String>()
+
+    /** Invitations waiting for an answer, by room. Never auto-accepted. */
+    private val groupInvites = LinkedHashMap<String, OtrEvent.GroupInvited>()
+
+    fun isSecureRoom(jid: String): Boolean = bare(jid) in secureRooms
+
+    fun noteSecureRooms(jids: Collection<String>) {
+        secureRooms.clear()
+        jids.forEach { secureRooms.add(bare(it)) }
+    }
+
+    val pendingGroupInvites: List<OtrEvent.GroupInvited>
+        get() = groupInvites.values.toList()
+
+    fun clearGroupInvite(room: String) { groupInvites.remove(bare(room)) }
+
+    private fun noteGroupChange(event: OtrEvent.GroupChanged) {
+        val room = bare(event.room)
+        when (event.change) {
+            "created", "joined" -> { secureRooms.add(room); rooms.add(room) }
+            "left", "removed_us" -> secureRooms.remove(room)
+        }
+        GroupText.describe(event)?.let { note(it) }
+    }
+
     fun receiveRoom(event: OtrEvent.RoomMessageReceived): Boolean {
         val room = bare(event.room)
         rooms.add(room)
+        if (event.encrypted) secureRooms.add(room)
         val at = if (event.timestamp > 0) (event.timestamp * 1000).toLong()
                  else now()
         val added = store.append(
@@ -744,9 +784,11 @@ class ChatState(
                 body = event.body,
                 outgoing = false,
                 at = at,
-                // Always plaintext: XEP-0045 group chat has no end-to-end
-                // encryption, whatever the room's own settings say.
-                security = SecurityLabel.PLAINTEXT,
+                // ENCRYPTED only when MLS decrypted it (an OTRv4Plus secure
+                // group); any other room is plaintext -- XEP-0045 has no
+                // end-to-end encryption, whatever the room's settings say.
+                security = if (event.encrypted) SecurityLabel.ENCRYPTED
+                           else SecurityLabel.PLAINTEXT,
                 sendState = SendState.NONE,
                 sender = event.sender,
             )

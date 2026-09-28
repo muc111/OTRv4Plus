@@ -25,10 +25,67 @@
 
 use std::collections::HashMap;
 
+use aes_gcm::aead::{Aead, KeyInit, Payload};
+use aes_gcm::{Aes256Gcm, Nonce};
 use openmls::prelude::{tls_codec::*, *};
+
+use sha2::{Digest, Sha384};
 use zeroize::Zeroizing;
 
 use crate::provider::{CoreProvider, SignatureKeyPair, CIPHERSUITE};
+
+/// Sealed-state header: magic, then format version.
+const STATE_MAGIC: &[u8; 4] = b"OMLS";
+const STATE_VERSION: u8 = 1;
+const STATE_KDF_INFO: &[u8] = b"OTRv4Plus MLS sealed state v1";
+/// Upper bound on a sealed blob we will try to open (64 MiB).
+const STATE_MAX: usize = 64 << 20;
+
+#[derive(serde::Serialize)]
+struct StateOut<'a> {
+    identity: &'a serde_bytes::Bytes,
+    sig_pub: &'a serde_bytes::Bytes,
+    sig_sk: &'a serde_bytes::Bytes,
+    groups: Vec<&'a serde_bytes::Bytes>,
+    pending: Vec<(&'a serde_bytes::Bytes, &'a serde_bytes::Bytes, Option<&'a serde_bytes::Bytes>)>,
+    storage: &'a serde_bytes::Bytes,
+}
+
+#[derive(serde::Deserialize)]
+struct StateIn {
+    identity: serde_bytes::ByteBuf,
+    sig_pub: serde_bytes::ByteBuf,
+    sig_sk: serde_bytes::ByteBuf,
+    groups: Vec<serde_bytes::ByteBuf>,
+    pending: Vec<(serde_bytes::ByteBuf, serde_bytes::ByteBuf, Option<serde_bytes::ByteBuf>)>,
+    storage: serde_bytes::ByteBuf,
+}
+
+/// The sealing key for MLS state, derived from the caller's data-encryption
+/// key so that key is never used directly for two purposes.
+fn state_key(dek: &[u8]) -> Result<Zeroizing<[u8; 32]>> {
+    if dek.len() != 32 {
+        return Err(MlsError::Failed("sealing key must be 32 bytes"));
+    }
+    let hk = hkdf::Hkdf::<sha2::Sha256>::new(None, dek);
+    let mut out = Zeroizing::new([0u8; 32]);
+    hk.expand(STATE_KDF_INFO, &mut out[..]).map_err(|_| MlsError::Failed("kdf"))?;
+    Ok(out)
+}
+
+fn state_aad(context: &[u8]) -> Vec<u8> {
+    let mut aad = Vec::with_capacity(5 + context.len());
+    aad.extend_from_slice(STATE_MAGIC);
+    aad.push(STATE_VERSION);
+    aad.extend_from_slice(context);
+    aad
+}
+
+/// SHA-384 of an ML-DSA-87 signature public key: what a member's MLS
+/// identity is compared by. Public, so it may be shown and sent.
+pub fn fingerprint(signature_public_key: &[u8]) -> Vec<u8> {
+    Sha384::digest(signature_public_key).to_vec()
+}
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum MlsError {
@@ -373,6 +430,125 @@ impl MlsClient {
     }
 
     pub fn is_wiped(&self) -> bool { self.wiped }
+
+    /// Our own MLS fingerprint (SHA-384 of our signature public key).
+    pub fn own_fingerprint(&self) -> Vec<u8> { fingerprint(self.signer.public()) }
+
+    /// The fingerprint a group holds for the member with this identity.
+    ///
+    /// Identity binding is deliberately NOT membership: MLS says this key
+    /// belongs to a leaf, not that the leaf is who its credential names. The
+    /// caller compares this against a fingerprint it learned over a channel
+    /// that authenticates the person -- an SMP-verified OTRv4+ session.
+    pub fn member_fingerprint(&mut self, group_id: &[u8], identity: &[u8]) -> Result<Vec<u8>> {
+        let group = self.group(group_id)?;
+        let member = group.members()
+            .find(|m| identity_of(&m.credential) == identity)
+            .ok_or(MlsError::NoSuchMember)?;
+        Ok(fingerprint(member.signature_key.as_slice()))
+    }
+
+    /// Seal the whole client -- identity, signing key, every group and its
+    /// secrets, and any commit still waiting for the room -- under a key
+    /// derived from `dek`. `context` is bound as associated data (the owning
+    /// account), so a blob cannot be opened as another account's.
+    ///
+    /// AES-256-GCM, random 96-bit nonce. The plaintext exists only in
+    /// zeroizing buffers inside this function.
+    pub fn export_sealed(&self, dek: &[u8], context: &[u8]) -> Result<Vec<u8>> {
+        self.live()?;
+        let storage = self.provider.secure_storage().snapshot()
+            .map_err(|_| MlsError::Failed("snapshot"))?;
+        let group_ids: Vec<Vec<u8>> = self.group_ids();
+        let pending: Vec<(&[u8], &Pending)> =
+            self.pending.iter().map(|(k, v)| (k.as_slice(), v)).collect();
+        let state = StateOut {
+            identity: serde_bytes::Bytes::new(&self.identity),
+            sig_pub: serde_bytes::Bytes::new(self.signer.public()),
+            sig_sk: serde_bytes::Bytes::new(self.signer.secret()),
+            groups: group_ids.iter().map(|g| serde_bytes::Bytes::new(g)).collect(),
+            pending: pending.iter().map(|(g, p)| (
+                serde_bytes::Bytes::new(g),
+                serde_bytes::Bytes::new(&p.commit),
+                p.welcome.as_deref().map(serde_bytes::Bytes::new),
+            )).collect(),
+            storage: serde_bytes::Bytes::new(&storage),
+        };
+        let need = storage.len() + self.signer.secret().len() + self.signer.public().len()
+            + self.identity.len()
+            + group_ids.iter().map(|g| g.len() + 16).sum::<usize>()
+            + self.pending.values().map(|p| p.commit.len()
+                + p.welcome.as_ref().map_or(0, |w| w.len()) + 32).sum::<usize>()
+            + 256;
+        let mut plain = Zeroizing::new(Vec::with_capacity(need));
+        ciborium::ser::into_writer(&state, &mut *plain).map_err(|_| MlsError::Failed("encode"))?;
+
+        let key = state_key(dek)?;
+        let cipher = Aes256Gcm::new_from_slice(&key[..]).map_err(|_| MlsError::Failed("key"))?;
+        let mut nonce = [0u8; 12];
+        getrandom::getrandom(&mut nonce).map_err(|_| MlsError::Failed("randomness"))?;
+        let aad = state_aad(context);
+        let ct = cipher.encrypt(Nonce::from_slice(&nonce), Payload { msg: &plain, aad: &aad })
+            .map_err(|_| MlsError::Failed("seal"))?;
+        let mut out = Vec::with_capacity(5 + 12 + ct.len());
+        out.extend_from_slice(STATE_MAGIC);
+        out.push(STATE_VERSION);
+        out.extend_from_slice(&nonce);
+        out.extend_from_slice(&ct);
+        Ok(out)
+    }
+
+    /// Open a blob from `export_sealed` into a working client.
+    ///
+    /// Fails closed and undifferentiated: a wrong key, a wrong context, a
+    /// truncated or altered blob and an unknown version all refuse, and
+    /// nothing partial is returned.
+    pub fn import_sealed(dek: &[u8], context: &[u8], blob: &[u8]) -> Result<Self> {
+        if blob.len() > STATE_MAX || blob.len() < 5 + 12 + 16
+            || &blob[..4] != STATE_MAGIC || blob[4] != STATE_VERSION
+        {
+            return Err(MlsError::Refused("not a sealed MLS state this build can open"));
+        }
+        let key = state_key(dek)?;
+        let cipher = Aes256Gcm::new_from_slice(&key[..]).map_err(|_| MlsError::Failed("key"))?;
+        let aad = state_aad(context);
+        let plain = Zeroizing::new(
+            cipher.decrypt(Nonce::from_slice(&blob[5..17]), Payload { msg: &blob[17..], aad: &aad })
+                .map_err(|_| MlsError::Refused("sealed MLS state did not open"))?,
+        );
+        let state: StateIn = ciborium::de::from_reader(plain.as_slice())
+            .map_err(|_| MlsError::Refused("sealed MLS state is malformed"))?;
+        let sig_sk = Zeroizing::new(state.sig_sk.into_vec());
+        let storage_bytes = Zeroizing::new(state.storage.into_vec());
+        let signer = SignatureKeyPair::from_parts(state.sig_pub.into_vec(), sig_sk)
+            .ok_or(MlsError::Refused("sealed MLS state has a bad signing key"))?;
+        let identity = state.identity.into_vec();
+        let credential = CredentialWithKey {
+            credential: BasicCredential::new(identity.clone()).into(),
+            signature_key: signer.public().to_vec().into(),
+        };
+        let provider = CoreProvider::default();
+        provider.secure_storage().restore(&storage_bytes)
+            .map_err(|_| MlsError::Refused("sealed MLS state has bad storage"))?;
+        let mut groups = HashMap::new();
+        for gid in state.groups {
+            let gid = gid.into_vec();
+            let group = MlsGroup::load(provider.storage(), &GroupId::from_slice(&gid))
+                .map_err(|_| MlsError::Refused("sealed MLS group did not load"))?
+                .ok_or(MlsError::Refused("sealed MLS group missing"))?;
+            groups.insert(gid, group);
+        }
+        let mut pending = HashMap::new();
+        for (gid, commit, welcome) in state.pending {
+            let gid = gid.into_vec();
+            if !groups.contains_key(&gid) {
+                return Err(MlsError::Refused("pending commit for an unknown group"));
+            }
+            pending.insert(gid, Pending { commit: commit.into_vec(),
+                                          welcome: welcome.map(|w| w.into_vec()) });
+        }
+        Ok(Self { identity, provider, signer, credential, groups, pending, wiped: false })
+    }
 
     /// Entries in storage (tests: proves the wipe emptied it).
     pub fn stored_entries(&self) -> usize { self.provider.stored_entries() }

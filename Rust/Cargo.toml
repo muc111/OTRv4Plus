@@ -53,6 +53,10 @@ extension-module = ["pyo3/extension-module"]
 # enable it: Termux gets Opus from `opuslib` over Termux's libopus.so.
 # Not cryptography -- a codec. It holds no key.
 android-opus = ["dep:otrv4-opus-codec"]
+# OTRv4Plus group chat: MLS (RFC 9420) on the core's PQ crypto. A separate
+# crate for the same reason as opus-codec: one PQClean FFI call needs
+# `unsafe`, and this crate keeps #![forbid(unsafe_code)].
+mls = ["dep:otrv4-mls"]
 
 pq-rust = [
     "num-bigint",
@@ -155,6 +159,7 @@ dashmap      = { version = "5.5"  }
 thiserror    = { version = "1.0"  }
 libc         = { version = "0.2"  }
 otrv4-opus-codec = { path = "opus-codec", optional = true }
+otrv4-mls        = { path = "mls", optional = true }
 
 # Optional, gated by the pq-rust feature.
 # v10.6.14: lazy_static (1.5) removed; SMP constants migrated to

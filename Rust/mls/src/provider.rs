@@ -11,7 +11,7 @@
 //! | SHA-384, HKDF, HMAC  | sha2 / hkdf / hmac (the core's versions)    |
 //! | AES-256-GCM          | aes-gcm (the core's version)                |
 //! | ML-DSA-87            | pqcrypto-mldsa, PQClean (as the core's DAKE)|
-//! | HPKE, ML-KEM-1024    | hpke-rs over `CoreHpke` (PQClean ML-KEM)    |
+//! | HPKE, ML-KEM-1024    | `crate::hpke` (RFC 9180) on PQClean ML-KEM  |
 //! | randomness           | the operating system (getrandom)            |
 //!
 //! ML-DSA-87 private keys are PQClean's 4896-byte expanded form. They are
@@ -25,8 +25,6 @@ use aes_gcm::{
 };
 use hkdf::Hkdf;
 use hmac::{Hmac, Mac};
-use hpke_rs::{Hpke, Mode};
-use hpke_rs_crypto::types::{AeadAlgorithm, KdfAlgorithm, KemAlgorithm};
 use crate::storage::SecureStorage;
 use openmls_traits::{
     crypto::OpenMlsCrypto,
@@ -44,7 +42,7 @@ use sha2::{Digest, Sha384};
 use tls_codec::SecretVLBytes;
 use zeroize::{Zeroize, Zeroizing};
 
-use crate::hpke_backend::CoreHpke;
+use crate::hpke::{self, Aead as HpkeAead};
 
 /// The one ciphersuite this provider serves.
 pub const CIPHERSUITE: Ciphersuite = Ciphersuite::MLS_256_MLKEM1024_AES256GCM_SHA384_MLDSA87;
@@ -65,21 +63,19 @@ fn sha384_only(hash_type: HashType) -> Result<(), CryptoError> {
     }
 }
 
-fn hpke_for(config: &HpkeConfig) -> Result<Hpke<CoreHpke>, CryptoError> {
-    let kem = match config.0 {
-        HpkeKemType::MlKem1024 => KemAlgorithm::MlKem1024,
-        _ => return Err(CryptoError::UnsupportedCiphersuite),
-    };
-    let kdf = match config.1 {
-        HpkeKdfType::HkdfSha384 => KdfAlgorithm::HkdfSha384,
-        _ => return Err(CryptoError::UnsupportedKdf),
-    };
-    let aead = match config.2 {
-        HpkeAeadType::AesGcm256 => AeadAlgorithm::Aes256Gcm,
-        HpkeAeadType::Export => AeadAlgorithm::HpkeExport,
-        _ => return Err(CryptoError::UnsupportedAeadAlgorithm),
-    };
-    Ok(Hpke::new(Mode::Base, kem, kdf, aead))
+/// The one HPKE configuration this suite uses; anything else is refused.
+fn hpke_suite(config: &HpkeConfig) -> Result<HpkeAead, CryptoError> {
+    if config.0 != HpkeKemType::MlKem1024 {
+        return Err(CryptoError::UnsupportedCiphersuite);
+    }
+    if config.1 != HpkeKdfType::HkdfSha384 {
+        return Err(CryptoError::UnsupportedKdf);
+    }
+    match config.2 {
+        HpkeAeadType::AesGcm256 => Ok(HpkeAead::Aes256Gcm),
+        HpkeAeadType::Export => Ok(HpkeAead::ExportOnly),
+        _ => Err(CryptoError::UnsupportedAeadAlgorithm),
+    }
 }
 
 fn aes256(alg: AeadType, key: &[u8], nonce: &[u8]) -> Result<Aes256Gcm, CryptoError> {
@@ -229,12 +225,13 @@ impl OpenMlsCrypto for CoreCrypto {
         aad: &[u8],
         ptxt: &[u8],
     ) -> Result<HpkeCiphertext, CryptoError> {
-        let (kem_output, ciphertext) = hpke_for(&config)?
-            .seal(&pk_r.into(), info, aad, ptxt, None, None, None)
-            .map_err(|e| match e {
-                hpke_rs::HpkeError::InvalidInput => CryptoError::InvalidLength,
-                _ => CryptoError::HpkeEncryptionError,
-            })?;
+        if hpke_suite(&config)? != HpkeAead::Aes256Gcm {
+            return Err(CryptoError::UnsupportedAeadAlgorithm);
+        }
+        let (kem_output, ciphertext) = hpke::seal(pk_r, info, aad, ptxt).map_err(|e| match e {
+            hpke::HpkeError::InvalidInput => CryptoError::InvalidLength,
+            _ => CryptoError::HpkeEncryptionError,
+        })?;
         Ok(HpkeCiphertext {
             kem_output: kem_output.into(),
             ciphertext: ciphertext.into(),
@@ -249,17 +246,12 @@ impl OpenMlsCrypto for CoreCrypto {
         info: &[u8],
         aad: &[u8],
     ) -> Result<Vec<u8>, CryptoError> {
-        hpke_for(&config)?
-            .open(
-                input.kem_output.as_slice(),
-                &sk_r.into(),
-                info,
-                aad,
-                input.ciphertext.as_slice(),
-                None,
-                None,
-                None,
-            )
+        if hpke_suite(&config)? != HpkeAead::Aes256Gcm {
+            return Err(CryptoError::UnsupportedAeadAlgorithm);
+        }
+        hpke::open(input.kem_output.as_slice(), sk_r, info, aad, input.ciphertext.as_slice())
+            // OpenMLS takes ownership of the plaintext as a plain Vec.
+            .map(|pt| pt.to_vec())
             .map_err(|_| CryptoError::HpkeDecryptionError)
     }
 
@@ -271,13 +263,14 @@ impl OpenMlsCrypto for CoreCrypto {
         exporter_context: &[u8],
         exporter_length: usize,
     ) -> Result<(Vec<u8>, ExporterSecret), CryptoError> {
-        let (kem_output, context) = hpke_for(&config)?
-            .setup_sender(&pk_r.into(), info, None, None, None)
-            .map_err(|_| CryptoError::SenderSetupError)?;
-        let secret = context
-            .export(exporter_context, exporter_length)
-            .map_err(|_| CryptoError::ExporterError)?;
-        Ok((kem_output, secret.into()))
+        let aead = hpke_suite(&config)?;
+        let (kem_output, secret) =
+            hpke::sender_export(pk_r, info, aead, exporter_context, exporter_length)
+                .map_err(|e| match e {
+                    hpke::HpkeError::Export => CryptoError::ExporterError,
+                    _ => CryptoError::SenderSetupError,
+                })?;
+        Ok((kem_output, secret.to_vec().into()))
     }
 
     fn hpke_setup_receiver_and_export(
@@ -289,13 +282,13 @@ impl OpenMlsCrypto for CoreCrypto {
         exporter_context: &[u8],
         exporter_length: usize,
     ) -> Result<ExporterSecret, CryptoError> {
-        let context = hpke_for(&config)?
-            .setup_receiver(enc, &sk_r.into(), info, None, None, None)
-            .map_err(|_| CryptoError::ReceiverSetupError)?;
-        let secret = context
-            .export(exporter_context, exporter_length)
-            .map_err(|_| CryptoError::ExporterError)?;
-        Ok(secret.into())
+        let aead = hpke_suite(&config)?;
+        let secret = hpke::receiver_export(enc, sk_r, info, aead, exporter_context, exporter_length)
+            .map_err(|e| match e {
+                hpke::HpkeError::Export => CryptoError::ExporterError,
+                _ => CryptoError::ReceiverSetupError,
+            })?;
+        Ok(secret.to_vec().into())
     }
 
     fn derive_hpke_keypair(
@@ -303,16 +296,14 @@ impl OpenMlsCrypto for CoreCrypto {
         config: HpkeConfig,
         ikm: &[u8],
     ) -> Result<HpkeKeyPair, CryptoError> {
-        let (private, public) = hpke_for(&config)?
-            .derive_key_pair(ikm)
-            .map_err(|e| match e {
-                hpke_rs::HpkeError::InvalidInput => CryptoError::InvalidLength,
-                _ => CryptoError::CryptoLibraryError,
-            })?
-            .into_keys();
+        hpke_suite(&config)?;
+        let (private, public) = hpke::derive_key_pair(ikm).map_err(|e| match e {
+            hpke::HpkeError::InvalidInput => CryptoError::InvalidLength,
+            _ => CryptoError::CryptoLibraryError,
+        })?;
         Ok(HpkeKeyPair {
-            private: private.as_slice().to_vec().into(),
-            public: public.as_slice().to_vec(),
+            private: private.to_vec().into(),
+            public,
         })
     }
 }
@@ -340,7 +331,7 @@ impl OpenMlsRand for CoreCrypto {
 }
 
 /// The provider OpenMLS runs on. Storage is `SecureStorage`: Rust-owned,
-/// zeroized on wipe and on drop. Encrypted persistence is a later stage.
+/// zeroized on wipe and on drop, sealed by `MlsClient` when persisted.
 #[derive(Default)]
 pub struct CoreProvider {
     crypto: CoreCrypto,
@@ -361,6 +352,10 @@ impl CoreProvider {
     /// Entries in storage (no contents).
     pub fn stored_entries(&self) -> usize {
         self.storage.len()
+    }
+
+    pub(crate) fn secure_storage(&self) -> &SecureStorage {
+        &self.storage
     }
 }
 
@@ -400,6 +395,21 @@ impl SignatureKeyPair {
 
     pub fn public(&self) -> &[u8] {
         &self.public
+    }
+
+    /// The private half, for sealing inside `MlsClient` only.
+    pub(crate) fn secret(&self) -> &[u8] {
+        &self.secret
+    }
+
+    /// Rebuild from sealed state. Lengths are checked; nothing else is.
+    pub(crate) fn from_parts(public: Vec<u8>, secret: Zeroizing<Vec<u8>>) -> Option<Self> {
+        if public.len() != mldsa87::public_key_bytes()
+            || secret.len() != mldsa87::secret_key_bytes()
+        {
+            return None;
+        }
+        Some(Self { public, secret })
     }
 }
 

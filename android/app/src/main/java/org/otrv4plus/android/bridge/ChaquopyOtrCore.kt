@@ -429,6 +429,62 @@ class ChaquopyOtrCore(private val appContext: Context) : OtrCore {
         return outcomeOf(result)
     }
 
+    // -- secure groups (MLS; android_bridge.groups) ---------------------------
+
+    /** A new room that is an OTRv4Plus secure group from its first message. */
+    fun createSecureGroup(room: String, password: String = ""): RoomOutcome {
+        val result = call("create_secure_group", room, password) ?: return notPrepared()
+        return outcomeOf(result)
+    }
+
+    /** Invite [peer] over our encrypted OTRv4+ session with them. */
+    fun inviteToGroup(room: String, peer: String): RoomOutcome {
+        val result = call("invite_to_group", room, peer) ?: return notPrepared()
+        return outcomeOf(result)
+    }
+
+    fun acceptGroupInvite(room: String): RoomOutcome {
+        val result = call("accept_group_invite", room) ?: return notPrepared()
+        return outcomeOf(result)
+    }
+
+    fun declineGroupInvite(room: String): RoomOutcome {
+        val result = call("decline_group_invite", room) ?: return notPrepared()
+        return outcomeOf(result)
+    }
+
+    fun removeGroupMember(room: String, member: String): RoomOutcome {
+        val result = call("remove_group_member", room, member) ?: return notPrepared()
+        return outcomeOf(result)
+    }
+
+    fun leaveSecureGroup(room: String): RoomOutcome {
+        val result = call("leave_secure_group", room) ?: return notPrepared()
+        return outcomeOf(result)
+    }
+
+    fun groupMembers(room: String): Pair<RoomOutcome, List<GroupMember>> {
+        val result = call("group_members", room) ?: return notPrepared() to emptyList()
+        val members = mutableListOf<GroupMember>()
+        listValue(result)?.let { items ->
+            for (item in items.asList()) {
+                members += GroupMember(
+                    jid = entry(item, "jid"),
+                    fingerprint = entry(item, "fingerprint"),
+                    me = entry(item, "me") == "True",
+                    verified = entry(item, "verified") == "True",
+                    bound = entry(item, "bound") == "True",
+                )
+            }
+        }
+        return outcomeOf(result) to members
+    }
+
+    fun secureGroups(): List<String> {
+        val result = call("secure_groups") ?: return emptyList()
+        return listValue(result)?.asList()?.map { it.toString() } ?: emptyList()
+    }
+
     fun destroyRoom(room: String, reason: String = ""): RoomOutcome {
         val result = call("destroy_room", room, reason) ?: return notPrepared()
         return outcomeOf(result)
@@ -1239,6 +1295,7 @@ class ChaquopyOtrCore(private val appContext: Context) : OtrCore {
         fun str(k: String) = item.callAttr("get", k)?.toString() ?: ""
         fun num(k: String) = item.callAttr("get", k)?.toDouble() ?: 0.0
         fun int(k: String) = item.callAttr("get", k)?.toInt() ?: 0
+        fun flag(k: String) = item.callAttr("get", k)?.toBoolean() ?: false
         return when (str("type")) {
             "ConnectionStateChanged" ->
                 OtrEvent.ConnectionChanged(
@@ -1256,7 +1313,17 @@ class ChaquopyOtrCore(private val appContext: Context) : OtrCore {
 
             "RoomMessageReceived" ->
                 OtrEvent.RoomMessageReceived(
-                    str("peer"), str("sender"), str("body"), num("timestamp"))
+                    str("peer"), str("sender"), str("body"), num("timestamp"),
+                    encrypted = flag("encrypted"),
+                    senderIdentity = str("sender_identity"),
+                    verified = flag("verified"))
+
+            "GroupInvite" ->
+                OtrEvent.GroupInvited(str("peer"), str("room"), flag("verified"))
+
+            "GroupChanged" ->
+                OtrEvent.GroupChanged(
+                    str("peer"), str("change"), num("epoch").toLong(), str("detail"))
 
             // The Python class is SmpProgress, the Kotlin event is
             // SmpProgressed. The names differ and that is a trap: these

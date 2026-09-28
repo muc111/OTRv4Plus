@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only OR LicenseRef-OTRv4Plus-Commercial
 // Copyright (C) 2025-2026 muc111
-//! hpke-rs's crypto backend, on the core's primitives.
+//! TEST ONLY: hpke-rs's crypto backend, on the core's primitives, so
+//! tests/hpke_cross.rs can run hpke-rs as an independent reference for
+//! src/hpke.rs. Not compiled into the library.
 //!
 //! hpke-rs does the RFC 9180 composition (key schedule, labelled KDF,
 //! nonces, export); this supplies the primitives it asks for, for the one
@@ -20,7 +22,7 @@ use hpke_rs_crypto::{
 use sha2::Sha384;
 use zeroize::Zeroize;
 
-use crate::mlkem;
+use otrv4_mls::mlkem;
 
 #[derive(Debug, Default, Clone, Copy)]
 pub struct CoreHpke;

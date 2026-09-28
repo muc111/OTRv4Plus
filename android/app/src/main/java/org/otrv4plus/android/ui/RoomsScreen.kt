@@ -86,7 +86,10 @@ fun RoomsScreen(
         Text(
             "Rooms are group chat. Messages in a room are not end-to-end " +
                 "encrypted — the server hosting the room can read them. " +
-                "One-to-one conversations are different.",
+                "One-to-one conversations are different, and so is an " +
+                "end-to-end encrypted group (MLS): its room carries only " +
+                "ciphertext, and members join by invitation over an " +
+                "encrypted OTRv4+ conversation.",
             style = MaterialTheme.typography.bodySmall,
         )
 
@@ -258,6 +261,15 @@ fun RoomsScreen(
                 },
             ) { Text("Create") }
         }
+        // A secure group: MLS end to end, the room carries ciphertext only.
+        // Members are added by invitation over an encrypted OTRv4+ session.
+        OutlinedButton(
+            enabled = canAct && (!protect || roomPassword.isNotBlank()),
+            onClick = {
+                model.createSecure(address.trim(), nick.trim(),
+                                   if (protect) roomPassword else "")
+            },
+        ) { Text("Create end-to-end encrypted group") }
 
         // THE PROMPT. Opened only when the service refused a join for want
         // of a password (not-authorized); nothing retries without the user.

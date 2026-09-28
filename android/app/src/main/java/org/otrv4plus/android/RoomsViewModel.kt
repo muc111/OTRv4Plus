@@ -180,6 +180,27 @@ class RoomsViewModel : ViewModel() {
         enter("Creating the room...", jid) { c -> c.createRoom(jid, nick, password) }
     }
 
+    /**
+     * Create a room that is an OTRv4Plus SECURE GROUP (MLS) from its first
+     * message. The bridge creates the room, then the group, and leaves the
+     * room again if the group could not be made -- so a failure never leaves
+     * a plaintext room the user believes is encrypted.
+     */
+    fun createSecure(typed: String, nick: String, password: String = "") {
+        if (password.isNotEmpty()) {
+            RoomPassword.problem(password)?.let {
+                last = RoomOutcome(false, "bad_request", it)
+                return
+            }
+        }
+        val jid = resolve(typed) ?: return
+        enter("Creating the secure group...", jid) { c ->
+            val made = c.createSecureGroup(jid, password)
+            val standing = if (made.ok) c.roomStanding(jid, nick).second else RoomStanding()
+            made to standing
+        }
+    }
+
     /** The password question for a room that refused us, or null. */
     var passwordPrompt by mutableStateOf<RoomPassword.Prompt?>(null)
         internal set

@@ -295,7 +295,7 @@ like `opus-codec`, because it needs one `unsafe` FFI call and the core keeps
 | ML-KEM-1024 | PQClean via `pqcrypto-mlkem` 0.1.1, as the core. Seeded key generation calls PQClean's `crypto_kem_keypair_derand`, which the crate compiles but does not export (the only `unsafe`). |
 | ML-DSA-87 | PQClean via `pqcrypto-mldsa` 0.1.2, as the core's DAKE (FIPS 204, empty context). |
 | AES-256-GCM, HKDF/HMAC/SHA-384 | `aes-gcm` 0.10, `hkdf`/`hmac` 0.12, `sha2` 0.10, the core's versions. |
-| HPKE (RFC 9180) composition | `hpke-rs` 0.7 over our backend. |
+| HPKE (RFC 9180) composition | `hpke-rs` 0.7 over our backend at stage 2; replaced at stage 3 by `src/hpke.rs` (section 22). |
 | Randomness | the OS (`getrandom`). |
 
 Any other suite, hash, AEAD, KEM or signature scheme is refused with an error.
@@ -321,13 +321,100 @@ cross-checked below.
   directions, and a mixed group (one member on each provider) joins, talks and
   follows a key update.
 
-**Not done yet.** Stages 3 to 7: transport over MUC and I2P, KeyPackage
-distribution, commit ordering, persistence, verification binding, UI and
-physical tests. Nothing in the app uses this crate, and rooms are still plain
-MUC labelled "not end-to-end encrypted".
+**Not done at stage 2.** Stages 3 to 7. See section 22 for where they
+stand now.
 
-**Before it ships.** `hpke-rs` and `hpke-rs-crypto` are MPL-2.0 (file-level
-copyleft: their source must stay available under MPL-2.0). That is compatible
-with AGPL-3.0, but the commercial licence needs the owner to confirm it.
-NOTICE gets the new crates when the crate first enters a shipped build.
+**Before it ships (stage 2 note, resolved in section 22).** `hpke-rs` and
+`hpke-rs-crypto` are MPL-2.0. Rather than ask the owner to accept a
+file-level copyleft component under the commercial licence, stage 3
+replaced them in the build.
+
+## 22. Stages 3–6 result (2026-09-28)
+
+Status labels: **automated** = covered by tests that run in CI; **not
+physically verified** = no handset or live server has run it yet. Stage 7
+(physical validation) has not started, so nothing here is claimed to work
+over I2P between phones.
+
+### What changed from the plan in section 20
+
+| Plan | Done instead | Why |
+|---|---|---|
+| KeyPackages published over PEP | KeyPackage, invitation and Welcome sent **inside an encrypted OTRv4+ 1:1 session** (`?OTRv4-MLS:` bodies) | The session authenticates who sent the KeyPackage, which is the identity binding stage 5 needs. PEP would publish a key per account for anyone to fetch (enumeration) and bind it to nothing. |
+| State in the Keystore vault | Sealed by Rust under a key derived from `FileDek` (a 0600 key file in app-private storage) | Keeps the MLS secrets inside Rust end to end; the Keystore path would hand the plaintext state or its key to Kotlin. Weaker at rest than a hardware-backed key: anyone who can read app-private storage can open it. Recorded as a limitation. |
+| hpke-rs | `Rust/mls/src/hpke.rs` | Removes an MPL-2.0 component, a second SHA-3 (libcrux-sha3) and an unmaintained proc-macro from the build. hpke-rs stays a dev-dependency and `tests/hpke_cross.rs` checks the new code against it byte for byte. |
+
+### Stage 3: transport (automated; not physically verified)
+
+* `otrv4_core.RustMlsClient` (`Rust/src/mls_group.rs`, feature `mls`, on in
+  the APK and wheel builds) wraps `otrv4-mls`. It returns wire bytes, the
+  plaintext of received messages, and public facts (members, epoch,
+  fingerprints). No key or secret has a getter. Inputs are bounded.
+* `android_bridge/groups.py` moves bytes: room bodies are
+  `?OTRv4MLS1:` + base64 of an MLS message, fragmented with the same
+  fragmenter as 1:1 frames (an add-commit or a Welcome is about 26 KB,
+  well over the I2P stanza size that motivated fragmenting).
+* Commit ordering is "the room decides" (stage 2). The transport now passes
+  our own room reflection up for MLS frames only, because that is how a
+  commit learns it won; a plain room's reflection is still dropped.
+* No plaintext fallback: a secure room's send is MLS or `SEND_FAILED`; a
+  plaintext body in a secure room is never shown (`room_plaintext_refused`);
+  an undecryptable frame (history from before we joined, replay, stale
+  epoch, tampering) is dropped and counted.
+
+### Stage 4: persistence and wipe (automated)
+
+* `MlsClient::export_sealed / import_sealed`: identity, signing key, every
+  group, and any commit still waiting for the room, as CBOR in zeroizing
+  buffers, sealed with AES-256-GCM under an HKDF-derived key, with the
+  account bound as associated data. A wrong key, another account, any
+  flipped byte, truncation or extension refuses; nothing partial opens.
+* Reload is tested mid-conversation, with a pending commit, and against a
+  stale snapshot (a rolled-back member cannot read a later epoch).
+* Wipe & Exit (`OtrApp.wipe_crypto`) destroys the Rust state and removes the
+  sealed file and its key file.
+
+### Stage 5: identity binding (automated)
+
+* A member is **verified** only when their MLS fingerprint (SHA-384 of the
+  signature public key) arrived over an SMP-verified OTRv4+ session with
+  that JID; **bound** when it arrived over any OTRv4+ session; otherwise
+  shown by name only.
+* A joiner checks that the group holds, for the inviter, the key the
+  inviter sent over OTRv4+; otherwise the join is refused
+  (`inviter_fingerprint_mismatch`).
+* An uninvited KeyPackage adds nobody; an unsolicited Welcome joins nothing.
+
+### Stage 6: UI (compiles in CI; not physically verified)
+
+* Rooms screen: "Create end-to-end encrypted group".
+* Conversation header: the MLS statement instead of "not end-to-end
+  encrypted", members with verified / key over OTRv4+ / not verified, invite
+  by address, remove.
+* Chat list: invitation banners, accepted or declined explicitly.
+* Received group messages are labelled ENCRYPTED only when MLS decrypted
+  them.
+
+### Tests
+
+`Rust/mls`: 34 (client, group, interop against OpenMLS's reference provider,
+HPKE cross-check against hpke-rs, persistence). Python:
+`tests/test_secure_groups.py` (17, simulated room with reflection, drop,
+replay, tamper, concurrent commits, restart, wipe),
+`tests/test_secure_groups_bridge.py` (4, real OtrApp bridges with a real
+OTRv4+ DAKE and SMP). Kotlin: `SecureGroupStateTest` (5).
+
+### Still open
+
+* **Stage 7, physical**: three or more members over I2P, offline catch-up,
+  removal, reconnect, restart.
+* **Offline catch-up**: a member offline when a commit is sent misses it and
+  cannot decrypt later epochs; there is no resync yet other than being
+  removed and re-invited. The room's history replay does not help (MLS
+  keeps no past-epoch secrets).
+* **Leaving** is local: MLS has no self-removal a member completes alone, so
+  others list the leaver until one of them commits the removal.
+* **At rest**: the sealing key is a file beside the state (see above).
+* **Interoperability** with other MLS clients is not claimed: the
+  ciphersuite is a draft.
 
