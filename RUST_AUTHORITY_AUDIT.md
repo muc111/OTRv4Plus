@@ -129,4 +129,6 @@ stage 3.
   serde_json bytes in a `HashMap` and never zeroizes them. Stage 3/4 needs
   its own `StorageProvider`: zeroizing values, no JSON for secret entities,
   encrypted persistence, destroyed by Wipe & Exit.
-* Remove `otrv4plus_omemo.py` from the APK and mark it superseded by MLS.
+* ~~Remove `otrv4plus_omemo.py` from the APK and mark it superseded by MLS.~~
+  Done 2026-09-28: the module and its tests are deleted, and it is no longer
+  packaged (ANDROID_ENCRYPTION_ARCHITECTURE.md §4).

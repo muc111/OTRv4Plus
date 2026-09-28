@@ -159,10 +159,11 @@ Desktop Linux works the same way. macOS not tested. Windows not supported.
 
 ## Out of scope
 
-- File transfer
 - **Video** (voice is implemented — see above)
 - Voice over any transport other than I2P
-- Group chat (OMEMO, MLS, Signal groups)
+- OMEMO and Signal-protocol groups (encrypted groups are OTRv4Plus secure
+  groups over MLS on Android -- see [MLS_FEASIBILITY.md](MLS_FEASIBILITY.md);
+  file transfer is implemented -- see `/sendfile` above)
 - Mobile push notifications
 - Cross-device sync
 - Identity recovery

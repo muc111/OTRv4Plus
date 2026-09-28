@@ -71,7 +71,6 @@ on:
       - "otrv4plus_mediapath.py"
       - "otrv4plus_mode.py"
       - "otrv4plus_muc.py"
-      - "otrv4plus_omemo.py"
       - "otrv4plus_ping.py"
       - "otrv4plus_presence.py"
       - "otrv4plus_registration.py"

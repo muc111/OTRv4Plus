@@ -419,13 +419,6 @@ val syncPythonSources by tasks.registering(Copy::class) {
             // android_bridge.connection at module scope, so a missing entry
             // here is an ImportError at launch.
             "otrv4plus_muc.py",
-            // XEP-0384 OMEMO 2: who a message must be encrypted TO, derived
-            // from room MEMBERSHIP rather than presence. Contains no
-            // cryptography -- the ratchet belongs to python-omemo/twomemo,
-            // which do not yet have Android wheels. Packaged now because the
-            // bridge imports it and because the rule it enforces is the one
-            // that decides whether a group message reaches everybody.
-            "otrv4plus_omemo.py",
             // What the voice diagnostics are allowed to claim. Imported by
             // otrv4plus_voice at module scope, so a missing entry here is an
             // ImportError at launch rather than a missing metric.
