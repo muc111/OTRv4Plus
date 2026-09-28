@@ -79,6 +79,31 @@ CODES = {
     "timeout": "The server did not answer. Over I2P this can be slow -- try "
                "again.",
     "network": "Could not reach the server.",
+    # By stage, so "never reached" and "reached, then refused" are never the
+    # same sentence (device report 2026-09-28: 07f.de and yax.im both said
+    # "Could not reach the server" for what was a client-side fault).
+    "dns_failure": "The server's name did not resolve. Check the address "
+                   "and the phone's connection.",
+    "tcp_failure": "The server was not reached: no address accepted a "
+                   "connection. Nothing was sent.",
+    "tls_failure": "The server was reached, but the encrypted (TLS) "
+                   "connection could not be set up. Nothing was sent.",
+    "certificate_failure": "The server was reached, but its certificate was "
+                           "not valid for this domain. Nothing was sent.",
+    "xmpp_stream_failure": "The server was reached, but it ended the XMPP "
+                           "stream with an error.",
+    "server_closed_connection": "The server was reached, then closed the "
+                                "connection before registration finished.",
+    "registration_captcha_required": "This server wants a CAPTCHA to create "
+                                     "an account, which the app cannot show. "
+                                     "Register on the server's web page, then "
+                                     "log in here. Your password was not sent.",
+    "registration_fields_required": "This server asks for more than a "
+                                    "username and password to create an "
+                                    "account. Register on its web page, then "
+                                    "log in here. Your password was not sent.",
+    "registration_protocol_error": "The server's registration reply could "
+                                   "not be understood.",
     "cancelled": "Registration was cancelled.",
     "tls_required": "The server did not offer TLS, so the new password was "
                     "not sent. This app does not register over an "
@@ -126,12 +151,15 @@ class RegistrationFailed(Exception):
     offering registration at all, the SAM tunnel not opening -- where the
     caller knows which of [CODES] applies and would otherwise have to encode it
     in a message for [classify] to parse back out. It carries the code, and
-    carries no detail: the sentence still comes from the table.
+    carries no server text: the sentence comes from the table, or from
+    `detail` when the raiser composed one itself from safe parts (a stage,
+    an errno name) -- never from a stanza or the server's own words.
     """
 
-    def __init__(self, code: str):
+    def __init__(self, code: str, detail: Optional[str] = None):
         super().__init__(code)
         self.code = code if code in CODES else "unknown"
+        self.detail = detail if isinstance(detail, str) and detail else None
 
 
 def validate(username: str, password: str) -> Optional[Tuple[str, str]]:
@@ -188,7 +216,9 @@ def classify(exc: BaseException) -> Tuple[str, str]:
     try:
         known = getattr(exc, "code", None)
         if isinstance(known, str) and known in CODES and known != OK:
-            return known, CODES[known]
+            own = getattr(exc, "detail", None) if isinstance(
+                exc, RegistrationFailed) else None
+            return known, (own or CODES[known])
     except Exception:                                        # pragma: no cover
         pass
 

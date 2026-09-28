@@ -1174,6 +1174,40 @@ class ConnectionController:
         """
         return self._prober(self._profile).as_dict()
 
+    def test_server(self) -> Dict[str, Any]:
+        """Reach the server and stop: DNS (SRV first on clearnet), TCP, TLS
+        with the certificate verified, the XMPP stream, and registration
+        discovery -- no sign-in and no account creation, and no password is
+        involved (the transport's probe carries an empty one). Returns the
+        probe's plain dict; never raises.
+
+        This is what separates "the server was not reached" from "reached,
+        but registration is refused / needs a CAPTCHA / not offered"."""
+        refused = self._gate_route()
+        if refused is not None:
+            return {"ok": False, "code": refused.code, "detail": refused.detail,
+                    "reached": [], "route": _route_summary(self._profile)}
+        transport = None
+        try:
+            factory = self._transport_factory or _default_transport_factory()
+            transport = factory(self._profile, "", on_payload=lambda *a: None)
+            result = transport.probe_server()
+        except Exception as exc:
+            result = {"ok": False, "code": "probe_failed",
+                      "detail": type(exc).__name__, "reached": []}
+        finally:
+            if transport is not None:
+                try:
+                    transport.close()
+                except Exception:
+                    pass
+        result = {k: v for k, v in dict(result).items()
+                  if isinstance(v, (str, bool, int, type(None), list))}
+        result["reached"] = ",".join(result.get("reached") or [])
+        _TRACE.record("controller", "server_tested", "info",
+                      code=result.get("code", ""), reached=result["reached"])
+        return result
+
     def inputs(self, password: Optional[str] = None) -> Dict[str, Any]:
         """What actually arrived from Kotlin, minus the password itself.
 
