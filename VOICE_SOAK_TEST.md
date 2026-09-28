@@ -1,6 +1,7 @@
 # Voice soak test — engineering benchmark
 
-A 4+ hour continuous encrypted voice call over I2P with 3-hop tunnels, run after
+A 4+ hour continuous encrypted voice call over I2P (3-hop tunnels requested;
+the length the router applied was not measured), run after
 the MAC fix (`ded35ac`) and the subsequent Rust rebuild.
 
 **What this document is.** A record of one observed run, for engineering
@@ -22,7 +23,7 @@ session on one network path, not invariants.
 | Metric | Observed |
 |---|---|
 | Duration | 4+ hours, continuous |
-| Transport | I2P, 3-hop tunnels |
+| Transport | I2P, 3-hop tunnels requested (router-applied length not measured) |
 | Voice frames transmitted | ~365,000 |
 | Packet loss | **0 observed** |
 | Authentication failures | **0 observed** |

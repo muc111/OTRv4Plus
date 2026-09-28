@@ -56,8 +56,8 @@ is [ANDROID_CALL_AND_FILE_DEVICE_TEST.md](ANDROID_CALL_AND_FILE_DEVICE_TEST.md).
 | File transfer | Working (XMPP) |
 | Voice over I2P | Working between two phones, in Termux and in the app; still being tuned |
 | Android app | Chat, OTRv4+, SMP, files and calls (to the app and to Termux) tested on phones |
-| Group encryption | Not implemented. Rooms are ordinary XMPP rooms that the server can read. See [MLS_FEASIBILITY.md](MLS_FEASIBILITY.md) |
-| External security review | None |
+| Group encryption | Android secure groups over MLS: code complete and tested in-process, **not yet tested on a phone**. Ordinary rooms (and the Welcome room) are plain XMPP rooms that the server can read. See [MLS_FEASIBILITY.md](MLS_FEASIBILITY.md) |
+| External security review | None. An internal review of the Rust core, with its open findings, is [CRYPTO_AUDIT_2026-09.md](CRYPTO_AUDIT_2026-09.md) |
 
 ## Cryptography
 

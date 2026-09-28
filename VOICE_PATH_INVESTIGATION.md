@@ -350,7 +350,8 @@ That value is also both routers' own client default
 `DEFAULT_LENGTH_VARIANCE = 0`), so on a stock router it changes nothing. It
 only removes a **non-default** router's ability to vary. The cost is real and
 small, and is stated rather than hidden: a router configured for `+1` would
-have built an occasional 4-hop tunnel and now builds 3. The requirement is 3.
+have built an occasional 4-hop tunnel and is now asked for 3. The requirement is 3.
+(What a router actually builds is its decision and has not been measured here.)
 
 **Nothing else was touched.** Quantity, backup quantity, `allowZeroHop`, idle
 behaviour and every other I2CP option remain the router's.
