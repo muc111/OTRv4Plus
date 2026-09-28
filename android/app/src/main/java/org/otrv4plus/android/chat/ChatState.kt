@@ -2,6 +2,7 @@
 // Copyright (C) 2025-2026 muc111
 package org.otrv4plus.android.chat
 
+import org.otrv4plus.android.crypto.Verification
 import org.otrv4plus.android.crypto.TransferUi
 
 import org.otrv4plus.android.bridge.CallState
@@ -513,6 +514,13 @@ class ChatState(
                 capabilities[bare(event.peer)] = event.state
                 false
             }
+            // A verification refusal says WHY, so "wait and try again" is
+            // not reported as "could not be started". Other codes are left
+            // to the call site that caused them.
+            is OtrEvent.Failed -> {
+                Verification.refusal(event.code)?.let { note(it) }
+                false
+            }
             else -> false
         }
     }
@@ -750,6 +758,12 @@ class ChatState(
 
     fun receive(event: OtrEvent.MessageReceived): Boolean {
         val jid = bare(event.peer)
+        // A blank body is a protocol carrier (SMP TLVs, a heartbeat), never
+        // something a person said. The bridge no longer emits one; this holds
+        // the line on this side too, because a stored blank is both a blank
+        // bubble and -- through `deleted.restore` -- a way to bring back a
+        // conversation the user deleted.
+        if (event.body.isBlank()) return false
         val at = if (event.timestamp > 0) (event.timestamp * 1000).toLong()
                  else now()
         val added = store.append(

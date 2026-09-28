@@ -884,4 +884,17 @@ fun interface OtrEventSink {
 }
 
 /** A bridge failure. Carries a code, never engine exception text. */
-class OtrBridgeException(val code: String) : RuntimeException(code)
+class OtrBridgeException(val code: String) : RuntimeException(code) {
+    companion object {
+        // `BridgeError(code)` stringifies to its code by construction, so its
+        // first line is "<module>.BridgeError: <code>". Nothing else is taken
+        // from a Python exception: any other type's text may carry the data
+        // it was handling, and is dropped.
+        private val BRIDGE_ERROR = Regex("""^(?:[\w.]+\.)?BridgeError: ([a-z][a-z0-9_]{0,63})$""")
+
+        /** The bridge's code from an exception's first line, or null. */
+        fun codeFromMessage(message: String?): String? =
+            message?.lineSequence()?.firstOrNull()?.trim()
+                ?.let { BRIDGE_ERROR.find(it)?.groupValues?.get(1) }
+    }
+}

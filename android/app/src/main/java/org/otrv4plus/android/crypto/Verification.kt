@@ -208,6 +208,23 @@ object Verification {
     }
 
     /**
+     * What to tell the user when the engine would not start or answer a run,
+     * by the bridge's code; null for a code this does not describe.
+     */
+    fun refusal(code: String): String? = when (code) {
+        "smp_cooldown" ->
+            "A verification just failed. Wait 30 seconds before trying again."
+        "smp_attempts_exhausted" ->
+            "Too many failed verifications in this session. End the session " +
+                "and start a new one to try again."
+        "smp_already_verified" ->
+            "This session is already verified."
+        "smp_in_progress" ->
+            "A verification is already in progress."
+        else -> null
+    }
+
+    /**
      * Whether a call may be offered.
      *
      * NOT THE GATE ITSELF, and this must never be mistaken for it. The gate is

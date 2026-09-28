@@ -643,9 +643,64 @@ impl SmpState {
         if self.lifecycle.attempt_count >= MAX_ATTEMPTS {
             self.destroy();
         } else {
-            self.phase = SmpPhase::Failed;
+            self.mark_failed();
         }
         err
+    }
+
+    /// End a run as Failed. The secret it used is forgotten with it: a
+    /// failed run's passphrase is either wrong or was answered by the wrong
+    /// party, and keeping it would answer the next SMP1 with it silently.
+    /// The attempt count and cooldown are the lifecycle's and survive.
+    fn mark_failed(&mut self) {
+        self.secret = SecretVec::new(vec![]);
+        self.phase = SmpPhase::Failed;
+    }
+
+    /// Per-run material only: exponents, received elements, the transcript,
+    /// a held SMP1 and the PQ bundle. Not the secret, not the binding, not
+    /// the lifecycle.
+    fn clear_run(&mut self) {
+        let e = || SecretVec::new(vec![]);
+        self.a2 = e(); self.a3 = e(); self.b2 = e(); self.b3 = e();
+        self.r2 = e(); self.r3 = e(); self.r4 = e(); self.r5 = e(); self.r6 = e();
+        self.r2b = e(); self.r3b = e(); self.r4b = e(); self.r5b = e(); self.r6b = e();
+        self.transcript = None;
+        self.g2a = None; self.g3a = None; self.g2b = None;
+        self.g3b = None; self.g3 = None;
+        self.pa = None; self.qa = None; self.pb = None; self.qb = None;
+        self.held_smp1 = None;
+        self.question = None;
+        self.pq.wipe();
+    }
+
+    /// Leave a finished-unsuccessfully run (Failed, or Aborted by either
+    /// side) so a new run can begin, from either side.
+    ///
+    /// Before this existed such a run was terminal for the session: the
+    /// responder's `hold_smp1` and `process_smp1_generate_smp2` require Idle,
+    /// and `guard()` refuses everything once Aborted, so every retry after
+    /// one wrong passphrase or one cancelled prompt was refused -- or,
+    /// through the Python race path, silently ignored by the side with the
+    /// lower fingerprint.
+    ///
+    /// This is no way around the rate limit. The attempt count and cooldown
+    /// live in the lifecycle, which is kept; `guard()` on the next step still
+    /// enforces the cooldown; and once the attempt limit is reached the
+    /// engine stays Aborted for good, as `fail_and_zeroize` intends.
+    pub fn restart_after_failure(&mut self) -> Result<()> {
+        match self.phase {
+            SmpPhase::Idle => Ok(()),
+            SmpPhase::Failed | SmpPhase::Aborted => {
+                if self.lifecycle.attempt_count >= MAX_ATTEMPTS {
+                    return Err(OtrError::Smp("SMP aborted: max attempt limit exceeded"));
+                }
+                self.clear_run();
+                self.phase = SmpPhase::Idle;
+                Ok(())
+            }
+            _ => Err(OtrError::Smp("SMP run has not ended: cannot restart it")),
+        }
     }
 
     // ─── classical math helpers ──────────────────────────────────────────────
@@ -1572,8 +1627,12 @@ impl SmpState {
             &Self::fe_bytes(&pa_over_pb),
             &Self::fe_bytes(&rab),
         );
-        self.phase = if matched { SmpPhase::Verified } else { SmpPhase::Failed };
-        if !matched { self.lifecycle.record_failure(); }
+        if matched {
+            self.phase = SmpPhase::Verified;
+        } else {
+            self.lifecycle.record_failure();
+            self.mark_failed();
+        }
 
         let classical_out = Self::encode_group_elems(&[&rb_b, &cr2, &d8]);
 
@@ -1657,8 +1716,12 @@ impl SmpState {
             &Self::fe_bytes(&pa_over_pb),
             &Self::fe_bytes(&rab),
         );
-        self.phase = if verified { SmpPhase::Verified } else { SmpPhase::Failed };
-        if !verified { self.lifecycle.record_failure(); }
+        if verified {
+            self.phase = SmpPhase::Verified;
+        } else {
+            self.lifecycle.record_failure();
+            self.mark_failed();
+        }
 
         // Wipe PQ material - all steps complete
         self.pq.wipe();
@@ -1813,6 +1876,9 @@ impl PySmp {
 
     fn discard_held_smp1(&mut self) { self.inner.discard_held_smp1(); }
     fn destroy(&mut self)           { self.inner.destroy(); }
+    fn restart_after_failure(&mut self) -> PyResult<()> {
+        self.inner.restart_after_failure().map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))
+    }
     fn is_verified(&self)  -> bool  { self.inner.is_verified() }
     fn is_failed(&self)    -> bool  { self.inner.is_failed() }
     fn get_phase(&self)    -> &str  { self.inner.get_phase() }
@@ -1915,6 +1981,113 @@ mod tests {
 
         assert!(!ok, "mismatched secret must NOT verify");
         assert!(!a.is_verified());
+    }
+
+    // ── 6b. A failed run can be retried, from either side ────────────────────
+    fn classical_pair() -> (SmpState, SmpState) {
+        let mut a = SmpState::new(true);
+        let mut b = SmpState::new(false);
+        a.version = SMP_VERSION_CLASSICAL;
+        b.version = SMP_VERSION_CLASSICAL;
+        (a, b)
+    }
+
+    fn run(i: &mut SmpState, r: &mut SmpState) -> bool {
+        let m1 = i.generate_smp1(None).expect("smp1");
+        let m2 = r.process_smp1_generate_smp2(&m1).expect("smp2");
+        let m3 = i.process_smp2_generate_smp3(&m2).expect("smp3");
+        let m4 = r.process_smp3_generate_smp4(&m3).expect("smp4");
+        i.process_smp4(&m4).expect("smp-final")
+    }
+
+    /// Stand in for the cooldown having elapsed, without sleeping 30 s.
+    fn cool_down(s: &mut SmpState) {
+        if let Some(t) = Instant::now().checked_sub(Duration::from_secs(RETRY_COOLDOWN_SECS + 1)) {
+            s.lifecycle.last_failure = Some(t);
+        }
+    }
+
+    #[test]
+    fn a_failed_run_forgets_its_secret_on_both_sides() {
+        let (sid, fa, fb) = (b"sid-retry-0", b"fp-a", b"fp-b");
+        let (mut a, mut b) = classical_pair();
+        a.set_secret(b"secret-one", sid, fa, fb);
+        b.set_secret(b"secret-TYPO", sid, fb, fa);
+        assert!(!run(&mut a, &mut b));
+        assert_eq!(a.get_phase(), "FAILED");
+        assert_eq!(b.get_phase(), "FAILED");
+        assert!(!a.check_secret_set() && !b.check_secret_set(),
+                "a failed run's passphrase must not answer the next SMP1");
+    }
+
+    #[test]
+    fn a_failed_run_can_be_retried_by_either_side() {
+        let (sid, fa, fb) = (b"sid-retry-1", b"fp-a", b"fp-b");
+        for responder_retries in [false, true] {
+            let (mut a, mut b) = classical_pair();
+            a.set_secret(b"secret-one", sid, fa, fb);
+            b.set_secret(b"secret-TYPO", sid, fb, fa);
+            assert!(!run(&mut a, &mut b));
+            // Before this fix the responder refused: "SMP not Idle for SMP1".
+            cool_down(&mut a);
+            cool_down(&mut b);
+            a.restart_after_failure().expect("restart a");
+            b.restart_after_failure().expect("restart b");
+            assert_eq!(a.get_phase(), "IDLE");
+            a.set_secret(b"secret-one", sid, fa, fb);
+            b.set_secret(b"secret-one", sid, fb, fa);
+            let ok = if responder_retries {
+                b.is_initiator = true; a.is_initiator = false;
+                run(&mut b, &mut a)
+            } else {
+                run(&mut a, &mut b)
+            };
+            assert!(ok, "the corrected passphrase must verify (responder_retries={})",
+                    responder_retries);
+            assert!(a.is_verified() && b.is_verified());
+        }
+    }
+
+    #[test]
+    fn restarting_keeps_the_rate_limit() {
+        let (sid, fa, fb) = (b"sid-retry-2", b"fp-a", b"fp-b");
+        let (mut a, mut b) = classical_pair();
+        a.set_secret(b"secret-one", sid, fa, fb);
+        b.set_secret(b"secret-TYPO", sid, fb, fa);
+        assert!(!run(&mut a, &mut b));
+        a.restart_after_failure().expect("restart");
+        a.set_secret(b"secret-one", sid, fa, fb);
+        assert!(a.generate_smp1(None).is_err(), "the cooldown must survive a restart");
+        assert_eq!(a.get_attempt_count(), 1);
+    }
+
+    #[test]
+    fn a_cancelled_run_can_be_restarted_but_not_past_the_attempt_limit() {
+        let mut a = SmpState::new(true);
+        a.set_secret(b"a-shared-passphrase", b"sid", b"fp-a", b"fp-b");
+        a.generate_smp1(None).expect("smp1");
+        a.destroy();                                  // cancelled
+        assert_eq!(a.get_phase(), "ABORTED");
+        a.restart_after_failure().expect("a cancel is not the end");
+        a.set_secret(b"a-shared-passphrase", b"sid", b"fp-a", b"fp-b");
+        a.generate_smp1(None).expect("a new run starts");
+
+        let mut spent = SmpState::new(true);
+        spent.lifecycle.attempt_count = MAX_ATTEMPTS;
+        spent.destroy();
+        assert!(spent.restart_after_failure().is_err(),
+                "the attempt limit must be final");
+        assert_eq!(spent.get_phase(), "ABORTED");
+    }
+
+    #[test]
+    fn only_a_failed_or_idle_run_restarts() {
+        let mut a = SmpState::new(true);
+        a.restart_after_failure().expect("idle is a no-op");
+        a.set_secret(b"a-shared-passphrase", b"sid", b"fp-a", b"fp-b");
+        a.generate_smp1(None).expect("smp1");
+        assert!(a.restart_after_failure().is_err(), "a peer cannot reset a run under way");
+        assert_eq!(a.get_phase(), "AWAITING_MSG2");
     }
 
     // ── 7. Hybrid PQ SMP full roundtrip (matching secret) ─────────────────────

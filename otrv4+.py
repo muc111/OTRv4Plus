@@ -6875,6 +6875,35 @@ class EnhancedOTRSession:
             if tlv.type in (OTRv4TLV.SMP_MSG_1, OTRv4TLV.SMP_MSG_1Q):
 
                 phase = self.rust_smp.get_phase()
+                # A FAILED run is over, not in progress. Treating it as a race
+                # made every retry after one wrong passphrase either refused
+                # ("SMP not Idle for SMP1") or, on the side with the lower
+                # fingerprint, silently ignored -- the peer then waited out
+                # its timeout. Rust leaves Failed for Idle and keeps the
+                # attempt count and cooldown, which its guard still enforces.
+                if phase in ("FAILED", "ABORTED"):
+                    try:
+                        self.rust_smp.restart_after_failure()
+                    except Exception:
+                        # The attempt limit is spent: this engine stays shut.
+                        self.tracer.trace(self.peer, "SMP", "SMP1_RECEIVED",
+                                          f"phase={phase }", "attempt limit reached - refused")
+                        self._queued_smp_response = self.encrypt_with_tlvs(
+                            "", [OTRv4TLV(OTRv4TLV.SMP_ABORT, b"")]
+                        )
+                        return
+                    phase = self.rust_smp.get_phase()
+                # Already verified this session: a second run is not started
+                # by the peer. Refuse it with an abort and keep the result;
+                # the old race path either ignored it or threw the
+                # verification away, depending on whose fingerprint was lower.
+                if phase == "VERIFIED":
+                    self.tracer.trace(self.peer, "SMP", "SMP1_RECEIVED",
+                                      "phase=VERIFIED", "already verified - refused")
+                    self._queued_smp_response = self.encrypt_with_tlvs(
+                        "", [OTRv4TLV(OTRv4TLV.SMP_ABORT, b"")]
+                    )
+                    return
                 if phase != "IDLE":
 
                     local_fp = b""
@@ -7136,6 +7165,11 @@ class EnhancedOTRSession:
                     )
                 return
 
+            elif tlv.type == OTRv4TLV.SMP_ABORT and self.rust_smp.get_phase() == "VERIFIED":
+                # A finished run cannot be aborted. A stale or refused-run
+                # abort must not throw away a verification both sides reached.
+                self.tracer.trace(self.peer, "SMP", "ABORTED", "IGNORED",
+                                  "abort after verification ignored")
             elif tlv.type == OTRv4TLV.SMP_ABORT:
                 self.rust_smp.abort()
                 self.auto_smp_started = False
@@ -7436,8 +7470,14 @@ class EnhancedOTRSession:
             if self.rust_smp is None:
                 raise RuntimeError("start_smp: RustSMP is None after initialize_smp")
             phase = self.rust_smp.get_phase()
-            if phase not in ("IDLE", "FAILED"):
+            if phase == "VERIFIED":
+                raise RuntimeError("start_smp: this session is already verified")
+            if phase not in ("IDLE", "FAILED", "ABORTED"):
                 raise RuntimeError(f"start_smp: SMP already in progress (phase={phase })")
+            if phase in ("FAILED", "ABORTED"):
+                # A new run after a failed or cancelled one. Rust keeps the
+                # cooldown and refuses once the attempt limit is spent.
+                self.rust_smp.restart_after_failure()
 
             if secret:
                 self.set_smp_secret(secret)
@@ -7588,6 +7628,8 @@ class EnhancedOTRSession:
             out_type = None
             resp = None
             if tlv_type in (OTRv4TLV.SMP_MSG_1, OTRv4TLV.SMP_MSG_1Q):
+                if self.rust_smp.get_phase() in ("FAILED", "ABORTED"):
+                    self.rust_smp.restart_after_failure()
                 resp = self.rust_smp.process_smp1_generate_smp2(tlv_val)
                 out_type = OTRv4TLV.SMP_MSG_2
             elif tlv_type == OTRv4TLV.SMP_MSG_2:
@@ -7642,7 +7684,8 @@ class EnhancedOTRSession:
                     )
                 return None
             elif tlv_type == OTRv4TLV.SMP_ABORT:
-                self.rust_smp.abort()
+                if self.rust_smp.get_phase() != "VERIFIED":
+                    self.rust_smp.abort()
                 return None
             if resp is not None and out_type is not None:
                 return self.encrypt_with_tlvs("", [OTRv4TLV(out_type, bytes(resp))])

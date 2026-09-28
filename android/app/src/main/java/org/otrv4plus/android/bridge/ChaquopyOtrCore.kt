@@ -1332,6 +1332,7 @@ class ChaquopyOtrCore(private val appContext: Context) : OtrCore {
         }
 
     private fun codeFrom(t: Throwable): String {
+        OtrBridgeException.codeFromMessage(t.message)?.let { return it }
         val name = t.javaClass.simpleName
         return if (name.isBlank()) "bridge_error" else name
     }

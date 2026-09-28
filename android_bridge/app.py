@@ -1430,6 +1430,22 @@ class OtrApp:
             self._touch(peer)
             return None
 
+        # AN EMPTY BODY IS A CARRIER, NOT A MESSAGE. SMP travels as TLVs on a
+        # data message whose text is empty, and OTRv4 heartbeats are empty
+        # data messages too. Before this branch every SMP step reached the
+        # screen as a blank bubble from the contact, on both sides, which is
+        # what a handset showed when SMP was started after ordinary chat.
+        # Measured through two real bridges: after four ordinary messages,
+        # smp_start produced MessageReceived(body='') on the responder, and
+        # each later SMP step produced another.
+        if body == "":
+            self._touch(peer)
+            after = self.security_state(peer)
+            if after != before:
+                self._emit(SessionStateChanged(peer=peer, security=after))
+            self._announce_smp_change(peer, before_smp)
+            return None
+
         self._touch(peer)
         self._emit(MessageReceived(peer=peer, body=body, timestamp=self._clock()))
         # A decrypted message means a session exists; the level may have moved
@@ -1538,9 +1554,10 @@ class OtrApp:
         self._require_encrypted(peer, "smp_not_encrypted")
         try:
             payload = self._engine.start_smp(peer, secret, question)
-        except Exception:
-            self._emit(ErrorOccurred(peer=peer, code="smp_start_failed"))
-            raise BridgeError("smp_start_failed")
+        except Exception as exc:
+            code = self._smp_start_refusal(exc)
+            self._emit(ErrorOccurred(peer=peer, code=code))
+            raise BridgeError(code)
         finally:
             del secret
         if not payload:
@@ -1556,6 +1573,27 @@ class OtrApp:
             self._emit(self.smp_progress(peer))
             raise
         self._emit(self.smp_progress(peer))
+
+    @staticmethod
+    def _smp_start_refusal(exc: BaseException) -> str:
+        """Name why the engine would not start a run.
+
+        Every refusal used to be `smp_start_failed`, so a user who retried
+        after a wrong passphrase was told only that verification "could not
+        be started" -- and the reason, a 30-second cooldown in the Rust
+        engine, was the one thing that would have told them to wait. The
+        engine's text is matched here and never shown: only the code leaves.
+        """
+        text = str(exc)
+        if "cooldown" in text:
+            return "smp_cooldown"
+        if "max attempt limit" in text:
+            return "smp_attempts_exhausted"
+        if "already verified" in text:
+            return "smp_already_verified"
+        if "already in progress" in text:
+            return "smp_in_progress"
+        return "smp_start_failed"
 
     def smp_respond(self, peer: str, secret: str) -> None:
         """Answer a peer's verification challenge.

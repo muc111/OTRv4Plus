@@ -19,6 +19,7 @@ import org.otrv4plus.android.bridge.ConnectionStatus
 import org.otrv4plus.android.bridge.FileOutcome
 import org.otrv4plus.android.bridge.FileTransferView
 import org.otrv4plus.android.bridge.MetadataFinding
+import org.otrv4plus.android.bridge.OtrBridgeException
 import org.otrv4plus.android.bridge.OtrEvent
 import org.otrv4plus.android.bridge.SendOutcome
 import org.otrv4plus.android.crypto.CallUi
@@ -826,9 +827,11 @@ class ChatViewModel : ViewModel() {
                 }
             }
             outcome.onFailure {
+                val code = (it as? OtrBridgeException)?.code.orEmpty()
                 state.note(
-                    if (incoming) "The verification could not be answered."
-                    else "The verification could not be started.")
+                    Verification.refusal(code)
+                        ?: if (incoming) "The verification could not be answered."
+                        else "The verification could not be started.")
             }
             revision++
         }
