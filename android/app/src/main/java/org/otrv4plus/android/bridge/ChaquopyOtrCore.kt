@@ -1077,10 +1077,10 @@ class ChaquopyOtrCore(private val appContext: Context) : OtrCore {
         runCatching {
             val d = requireApp().callAttr("inspect_file", path)
             MetadataFinding(
-                kind = d.get("kind")?.toString() ?: "unknown",
-                carriesMetadata = d.get("carries_metadata")?.toBoolean() ?: false,
-                metadataBytes = d.get("metadata_bytes")?.toInt() ?: 0,
-                canScrub = d.get("can_scrub")?.toBoolean() ?: false,
+                kind = d.callAttr("get", "kind")?.toString() ?: "unknown",
+                carriesMetadata = d.callAttr("get", "carries_metadata")?.toBoolean() ?: false,
+                metadataBytes = d.callAttr("get", "metadata_bytes")?.toInt() ?: 0,
+                canScrub = d.callAttr("get", "can_scrub")?.toBoolean() ?: false,
             )
         }.getOrDefault(MetadataFinding.UNKNOWN)
 
@@ -1111,21 +1111,29 @@ class ChaquopyOtrCore(private val appContext: Context) : OtrCore {
      * `sanitise_filename`, which matters because it was chosen by somebody
      * else and is about to be rendered.
      */
+    // `callAttr("get", key)`, NOT `row.get(key)`. Chaquopy's PyObject is a
+    // Map over the object's ATTRIBUTES, so on a Python dict `get("path")`
+    // looked up an attribute called `path` and returned null. Every field of
+    // every row decoded as empty: `state` was never RECEIVED and `path` was
+    // blank, so `canOpen` was false and a received file could never be
+    // opened -- the Android-to-Android "cannot open" report. The Python side
+    // was right all along (tests/test_android_files.py), which is why no
+    // Python test saw it; tests/test_chaquopy_dict_access.py now pins it.
     fun transfers(): List<FileTransferView> =
         runCatching {
             requireApp().callAttr("transfers").asList().map { row ->
                 FileTransferView(
-                    id = row.get("id")?.toString().orEmpty(),
-                    peer = row.get("peer")?.toString().orEmpty(),
-                    filename = row.get("filename")?.toString().orEmpty(),
-                    sizeBytes = row.get("size")?.toLong() ?: 0L,
-                    outgoing = row.get("outgoing")?.toBoolean() ?: false,
-                    accepted = row.get("accepted")?.toBoolean() ?: false,
-                    cancelled = row.get("cancelled")?.toBoolean() ?: false,
-                    progress = row.get("progress")?.toFloat() ?: 0f,
-                    state = row.get("state")?.toString().orEmpty(),
-                    reason = row.get("reason")?.toString().orEmpty(),
-                    path = row.get("path")?.toString().orEmpty(),
+                    id = row.callAttr("get", "id")?.toString().orEmpty(),
+                    peer = row.callAttr("get", "peer")?.toString().orEmpty(),
+                    filename = row.callAttr("get", "filename")?.toString().orEmpty(),
+                    sizeBytes = row.callAttr("get", "size")?.toLong() ?: 0L,
+                    outgoing = row.callAttr("get", "outgoing")?.toBoolean() ?: false,
+                    accepted = row.callAttr("get", "accepted")?.toBoolean() ?: false,
+                    cancelled = row.callAttr("get", "cancelled")?.toBoolean() ?: false,
+                    progress = row.callAttr("get", "progress")?.toFloat() ?: 0f,
+                    state = row.callAttr("get", "state")?.toString().orEmpty(),
+                    reason = row.callAttr("get", "reason")?.toString().orEmpty(),
+                    path = row.callAttr("get", "path")?.toString().orEmpty(),
                 )
             }
         }.getOrDefault(emptyList())
