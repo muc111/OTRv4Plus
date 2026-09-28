@@ -1585,3 +1585,33 @@ mod tests {
         assert!(b.skipped.len() <= MAX_MESSAGE_KEYS);
     }
 }
+
+#[cfg(test)]
+mod audit_brace_folding {
+    //! AUDIT FINDING (2026-09), pinned: SPEC §5.2 says the brace key is
+    //! folded into every root-key derivation (`dh_secret || brace_key`).
+    //! `send_ratchet` / `decrypt_new_dh` call `kdf_root(root, dh_secret)`
+    //! only, so an ML-KEM brace rotation after the DAKE changes no message
+    //! key. Post-DAKE PQ protection therefore rests on the DAKE root alone
+    //! (which does include the DAKE ML-KEM secret); there is no PQ
+    //! post-compromise recovery. Fixing it changes key derivation for both
+    //! peers, so it needs a negotiated protocol version -- see the audit
+    //! report. When it is fixed, this test must be inverted, not deleted.
+    use super::*;
+
+    #[test]
+    fn a_brace_rotation_does_not_change_the_next_chain() {
+        let mk = |bk: &[u8; 32]| DoubleRatchet::new(&[0x11; 32], &[0x22; 32], &[0x33; 32],
+                                                    bk, &[0xAA; 56], true).expect("ratchet");
+        let mut a = mk(&[0x44; 32]);
+        let mut b = mk(&[0x44; 32]);
+        b.rotate_brace_key(&[0x99; 32]);
+        assert_ne!(a.brace_key(), b.brace_key(), "rotation happened");
+        a.send_ratchet(&[0x55; 56], &[0xBB; 56]);
+        b.send_ratchet(&[0x55; 56], &[0xBB; 56]);
+        let (ra, sa, _, _) = a.key_refs();
+        let (rb, sb, _, _) = b.key_refs();
+        assert_eq!(ra, rb, "FINDING: brace key not folded into root (SPEC §5.2)");
+        assert_eq!(sa, sb, "FINDING: brace key not folded into chain (SPEC §5.2)");
+    }
+}

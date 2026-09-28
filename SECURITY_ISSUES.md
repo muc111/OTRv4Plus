@@ -13,11 +13,17 @@ Status vocabulary:
 
 | ID | Title | Severity | Status |
 |----|-------|----------|--------|
-| L1 | MAC-key revelation reveals all-zeros; deniability not achieved | Design | **OPEN** |
+| L1 | MAC-key revelation reveals all-zeros; deniability not achieved | Design | **OPEN (claim only)** -- the all-zeros mechanism is fixed and proven end to end (`tests/test_mac_revelation_end_to_end.py`: the published key re-MACs a forgery of the real message). What stays open is the *formal* deniability claim, which needs expert review; do not claim it. Re-checked 2026-09-28. |
 | M3 | Legacy DAKE path can hand session keys to Python as PyBytes | Medium | **RESOLVED** |
 | G1 | `RustDAKEAdapter.is_expired()` is a stub; DAKE handshake timeout absent | Low | **OPEN** |
 | G2 | Two divergent copies of `otrv4_testlib.py`; which loads depends on collection order | Low | **OPEN** |
 | B1-seed | Persisting an identity requires the seed to exist in Python | Design | **RESOLVED** |
+| A1 | Ratchet brace key is never folded into root/chain keys (SPEC §5.2 not implemented): no post-quantum post-compromise recovery | Design / High (spec divergence) | **OPEN** -- pinned by `ratchet::audit_brace_folding`; needs a versioned protocol change. See CRYPTO_AUDIT_2026-09.md |
+| A2 | DAKE post-quantum authentication is initiator-only and strippable by an active quantum adversary | Design / Medium | **OPEN** -- documented, SPEC §4.3; needs a protocol version |
+| A3 | Crafted `.otrv` header overflowed `8 * p` before bounding p: process abort (overflow-checks + panic=abort) | Medium (DoS) | **RESOLVED** -- `container::tests::a_huge_lane_count_is_refused_not_an_overflow`; found by `fuzz/container_header` |
+| A4 | Ring verifier accepted the identity point as a ring member (signable by anyone) | Low | **RESOLVED** -- `ring_sig::audit_identity_point` |
+| A5 | Profile expiry and degenerate identity key enforced only in Python | Low | **RESOLVED** -- `dake::profile_tests` |
+| A6 | Ring signature scalars reduced mod Q, so every signature had malleable re-encodings | Low / Info | **RESOLVED** -- `ring_sig::audit_identity_point::a_non_canonical_scalar_is_refused` |
 
 ---
 

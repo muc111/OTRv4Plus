@@ -307,6 +307,18 @@ When the flag is `0x01`, the receiver MUST verify **both** the Ed448 ring
 signature and the ML-DSA-87 signature. Both MUST verify for the handshake to
 succeed (hybrid authentication).
 
+**Scope of the post-quantum authentication (audit 2026-09).** The ML-DSA-87
+signature authenticates the *initiator only*, and only when the initiator's
+ML-DSA public key was committed in DAKE1. DAKE1 is unauthenticated, so an
+active adversary who can also forge Ed448 (a quantum adversary) can remove that
+commitment and then forge the ring signature; the responder never signs with
+ML-DSA at all. Against such an adversary this handshake therefore provides
+post-quantum *confidentiality* (the ML-KEM secret is in every session key, §4.4)
+but not post-quantum *authentication* in either direction. Closing that needs a
+policy that requires ML-DSA from known peers (so stripping is detected) and a
+responder ML-DSA signature in DAKE2; both are wire changes that need a new
+protocol version.
+
 ### 4.4 Session Key Derivation
 
 After DAKE2 is generated (responder) or processed (initiator), both parties
@@ -446,6 +458,15 @@ At each DH ratchet step:
    ```
 
 ### 5.2 Root Key Folding
+
+> **Implementation status (audit 2026-09): NOT IMPLEMENTED.** `ratchet.rs`
+> derives `kdf_root(root_key, dh_secret)` without the brace key, so a brace
+> rotation (§5.1) changes no message key. What protects post-DAKE traffic
+> against a quantum adversary is the DAKE root, which does include the DAKE
+> ML-KEM secret; what is missing is post-quantum *post-compromise* recovery.
+> Pinned by `ratchet::audit_brace_folding`. Implementing the derivation below
+> changes every key after the first DH ratchet step, so both peers must switch
+> together, behind a negotiated version.
 
 The brace key is folded into the root key derivation at every ratchet step:
 
@@ -1367,9 +1388,10 @@ IRC, and an implementation MUST NOT carry it there.
 ### 9A.2 Transfer key establishment
 
 The transfer key is derived from the session, not from a new key agreement.
-The double ratchet's brace key already folds ML-KEM-1024 shared secrets, so
-session state is already post-quantum protected and already authenticated by
-the DAKE. An implementation MUST NOT perform a second KEM exchange for a file
+The extra symmetric key is derived from the DAKE mixed secret, which includes
+the DAKE's ML-KEM-1024 shared secret (§4.4), so it is already post-quantum
+protected and already authenticated by the DAKE. (It does not depend on the
+ratchet's brace key, which §5.2 notes is not folded into any key today.) An implementation MUST NOT perform a second KEM exchange for a file
 transfer.
 
 Let `esk` be the 32-byte extra symmetric key from §4.4 (KDF usage `0x1F`), and
