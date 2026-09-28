@@ -204,3 +204,28 @@ def _restore_voice_host():
     if voice_now is not None and saved is not None and voice_now is voice:
         voice_now._HOST.clear()
         voice_now._HOST.update(saved)
+
+
+# ── X1 server pins: never the real ~/.otrv4plus ──────────────────────────────
+#
+# android_bridge.server_pins.default_store() persists under the home
+# directory. A test that connects to a fake `.i2p` server would otherwise pin
+# into the developer's own store -- and a later test would then see a
+# "changed" destination left behind by an earlier one. Each test gets a fresh
+# in-memory store.
+import pytest as _pytest
+
+
+@_pytest.fixture(autouse=True)
+def _isolated_server_pins():
+    try:
+        from android_bridge import server_pins as _sp
+    except Exception:
+        yield
+        return
+    saved = _sp._DEFAULT
+    _sp._DEFAULT = _sp.ServerPins(None)
+    try:
+        yield
+    finally:
+        _sp._DEFAULT = saved

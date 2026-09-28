@@ -47,7 +47,9 @@ import threading
 import time
 from typing import Any, Callable, Dict, List, Optional
 
+import otrv4plus_address as _address
 import otrv4plus_caps as _caps
+from . import route as _route_mod
 from . import welcome as _welcome
 import otrv4plus_fragment as _fragment
 import otrv4plus_muc as _muc
@@ -251,6 +253,9 @@ _REGISTRATION_CODES = {
     # A packaging fault. Nothing the user can do, and calling it a network
     # problem would send them to look at their router for no reason.
     "forwarder_import_failed": "unknown",
+    # X1 and the Tor route: their own codes, never folded into "network".
+    "i2p_destination_changed": "server_identity_changed",
+    "tor_unavailable": "tor_unavailable",
     "client_build_failed": "unknown",
     "cancelled": "cancelled",
     "timeout": "timeout",
@@ -260,6 +265,69 @@ _REGISTRATION_CODES = {
 def _localpart(jid: str) -> str:
     """The username out of a JID, tolerating one that is only a username."""
     return str(jid or "").strip().split("@", 1)[0]
+
+
+#: X1, part A. The mechanisms allowed when TLS certificate checks are off:
+#: SCRAM only (RFC 5802/7677), with and without channel binding. With SCRAM
+#: the password never crosses the wire -- the server gets a salted proof it
+#: cannot replay elsewhere, and a server that does not hold the credential
+#: fails SCRAM's mutual authentication. PLAIN (the password itself), LOGIN,
+#: DIGEST/CRAM (weak or obsolete) and SCRAM-MD5 are excluded.
+SCRAM_ONLY = frozenset({
+    "SCRAM-SHA-512-PLUS", "SCRAM-SHA-512",
+    "SCRAM-SHA-256-PLUS", "SCRAM-SHA-256",
+    "SCRAM-SHA-1-PLUS", "SCRAM-SHA-1",
+})
+
+
+def _restrict_to_scram(client) -> None:
+    """Never send the password itself where the certificate is not checked.
+
+    `use_mechs` is enforced by slixmpp's mechanism chooser as a hard limit,
+    and `encrypted_plain` False makes PLAIN cancel itself even if it were
+    chosen. A server offering none of these fails with `no_auth` and the
+    user is told why (`no_safe_auth_mechanism`); nothing falls back.
+    """
+    try:
+        plugins = getattr(client, "plugin", None)
+        mech = (plugins["feature_mechanisms"] if plugins is not None
+                else client["feature_mechanisms"])
+    except Exception:
+        raise TransportError(
+            "client_build_failed",
+            "the XMPP client has no SASL plugin to restrict; refusing to "
+            "authenticate without that restriction.")
+    mech.use_mechs = set(SCRAM_ONLY)
+    mech.encrypted_plain = False
+    mech.unencrypted_plain = False
+
+
+def _tls_in_place(client) -> bool:
+    """Whether the stream is TLS-protected (STARTTLS done, or TLS socket)."""
+    try:
+        if "starttls" in getattr(client, "features", set()):
+            return True
+        import ssl
+        return isinstance(getattr(client, "socket", None),
+                          (ssl.SSLSocket, ssl.SSLObject))
+    except Exception:
+        return False
+
+
+def _stream_failure_text(route, what: str) -> str:
+    """Which layer a stream failure belongs to, by route."""
+    if route.kind == _route_mod.CLEARNET_TLS:
+        return ("the XMPP stream could not be established (%s): DNS, the TCP "
+                "connection or the TLS handshake with the server failed. If "
+                "TLS failed, the server's certificate may not be valid for "
+                "its domain; nothing insecure was attempted instead." % what)
+    if route.kind == _route_mod.TOR:
+        return ("the XMPP stream could not be established (%s). The Tor "
+                "circuit was open, so this is the server or the TLS "
+                "handshake rather than Tor." % what)
+    return ("the XMPP stream could not be established (%s). The SAM tunnel "
+            "was open, so this is the server or the TLS handshake rather "
+            "than I2P." % what)
 
 
 def _enable_registration(client) -> None:
@@ -337,6 +405,8 @@ class XmppTransport(Transport):
         subscription_policy: str = SubscriptionPolicy.ACCEPT,
         client_factory: Optional[Callable[..., Any]] = None,
         forwarder: Optional[Callable[..., Any]] = None,
+        tor_forwarder: Optional[Callable[..., Any]] = None,
+        server_pins: Optional[Any] = None,
     ):
         profile.validate()
         if not profile.is_complete:
@@ -349,6 +419,11 @@ class XmppTransport(Transport):
         #: Set by `set_room_handler`; None drops room messages.
         self._on_room_message: Optional[Callable[..., None]] = None
         self._on_presence = on_presence
+        #: The route, decided once from the name (android_bridge.route).
+        self._route = profile.route
+        self._tor_forwarder = tor_forwarder
+        #: X1: the I2P destination each human-readable name is trusted at.
+        self._server_pins = server_pins
         #: Which resources speak OTRv4Plus. See otrv4plus_caps: OTRv4+
         #: traffic goes only to a resource this has confirmed.
         self._caps = _caps.CapabilityBook()
@@ -421,10 +496,10 @@ class XmppTransport(Transport):
     def __repr__(self) -> str:
         # Written out, never derived. A default repr on a class holding a
         # credential is one logging call away from putting it in a file.
-        return ("<XmppTransport jid=%r server=%r sam=%s:%d i2p=%s connected=%s>"
+        return ("<XmppTransport jid=%r server=%r route=%s connected=%s>"
                 % (self._profile.jid, self._profile.effective_server,
-                   self._profile.sam_host, self._profile.sam_port,
-                   self._profile.use_i2p, self.is_connected))
+                   getattr(getattr(self, "_route", None), "kind", "?"),
+                   self.is_connected))
 
     __str__ = __repr__
 
@@ -698,6 +773,14 @@ class XmppTransport(Transport):
             300s timeout instead of "that username is taken".
             """
             offered["register"] = True
+            if self._route.verify_certificate and not _tls_in_place(client):
+                # Clearnet (or a clearnet name over Tor): the form carries the
+                # new password, and without TLS it would travel in the clear.
+                # slixmpp does not insist on STARTTLS, so this does.
+                if not done.done():
+                    done.set_exception(
+                        _registration.RegistrationFailed("tls_required"))
+                return
             try:
                 iq = client.Iq()
                 iq["type"] = "set"
@@ -747,6 +830,9 @@ class XmppTransport(Transport):
             # reporting success here would send the user to a sign-in screen
             # for an account that does not exist.
             raise _registration.RegistrationFailed("unsupported")
+        # The server answered the registration as this name's server: pin
+        # the destination it was reached at (X1; I2P names only).
+        self._confirm_destination()
 
     async def _connect(self) -> None:
         try:
@@ -783,10 +869,29 @@ class XmppTransport(Transport):
                 started.set_result(True)
 
         def on_failed(_event):
+            if started.done():
+                return
+            if self._route.verify_certificate and not _tls_in_place(client):
+                started.set_exception(TransportError(
+                    "tls_required",
+                    "the server did not offer TLS, so no password was sent. "
+                    "This app does not sign in over an unencrypted stream."))
+                return
+            started.set_exception(
+                TransportError("auth_failed",
+                               "the server rejected the account or password"))
+
+        def on_no_auth(_event):
+            # No mechanism this app allows was offered. Over I2P and Tor that
+            # set is SCRAM only: a server (or an impostor) offering only
+            # PLAIN would receive the password itself, so nothing is sent.
             if not started.done():
-                started.set_exception(
-                    TransportError("auth_failed",
-                                   "the server rejected the account or password"))
+                started.set_exception(TransportError(
+                    "no_safe_auth_mechanism",
+                    "the server offers no sign-in method that keeps the "
+                    "password off the wire (SCRAM). Nothing was sent."
+                    if not self._route.verify_certificate else
+                    "the server offers no sign-in method this app accepts."))
 
         def on_connection_failed(event):
             # slixmpp reschedules a failed connection rather than giving up
@@ -798,13 +903,11 @@ class XmppTransport(Transport):
             if not started.done():
                 started.set_exception(TransportError(
                     "stream_failed",
-                    "the XMPP stream could not be established (%s). The SAM "
-                    "tunnel was open, so this is the server or the TLS "
-                    "handshake rather than I2P."
-                    % type(event).__name__))
+                    _stream_failure_text(self._route, type(event).__name__)))
 
         client.add_event_handler("session_start", on_session)
         client.add_event_handler("failed_auth", on_failed)
+        client.add_event_handler("no_auth", on_no_auth)
         client.add_event_handler("connection_failed", on_connection_failed)
 
         # host= and port= point slixmpp at the local end of the SAM tunnel
@@ -824,6 +927,8 @@ class XmppTransport(Transport):
         client.connect(host=host, port=port)
         await started
         self._connected.set()
+        _TRACE.record("auth", "allowed", "info", route=self._route.kind)
+        self._confirm_destination()
 
         # WHAT A CLIENT OWES THE SERVER ONCE THE SESSION IS UP.
         #
@@ -1180,12 +1285,99 @@ class XmppTransport(Transport):
                     pass
                 break
 
+    def _pins(self):
+        pins = getattr(self, "_server_pins", None)
+        if pins is None:
+            from . import server_pins as _pins_mod
+            pins = self._server_pins = _pins_mod.default_store()
+        return pins
+
+    def _verify_destination(self, dest_b64: str) -> None:
+        """X1: runs between NAMING LOOKUP and STREAM CONNECT (SAM worker
+        thread). Raising here means no stream to that destination exists, so
+        nothing -- no credential -- is ever sent to it."""
+        from . import server_pins as _pins_mod
+        route = self._route
+        seen = _pins_mod.b32_of_destination(dest_b64)
+        if route.self_authenticating:
+            # A typed .b32.i2p IS the key hash: the router must hand back the
+            # destination that hashes to it.
+            if seen != route.host:
+                _TRACE.record("i2p", "destination_mismatch", "error")
+                raise _pins_mod.DestinationChanged(route.host, route.host, seen)
+            _TRACE.record("i2p", "destination_accepted", "info",
+                          basis="b32 address")
+            return
+        _TRACE.record("i2p", "hostname_resolved", "info")
+        pins = self._pins()
+        verdict = pins.check(route.host, seen)
+        if verdict == "changed":
+            _TRACE.record("i2p", "destination_changed", "error")
+            _TRACE.record("auth", "blocked", "error",
+                          reason="i2p destination changed")
+            raise _pins_mod.DestinationChanged(
+                route.host, pins.pinned(route.host) or "", seen)
+        _TRACE.record("i2p", "destination_accepted", "info",
+                      basis="pinned" if verdict == "match" else "first use")
+
+    def _confirm_destination(self) -> None:
+        """The attempt succeeded: pin a first-use or approved destination."""
+        route = getattr(self, "_route", None)
+        if route is None or route.kind != _route_mod.I2P_SAM \
+                or route.self_authenticating:
+            return
+        if self._pins().confirm(route.host):
+            _TRACE.record("i2p", "destination_pinned", "info")
+
+    def _explicit_host(self) -> bool:
+        """Whether a server other than the JID's own domain was given."""
+        server = (self._profile.server or "").strip().lower()
+        if not server:
+            return False
+        return self._route.host != _address.jid_domain(
+            self._profile.jid).strip().lower()
+
     async def _endpoint(self):
-        """Where slixmpp should point: the SAM tunnel, or the server itself."""
-        if not self._profile.use_i2p:
-            # A clearnet server, which the profile allows and the UI does not
-            # advertise. No tunnel to build, so no forwarder.
-            return self._profile.effective_server, DEFAULT_C2S_PORT
+        """Where slixmpp should point, by route (android_bridge.route).
+
+        clearnet_tls: (None, None) when the server is the JID's own domain,
+            so slixmpp does the standard SRV lookup and falls back to the
+            domain on 5222; the server and port otherwise. System DNS, TCP,
+            STARTTLS, a CA-valid certificate for the JID's domain.
+        tor: a local forwarder into a SOCKS5 CONNECT; the name travels only
+            inside the CONNECT and Tor resolves it. Never DNS.
+        i2p_sam: a local forwarder into a SAM stream, after the destination
+            check (X1). Never DNS.
+        """
+        route = self._route
+        if route.kind == _route_mod.CLEARNET_TLS:
+            srv = route.port is None and not self._explicit_host()
+            _TRACE.record("transport", "clearnet_endpoint", "info", srv=srv)
+            if srv:
+                return None, None
+            return route.host, route.port or DEFAULT_C2S_PORT
+        if route.kind == _route_mod.TOR:
+            try:
+                forward = self._tor_forwarder or _default_tor_forwarder()
+            except Exception as exc:
+                self._emit_state("failed")
+                raise TransportError(
+                    "forwarder_import_failed",
+                    "the Tor forwarder could not be loaded (%s)."
+                    % type(exc).__name__)
+            self._emit_state("building_tunnels")
+            try:
+                return await forward(
+                    route.host, route.port or DEFAULT_C2S_PORT,
+                    getattr(self._profile, "socks_host", "127.0.0.1"),
+                    getattr(self._profile, "socks_port", 9050),
+                    resources=self._i2p_resources, log=_forwarder_log)
+            except Exception as exc:
+                self._emit_state("failed")
+                raise TransportError(
+                    "tor_unavailable",
+                    "Tor did not open a circuit to the server (%s). Nothing "
+                    "was sent any other way." % type(exc).__name__)
 
         # Inside its own try, and separately coded. This import pulls in
         # otrv4plus_xmpp and therefore the whole engine, and it sat outside the
@@ -1217,6 +1409,16 @@ class XmppTransport(Transport):
         if _accepts(forward, "aliases"):
             # The app reads no alias file: a name means what the router says.
             extra["aliases"] = False
+        if _accepts(forward, "verify"):
+            extra["verify"] = self._verify_destination
+        else:
+            # A forwarder that cannot check the destination could hand the
+            # password to a substituted server (X1). Refuse rather than go on.
+            self._emit_state("failed")
+            raise TransportError(
+                "forwarder_import_failed",
+                "the I2P forwarder cannot verify the server's destination; "
+                "refusing to connect without that check.")
         if "resources" not in extra:
             _log.info("the I2P forwarder does not accept resource handover; "
                       "its sockets will not be released on teardown")
@@ -1224,11 +1426,22 @@ class XmppTransport(Transport):
         self._emit_state("building_tunnels")
         try:
             return await forward(
-                self._profile.effective_server, DEFAULT_C2S_PORT,
+                route.host, route.port or DEFAULT_C2S_PORT,
                 self._profile.sam_host, self._profile.sam_port, **extra)
         except Exception as exc:
             self._emit_state("failed")
-            raise _sam_failure(exc, self._profile.effective_server)
+            from . import server_pins as _pins_mod
+            if isinstance(exc, _pins_mod.DestinationChanged):
+                raise TransportError(
+                    "i2p_destination_changed",
+                    "SECURITY: %s now resolves to a DIFFERENT I2P destination "
+                    "than the one this device trusted.\n"
+                    "  trusted: %s\n  now:     %s\n"
+                    "Nothing was sent to the new destination and you were not "
+                    "signed in. If the server's operator confirms it moved, "
+                    "trust the new address explicitly; otherwise someone may "
+                    "be impersonating the server." % (exc.name, exc.pinned, exc.seen))
+            raise _sam_failure(exc, route.host)
 
     # -- rooms: plaintext group chat ---------------------------------------------
     #
@@ -1774,6 +1987,9 @@ class XmppTransport(Transport):
                             else "certificate checks off, endpoint "
                                  "authenticated by %s" % by)
         if by is None:
+            # Clearnet (or a clearnet name over Tor): slixmpp's default
+            # context, CERT_REQUIRED with hostname checking against the JID's
+            # domain and the system trust store. Nothing here relaxes it.
             return
         import ssl
 
@@ -1781,6 +1997,8 @@ class XmppTransport(Transport):
         ctx.check_hostname = False
         ctx.verify_mode = ssl.CERT_NONE
         client.ssl_context = ctx
+        _restrict_to_scram(client)
+        self._tls_policy += "; SCRAM only (no PLAIN)"
 
     @property
     def tls_policy(self) -> str:
@@ -2766,11 +2984,17 @@ def endpoint_authenticated_by(profile) -> Optional[str]:
 
     None means clearnet, and clearnet still demands a real certificate.
     """
-    if getattr(profile, "use_i2p", False):
-        return "I2P"
-    if str(getattr(profile, "effective_server", "")).endswith(".onion"):
-        return "Tor"
-    return None
+    try:
+        route = profile.route
+    except Exception:
+        # Undecidable names never reach the network; answer by suffix so a
+        # caller asking about policy is never told "clearnet" for them.
+        name = str(getattr(profile, "effective_server", "")).lower()
+        return "I2P" if name.endswith(".i2p") else (
+            "Tor" if name.endswith(".onion") else None)
+    if route.verify_certificate:
+        return None
+    return "I2P" if route.kind == _route_mod.I2P_SAM else "Tor"
 
 
 def _default_client_factory():
@@ -2827,6 +3051,13 @@ def _default_client_factory():
         return client
 
     return factory
+
+
+def _default_tor_forwarder():
+    """The terminal client's Tor SOCKS5 forwarder, imported late."""
+    import otrv4plus_xmpp
+
+    return otrv4plus_xmpp.start_tor_socks_forwarder
 
 
 def _default_forwarder():

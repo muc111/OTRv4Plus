@@ -42,6 +42,7 @@ import pytest
 
 import android_bridge.transport as transport_module
 from android_bridge.settings import ConnectionProfile
+from tests.fake_sasl import sasl_plugins
 from android_bridge.transport import (
     KEEPALIVE_PING_FAILS,
     KEEPALIVE_PING_S,
@@ -100,6 +101,7 @@ class FakeBoundJid:
 
 class FakeClient:
     def __init__(self, jid, password, *, ping=None):
+        self.plugin = sasl_plugins()
         self.handlers = {}
         #: (direction, fn) pairs, as slixmpp's add_filter records them. The
         #: transport installs an "in" filter to note that the stream

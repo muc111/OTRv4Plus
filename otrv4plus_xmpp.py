@@ -1070,7 +1070,8 @@ async def socks5_connect(dest_host: str, dest_port: int,
 
 async def start_tor_socks_forwarder(onion_host: str, dest_port: int,
                                     socks_host: str = "127.0.0.1",
-                                    socks_port: int = TOR_SOCKS_PORT):
+                                    socks_port: int = TOR_SOCKS_PORT,
+                                    *, resources=None, log=None):
     """Tunnel to a .onion through Tor and expose it as a local TCP endpoint.
 
     Returns (local_host, local_port). Deliberately the same shape as
@@ -1084,11 +1085,15 @@ async def start_tor_socks_forwarder(onion_host: str, dest_port: int,
     not fall back to a direct connection: doing so would send the user's
     address to a server they asked to reach anonymously.
     """
-    print("[tor] opening SOCKS5 tunnel to %s:%d via %s:%d ..."
-          % (_sanitise(onion_host, 80), dest_port, socks_host, socks_port))
+    # `log` and `resources` exist for the Android bridge, exactly as on the
+    # SAM forwarder: logcat must not name the destination, and the caller's
+    # list is what lets a failed or finished connection release the tunnel.
+    say = log if log is not None else print
+    say("[tor] opening SOCKS5 tunnel to %s:%d via %s:%d ..."
+        % (_sanitise(onion_host, 80), dest_port, socks_host, socks_port))
     tor_reader, tor_writer = await socks5_connect(
         onion_host, dest_port, socks_host=socks_host, socks_port=socks_port)
-    print("[tor] tunnel established.")
+    say("[tor] tunnel established.")
 
     async def _handle_local(local_reader, local_writer):
         async def pump(src, dst):
@@ -1113,10 +1118,14 @@ async def start_tor_socks_forwarder(onion_host: str, dest_port: int,
 
     server = await asyncio.start_server(_handle_local, "127.0.0.1", 0)
     host, port = server.sockets[0].getsockname()[:2]
-    # Held on the loop so neither the server nor the tunnel is collected.
-    _TOR_FORWARDERS.append((server, tor_reader, tor_writer))
-    print("[tor] local bridge ready at %s:%d -> %s"
-          % (host, port, _sanitise(onion_host, 80)))
+    # Held so neither the server nor the tunnel is collected; the caller's
+    # list, when given, so it can also let go.
+    if resources is not None:
+        resources.extend([server, tor_writer])
+    else:
+        _TOR_FORWARDERS.append((server, tor_reader, tor_writer))
+    say("[tor] local bridge ready at %s:%d -> %s"
+        % (host, port, _sanitise(onion_host, 80)))
     return host, port
 
 
@@ -1126,7 +1135,7 @@ _TOR_FORWARDERS = []
 
 async def start_i2p_sam_forwarder(
     dest_b32: str, dest_port: int, sam_host: str = "127.0.0.1", sam_port: int = 7656,
-    *, resources=None, log=None, aliases: bool = True,
+    *, resources=None, log=None, aliases: bool = True, verify=None,
 ):
     """
     Open an I2P SAM stream to `dest_b32` and expose it as a local TCP endpoint.
@@ -1171,7 +1180,13 @@ async def start_i2p_sam_forwarder(
         # `dest_b32` may be a .b32.i2p address or a short .i2p name: the
         # router resolves either with NAMING LOOKUP (I2PSAMConnection.resolve).
         # `aliases=False` (Android) means the local alias file is never read.
-        s = sam.connect(dest_b32, allow_aliases=aliases)
+        # `verify` (Android, X1): checked against the resolved destination
+        # before any stream to it exists. Omitted, the call is unchanged.
+        if verify is not None:
+            s = sam.connect(dest_b32, allow_aliases=aliases,
+                            verify_destination=verify)
+        else:
+            s = sam.connect(dest_b32, allow_aliases=aliases)
         s.setblocking(False)
         return s
 

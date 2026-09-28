@@ -39,6 +39,8 @@ from typing import Any, Dict, List, Optional
 
 import otrv4plus_address as _address
 
+from . import route as _route
+
 __all__ = [
     "ConnectionProfile", "DEFAULT_SERVER", "default_profile",
     "ProfileError",
@@ -108,11 +110,35 @@ class ConnectionProfile:
     server: str = ""
     sam_host: str = _address.DEFAULT_SAM_HOST
     sam_port: int = _address.DEFAULT_SAM_PORT
-    #: False only for a clearnet server. The app is an I2P messenger; this
-    #: exists because the transport has to know, not as an invitation.
-    use_i2p: bool = True
+    #: LEGACY, and no longer decides anything. It used to be the route, with
+    #: a default of True that Kotlin never overrode -- so a clearnet server
+    #: such as 07f.de was probed for an I2P router and failed before any DNS
+    #: or TCP (device report). The route now comes from the server NAME
+    #: (`route`, android_bridge.route); this field is kept only so older
+    #: stored profiles and callers still construct.
+    use_i2p: Optional[bool] = None
+    #: Explicit transport: "auto" (from the name), "clearnet_tls",
+    #: "i2p_sam" or "tor". Refused where it would leak a name (route.py).
+    transport: str = "auto"
+    #: Tor's SOCKS5 port (Orbot's default). Used only for a Tor route.
+    socks_host: str = "127.0.0.1"
+    socks_port: int = 9050
 
     # -- derived --------------------------------------------------------------
+
+    @property
+    def route(self) -> "_route.Route":
+        """The one transport decision for this profile. Raises RouteError."""
+        return _route.classify(self.effective_server, self.transport)
+
+    @property
+    def uses_i2p(self) -> bool:
+        """Whether this profile goes through the SAM bridge. False when the
+        route cannot be decided -- such a profile never reaches the network."""
+        try:
+            return self.route.kind == _route.I2P_SAM
+        except _route.RouteError:
+            return False
 
     @property
     def effective_server(self) -> str:
@@ -160,6 +186,13 @@ class ConnectionProfile:
             found.append(
                 "No server to connect to: %r has no domain and no server was "
                 "given." % (self.jid,))
+        elif self.effective_server and not found:
+            # Only when the fields themselves are fine: a server the field
+            # check already refused needs no second sentence saying so.
+            try:
+                self.route
+            except _route.RouteError as exc:
+                found.append(exc.detail)
         return found
 
     def validate(self) -> "ConnectionProfile":
@@ -189,7 +222,9 @@ class ConnectionProfile:
             "server": self.server,
             "sam_host": self.sam_host,
             "sam_port": self.sam_port,
-            "use_i2p": self.use_i2p,
+            "transport": self.transport,
+            "socks_host": self.socks_host,
+            "socks_port": self.socks_port,
         }
 
     @classmethod
@@ -212,7 +247,10 @@ class ConnectionProfile:
             server=str(data.get("server", "") or ""),
             sam_host=str(data.get("sam_host", _address.DEFAULT_SAM_HOST) or ""),
             sam_port=port,
-            use_i2p=bool(data.get("use_i2p", True)),
+            # A stored "use_i2p" is read and ignored: the name decides.
+            transport=str(data.get("transport", _route.AUTO) or _route.AUTO),
+            socks_host=str(data.get("socks_host", "127.0.0.1") or "127.0.0.1"),
+            socks_port=_stored_port(data.get("socks_port"), 9050),
         )
 
 
@@ -227,3 +265,12 @@ def default_profile(jid: str = "") -> Optional[ConnectionProfile]:
     if not DEFAULT_SERVER:
         return None
     return ConnectionProfile(jid=jid, server=DEFAULT_SERVER)
+
+
+def _stored_port(value: Any, default: int) -> int:
+    """A stored port, or `default` if it is missing or not a number. A bad
+    stored value must not stop the app opening its settings."""
+    try:
+        return int(value) if value not in (None, "") else default
+    except (TypeError, ValueError):
+        return default

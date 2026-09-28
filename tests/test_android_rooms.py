@@ -33,6 +33,7 @@ if ROOT not in sys.path:
 
 import otrv4plus_muc as muc
 from android_bridge.settings import ConnectionProfile
+from tests.fake_sasl import sasl_plugins
 from android_bridge.transport import XmppTransport
 
 JID = "alice@xmpp-elite.i2p"
@@ -148,6 +149,7 @@ class FakeBoundJid:
 
 class FakeClient:
     def __init__(self, jid, password, *, disco=None, muc_plugin=None):
+        self.plugin = sasl_plugins()
         self.jid = jid
         self.password = password
         self.boundjid = FakeBoundJid()

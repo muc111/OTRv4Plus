@@ -34,6 +34,7 @@ import pytest
 
 import otrv4plus_fragment as frag
 from android_bridge.settings import ConnectionProfile
+from tests.fake_sasl import sasl_plugins
 from android_bridge.transport import XmppTransport
 
 JID = "alice@xmpp-elite.i2p"
@@ -84,6 +85,7 @@ class TerminalStub:
 
 class FakeClient:
     def __init__(self, jid, password):
+        self.plugin = sasl_plugins()
         self.handlers = {}
         self.sent = []
 

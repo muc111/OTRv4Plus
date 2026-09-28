@@ -34,6 +34,7 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
 from android_bridge.settings import ConnectionProfile
+from tests.fake_sasl import sasl_plugins
 from android_bridge.transport import (
     CONNECT_TIMEOUT, DEFAULT_C2S_PORT, TransportError, XmppTransport,
 )
@@ -57,6 +58,7 @@ class FakeClient:
     """A slixmpp ClientXMPP that never opens a socket."""
 
     def __init__(self, jid, password, *, fail_auth=False):
+        self.plugin = sasl_plugins()
         self.jid = jid
         self.password = password
         self.fail_auth = fail_auth
@@ -109,7 +111,9 @@ def build(*, fail_auth=False, forwarder=None, **kw):
         made["client"] = FakeClient(jid, password, fail_auth=fail_auth)
         return made["client"]
 
-    async def default_forwarder(dest, port, sam_host, sam_port):
+    # `verify`: the X1 destination check, which the transport requires every
+    # I2P forwarder to accept (tests/test_x1_destination_pinning.py).
+    async def default_forwarder(dest, port, sam_host, sam_port, *, verify=None):
         made["forward"] = (dest, port, sam_host, sam_port)
         return ("127.0.0.1", 41234)
 
@@ -154,7 +158,7 @@ class TestItConnectsThroughTheTunnel:
             t.close()
 
     def test_a_router_that_is_not_there_says_so(self):
-        async def broken(*_a):
+        async def broken(*_a, **_kw):
             raise OSError("connection refused")
 
         t, made = build(forwarder=broken)
@@ -405,7 +409,7 @@ class TestTheCredentialDoesNotLeak:
 
     def test_a_failure_carries_a_type_not_a_message(self):
         """An exception raised inside SASL can quote what it was given."""
-        async def leaky(*_a):
+        async def leaky(*_a, **_kw):
             raise OSError("auth failed for password=%s" % PASSWORD)
 
         t, _ = build(forwarder=leaky)
@@ -482,7 +486,7 @@ class TestLifecycle:
         where = []
         t, _ = build(on_payload=lambda *a: None)
 
-        async def watching_forwarder(*_a):
+        async def watching_forwarder(*_a, **_kw):
             where.append(threading.current_thread().name)
             return ("127.0.0.1", 41234)
 
@@ -751,7 +755,7 @@ class TestItDoesNotHangOnAStreamThatWillNotOpen:
             made["client"] = NeverOpens(jid, password)
             return made["client"]
 
-        async def forwarder(*_a):
+        async def forwarder(*_a, **_kw):
             return ("127.0.0.1", 41234)
 
         t = XmppTransport(profile(), PASSWORD, on_payload=lambda *a: None,
@@ -779,7 +783,7 @@ class TestItDoesNotHangOnAStreamThatWillNotOpen:
             made["client"] = Leaky(jid, password)
             return made["client"]
 
-        async def forwarder(*_a):
+        async def forwarder(*_a, **_kw):
             return ("127.0.0.1", 41234)
 
         t = XmppTransport(profile(), PASSWORD, on_payload=lambda *a: None,

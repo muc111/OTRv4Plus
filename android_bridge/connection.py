@@ -51,6 +51,7 @@ import otrv4plus_address as _address
 import otrv4plus_muc as _muc
 import otrv4plus_registration as _registration
 
+from . import route as _route
 from .settings import ConnectionProfile
 from .trace import TRACE as _TRACE
 
@@ -218,7 +219,7 @@ class ConnectionController:
     #: server drops the stream, the lambda below passed it straight through,
     #: and the screen rendered a stage this tuple said did not exist. A stage
     #: vocabulary that the code can step outside of is not a vocabulary.
-    STAGES = ("idle", "checking_router", "building_tunnels",
+    STAGES = ("idle", "checking_router", "checking_tor", "building_tunnels",
               "connecting", "authenticating", "connected",
               # An account was created and NOBODY IS SIGNED IN. Its own stage
               # rather than "disconnected", because the two look identical on
@@ -401,6 +402,39 @@ class ConnectionController:
                       "code": code, "detail": detail}
         return dict(self._last)
 
+    def _gate_route(self) -> "Optional[SamProbe]":
+        """Decide the transport, record it, and check what that route needs.
+
+        Returns None to go on, or a SamProbe-shaped refusal. THE ORDER IS
+        THE FIX for the 07f.de report: the route is decided from the server
+        name first, and only an I2P route ever enters `checking_router`. A
+        clearnet server goes straight to DNS/TCP/TLS; a Tor route checks for
+        Tor's SOCKS port instead; nothing falls back to another route.
+        """
+        try:
+            route = self._profile.route
+        except _route.RouteError as exc:
+            _TRACE.record("transport", "route_refused", "warning", code=exc.code)
+            return SamProbe(False, exc.code, exc.detail)
+        _TRACE.record("transport", "selected", "info", route=route.kind,
+                      resolver=route.resolver,
+                      certificate="checked" if route.verify_certificate
+                      else "not used (address authenticates)")
+        self._probe_version = ""
+        if route.kind == _route.CLEARNET_TLS:
+            # No local component to check: DNS, TCP and TLS are the attempt.
+            # The prober is NOT called (a test pins this).
+            return None
+        if route.kind == _route.I2P_SAM:
+            self._enter("checking_router")
+        else:
+            self._enter("checking_tor")
+        probe = self._prober(self._profile)
+        self._probe_version = getattr(probe, "version", "")
+        if not probe.reachable:
+            return probe
+        return None
+
     def connect(self, password: str) -> Dict[str, Any]:
         """Bring the connection up. Returns a result dict, never raises.
 
@@ -435,10 +469,9 @@ class ConnectionController:
 
     def _connect(self, password: str) -> Dict[str, Any]:
         self._password_present = bool(password)
-        self._enter("checking_router")
-        probe = self._prober(self._profile)
-        if not probe.reachable:
-            return self._fail(probe.code, probe.detail)
+        refused = self._gate_route()
+        if refused is not None:
+            return self._fail(refused.code, refused.detail)
 
         # THE PREVIOUS ONE GOES FIRST. `self._transport` was assigned over the
         # top of whatever was there, and the only thing that reaches this line
@@ -543,7 +576,8 @@ class ConnectionController:
                       "detail": "Connected to %s as %s"
                                 % (self._profile.effective_server,
                                    self._profile.jid),
-                      "sam_version": probe.version}
+                      "sam_version": getattr(self, "_probe_version", ""),
+                      "route": _route_summary(self._profile)}
         return dict(self._last)
 
     def register(self, password: str) -> Dict[str, Any]:
@@ -583,16 +617,24 @@ class ConnectionController:
     def _register(self, password: str) -> Dict[str, Any]:
         self._password_present = bool(password)
         _TRACE.record("registration", "started", "info")
-        self._enter("checking_router")
-        probe = self._prober(self._profile)
-        if not probe.reachable:
-            # The same first gate `connect` has. Without a router there is no
-            # tunnel, and spending the registration timeout discovering that
-            # tells the user nothing a probe would not have said in
-            # milliseconds.
+        refused = self._gate_route()
+        if refused is not None:
+            # The same first gate `connect` has: a route that cannot be used
+            # is said in milliseconds, not after the registration timeout.
             self._enter("failed")
-            return {"ok": False, "stage": "failed", "code": "network",
-                    "detail": _registration.describe("network")}
+            # A route the name cannot take keeps its own code and sentence;
+            # Tor missing keeps its own; any other probe failure is the
+            # registration table's "network".
+            if refused.code in _route.ROUTE_CODES:
+                code, detail = refused.code, refused.detail
+            elif refused.code == "tor_unavailable":
+                code, detail = "tor_unavailable", _registration.describe(
+                    "tor_unavailable")
+            else:
+                code, detail = "network", _registration.describe("network")
+            self._last = {"ok": False, "stage": "failed", "code": code,
+                          "detail": detail}
+            return dict(self._last)
 
         transport = None
         try:
@@ -634,6 +676,44 @@ class ConnectionController:
         _TRACE.record("registration", "finished", "info" if ok else "warn",
                       code=code)
         return dict(self._last)
+
+    def destination_change(self) -> Dict[str, Any]:
+        """X1: the refused destination change for this profile's server, for
+        the warning -- {} when there is none. Public values only: the name
+        and two .b32.i2p hashes."""
+        try:
+            route = self._profile.route
+        except _route.RouteError:
+            return {}
+        if route.kind != _route.I2P_SAM or route.self_authenticating:
+            return {}
+        from . import server_pins as _pins
+        change = _pins.default_store().last_change(route.host)
+        if not change:
+            return {}
+        return {"server": route.host, "trusted": change[0], "seen": change[1]}
+
+    def approve_server_destination(self, b32: str) -> Dict[str, Any]:
+        """X1: the user explicitly trusts `b32` as this I2P server's new
+        destination, after being shown both. Only that exact destination is
+        approved, only for this server name, and it becomes the pin only
+        when the next attempt to it succeeds. Nothing connects here."""
+        try:
+            route = self._profile.route
+        except _route.RouteError as exc:
+            return {"ok": False, "code": exc.code, "detail": exc.detail}
+        if route.kind != _route.I2P_SAM or route.self_authenticating:
+            return {"ok": False, "code": "not_applicable",
+                    "detail": "Only a human-readable .i2p server name is pinned."}
+        from . import server_pins as _pins
+        try:
+            _pins.default_store().approve(route.host, b32)
+        except ValueError as exc:
+            return {"ok": False, "code": "bad_destination", "detail": str(exc)}
+        _TRACE.record("i2p", "destination_approved_by_user", "warning")
+        return {"ok": True, "code": "ok",
+                "detail": "The new destination will be trusted if the next "
+                          "connection to it succeeds."}
 
     def cancel(self) -> Dict[str, Any]:
         """Stop an attempt that is still running.
@@ -1120,7 +1200,7 @@ class ConnectionController:
             "sam_host": self._profile.sam_host,
             "sam_port": self._profile.sam_port,
             "c2s_port": _c2s_port(),
-            "use_i2p": self._profile.use_i2p,
+            "route": _route_summary(self._profile),
             # STARTTLS on a normal c2s port at the far end of the tunnel;
             # direct TLS would be wrong and is explicitly turned off. Whether
             # the certificate is checked depends on whether the ADDRESS
@@ -1238,9 +1318,61 @@ def probe_profile(profile: ConnectionProfile, **kw) -> SamProbe:
     and reporting one as unreachable would be a false alarm about a component
     that is not in use.
     """
-    if not profile.use_i2p:
-        return SamProbe(True, "ok", "Not using I2P; no SAM bridge needed.")
+    try:
+        route = profile.route
+    except _route.RouteError as exc:
+        return SamProbe(False, exc.code, exc.detail)
+    if route.kind == _route.CLEARNET_TLS:
+        return SamProbe(True, "ok", "Clearnet TLS: no SAM bridge needed "
+                                    "(no I2P router or Tor is used).")
+    if route.kind == _route.TOR:
+        return probe_tor(getattr(profile, "socks_host", "127.0.0.1"),
+                         getattr(profile, "socks_port", 9050), **kw)
     return probe_sam(profile.sam_host, profile.sam_port, **kw)
+
+
+def probe_tor(host: str, port: int, timeout: float = SAM_PROBE_TIMEOUT,
+              opener: Optional[Callable[..., Any]] = None) -> SamProbe:
+    """Whether a Tor SOCKS5 port is listening (Orbot: 127.0.0.1:9050).
+
+    Only the SOCKS5 greeting: no CONNECT, so no destination is named here.
+    Unreachable means FAIL -- a Tor route never falls back to clearnet.
+    """
+    connect = opener or socket.create_connection
+    try:
+        sock = connect((host, port), timeout)
+    except OSError as exc:
+        return SamProbe(
+            False, "tor_unavailable",
+            "Tor is not reachable on %s:%d (%s). Start Orbot (or another Tor "
+            "client with a SOCKS port) and try again. Nothing was sent "
+            "anywhere else." % (host, port, type(exc).__name__))
+    try:
+        sock.settimeout(timeout)
+        sock.sendall(b"\x05\x01\x00")
+        reply = sock.recv(2)
+    except OSError as exc:
+        return SamProbe(False, "tor_unavailable",
+                        "%s:%d did not complete a SOCKS5 greeting (%s)."
+                        % (host, port, type(exc).__name__))
+    finally:
+        try:
+            sock.close()
+        except Exception:
+            pass
+    if reply != b"\x05\x00":
+        return SamProbe(False, "tor_unavailable",
+                        "%s:%d is not a SOCKS5 proxy without authentication."
+                        % (host, port))
+    return SamProbe(True, "ok", "Tor SOCKS5 reachable at %s:%d." % (host, port))
+
+
+def _route_summary(profile) -> str:
+    """The route kind, as plain data for the status snapshot ("" if none)."""
+    try:
+        return profile.route.kind
+    except _route.RouteError:
+        return ""
 
 
 def _as_dict(value):

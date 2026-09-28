@@ -80,6 +80,17 @@ CODES = {
                "again.",
     "network": "Could not reach the server.",
     "cancelled": "Registration was cancelled.",
+    "tls_required": "The server did not offer TLS, so the new password was "
+                    "not sent. This app does not register over an "
+                    "unencrypted connection.",
+    "server_identity_changed": "SECURITY: this I2P server name now points to "
+                               "a different destination than the one this "
+                               "device trusted. Nothing was sent. Confirm the "
+                               "change with the server operator before "
+                               "trusting the new address.",
+    "tor_unavailable": "Tor is not running or not reachable. Start Orbot (or "
+                       "another Tor client) and try again. Nothing was sent "
+                       "any other way.",
     "unknown": "Registration failed.",
 }
 

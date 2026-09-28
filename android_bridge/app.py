@@ -612,6 +612,11 @@ class OtrApp:
             _trace.clear()
         except Exception:
             report["errors"].append("trace")
+        try:
+            from . import server_pins as _pins
+            _pins.default_store().forget()
+        except Exception:
+            report["errors"].append("server_pins")
 
         from . import wipe as _disk
         destroyed = failed = 0

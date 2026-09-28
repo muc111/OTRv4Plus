@@ -1316,7 +1316,8 @@ class I2PSAMConnection:
             raise self._naming_failure(alias, exc, alias_source) from None
 
     def connect(self, target_host: str, target_port: int = 0,
-                allow_aliases: bool = True) -> "socket.socket":
+                allow_aliases: bool = True,
+                verify_destination=None) -> "socket.socket":
         """Connect to an I2P destination via SAM. Returns a raw socket.
 
         Creates a transient destination (fresh identity, not saved).
@@ -1324,8 +1325,15 @@ class I2PSAMConnection:
         `target_host` is a 52-character .b32.i2p address or a short .i2p
         name; `resolve` says how each becomes a destination. Every failure
         is a SamError naming the stage that failed.
+
+        `verify_destination(dest_b64)`, when given, is called with the
+        resolved destination BEFORE any session or stream exists; whatever it
+        raises propagates and nothing is sent to that destination. This is
+        where the Android bridge enforces its destination pin (X1).
         """
         dest_b64 = self.resolve(target_host, allow_aliases=allow_aliases)
+        if verify_destination is not None:
+            verify_destination(dest_b64)
 
         self._control_sock = self._bridge_socket(90)
         reply = self._send_cmd(

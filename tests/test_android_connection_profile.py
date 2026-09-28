@@ -309,10 +309,18 @@ class TestCompleteIsNotTheSameAsValid:
 class TestItSurvivesStorage:
 
     def test_round_trip(self):
+        # `use_i2p` is not stored any more: it decides nothing (the route
+        # comes from the name, android_bridge.route), so writing it out would
+        # only preserve a value that is ignored on the way back in.
         p = ConnectionProfile(jid=GOOD, server="mine.i2p",
                               sam_host="10.0.0.2", sam_port=7000,
-                              use_i2p=False)
+                              transport="i2p_sam", socks_host="10.0.0.3",
+                              socks_port=9150)
         assert ConnectionProfile.from_dict(p.to_dict()) == p
+
+    def test_a_stored_use_i2p_is_read_and_ignored(self):
+        p = ConnectionProfile.from_dict({"jid": "a@07f.de", "use_i2p": True})
+        assert p.route.kind == "clearnet_tls"
 
     def test_a_profile_from_an_older_build_opens_with_defaults(self):
         """Stored settings outlive the version that wrote them."""
@@ -349,9 +357,12 @@ class TestNoSecretLivesHere:
                 "exported in diagnostic reports and rendered on screen; "
                 "secrets belong in SecureStore." % (names,))
 
-    def test_to_dict_emits_only_the_five_known_fields(self):
+    def test_to_dict_emits_only_the_known_fields(self):
+        # `transport` (the explicit route override) and the Tor SOCKS
+        # endpoint replaced `use_i2p`; none of them is a secret.
         assert set(ConnectionProfile(jid=GOOD).to_dict()) == {
-            "jid", "server", "sam_host", "sam_port", "use_i2p"}
+            "jid", "server", "sam_host", "sam_port", "transport",
+            "socks_host", "socks_port"}
 
     def test_to_dict_is_written_out_rather_than_derived(self):
         """asdict() would silently export a field added later."""

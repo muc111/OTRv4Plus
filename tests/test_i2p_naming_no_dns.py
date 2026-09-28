@@ -336,6 +336,11 @@ class TestAndroidFlow:
         t._forwarder = otrv4plus_xmpp.start_i2p_sam_forwarder
         t._i2p_resources = []
         t._emit_state = lambda *a, **k: None
+        # What __init__ sets for the route and the X1 destination check.
+        from android_bridge import server_pins as _sp
+        t._route = profile.route
+        t._tor_forwarder = None
+        t._server_pins = _sp.ServerPins(None)
         host, port = asyncio.run(t._endpoint())
         assert host == "127.0.0.1"
         assert fake.looked_up() == [NEW]
@@ -359,6 +364,11 @@ class TestAndroidFlow:
         t._forwarder = otrv4plus_xmpp.start_i2p_sam_forwarder
         t._i2p_resources = []
         t._emit_state = lambda *a, **k: None
+        # What __init__ sets for the route and the X1 destination check.
+        from android_bridge import server_pins as _sp
+        t._route = profile.route
+        t._tor_forwarder = None
+        t._server_pins = _sp.ServerPins(None)
         with pytest.raises(T.TransportError) as exc:
             asyncio.run(t._endpoint())
         assert exc.value.code == "i2p_name_not_found"

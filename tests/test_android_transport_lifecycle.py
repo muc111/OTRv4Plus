@@ -41,6 +41,7 @@ import time
 import pytest
 
 from android_bridge.settings import ConnectionProfile
+from tests.fake_sasl import sasl_plugins
 from android_bridge.transport import (
     CLOSE_TIMEOUT,
     TransportError,
@@ -80,6 +81,7 @@ class FakeClient:
     completes = False
 
     def __init__(self, jid, password):
+        self.plugin = sasl_plugins()
         self.jid = jid
         self.password = password
         self.handlers = {}
@@ -128,7 +130,7 @@ class Harness:
             return client
 
         async def forward(dest, port, sam_host, sam_port,
-                          resources=None, log=None):
+                          resources=None, log=None, verify=None):
             sockets = [FakeSocket() for _ in range(3)]
             self.tunnels.append(sockets)
             if resources is not None:
@@ -468,9 +470,12 @@ class TestTheForwarderHandover:
             "the forwarder no longer takes `resources`, so the transport "
             "cannot close what it opens")
         assert _accepts(fn, "log")
+        assert _accepts(fn, "verify"), (
+            "the forwarder no longer takes `verify`: the X1 destination check "
+            "would be lost, and the transport refuses to connect without it")
 
     def test_the_transport_asks_before_passing(self):
-        """A forwarder without the keywords still works.
+        """A forwarder without the optional keywords still works.
 
         Checked by signature rather than by calling and catching TypeError: a
         TypeError raised INSIDE the forwarder looks identical from outside,
@@ -479,7 +484,8 @@ class TestTheForwarderHandover:
         """
         seen = {}
 
-        async def old_style(dest, port, sam_host, sam_port):
+        # `resources` and `log` are optional; `verify` is not (X1).
+        async def old_style(dest, port, sam_host, sam_port, *, verify=None):
             seen["called"] = True
             return ("127.0.0.1", 1234)
 
@@ -487,6 +493,23 @@ class TestTheForwarderHandover:
         h.transport.connect()
         assert seen["called"]
         assert h.transport.is_connected
+        h.transport.close()
+
+    def test_a_forwarder_without_the_destination_check_is_refused(self):
+        """SECURITY_ISSUES X1: a forwarder that cannot check the resolved
+        destination could hand the stream -- and the password -- to a
+        substituted server. Refused, not called."""
+        seen = {}
+
+        async def unchecked(dest, port, sam_host, sam_port):
+            seen["called"] = True
+            return ("127.0.0.1", 1234)
+
+        h = Harness(completes=True, forwarder=unchecked)
+        with pytest.raises(TransportError) as caught:
+            h.transport.connect()
+        assert caught.value.code == "forwarder_import_failed"
+        assert "called" not in seen
         h.transport.close()
 
     def test_accepts_recognises_kwargs(self):
@@ -719,18 +742,26 @@ class TestNoFailureFallsBackToADirectConnection:
         h.transport.close()
         assert all(h.tunnel_closed(i) for i in range(len(h.tunnels)))
 
-    def test_android_never_builds_a_clearnet_profile(self):
-        """`use_i2p=False` exists for the terminal clients' clearnet row. No
-        Kotlin source names it, so the app's profiles always take the I2P
-        default -- and a stored profile without the key reads back as I2P."""
+    def test_the_route_comes_from_the_name_not_a_flag(self):
+        """This test used to pin the DEFECT: that the app never built a
+        clearnet profile, because `use_i2p` defaulted to True and no Kotlin
+        source set it. That is exactly why registering on `07f.de` went to
+        `checking_router` and failed in 3 ms (tests/test_transport_route.py).
+
+        What holds now: Kotlin still names no transport flag, and the route
+        is decided from the server name alone (android_bridge.route) -- an
+        .i2p name is I2P, an ordinary name is clearnet TLS, and a stale
+        `use_i2p` in a stored profile decides nothing."""
         import os
         from android_bridge.settings import ConnectionProfile
         root = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                             "android", "app", "src", "main")
         for dirpath, _, files in os.walk(root):
             for f in files:
-                if f.endswith((".kt", ".py")):
+                if f.endswith(".kt"):
                     src = open(os.path.join(dirpath, f), encoding="utf-8").read()
                     assert "use_i2p" not in src and "useI2p" not in src, f
-        assert ConnectionProfile(jid="a@b.i2p", server="b.i2p").use_i2p is True
-        assert ConnectionProfile.from_dict({"jid": "a@b.i2p", "server": "b.i2p"}).use_i2p is True
+        assert ConnectionProfile(jid="a@b.i2p", server="b.i2p").route.kind == "i2p_sam"
+        assert ConnectionProfile(jid="a@07f.de").route.kind == "clearnet_tls"
+        assert ConnectionProfile.from_dict(
+            {"jid": "a@07f.de", "use_i2p": True}).route.kind == "clearnet_tls"

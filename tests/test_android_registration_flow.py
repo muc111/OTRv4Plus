@@ -61,7 +61,8 @@ class FakeTransport:
     def __init__(self, profile, password, *, on_payload, on_state=None,
                  on_presence=None, on_subscription_request=None,
                  subscription_policy=None, client_factory=None,
-                 forwarder=None, outcome=None, raises=None):
+                 forwarder=None, tor_forwarder=None, server_pins=None,
+                 outcome=None, raises=None):
         self.profile = profile
         self.password = password
         self.on_payload = on_payload
