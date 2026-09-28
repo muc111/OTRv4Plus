@@ -190,8 +190,8 @@ fun ConnectScreen(
                     // The route comes from the name (android_bridge.route):
                     // .i2p -> I2P, .onion -> Tor, anything else -> clearnet
                     // TLS with a checked certificate.
-                    Text("A domain (clearnet, .i2p or .onion), or a .b32.i2p " +
-                         "destination.")
+                    Text("A domain (clearnet, .i2p or .onion), or a " +
+                         "full .b32.i2p destination.")
                 },
                 singleLine = true,
                 enabled = !status.connected && busy == null,
