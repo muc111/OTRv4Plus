@@ -1065,6 +1065,24 @@ Initiator:                          Responder:
   Established                        Established
 ```
 
+#### 8.1.1 A DAKE1 in any state
+
+A DAKE1 is answered in every session state, because every state is one a real
+network produces (a lost frame, a VPN switch, a peer that restarted with a new
+identity). The per-peer DAKE1 rate limit applies in each case.
+
+| Receiver's state | Action |
+|------------------|--------|
+| No session, or Failed/Finished | Answer with DAKE2. |
+| Responder, waiting for DAKE3 | The same DAKE1 again is a duplicate and is ignored, spending no allowance. A different DAKE1 supersedes the run: its keys are zeroized and the new DAKE1 is answered. |
+| Initiator, waiting for DAKE2 (glare) | Compare the two decoded DAKE1s as byte strings. If our own is greater, keep the initiator role and resend it; otherwise zeroize our run and answer theirs. Both sides compare the same two values, so exactly one yields. |
+| Encrypted | Answer from a **pending** session. The live session keeps encrypting and decrypting until the new DAKE3 verifies, and only then is it replaced and its keys destroyed. SMP state starts unverified in the replacement. |
+
+A client that receives a DATA frame for which it has no encrypted session MAY
+start a DAKE (never plaintext). The reference client does so at most once per
+30 seconds per peer, and only to a contact whose OTRv4Plus capability is
+confirmed.
+
 ### 8.2 SMP Phase Machine
 
 ```
@@ -1080,12 +1098,22 @@ AwaitingMsg3
 AwaitingMsg4
  │ process_smp4()                → Verified | Failed
 
-Terminal states: Verified, Failed, Aborted
+Final states: Verified; Aborted once the attempt limit is reached
+Restartable:  Failed, Aborted (below the limit) → Idle via restart_after_failure()
 ```
 
 Any protocol error, validation failure, ZKP verification failure, ML-DSA
 verification failure, or version mismatch transitions to **Failed** or **Aborted**
-and zeroizes all SMP secret state.
+and zeroizes all SMP secret state. A failed run also forgets its secret, so a
+wrong passphrase cannot silently answer the next SMP1.
+
+A new run may begin from Failed, or from Aborted (a cancel or decline), by
+returning to Idle. The attempt count and the 30-second cooldown belong to the
+lifecycle and survive the restart. Once the attempt limit is reached the state
+machine stays Aborted for the rest of the session. An SMP1 received on a
+Verified session is refused with SMP_ABORT, and an SMP_ABORT received on a
+Verified session is ignored: a completed verification is not undone by a later
+message.
 
 ---
 

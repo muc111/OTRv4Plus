@@ -72,29 +72,21 @@ def _manager():
     return otr.EnhancedSessionManager(config=config)
 
 
-#: One real DAKE1, built once and replayed.
-#:
-#: Real bytes from a real `EnhancedSessionManager`, so the responder runs its
-#: genuine admission path. Built once because a DAKE1 costs an X448 keypair
-#: plus ML-KEM and ML-DSA work, and these tests need dozens.
-#:
-#: Replay is legitimate HERE and only here: `_handle_dake1` resets the session
-#: and rebuilds its DAKE engine on each arrival, so each delivery is processed
-#: afresh and spends exactly one unit of allowance -- which is the quantity
-#: under test. Verified before relying on it: three replays produced three
-#: DAKE2s and a bucket of three.
-_DAKE1 = None
-
-
 def _dake1():
-    global _DAKE1
-    if _DAKE1 is None:
-        sender = _manager()
-        payload, _should_send = sender.handle_outgoing_message(
-            "victim@example.test", "")
-        assert payload and payload.startswith("?OTRv4"), "no DAKE1 produced"
-        _DAKE1 = payload
-    return _DAKE1
+    """A fresh, real DAKE1 from a real `EnhancedSessionManager`.
+
+    Fresh every time. These tests used to build one and replay it, relying
+    on `_handle_dake1` restarting on every arrival. It no longer does: a
+    DAKE1 identical to the one already being answered is a duplicate (a
+    glare resend, a re-delivered stanza) and is ignored without spending
+    allowance -- see `test_a_duplicate_spends_no_allowance`. Each distinct
+    DAKE1 costs ~10 ms to build, so building them is cheap.
+    """
+    sender = _manager()
+    payload, _should_send = sender.handle_outgoing_message(
+        "victim@example.test", "")
+    assert payload and payload.startswith("?OTRv4"), "no DAKE1 produced"
+    return payload
 
 
 @pytest.fixture(autouse=True)
@@ -422,3 +414,17 @@ class TestTheTrackingTableIsBounded:
             limiter.is_allowed("noise%d@example.test" % i)
         assert not limiter.is_allowed("active@example.test"), (
             "an active peer's budget did not survive ordinary churn")
+
+
+class TestDuplicates:
+
+    def test_a_duplicate_spends_no_allowance(self):
+        """Answered once; the copies are ignored and cost nothing."""
+        responder = _manager()
+        jid = "dup@example.test"
+        d1 = _dake1()
+        assert responder._handle_dake1(jid, d1)
+        for _ in range(LIMIT + 2):
+            assert responder._handle_dake1(jid, d1) is None
+        # The allowance is untouched by the copies: new DAKE1s still land.
+        assert all(responder._handle_dake1(jid, _dake1()) for _ in range(LIMIT - 1))

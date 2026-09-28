@@ -230,6 +230,8 @@ class OtrApp:
         self._transport = transport
         self._sink = event_sink
         self._clock = clock
+        #: When each peer last got an automatic recovery handshake.
+        self._recovered_at: Dict[str, float] = {}
         self._connection = ConnectionState.DISCONNECTED
         #: What we know about each peer's availability, and when we know
         #: nothing. A PresenceBook rather than a dict of bools because
@@ -1136,6 +1138,29 @@ class OtrApp:
         self._mode.request(peer)
         _TRACE.record("otr", "dake_requested", "info", jid=peer)
 
+        # AN EXPLICIT REQUEST RESTARTS A HANDSHAKE THAT IS NOT FINISHING.
+        # The engine declines to build a DAKE1 while one is in flight, and a
+        # handshake whose DAKE2 or DAKE3 was lost -- a VPN switch, a dropped
+        # I2P tunnel -- is in flight forever. The terminal's `/otr` resets in
+        # that case; this facade sent a bare query the peer ignores, so the
+        # user could tap Start as often as they liked and nothing recovered.
+        # A fresh DAKE1 is always safe to send: the peer's engine lets it
+        # supersede a stale run, and settles glare if both sides retry.
+        # "In flight" is either state the engine uses for it: an initiator
+        # waiting for DAKE2 is DAKE_IN_PROGRESS, and a responder waiting for
+        # DAKE3 is still PLAINTEXT with a DAKE engine attached.
+        live = getattr(self._engine, "sessions", {}).get(peer)
+        live_state = getattr(getattr(live, "session_state", None), "name", "")
+        half_done = (live_state == "DAKE_IN_PROGRESS"
+                     or (live_state == "PLAINTEXT"
+                         and getattr(live, "dake_engine", None) is not None))
+        if half_done and hasattr(self._engine, "end_session"):
+            try:
+                self._engine.end_session(peer, "handshake restarted by the user")
+                _TRACE.record("otr", "dake_restarted", "info", jid=peer)
+            except Exception as exc:
+                _TRACE.record_exception("otr", "dake_restart_failed", exc, jid=peer)
+
         # NOT `self._safe`. An engine that RAISES here and an engine that
         # DECLINES to produce DAKE1 are different answers, and swallowing the
         # first into the second would send an OTR query on behalf of an engine
@@ -1355,6 +1380,7 @@ class OtrApp:
             if after != before:
                 self._emit(SessionStateChanged(peer=peer, security=after))
             self._announce_smp_change(peer, before_smp)
+            self._recover_if_orphaned(peer)
             return None
 
         # THE ENGINE'S OUTPUT IS NOT NECESSARILY SOMETHING TO DISPLAY.
@@ -1455,6 +1481,44 @@ class OtrApp:
             self._emit(SessionStateChanged(peer=peer, security=after))
         self._announce_smp_change(peer, before_smp)
         return body
+
+    #: At most one automatic handshake per peer in this many seconds.
+    RECOVERY_INTERVAL = 30.0
+
+    def _recover_if_orphaned(self, peer: str) -> None:
+        """Start a handshake when the peer is encrypting to a session we lack.
+
+        After this device restarts (a new identity every launch) or when a
+        DAKE3 is lost, the peer keeps sending DATA frames this side cannot
+        read, and nothing ever changes: the peer has a session and no reason
+        to start another, and this side had no reason either. The frames are
+        now the reason. A DAKE1 is sent -- never plaintext, never a reply to
+        the frame's contents -- and the peer's engine answers it from a
+        pending session, so their side is not disturbed unless the handshake
+        completes.
+
+        Bounded: once per `RECOVERY_INTERVAL` per peer, never for a room, and
+        only to a contact whose OTRv4Plus capability is confirmed where the
+        transport tracks it, so a stream of junk frames cannot make this
+        device send handshakes to anybody.
+        """
+        take = getattr(self._engine, "take_orphan_data", None)
+        if take is None or not take(peer):
+            return
+        if self.is_room(peer):
+            return
+        if self._capability_enforced() and self.otr_capability(peer) != "available":
+            return
+        now = self._clock()
+        last = self._recovered_at.get(peer)
+        if last is not None and now - last < self.RECOVERY_INTERVAL:
+            return
+        self._recovered_at[peer] = now
+        _TRACE.record("otr", "orphan_data_recovery", "info", jid=peer)
+        try:
+            self.start_session(peer)
+        except BridgeError:
+            pass
 
     def _announce_smp_change(self, peer: str, before: SmpState) -> None:
         """Emit when an inbound frame moved this peer's verification state.

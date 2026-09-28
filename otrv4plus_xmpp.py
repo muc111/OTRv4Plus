@@ -2907,34 +2907,13 @@ class OTRv4PlusXMPP(ClientXMPP):
                 self._dbg(f"[otr-probe] inbound probe error: {e}")
 
         # --- DAKE glare resolution ---
-        # Over slow I2P both sides may send DAKE1 before either receives the
-        # other's. Tie-break by bare JID: lower JID keeps initiator role;
-        # higher JID yields and answers as responder. Both sides run identical
-        # code so exactly one yields.
-        if stage_in == "DAKE1":
-            sess = self.otr.get_session(peer)
-            st = getattr(getattr(sess, "session_state", None), "name", "")
-            is_init = bool(getattr(sess, "is_initiator", False))
-            if sess is not None and st == "DAKE_IN_PROGRESS" and is_init:
-                if self._own_bare < peer:
-                    print(
-                        f"[otr] simultaneous start with {peer}: keeping "
-                        f"initiator role; re-sending our DAKE1"
-                    )
-                    d1 = self._last_dake1.get(peer)
-                    if d1:
-                        self.send_otr_fragmented(peer, d1)
-                    return
-                print(
-                    f"[otr] simultaneous start with {peer}: yielding initiator "
-                    f"role, answering as responder"
-                )
-                try:
-                    self.otr.end_session(peer)
-                    self._last_dake1.pop(peer, None)
-                    self._encrypted.discard(peer)
-                except Exception as e:
-                    print(f"[otr] glare teardown error: {e}")
+        # Decided by the ENGINE (`EnhancedSessionManager._handle_dake1`), by
+        # comparing the two DAKE1s, so both clients apply one rule and exactly
+        # one side yields. This used to be a bare-JID rule applied here; the
+        # Android bridge cannot use it (it does not know its own JID), and a
+        # terminal keeping by JID while an Android peer kept by DAKE1 would
+        # have both resending forever. The engine's answer -- our DAKE1 to
+        # resend, or a DAKE2 -- goes out through the ordinary path below.
 
         heavy = (stage_in or "").startswith("DATA")
         if heavy:
