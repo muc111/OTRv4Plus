@@ -9,7 +9,7 @@ import org.otrv4plus.android.bridge.SubscriptionPolicy
 import org.otrv4plus.android.crypto.SecurityLevel
 
 /**
- * "Online users": who the SERVER says is online right now.
+ * People: roster contacts, requests and discovered users, one row each.
  *
  * Built from [Conversation.presence], which comes from XMPP presence stanzas
  * through the roster -- nothing here invents presence, and a contact whose
@@ -30,46 +30,6 @@ import org.otrv4plus.android.crypto.SecurityLevel
  * was reached.
  */
 object OnlineUsers {
-
-    data class Row(
-        val jid: String,
-        val displayName: String,
-        val online: Boolean,
-        val encrypted: Boolean,
-        val verified: Boolean,
-        val callReady: Boolean,
-    ) {
-        /** The facts as words, in order, for the row and for accessibility. */
-        val facts: List<String>
-            get() = buildList {
-                add("online")
-                add(if (encrypted) "OTR encrypted" else "not encrypted")
-                if (verified) add("SMP verified")
-                if (callReady) add("call available")
-            }
-    }
-
-    /** Online people only, alphabetical, one row per bare JID. */
-    @JvmStatic
-    fun rows(conversations: List<Conversation>): List<Row> =
-        conversations
-            .filter { it.presence == Presence.ONLINE }
-            .distinctBy { ChatState.bare(it.jid) }
-            .map { c ->
-                val level = SecurityLevel.of(c.security)
-                val encrypted = SecurityLevel.encrypts(level)
-                val verified = c.security == SecurityState.SMP_VERIFIED &&
-                    c.smp == SmpState.VERIFIED
-                Row(
-                    jid = ChatState.bare(c.jid),
-                    displayName = c.displayName,
-                    online = true,
-                    encrypted = encrypted,
-                    verified = verified,
-                    callReady = verified,
-                )
-            }
-            .sortedBy { it.displayName.lowercase() }
 
     // -- the one list ----------------------------------------------------------
     //
@@ -177,6 +137,20 @@ object OnlineUsers {
                 .thenBy { it.displayName.lowercase() })
     }
 
+    /** The chat list's button beside the connection state: "People (2)",
+     *  counting who is online. */
+    @JvmStatic
+    fun peopleButton(entries: List<Entry>): String {
+        val online = entries.count {
+            it.relation == Relation.ADDED_ONLINE || it.relation == Relation.ONLINE_ADD
+        }
+        val asking = entries.count { it.relation == Relation.ACCEPT }
+        return when {
+            asking > 0 -> "People ($online) \u2022"
+            else -> "People ($online)"
+        }
+    }
+
     /** The header: "PEOPLE (5 · 2 online)". */
     @JvmStatic
     fun directoryTitle(entries: List<Entry>): String {
@@ -226,6 +200,28 @@ object OnlineUsers {
             "It is not end-to-end encrypted: the server can read it. Private " +
             "chats stay OTRv4+ as before."
 
+    /**
+     * Refusals that mean the SERVER'S SETTINGS stop this account creating
+     * rooms (Prosody's restrict_room_creation answers not-allowed or, on some
+     * versions, forbidden). Said as such -- not as the generic room sentence,
+     * which for `forbidden` is "you are banned from this room".
+     */
+    private val PERMISSION_CODES = setOf(
+        "not_allowed", "forbidden", "registration_required", "not_authorized")
+
+    const val WELCOME_NOT_PERMITTED =
+        "The Welcome room was not created: this server's settings do not let " +
+            "your account create rooms. Ask the server admin to create a " +
+            "public, persistent room named \u201cOTRv4Plus Welcome\u201d, or " +
+            "to allow room creation. You can still add people by address."
+
+    /** The result of creating it, in words. */
+    @JvmStatic
+    fun welcomeCreated(ok: Boolean, code: String, detail: String,
+                       missing: List<String>): String =
+        if (!ok && code in PERMISSION_CODES) WELCOME_NOT_PERMITTED
+        else welcomeCreated(ok, detail, missing)
+
     /** The result of creating it, in words. */
     @JvmStatic
     fun welcomeCreated(ok: Boolean, detail: String, missing: List<String>): String = when {
@@ -237,7 +233,35 @@ object OnlineUsers {
             missing.joinToString("; ") + ". Ask the server admin to change it."
     }
 
-    /** The header: "ONLINE USERS (3)". */
+    // -- search and details ----------------------------------------------------
+
+    /**
+     * The rows matching [query]: case-insensitive, on the name or the address,
+     * order kept. Blank matches everyone. Local filtering only -- a search
+     * never asks the server anything, so it cannot enumerate accounts.
+     */
     @JvmStatic
-    fun title(count: Int): String = "ONLINE USERS ($count)"
+    fun search(entries: List<Entry>, query: String): List<Entry> {
+        val q = query.trim().lowercase()
+        if (q.isEmpty()) return entries
+        return entries.filter {
+            q in it.displayName.lowercase() || q in it.jid.lowercase()
+        }
+    }
+
+    /** What the details sheet says about one person, label to value. */
+    @JvmStatic
+    fun details(entry: Entry): List<Pair<String, String>> = buildList {
+        add("Address" to entry.jid)
+        add("Status" to entry.relation.label)
+        val discoveredOnly = entry.relation == Relation.ONLINE_ADD ||
+            entry.relation == Relation.ACCEPT
+        add("OTRv4+" to when {
+            discoveredOnly && !entry.encrypted -> "no session (not a contact yet)"
+            entry.encrypted -> "encrypted"
+            else -> "not encrypted"
+        })
+        add("Identity" to if (entry.verified) "SMP verified"
+                         else "not verified with SMP")
+    }
 }

@@ -31,6 +31,7 @@ import org.otrv4plus.android.ui.ConnectScreen
 import org.otrv4plus.android.ui.ConversationScreen
 import org.otrv4plus.android.ui.ConversationsScreen
 import org.otrv4plus.android.ui.DevShellScreen
+import org.otrv4plus.android.ui.PeopleScreen
 import org.otrv4plus.android.ui.RoomsScreen
 import org.otrv4plus.android.ui.FingerprintAlertDialog
 import org.otrv4plus.android.ui.IncomingFileDialog
@@ -84,7 +85,7 @@ import org.otrv4plus.android.security.WipeAndExit
  */
 class MainActivity : ComponentActivity() {
 
-    private enum class Screen { CONNECT, CONVERSATIONS, CONVERSATION, ROOMS, ABOUT, DIAGNOSTICS }
+    private enum class Screen { CONNECT, CONVERSATIONS, CONVERSATION, ROOMS, PEOPLE, ABOUT, DIAGNOSTICS }
 
     /**
      * Asking for POST_NOTIFICATIONS, which on API 33+ is not optional.
@@ -297,6 +298,7 @@ class MainActivity : ComponentActivity() {
                                 },
                                 onOpenConnection = { screen = Screen.CONNECT },
                                 onOpenRooms = { screen = Screen.ROOMS },
+                                onOpenPeople = { screen = Screen.PEOPLE },
                                 onOpenDiagnostics = { screen = Screen.DIAGNOSTICS },
                                 onOpenAbout = { screen = Screen.ABOUT },
                                 onWipeAndExit = { connection.wipeAndExit() },
@@ -304,6 +306,18 @@ class MainActivity : ComponentActivity() {
                                 onTheme = { mode ->
                                     themeMode = mode
                                     ThemeStore.save(this@MainActivity, mode)
+                                },
+                            )
+                        }
+
+                        Screen.PEOPLE -> {
+                            BackHandler { screen = Screen.CONVERSATIONS }
+                            PeopleScreen(
+                                model = chat,
+                                onBack = { screen = Screen.CONVERSATIONS },
+                                onOpenChat = { jid ->
+                                    openJid = jid
+                                    screen = Screen.CONVERSATION
                                 },
                             )
                         }

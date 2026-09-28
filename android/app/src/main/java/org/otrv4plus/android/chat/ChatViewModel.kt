@@ -415,7 +415,7 @@ class ChatViewModel : ViewModel() {
                     ?: (org.otrv4plus.android.bridge.RoomOutcome(false, "network", "") to emptyList())
             }
             creatingWelcome = false
-            state.note(OnlineUsers.welcomeCreated(outcome.ok, outcome.detail, missing))
+            state.note(OnlineUsers.welcomeCreated(outcome.ok, outcome.code, outcome.detail, missing))
             lastWelcome = 0L
             refreshWelcome()
             revision++

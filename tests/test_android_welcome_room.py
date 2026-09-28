@@ -401,12 +401,17 @@ class TestAddingAndPending:
 
     def test_add_on_a_discovered_row_is_the_normal_roster_subscription(self):
         """The row's Add calls addContact with the row's bare JID -- the one
-        the MUC service revealed -- which is roster add + subscribe."""
+        the MUC service revealed -- which is roster add + subscribe.
+
+        The list moved to its own screen (PeopleScreen.kt, opened beside the
+        connection state); the chat list must not grow a second copy."""
         screen = self._src("android", "app", "src", "main", "java", "org",
-                           "otrv4plus", "android", "ui", "ConversationsScreen.kt")
-        assert "onAdd = { model.addContact(it) }" in screen
+                           "otrv4plus", "android", "ui", "PeopleScreen.kt")
+        assert "onAdd = { model.addContact(entry.jid) }" in screen
         assert "OnlineUsers.Relation.ONLINE_ADD ->" in screen
-        assert "onAdd(entry.jid)" in screen
+        chats = self._src("android", "app", "src", "main", "java", "org",
+                          "otrv4plus", "android", "ui", "ConversationsScreen.kt")
+        assert "PeopleSection" not in chats and "onOpenPeople" in chats
         transport = self._src("android_bridge", "transport.py")
         body = transport[transport.index("async def _add_contact"):]
         body = body[:body.index("\n    def ", 5)]

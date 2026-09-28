@@ -48,6 +48,7 @@ fun ConversationsScreen(
     onOpen: (String) -> Unit,
     onOpenConnection: () -> Unit = {},
     onOpenRooms: () -> Unit = {},
+    onOpenPeople: () -> Unit = {},
     onOpenDiagnostics: () -> Unit = {},
     onOpenAbout: () -> Unit = {},
     onWipeAndExit: (() -> Unit)? = null,
@@ -65,6 +66,13 @@ fun ConversationsScreen(
             TopAppBar(
                 title = { Text("OTRv4+") },
                 actions = {
+                    // People sits beside the connection state: who is here is
+                    // a question about the same server.
+                    if (model.canSend()) {
+                        TextButton(onClick = onOpenPeople) {
+                            Text(OnlineUsers.peopleButton(model.directory))
+                        }
+                    }
                     TextButton(onClick = onOpenConnection) {
                         Text(when {
                             model.link != ChatState.Link.OK -> "Checking…"
@@ -151,23 +159,9 @@ fun ConversationsScreen(
                 )
             }
 
-            // PEOPLE: one list -- roster, requests, and who the server says
-            // is online -- with Add / Pending / Accept / Added per row.
-            // Collapsed by default so it does not push the conversations off
-            // a small screen; the counts are live either way.
-            if (model.canSend()) {
-                PeopleSection(
-                    entries = model.directory,
-                    note = model.discoveryNote,
-                    onOpen = onOpen,
-                    onAdd = { model.addContact(it) },
-                    onAccept = { model.answerSubscription(it, true) },
-                    onRefresh = { model.refreshDiscovery(force = true) },
-                    welcomeMissing = model.welcomeMissing,
-                    creatingWelcome = model.creatingWelcome,
-                    onCreateWelcome = { model.createWelcomeRoom() },
-                )
-            }
+            // PEOPLE lives on its own screen (PeopleScreen), opened from the
+            // button beside the connection state. A request still gets its
+            // banner above; the list itself no longer pushes chats down.
 
             if (conversations.isEmpty()) {
                 // `weight(1f)`, NOT the child's own fillMaxSize().
@@ -672,112 +666,4 @@ private fun DeleteChatDialog(
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text(ChatDeletion.CANCEL) } },
     )
-}
-
-/**
- * "PEOPLE (n · m online)", expandable. Each row names the relation in words
- * (Online — Add, Pending, Wants to add you — Accept, Online/Offline — Added)
- * and, separately, the security facts; a tap opens that person's one
- * conversation. The action button, when there is one, is the only thing on
- * the row that changes anything.
- */
-@Composable
-private fun PeopleSection(
-    entries: List<OnlineUsers.Entry>,
-    note: String?,
-    onOpen: (String) -> Unit,
-    onAdd: (String) -> Unit,
-    onAccept: (String) -> Unit,
-    onRefresh: () -> Unit,
-    welcomeMissing: Boolean = false,
-    creatingWelcome: Boolean = false,
-    onCreateWelcome: () -> Unit = {},
-) {
-    var expanded by rememberSaveable { mutableStateOf(false) }
-    var confirmWelcome by remember { mutableStateOf(false) }
-    Surface(color = MaterialTheme.colorScheme.surfaceVariant) {
-        Column(Modifier.fillMaxWidth()) {
-            Row(
-                Modifier.fillMaxWidth().clickable { expanded = !expanded }
-                    .padding(horizontal = 12.dp, vertical = 8.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text(OnlineUsers.directoryTitle(entries),
-                     style = MaterialTheme.typography.labelLarge)
-                Text(if (expanded) "Hide" else "Show",
-                     style = MaterialTheme.typography.labelSmall)
-            }
-            if (expanded) {
-                note?.let {
-                    Text(it, style = MaterialTheme.typography.bodySmall,
-                         modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp))
-                }
-                TextButton(onClick = onRefresh,
-                           modifier = Modifier.padding(horizontal = 4.dp)) {
-                    Text("Ask the server again")
-                }
-                // Only when the server has none, and only after the warning.
-                if (welcomeMissing) {
-                    OutlinedButton(
-                        enabled = !creatingWelcome,
-                        onClick = { confirmWelcome = true },
-                        modifier = Modifier.padding(horizontal = 12.dp),
-                    ) {
-                        Text(if (creatingWelcome) "Creating the Welcome room…"
-                             else "Create the OTRv4Plus Welcome room")
-                    }
-                }
-                if (entries.isEmpty()) {
-                    Text("Nobody yet. Add someone by address with +.",
-                         style = MaterialTheme.typography.bodySmall,
-                         modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp))
-                }
-                for (entry in entries) {
-                    Row(
-                        Modifier.fillMaxWidth().clickable { onOpen(entry.jid) }
-                            .padding(horizontal = 12.dp, vertical = 6.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Column(Modifier.weight(1f)) {
-                            Text(entry.displayName,
-                                 style = MaterialTheme.typography.bodyMedium)
-                            Text(
-                                entry.facts.joinToString(" · "),
-                                style = MaterialTheme.typography.labelSmall,
-                                color = if (entry.verified) VerifiedBlue
-                                        else MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
-                        when (entry.relation) {
-                            OnlineUsers.Relation.ONLINE_ADD ->
-                                OutlinedButton(onClick = { onAdd(entry.jid) }) {
-                                    Text(entry.relation.action ?: "Add")
-                                }
-                            OnlineUsers.Relation.ACCEPT ->
-                                Button(onClick = { onAccept(entry.jid) }) {
-                                    Text(entry.relation.action ?: "Accept")
-                                }
-                            else -> {}
-                        }
-                    }
-                }
-            }
-        }
-    }
-    if (confirmWelcome) {
-        AlertDialog(
-            onDismissRequest = { confirmWelcome = false },
-            title = { Text("Create the Welcome room?") },
-            text = { Text(OnlineUsers.WELCOME_CREATE_WARNING) },
-            confirmButton = {
-                TextButton(onClick = { confirmWelcome = false; onCreateWelcome() }) {
-                    Text("Create")
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { confirmWelcome = false }) { Text("Cancel") }
-            },
-        )
-    }
 }
