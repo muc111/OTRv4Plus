@@ -24,6 +24,7 @@ Status vocabulary:
 | A4 | Ring verifier accepted the identity point as a ring member (signable by anyone) | Low | **RESOLVED** -- `ring_sig::audit_identity_point` |
 | A5 | Profile expiry and degenerate identity key enforced only in Python | Low | **RESOLVED** -- `dake::profile_tests` |
 | A6 | Ring signature scalars reduced mod Q, so every signature had malleable re-encodings | Low / Info | **RESOLVED** -- `ring_sig::audit_identity_point::a_non_canonical_scalar_is_refused` |
+| X1 | With TLS certificate checks off (I2P, .onion), a server reached by a human-readable `.i2p` NAME is bound only by the router's address book; a substituted server can offer only SASL PLAIN and capture the XMPP account password | Medium | **OPEN** -- message content is unaffected (DAKE-authenticated, TOFU-pinned). Fix options, each needing a handset login test first: SCRAM-only SASL whenever certificate checks are off, or pin the resolved destination per account and warn on change. `.b32.i2p` and `.onion` addresses are self-authenticating and unaffected |
 
 ---
 

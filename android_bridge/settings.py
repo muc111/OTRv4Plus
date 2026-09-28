@@ -69,7 +69,10 @@ __all__ = [
 #: Not a trust anchor either way. The server is a relay the DAKE
 #: authenticates *through*: the peer's identity key is pinned by TOFU end to
 #: end, so a substituted or hostile server costs availability and metadata,
-#: and cannot read a message or impersonate a contact.
+#: and cannot read a message or impersonate a contact. It CAN capture the
+#: account password: certificate checks are off over I2P, so a server that
+#: the address book substituted for this name may offer only SASL PLAIN
+#: (SECURITY_ISSUES X1). A full `.b32.i2p` address avoids that.
 DEFAULT_SERVER = "xmpp-elite.i2p"
 
 
