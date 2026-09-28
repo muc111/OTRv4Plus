@@ -14,8 +14,10 @@ OTRv4+ is an open-source client for end-to-end encrypted chat, file transfer
 and voice calls. It is built around the I2P network and needs no phone number.
 Tor and TLS also work for chat.
 
-It is an experimental, single-author project with no external security
-review. Do not rely on it where your safety depends on it.
+**Security status: extensively tested and hardened through developer-led and
+AI-assisted analysis, but not independently audited.** See
+[Security assessment and audit status](#security-assessment-and-audit-status)
+for what that covers and what it does not.
 
 ## Android app (experimental)
 
@@ -41,7 +43,9 @@ Works on Android 8.0 and newer, including the Pixel 7.
 
 **What has been tested on a phone:** sign-in, contacts, 1:1 chat, rooms,
 OTRv4+ encryption, SMP identity verification, encrypted file transfer with a
-Termux peer, and two-way voice calls (app to app, and app to Termux).
+Termux peer, two-way voice calls (app to app, and app to Termux), and
+account creation and login on an ordinary clearnet server (yax.im, over
+TLS with the certificate verified).
 **Not yet tested on a phone:** the newest additions listed in
 [CHANGELOG.md](CHANGELOG.md). The step-by-step test list
 is [ANDROID_CALL_AND_FILE_DEVICE_TEST.md](ANDROID_CALL_AND_FILE_DEVICE_TEST.md).
@@ -57,7 +61,64 @@ is [ANDROID_CALL_AND_FILE_DEVICE_TEST.md](ANDROID_CALL_AND_FILE_DEVICE_TEST.md).
 | Voice over I2P | Working between two phones, in Termux and in the app; still being tuned |
 | Android app | Chat, OTRv4+, SMP, files and calls (to the app and to Termux) tested on phones |
 | Group encryption | Android secure groups over MLS: code complete and tested in-process, **not yet tested on a phone**. Ordinary rooms (and the Welcome room) are plain XMPP rooms that the server can read. See [MLS_FEASIBILITY.md](MLS_FEASIBILITY.md) |
-| External security review | None. An internal review of the Rust core, with its open findings, is [CRYPTO_AUDIT_2026-09.md](CRYPTO_AUDIT_2026-09.md) |
+| Security review | Extensive developer-led and AI-assisted review, fuzzing, and known-answer and cross-implementation testing; **no paid independent audit yet**. See below and [CRYPTO_AUDIT_2026-09.md](CRYPTO_AUDIT_2026-09.md) |
+
+## Security assessment and audit status
+
+OTRv4+ has undergone extensive developer-led security review and hardening
+during development. It uses several independent layers of automated
+validation, each of which runs on every change:
+
+| Layer | What it covers | Where |
+|---|---|---|
+| Rust unit and integration tests | DAKE, double ratchet, SMP, ring signatures, MAC revelation, the at-rest store, the `.otrv` container, MLS groups | `Rust/src` (151 core tests), `Rust/mls` (33) |
+| Known-answer and cross-implementation tests for post-quantum primitives | ML-KEM-1024 against the FIPS 203 known-answer vectors, and against Go's independent `crypto/mlkem` (agreement both directions); X448 and Ed448 against an independent library | `tests/test_mlkem_kat.py`, `tests/test_mlkem_cross_implementation.py`, `tests/test_differential.py` |
+| Fuzzing | cargo-fuzz (libFuzzer) on every Rust parser of untrusted input: ratchet headers and forged messages, DAKE1/2/3, ring signatures, SMP1-4, the `.otrv` header -- each with a security invariant beyond "no crash" | `Rust/fuzz/` ([FUZZING.md](Rust/fuzz/FUZZING.md)) |
+| Property and attack tests | Replay, reordering, forgery, downgrade, malformed input, state-machine abuse | `tests/test_attacks.py`, `tests/test_property.py` |
+| Python integration and protocol suites | Handshake, ratchet, SMP, file transfer, transports, the Android bridge, wipe | `tests/` (6,300+ tests) |
+| Android/Kotlin tests | Security state, gating of calls and files on SMP, reconnect and wipe policy | `android/app/src/test` (800+ tests) |
+| Dependency and lint checks | `cargo audit --deny warnings` in CI; Clippy; dependency-licence checks on the APK | `.github/workflows` |
+| Security-focused review | Threat model, a Rust-authority audit (secrets never leave the Rust core), a cryptographic audit with its findings tracked to closure, a transport audit | [SECURITY.md](SECURITY.md), [CRYPTO_AUDIT_2026-09.md](CRYPTO_AUDIT_2026-09.md), [RUST_AUTHORITY_AUDIT.md](RUST_AUTHORITY_AUDIT.md), [SECURITY_ISSUES.md](SECURITY_ISSUES.md) |
+| AI-assisted review | Used throughout to look for implementation weaknesses and to write adversarial tests; every finding it produced is a test or a tracked issue, not a claim | -- |
+| Physical testing | OTRv4+ handshake, SMP, encrypted files and voice between handsets and Termux; clearnet and I2P sign-in; Wipe & Exit | [PHYSICAL_TEST_PLAN.md](PHYSICAL_TEST_PLAN.md) |
+
+Counts are as of 2026-09-28.
+
+Findings from this work were fixed, not just recorded. For example:
+defensive and canonical-encoding checks in every parser, rejection of
+invalid cryptographic inputs (such as the identity point in ring
+signatures, and non-canonical scalars), an integer overflow in the `.otrv`
+header found by fuzzing, secret-state handling moved into Rust, and a
+password-exposure path to a substituted I2P server (X1) closed. Each fix has
+a regression test.
+
+### Independent audit status
+
+OTRv4+ has **not** undergone a paid independent third-party security audit
+or a formal external cryptographic assessment.
+
+The work above is therefore not equivalent to an independent professional
+audit. Automated testing, fuzzing, internal review and AI-assisted analysis
+find many classes of implementation and protocol problems, but they cannot
+establish that the system is free of vulnerabilities. Treat the project
+accordingly, particularly for high-value, safety-critical or otherwise
+sensitive communications.
+
+The project keeps a record of its known limitations and design constraints
+([SECURITY_ISSUES.md](SECURITY_ISSUES.md)) rather than treating passing tests
+as proof of security.
+
+### Protocol security
+
+OTRv4+ is a protocol implementation under active development with a hybrid
+post-quantum design. Some documented limitations need a future protocol
+version rather than an in-place, compatibility-breaking change: A1 (the
+ratchet brace key is not yet folded into the root key) and A2 (the DAKE's
+post-quantum authentication is initiator-only). See
+[SECURITY_ISSUES.md](SECURITY_ISSUES.md) and [SPEC.md](SPEC.md).
+
+**Security status: extensively tested and hardened through developer-led and
+AI-assisted analysis, but not independently audited.**
 
 ## Cryptography
 
