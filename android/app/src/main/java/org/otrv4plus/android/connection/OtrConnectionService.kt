@@ -487,7 +487,23 @@ class OtrConnectionService : Service() {
                 // that merely stopped would leave them all in memory until
                 // Android got round to reclaiming it. Stopped first, so the
                 // system does not restart a sticky service into the void.
-                android.os.Process.killProcess(android.os.Process.myPid())
+                //
+                // Then the SYSTEM clears what is left, exactly as Settings'
+                // "Clear storage" does: it kills this process and removes the
+                // whole data directory, cache and code_cache included, plus
+                // this app's Keystore entries. The sweep above cannot finish
+                // that job by itself: while this process is still alive, the
+                // renderer and ART keep writing (a GPU shader cache into
+                // code_cache, directory entries), which is the ~8 kB user data
+                // and ~119 kB cache a handset showed after rc.5's wipe.
+                // Killing the process stays as the fallback if it is refused.
+                val cleared = runCatching {
+                    getSystemService(android.app.ActivityManager::class.java)
+                        ?.clearApplicationUserData() == true
+                }.getOrDefault(false)
+                if (!cleared) {
+                    android.os.Process.killProcess(android.os.Process.myPid())
+                }
             },
         ))
         teardown.launch {

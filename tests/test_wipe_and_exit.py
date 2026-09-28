@@ -556,6 +556,11 @@ class TestTheAndroidSideIsWired:
         assert body.index("core.wipe()") < body.index("AppDataWipe.wipe(")
         # Stopped, THEN killed, so a sticky service is not restarted.
         assert body.index("stopSelf()") < body.index("killProcess")
+        # The system's own "Clear storage" is the last word: it removes what
+        # the live process wrote after the sweep (code_cache, shader cache).
+        # killProcess is only the fallback when that call is refused.
+        assert body.index("stopSelf()") < body.index("clearApplicationUserData()")
+        assert body.index("clearApplicationUserData()") < body.index("killProcess")
 
     def test_nothing_starts_once_a_wipe_has_begun(self):
         body = _body(_kt("connection", "OtrConnectionService.kt"),

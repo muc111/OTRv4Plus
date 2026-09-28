@@ -206,6 +206,22 @@ values the user typed (the account password, an SMP secret) cannot be
 overwritten by any means. The process is then killed, which releases the
 interpreter and everything it held.
 
+**The system's own clear, last (rc.7).** The final step is
+`ActivityManager.clearApplicationUserData()` -- the call behind Settings'
+"Clear storage". The system kills the process and removes the whole data
+directory, cache and code_cache included, and this app's Keystore entries.
+The app's own sweep runs first and cannot finish the job alone: while the
+process is alive the renderer and ART keep writing (a GPU shader cache in
+code_cache, directory entries). A handset showed 8.19 kB user data and
+119 kB cache after rc.5's wipe; that is what this step removes. If the call
+is refused, the process is killed as before. Nothing here, and nothing any
+app can do, forces the flash controller to erase old blocks: overwriting a
+file in place on a log-structured, wear-levelled filesystem (f2fs, ext4 on
+eMMC/UFS) usually writes NEW blocks and leaves the old ones until garbage
+collection. That is why the guarantee above rests on cryptographic erasure
+(the vault key deleted from the Keystore) and on Android's file-based
+encryption, not on "corrupting" files.
+
 **Not covered.** A screenshot or screen recording the user or the system took;
 anything the recipient has; server-side state (the XMPP server keeps the
 roster and may have offline messages, which are OTR ciphertext).
