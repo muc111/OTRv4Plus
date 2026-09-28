@@ -202,6 +202,39 @@ def hop_note() -> str:
     return note
 
 
+#: What each voice counter means. The ONE definition: the jitter buffer,
+#: the session, the hangup summary and the Android call screen read these
+#: names and nothing else. Units are 40 ms frames unless stated.
+#:
+#: Conservation, receive side, checked by tests/test_voice_counters.py:
+#:     accepted = played + shed + overflow + cleared + still buffered
+#: where accepted is the jitter buffer's `queued`.
+COUNTER_DEFINITIONS = {
+    "sent": "frames sealed and handed to the transport",
+    "received": "frames that authenticated, decrypted and carried audio, "
+                "whether or not they were then played (accepted + late + "
+                "duplicate)",
+    "played": "frames taken from the jitter buffer for decoding and "
+              "playout; a frame is played once or not at all",
+    "missing": "sequence positions reached at playout with no frame, within "
+               "one epoch: audio lost in transit or too late to wait for "
+               "(FEC or concealment covers them). Never counted across a "
+               "rekey, where the counter restarts",
+    "reordered": "frames accepted although a later frame had already "
+                 "arrived: out of order, still in time",
+    "late": "frames that arrived after their slot had been played; refused",
+    "duplicate": "frames whose sequence was already queued; refused",
+    "underrun": "times playout found the buffer empty and waited",
+    "shed": "accepted frames discarded on purpose to cut latency (drift) "
+            "or because the buffer was full (overflow); they arrived, and "
+            "are not counted as missing",
+    "dropped": "LOCAL failures only: tx = a frame we could not encode, seal "
+               "or send; rx = bytes that arrived and did not form an "
+               "authentic frame. Not loss in transit and not shedding, so "
+               "a call can report dropped 0 and still have lost audio",
+}
+
+
 class MediaCounters:
     """What actually happened to the audio, as counts rather than a verdict.
 
@@ -215,7 +248,9 @@ class MediaCounters:
 
     __slots__ = ("captured", "encoded", "encrypted", "sent",
                  "received", "decrypted", "queued", "played",
-                 "concealed", "shed", "gaps", "underruns")
+                 "concealed", "shed", "gaps", "underruns",
+                 "reordered", "late", "duplicate",
+                 "dropped_tx", "dropped_rx")
 
     def __init__(self, **counts):
         for name in self.__slots__:
@@ -236,6 +271,52 @@ class MediaCounters:
 
     def __repr__(self):                                      # pragma: no cover
         return "<MediaCounters sent=%d played=%d>" % (self.sent, self.played)
+
+
+def counters_from(session) -> MediaCounters:
+    """Read one call's counters, each by its definition above.
+
+    Tolerant of a session without a counter (older or partial), which
+    reads as zero rather than raising: this runs at hangup.
+    """
+    def get(d, key):
+        try:
+            return int((d or {}).get(key, 0))
+        except Exception:
+            return 0
+    # Any exception, not only AttributeError: a half-torn-down session can
+    # raise anything, and this runs on the hangup path.
+    try:
+        jit = dict(session.jitter.stats or {})
+    except Exception:
+        jit = {}
+    try:
+        st = dict(session.stats or {})
+    except Exception:
+        st = {}
+    queued = get(jit, "queued")
+    drift, overflow = get(jit, "drift"), get(jit, "overflow")
+    if "played" in jit:
+        played = get(jit, "played")
+    else:
+        # A jitter buffer from before `played` existed: queued included
+        # what was later shed or evicted, so take those back out.
+        played = max(0, queued - drift - overflow)
+    late, dup = get(jit, "late"), get(jit, "duplicate")
+    return MediaCounters(
+        sent=get(st, "sent"),
+        received=queued + late + dup,
+        queued=queued,
+        played=played,
+        gaps=get(jit, "gaps"),
+        shed=drift + overflow,
+        underruns=get(jit, "underrun"),
+        reordered=get(jit, "reordered"),
+        late=late,
+        duplicate=dup,
+        dropped_tx=get(st, "tx_dropped"),
+        dropped_rx=get(st, "rx_dropped"),
+    )
 
 
 def delivery_line(counters: MediaCounters) -> str:
@@ -263,8 +344,15 @@ def delivery_line(counters: MediaCounters) -> str:
         parts.append("%d missing" % counters.gaps)
     if counters.shed:
         parts.append("%d shed locally" % counters.shed)
+    if counters.reordered:
+        parts.append("%d reordered" % counters.reordered)
+    if counters.late:
+        parts.append("%d late" % counters.late)
     if counters.underruns:
         parts.append("%d underrun(s)" % counters.underruns)
+    if counters.dropped_tx or counters.dropped_rx:
+        parts.append("%d/%d dropped locally (send/receive)"
+                     % (counters.dropped_tx, counters.dropped_rx))
     if not parts:
         return "no media counters were recorded"
     return ", ".join(parts) + " (frames)"

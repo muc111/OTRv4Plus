@@ -2268,9 +2268,17 @@ class JitterBuffer:
         #: Measured arrival-to-playout dwell per frame. This is the jitter
         #: buffer's real contribution to mouth-to-ear delay.
         self.dwell = Percentiles()
+        # See otrv4plus_mediapath.COUNTER_DEFINITIONS for what each means.
+        # `queued` is frames ACCEPTED, not played: a queued frame may still
+        # be shed (`drift`), evicted (`overflow`) or cleared at teardown.
+        # `played` is the one that counts what reached the decoder.
         self.stats = {"queued": 0, "late": 0, "duplicate": 0,
                       "overflow": 0, "gaps": 0, "drift": 0,
-                      "underrun": 0, "burst_drain": 0}
+                      "underrun": 0, "burst_drain": 0,
+                      "played": 0, "reordered": 0, "cleared": 0}
+        #: Highest sequence key accepted, so an in-time frame that arrived
+        #: behind a later one is counted as reordered.
+        self._highest = -1
 
     #: How far the epoch is shifted in a sequence key.
     #:
@@ -2438,6 +2446,10 @@ class JitterBuffer:
             self._heapq.heappush(self._heap, (seq, pcm, time.monotonic()))
             self._seqs.add(seq)
             self.stats["queued"] += 1
+            if seq < self._highest:
+                self.stats["reordered"] += 1
+            else:
+                self._highest = seq
             return True
 
     def pop(self):
@@ -2546,6 +2558,7 @@ class JitterBuffer:
                     self.stats["gaps"] += gap
             self._last_played = seq
             self._note_clean_pop()
+            self.stats["played"] += 1
             return pcm, gap
 
     def depth(self) -> int:
@@ -2572,6 +2585,7 @@ class JitterBuffer:
                 try:
                     _, pcm, _t = self._heapq.heappop(self._heap)
                     _wipe(pcm)
+                    self.stats["cleared"] += 1
                 except Exception:
                     break
             self._seqs.clear()
@@ -2981,6 +2995,14 @@ class RateLimiter:
 #: fake behind with a KeyError.
 MEDIA_STAT_KEYS = (
     "sent", "recv", "dropped", "late", "oversize", "backpressure",
+    # `dropped` is the total of these two, kept for the diagnostics that
+    # read it. It counts LOCAL failures only -- a frame we could not encode,
+    # seal or hand to the transport (tx), or bytes that arrived and did not
+    # form an authentic frame (rx). It is not loss in transit ("missing")
+    # and not frames discarded to cut latency ("shed"), which is why a call
+    # can end with dropped=0 and still have lost audio. See
+    # otrv4plus_mediapath.COUNTER_DEFINITIONS.
+    "tx_dropped", "rx_dropped",
     "auth_fail", "replay", "resync", "fec_recovered", "stale", "foreign",
     # Rejection causes, split out at v10.13.1.  `auth_fail` used to absorb
     # all of these, so "authfail=87" could equally mean a forged frame or a
@@ -3507,6 +3529,7 @@ class VoiceCallSession:
                 # is per-packet and recoverable, so it must not tear the call
                 # down; the stats already show the result as silence.
                 session.stats["dropped"] += 1
+                session.stats["tx_dropped"] = session.stats.get("tx_dropped", 0) + 1
 
         transport, _proto = await self.loop.create_datagram_endpoint(
             _MediaDatagramProtocol, sock=self._dgram_sock)
@@ -3566,6 +3589,7 @@ class VoiceCallSession:
             self._drain_buffer(buf)
         except Exception:
             self.stats["dropped"] += 1
+            self.stats["rx_dropped"] = self.stats.get("rx_dropped", 0) + 1
         finally:
             _wipe(buf)
         # The initiator never learns the callee's destination from signalling:
@@ -4075,6 +4099,7 @@ class VoiceCallSession:
                 self._emit(padded)
             except Exception:
                 self.stats["dropped"] += 1
+                self.stats["tx_dropped"] = self.stats.get("tx_dropped", 0) + 1
             finally:
                 _wipe(pcm)
                 if opus_frame is not None:
@@ -4146,9 +4171,11 @@ class VoiceCallSession:
                 self._running = False
             else:
                 self.stats["dropped"] += 1
+                self.stats["tx_dropped"] = self.stats.get("tx_dropped", 0) + 1
             return
         except Exception:
             self.stats["dropped"] += 1
+            self.stats["tx_dropped"] = self.stats.get("tx_dropped", 0) + 1
             return
         if packet is None:
             return
@@ -4217,6 +4244,7 @@ class VoiceCallSession:
                 self.stats["sent"] += 1
             else:
                 self.stats["dropped"] += 1
+                self.stats["tx_dropped"] = self.stats.get("tx_dropped", 0) + 1
             return
         try:
             if self._writer.is_closing():
@@ -4233,6 +4261,7 @@ class VoiceCallSession:
             self.stats["sent"] += 1
         except Exception:
             self.stats["dropped"] += 1
+            self.stats["tx_dropped"] = self.stats.get("tx_dropped", 0) + 1
 
     # -- network ----------------------------------------------------------
 
@@ -4290,6 +4319,7 @@ class VoiceCallSession:
                 if len(buf) > VOICE_PACKET_LEN * 8:
                     del buf[:]
                     self.stats["dropped"] += 1
+                    self.stats["rx_dropped"] = self.stats.get("rx_dropped", 0) + 1
         except asyncio.CancelledError:
             raise
         except Exception as exc:
@@ -4683,6 +4713,7 @@ class VoiceCallSession:
                 idx = buf.find(bytes([VOICE_SYNC]), 1)
                 if idx == -1:
                     self.stats["dropped"] += 1
+                    self.stats["rx_dropped"] = self.stats.get("rx_dropped", 0) + 1
                     buf.clear()
                     return
                 del buf[:idx]
@@ -4742,6 +4773,11 @@ class VoiceCallSession:
                     self.stats["recv"] += 1
                     opus_frame = None        # ownership passed to playback
                 else:
+                    # Refused by the jitter buffer, which says why: `late`
+                    # (its slot was already played) or `duplicate`. This
+                    # counter used to take both, so a duplicate read as a
+                    # late frame. Kept as their sum for the diagnostics
+                    # that print it; the split is in jitter.stats.
                     self.stats["late"] += 1
             except FrameError as exc:
                 # Classified by the raise site.  This used to read
@@ -4752,10 +4788,12 @@ class VoiceCallSession:
                     getattr(exc, "reason", FrameError.MALFORMED),
                     "rej_malformed")] += 1
                 self.stats["dropped"] += 1
+                self.stats["rx_dropped"] = self.stats.get("rx_dropped", 0) + 1
                 del buf[:1]
                 self.stats["resync"] += 1
             except Exception:
                 self.stats["dropped"] += 1
+                self.stats["rx_dropped"] = self.stats.get("rx_dropped", 0) + 1
                 del buf[:1]
             finally:
                 if opus_frame is not None:
@@ -5872,6 +5910,19 @@ class VoiceCallManager:
         # Before anything opens a playback stream, so the two never contend.
         self._stop_ringing(peer)
 
+        # THE GATE AGAIN, AT ANSWER. It was checked when the INVITE arrived,
+        # but verification can end while the phone rings: the OTRv4+ session
+        # may have been replaced by a new handshake (a peer restart, a
+        # recovered DAKE), and a replacement starts unverified by design.
+        # Answering on the old verdict would take a call from a peer whose
+        # current keys nobody has checked.
+        if not self._smp_verified(peer):
+            _print("[voice] not answering: %s is no longer SMP-verified"
+                   % _san(peer, 64))
+            self._signal(peer, "REJECT", (session.call_id.hex(), "unverified"))
+            await self.end_call(peer, notify_peer=False)
+            return
+
         if not session.try_transition(CallState.CONNECTING):
             return
         self._cancel_timeout(peer)
@@ -6140,6 +6191,13 @@ class VoiceCallManager:
             return
         if not session.is_initiator or session.state != CallState.INVITING:
             self._vdbg(peer, "ACCEPT in state %s — ignored" % session.state)
+            return
+        # The caller's gate, again when the answer arrives: see answer_call.
+        if not self._smp_verified(peer):
+            _print("[voice] ending call: %s is no longer SMP-verified"
+                   % _san(peer, 64))
+            self._signal(peer, "REJECT", (session.call_id.hex(), "unverified"))
+            await self.end_call(peer, notify_peer=False)
             return
 
         peer_x448 = _hex_field(fields[1], VoiceKeyExchange.PUB_LEN)
@@ -6996,32 +7054,25 @@ class VoiceCallManager:
         # answer -- `queued` is every frame accepted for playout and `gaps`
         # is every frame missing from the sequence when its turn came, which
         # is exactly the audio that had to be concealed.
+        # From the definitions in otrv4plus_mediapath.COUNTER_DEFINITIONS.
+        # `played` is frames actually taken for playout. It used to be the
+        # jitter buffer's `queued` -- frames ACCEPTED -- which also counted
+        # every frame later shed to cut latency or evicted when full, so
+        # shed audio was reported twice (as played and as shed) and the
+        # delivery ratio was overstated by exactly the shed fraction.
+        counts = _mediapath.counters_from(session)
+        played, gaps = counts.played, counts.gaps
         delivery = None
-        try:
-            played = int(session.jitter.stats.get("queued", 0))
-            gaps = int(session.jitter.stats.get("gaps", 0))
-            if played + gaps:
-                delivery = float(played) / float(played + gaps)
-        except Exception:
-            delivery = None
+        if played + gaps:
+            delivery = float(played) / float(played + gaps)
 
-        # Audio we threw away ourselves.
-        #
-        # `drift` is the jitter buffer shedding frames to pull latency back
-        # down.  It is deliberately NOT counted as loss above -- a shed frame
-        # advances the playout marker, so it leaves no gap and conceals
-        # nothing -- which is right for the mechanism and wrong for the user:
-        # a 1960 s call whose playout device blocked on every write shed a
-        # THIRD of its audio, eight times more than the network lost, and
-        # every counter read healthy.  It is reported here because this is
-        # the only place a person would see it.
+        # Audio we threw away ourselves, as a share of everything that
+        # reached playout or should have. Reported because a shed frame
+        # leaves no gap, so nothing else shows it: a 1960 s call once shed a
+        # third of its audio while every other counter read healthy.
         shed = None
-        try:
-            dropped_locally = int(session.jitter.stats.get("drift", 0))
-            if played + gaps and dropped_locally:
-                shed = float(dropped_locally) / float(played + gaps)
-        except Exception:
-            shed = None
+        if counts.shed and (played + gaps + counts.shed):
+            shed = float(counts.shed) / float(played + gaps + counts.shed)
 
         # If NOTHING could be read, say nothing.
         #
@@ -7070,8 +7121,9 @@ class VoiceCallManager:
             # phrasing invites the reading "zero audio was received", which
             # is not what the ratio ever meant.
             parts.append(_mediapath.delivery_line(_mediapath.MediaCounters(
-                played=played, gaps=gaps,
-                shed=int(session.jitter.stats.get("drift", 0)))))
+                played=played, gaps=gaps, shed=counts.shed,
+                reordered=counts.reordered, late=counts.late,
+                dropped_tx=counts.dropped_tx, dropped_rx=counts.dropped_rx)))
 
         if sent:
             parts.append("%d frames sent" % sent)
