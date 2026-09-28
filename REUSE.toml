@@ -44,6 +44,7 @@ path = [
     "CHANGES.md",
     "CONTRIBUTING.md",
     "CRYPTO_AUDIT_2026-09.md",
+    "PHYSICAL_TEST_PLAN.md",
     "CRYPTO_SOURCE_OF_TRUTH.md",
     "DEVELOPMENT.md",
     "FEATURES.md",
