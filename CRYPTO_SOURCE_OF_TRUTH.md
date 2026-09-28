@@ -72,6 +72,7 @@ cryptographic protections at all:
 | `otrv4+.py` fingerprints | SHA3-512 of a *public* key (`hashlib`) | display value of public data |
 | `otrv4plus_voice.py` | SHA-512 of the public call transcript (HKDF salt) | public input; the keys are derived in Rust |
 | `otrv4plus_filetransfer.py` | SHA-256 of the file | integrity digest of content the user already holds |
+| `android_bridge/server_pins.py` | SHA-256 of an I2P server's *public* destination -> its `.b32.i2p` address | the standard I2P address of public data, compared against a pin (SECURITY_ISSUES X1); no secret input, no key |
 | `_secure_file_destroy` | `os.urandom` overwrite bytes | not a key; see `ANDROID_WIPE_AND_EXIT.md` for what overwrite does and does not guarantee on flash |
 
 DAKE3 is signed and verified in Rust over the Auth-I message it computes

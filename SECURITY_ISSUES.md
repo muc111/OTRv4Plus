@@ -24,7 +24,7 @@ Status vocabulary:
 | A4 | Ring verifier accepted the identity point as a ring member (signable by anyone) | Low | **RESOLVED** -- `ring_sig::audit_identity_point` |
 | A5 | Profile expiry and degenerate identity key enforced only in Python | Low | **RESOLVED** -- `dake::profile_tests` |
 | A6 | Ring signature scalars reduced mod Q, so every signature had malleable re-encodings | Low / Info | **RESOLVED** -- `ring_sig::audit_identity_point::a_non_canonical_scalar_is_refused` |
-| X1 | With TLS certificate checks off (I2P, .onion), a server reached by a human-readable `.i2p` NAME is bound only by the router's address book; a substituted server can offer only SASL PLAIN and capture the XMPP account password | Medium | **OPEN** -- message content is unaffected (DAKE-authenticated, TOFU-pinned). Fix options, each needing a handset login test first: SCRAM-only SASL whenever certificate checks are off, or pin the resolved destination per account and warn on change. `.b32.i2p` and `.onion` addresses are self-authenticating and unaffected |
+| X1 | With TLS certificate checks off (I2P, .onion), a server reached by a human-readable `.i2p` NAME is bound only by the router's address book; a substituted server can offer only SASL PLAIN and capture the XMPP account password | Medium | **RESOLVED (Android), with stated residuals** -- both options, combined: the resolved destination is pinned per server name and a changed one is refused before STREAM CONNECT (nothing reaches it; explicit, confirmed re-approval of exactly that destination), and SASL is SCRAM-only wherever certificate checks are off. `tests/test_x1_destination_pinning.py`. Residuals and the terminal client: see the X1 section. NOT yet confirmed by a handset login |
 
 ---
 
@@ -312,3 +312,91 @@ structural security claim, and the additional work is small and additive.
 is the interface, and the package ships no concrete implementation. The test
 double in `tests/test_android_identity.py` uses Option A and is explicitly
 marked development/test only.
+
+---
+
+## X1 — Password to a substituted `.i2p` server
+
+**Status: RESOLVED on Android (2026-09-28), with the residuals below. Not yet
+exercised by a handset login (PHYSICAL_TEST_PLAN.md §0).**
+
+### The defect
+
+A short `.i2p` name is bound to a destination by the router's address book,
+which a subscription feed, a jump service or a first registrant can
+influence. Over I2P the transport turns TLS certificate checks off, because
+there is no CA for `.i2p`. The client then authenticated with whatever SASL
+mechanism the server offered -- including PLAIN, which is the password
+itself. A substituted destination therefore collected the account password.
+Message content was never exposed (DAKE-authenticated, TOFU-pinned end to end).
+
+### The fix: both options, combined
+
+**B. Destination pinning** (`android_bridge/server_pins.py`). The identity of
+an I2P server is its destination -- the `.b32.i2p` hash of the full
+destination the router returned -- never its name.
+
+* The first destination a name resolves to is pinned when that connection
+  (or registration) succeeds: trust on first use.
+* Every later attempt is checked inside the SAM connect, between `NAMING
+  LOOKUP` and `SESSION CREATE` (`I2PSAMConnection.connect(verify_destination=)`).
+  A different destination raises before any session or stream exists, so
+  **not one byte -- no credential -- reaches it**. The failure is
+  `i2p_destination_changed` (registration: `server_identity_changed`) and
+  names both addresses.
+* Nothing retries it in the background (`ReconnectPolicy.NEEDS_THE_USER`).
+  The connect screen shows a security warning with both addresses; "Trust new
+  address" needs a second confirmation, approves only the destination that
+  was refused, and does not connect -- the user logs in again, and the new
+  destination becomes the pin only if that succeeds.
+* A typed `.b32.i2p` is checked against the destination the router returns
+  for it. `.onion` v3 names are self-authenticating and not pinned.
+* Pins are public data (names and hashes), stored at
+  `~/.otrv4plus/server_pins.json` (0600) and destroyed by Wipe & Exit.
+* The transport refuses a forwarder that cannot run the check.
+
+**A. SCRAM only where certificate checks are off**
+(`transport._restrict_to_scram`). slixmpp's `feature_mechanisms` is limited to
+SCRAM-SHA-512/256/1 (with and without -PLUS); `encrypted_plain` and
+`unencrypted_plain` are off. Verified on the wire against the real slixmpp
+1.17 plugin: a server offering only PLAIN (or LOGIN, DIGEST-MD5) gets no
+`<auth>` at all and the attempt fails as `no_safe_auth_mechanism`; with SCRAM
+offered, the first message carries `n=<user>,r=<nonce>` and never the
+password. slixmpp also refuses SCRAM on a stream without TLS, so an I2P
+server that skips STARTTLS gets nothing. SCRAM is mutual: a server that does
+not hold the credential cannot complete it.
+
+Clearnet (`clearnet_tls`) keeps slixmpp's default: CA-verified certificate,
+hostname checked; PLAIN is allowed only inside that verified TLS, and the
+transport refuses to send a password or a registration form if TLS was not
+negotiated (`tls_required`).
+
+### Residual risks, stated
+
+1. **First contact is trust-on-first-use.** If the very first resolution of a
+   name is already substituted, that destination is pinned. Layer A then
+   still keeps the password off the wire, but:
+2. **A SCRAM exchange with an impostor permits an offline guessing attack**
+   on a weak password: the impostor picks the salt and iteration count and
+   receives the client proof, against which it can test guesses offline. It
+   never receives the password itself. Use a strong, unique password.
+3. **Registration over I2P on first contact** sends the NEW account's
+   password inside the XEP-0077 form over TLS to an unpinned destination.
+   After the first success the destination is pinned and later
+   registrations are protected.
+4. **The terminal client** (`otrv4plus_xmpp.py`) still accepts whatever the
+   server offers. It is outside this fix; use a `.b32.i2p` address there.
+
+### Tests
+
+`tests/test_x1_destination_pinning.py` runs the real forwarder and the real
+`I2PSAMConnection` against a scripted SAM bridge that plays the XMPP server
+at each destination and records every byte: first use pins A; reconnect to
+A is allowed; after the name is re-pointed at B the attempt is refused, no
+`SESSION CREATE` or `STREAM CONNECT` follows the lookup, B receives zero
+bytes and the password never reaches it; registration is blocked the same
+way; approval is only for the refused destination and does not re-pin until
+a successful connect; the SCRAM restriction is checked on the real slixmpp
+plugin. Disabling either layer fails 15 of those tests (checked by mutation
+on 2026-09-28). `ReconnectPolicyTest` pins that the refusal is not retried.
+

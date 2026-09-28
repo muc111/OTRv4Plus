@@ -246,7 +246,8 @@ forbids.
 | I2P XMPP control plane | implemented, live-verified |
 | I2P voice media (SAM datagram) | implemented, live-verified — 4-hour soak, authenticated recovery across a network transition |
 | Tor XMPP control plane | implemented via a hand-rolled SOCKS5 CONNECT to a loopback forwarder; **LIVE-UNVERIFIED** |
-| Clearnet TLS XMPP control plane | implemented; no reconnect |
+| Clearnet TLS XMPP control plane | implemented (terminal: no reconnect; Android: §8.2, **LIVE-UNVERIFIED**) |
+| Tor XMPP control plane (Android) | implemented, §8.2; **LIVE-UNVERIFIED** |
 | Tor voice media | **not implemented** — §7 |
 | Clearnet TLS voice media | **not implemented** |
 | Proxy route (mode 4) | **not implemented** |
@@ -310,6 +311,28 @@ alias wrong costs a failed connection, not a silent redirection: the server is
 not a trust anchor in this design — the DAKE authenticates the peer and TOFU
 pins the identity key, both end to end through whatever server is in the
 middle.
+
+## 8.2 Android: one decision, from the name (2026-09-28)
+
+A handset registering on `07f.de`, an ordinary clearnet server, got
+`checking_router -> failed` in 3 ms with no DNS, TCP or TLS: the Android
+profile's `use_i2p` defaulted to True and nothing looked at the name.
+`android_bridge/route.py` is now the single authority, pure and tested:
+
+| Server | Route | Resolver | Certificate |
+|---|---|---|---|
+| `*.b32.i2p` | `i2p_sam` | SAM (the address is the key hash) | off; SCRAM only |
+| `*.i2p` | `i2p_sam` | SAM `NAMING LOOKUP`; destination pinned (SECURITY_ISSUES X1) | off; SCRAM only |
+| `*.onion` | `tor` | Tor, inside SOCKS5 CONNECT | off; SCRAM only |
+| anything else | `clearnet_tls` | system DNS (SRV, then the domain on 5222) | CA-verified, hostname checked |
+
+An explicit override is honoured where safe (`tor` for a clearnet name keeps
+certificate checks) and refused where it would leak a name (`.i2p`/`.onion`
+never to DNS). Only `i2p_sam` enters `checking_router`; only `tor` enters
+`checking_tor` (Orbot's SOCKS5 greeting); `clearnet_tls` goes straight to
+`connecting`. No route falls back to another. The trace records
+`transport selected` with the route, resolver and certificate policy.
+`tests/test_transport_route.py`.
 
 ## 9. Rules for anyone adding a transport
 

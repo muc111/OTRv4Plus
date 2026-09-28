@@ -17,6 +17,33 @@ storage figures.
 
 ---
 
+## 0. Transport selection and X1 (first, before anything else)
+
+Automated coverage: `tests/test_transport_route.py`,
+`tests/test_x1_destination_pinning.py`, `ReconnectPolicyTest`.
+
+1. **Clearnet `07f.de`.** Fresh install. Another server… → `07f.de`,
+   username, strong password, **Create account**. **Pass:** the state line
+   never shows "Checking for an I2P router"; Debug → trace shows `transport
+   selected route=clearnet_tls`, then DNS/TCP/TLS progress; the account is
+   created or the server's own reason is shown. Then **Log in**: connected.
+2. **Clearnet failure is named.** A non-existent domain → a DNS/TCP/TLS
+   failure sentence, never a router one.
+3. **Default I2P server, router running.** "Checking for an I2P router" then
+   tunnels; login works. Debug trace: `destination_accepted basis=first use`,
+   then `destination_pinned`. Log out, log in again: `basis=pinned`.
+4. **I2P without a router.** Fails at "Checking for an I2P router" in
+   milliseconds (unchanged).
+5. **X1 warning (only if a second destination can be arranged**, e.g. by
+   editing the router's address book to point the name elsewhere). **Pass:**
+   "Security warning: the server's address changed" with both addresses; no
+   automatic retry; "Keep the old address" leaves it refused; "Trust new
+   address…" asks again and does not connect by itself.
+6. **Onion (optional, Orbot).** Without Orbot: "Checking for Tor" fails with
+   `tor_unavailable`, no clearnet attempt. With Orbot: connects.
+
+---
+
 ## 1. Wipe & Exit (the 11.28 MB report)
 
 Covered automatically: ordering, crypto destroyed in Rust before teardown,
@@ -139,5 +166,4 @@ bridge event paths.
 ## 8. Not part of this session
 
 Physical flash erasure (never claimed), router-applied tunnel length (not
-measured; the app only requests it), X1 SASL hardening (needs its own
-login test once implemented).
+measured; the app only requests it). X1 is implemented and covered by §0.

@@ -4,6 +4,33 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.5 — 2026-09-28 — clearnet servers work; no password to a substituted I2P server (core 0.11.0)
+
+*Not tested on a handset. `PHYSICAL_TEST_PLAN.md` §0 is the first thing to
+run. Also carries everything committed on the branch since rc.4 (Wipe &
+Exit completion, SMP and reconnect recovery, MLS stages, file transfer).*
+
+**Transport chosen from the server name** (`TRANSPORT_POLICY.md` §8.2)
+
+- `07f.de` failed with `checking_router` in 3 ms: every server was treated as
+  an I2P server. The route now comes from the name alone, in one place
+  (`android_bridge/route.py`): `.b32.i2p`/`.i2p` over SAM, `.onion` over Tor
+  (Orbot), anything else over clearnet DNS/TCP/STARTTLS with a CA-verified
+  certificate. Clearnet never probes for a router or Tor.
+- No fallback between routes. A clearnet server that offers no TLS gets no
+  password (`tls_required`).
+
+**X1 resolved on Android** (`SECURITY_ISSUES.md` X1)
+
+- The I2P destination a server name resolves to is pinned on first use. A
+  different one is refused before any stream opens, and a security warning
+  shows both addresses. Trusting the new one takes two presses and does not
+  connect on its own. No background retry.
+- SCRAM only wherever certificate checks are off (I2P, onion). A server
+  offering only PLAIN gets nothing.
+- Residuals are stated in `SECURITY_ISSUES.md`: first contact is TOFU, and
+  SCRAM against an impostor allows offline guessing of weak passwords.
+
 ## Android 0.7.0-experimental.rc.4 — 2026-09-24 — automatic OTRv4+ only where OTRv4Plus is, one People list, files you can see (core 0.11.0)
 
 *Supersedes rc.3; the release page now keeps only the newest APK. None of
