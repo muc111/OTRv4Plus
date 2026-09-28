@@ -266,21 +266,42 @@ this project has previously been wrong about itself.
 Added when short `.i2p` names were made usable (v10.15.2), because "how does a
 name become a destination" is a routing question and belongs here.
 
-A name reaches a destination by one of three paths, and **none of them is
-system DNS**:
+A name reaches a destination through the local I2P router's SAM bridge, and
+**never through system DNS**:
 
 | Given | Resolved by | Who sees the name |
 |---|---|---|
-| `<52 chars>.b32.i2p` | nothing — the label *is* the destination hash | nobody |
-| a short `.i2p` name in `~/.otrv4plus/i2p_hosts` | a local file read | nobody |
-| any other short `.i2p` name | `NAMING LOOKUP` over the SAM socket | the local router only |
+| `<52 chars>.b32.i2p` | `NAMING LOOKUP` of the b32; the router resolves it from the hash. No alias file is read | the local router only |
+| any short `.i2p` name | `NAMING LOOKUP` over the SAM socket, **first and always** | the local router only |
+| a short name the router answers `KEY_NOT_FOUND` for (Termux only) | the user's `~/.otrv4plus/i2p_hosts`, announced when used | nobody |
 | `.onion` | Tor, inside the SOCKS5 request | the local Tor daemon only |
+
+`INVALID_KEY`, any other `NAMING REPLY` result, a malformed name, a malformed
+or oversized reply, a reply for a different name, or a timeout is a classified
+failure (`SamError` stage `naming` or `bridge`). There is no fallback: not to
+DNS, not to a shipped or remembered destination. A name is validated before it
+is sent, so it cannot inject a second SAM command.
 
 `getaddrinfo` is never called on a `.i2p` or `.onion` name. The SAM lookup
 travels the same loopback socket as the stream, so an operating-system
 resolver, a DHCP-supplied nameserver and a captive portal all learn nothing —
 which is the point, and is why the client refuses an `.onion` address when
 `--no-tor` is given rather than falling back to a resolver.
+`tests/test_i2p_naming_no_dns.py` fails if any hostname resolution happens.
+
+**Why the router is asked first (changed 2026-09-28).** The alias file, and a
+shipped defaults file that mapped the project's server name to its b32, used to
+be consulted *before* the router. When the server was recreated under the same
+name, every client rewrote the name to the old destination and never asked the
+router; the Android app also had that b32 compiled in as its default. A server
+entered by name was unreachable. Now no destination is shipped or compiled in
+(`i2p_hosts.defaults` maps no name; `android_bridge/settings.DEFAULT_SERVER` is
+the name `xmpp-elite.i2p`), a blank route means the JID's own domain, and the
+Android app reads no alias file at all.
+
+Failures reach the app by layer: `sam_unavailable` (the local bridge),
+`i2p_name_invalid` / `i2p_name_not_found` (naming), `i2p_session_failed`
+(our tunnels), `i2p_destination_unreachable` (resolved, but not reachable).
 
 The alias file is a **local naming convenience with no authority**. It is not
 signed, not published, and not consulted for an address already given in full

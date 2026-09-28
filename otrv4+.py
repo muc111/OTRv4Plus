@@ -973,6 +973,49 @@ def resolve_i2p_aliases(user_path: str = None,
     return merged
 
 
+class SamError(ConnectionError):
+    """A SAM failure, classified by the layer that failed.
+
+    `stage` is one of:
+      * "bridge"  -- the LOCAL SAM bridge: unreachable, closed, refused HELLO,
+                     or sent a malformed / oversized / mismatched reply;
+      * "naming"  -- the router could not resolve the name (RESULT= says why);
+      * "session" -- SESSION CREATE failed;
+      * "stream"  -- STREAM CONNECT failed: the destination is not reachable.
+    `result` is the SAM RESULT= value when there was one. These are different
+    problems with different remedies, and callers report which one it was.
+    """
+
+    def __init__(self, stage: str, message: str, result: str = ""):
+        super().__init__(message)
+        self.stage = stage
+        self.result = result
+
+
+#: A short I2P name: dot-separated labels of letters, digits and hyphens,
+#: ending in `.i2p`. Checked BEFORE anything is sent, so a malformed name can
+#: never inject text (a space, a newline) into a SAM command.
+_I2P_NAME_RE = re.compile(r"^(?=.{5,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+i2p$")
+_B32_RE = re.compile(r"^[a-z2-7]{52}\.b32\.i2p$")
+#: A full destination in I2P's base64 alphabet (at least 387 characters).
+_I2P_DEST_RE = re.compile(r"^[A-Za-z0-9~-]{387,}={0,2}$")
+#: A SAM reply line is a few hundred bytes (a destination is under 1 KB).
+#: Anything far larger is not a SAM reply and is refused unread.
+SAM_MAX_REPLY = 16384
+
+
+def i2p_target_error(target: str) -> Optional[str]:
+    """Why `target` is not an I2P address this client will look up, or None."""
+    t = (target or "").strip().lower()
+    if not t.endswith(".i2p"):
+        return "not an .i2p address"
+    if t.endswith(".b32.i2p"):
+        return None if _B32_RE.match(t) else (
+            "a .b32.i2p address is 52 characters of a-z and 2-7 before "
+            "'.b32.i2p'")
+    return None if _I2P_NAME_RE.match(t) else (
+        "an .i2p name is letters, digits, hyphens and dots, ending in .i2p")
+
 class I2PSAMConnection:
     """Connect to I2P via the SAM bridge instead of SOCKS5.
 
@@ -990,6 +1033,10 @@ class I2PSAMConnection:
             # sock is a raw TCP stream to the IRC server
     """
 
+    #: Longest wait for one SAM reply line. NAMING LOOKUP and SESSION CREATE
+    #: on a cold router legitimately take 60-90 s.
+    reply_timeout = 90
+
     def __init__(self, sam_host: str = None, sam_port: int = None):
         self.sam_host = sam_host or NetworkConstants.I2P_SAM_HOST
         self.sam_port = sam_port or NetworkConstants.I2P_SAM_PORT
@@ -998,28 +1045,45 @@ class I2PSAMConnection:
         self._our_destination = None
 
     def _send_cmd(self, sock, cmd: str) -> str:
-        """Send a SAM command and read the response line.
+        """Send a SAM command and read ONE reply line.
 
         Deadline is 90s - I2P NAMING LOOKUP and SESSION CREATE on a cold tunnel
-        can legitimately take 60-90 seconds.  A shorter deadline causes
-        spurious timeouts and forces a SOCKS5 fallback (loses the unique
-        per-session destination security property)."""
-        sock.sendall((cmd + "\n").encode("utf-8"))
-        buf = b""
-        deadline = time.time() + 90
-        while not buf.endswith(b"\n"):
-            if time.time() > deadline:
-                raise ConnectionError("SAM bridge timeout")
-            chunk = sock.recv(4096)
-            if not chunk:
-                raise ConnectionError("SAM bridge closed connection")
-            buf += chunk
-        return buf.decode("utf-8").strip()
+        can legitimately take 60-90 seconds.  The reply is bounded
+        (SAM_MAX_REPLY): a peer that streams without a newline is not a SAM
+        bridge and must not be able to grow this buffer without limit.  Every
+        failure is a SamError("bridge"), never a bare socket error."""
+        if "\n" in cmd or "\r" in cmd:
+            raise SamError("bridge", "refusing to send a multi-line SAM command")
+        try:
+            sock.sendall((cmd + "\n").encode("utf-8"))
+            buf = b""
+            deadline = time.time() + self.reply_timeout
+            while b"\n" not in buf:
+                if time.time() > deadline:
+                    raise SamError("bridge", "SAM bridge timeout")
+                if len(buf) > SAM_MAX_REPLY:
+                    raise SamError("bridge", "SAM reply too long")
+                chunk = sock.recv(4096)
+                if not chunk:
+                    raise SamError("bridge", "SAM bridge closed connection")
+                buf += chunk
+        except SamError:
+            raise
+        except socket.timeout:
+            raise SamError("bridge", "SAM bridge timeout") from None
+        except OSError as exc:
+            raise SamError("bridge", "SAM bridge I/O error (%s)"
+                           % type(exc).__name__) from None
+        line = buf.split(b"\n", 1)[0]
+        try:
+            return line.decode("ascii").strip()
+        except UnicodeDecodeError:
+            raise SamError("bridge", "SAM reply is not ASCII") from None
 
     def _parse_reply(self, reply: str, prefix: str) -> dict:
         """Parse SAM key=value reply."""
         if not reply.startswith(prefix):
-            raise ConnectionError(f"SAM unexpected: {reply }")
+            raise SamError("bridge", f"SAM unexpected reply: {reply[:120] }")
         parts = reply[len(prefix) :].strip().split(" ")
         result = {}
         for part in parts:
@@ -1033,7 +1097,8 @@ class I2PSAMConnection:
         reply = self._send_cmd(sock, "HELLO VERSION MIN=3.1 MAX=3.1")
         parsed = self._parse_reply(reply, "HELLO REPLY ")
         if parsed.get("RESULT") != "OK":
-            raise ConnectionError(f"SAM handshake failed: {reply }")
+            raise SamError("bridge", f"SAM handshake failed: {reply[:120] }",
+                           parsed.get("RESULT", ""))
 
     @staticmethod
     def _explain_stream_failure(target_host, parsed, reply) -> str:
@@ -1146,38 +1211,123 @@ class I2PSAMConnection:
             f"{i2p_hosts_path ()}:\n"
             f"    {target_host } = <52 chars>.b32.i2p")
 
-    def connect(self, target_host: str, target_port: int = 0) -> "socket.socket":
+    def _bridge_socket(self, timeout: float) -> "socket.socket":
+        """A connected, HELLO'd socket to the LOCAL SAM bridge.
+
+        `sam_host` is the bridge's own address (normally 127.0.0.1). The I2P
+        destination never reaches this call or any resolver: it only ever
+        travels inside a SAM command on this socket.
+        """
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(min(timeout, self.reply_timeout))
+        try:
+            sock.connect((self.sam_host, self.sam_port))
+        except OSError as exc:
+            sock.close()
+            raise SamError("bridge", "no SAM bridge at %s:%s (%s)"
+                           % (self.sam_host, self.sam_port,
+                              type(exc).__name__)) from None
+        try:
+            self._handshake(sock)
+        except Exception:
+            sock.close()
+            raise
+        return sock
+
+    def naming_lookup(self, name: str) -> str:
+        """`NAMING LOOKUP NAME=<name>` on the router.
+
+        Returns the full base64 destination, or raises SamError("naming",
+        ..., RESULT). The reply must name what was asked and carry a
+        well-formed destination; anything else is a bridge fault, never a
+        destination to connect to."""
+        sock = self._bridge_socket(90)
+        try:
+            reply = self._send_cmd(sock, f"NAMING LOOKUP NAME={name }")
+        finally:
+            sock.close()
+        parsed = self._parse_reply(reply, "NAMING REPLY ")
+        result = parsed.get("RESULT", "")
+        if result != "OK":
+            raise SamError("naming", reply[:200], result or "MISSING")
+        if parsed.get("NAME", "").lower() != name.lower():
+            raise SamError("bridge", "SAM answered for a different NAME")
+        value = parsed.get("VALUE", "")
+        if not _I2P_DEST_RE.match(value):
+            raise SamError("bridge", "SAM NAMING REPLY carried no valid destination")
+        return value
+
+    def _naming_failure(self, target, exc, alias_source=None):
+        if exc.stage != "naming":
+            return exc
+        return SamError("naming", self._explain_resolve_failure(
+            target, str(exc), alias_source), exc.result)
+
+    def resolve(self, target_host: str, allow_aliases: bool = True) -> str:
+        """The full destination for an .i2p address, from the ROUTER.
+
+        THE NAMING MODEL, and why it is this way round
+        ----------------------------------------------
+        * `x.b32.i2p` is the hash of the destination and the router resolves
+          it from the hash. No address book and no local file is consulted,
+          so nothing can redirect an address typed in full.
+        * A short `x.i2p` is asked of the router first -- NAMING LOOKUP,
+          always. The router's address book is the authority for what a name
+          means NOW. The local alias file (Termux) is consulted only when the
+          router answers KEY_NOT_FOUND, and its use is announced.
+          It used to be consulted FIRST, together with a shipped defaults file
+          that mapped the project's server name to its old b32. A server
+          recreated under that name was therefore never looked up: the name
+          was quietly rewritten to the retired destination (Android, device
+          report 2026-09-28).
+        * INVALID_KEY, a malformed name, or any other result is a clean
+          naming failure. There is no fallback to DNS, to a hard-coded
+          destination, or to anything else: no path in this class hands an
+          .i2p name to a system resolver.
+        """
+        target = (target_host or "").strip().lower()
+        problem = i2p_target_error(target)
+        if problem:
+            raise SamError("naming", f"{target_host !r}: {problem }", "INVALID_NAME")
+        if target.endswith(".b32.i2p"):
+            moved_to = I2PSAMConnection._retired_destinations().get(target)
+            if moved_to:
+                print(f"[i2p] {target } is a retired address for {moved_to }; "
+                      "trying it as given.")
+            try:
+                return self.naming_lookup(target)
+            except SamError as exc:
+                raise self._naming_failure(target, exc) from None
+        try:
+            return self.naming_lookup(target)
+        except SamError as exc:
+            if not (allow_aliases and exc.stage == "naming"
+                    and exc.result == "KEY_NOT_FOUND"):
+                raise self._naming_failure(target, exc) from None
+            router_reply = exc
+        alias, alias_source = self._apply_i2p_alias(target)
+        if not alias_source:
+            raise self._naming_failure(target, router_reply) from None
+        if _I2P_DEST_RE.match(alias):
+            return alias
+        try:
+            return self.naming_lookup(alias)
+        except SamError as exc:
+            raise self._naming_failure(alias, exc, alias_source) from None
+
+    def connect(self, target_host: str, target_port: int = 0,
+                allow_aliases: bool = True) -> "socket.socket":
         """Connect to an I2P destination via SAM. Returns a raw socket.
 
         Creates a transient destination (fresh identity, not saved).
         The port arg is ignored - I2P destinations don't use ports.
-
-        `target_host` may be a 52-character .b32.i2p address, a short name the
-        router's address book knows, or a short name in the local alias file
-        (see i2p_aliases()).  The alias file is consulted first.
+        `target_host` is a 52-character .b32.i2p address or a short .i2p
+        name; `resolve` says how each becomes a destination. Every failure
+        is a SamError naming the stage that failed.
         """
+        dest_b64 = self.resolve(target_host, allow_aliases=allow_aliases)
 
-        target_host, alias_source = self._apply_i2p_alias(target_host)
-
-        resolve_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        resolve_sock.settimeout(90)
-        try:
-            resolve_sock.connect((self.sam_host, self.sam_port))
-            self._handshake(resolve_sock)
-            reply = self._send_cmd(resolve_sock, f"NAMING LOOKUP NAME={target_host }")
-            parsed = self._parse_reply(reply, "NAMING REPLY ")
-            if parsed.get("RESULT") != "OK":
-                raise ConnectionError(
-                    self._explain_resolve_failure(target_host, reply, alias_source))
-            dest_b64 = parsed["VALUE"]
-        finally:
-            resolve_sock.close()
-
-        self._control_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self._control_sock.settimeout(90)
-        self._control_sock.connect((self.sam_host, self.sam_port))
-        self._handshake(self._control_sock)
-
+        self._control_sock = self._bridge_socket(90)
         reply = self._send_cmd(
             self._control_sock,
             f"SESSION CREATE STYLE=STREAM ID={self ._session_id } "
@@ -1186,14 +1336,11 @@ class I2PSAMConnection:
         parsed = self._parse_reply(reply, "SESSION STATUS ")
         if parsed.get("RESULT") != "OK":
             self._control_sock.close()
-            raise ConnectionError(f"SAM session failed: {reply }")
+            raise SamError("session", f"SAM session failed: {reply[:200] }",
+                           parsed.get("RESULT", ""))
         self._our_destination = parsed.get("DESTINATION", "")
 
-        stream_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        stream_sock.settimeout(NetworkConstants.TIMEOUT_I2P)
-        stream_sock.connect((self.sam_host, self.sam_port))
-        self._handshake(stream_sock)
-
+        stream_sock = self._bridge_socket(NetworkConstants.TIMEOUT_I2P)
         reply = self._send_cmd(
             stream_sock,
             f"STREAM CONNECT ID={self ._session_id } " f"DESTINATION={dest_b64 } SILENT=false",
@@ -1202,8 +1349,9 @@ class I2PSAMConnection:
         if parsed.get("RESULT") != "OK":
             stream_sock.close()
             self._control_sock.close()
-            raise ConnectionError(
-                self._explain_stream_failure(target_host, parsed, reply))
+            raise SamError("stream",
+                           self._explain_stream_failure(target_host, parsed, reply),
+                           parsed.get("RESULT", ""))
 
         stream_sock.settimeout(1.0)
         return stream_sock

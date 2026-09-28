@@ -58,14 +58,19 @@ __all__ = [
 #: `jid`'s domain is the XMPP virtual host, and a server can front several --
 #: which is why a profile carries both and why `effective_server` exists.
 #:
-#: This is a destination hash, not a name: nothing resolves it, the label *is*
-#: the address (`TRANSPORT_POLICY.md`). It is therefore not a trust anchor
-#: either, and does not become one by being compiled in. The server is a relay
-#: the DAKE authenticates *through*: the peer's identity key is pinned by TOFU
-#: end to end, so a substituted or hostile server at this address costs
-#: availability and metadata, and cannot read a message or impersonate a
-#: contact.
-DEFAULT_SERVER = "hq4t24b7vkllfbk55e5xfocqhfi7hxprwc47zyuilbg6wgzikidq.b32.i2p"
+#: A NAME, not a destination. The router resolves it with SAM NAMING LOOKUP
+#: every time the app connects (`I2PSAMConnection.resolve`), so a server that
+#: is recreated or moves under this name is reached at its current
+#: destination. This used to be the server's 52-character b32, compiled in:
+#: when the server was recreated, the app kept dialling the old destination
+#: and nothing a user typed could change that for this name (device report,
+#: 2026-09-28). No build depends on a destination now.
+#:
+#: Not a trust anchor either way. The server is a relay the DAKE
+#: authenticates *through*: the peer's identity key is pinned by TOFU end to
+#: end, so a substituted or hostile server costs availability and metadata,
+#: and cannot read a message or impersonate a contact.
+DEFAULT_SERVER = "xmpp-elite.i2p"
 
 
 class ProfileError(ValueError):

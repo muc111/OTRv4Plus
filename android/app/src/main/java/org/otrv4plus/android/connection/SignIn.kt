@@ -20,14 +20,15 @@ package org.otrv4plus.android.connection
  * WHAT THE USER SHOULD HAVE TO KNOW
  * ---------------------------------
  * Their username, their password, and which server they are on. NOT a b32
- * address. The mapping from "xmpp-elite.i2p" to its destination hash is
- * shipped in `android_bridge/settings.DEFAULT_SERVER` and applied here, so
- * the sign-in screen is an ordinary sign-in screen.
+ * address: a short name like "xmpp-elite.i2p" is resolved by the phone's I2P
+ * router (SAM NAMING LOOKUP) every time the app connects, so the sign-in
+ * screen is an ordinary sign-in screen. No destination is compiled in: one
+ * was, and when the server was recreated the app kept dialling the old one.
  *
- * That default is routing information, not a trust anchor, and compiling it in
- * does not make it one: the DAKE pins the peer's identity key end to end by
- * TOFU, so a substituted server at that address costs availability and
- * metadata and cannot read a message or impersonate a contact.
+ * The server is routing information, not a trust anchor: the DAKE pins the
+ * peer's identity key end to end by TOFU, so a substituted server costs
+ * availability and metadata and cannot read a message or impersonate a
+ * contact.
  *
  * WHY PLAIN KOTLIN
  * ----------------
@@ -40,7 +41,7 @@ object SignIn {
      * The virtual host of the server the app ships pointing at.
      *
      * The NAME, not the route. The route lives in Python and is applied by
-     * leaving [Target.server] blank, which is what "use the compiled-in
+     * leaving [Target.server] blank, which is what "route to the JID's own
      * default" means at the bridge.
      */
     const val DEFAULT_DOMAIN = "xmpp-elite.i2p"
@@ -66,7 +67,7 @@ object SignIn {
     /**
      * An account and the route to reach it.
      *
-     * [server] blank means "use the compiled-in default", which is how the
+     * [server] blank means "route to the JID's own domain", which is how the
      * bridge already spells it -- `ConnectionProfile.server` is deliberately
      * left empty rather than eagerly filled so that `is_default_server` can
      * tell a deliberate choice from an inherited one.
@@ -120,8 +121,8 @@ object SignIn {
             Choice.CUSTOM -> custom.trim()
         }
         val jid = if (typed.contains("@")) typed else "$typed@$domain"
-        // DEFAULT leaves the route blank so the bridge applies the compiled-in
-        // b32. CUSTOM routes to the host the user named: they gave one name,
+        // DEFAULT leaves the route blank: the bridge routes to the JID's own
+        // domain, which the router resolves by name. CUSTOM routes to the host the user named: they gave one name,
         // and inventing a second would be guessing.
         val server = when (choice) {
             Choice.DEFAULT -> ""

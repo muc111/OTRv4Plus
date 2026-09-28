@@ -170,6 +170,52 @@ KEEPALIVE_QUIET_S = 180
 _CANCELLED = (asyncio.CancelledError, _futures.CancelledError)
 
 
+def _sam_failure(exc: BaseException, server: str) -> "TransportError":
+    """The TransportError for a failure opening the I2P stream, by LAYER.
+
+    "Is the router running?" used to be the answer to every failure here,
+    including a name the router did not know and a destination that was not
+    online -- which sent people to restart a router that was working. The
+    SAM layer now says which stage failed (otrv4+.py `SamError`):
+
+      bridge  -> sam_unavailable        the local SAM bridge
+      naming  -> i2p_name_not_found     the router could not resolve the name
+      session -> i2p_session_failed     the router could not build our tunnels
+      stream  -> i2p_destination_unreachable   resolved, but not reachable
+
+    Only the SAM RESULT code is included, never the reply text, which can
+    carry a destination.
+    """
+    stage = getattr(exc, "stage", "")
+    result = str(getattr(exc, "result", "") or "")
+    if stage == "naming":
+        if result == "INVALID_NAME":
+            return TransportError(
+                "i2p_name_invalid",
+                "%s is not a valid I2P address. Use a name ending in .i2p or a "
+                "52-character .b32.i2p address." % server)
+        return TransportError(
+            "i2p_name_not_found",
+            "the I2P router could not resolve %s (%s). Short .i2p names come "
+            "from the router's address book; add the server to it, or use its "
+            ".b32.i2p address. Nothing was looked up in DNS." % (server, result or "no result"))
+    if stage == "stream":
+        return TransportError(
+            "i2p_destination_unreachable",
+            "%s resolved, but its I2P destination is not reachable right now "
+            "(%s). The server or its I2P tunnel may be down; a cold router can "
+            "also need a few minutes." % (server, result or "no result"))
+    if stage == "session":
+        return TransportError(
+            "i2p_session_failed",
+            "the I2P router would not create a session (%s). It may still be "
+            "starting." % (result or "no result"))
+    return TransportError(
+        "sam_unavailable",
+        "could not reach the I2P router's SAM bridge (%s). Is the router "
+        "running and is its SAM bridge enabled?" % type(exc).__name__)
+
+
 def _accepts(fn: Any, name: str) -> bool:
     """Whether *fn* takes a keyword argument called *name*.
 
@@ -198,6 +244,10 @@ _REGISTRATION_CODES = {
     # side that is indistinguishable from the server being unreachable, and
     # the remedy -- check the router, try again -- is the same.
     "sam_unavailable": "network",
+    "i2p_name_not_found": "network",
+    "i2p_name_invalid": "network",
+    "i2p_destination_unreachable": "network",
+    "i2p_session_failed": "network",
     # A packaging fault. Nothing the user can do, and calling it a network
     # problem would send them to look at their router for no reason.
     "forwarder_import_failed": "unknown",
@@ -1156,6 +1206,9 @@ class XmppTransport(Transport):
             extra["resources"] = self._i2p_resources
         if _accepts(forward, "log"):
             extra["log"] = _forwarder_log
+        if _accepts(forward, "aliases"):
+            # The app reads no alias file: a name means what the router says.
+            extra["aliases"] = False
         if "resources" not in extra:
             _log.info("the I2P forwarder does not accept resource handover; "
                       "its sockets will not be released on teardown")
@@ -1167,10 +1220,7 @@ class XmppTransport(Transport):
                 self._profile.sam_host, self._profile.sam_port, **extra)
         except Exception as exc:
             self._emit_state("failed")
-            raise TransportError(
-                "sam_unavailable",
-                "could not open an I2P stream (%s). Is the router running and "
-                "is its SAM bridge enabled?" % type(exc).__name__)
+            raise _sam_failure(exc, self._profile.effective_server)
 
     # -- rooms: plaintext group chat ---------------------------------------------
     #

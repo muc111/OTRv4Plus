@@ -29,7 +29,8 @@ from android_bridge.settings import ConnectionProfile
 from android_bridge.transport import TransportError
 
 JID = "alice@xmpp-elite.i2p"
-SERVER = "hq4t24b7vkllfbk55e5xfocqhfi7hxprwc47zyuilbg6wgzikidq.b32.i2p"
+# The default is a NAME the router resolves, and the JID's own domain.
+SERVER = "xmpp-elite.i2p"
 
 
 class FakeApp:
@@ -355,10 +356,16 @@ class TestWhatCrossedTheBoundary:
     def test_the_tunnel_target_is_the_server_not_the_jid_domain(self):
         """These differ on purpose: the SAM stream goes to the c2s
         destination, the JID domain is the XMPP virtual host."""
-        ctl, _ = build()
+        ctl, _ = build(profile=ConnectionProfile(jid=JID, server="relay.i2p"))
         got = ctl.inputs()
-        assert got["tunnel_target"] == SERVER
+        assert got["tunnel_target"] == "relay.i2p"
         assert got["jid_domain"] != got["tunnel_target"]
+
+    def test_a_blank_route_tunnels_to_the_jid_domain(self):
+        """No compiled-in destination stands in for a blank route: the JID's
+        own domain is the target, and the router resolves it."""
+        ctl, _ = build(profile=ConnectionProfile(jid="bob@elsewhere.i2p"))
+        assert ctl.inputs()["tunnel_target"] == "elsewhere.i2p"
 
     def test_it_reports_ports_and_tls_mode(self):
         ctl, _ = build()

@@ -284,12 +284,11 @@ class TestShippedDefaults:
     def _defaults(self, text):
         return _hosts(text)
 
-    def test_the_shipped_file_parses_and_has_the_project_server(self):
-        loaded = otr.i2p_aliases(otr.i2p_hosts_defaults_path())
-        assert loaded, "the shipped defaults file did not load"
-        for name, dest in loaded.items():
-            assert name.endswith(".i2p") and not name.endswith(".b32.i2p")
-            assert otr._valid_i2p_destination(dest), (name, dest)
+    def test_the_shipped_file_parses_and_maps_no_name(self):
+        """No destination is shipped: a name means what the router says
+        (test_i2p_naming_no_dns.py for why)."""
+        assert os.path.exists(otr.i2p_hosts_defaults_path())
+        assert otr.i2p_aliases(otr.i2p_hosts_defaults_path()) == {}
 
     def test_a_default_applies_when_the_user_has_no_file(self):
         d = self._defaults("xmpp-elite.i2p = %s\n" % B32)
@@ -354,11 +353,13 @@ class TestShippedDefaults:
     def test_nothing_is_recorded_when_the_defaults_already_say_it(self):
         """Otherwise every user accumulates a learned copy of the shipped
         address, which would then have to lose an argument with it later."""
-        shipped = otr.i2p_aliases(otr.i2p_hosts_defaults_path())
-        name, dest = next(iter(shipped.items()))
+        name, dest = "xmpp-elite.i2p", B32
+        defaults = self._defaults("%s = %s\n" % (name, dest))
         d = tempfile.mkdtemp()
         path = os.path.join(d, "i2p_hosts")
-        assert otr.remember_i2p_alias(name, dest, path) == ""
+        import unittest.mock as _mock
+        with _mock.patch.object(otr, "i2p_hosts_defaults_path", lambda: defaults):
+            assert otr.remember_i2p_alias(name, dest, path) == ""
         assert not os.path.exists(path)
 
 

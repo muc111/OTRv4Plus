@@ -1130,14 +1130,14 @@ def controller_for(app: Any, jid: str = "",
     object graph -- a PyObject held across the boundary is a lifetime question
     nobody wants to answer twice.
 
-    Empty arguments mean "use the default", so the common case on the handset
-    is `controller_for(app, jid)` and the server, SAM host and port come from
-    `settings.DEFAULT_SERVER` and the SAM defaults.
+    An empty `server` means "the JID's own domain" (`effective_server`), which
+    the router resolves by name. It used to mean `settings.DEFAULT_SERVER`,
+    which sent an account on ANY server to the default one whenever the
+    route was left blank. Empty SAM host and port mean the SAM defaults.
     """
-    from .settings import DEFAULT_SERVER
     profile = ConnectionProfile(
         jid=jid,
-        server=server or DEFAULT_SERVER,
+        server=server,
         **{k: v for k, v in (("sam_host", sam_host), ("sam_port", sam_port))
            if v}
     )

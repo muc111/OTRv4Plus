@@ -184,9 +184,12 @@ class TestTheB32ShapeIsChecked:
 class TestTheShippedDefault:
 
     def test_it_is_the_address_it_is_supposed_to_be(self):
-        """Pinned. A transposed character here reaches every install."""
-        assert DEFAULT_SERVER == (
-            "hq4t24b7vkllfbk55e5xfocqhfi7hxprwc47zyuilbg6wgzikidq.b32.i2p")
+        """Pinned. A transposed character here reaches every install.
+
+        A NAME, resolved by the router's NAMING LOOKUP on every connect --
+        never a compiled-in destination, which is what stranded every
+        install when the server was recreated (test_i2p_naming_no_dns.py)."""
+        assert DEFAULT_SERVER == "xmpp-elite.i2p"
 
     def test_a_fresh_install_gets_a_usable_profile(self):
         p = default_profile("alice@xmpp-elite.i2p")

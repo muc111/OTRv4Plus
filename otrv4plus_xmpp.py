@@ -1126,7 +1126,7 @@ _TOR_FORWARDERS = []
 
 async def start_i2p_sam_forwarder(
     dest_b32: str, dest_port: int, sam_host: str = "127.0.0.1", sam_port: int = 7656,
-    *, resources=None, log=None,
+    *, resources=None, log=None, aliases: bool = True,
 ):
     """
     Open an I2P SAM stream to `dest_b32` and expose it as a local TCP endpoint.
@@ -1168,20 +1168,15 @@ async def start_i2p_sam_forwarder(
     sam = I2PSAMConnection(sam_host=sam_host, sam_port=sam_port)
 
     def _do_sam():
-        s = sam.connect(dest_b32)
+        # `dest_b32` may be a .b32.i2p address or a short .i2p name: the
+        # router resolves either with NAMING LOOKUP (I2PSAMConnection.resolve).
+        # `aliases=False` (Android) means the local alias file is never read.
+        s = sam.connect(dest_b32, allow_aliases=aliases)
         s.setblocking(False)
         return s
 
-    # Resolve first, then announce, so the line names the destination the
-    # stream is actually opened to.  Printing the short name and only then
-    # the substitution read as though the alias had been ignored.
-    resolved, _alias_src = I2PSAMConnection._apply_i2p_alias(dest_b32)
-    if resolved != dest_b32:
-        say(f"[i2p] opening SAM stream to {dest_b32} -> {resolved} "
-            "(a cold tunnel can take 30-90s)...")
-    else:
-        say(f"[i2p] opening SAM stream to {dest_b32} "
-            "(a cold tunnel can take 30-90s)...")
+    say(f"[i2p] opening SAM stream to {dest_b32} "
+        "(the router resolves the name; a cold tunnel can take 30-90s)...")
     sam_sock = await loop.run_in_executor(None, _do_sam)
     say("[i2p] SAM stream established.")
 

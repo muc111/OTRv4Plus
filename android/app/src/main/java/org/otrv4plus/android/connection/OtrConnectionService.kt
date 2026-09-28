@@ -201,7 +201,7 @@ class OtrConnectionService : Service() {
     private var password: String = ""
 
     /**
-     * The route, or "" for the compiled-in default.
+     * The route, or "" for the JID's own domain (resolved by the router).
      *
      * Not a secret and not in the vault beside the credentials: it is
      * derivable from the JID's domain for every custom server, and for the
@@ -354,10 +354,9 @@ class OtrConnectionService : Service() {
                 server = if (explicit) {
                     intent.getStringExtra(EXTRA_SERVER).orEmpty()
                 } else {
-                    // A remembered account on anything but the default server
-                    // routes to its own domain. The default is the blank
-                    // case, which is what the bridge already means by "use
-                    // the compiled-in destination".
+                    // A remembered account routes to its own domain; for the
+                    // default server that is the blank route, which the
+                    // bridge also resolves as the JID's domain, by name.
                     if (SignIn.choiceFor(chosen.jid) == SignIn.Choice.CUSTOM)
                         SignIn.domainOf(chosen.jid) else ""
                 }
@@ -988,7 +987,7 @@ class OtrConnectionService : Service() {
         const val EXTRA_JID = "jid"
         const val EXTRA_PASSWORD = "password"
 
-        /** The route, or absent for the compiled-in default. Not a secret. */
+        /** The route, or absent for the JID's own domain. Not a secret. */
         const val EXTRA_SERVER = "server"
 
         /** How often to ask the transport whether it is still up. */

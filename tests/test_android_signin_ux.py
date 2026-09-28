@@ -49,9 +49,13 @@ def signin():
 
 class TestTheUserNeverTypesAB32:
 
-    def test_the_destination_lives_in_python_only(self):
+    def test_no_destination_is_compiled_in_at_all(self):
+        """The default is a name the router resolves. The old b32 was
+        compiled in here and kept every install pointed at a server that had
+        been recreated (test_i2p_naming_no_dns.py)."""
         settings = _read(ROOT, "android_bridge", "settings.py")
-        assert B32 in settings, "the default destination moved or was lost"
+        assert B32 not in settings
+        assert 'DEFAULT_SERVER = "xmpp-elite.i2p"' in settings
 
     def test_it_is_not_duplicated_into_kotlin(self):
         """Two copies is two places to change when the server moves, and the
