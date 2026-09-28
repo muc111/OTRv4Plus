@@ -231,3 +231,8 @@ overflow-checks = true
 # until a test uses it.
 proptest = "1"
 hex      = "0.4"
+
+# `cfg(fuzzing)` is set only by cargo-fuzz (see fuzz/). Declared so a normal
+# build does not warn about the fuzz-only helper in smp.rs.
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(fuzzing)'] }

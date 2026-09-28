@@ -1052,6 +1052,23 @@ impl SmpState {
         self.transcript = Some(SmpTranscript::new(session_id));
     }
 
+    /// cargo-fuzz only (`--cfg fuzzing`; never in a shipped or test build).
+    /// Sets a fixed secret scalar and transcript without Argon2id, which at
+    /// 64 MiB per call would hold the fuzzer to a few executions a second.
+    /// Everything after the secret -- parsing, range and subgroup checks,
+    /// ZKPs, ML-DSA verification -- is the real code path.
+    #[cfg(fuzzing)]
+    pub fn fuzz_set_secret_scalar(&mut self, version: u8) {
+        self.version = version;
+        self.secret = SecretVec::from_slice(&Self::fixed_bytes(
+            &num_bigint::BigUint::from(0x1234_5678u32), SMP_SCALAR_BYTES));
+        let sid = [7u8; 32];
+        self.session_id = Some(sid.to_vec());
+        self.our_fp = Some(vec![1u8; 56]);
+        self.peer_fp = Some(vec![2u8; 56]);
+        self.transcript = Some(SmpTranscript::new(&sid));
+    }
+
     fn feed_transcript(&mut self, wire: &[u8]) {
         if let Some(ref mut t) = self.transcript {
             t.feed(wire);

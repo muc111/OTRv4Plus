@@ -55,3 +55,9 @@ otrv4_core.so
 .otrv4plus/
 *.log
 __pycache__/
+# Audit crates (own workspaces): build output and fuzz working state.
+Rust/fuzz/target/
+Rust/fuzz/corpus/
+Rust/fuzz/artifacts/
+Rust/fuzz/coverage/
+Rust/audit/target/
