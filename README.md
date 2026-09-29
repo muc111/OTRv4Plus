@@ -133,8 +133,9 @@ pip install PySocks slixmpp aiodns
 For voice calls in Termux, also run `pkg install libopus termux-api` and
 `pip install opuslib`.
 
-**2. Download and build the Rust core** (about 10 minutes on a modern phone
-the first time; later builds are faster):
+**2. Download and build the Rust core** (the first run on a phone takes
+longer -- it also compiles the build tool once, see below; later builds are
+much faster):
 
 ```bash
 git clone https://github.com/muc111/OTRv4Plus.git
@@ -145,7 +146,9 @@ cd ..
 
 `build.sh` needs nothing else prepared. It creates the project's own Python
 environment in `OTRv4Plus/.venv` (it can still use the modules installed in
-step 1), installs its pinned build tool there, runs the Rust tests and lints,
+step 1), installs its pinned build tool there (on Termux it compiles it once,
+serially, and keeps the result in `~/.cache/otrv4plus`), runs the Rust tests
+and lints,
 installs the core with secure groups (MLS) into `.venv`, and ends with
 `otrv4_core imported OK` and `secure groups (MLS): yes`. Run the clients with
 `.venv/bin/python`, as in step 5.

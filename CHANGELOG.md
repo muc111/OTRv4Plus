@@ -27,6 +27,16 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
   "_Py_NoneStruct"`: maturin 1.14+ makes PyO3 0.29 link `libpython3.so` for
   abi3 builds on Android. PyO3 stays at 0.29 (0.28.x is affected by
   RUSTSEC-2026-0176).
+- **Termux: the maturin compile no longer dies with `Text file busy (os
+  error 26)`.** Android forbids hard links in app data, so cargo copies each
+  build script into place, and a parallel job forked mid-copy keeps it open
+  for writing when cargo executes it (ETXTBSY). `build.sh` now compiles
+  maturin once with `CARGO_BUILD_JOBS=1`, in a temp/target directory it owns
+  and empties before each attempt (at most 3, only for that error), checks and
+  caches the wheel in `~/.cache/otrv4plus/maturin-1.13.3/`, and installs it
+  from there on later runs. Prerequisites (rustc versions, a C compiler,
+  venv) are checked before anything is built; the project's own cargo
+  commands retry that one error serially too.
 - **Zero compiler and clippy warnings.** Deprecated `GenericArray` calls
   replaced with the equivalent trait conversions (same length checks, no
   copies); clippy findings fixed rather than allowed. The off-by-default
