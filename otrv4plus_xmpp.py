@@ -903,6 +903,10 @@ except ImportError:
 # it at all.
 OTR_PREFIX = _frag.OTR_PREFIX
 OTR_PREFIX_B = OTR_PREFIX.encode("utf-8")
+#: Secure-group setup signals (android_bridge.groups.SIGNAL_PREFIX). Restated
+#: so this module still imports without the android_bridge package;
+#: tests/test_termux_groups.py holds the two equal.
+GROUP_SIGNAL_PREFIX = "?OTRv4-MLS:"
 
 # SMP passphrase length bounds enforced before passing to the Rust engine.
 # Defined in the engine (otrv4+.py) since v10.23.0 so both clients agree;
@@ -1553,6 +1557,15 @@ def _smp_query(manager, peer):
 # XMPP client
 # =============================================================================
 
+def _make_groups(host):
+    """The secure-groups adapter, or None if it cannot be loaded here."""
+    try:
+        import otrv4plus_groups as _og
+    except Exception:
+        return None
+    return _og.TermuxGroups(host, _xmpp_state_path("groups"), printer=print)
+
+
 class OTRv4PlusXMPP(ClientXMPP):
     """XMPP transport driving the OTRv4+ engine, with IRC-identical SMP flow."""
 
@@ -1820,6 +1833,16 @@ class OTRv4PlusXMPP(ClientXMPP):
             pass
         # XEP-0199: XMPP Ping (available for /ping command).
         self.register_plugin("xep_0199")
+        # XEP-0045 rooms, for OTRv4Plus secure groups (MLS) only. The room is
+        # transport: every body a secure group puts in it is MLS ciphertext.
+        self.register_plugin("xep_0045")
+        self.add_event_handler("groupchat_message", self._on_groupchat)
+        # Secure groups: the Android app's SecureGroups over the Rust core's
+        # OpenMLS, driven from this terminal (otrv4plus_groups). None when
+        # the android_bridge package is not beside this file.
+        self._groups = _make_groups(self)
+        #: /wipe sets this: the exit then destroys group state too.
+        self._wipe_on_exit = False
 
         # Ephemeral encrypted per-session log: key zeroed and files deleted on exit,
         # matching the IRC client wipe behaviour. Within-session scrollback is backed
@@ -1910,6 +1933,16 @@ class OTRv4PlusXMPP(ClientXMPP):
             "[ready] /identity shows what is pinned. Type /help for the full "
             "command list.\n"
         )
+        # Secure groups: open (or reopen after a restart) and rejoin the room
+        # of every group we hold, so its traffic reaches us again.
+        groups = getattr(self, "_groups", None)
+        if groups is not None and not getattr(groups, "_opened", False):
+            groups.open(self.boundjid.bare)
+        if groups is not None and getattr(groups, "_opened", False):
+            try:
+                await groups.rejoin_all()
+            except Exception as exc:
+                print("[group] rejoin failed (%s)" % type(exc).__name__)
         # Reset reconnect backoff on successful connection.
         self._reconnect_delay = _RECONNECT_BASE
         # Whitespace keepalive to maintain I2P SAM streams during long SMP
@@ -2875,8 +2908,26 @@ class OTRv4PlusXMPP(ClientXMPP):
             print("[file] ignoring UNENCRYPTED file signal from %s — file "
                   "transfer is only accepted inside an OTR session"
                   % _sanitise(peer, 128))
+        elif body.startswith(GROUP_SIGNAL_PREFIX):
+            # Group setup is only accepted inside the OTR channel: in the clear
+            # it could let an off-session party steer a group join.
+            print("[group] ignoring UNENCRYPTED group setup message from %s — "
+                  "it is only accepted inside an OTR session"
+                  % _sanitise(peer, 128))
         else:
             print(f"[plain] {_sanitise(peer, 128)}: {_sanitise(body)}")
+
+    def _on_groupchat(self, msg):
+        """A room message. Only secure groups use rooms here; see
+        otrv4plus_groups.TermuxGroups.on_groupchat."""
+        groups = getattr(self, "_groups", None)
+        if groups is None:
+            return
+        try:
+            groups.on_groupchat(msg)
+        except Exception as exc:
+            self._dbg("[group] room message handling failed: %s"
+                      % type(exc).__name__)
 
     def _check_smp_secret_required(self, peer):
         """Show the consent prompt if the engine is holding a peer's SMP1.
@@ -2994,6 +3045,17 @@ class OTRv4PlusXMPP(ClientXMPP):
                     else:
                         print("[file] file signal received before the "
                               "transfer subsystem was ready — ignoring")
+                    return
+
+                # Secure-group setup (invitation, KeyPackage, Welcome) travels
+                # only inside an OTRv4+ session and is never shown as chat.
+                if text.startswith(GROUP_SIGNAL_PREFIX):
+                    groups = getattr(self, "_groups", None)
+                    if groups is not None:
+                        groups.on_signal(peer, text)
+                    else:
+                        print("[group] group setup message received, but "
+                              "secure groups are unavailable here — ignoring")
                     return
 
                 # Trade coordination, routed for the same reason: a multisig
@@ -4510,6 +4572,12 @@ class OTRv4PlusXMPP(ClientXMPP):
         path uses, and a padlock on a message that never left would be a
         false claim about the one thing this client exists to be right about.
         """
+        # A SECURE GROUP'S ROOM, typed into as the active conversation: MLS or
+        # nothing. Never the 1:1 path, never plaintext to the room.
+        groups = getattr(self, "_groups", None)
+        if groups is not None and groups.owns_room(peer):
+            groups.say(peer, text)
+            return
         # PLAINTEXT BEFORE OTR.
         #
         # `handle_outgoing_message` is opportunistic: for a peer with no
@@ -4938,6 +5006,10 @@ class OTRv4PlusXMPP(ClientXMPP):
             "                       (prompts, hidden; advanced/compat)\n"
             "  /smp-secret <s>      store it inline (ECHOED — prefer the above)\n"
             "  /trust-reset <jid>   clear a pinned fingerprint (deliberate)\n"
+            "  /group help          secure groups (MLS): create, invite,\n"
+            "                       accept, say, members, remove, leave\n"
+            "  /wipe                destroy ALL local state (secure groups\n"
+            "                       too) and exit; /quit keeps your groups\n"
             "  /identity            your identity and every pinned fingerprint\n"
             "  /trust               re-show fingerprint trust prompt\n"
             "  /msg <jid> <text>    send plaintext message\n"
@@ -5348,6 +5420,23 @@ class OTRv4PlusXMPP(ClientXMPP):
         if lstrip == "/quit":
             self._clear_trades("/quit")
             return False
+
+        # --- Wipe: /quit that destroys EVERYTHING, secure groups included ---
+        if lstrip == "/wipe":
+            self._clear_trades("/wipe")
+            self._wipe_on_exit = True
+            print("[wipe] destroying all local state, secure groups included, "
+                  "and exiting")
+            return False
+
+        # --- Secure groups (MLS) ---
+        if lstrip == "/group" or lstrip.startswith("/group "):
+            groups = getattr(self, "_groups", None)
+            if groups is None:
+                print("[group] secure groups are unavailable in this install")
+            else:
+                asyncio.ensure_future(groups.command(lstrip[len("/group"):].strip()))
+            return True
 
         # --- OTR ---
         elif lstrip == "/otr":
@@ -6114,18 +6203,45 @@ class OTRv4PlusXMPP(ClientXMPP):
         except Exception:
             pass
 
+        # 3b. Secure groups. /quit keeps them: the state is sealed to disk by
+        #     Rust and every group secret is zeroized in memory. /wipe destroys
+        #     them: Rust wipes the secrets and the state files are removed.
+        groups = getattr(self, "_groups", None)
+        wiping = bool(getattr(self, "_wipe_on_exit", False))
+        keep_dir = None
+        if groups is not None:
+            try:
+                if wiping:
+                    groups.wipe()
+                else:
+                    groups.close()
+                    keep_dir = os.path.realpath(_xmpp_state_path("groups"))
+            except Exception:
+                pass
+
         # 4. Overwrite and remove ~/.otrv4plus (fingerprints, trust DB, SMP).
         #    File-level only: on flash the old blocks are beyond our reach.
         #    Uses the same _secure_file_destroy function the IRC client uses.
+        #    The ONE exception on /quit is the sealed secure-group state (3b).
         try:
             secure_destroy = getattr(_otr, "_secure_file_destroy", None)
             if secure_destroy:
                 import glob as _glob
                 otr_dir = os.path.expanduser("~/.otrv4plus")
                 if os.path.isdir(otr_dir):
-                    for fpath in _glob.glob(
-                        os.path.join(otr_dir, "**", "*"), recursive=True
-                    ):
+                    if wiping:
+                        # /wipe means everything, dot-files included (the
+                        # identity DEK, the SMP seed), which the glob below
+                        # does not match. /quit keeps its old behaviour.
+                        paths = [os.path.join(d, f) for d, _s, fs
+                                 in os.walk(otr_dir) for f in fs]
+                    else:
+                        paths = _glob.glob(
+                            os.path.join(otr_dir, "**", "*"), recursive=True)
+                    for fpath in paths:
+                        if keep_dir is not None and os.path.realpath(
+                                fpath).startswith(keep_dir + os.sep):
+                            continue
                         if os.path.isfile(fpath):
                             try:
                                 secure_destroy(fpath)

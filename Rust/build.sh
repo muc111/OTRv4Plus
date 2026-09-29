@@ -12,8 +12,9 @@
 # Test (Rust only, no Python):
 #   cargo test
 #
-# Install into Python:
-#   maturin develop --release
+# Install into Python (with secure groups / MLS, which the terminal client's
+# /group commands need -- the Android build enables the same feature):
+#   maturin develop --release --features mls
 
 set -e
 
@@ -30,12 +31,12 @@ cargo test --release 2>&1
 # Build Python module
 if command -v maturin >/dev/null; then
     echo "--- Building Python module ---"
-    maturin develop --release
+    maturin develop --release --features mls
     echo "--- Testing Python import ---"
-    python3 -c "import otrv4_core; print('otrv4_core imported OK')"
+    python3 -c "import otrv4_core; print('otrv4_core imported OK'); print('secure groups (MLS):', 'yes' if hasattr(otrv4_core, 'RustMlsClient') else 'NO')"
     echo "=== Done ==="
 else
     echo "--- maturin not found, skipping Python build ---"
     echo "Install with: pip install maturin"
-    echo "Then run: maturin develop --release"
+    echo "Then run: maturin develop --release --features mls"
 fi

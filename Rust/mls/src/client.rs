@@ -582,4 +582,81 @@ mod storage_tests {
         a.wipe();
         assert!(a.provider.storage_values_for_test().is_empty());
     }
+
+    /// A STANDALONE proposal (RFC 9420 §12.1), which no OTRv4Plus client
+    /// sends -- they commit their proposals inline -- but which a member may
+    /// receive. It must authenticate, be queued rather than shown, refuse a
+    /// tampered or replayed copy, and be folded in by the next commit without
+    /// breaking the group.
+    #[test]
+    fn a_standalone_proposal_is_queued_then_committed() {
+        let mut a = MlsClient::new(b"alice");
+        let mut b = MlsClient::new(b"bob");
+        a.create_group(b"g").unwrap();
+        let add = a.add_members(b"g", &[b.key_package().unwrap()]).unwrap();
+        let welcome = match a.process(b"g", &add).unwrap() {
+            Event::Commit { welcome: Some(w), .. } => w,
+            _ => panic!("expected our add to land with a Welcome"),
+        };
+        b.join(&welcome).unwrap();
+
+        // Bob proposes a fresh leaf for himself, without committing it.
+        let proposal = {
+            let (provider, signer) = (&b.provider, &b.signer);
+            let group = b.groups.get_mut(&b"g".to_vec()).unwrap();
+            let (out, _ref) = group
+                .propose_self_update(provider, signer, LeafNodeParameters::default())
+                .unwrap();
+            out.to_bytes().unwrap()
+        };
+
+        assert!(matches!(a.process(b"g", &proposal).unwrap(), Event::Proposal));
+        assert!(a.process(b"g", &proposal).is_err(), "a replayed proposal was accepted");
+        let epoch = a.epoch(b"g").unwrap();
+
+        // Alice's next commit folds the queued proposal in; both move on.
+        let commit = a.self_update(b"g").unwrap();
+        assert!(matches!(a.process(b"g", &commit).unwrap(), Event::Commit { ours: true, .. }));
+        assert!(matches!(b.process(b"g", &commit).unwrap(), Event::Commit { .. }));
+        assert_eq!(a.epoch(b"g").unwrap(), epoch + 1);
+        assert_eq!(b.epoch(b"g").unwrap(), epoch + 1);
+
+        let ct = b.encrypt(b"g", b"after the proposal").unwrap();
+        match a.process(b"g", &ct).unwrap() {
+            Event::Application { plaintext, .. } => assert_eq!(&plaintext[..], b"after the proposal"),
+            _ => panic!("expected an application message"),
+        }
+    }
+
+    /// A tampered copy is refused -- and, as OpenMLS's secret tree deletes a
+    /// generation's key when it is first used, the GENUINE message arriving
+    /// after it is refused too. Fail closed, never a wrong acceptance; the
+    /// effect is that of the relay dropping the message, which a relay can
+    /// do anyway. Recorded here so a change to it is deliberate.
+    #[test]
+    fn a_tampered_copy_is_refused_and_spends_the_generation() {
+        let mut a = MlsClient::new(b"alice");
+        let mut b = MlsClient::new(b"bob");
+        a.create_group(b"g").unwrap();
+        let add = a.add_members(b"g", &[b.key_package().unwrap()]).unwrap();
+        let welcome = match a.process(b"g", &add).unwrap() {
+            Event::Commit { welcome: Some(w), .. } => w,
+            _ => panic!("expected a Welcome"),
+        };
+        b.join(&welcome).unwrap();
+
+        let genuine = b.encrypt(b"g", b"first").unwrap();
+        let mut tampered = genuine.clone();
+        let i = tampered.len() - 10;
+        tampered[i] ^= 0x01;
+        assert!(a.process(b"g", &tampered).is_err(), "a tampered message was accepted");
+        assert!(a.process(b"g", &genuine).is_err());
+
+        // The group is unharmed: the next message decrypts.
+        let next = b.encrypt(b"g", b"second").unwrap();
+        match a.process(b"g", &next).unwrap() {
+            Event::Application { plaintext, .. } => assert_eq!(&plaintext[..], b"second"),
+            _ => panic!("expected an application message"),
+        }
+    }
 }

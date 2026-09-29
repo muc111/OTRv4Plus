@@ -250,6 +250,38 @@ class SecureGroups:
                 os.close(fd)
             os.replace(tmp, state_path)
 
+    def close(self) -> None:
+        """An ordinary exit: seal the state to disk, then zeroize every group
+        secret held in memory. The sealed files are KEPT, so the groups reopen
+        on the next start (`open`). Wipe & Exit is `wipe`, not this.
+
+        Used by the terminal client's /quit. The Android app never exits
+        this way: its only teardown of group state is Wipe & Exit."""
+        with self._lock:
+            if self._wiped:
+                return
+            try:
+                self.save()
+            finally:
+                if self._client is not None:
+                    try:
+                        self._client.wipe()
+                    except Exception:
+                        pass
+                if self._dek is not None:
+                    try:
+                        self._dek.zeroize()
+                    except Exception:
+                        pass
+                self._client = None
+                self._dek = None
+                self._invites.clear()
+                self._outgoing.clear()
+                self._awaiting_welcome.clear()
+                self._welcome_for.clear()
+                self._pending_binding.clear()
+                self._reassembler.clear()
+
     def wipe(self) -> None:
         """Wipe & Exit: every group secret destroyed, state files removed."""
         with self._lock:
@@ -323,6 +355,11 @@ class SecureGroups:
 
     def epoch(self, room: str) -> int:
         return int(self._need().epoch(room.encode()))
+
+    def awaiting_welcome(self, room: str) -> bool:
+        """Whether we accepted an invitation to `room` and await its Welcome."""
+        with self._lock:
+            return room in self._awaiting_welcome
 
     def pending_invites(self) -> List[Dict[str, Any]]:
         with self._lock:
