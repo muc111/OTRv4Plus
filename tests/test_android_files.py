@@ -705,7 +705,7 @@ class TestTheThirdControlPrefix:
             assert prefix in handled or any(
                 prefix in _io.open(os.path.join(root, "android_bridge", mod),
                                    encoding="utf-8").read()
-                for mod in ("voice.py", "files.py")), (
+                for mod in ("voice.py", "files.py", "groups.py")), (
                 "%s is carried in a message body and nothing on the Android "
                 "inbound path recognises it, so it renders as chat text"
                 % prefix)

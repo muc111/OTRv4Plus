@@ -603,7 +603,7 @@ mod storage_tests {
         // Bob proposes a fresh leaf for himself, without committing it.
         let proposal = {
             let (provider, signer) = (&b.provider, &b.signer);
-            let group = b.groups.get_mut(&b"g".to_vec()).unwrap();
+            let group = b.groups.get_mut(b"g".as_slice()).unwrap();
             let (out, _ref) = group
                 .propose_self_update(provider, signer, LeafNodeParameters::default())
                 .unwrap();
