@@ -188,12 +188,14 @@ offer a MUC service (e.g. `conference.<domain>`). Room used below:
    `1 secure group(s) restored: circle@...`; C sends; A reads it; A replies;
    C reads it.
 9. **Plaintext refused.** From any ordinary client join `circle@...` and
-   send plain text. **Pass:** A and B print `room_plaintext_refused`, never
-   the text; C does not show it.
+   send plain text. **Pass:** A prints `room_plaintext_refused`, never the
+   text; C does not show it. (B left the group in step 6, so it is not a
+   member here.)
 10. **Wipe.** B: `/wipe`. **Pass:** the client exits; `~/.otrv4plus` is
     empty; starting again shows no secure groups.
-11. **Offline miss (documented limitation).** With B's client stopped
-    (after `/quit`), A: `/group rekey circle@...` twice, then messages. Start
+11. **Offline miss (documented limitation).** First bring B back: repeat
+    step 1 for B, then steps 3-4 for B only. Then stop B's client with `/quit`
+    (not `/wipe`), and A: `/group rekey circle@...` twice, then messages. Start
     B. **Expected:** if the room history no longer holds those commits, B
     prints `could not be decrypted ... remove you and invite you again` and
     shows nothing wrong; recovery is remove + re-invite (steps 6, 3, 4).
