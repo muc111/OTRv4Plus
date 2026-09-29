@@ -4,6 +4,22 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.9 — 2026-09-29 — Termux joins the same secure groups (core 0.11.0)
+
+- **No change to the app's behaviour or wire format.** The APK now also
+  carries `otrv4plus_groups.py`, the terminal client's secure-groups adapter,
+  because the shipped `otrv4plus_xmpp.py` imports it; the app never uses it.
+- **Termux XMPP client: MLS secure groups** with the same Rust/OpenMLS core,
+  the same `?OTRv4MLS1:` room format and the same OTRv4+ setup as the app, so
+  Termux A, Termux B and Android C can share one group. `/group create |
+  invite | accept | say | members | remove | rekey | leave`, and `/wipe`.
+  `/quit` keeps the sealed group state; `/wipe` destroys it. Build the Termux
+  core with `--features mls` (Rust/build.sh does). Not yet tested on devices:
+  `PHYSICAL_TEST_PLAN.md` §7a.
+- Recorded: a tampered copy of a group message that arrives before the
+  genuine one makes the genuine one undecryptable (fail closed; OpenMLS
+  spends the key). See MLS_FEASIBILITY.md.
+
 ## Android 0.7.0-experimental.rc.8 — 2026-09-28 — room occupant counts; security status stated (core 0.11.0)
 
 *Handset report on rc.7: account creation and login on yax.im work.*

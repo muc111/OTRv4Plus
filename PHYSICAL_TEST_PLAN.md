@@ -157,6 +157,49 @@ cutoff against history replay.
 
 ## 7. MLS secure groups
 
+### 7a. Termux A + Termux B + Android C in one group
+
+Build each Termux core with MLS: `cd Rust && bash build.sh` (it runs
+`maturin develop --release --features mls`; the import line must say
+`secure groups (MLS): yes`). All three on the same XMPP server, which must
+offer a MUC service (e.g. `conference.<domain>`). Room used below:
+`circle@conference.<domain>`. Record PASS/FAIL per step.
+
+1. **OTRv4+ first.** A: `/otr <B>` and `/otr <C>`; B: `/otr <C>`. Optionally
+   `/smp` each pair (verified members show as `verified`).
+2. **Create.** A: `/group create circle@conference.<domain>`. **Pass:**
+   `[group circle@...] created (epoch 0)`.
+3. **Invite.** A: `/group invite circle@... <B>` and `/group invite
+   circle@... <C>`. **Pass:** B prints `invites you to the secure group`;
+   C shows the invitation on its conversation list.
+4. **Accept.** B: `/group accept circle@...`; C: Accept on the phone.
+   **Pass:** B prints `joined (epoch N)`, C shows the group; A prints
+   `member_added` twice. `/group members circle@...` on A and B lists all
+   three with the same epoch.
+5. **All three talk.** A: `/group say circle@... from A`; B: `/group say
+   circle@... from B`; C: type in the group. **Pass:** every message appears
+   on the other two, marked encrypted; the server/room never shows text.
+6. **Remove.** A: `/group remove circle@... <B>`. **Pass:** B prints `you
+   were removed`; A and C show a new epoch.
+7. **Removed member cannot read.** C then A send a message. **Pass:** A and
+   C read both; B prints nothing for them (B is still in the room, receiving
+   ciphertext it cannot decrypt).
+8. **Restart.** A: `/quit`, start the client again, reconnect. **Pass:**
+   `1 secure group(s) restored: circle@...`; C sends; A reads it; A replies;
+   C reads it.
+9. **Plaintext refused.** From any ordinary client join `circle@...` and
+   send plain text. **Pass:** A and B print `room_plaintext_refused`, never
+   the text; C does not show it.
+10. **Wipe.** B: `/wipe`. **Pass:** the client exits; `~/.otrv4plus` is
+    empty; starting again shows no secure groups.
+11. **Offline miss (documented limitation).** With B's client stopped
+    (after `/quit`), A: `/group rekey circle@...` twice, then messages. Start
+    B. **Expected:** if the room history no longer holds those commits, B
+    prints `could not be decrypted ... remove you and invite you again` and
+    shows nothing wrong; recovery is remove + re-invite (steps 6, 3, 4).
+
+### 7b. Android-only checks
+
 Covered automatically: in-process groups (create, add, remove, removed
 member cannot decrypt, concurrent commits, persistence, HPKE cross-check),
 bridge event paths.

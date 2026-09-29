@@ -397,12 +397,27 @@ over I2P between phones.
 
 ### Tests
 
-`Rust/mls`: 34 (client, group, interop against OpenMLS's reference provider,
+`Rust/mls`: 35 (client, group, interop against OpenMLS's reference provider,
 HPKE cross-check against hpke-rs, persistence). Python:
 `tests/test_secure_groups.py` (17, simulated room with reflection, drop,
 replay, tamper, concurrent commits, restart, wipe),
 `tests/test_secure_groups_bridge.py` (4, real OtrApp bridges with a real
 OTRv4+ DAKE and SMP). Kotlin: `SecureGroupStateTest` (5).
+
+### The terminal client (Termux) is a member too
+
+`otrv4plus_groups.py` puts the terminal XMPP client in the SAME groups as the
+app: it drives the unchanged `android_bridge.groups.SecureGroups` over the
+same Rust `RustMlsClient`, with the same `?OTRv4MLS1:` room framing,
+fragmentation and `?OTRv4-MLS:` setup signals inside OTRv4+. There is no
+second wire format and no MLS code in Python. The terminal adds only the
+XEP-0045 room join (an instant room, nick = localpart), `/group` commands and
+`/wipe`. A terminal /quit keeps the sealed group state
+(`~/.otrv4plus/xmpp/groups/`); /wipe destroys it. The Rust core must be built
+with `--features mls` (Rust/build.sh does). Tested with two terminal clients
+and one `OtrApp` over real OTRv4+ DAKEs in `tests/test_termux_groups.py`;
+Rust: `a_standalone_proposal_is_queued_then_committed`,
+`a_tampered_copy_is_refused_and_spends_the_generation`.
 
 ### Still open
 
@@ -412,6 +427,14 @@ OTRv4+ DAKE and SMP). Kotlin: `SecureGroupStateTest` (5).
   cannot decrypt later epochs; there is no resync yet other than being
   removed and re-invited. The room's history replay does not help (MLS
   keeps no past-epoch secrets).
+* **A tampered copy spends the genuine message's key.** OpenMLS deletes a
+  sender's generation key on first use, so a corrupted copy that arrives
+  BEFORE the genuine message makes the genuine one undecryptable. Fail
+  closed, never a wrong acceptance; the effect equals the relay dropping the
+  message, which it can do anyway. Pinned by a Rust test.
+* **Verification badges after a restart**: which members were bound over an
+  SMP-verified session is kept in memory only, so after a restart members
+  show as unverified until re-bound. Membership and keys are unaffected.
 * **Leaving** is local: MLS has no self-removal a member completes alone, so
   others list the leaver until one of them commits the removal.
 * **At rest**: the sealing key is a file beside the state (see above).
