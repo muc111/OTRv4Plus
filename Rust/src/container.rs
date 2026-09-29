@@ -43,6 +43,7 @@
 //!     refuses;
 //!   * each chunk's index and final flag are authenticated, so chunks cannot
 //!     be reordered, duplicated or dropped, and the last cannot be cut.
+//!
 //! `open_file` writes to a temporary file and renames only after the last
 //! chunk authenticates; on any failure the partial output is removed.
 //! Every failure is one undifferentiated error.
@@ -303,7 +304,7 @@ pub fn seal_file(src: &Path, dst: &Path, key: &KeySource, chunk: u32) -> Result<
             remaining -= want as u64;
             let last = i as u64 + 1 == n;
             let ct = cipher
-                .encrypt(Nonce::from_slice(&nonce(&prefix, i)),
+                .encrypt(<&Nonce<_>>::from(&nonce(&prefix, i)[..]),
                          Payload { msg: &buf[..want], aad: &aad(&hbytes, i, last) })
                 .map_err(|_| ContainerError::Refused)?;
             out.write_all(&ct).map_err(io)?;
@@ -345,7 +346,7 @@ fn open_with(src: &Path, key: &KeySource, mut sink: impl FnMut(&[u8]) -> Result<
         let last = i as u64 + 1 == n;
         let pt = Zeroizing::new(
             cipher
-                .decrypt(Nonce::from_slice(&nonce(&header.prefix, i)),
+                .decrypt(<&Nonce<_>>::from(&nonce(&header.prefix, i)[..]),
                          Payload { msg: &buf[..want + TAG_LEN], aad: &aad(&hbytes, i, last) })
                 .map_err(|_| ContainerError::Refused)?,
         );

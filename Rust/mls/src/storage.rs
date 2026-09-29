@@ -994,8 +994,6 @@ fn build_key_from_vec<const V: u16>(label: &[u8], key: Vec<u8>) -> Vec<u8> {
     key_out
 }
 
-/// Whether a storage key belongs to a retained-KeyPackage epoch tag entry.
-
 /// Build a key with version and label.
 fn build_key<const V: u16, K: Serialize>(label: &[u8], key: K) -> Vec<u8> {
     build_key_from_vec::<V>(label, cbor_enc(&key).unwrap())

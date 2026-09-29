@@ -16,6 +16,7 @@
 //! epoch arrives:
 //!   * if it is byte-for-byte our pending commit, ours came first: merge it;
 //!   * otherwise someone else's came first: drop ours and apply theirs.
+//!
 //! Every member sees the same first commit, so every member ends in the same
 //! epoch. A dropped commit is reported so the caller can retry.
 //!
@@ -488,7 +489,7 @@ impl MlsClient {
         let mut nonce = [0u8; 12];
         getrandom::getrandom(&mut nonce).map_err(|_| MlsError::Failed("randomness"))?;
         let aad = state_aad(context);
-        let ct = cipher.encrypt(Nonce::from_slice(&nonce), Payload { msg: &plain, aad: &aad })
+        let ct = cipher.encrypt(<&Nonce<_>>::from(&nonce[..]), Payload { msg: &plain, aad: &aad })
             .map_err(|_| MlsError::Failed("seal"))?;
         let mut out = Vec::with_capacity(5 + 12 + ct.len());
         out.extend_from_slice(STATE_MAGIC);
@@ -513,7 +514,7 @@ impl MlsClient {
         let cipher = Aes256Gcm::new_from_slice(&key[..]).map_err(|_| MlsError::Failed("key"))?;
         let aad = state_aad(context);
         let plain = Zeroizing::new(
-            cipher.decrypt(Nonce::from_slice(&blob[5..17]), Payload { msg: &blob[17..], aad: &aad })
+            cipher.decrypt(<&Nonce<_>>::from(&blob[5..17]), Payload { msg: &blob[17..], aad: &aad })
                 .map_err(|_| MlsError::Refused("sealed MLS state did not open"))?,
         );
         let state: StateIn = ciborium::de::from_reader(plain.as_slice())

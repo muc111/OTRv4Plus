@@ -185,10 +185,11 @@ _DEV_CREDENTIALS = ("1337",)
 
 _SHIPPABLE_SUFFIXES = (".py", ".kt", ".java", ".xml", ".pro", ".kts", ".rs", ".toml")
 
-# Directories that never reach a device.
+# Directories that never reach a device. `.venv` is the project virtualenv
+# Rust/build.sh creates (gitignored): third-party code, not ours.
 _EXCLUDED_PARTS = {
     "tests", ".attic", "target", "build", "__pycache__", ".git",
-    "androidTest", "test",
+    "androidTest", "test", ".venv",
 }
 
 

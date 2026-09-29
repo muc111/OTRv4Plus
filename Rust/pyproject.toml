@@ -1,5 +1,10 @@
 [build-system]
-requires = ["maturin>=1.0,<2.0"]
+# The series build.sh pins. maturin 1.14+ hands PyO3 >= 0.29 a config naming
+# `python3` for abi3 builds on Android, so a native Termux build links
+# libpython3.so and fails to import ("cannot locate symbol _Py_NoneStruct").
+# See the note at the top of build.sh. CI calls maturin directly and is not
+# affected by this line.
+requires = ["maturin>=1.13.3,<1.14"]
 build-backend = "maturin"
 
 [project]

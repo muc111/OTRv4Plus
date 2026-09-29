@@ -115,8 +115,8 @@ impl OpenMlsCrypto for CoreCrypto {
     ) -> Result<SecretVLBytes, CryptoError> {
         sha384_only(hash_type)?;
         let (mut prk, _) = Hkdf::<Sha384>::extract(Some(salt), ikm);
-        let out = prk.as_slice().into();
-        prk.as_mut_slice().zeroize();
+        let out = prk[..].into();
+        prk[..].zeroize();
         Ok(out)
     }
 
@@ -131,8 +131,8 @@ impl OpenMlsCrypto for CoreCrypto {
             <Hmac<Sha384> as Mac>::new_from_slice(key).map_err(|_| CryptoError::InvalidLength)?;
         mac.update(message);
         let mut tag = mac.finalize().into_bytes();
-        let out = tag.as_slice().into();
-        tag.as_mut_slice().zeroize();
+        let out = tag[..].into();
+        tag[..].zeroize();
         Ok(out)
     }
 

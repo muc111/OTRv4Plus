@@ -191,7 +191,7 @@ pub fn seal(pk_r: &[u8], info: &[u8], aad: &[u8], pt: &[u8]) -> Result<(Vec<u8>,
     let (ss, enc) = encap(pk_r)?;
     let ctx = key_schedule(&ss, info, Aead::Aes256Gcm)?;
     let ct = ctx.cipher()?
-        .encrypt(Nonce::from_slice(&ctx.base_nonce), Payload { msg: pt, aad })
+        .encrypt(<&Nonce<_>>::from(&ctx.base_nonce[..]), Payload { msg: pt, aad })
         .map_err(|_| HpkeError::Seal)?;
     Ok((enc, ct))
 }
@@ -203,7 +203,7 @@ pub fn open(enc: &[u8], sk_r: &[u8], info: &[u8], aad: &[u8], ct: &[u8])
     let ss = decap(enc, sk_r)?;
     let ctx = key_schedule(&ss, info, Aead::Aes256Gcm)?;
     ctx.cipher()?
-        .decrypt(Nonce::from_slice(&ctx.base_nonce), Payload { msg: ct, aad })
+        .decrypt(<&Nonce<_>>::from(&ctx.base_nonce[..]), Payload { msg: ct, aad })
         .map(Zeroizing::new)
         .map_err(|_| HpkeError::Open)
 }

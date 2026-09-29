@@ -896,7 +896,11 @@ impl PyVoiceAgreement {
 #[pymethods]
 impl PyVoiceAgreement {
     /// The initial epoch root. Consumes the agreement.
-    fn into_root(&mut self, transcript: &[u8]) -> PyResult<PyVoiceRoot> {
+    ///
+    /// Python calls it `into_root`. It takes `&mut self` because a pyclass
+    /// cannot be moved out of; the consuming happens in `take()`.
+    #[pyo3(name = "into_root")]
+    fn take_root(&mut self, transcript: &[u8]) -> PyResult<PyVoiceRoot> {
         let (x, k) = self.take()?;
         PyVoiceRoot::derive_initial(x.expose_slice(), k.expose_slice(), transcript)
     }
@@ -904,7 +908,8 @@ impl PyVoiceAgreement {
     /// The next epoch's root, chained onto `current`. Consumes the agreement
     /// but not `current`: a rekey that fails to confirm must leave the call
     /// on the epoch it already had.
-    fn into_rekey_root(&mut self, current: PyRef<'_, PyVoiceRoot>, transcript: &[u8])
+    #[pyo3(name = "into_rekey_root")]
+    fn take_rekey_root(&mut self, current: PyRef<'_, PyVoiceRoot>, transcript: &[u8])
         -> PyResult<PyVoiceRoot>
     {
         let (x, k) = self.take()?;

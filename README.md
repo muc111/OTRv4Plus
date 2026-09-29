@@ -133,15 +133,22 @@ pip install PySocks slixmpp aiodns
 For voice calls in Termux, also run `pkg install libopus termux-api` and
 `pip install opuslib`.
 
-**2. Download and build the Rust core** (about 3 minutes on a modern phone):
+**2. Download and build the Rust core** (about 10 minutes on a modern phone
+the first time; later builds are faster):
 
 ```bash
 git clone https://github.com/muc111/OTRv4Plus.git
 cd OTRv4Plus/Rust
-cargo build --release --features extension-module,pq-rust
-cp target/release/libotrv4_core.so ../otrv4_core.so
+bash build.sh
 cd ..
 ```
+
+`build.sh` needs nothing else prepared. It creates the project's own Python
+environment in `OTRv4Plus/.venv` (it can still use the modules installed in
+step 1), installs its pinned build tool there, runs the Rust tests and lints,
+installs the core with secure groups (MLS) into `.venv`, and ends with
+`otrv4_core imported OK` and `secure groups (MLS): yes`. Run the clients with
+`.venv/bin/python`, as in step 5.
 
 **3. Update later.** Pull, then rebuild the core, because both the Python
 files and the Rust core change:
@@ -149,8 +156,7 @@ files and the Rust core change:
 ```bash
 cd ~/OTRv4Plus
 git pull
-cd Rust && cargo build --release --features extension-module,pq-rust
-cp target/release/libotrv4_core.so ../otrv4_core.so && cd ..
+cd Rust && bash build.sh && cd ..
 git log -1 --format='%h %ad'     # check you are on the latest commit
 ```
 
@@ -167,7 +173,7 @@ with SOCKS on port 9050. Plain TLS needs nothing extra.
 XMPP over I2P (chat, files and voice):
 
 ```bash
-PYTHONMALLOC=malloc python otrv4plus_xmpp.py \
+PYTHONMALLOC=malloc .venv/bin/python otrv4plus_xmpp.py \
   --jid you@yourserver.i2p --peer friend@yourserver.i2p
 ```
 
@@ -177,7 +183,7 @@ Add `--server <address>.b32.i2p` if your server name does not resolve, and
 IRC (defaults to `irc.postman.i2p` over I2P; `-s irc.libera.chat` for TLS):
 
 ```bash
-PYTHONMALLOC=malloc python otrv4+.py
+PYTHONMALLOC=malloc .venv/bin/python otrv4+.py
 ```
 
 **6. First commands** (XMPP; IRC uses the same `/otr` and `/smp`):

@@ -311,6 +311,10 @@ impl DakeOutput {
     }
 }
 
+/// Signs the DAKE3 transcript with the initiator's ML-DSA-87 key, which
+/// stays behind the closure (see `DakeState::generate_dake3`).
+pub type MldsaSigner<'a> = &'a dyn Fn(&[u8]) -> Result<Vec<u8>>;
+
 #[derive(ZeroizeOnDrop)]
 pub struct DakeState {
     our_identity_priv: SecretBytes<57>,
@@ -673,7 +677,7 @@ impl DakeState {
     /// error here rather than a DAKE3 the peer is certain to refuse.
     pub fn generate_dake3(
         &mut self,
-        mldsa_sign: Option<&dyn Fn(&[u8]) -> Result<Vec<u8>>>,
+        mldsa_sign: Option<MldsaSigner<'_>>,
     ) -> Result<Vec<u8>> {
         self.refuse_if_wiped()?;
         if !self.is_initiator || self.phase != DakePhase::ReceivedDake2 {
@@ -1471,7 +1475,7 @@ impl PyDake {
     fn zeroize(&mut self) { self.inner.wipe(); }
     #[cfg(feature = "legacy-dake-keys")]
     fn get_session_keys(&mut self) -> Option<Py<PyAny>> {
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             if let Some(keys) = self.inner.take_session_keys() {
                 let robj = Py::new(py, Dakeresult::success()).ok()?; let rb = robj.bind(py);
                 rb.setattr("root_key", keys.root_key.expose()).ok()?;
@@ -1548,7 +1552,11 @@ mod dake3_tests {
         field(name).try_into().expect("57 bytes")
     }
 
-    fn recorded() -> (Vec<u8>, Vec<u8>, [u8; 57], [u8; 57], Vec<u8>) {
+    /// (transcript, dake3, initiator identity, responder identity,
+    /// initiator ML-DSA key)
+    type Recorded = (Vec<u8>, Vec<u8>, [u8; 57], [u8; 57], Vec<u8>);
+
+    fn recorded() -> Recorded {
         let mut transcript = field("dake1");
         transcript.extend_from_slice(&field("dake2"));
         (transcript, field("dake3"), pub57("initiator_identity_pub"),
@@ -1558,7 +1566,7 @@ mod dake3_tests {
     #[test]
     fn the_recorded_pre_r1_dake3_verifies() {
         let (t, d3, i, r, m) = recorded();
-        assert_eq!(verify_dake3(&t, &d3, &i, &r, Some(&m)).unwrap(), true);
+        assert!(verify_dake3(&t, &d3, &i, &r, Some(&m)).unwrap());
     }
 
     #[test]
@@ -1627,7 +1635,7 @@ mod profile_tests {
     fn honest(expires: u64) -> (Vec<u8>, [u8; 57]) {
         let seed = [0x42u8; 57];
         let sk = SigningKey::try_from(&seed[..]).expect("seed");
-        let id: [u8; 57] = sk.verifying_key().to_bytes().into();
+        let id: [u8; 57] = sk.verifying_key().to_bytes();
         (profile_signed_by(&seed, &id, expires), id)
     }
 

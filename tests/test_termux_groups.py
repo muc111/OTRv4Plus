@@ -779,4 +779,7 @@ class TestBoundaries:
     def test_the_termux_build_enables_mls(self):
         root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         build = open(os.path.join(root, "Rust", "build.sh"), encoding="utf-8").read()
-        assert "maturin develop --release --features mls" in build
+        assert '"$MATURIN" build --release --features mls' in build
+        # The import check the procedure (PHYSICAL_TEST_PLAN.md 7a) relies on.
+        assert 'print("otrv4_core imported OK")' in build
+        assert '"yes" if mls else "NO"' in build

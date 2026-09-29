@@ -691,24 +691,29 @@ class TestTheCoreApiContract:
         assert any("0.10.25" in m for m in missing), (
             "the report does not say which version introduced it")
 
-    def test_the_hint_names_both_supported_builds(self):
-        """Termux builds the .so and copies it; a machine with maturin builds
-        a wheel.  A hint that names only the wheel sends a phone user to a
-        toolchain they do not have, which is how the first version of this
-        message was wrong."""
+    def test_the_hint_names_the_one_supported_build(self):
+        """A hint that named only a maturin wheel once sent phone users to a
+        toolchain they did not have. Rust/build.sh now needs only Python and
+        Rust -- it installs its own pinned maturin into the project .venv --
+        so it is the one command on Termux and Linux alike.
+
+        The old recipes must not come back: a .so copied into the repository
+        root shadows the module build.sh installs and verifies (the clients
+        run from the root, which Python searches first), and a global pip
+        install is not the interpreter the clients are started with."""
         import otrv4plus_coreapi as coreapi
         hint = coreapi.REBUILD_HINT
-        assert "cargo build --release --features extension-module,pq-rust" in hint
-        assert "libotrv4_core.so" in hint
-        assert "pip install" in hint and "./Rust" in hint
+        assert "bash build.sh" in hint
+        assert ".venv/bin/python" in hint
+        assert "../otrv4_core.so" not in hint
+        assert "pip install" not in hint
 
     def test_the_hint_matches_the_readme(self):
         """The two must not drift: the README is where someone looks when the
         client is not running at all."""
         import otrv4plus_coreapi as coreapi
         readme = open(os.path.join(ROOT, "README.md"), encoding="utf-8").read()
-        for line in ("cargo build --release --features extension-module,pq-rust",
-                     "cp target/release/libotrv4_core.so ../otrv4_core.so"):
+        for line in ("bash build.sh", ".venv/bin/python otrv4plus_xmpp.py"):
             assert line in readme, "README no longer documents: %s" % line
             assert line in coreapi.REBUILD_HINT
 

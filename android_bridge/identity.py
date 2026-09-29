@@ -303,14 +303,25 @@ class RustSealedIdentityKeyStore(IdentityKeyStore):
         self._dek_provider = dek_provider
         self._key_id = int(key_id)
 
-    def _core(self):
+    def _core(self, dek):
+        """The Rust core, checked for the two functions ``dek`` will use.
+
+        A Rust ``FileDek`` (the Termux provider) goes through the ``_under``
+        functions, which every build has. Raw key bytes go through
+        ``create_sealed_identity`` / ``unseal_identity``, which only test
+        builds compile in (Cargo feature ``raw-key-test-api``). Requiring the
+        raw pair unconditionally refused every production build."""
         try:
             import otrv4_core
         except ImportError as exc:
             raise IdentityError(
                 "otrv4_core is required for identity sealing"
             ) from exc
-        for required in ("create_sealed_identity", "unseal_identity"):
+        if isinstance(dek, (bytes, bytearray)):
+            needed = ("create_sealed_identity", "unseal_identity")
+        else:
+            needed = ("create_sealed_identity_under", "unseal_identity_under")
+        for required in needed:
             if not hasattr(otrv4_core, required):
                 raise IdentityError(
                     f"otrv4_core is missing {required}; rebuild the Rust core"
@@ -335,8 +346,8 @@ class RustSealedIdentityKeyStore(IdentityKeyStore):
 
     def create(self):
         """Generate and seal an identity without the seed entering Python."""
-        core = self._core()
         dek = self._dek()
+        core = self._core(dek)
         try:
             if isinstance(dek, (bytes, bytearray)):
                 ident, prekey, sealed = core.create_sealed_identity(dek, self._key_id)
@@ -352,8 +363,8 @@ class RustSealedIdentityKeyStore(IdentityKeyStore):
         Any failure -- wrong key, tampering, truncation, unknown version --
         raises `CorruptIdentity`, undifferentiated.
         """
-        core = self._core()
         dek = self._dek()
+        core = self._core(dek)
         try:
             if isinstance(dek, (bytes, bytearray)):
                 ident, prekey = core.unseal_identity(bytes(serialized), dek, self._key_id)

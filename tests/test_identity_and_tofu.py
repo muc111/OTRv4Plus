@@ -67,6 +67,21 @@ class TestXmppIdentityPersists:
             mode = os.stat(path).st_mode & 0o777
             assert mode == 0o600, "%s is %o" % (path, mode)
 
+    def test_a_production_core_without_the_raw_key_api_persists_it(
+            self, statedir, monkeypatch):
+        # A production build (Rust/build.sh, no `raw-key-test-api`) has no
+        # create_sealed_identity / unseal_identity. The Termux key store uses
+        # the FileDek `_under` pair and must not ask for the raw pair: it
+        # did, and every production build refused to create or open an
+        # identity. The suite's own core is a test build, so hide them.
+        core = pytest.importorskip("otrv4_core")
+        for name in ("create_sealed_identity", "unseal_identity"):
+            monkeypatch.delattr(core, name, raising=False)
+        rec, dek = _paths(statedir)
+        _e1, _x1, first = ident.load_or_create_identity(rec, dek)
+        _e2, _x2, second = ident.load_or_create_identity(rec, dek)
+        assert len(first) == 57 and first == second
+
     def test_the_seed_is_not_reachable_from_python(self):
         # The whole reason persistence goes through Rust. If a seed accessor
         # ever appears, persisting the identity stops being safe and this

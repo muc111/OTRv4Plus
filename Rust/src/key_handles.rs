@@ -77,7 +77,7 @@ impl Ed448KeyHandle {
     /// rebuilds a handle without the seed ever becoming a Python object.
     #[cfg(feature = "test-only-kdf")]
     #[staticmethod]
-    pub(crate) fn from_seed_bytes<'py>(seed: &[u8]) -> PyResult<Self> {
+    pub(crate) fn from_seed_bytes(seed: &[u8]) -> PyResult<Self> {
         if seed.len() != 57 {
             return Err(PyValueError::new_err(format!(
                 "Ed448 seed must be 57 bytes, got {}", seed.len()
@@ -298,7 +298,7 @@ impl X448KeyHandle {
     /// TEST-ONLY as of decision B1 -- see `Ed448KeyHandle::from_seed_bytes`.
     #[cfg(feature = "test-only-kdf")]
     #[staticmethod]
-    pub(crate) fn from_priv_bytes<'py>(priv_bytes: &[u8]) -> PyResult<Self> {
+    pub(crate) fn from_priv_bytes(priv_bytes: &[u8]) -> PyResult<Self> {
         if priv_bytes.len() != 56 {
             return Err(PyValueError::new_err(format!(
                 "X448 private bytes must be 56 bytes, got {}", priv_bytes.len()

@@ -159,9 +159,10 @@ cutoff against history replay.
 
 ### 7a. Termux A + Termux B + Android C in one group
 
-Build each Termux core with MLS: `cd Rust && bash build.sh` (it runs
-`maturin develop --release --features mls`; the import line must say
-`secure groups (MLS): yes`). All three on the same XMPP server, which must
+Build each Termux core with MLS: `cd Rust && bash build.sh` (it sets up
+`.venv` itself and must end with `otrv4_core imported OK` and
+`secure groups (MLS): yes`); run the client as `.venv/bin/python
+otrv4plus_xmpp.py ...` from the repository root. All three on the same XMPP server, which must
 offer a MUC service (e.g. `conference.<domain>`). Room used below:
 `circle@conference.<domain>`. Record PASS/FAIL per step.
 

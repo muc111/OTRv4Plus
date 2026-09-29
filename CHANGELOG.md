@@ -19,6 +19,18 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 - Recorded: a tampered copy of a group message that arrives before the
   genuine one makes the genuine one undecryptable (fail closed; OpenMLS
   spends the key). See MLS_FEASIBILITY.md.
+- **Termux build: `cd Rust && bash build.sh` is now all it takes.** It creates
+  and uses the project's own `.venv`, installs the pinned maturin 1.13.3
+  there, runs the Rust tests and clippy (-D warnings), installs the MLS build
+  into `.venv` and proves the import comes from there. Run the clients with
+  `.venv/bin/python`. Fixes the Termux import failure `cannot locate symbol
+  "_Py_NoneStruct"`: maturin 1.14+ makes PyO3 0.29 link `libpython3.so` for
+  abi3 builds on Android. PyO3 stays at 0.29 (0.28.x is affected by
+  RUSTSEC-2026-0176).
+- **Zero compiler and clippy warnings.** Deprecated `GenericArray` calls
+  replaced with the equivalent trait conversions (same length checks, no
+  copies); clippy findings fixed rather than allowed. The off-by-default
+  `legacy-dake-keys` feature compiles again on PyO3 0.29.
 
 ## Android 0.7.0-experimental.rc.8 — 2026-09-28 — room occupant counts; security status stated (core 0.11.0)
 
