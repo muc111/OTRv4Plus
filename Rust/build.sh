@@ -246,15 +246,28 @@ explain_failure() {
 # "pid own-ticks total-ticks" for every compiler-ish process this user can
 # see. The total includes children the process has already reaped, so a rustc
 # that started and finished between two samples still shows up in cargo's.
+#
+# Each file is read on its own: on a busy phone processes exit between listing
+# /proc and reading it, and awk given all the files at once stops at the first
+# one that has gone -- skipping every process after it (it reported "0
+# processes" while rustc was linking).
 compiler_snapshot() {
-    [ -d /proc/self ] || return 0
-    awk '{
-        line = $0
-        comm = line; sub(/^[0-9]+ \(/, "", comm); sub(/\) [A-Za-z] .*$/, "", comm)
-        rest = line; sub(/^.*\) /, "", rest); n = split(rest, f, " ")
-        if (comm ~ /^(rustc|cargo|cc|cc1|cc1plus|clang.*|gcc|ld|ld\..*|lld|ar|build-script-b.*|build_script_.*|maturin|python[0-9.]*)$/)
-            print $1, f[12] + f[13], f[12] + f[13] + f[14] + f[15]
-    }' /proc/[0-9]*/stat 2>/dev/null || true
+    [ -r /proc/self/stat ] || return 0
+    local f line comm
+    local -a fld
+    for f in /proc/[0-9]*/stat; do
+        { read -r line < "$f"; } 2>/dev/null || continue
+        comm="${line#*(}"; comm="${comm%)*}"
+        case "$comm" in
+            rustc|cargo|cc|cc1|cc1plus|clang*|gcc|ld|ld.*|lld|ar|build-script-b*|build_script_*|maturin|python|python[0-9]*) ;;
+            *) continue ;;
+        esac
+        # After "(comm) ": state ppid ... utime(11) stime(12) cutime(13) cstime(14)
+        read -r -a fld <<< "${line##*) }"
+        [ "${#fld[@]}" -gt 14 ] || continue
+        printf '%s %s %s\n' "${line%% *}" $((fld[11] + fld[12])) \
+            $((fld[11] + fld[12] + fld[13] + fld[14]))
+    done
 }
 # CPU ticks used between two snapshots: the growth of a process seen in both,
 # and only its own ticks for one that started in between.
@@ -287,11 +300,18 @@ watch_start() {
             cpu=$(($(cpu_delta "$prev" "$cur") / hz))
             procs="$(wc -l < "$cur" | tr -d ' ')"
             cp "$cur" "$prev"
+            # cargo or pip itself is always running here; seeing none means
+            # this system hides process activity, not that nothing runs.
+            if [ "$procs" -eq 0 ]; then
+                activity="compiler activity not visible"
+            else
+                activity="compiler CPU ${cpu}s in the last ${HEARTBEAT_SECS}s ($procs processes)"
+            fi
             if [ "$mode" = quiet ] && [ "$idle" -lt "$HEARTBEAT_SECS" ]; then continue; fi
             n="$(grep -cE '^[[:space:]]*Compiling ' "$log" 2>/dev/null || true)"
             if [ -n "$total" ]; then crates="$n of ~$total crates compiled"; else crates="$n crates compiled"; fi
-            printf '    ... %s: %s running, %s, compiler CPU %ss in the last %ss (%s processes), last output %s ago\n' \
-                "$label" "$(fmt_secs $((t - t0)))" "$crates" "$cpu" "$HEARTBEAT_SECS" "$procs" "$(fmt_secs "$idle")"
+            printf '    ... %s: %s running, %s, %s, last output %s ago\n' \
+                "$label" "$(fmt_secs $((t - t0)))" "$crates" "$activity" "$(fmt_secs "$idle")"
             last="$(tail -n 1 "$log" 2>/dev/null | tr -d '\r' | cut -c1-110)"
             if [ "$idle" -ge "$HEARTBEAT_SECS" ] && [ -n "$last" ]; then
                 printf '        last line: %s\n' "$last"
@@ -303,7 +323,12 @@ watch_start() {
             esac
             if [ "$idle" -ge "$STALL_WARN_SECS" ] && [ -z "$warned" ]; then
                 warned=1
-                if [ "$cpu" -gt 0 ]; then
+                if [ "$procs" -eq 0 ]; then
+                    printf '!!! No new output for %s. Process activity is not visible here, so this\n' "$(fmt_secs "$idle")"
+                    printf '!!! cannot tell a slow step from a stall. The final optimised (LTO) link\n'
+                    printf '!!! of otrv4_core is silent for a long time on a phone. If nothing changes\n'
+                    printf '!!! for another %s, press Ctrl-C and run "bash build.sh" again.\n' "$(fmt_secs "$STALL_WARN_SECS")"
+                elif [ "$cpu" -gt 0 ]; then
                     printf '!!! No new output for %s, but the compiler is busy (%ss CPU in the last %ss).\n' \
                         "$(fmt_secs "$idle")" "$cpu" "$HEARTBEAT_SECS"
                     printf '!!! Large crates and the final optimised (LTO) link are silent for a long\n'
@@ -356,7 +381,7 @@ cargo_clean_output() {
     log="$(mktemp)"
     CLEANUP_PATHS+=("$log")
     while :; do
-        watch_start "$log" "$1 $2" quiet
+        watch_start "$log" "${1##*/} $2" quiet
         if ${prefix[@]+"${prefix[@]}"} "$@" 2>&1 | tee "$log"; then
             watch_stop
             break
@@ -812,7 +837,10 @@ shopt -u nullglob
 wheel_fits_python "${wheels[0]}" \
     || die "the built wheel $(basename "${wheels[0]}") does not match this Python's platform (tags above)"
 info "installing $(basename "${wheels[0]}") into $VENV"
-"$PY" -m pip install --no-deps --force-reinstall "${wheels[0]}" \
+# --ignore-installed: the old copy in .venv is already gone (above); a copy in
+# the system Python is not this build's to remove, and pip would only report
+# that it cannot.
+"$PY" -m pip install --no-deps --ignore-installed "${wheels[0]}" \
     || die "pip could not install ${wheels[0]} into $VENV"
 
 step "7/7 Checks: import, client API, MLS on this device"
@@ -882,6 +910,24 @@ except Exception as exc:
 print("MLS self-test (2 members, 1 message): OK")
 PYEOF
 ) || die "the installed module did not pass the checks above"
+
+# A core installed into the system Python by an older recipe is what a plain
+# `python otrv4plus_xmpp.py` would load. Name it, so nobody tests with it.
+global_core="$(cd / && "$BASE_PY" -s -c 'import importlib.util as u, importlib.metadata as m
+s = u.find_spec("otrv4_core")
+if s:
+    try:
+        v = m.version("otrv4_core")
+    except Exception:
+        v = "unknown version"
+    print("%s (%s)" % (s.origin, v))' 2>/dev/null || true)"
+if [ -n "$global_core" ]; then
+    notice "An older otrv4_core is also installed in the system Python:" \
+        "  $global_core" \
+        "Start the clients with .venv/bin/python (below), which uses this build." \
+        "'python otrv4plus_xmpp.py' would load that old copy, without secure groups." \
+        "To remove it: $BASE_PY -m pip uninstall --break-system-packages otrv4_core"
+fi
 
 step "Done"
 FINISHED=1
