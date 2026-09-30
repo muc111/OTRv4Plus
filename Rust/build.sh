@@ -21,11 +21,21 @@
 #     and installed from there on later runs.
 #
 # Then: Rust release tests (core and MLS), clippy with -D warnings, the
-# MLS-enabled release build installed into .venv, and an import check that
-# proves the module Python loads is the one just built, from .venv.
+# MLS-enabled release build installed into .venv, and checks that prove the
+# module Python loads is the one just built, from .venv, that it has every
+# function the clients call, and that MLS works on this device.
 #
 # Run the clients with the same interpreter afterwards:
 #     cd ~/OTRv4Plus && .venv/bin/python otrv4plus_xmpp.py ...
+#
+# WHAT YOU SEE WHILE IT RUNS, AND WHERE THE LOG IS
+# Every run is logged in full to ~/.cache/otrv4plus/logs/ (latest.log is the
+# newest). Each step prints its start time; a long step prints a heartbeat
+# with the time taken, crates compiled and whether the compiler is using CPU,
+# and says plainly if nothing at all is happening. A failure ends with
+# "BUILD FAILED", the reason, and a diagnostics block for the report. If a run
+# was killed from outside (Android can do that to long builds), the next run
+# says so first, and carries on from the work already done.
 #
 # WHY MATURIN IS PINNED BELOW 1.14
 # maturin 1.14+ writes its own PyO3 config for every stable-ABI (abi3) build
@@ -39,8 +49,8 @@
 # affected by RUSTSEC-2026-0176 (GHSA-36hh-v3qg-5jq4).
 #
 # WHY TERMUX BUILDS MATURIN SERIALLY, IN ITS OWN DIRECTORIES
-# PyPI has no maturin wheel Termux's pip can use, so pip compiles it (255
-# crates). Cargo runs each build script from target/.../build-script-build,
+# PyPI has no maturin wheel Termux's pip can use, so pip compiles it (about
+# 210 crates). Cargo runs each build script from target/.../build-script-build,
 # which it normally hard-links into place. Android refuses hard links in an
 # app's data directory, so cargo copies the file instead -- with the copy
 # open for writing in cargo's own process. A parallel job forked in that
@@ -48,39 +58,277 @@
 # script then fails with
 #     could not execute process `.../build-script-build` (never executed)
 #     Text file busy (os error 26)
-# The maturin build therefore runs with CARGO_BUILD_JOBS=1, in a temp and
-# target directory this script owns and empties before every attempt (not
-# pip's throwaway pip-install-* directory), retried at most MATURIN_ATTEMPTS
-# times and only for that error. The finished wheel is checked and cached,
-# so this happens once. The project's own cargo commands retry the same way.
+# The maturin build therefore runs with CARGO_BUILD_JOBS=1, with its temp
+# directory (emptied before every attempt) and cargo target directory under
+# ~/.cache/otrv4plus -- not pip's throwaway pip-install-* directory. The
+# target directory is kept between attempts and runs, so a compile Android
+# killed half way resumes instead of starting over; it is emptied before the
+# last attempt. Attempts are bounded (MATURIN_ATTEMPTS) and only a busy file,
+# a killed compiler or memory exhaustion is retried. The finished wheel is
+# checked and cached, so this happens once. The project's own cargo commands
+# retry the same failures with one job at a time.
 
 set -euo pipefail
 
 MATURIN_VERSION="1.13.3"
+MATURIN_CRATES_APPROX=210
 PY_MIN_MAJOR=3
 PY_MIN_MINOR=12
 RUST_MIN="1.85"          # the core's rust-version (Cargo.toml)
 MATURIN_RUST_MIN="1.89"  # maturin 1.13.3's rust-version, when compiling it
-MATURIN_ATTEMPTS=3       # bounded: only "Text file busy" is retried
+MATURIN_ATTEMPTS=3       # bounded; see RETRY_RE
 CARGO_ATTEMPTS=3
+TERMUX_MAX_JOBS=4        # parallel compile jobs on a phone, unless set
+HEARTBEAT_SECS="${OTRV4PLUS_HEARTBEAT_SECS:-60}"
+STALL_WARN_SECS="${OTRV4PLUS_STALL_WARN_SECS:-900}"
+LOG_KEEP=10
 
 RUST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 REPO_ROOT="$(cd "$RUST_DIR/.." && pwd -P)"
 VENV="$REPO_ROOT/.venv"
 PY="$VENV/bin/python"
 MATURIN="$VENV/bin/maturin"
-MATURIN_CACHE="${XDG_CACHE_HOME:-$HOME/.cache}/otrv4plus/maturin-$MATURIN_VERSION"
+CACHE_ROOT="${XDG_CACHE_HOME:-$HOME/.cache}/otrv4plus"
+MATURIN_CACHE="$CACHE_ROOT/maturin-$MATURIN_VERSION"
+LOG_DIR="$CACHE_ROOT/logs"
+LOCK_DIR="$CACHE_ROOT/build.lock"
 
-step() { printf '\n=== %s ===\n' "$*"; }
+# Failures recognised in a command's output. The retryable ones are those a
+# second try with one job at a time can get past.
+ETXTBSY_RE='Text file busy|os error 26'
+KILLED_RE='signal: 9|SIGKILL|\(signal 9\)|^Killed|terminated by signal 9'
+OOM_RE='out of memory|memory allocation of [0-9]+ bytes failed|Cannot allocate memory|os error 12'
+NOSPACE_RE='No space left on device|os error 28|Disk quota exceeded'
+NETWORK_RE='Could not fetch URL|Network is unreachable|Temporary failure in name resolution|Name or service not known|Connection (refused|reset|timed out)|Max retries exceeded|No matching distribution found|failed to download|Could not resolve host'
+RETRY_RE="$ETXTBSY_RE|$KILLED_RE|$OOM_RE"
+# rustc's `warning:` lines and maturin's `⚠️ Warning:` lines.
+WARNING_RE='^(warning|error)(\[[A-Za-z0-9_]+\])?:|⚠'
+
+BUILD_T0="$(date +%s)"
+STEP_NAME=""
+STEP_T0="$BUILD_T0"
+WATCH_PID=""
+TEE_PID=""
+RUN_LOG=""
+PREV_LOG=""
+HAVE_LOCK=""
+WAKE_LOCKED=""
+DIED=""
+FINISHED=""
+CLEANUP_PATHS=()
+
+# ---------------------------------------------------------------- output ---
+
+now() { date +%s; }
+fmt_secs() { printf '%dm%02ds' $(($1 / 60)) $(($1 % 60)); }
 info() { printf -- '--- %s\n' "$*"; }
-die()  { printf '\nBUILD FAILED: %s\n' "$*" >&2; exit 1; }
+# A notice that must not be missed: each argument is one line.
+notice() {
+    printf '\n!!! %s\n' "$1"
+    shift
+    local line
+    for line in "$@"; do printf '!!! %s\n' "$line"; done
+    printf '\n'
+}
+step() {
+    local t
+    t="$(now)"
+    if [ -n "$STEP_NAME" ]; then info "step done in $(fmt_secs $((t - STEP_T0)))"; fi
+    STEP_NAME="$*"
+    STEP_T0="$t"
+    printf '\n=== %s ===  [%s, %s since start]\n' "$*" "$(date +%H:%M:%S)" "$(fmt_secs $((t - BUILD_T0)))"
+}
 
-# Termux, not merely "some Android": its prefix, or the variable the Termux
-# app exports.
 is_termux() {
     case "${PREFIX:-}" in */com.termux/*) return 0 ;; esac
     [ -n "${TERMUX_VERSION:-}" ]
 }
+
+prop() { command -v getprop >/dev/null 2>&1 && getprop "$1" 2>/dev/null || true; }
+android_sdk() { local s; s="$(prop ro.build.version.sdk)"; printf '%s' "${s:-0}"; }
+
+device_summary() {
+    if [ -n "$(prop ro.build.version.release)" ]; then
+        printf '%s %s, Android %s (SDK %s), kernel %s, %s' \
+            "$(prop ro.product.manufacturer)" "$(prop ro.product.model)" \
+            "$(prop ro.build.version.release)" "$(android_sdk)" "$(uname -r)" "$(uname -m)"
+    else
+        printf '%s %s %s' "$(uname -s)" "$(uname -r)" "$(uname -m)"
+    fi
+}
+
+avail_mb() { df -Pk "$1" 2>/dev/null | awk 'NR==2 {print int($4 / 1024)}'; }
+mem_summary() {
+    [ -r /proc/meminfo ] || { printf 'unknown'; return; }
+    awk '/^MemTotal:/ {t=$2} /^MemAvailable:/ {a=$2}
+         END {printf "%d MB available of %d MB", a/1024, t/1024}' /proc/meminfo
+}
+
+print_diagnostics() {
+    printf '\n--- diagnostics (send this block, or the whole log, with a report) ---\n'
+    printf '    failed in: %s, %s after start\n' "${STEP_NAME:-start}" "$(fmt_secs $(($(now) - BUILD_T0)))"
+    printf '    device:    %s\n' "$(device_summary)"
+    printf '    termux:    %s\n' "${TERMUX_VERSION:-no} (PREFIX=${PREFIX:-unset})"
+    printf '    rustc:     %s\n' "$(rustc --version 2>/dev/null || echo missing)"
+    printf '    cargo:     %s\n' "$(cargo --version 2>/dev/null || echo missing)"
+    printf '    python:    %s\n' "$("$PY" -c 'import sys; print(sys.version.split()[0], sys.executable)' 2>/dev/null || echo "no virtualenv yet")"
+    printf '    maturin:   %s\n' "$("$MATURIN" --version 2>/dev/null || echo "not installed in .venv")"
+    printf '    jobs:      CARGO_BUILD_JOBS=%s\n' "${CARGO_BUILD_JOBS:-default}"
+    printf '    disk:      %s MB free for the repository, %s MB for the cache\n' \
+        "$(avail_mb "$REPO_ROOT")" "$(avail_mb "$CACHE_ROOT")"
+    printf '    memory:    %s\n' "$(mem_summary)"
+    printf '    log:       %s\n' "$RUN_LOG"
+}
+
+die() {
+    DIED=1
+    watch_stop
+    printf '\nBUILD FAILED: %s\n' "$*" >&2
+    print_diagnostics >&2
+    exit 1
+}
+
+# Explain the recognised causes of a failure found in a command's output.
+android_kill_advice() {
+    notice "${1:-Android stopped a compiler process (SIGKILL).}" \
+        "On Android 12 and later the system kills child processes of apps it" \
+        "considers background or too busy, and kills big ones when memory runs out." \
+        "To let the build finish:" \
+        "  * keep Termux open, in front, until the build ends (build.sh holds a" \
+        "    Termux wake lock so the phone does not sleep);" \
+        "  * Settings > Apps > Termux > Battery: Unrestricted;" \
+        "  * Android 14 or newer: Settings > System > Developer options >" \
+        "    'Disable child process restrictions' = on;" \
+        "  * Android 12L/13, from a computer with adb:" \
+        "      adb shell settings put global settings_enable_monitor_phantom_procs false" \
+        "  * Android 12, from a computer with adb:" \
+        "      adb shell device_config set_sync_disabled_for_tests persistent" \
+        "      adb shell device_config put activity_manager max_phantom_processes 2147483647" \
+        "Then run 'bash build.sh' again: work already finished is kept."
+}
+explain_failure() {
+    local log="$1"
+    if grep -Eq "$NOSPACE_RE" "$log"; then
+        notice "The storage is full ('No space left on device')." \
+            "Free: $(avail_mb "$REPO_ROOT") MB. A full build needs about 4 GB free." \
+            "Free some space (for example 'pkg clean', or delete old downloads) and run" \
+            "'bash build.sh' again."
+    fi
+    if grep -Eq "$KILLED_RE" "$log"; then android_kill_advice; fi
+    if grep -Eq "$OOM_RE" "$log"; then
+        notice "A compiler ran out of memory ($(mem_summary))." \
+            "Close other apps and run 'bash build.sh' again; retries already use one" \
+            "compile job at a time."
+    fi
+    if grep -Eq "$ETXTBSY_RE" "$log"; then
+        notice "'Text file busy' (ETXTBSY) came back even with one compile job at a time." \
+            "Run 'bash build.sh' again; the work already done is kept."
+    fi
+    if grep -Eq "$NETWORK_RE" "$log"; then
+        notice "A download failed (PyPI or crates.io could not be reached)." \
+            "Check the connection (and any VPN or proxy) and run 'bash build.sh' again."
+    fi
+    if grep -q 'Failed to determine Android API level' "$log"; then
+        notice "maturin could not tell the Android API level." \
+            "Run: ANDROID_API_LEVEL=24 bash build.sh   and report this log."
+    fi
+    if grep -q 'not a supported wheel on this platform' "$log"; then
+        notice "pip refused the wheel for this Python (platform tag mismatch); send this log."
+    fi
+    if grep -q 'Blocking waiting for file lock' "$log"; then
+        notice "cargo waited for a lock held by another cargo process." \
+            "Close other Termux sessions that build Rust, or stop them: pkill cargo"
+    fi
+}
+
+# ------------------------------------------------------------ liveness ---
+
+# "pid own-ticks total-ticks" for every compiler-ish process this user can
+# see. The total includes children the process has already reaped, so a rustc
+# that started and finished between two samples still shows up in cargo's.
+compiler_snapshot() {
+    [ -d /proc/self ] || return 0
+    awk '{
+        line = $0
+        comm = line; sub(/^[0-9]+ \(/, "", comm); sub(/\) [A-Za-z] .*$/, "", comm)
+        rest = line; sub(/^.*\) /, "", rest); n = split(rest, f, " ")
+        if (comm ~ /^(rustc|cargo|cc|cc1|cc1plus|clang.*|gcc|ld|ld\..*|lld|ar|build-script-b.*|build_script_.*|maturin|python[0-9.]*)$/)
+            print $1, f[12] + f[13], f[12] + f[13] + f[14] + f[15]
+    }' /proc/[0-9]*/stat 2>/dev/null || true
+}
+# CPU ticks used between two snapshots: the growth of a process seen in both,
+# and only its own ticks for one that started in between.
+cpu_delta() {
+    awk 'NR == FNR { p[$1] = $3; next }
+         { d = ($1 in p) ? $3 - p[$1] : $2; if (d > 0) s += d }
+         END { print s + 0 }' "$1" "$2"
+}
+
+# Print a heartbeat while a long command runs. $1 is the file its output goes
+# to, $2 a label, $3 "always" (the output is not on screen) or "quiet" (only
+# when the output has been silent for a while), $4 an optional crate total.
+watch_start() {
+    local log="$1" label="$2" mode="$3" total="${4:-}"
+    [ "$HEARTBEAT_SECS" -gt 0 ] || return 0
+    (
+        trap - EXIT INT TERM
+        t0="$(date +%s)"; last_size=-1; idle_since="$t0"; warned=""
+        hz="$(getconf CLK_TCK 2>/dev/null || echo 100)"
+        prev="$(mktemp)"; cur="$(mktemp)"
+        trap 'rm -f "$prev" "$cur"' EXIT
+        trap 'rm -f "$prev" "$cur"; exit 0' TERM
+        compiler_snapshot > "$prev"
+        while sleep "$HEARTBEAT_SECS" >/dev/null 2>&1; do
+            t="$(date +%s)"
+            size="$(wc -c < "$log" 2>/dev/null || echo 0)"
+            if [ "$size" != "$last_size" ]; then last_size="$size"; idle_since="$t"; warned=""; fi
+            idle=$((t - idle_since))
+            compiler_snapshot > "$cur"
+            cpu=$(($(cpu_delta "$prev" "$cur") / hz))
+            procs="$(wc -l < "$cur" | tr -d ' ')"
+            cp "$cur" "$prev"
+            if [ "$mode" = quiet ] && [ "$idle" -lt "$HEARTBEAT_SECS" ]; then continue; fi
+            n="$(grep -cE '^[[:space:]]*Compiling ' "$log" 2>/dev/null || true)"
+            if [ -n "$total" ]; then crates="$n of ~$total crates compiled"; else crates="$n crates compiled"; fi
+            printf '    ... %s: %s running, %s, compiler CPU %ss in the last %ss (%s processes), last output %s ago\n' \
+                "$label" "$(fmt_secs $((t - t0)))" "$crates" "$cpu" "$HEARTBEAT_SECS" "$procs" "$(fmt_secs "$idle")"
+            last="$(tail -n 1 "$log" 2>/dev/null | tr -d '\r' | cut -c1-110)"
+            if [ "$idle" -ge "$HEARTBEAT_SECS" ] && [ -n "$last" ]; then
+                printf '        last line: %s\n' "$last"
+            fi
+            case "$last" in
+                *"Blocking waiting for file lock"*)
+                    printf '!!! cargo is waiting for another cargo process to release its lock.\n'
+                    printf '!!! Close other Termux sessions that build Rust, or run: pkill cargo\n' ;;
+            esac
+            if [ "$idle" -ge "$STALL_WARN_SECS" ] && [ -z "$warned" ]; then
+                warned=1
+                if [ "$cpu" -gt 0 ]; then
+                    printf '!!! No new output for %s, but the compiler is busy (%ss CPU in the last %ss).\n' \
+                        "$(fmt_secs "$idle")" "$cpu" "$HEARTBEAT_SECS"
+                    printf '!!! Large crates and the final optimised (LTO) link are silent for a long\n'
+                    printf '!!! time on a phone. This is normal; keep Termux open.\n'
+                else
+                    printf '!!! STALLED? No new output for %s and no compiler CPU use.\n' "$(fmt_secs "$idle")"
+                    printf '!!! Usual causes: the screen went off or Termux was put in the background,\n'
+                    printf '!!! battery optimisation, or a process Android killed. If nothing changes,\n'
+                    printf '!!! press Ctrl-C and run "bash build.sh" again (finished work is kept).\n'
+                fi
+            fi
+        done
+    ) &
+    WATCH_PID=$!
+}
+watch_stop() {
+    if [ -n "$WATCH_PID" ]; then
+        kill "$WATCH_PID" 2>/dev/null || true
+        wait "$WATCH_PID" 2>/dev/null || true
+        WATCH_PID=""
+    fi
+    return 0
+}
+
+# ------------------------------------------------------------- helpers ---
 
 # `rustc 1.94.1 (...)` -> succeeds when at least $1.
 rustc_at_least() {
@@ -89,33 +337,48 @@ rustc_at_least() {
     [ "$(printf '%s\n%s\n' "$1" "${have%%-*}" | sort -V | head -n1)" = "$1" ]
 }
 
-ETXTBSY_RE='Text file busy|os error 26'
+run_in() {
+    local dir="$1" old="$PWD"
+    shift
+    cd "$dir"
+    "$@"
+    cd "$old"
+}
 
-# Run a cargo or maturin command and fail on any warning it prints: rustc's
-# `warning:` lines and maturin's `⚠️ Warning:` lines. The production build is
-# warning-free; a new warning is a failure, not noise.
-#
-# "Text file busy" (see the note at the top) is retried, at most
-# CARGO_ATTEMPTS times in all, serially; cargo resumes where it stopped.
-# Every other failure fails at once.
-WARNING_RE='^(warning|error)(\[[A-Za-z0-9_]+\])?:|⚠'
+# Run a cargo or maturin command, show its output, and fail on any warning it
+# prints. The production build is warning-free; a new warning is a failure,
+# not noise. A busy file, a killed compiler or memory exhaustion is retried,
+# at most CARGO_ATTEMPTS times in all, with one job at a time; cargo resumes
+# where it stopped. Every other failure fails at once, explained.
 cargo_clean_output() {
     local log attempt=1
     local -a prefix=()
     log="$(mktemp)"
-    while ! ${prefix[@]+"${prefix[@]}"} "$@" 2>&1 | tee "$log"; do
-        if grep -Eq "$ETXTBSY_RE" "$log" && [ "$attempt" -lt "$CARGO_ATTEMPTS" ]; then
+    CLEANUP_PATHS+=("$log")
+    while :; do
+        watch_start "$log" "$1 $2" quiet
+        if ${prefix[@]+"${prefix[@]}"} "$@" 2>&1 | tee "$log"; then
+            watch_stop
+            break
+        fi
+        watch_stop
+        if ! grep -Eq "$NOSPACE_RE" "$log" && grep -Eq "$RETRY_RE" "$log" \
+                && [ "$attempt" -lt "$CARGO_ATTEMPTS" ]; then
             attempt=$((attempt + 1))
-            info "cargo hit 'Text file busy' (ETXTBSY); retrying serially, attempt $attempt of $CARGO_ATTEMPTS"
+            if grep -Eq "$ETXTBSY_RE" "$log"; then
+                info "cargo hit 'Text file busy' (ETXTBSY)"
+            else
+                info "a compiler process was killed or ran out of memory"
+            fi
+            info "retrying with one compile job at a time, attempt $attempt of $CARGO_ATTEMPTS"
             prefix=(env CARGO_BUILD_JOBS=1)
             continue
         fi
-        rm -f "$log"
-        die "'$*' failed (output above)"
+        explain_failure "$log"
+        die "'$*' failed (its output is above)"
     done
     if grep -Eq "$WARNING_RE" "$log"; then
         grep -E "$WARNING_RE" "$log" | sort | uniq -c >&2
-        rm -f "$log"
         die "'$*' printed compiler warnings; the production build must have none"
     fi
     rm -f "$log"
@@ -143,23 +406,42 @@ with zipfile.ZipFile(path) as z:
 PYEOF
 }
 
+# Whether this Python's pip accepts a wheel's platform tags. Prints the tags
+# on a mismatch, so a refusal is explained instead of left to pip.
+wheel_fits_python() {
+    "$PY" - "$1" <<'PYEOF'
+import os, sys
+try:
+    from pip._vendor.packaging.tags import sys_tags
+    from pip._vendor.packaging.utils import parse_wheel_filename
+except Exception:
+    sys.exit(0)  # cannot tell; let pip decide
+_, _, _, tags = parse_wheel_filename(os.path.basename(sys.argv[1]))
+supported = list(sys_tags())
+if set(tags) & set(supported):
+    sys.exit(0)
+print("wheel tags:        " + ", ".join(sorted(str(t) for t in tags)))
+print("this Python takes: " + ", ".join(str(t) for t in supported[:6]) + ", ...")
+sys.exit(1)
+PYEOF
+}
+
 # The one cached wheel, if there is exactly one.
 cached_maturin_wheel() {
     local -a found=()
     shopt -s nullglob
-    found=("$MATURIN_CACHE"/wheel/maturin-"$MATURIN_VERSION"-*.whl)
+    found=("$MATURIN_CACHE/wheel/maturin-$MATURIN_VERSION-"*.whl)
     shopt -u nullglob
     [ "${#found[@]}" -eq 1 ] && printf '%s\n' "${found[0]}"
 }
 
 install_maturin_wheel() {
-    "$PY" -m pip install --disable-pip-version-check --no-index --no-deps \
-        --ignore-installed "$1" && have_maturin
+    "$PY" -m pip install --no-index --no-deps --ignore-installed "$1" && have_maturin
 }
 
-# pip's own temp directories left by an earlier, killed maturin build (the
-# failure this replaces used them). Only directories holding a maturin source
-# tree and untouched for an hour, so a concurrent pip is never disturbed.
+# pip's own temp directories left by an earlier, killed maturin build. Only
+# directories holding a maturin source tree and untouched for an hour, so a
+# concurrent pip is never disturbed.
 remove_stale_pip_dirs() {
     local tmp="${TMPDIR:-/tmp}" d
     shopt -s nullglob
@@ -173,55 +455,107 @@ remove_stale_pip_dirs() {
     shopt -u nullglob
 }
 
-# Compile maturin into a wheel in MATURIN_CACHE/work and move it to
-# MATURIN_CACHE/wheel once it validates. pip keeps build isolation (it fetches
-# setuptools / setuptools-rust into its own build environment), but TMPDIR and
-# CARGO_TARGET_DIR point at directories this script owns and empties first, so
-# nothing half-built survives an attempt, and nothing lands in Rust/target.
+# Compile maturin into a wheel and move it to MATURIN_CACHE/wheel once it
+# validates. pip keeps build isolation (it fetches setuptools /
+# setuptools-rust into its own build environment), but TMPDIR and
+# CARGO_TARGET_DIR point at directories this script owns, so nothing lands in
+# Rust/target. The detailed output goes to a log; the screen gets progress.
 build_maturin_wheel() {
-    local work="$MATURIN_CACHE/work" attempt log
+    local attempt log
     local -a built=()
     remove_stale_pip_dirs
+    rm -rf -- "$MATURIN_CACHE/work"   # the layout before the target was kept
     rm -f "$MATURIN_CACHE"/build-attempt-*.log
     for attempt in $(seq 1 "$MATURIN_ATTEMPTS"); do
-        rm -rf -- "$work"
-        mkdir -p "$work/tmp" "$work/target" "$work/out"
         log="$MATURIN_CACHE/build-attempt-$attempt.log"
+        rm -rf -- "$MATURIN_CACHE/tmp" "$MATURIN_CACHE/out"
+        if [ "$attempt" -eq "$MATURIN_ATTEMPTS" ] && [ "$attempt" -gt 1 ]; then
+            info "last attempt: starting from an empty target directory"
+            rm -rf -- "$MATURIN_CACHE/target"
+        fi
+        mkdir -p "$MATURIN_CACHE/tmp" "$MATURIN_CACHE/out" "$MATURIN_CACHE/target"
         info "compiling maturin $MATURIN_VERSION, attempt $attempt of $MATURIN_ATTEMPTS"
-        info "  serial cargo (CARGO_BUILD_JOBS=1), temp and target under $work"
-        info "  this takes a while on a phone; the log is $log"
+        info "  one compile job at a time; about $MATURIN_CRATES_APPROX crates; on a phone this"
+        info "  takes a long time -- progress is printed every $HEARTBEAT_SECS s"
+        info "  detailed output: $log"
+        watch_start "$log" "maturin" always "$MATURIN_CRATES_APPROX"
         if env -u RUSTFLAGS -u CARGO_ENCODED_RUSTFLAGS -u CARGO_BUILD_RUSTFLAGS \
                -u CARGO_BUILD_TARGET -u CARGO_BUILD_TARGET_DIR \
-               TMPDIR="$work/tmp" CARGO_TARGET_DIR="$work/target" \
-               CARGO_BUILD_JOBS=1 CARGO_INCREMENTAL=0 \
-               MATURIN_NO_INSTALL_RUST=1 PIP_NO_INPUT=1 \
-               "$PY" -m pip wheel --disable-pip-version-check --no-deps \
-                   --wheel-dir "$work/out" "maturin==$MATURIN_VERSION" 2>&1 | tee "$log"
+               TMPDIR="$MATURIN_CACHE/tmp" CARGO_TARGET_DIR="$MATURIN_CACHE/target" \
+               CARGO_BUILD_JOBS=1 CARGO_INCREMENTAL=0 MATURIN_NO_INSTALL_RUST=1 \
+               "$PY" -m pip wheel -v --no-deps \
+                   --wheel-dir "$MATURIN_CACHE/out" "maturin==$MATURIN_VERSION" > "$log" 2>&1
         then
+            watch_stop
             shopt -s nullglob
-            built=("$work/out"/maturin-"$MATURIN_VERSION"-*.whl)
+            built=("$MATURIN_CACHE/out/maturin-$MATURIN_VERSION-"*.whl)
             shopt -u nullglob
-            [ "${#built[@]}" -eq 1 ] && valid_maturin_wheel "${built[0]}" \
-                || die "pip reported success but produced no valid maturin wheel in $work/out"
+            if [ "${#built[@]}" -ne 1 ] || ! valid_maturin_wheel "${built[0]}"; then
+                die "pip reported success but produced no valid maturin wheel in $MATURIN_CACHE/out"
+            fi
+            info "maturin compiled: $(grep -cE '^[[:space:]]*Compiling ' "$log" || true) crates"
             rm -rf -- "$MATURIN_CACHE/wheel"
             mkdir -p "$MATURIN_CACHE/wheel"
             mv -- "${built[0]}" "$MATURIN_CACHE/wheel/"
-            rm -rf -- "$work"
+            rm -rf -- "$MATURIN_CACHE/tmp" "$MATURIN_CACHE/out" "$MATURIN_CACHE/target"
             return 0
         fi
-        if grep -Eq "$ETXTBSY_RE" "$log" && [ "$attempt" -lt "$MATURIN_ATTEMPTS" ]; then
-            info "attempt $attempt hit 'Text file busy' (ETXTBSY); emptying $work and retrying"
+        watch_stop
+        if ! grep -Eq "$NOSPACE_RE" "$log" && grep -Eq "$RETRY_RE" "$log" \
+                && [ "$attempt" -lt "$MATURIN_ATTEMPTS" ]; then
+            if grep -Eq "$ETXTBSY_RE" "$log"; then
+                info "attempt $attempt hit 'Text file busy' (ETXTBSY); retrying"
+            else
+                info "attempt $attempt: a compiler process was killed or ran out of memory; retrying"
+            fi
             continue
         fi
-        rm -rf -- "$work"
         printf '\n--- last lines of %s:\n' "$log" >&2
         tail -n 40 "$log" >&2
-        if grep -Eq "$ETXTBSY_RE" "$log"; then
-            die "maturin $MATURIN_VERSION still hit 'Text file busy' after $MATURIN_ATTEMPTS serial attempts. Full log: $log"
+        explain_failure "$log"
+        if grep -Eq "$RETRY_RE" "$log"; then
+            die "compiling maturin $MATURIN_VERSION failed $MATURIN_ATTEMPTS times. Full log: $log"
         fi
-        die "compiling maturin $MATURIN_VERSION failed (not ETXTBSY; not retried). Full log: $log"
+        die "compiling maturin $MATURIN_VERSION failed (a cause that retrying cannot fix). Full log: $log"
     done
 }
+
+# -------------------------------------------------------------- run log ---
+
+on_exit() {
+    local status=$?
+    set +e
+    watch_stop
+    local p
+    for p in ${CLEANUP_PATHS[@]+"${CLEANUP_PATHS[@]}"}; do rm -rf -- "$p"; done
+    if [ -n "$WAKE_LOCKED" ]; then termux-wake-unlock >/dev/null 2>&1; fi
+    if [ -n "$HAVE_LOCK" ]; then rm -rf -- "$LOCK_DIR"; fi
+    if [ "$status" -ne 0 ] && [ -z "$DIED" ] && [ -z "$FINISHED" ]; then
+        printf '\nBUILD FAILED: stopped (exit status %s) during "%s"\n' "$status" "${STEP_NAME:-start}"
+        print_diagnostics
+    fi
+    if [ -n "$RUN_LOG" ]; then printf -- '--- full log: %s\n' "$RUN_LOG"; fi
+    # Let tee write everything before the prompt comes back.
+    if [ -n "$TEE_PID" ]; then
+        exec 1>&- 2>&-
+        wait "$TEE_PID" 2>/dev/null
+    fi
+}
+trap on_exit EXIT
+trap 'printf "\n--- interrupted (Ctrl-C)\n"; exit 130' INT
+trap 'printf "\n--- terminated\n"; exit 143' TERM
+
+mkdir -p "$LOG_DIR" 2>/dev/null || { printf 'BUILD FAILED: cannot create %s\n' "$LOG_DIR" >&2; exit 1; }
+if [ -e "$LOG_DIR/latest.log" ]; then
+    PREV_LOG="$LOG_DIR/$(readlink "$LOG_DIR/latest.log" 2>/dev/null || true)"
+fi
+RUN_LOG="$LOG_DIR/build-$(date +%Y%m%d-%H%M%S)-$$.log"
+: > "$RUN_LOG"
+ln -sfn "$(basename "$RUN_LOG")" "$LOG_DIR/latest.log"
+exec > >(tee -a "$RUN_LOG") 2>&1
+TEE_PID=$!
+# shellcheck disable=SC2012
+ls -1t "$LOG_DIR"/build-*.log 2>/dev/null | tail -n +$((LOG_KEEP + 1)) | while read -r old; do rm -f -- "$old"; done
 
 cd "$RUST_DIR"
 
@@ -232,13 +566,70 @@ unset PYTHONPATH PYTHONHOME PYTHONSTARTUP PYTHONUSERBASE CONDA_PREFIX \
       PYO3_CROSS_LIB_DIR PYO3_CROSS_PYTHON_VERSION PYO3_CROSS_PYTHON_IMPLEMENTATION \
       OTRV4PLUS_ALLOW_TEST_GATES OTRV4PLUS_ALLOW_LEGACY_DAKE_KEYS \
       OTRV4PLUS_ALLOW_RAW_KEY_TEST_API
+export PIP_DISABLE_PIP_VERSION_CHECK=1 PIP_NO_INPUT=1
+
+printf '=== otrv4_core build, %s ===\n' "$(date '+%Y-%m-%d %H:%M:%S')"
+info "device: $(device_summary)"
+info "log:    $RUN_LOG  (also: $LOG_DIR/latest.log)"
 
 step "1/7 Prerequisites"
+# One build at a time: a second one would wait on cargo's lock, silently.
+if ! mkdir "$LOCK_DIR" 2>/dev/null; then
+    other="$(cat "$LOCK_DIR/pid" 2>/dev/null || true)"
+    if [ -n "$other" ] && kill -0 "$other" 2>/dev/null \
+            && { [ ! -r "/proc/$other/cmdline" ] || tr '\0' ' ' < "/proc/$other/cmdline" | grep -q build.sh; }; then
+        die "another build.sh is already running (pid $other). Let it finish, or stop it: kill $other"
+    fi
+    info "removing the lock of an earlier build.sh that is no longer running"
+    rm -rf -- "$LOCK_DIR"
+    mkdir "$LOCK_DIR" || die "cannot create $LOCK_DIR"
+fi
+echo "$$" > "$LOCK_DIR/pid"
+HAVE_LOCK=1
+
+# A previous run that left no result was stopped from outside.
+if [ -n "$PREV_LOG" ] && [ -f "$PREV_LOG" ] && [ "$PREV_LOG" != "$RUN_LOG" ] \
+        && ! grep -Eq '^(BUILD OK|BUILD FAILED)' "$PREV_LOG"; then
+    notice "The previous build did not finish: it stopped without a result." \
+        "Log: $PREV_LOG" \
+        "Its last lines were:"
+    tail -n 8 "$PREV_LOG" | sed 's/^/        /'
+    if is_termux; then
+        android_kill_advice "On a phone this usually means Android stopped Termux's processes."
+    fi
+    info "this run continues from the work already done"
+fi
+
+# Compilers left running by something else hold cargo's lock.
+if [ -d /proc/self ]; then
+    others="$(for f in /proc/[0-9]*/comm; do
+        c="$(cat "$f" 2>/dev/null || true)"
+        case "$c" in cargo|rustc) p="${f#/proc/}"; printf '%s ' "${p%/comm}" ;; esac
+    done)"
+    if [ -n "$others" ]; then
+        notice "Other cargo/rustc processes are running (pid $others)." \
+            "If they are left over from an earlier build, stop them first: kill $others" \
+            "Otherwise this build waits for them."
+    fi
+fi
+
 if is_termux; then
-    info "platform: Termux (PREFIX=${PREFIX:-unset})"
+    info "platform: Termux ${TERMUX_VERSION:-(version unknown)} (PREFIX=${PREFIX:-unset})"
     PKG_HINT_RUST="pkg install rust"
     PKG_HINT_CC="pkg install clang"
     PKG_HINT_PY="pkg install python"
+    # Keep the CPU awake while the screen is off.
+    if command -v termux-wake-lock >/dev/null 2>&1; then
+        if termux-wake-lock >/dev/null 2>&1; then
+            WAKE_LOCKED=1
+            info "holding a Termux wake lock until the build ends; keep Termux open"
+        fi
+    fi
+    if [ -z "${CARGO_BUILD_JOBS:-}" ]; then
+        cpus="$(nproc 2>/dev/null || echo 2)"
+        export CARGO_BUILD_JOBS=$((cpus < TERMUX_MAX_JOBS ? cpus : TERMUX_MAX_JOBS))
+        info "compile jobs: $CARGO_BUILD_JOBS of $cpus CPUs (fewer processes for Android to kill)"
+    fi
 else
     info "platform: $(uname -s) $(uname -m)"
     PKG_HINT_RUST="https://rustup.rs (or your distribution's rust/cargo)"
@@ -257,6 +648,7 @@ BASE_PY="$(command -v python3)"
 BASE_VER="$("$BASE_PY" -c 'import sys; print("%d.%d" % sys.version_info[:2])')"
 "$BASE_PY" -c "import sys; sys.exit(0 if sys.version_info[:2] >= ($PY_MIN_MAJOR, $PY_MIN_MINOR) else 1)" \
     || die "$BASE_PY is Python $BASE_VER; OTRv4+ needs $PY_MIN_MAJOR.$PY_MIN_MINOR or newer"
+info "rustc:  $(rustc --version)"
 info "cargo:  $(cargo --version)"
 info "python: $BASE_PY (Python $BASE_VER)"
 cargo clippy --version >/dev/null 2>&1 \
@@ -268,17 +660,26 @@ if [ ! -x "$PY" ]; then
 fi
 # On Termux maturin is compiled unless the virtualenv or the cache already has
 # it; check now what that compile needs rather than fail inside it.
+compile_maturin=""
 if is_termux && ! have_maturin && ! cached_maturin_wheel >/dev/null; then
+    compile_maturin=1
     info "maturin $MATURIN_VERSION will be compiled once (no installed copy, no cached wheel)"
     rustc_at_least "$MATURIN_RUST_MIN" \
         || die "$(rustc --version) is older than $MATURIN_RUST_MIN, which compiling maturin $MATURIN_VERSION needs. Update: pkg upgrade rust"
 fi
-if is_termux; then
-    mkdir -p "$MATURIN_CACHE" 2>/dev/null && [ -w "$MATURIN_CACHE" ] \
-        || die "cannot write the build cache $MATURIN_CACHE (HOME=${HOME:-unset})"
-    info "maturin cache: $MATURIN_CACHE"
+mkdir -p "$MATURIN_CACHE" 2>/dev/null && [ -w "$MATURIN_CACHE" ] \
+    || die "cannot write the build cache $MATURIN_CACHE (HOME=${HOME:-unset})"
+# Space, before hours of compiling rather than after.
+need_mb=600
+[ -d "$RUST_DIR/target/release" ] || need_mb=$((need_mb + 1800))
+[ -d "$RUST_DIR/mls/target/release" ] || need_mb=$((need_mb + 700))
+[ -z "$compile_maturin" ] || need_mb=$((need_mb + 1200))
+free_mb="$(avail_mb "$REPO_ROOT")"
+if [ -n "$free_mb" ] && [ "$free_mb" -lt "$need_mb" ]; then
+    die "this build needs about $need_mb MB of free storage; only $free_mb MB is free. Free some space (for example: pkg clean) and run bash build.sh again"
 fi
-info "rustc:  $(rustc --version)"
+info "storage: ${free_mb:-?} MB free (this build needs about $need_mb MB)"
+info "memory:  $(mem_summary)"
 
 step "2/7 Project virtualenv: $VENV"
 recreate=""
@@ -301,23 +702,34 @@ if [ -n "$recreate" ]; then
     args=(--system-site-packages)
     [ "$recreate" = "clear" ] && args+=(--clear)
     "$BASE_PY" -m venv "${args[@]}" "$VENV" \
-        || die "could not create $VENV. Debian/Ubuntu: apt install python3-venv"
+        || die "could not create $VENV. Install: $PKG_HINT_PY"
 fi
 "$PY" -c 'import sys; sys.exit(0 if sys.prefix != sys.base_prefix else 1)' \
     || die "$PY is not running inside $VENV"
 if ! "$PY" -m pip --version >/dev/null 2>&1; then
     info "pip missing in the virtualenv; bootstrapping it with ensurepip"
     "$PY" -m ensurepip --upgrade >/dev/null \
-        || die "could not install pip into $VENV. Debian/Ubuntu: apt install python3-venv"
+        || die "could not install pip into $VENV. Install: $PKG_HINT_PY"
 fi
 info "interpreter: $PY ($("$PY" -c 'import sys; print(sys.version.split()[0])'))"
 
-# Every later step -- cargo's PyO3 build scripts, maturin, the import check --
-# uses this interpreter and this environment.
+# Every later step -- cargo's PyO3 build scripts, maturin, the checks -- uses
+# this interpreter and this environment.
 export VIRTUAL_ENV="$VENV"
 export PATH="$VENV/bin:$PATH"
 export PYO3_PYTHON="$PY"
 hash -r
+# The Android API level for the wheel's platform tag: the one this Python was
+# built for, which is exactly what its pip accepts. maturin's own guess reads
+# the kernel's name, which not every Android kernel carries.
+if is_termux && [ -z "${ANDROID_API_LEVEL:-}" ]; then
+    api="$("$PY" -c 'import sys; print(sys.getandroidapilevel())' 2>/dev/null \
+           || (clang -dumpmachine 2>/dev/null | sed -n 's/.*android\([0-9][0-9]*\)$/\1/p') || true)"
+    if [ -n "$api" ]; then
+        export ANDROID_API_LEVEL="$api"
+        info "Android API level for the wheel: $ANDROID_API_LEVEL"
+    fi
+fi
 
 step "3/7 Build tool: maturin $MATURIN_VERSION (in the virtualenv)"
 if have_maturin; then
@@ -339,12 +751,14 @@ elif is_termux; then
     fi
 else
     info "installing maturin==$MATURIN_VERSION into $VENV"
-    info "(on Termux pip compiles it from source: this takes several minutes once)"
     # --ignore-installed: a global maturin of the same version must not
     # satisfy this; the build uses $MATURIN and nothing else.
-    "$PY" -m pip install --disable-pip-version-check --ignore-installed \
-        "maturin==$MATURIN_VERSION" \
-        || die "pip could not install maturin==$MATURIN_VERSION into $VENV (output above)"
+    log="$(mktemp)"
+    CLEANUP_PATHS+=("$log")
+    if ! "$PY" -m pip install --ignore-installed "maturin==$MATURIN_VERSION" 2>&1 | tee "$log"; then
+        explain_failure "$log"
+        die "pip could not install maturin==$MATURIN_VERSION into $VENV (output above)"
+    fi
     have_maturin || die "maturin in $VENV is not version $MATURIN_VERSION after installing it"
 fi
 info "$("$MATURIN" --version) at $MATURIN"
@@ -353,13 +767,13 @@ step "4/7 Rust release tests"
 info "otrv4_core"
 cargo_clean_output cargo test --release
 info "otrv4-mls (secure groups)"
-(cd "$RUST_DIR/mls" && cargo_clean_output cargo test --release)
+run_in "$RUST_DIR/mls" cargo_clean_output cargo test --release
 
 step "5/7 Clippy (-D warnings)"
 info "otrv4_core, all targets, the feature set this build ships (mls)"
 cargo_clean_output cargo clippy --release --all-targets --features mls -- -D warnings
 info "otrv4-mls, all targets, all features"
-(cd "$RUST_DIR/mls" && cargo_clean_output cargo clippy --release --all-targets --all-features -- -D warnings)
+run_in "$RUST_DIR/mls" cargo_clean_output cargo clippy --release --all-targets --all-features -- -D warnings
 
 step "6/7 MLS-enabled release build, installed into the virtualenv"
 # Take out anything a previous build left where Python would find it first,
@@ -388,18 +802,20 @@ shopt -u nullglob
 # pqcrypto-internals' target/ directory -- its C code is a static archive, so
 # the rpath would do nothing except embed a build-machine path in the module.
 WHEEL_DIR="$(mktemp -d)"
-trap 'rm -rf "$WHEEL_DIR"' EXIT
+CLEANUP_PATHS+=("$WHEEL_DIR")
 cargo_clean_output "$MATURIN" build --release --features mls \
     --interpreter "$PY" --out "$WHEEL_DIR"
 shopt -s nullglob
 wheels=("$WHEEL_DIR"/otrv4_core-*.whl)
 shopt -u nullglob
 [ "${#wheels[@]}" -eq 1 ] || die "expected one otrv4_core wheel in $WHEEL_DIR, found ${#wheels[@]}"
+wheel_fits_python "${wheels[0]}" \
+    || die "the built wheel $(basename "${wheels[0]}") does not match this Python's platform (tags above)"
 info "installing $(basename "${wheels[0]}") into $VENV"
-"$PY" -m pip install --disable-pip-version-check --no-deps --force-reinstall "${wheels[0]}" \
+"$PY" -m pip install --no-deps --force-reinstall "${wheels[0]}" \
     || die "pip could not install ${wheels[0]} into $VENV"
 
-step "7/7 Import check"
+step "7/7 Checks: import, client API, MLS on this device"
 # Run from the repository root, as the clients are run, so a module anywhere
 # Python looks first would be found -- and refused.
 (cd "$REPO_ROOT" && OTRV4PLUS_VENV="$VENV" "$PY" - <<'PYEOF'
@@ -436,9 +852,39 @@ mls = hasattr(otrv4_core, "RustMlsClient")
 print("secure groups (MLS): " + ("yes" if mls else "NO"))
 if not mls:
     fail("RustMlsClient missing: the module was built without --features mls")
+
+# Every core function the clients call, and the secure-groups adapter.
+try:
+    import otrv4plus_coreapi
+    import otrv4plus_groups  # noqa: F401  (the /group commands)
+except ImportError as exc:
+    fail("the client modules do not import: %s" % exc)
+missing = otrv4plus_coreapi.missing_core_api(otrv4_core)
+if missing:
+    fail("the core lacks functions the clients call: %s" % ", ".join(missing))
+print("client API check: OK")
+
+# MLS on this device, in memory: two members, one group, one message.
+try:
+    a = otrv4_core.RustMlsClient(b"build-selftest-a")
+    b = otrv4_core.RustMlsClient(b"build-selftest-b")
+    g = b"otrv4plus-build-selftest"
+    a.create_group(g)
+    ev = a.process(g, bytes(a.add_members(g, [bytes(b.key_package())])))
+    assert ev["kind"] == "commit" and ev["ours"] and ev["welcome"], ev["kind"]
+    assert bytes(b.join(bytes(ev["welcome"]))) == g
+    out = b.process(g, bytes(a.encrypt(g, b"mls self-test")))
+    assert out["kind"] == "application" and bytes(out["plaintext"]) == b"mls self-test"
+    a.wipe()
+    b.wipe()
+except Exception as exc:
+    fail("MLS self-test: %s: %s" % (type(exc).__name__, exc))
+print("MLS self-test (2 members, 1 message): OK")
 PYEOF
-) || die "the installed module did not pass the import check"
+) || die "the installed module did not pass the checks above"
 
 step "Done"
+FINISHED=1
+printf '\nBUILD OK in %s\n' "$(fmt_secs $(($(now) - BUILD_T0)))"
 info "run the clients with the project interpreter, from the repository root:"
 info "  cd $REPO_ROOT && PYTHONMALLOC=malloc .venv/bin/python otrv4plus_xmpp.py --jid ..."

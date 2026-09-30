@@ -150,8 +150,16 @@ step 1), installs its pinned build tool there (on Termux it compiles it once,
 serially, and keeps the result in `~/.cache/otrv4plus`), runs the Rust tests
 and lints,
 installs the core with secure groups (MLS) into `.venv`, and ends with
-`otrv4_core imported OK` and `secure groups (MLS): yes`. Run the clients with
-`.venv/bin/python`, as in step 5.
+`otrv4_core imported OK` and `secure groups (MLS): yes`, then `BUILD OK`. Run
+the clients with `.venv/bin/python`, as in step 5.
+
+On a phone, keep Termux open until it finishes (it holds a wake lock), set
+Settings > Apps > Termux > Battery to Unrestricted, and on Android 14+ turn on
+Developer options > "Disable child process restrictions": Android otherwise
+kills long builds. Long steps print progress every minute and say plainly if
+nothing is happening. Every run is logged in full to
+`~/.cache/otrv4plus/logs/latest.log`; if a build fails, that file is what to
+send. Running `bash build.sh` again resumes from the work already done.
 
 **3. Update later.** Pull, then rebuild the core, because both the Python
 files and the Rust core change:

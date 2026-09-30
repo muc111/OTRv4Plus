@@ -37,6 +37,18 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
   from there on later runs. Prerequisites (rustc versions, a C compiler,
   venv) are checked before anything is built; the project's own cargo
   commands retry that one error serially too.
+- **Termux build: every run explains itself.** Full log in
+  `~/.cache/otrv4plus/logs/` (`latest.log`), with device and toolchain; a
+  heartbeat during long steps (time, crates compiled, whether the compiler is
+  using CPU) that says plainly when nothing is happening; `BUILD OK` or
+  `BUILD FAILED` with the cause and a diagnostics block. A build Android
+  killed is reported by the next run, which resumes (the maturin target is
+  kept; its last retry starts clean). Killed compilers and memory exhaustion
+  are retried with one job at a time; a full disk is named, and free space is
+  checked first. A wake lock is held, parallel jobs are capped at 4 on a
+  phone, a second concurrent build is refused, and the Android API level for
+  the wheel comes from Python itself. The final step also checks every core
+  function the clients call and runs an MLS round trip on the device.
 - **Zero compiler and clippy warnings.** Deprecated `GenericArray` calls
   replaced with the equivalent trait conversions (same length checks, no
   copies); clippy findings fixed rather than allowed. The off-by-default

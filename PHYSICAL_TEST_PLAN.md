@@ -161,8 +161,11 @@ cutoff against history replay.
 
 Build each Termux core with MLS: `cd Rust && bash build.sh` (it sets up
 `.venv` itself and must end with `otrv4_core imported OK` and
-`secure groups (MLS): yes`); run the client as `.venv/bin/python
-otrv4plus_xmpp.py ...` from the repository root. All three on the same XMPP server, which must
+`secure groups (MLS): yes`, `client API check: OK`, `MLS self-test (2
+members, 1 message): OK` and `BUILD OK`); run the client as `.venv/bin/python
+otrv4plus_xmpp.py ...` from the repository root. If a build fails or stops,
+keep `~/.cache/otrv4plus/logs/latest.log` for the report (README step 2 lists
+the Android settings that stop it being killed). All three on the same XMPP server, which must
 offer a MUC service (e.g. `conference.<domain>`). Room used below:
 `circle@conference.<domain>`. Record PASS/FAIL per step.
 
