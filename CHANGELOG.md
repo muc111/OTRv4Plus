@@ -54,10 +54,15 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
   linking -- awk, handed every /proc/*/stat at once, stops at the first
   process that has exited and skips the rest. Each file is now read on its
   own; if activity cannot be seen at all it says so instead of reporting 0,
-  and never calls that a stall. The wheel is installed without pip trying to
-  remove an old copy in the system Python, and such a copy is named at the
-  end with the command to remove it, since `python otrv4plus_xmpp.py` would
-  load it instead of this build.
+  and never calls that a stall.
+- **One core per phone.** Before installing, the build removes older
+  otrv4_core copies from the system Python and its user site (pip-installed
+  ones with pip; a module copied into site-packages by hand is deleted), as
+  well as the old copy in .venv and the repository root -- `python
+  otrv4plus_xmpp.py` would otherwise load an old core without secure groups.
+  Anything it may not remove (outside a site-packages directory) is named
+  with the command to delete it. An unexpected stop now names the command
+  that failed.
 - **Zero compiler and clippy warnings.** Deprecated `GenericArray` calls
   replaced with the equivalent trait conversions (same length checks, no
   copies); clippy findings fixed rather than allowed. The off-by-default

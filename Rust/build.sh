@@ -557,6 +557,7 @@ on_exit() {
     if [ -n "$HAVE_LOCK" ]; then rm -rf -- "$LOCK_DIR"; fi
     if [ "$status" -ne 0 ] && [ -z "$DIED" ] && [ -z "$FINISHED" ]; then
         printf '\nBUILD FAILED: stopped (exit status %s) during "%s"\n' "$status" "${STEP_NAME:-start}"
+        if [ -n "$LAST_ERR" ]; then printf -- '--- the command that failed: build.sh %s\n' "$LAST_ERR"; fi
         print_diagnostics
     fi
     if [ -n "$RUN_LOG" ]; then printf -- '--- full log: %s\n' "$RUN_LOG"; fi
@@ -567,6 +568,10 @@ on_exit() {
     fi
 }
 trap on_exit EXIT
+# Remember the command that failed, so an unexpected stop says where.
+set -o errtrace
+LAST_ERR=""
+trap 'LAST_ERR="line $LINENO: $BASH_COMMAND"' ERR
 trap 'printf "\n--- interrupted (Ctrl-C)\n"; exit 130' INT
 trap 'printf "\n--- terminated\n"; exit 143' TERM
 
@@ -800,6 +805,57 @@ cargo_clean_output cargo clippy --release --all-targets --features mls -- -D war
 info "otrv4-mls, all targets, all features"
 run_in "$RUST_DIR/mls" cargo_clean_output cargo clippy --release --all-targets --all-features -- -D warnings
 
+# Where the system Python (with its user site) finds an otrv4_core, or
+# nothing. Run from / so the repository is not on the path.
+outside_core() {
+    (cd / && "$BASE_PY" -c 'import importlib.util as u
+s = u.find_spec("otrv4_core")
+print(s.origin if s and s.origin else "")' 2>/dev/null) || true
+}
+
+# One core: this build's, in .venv. Older ones installed into the system
+# Python (pip install ./Rust, or a copied .so) are removed, because
+# `python otrv4plus_xmpp.py` would load them instead. pip removes what it
+# installed; a module copied by hand is deleted only when it is plainly an
+# otrv4_core file or directory inside a site-packages directory.
+remove_outside_cores() {
+    local where before ver target round out
+    out="$(mktemp)"
+    CLEANUP_PATHS+=("$out")
+    for round in 1 2 3 4; do
+        where="$(outside_core)"
+        [ -n "$where" ] || return 0
+        ver="$(cd / && "$BASE_PY" -m pip show otrv4_core 2>/dev/null | sed -n 's/^Version: //p' || true)"
+        info "removing an older otrv4_core${ver:+ $ver} from the system Python: $where"
+        before="$where"
+        "$BASE_PY" -m pip uninstall -y --break-system-packages otrv4_core > "$out" 2>&1 \
+            || "$BASE_PY" -m pip uninstall -y otrv4_core >> "$out" 2>&1 || true
+        where="$(outside_core)"
+        if [ "$where" = "$before" ]; then
+            # Not something pip installed: a module copied into place.
+            target="$where"
+            case "$target" in */__init__.py) target="${target%/__init__.py}" ;; esac
+            case "$(basename "$(dirname "$target")")/$(basename "$target")" in
+                site-packages/otrv4_core*|dist-packages/otrv4_core*)
+                    rm -rf -- "$target" 2>>"$out" || true ;;
+            esac
+            if [ "$(outside_core)" = "$before" ]; then
+                sed 's/^/        /' "$out"
+                notice "Could not remove the older otrv4_core at:" \
+                    "  $before" \
+                    "Start the clients with .venv/bin/python, which uses this build;" \
+                    "'python otrv4plus_xmpp.py' would load the old copy. Remove it by hand:" \
+                    "  rm -rf '$target'"
+                return 0
+            fi
+        fi
+        [ "$round" -lt 4 ] || break
+    done
+    if [ -n "$(outside_core)" ]; then
+        notice "An older otrv4_core is still found by the system Python at $(outside_core)."
+    fi
+}
+
 step "6/7 MLS-enabled release build, installed into the virtualenv"
 # Take out anything a previous build left where Python would find it first,
 # so the import check below can only succeed with what is built now.
@@ -821,6 +877,7 @@ for stale in "$REPO_ROOT"/otrv4_core*.so "$REPO_ROOT"/otrv4_core*.pyd; do
     rm -f -- "$stale"
 done
 shopt -u nullglob
+remove_outside_cores
 # A regular wheel, installed the way `maturin develop` installs one (pip
 # --no-deps --force-reinstall), but not editable: the editable path adds every
 # native link-search directory to the rpath, which here is only
@@ -837,9 +894,8 @@ shopt -u nullglob
 wheel_fits_python "${wheels[0]}" \
     || die "the built wheel $(basename "${wheels[0]}") does not match this Python's platform (tags above)"
 info "installing $(basename "${wheels[0]}") into $VENV"
-# --ignore-installed: the old copy in .venv is already gone (above); a copy in
-# the system Python is not this build's to remove, and pip would only report
-# that it cannot.
+# --ignore-installed: the old copies are already gone (above), and pip must
+# not go looking for one outside .venv.
 "$PY" -m pip install --no-deps --ignore-installed "${wheels[0]}" \
     || die "pip could not install ${wheels[0]} into $VENV"
 
@@ -910,24 +966,6 @@ except Exception as exc:
 print("MLS self-test (2 members, 1 message): OK")
 PYEOF
 ) || die "the installed module did not pass the checks above"
-
-# A core installed into the system Python by an older recipe is what a plain
-# `python otrv4plus_xmpp.py` would load. Name it, so nobody tests with it.
-global_core="$(cd / && "$BASE_PY" -s -c 'import importlib.util as u, importlib.metadata as m
-s = u.find_spec("otrv4_core")
-if s:
-    try:
-        v = m.version("otrv4_core")
-    except Exception:
-        v = "unknown version"
-    print("%s (%s)" % (s.origin, v))' 2>/dev/null || true)"
-if [ -n "$global_core" ]; then
-    notice "An older otrv4_core is also installed in the system Python:" \
-        "  $global_core" \
-        "Start the clients with .venv/bin/python (below), which uses this build." \
-        "'python otrv4plus_xmpp.py' would load that old copy, without secure groups." \
-        "To remove it: $BASE_PY -m pip uninstall --break-system-packages otrv4_core"
-fi
 
 step "Done"
 FINISHED=1
