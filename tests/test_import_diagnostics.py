@@ -84,8 +84,11 @@ class TestTheOtherTwoCasesAreStillHandled:
 
     def test_a_missing_rust_core_gets_build_instructions(self):
         text = advice_for(ImportError("x", name="otrv4_core"))
-        assert "cargo build --release --features extension-module" in text
-        assert "libotrv4_core.so" in text
+        assert "bash build.sh" in text
+        assert ".venv/bin/python" in text
+        # The old recipe put a second core in the repository root, which
+        # shadows the one build.sh installs; it must not be suggested again.
+        assert "../otrv4_core.so" not in text
 
     def test_anything_else_falls_back_to_the_placement_hint(self):
         """A SyntaxError in otrv4+.py, a missing symlink, a permissions

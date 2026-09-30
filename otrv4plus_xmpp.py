@@ -467,15 +467,17 @@ def _import_failure_advice(exc):
 
     if missing == "otrv4_core":
         return [
-            "The Rust core is missing. Build it and copy the shared library "
-            "next to this script:",
-            "    cd Rust && cargo build --release --features extension-module",
-            "    cp target/release/libotrv4_core.so ../otrv4_core.so",
+            "The Rust core is missing from this Python. Build and install it "
+            "(this also removes any older copies):",
+            "    cd Rust && bash build.sh",
+            "then start the client with the project's Python, from the "
+            "repository root:",
+            "    .venv/bin/python otrv4plus_xmpp.py ...",
         ]
 
     return [
-        "Ensure otrv4+.py, the otrv4plus.py symlink, and otrv4_core.so are "
-        "in this directory.",
+        "Ensure otrv4+.py and the otrv4plus.py symlink are in this directory, "
+        "and that the core was installed with Rust/build.sh.",
     ]
 
 
