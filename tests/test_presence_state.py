@@ -34,8 +34,8 @@ import pytest
 import otrv4plus_presence as presence
 from otrv4plus_presence import OFFLINE, ONLINE, UNKNOWN, PresenceBook
 
-ALICE = "alice@xmpp-elite.i2p"
-BOB = "bob@xmpp-elite.i2p"
+ALICE = "alice@otrv4plus.i2p"
+BOB = "bob@otrv4plus.i2p"
 
 
 @pytest.fixture
@@ -250,9 +250,9 @@ class TestTheCaseHalfOfTheDocumentedRule:
     """
 
     #: The same account as the server, as the user types it, and per device.
-    SPELLINGS = ("alice@xmpp-elite.i2p", "Alice@XMPP-Elite.i2p",
-                 "ALICE@XMPP-ELITE.I2P", "alice@xmpp-elite.i2p/phone",
-                 "Alice@XMPP-Elite.i2p/Desktop", "  alice@xmpp-elite.i2p  ")
+    SPELLINGS = ("alice@otrv4plus.i2p", "Alice@OTRv4Plus.i2p",
+                 "ALICE@OTRV4PLUS.I2P", "alice@otrv4plus.i2p/phone",
+                 "Alice@OTRv4Plus.i2p/Desktop", "  alice@otrv4plus.i2p  ")
 
     @pytest.mark.parametrize("spelling", SPELLINGS)
     def test_every_spelling_reads_the_same_state(self, book, spelling):

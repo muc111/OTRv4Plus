@@ -16,7 +16,7 @@ import kotlin.test.assertTrue
  */
 class RoomAddressTest {
 
-    private val service = "rooms.xmpp-elite.i2p"
+    private val service = "rooms.otrv4plus.i2p"
 
     private fun resolved(typed: String, svc: String? = service): String {
         val outcome = RoomAddress.resolve(typed, svc)
@@ -36,7 +36,7 @@ class RoomAddressTest {
 
     @Test
     fun `a bare name becomes a JID on the discovered service`() {
-        assertEquals("myroom@rooms.xmpp-elite.i2p", resolved("myroom"))
+        assertEquals("myroom@rooms.otrv4plus.i2p", resolved("myroom"))
     }
 
     @Test
@@ -47,12 +47,12 @@ class RoomAddressTest {
 
     @Test
     fun `surrounding whitespace is not part of the name`() {
-        assertEquals("myroom@rooms.xmpp-elite.i2p", resolved("  myroom  "))
+        assertEquals("myroom@rooms.otrv4plus.i2p", resolved("  myroom  "))
     }
 
     @Test
     fun `a room name is case-folded like any JID`() {
-        assertEquals("myroom@rooms.xmpp-elite.i2p", resolved("MyRoom"))
+        assertEquals("myroom@rooms.otrv4plus.i2p", resolved("MyRoom"))
     }
 
     // ── a full address still works ───────────────────────────────────────────

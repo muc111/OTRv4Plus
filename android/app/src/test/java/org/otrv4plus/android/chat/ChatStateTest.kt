@@ -30,8 +30,8 @@ import kotlin.test.assertTrue
  */
 class ChatStateTest {
 
-    private val alice = "alice@xmpp-elite.i2p"
-    private val bob = "bob@xmpp-elite.i2p"
+    private val alice = "alice@otrv4plus.i2p"
+    private val bob = "bob@otrv4plus.i2p"
 
     private fun state(vararg roster: Contact): ChatState {
         val s = ChatState()
@@ -133,10 +133,10 @@ class ChatStateTest {
     @Test
     fun `a contact with no roster entry has unknown presence`() {
         val s = state()
-        s.receive(inbound("stranger@xmpp-elite.i2p", "hello"))
+        s.receive(inbound("stranger@otrv4plus.i2p", "hello"))
         assertEquals(
             Presence.UNKNOWN,
-            s.conversation("stranger@xmpp-elite.i2p").presence,
+            s.conversation("stranger@otrv4plus.i2p").presence,
         )
     }
 
@@ -165,9 +165,9 @@ class ChatStateTest {
     fun `a message from a stranger does not land in the open conversation`() {
         val s = state(contact(bob))
         s.open(bob)
-        s.receive(inbound("mallory@xmpp-elite.i2p", "hello"))
+        s.receive(inbound("mallory@otrv4plus.i2p", "hello"))
         assertTrue(s.messages(bob).isEmpty())
-        assertEquals(1, s.messages("mallory@xmpp-elite.i2p").size)
+        assertEquals(1, s.messages("mallory@otrv4plus.i2p").size)
     }
 
     @Test
@@ -804,7 +804,7 @@ class ChatStateTest {
 
     // ── rooms ────────────────────────────────────────────────────────────────
 
-    private val room = "lobby@rooms.xmpp-elite.i2p"
+    private val room = "lobby@rooms.otrv4plus.i2p"
 
     private fun roomLine(sender: String, body: String, at: Double = 1_700.0) =
         OtrEvent.RoomMessageReceived(room = room, sender = sender, body = body,
@@ -838,7 +838,7 @@ class ChatStateTest {
     fun `a room is only a room for the account that joined it`() {
         val s = state()
         s.noteRoom(room)
-        s.bindAccount(AccountScope.of("dave@xmpp-elite.i2p"))
+        s.bindAccount(AccountScope.of("dave@otrv4plus.i2p"))
         assertFalse(s.isRoom(room))
     }
 

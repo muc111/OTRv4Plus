@@ -18,8 +18,8 @@ import kotlin.test.assertTrue
  */
 class MessageStoreTest {
 
-    private val alice = "alice@xmpp-elite.i2p"
-    private val bob = "bob@xmpp-elite.i2p"
+    private val alice = "alice@otrv4plus.i2p"
+    private val bob = "bob@otrv4plus.i2p"
 
     private fun message(
         id: String,

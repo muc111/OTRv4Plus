@@ -28,11 +28,11 @@ import kotlin.test.assertTrue
  */
 class WelcomeDiscoveryTest {
 
-    private val me = "me@xmpp-elite.i2p"
-    private val alice = "alice@xmpp-elite.i2p"
-    private val bob = "bob@xmpp-elite.i2p"
-    private val carol = "carol@xmpp-elite.i2p"
-    private val dave = "dave@xmpp-elite.i2p"
+    private val me = "me@otrv4plus.i2p"
+    private val alice = "alice@otrv4plus.i2p"
+    private val bob = "bob@otrv4plus.i2p"
+    private val carol = "carol@otrv4plus.i2p"
+    private val dave = "dave@otrv4plus.i2p"
 
     private fun contact(jid: String, presence: PeerPresence,
                         subscription: Subscription = Subscription.BOTH) =
@@ -63,7 +63,7 @@ class WelcomeDiscoveryTest {
     @Test
     fun `a roster contact in the room stays one Online - Added row`() {
         val s = state(contact(alice, PeerPresence.ONLINE))
-        s.applyWelcome(welcome(alice, "ALICE@xmpp-elite.i2p"))
+        s.applyWelcome(welcome(alice, "ALICE@otrv4plus.i2p"))
         val rows = s.directory()
         assertEquals(1, rows.size)
         assertEquals(R.ADDED_ONLINE, rows.single().relation)
@@ -93,7 +93,7 @@ class WelcomeDiscoveryTest {
         s.applyConnection(ConnectionStatus(stage = "failed", connected = false))
         assertTrue(s.directory().isEmpty(), "a stale occupant outlived our stream")
         s.applyConnection(ConnectionStatus(stage = "connected", connected = true))
-        s.bindAccount(AccountScope.of("other@xmpp-elite.i2p"))
+        s.bindAccount(AccountScope.of("other@otrv4plus.i2p"))
         assertEquals(WelcomeView.NONE, s.welcome)
     }
 

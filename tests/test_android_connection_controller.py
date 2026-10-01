@@ -28,9 +28,9 @@ from android_bridge.connection import ConnectionController, SamProbe
 from android_bridge.settings import ConnectionProfile
 from android_bridge.transport import TransportError
 
-JID = "alice@xmpp-elite.i2p"
+JID = "alice@otrv4plus.i2p"
 # The default is a NAME the router resolves, and the JID's own domain.
-SERVER = "xmpp-elite.i2p"
+SERVER = "otrv4plus.i2p"
 
 
 class FakeApp:
@@ -352,7 +352,7 @@ class TestWhatCrossedTheBoundary:
         got = ctl.inputs()
         assert got["jid"] == JID
         assert got["jid_localpart_present"] is True
-        assert got["jid_domain"] == "xmpp-elite.i2p"
+        assert got["jid_domain"] == "otrv4plus.i2p"
 
     def test_the_tunnel_target_is_the_server_not_the_jid_domain(self):
         """These differ on purpose: the SAM stream goes to the c2s
@@ -525,17 +525,17 @@ class TestASubscriptionRequestReachesTheUser:
     def test_a_request_is_queued_rather_than_logged(self):
         ctl, made = build()
         ctl.connect("pw")
-        made["transport"].on_subscription_request("bob@xmpp-elite.i2p")
+        made["transport"].on_subscription_request("bob@otrv4plus.i2p")
         got = self._requests(ctl)
         assert len(got) == 1, "the request never reached the event queue"
-        assert got[0]["peer"] == "bob@xmpp-elite.i2p"
+        assert got[0]["peer"] == "bob@otrv4plus.i2p"
 
     def test_it_crosses_as_flat_primitives(self):
         """What the old comment was about: a nested or non-dataclass value
         arrives in Kotlin with no fields and the mapper drops it."""
         ctl, made = build()
         ctl.connect("pw")
-        made["transport"].on_subscription_request("bob@xmpp-elite.i2p")
+        made["transport"].on_subscription_request("bob@otrv4plus.i2p")
         item = self._requests(ctl)[0]
         for key, value in item.items():
             assert isinstance(value, (str, int, float, bool)) or value is None, (
@@ -548,7 +548,7 @@ class TestASubscriptionRequestReachesTheUser:
         ctl, made = build()
         ctl.connect("pw")
         made["transport"].subscription_policy = "ask"
-        made["transport"].on_subscription_request("bob@xmpp-elite.i2p")
+        made["transport"].on_subscription_request("bob@otrv4plus.i2p")
         assert self._requests(ctl)[0]["policy"] == "ask"
 
     def test_the_policy_is_read_from_the_transport_not_the_request(self):
@@ -557,7 +557,7 @@ class TestASubscriptionRequestReachesTheUser:
         ctl, made = build()
         ctl.connect("pw")
         made["transport"].subscription_policy = "accept"
-        made["transport"].on_subscription_request("bob@xmpp-elite.i2p")
+        made["transport"].on_subscription_request("bob@otrv4plus.i2p")
         assert self._requests(ctl)[0]["policy"] == "accept"
         assert ctl.subscription_policy() == "accept"
 
@@ -596,7 +596,7 @@ class TestASubscriptionRequestReachesTheUser:
             raise RuntimeError("sink is broken")
 
         ctl._events.on_event = boom
-        made["transport"].on_subscription_request("bob@xmpp-elite.i2p")
+        made["transport"].on_subscription_request("bob@otrv4plus.i2p")
 
     def test_answering_reaches_the_transport(self):
         ctl, made = build()
@@ -604,12 +604,12 @@ class TestASubscriptionRequestReachesTheUser:
         seen = []
         made["transport"].answer_subscription = (
             lambda jid, approve: seen.append((jid, approve)))
-        assert ctl.answer_subscription("bob@xmpp-elite.i2p", True)["ok"]
-        assert seen == [("bob@xmpp-elite.i2p", True)]
+        assert ctl.answer_subscription("bob@otrv4plus.i2p", True)["ok"]
+        assert seen == [("bob@otrv4plus.i2p", True)]
 
     def test_answering_without_a_connection_says_so(self):
         ctl, _ = build()
-        got = ctl.answer_subscription("bob@xmpp-elite.i2p", True)
+        got = ctl.answer_subscription("bob@otrv4plus.i2p", True)
         assert got["ok"] is False
         assert got["code"] == "not_connected"
 

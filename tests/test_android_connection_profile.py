@@ -27,13 +27,13 @@ from android_bridge.settings import (
     ConnectionProfile, DEFAULT_SERVER, ProfileError, default_profile,
 )
 
-GOOD = "alice@xmpp-elite.i2p"
+GOOD = "alice@otrv4plus.i2p"
 
 
 class TestTheSharedRulesAreActuallyShared:
     """The CLI and the settings screen must agree about what an address is.
 
-    Not a style point. They disagreed once already -- `bob@xmpp-elite` passed
+    Not a style point. They disagreed once already -- `bob@otrv4plus` passed
     every check the CLI had and produced a session that looked broken at both
     ends for an hour (tests/test_peer_address_mistakes.py). One set of rules,
     used by both, is how that stays fixed.
@@ -78,10 +78,10 @@ class TestTheSharedRulesAreActuallyShared:
         against the pre-refactor source) cannot live in the suite because it
         needs a commit that keeps moving. This is the durable half.
         """
-        assert address.jid_error("bob@xmpp-elite", "--peer") == (
-            "Invalid --peer: 'bob@xmpp-elite'\n"
+        assert address.jid_error("bob@otrv4plus", "--peer") == (
+            "Invalid --peer: 'bob@otrv4plus'\n"
             "  Expected  user@server.b32.i2p"
-        ) or address.jid_error("bob@xmpp-elite", "--peer") is None, (
+        ) or address.jid_error("bob@otrv4plus", "--peer") is None, (
             "a single-label domain is accepted -- that is the v10.18.3 bug "
             "and is covered by tests/test_peer_address_mistakes.py, not here")
         assert address.jid_error("alice@xmpp..i2p", "--jid") == (
@@ -97,15 +97,15 @@ class TestTheServerFieldCatchesTheCommonMistake:
 
     def test_a_jid_in_the_server_field_is_named_as_such(self):
         """"Server" and "address" are close enough in ordinary use."""
-        err = address.server_error("alice@xmpp-elite.i2p")
+        err = address.server_error("alice@otrv4plus.i2p")
         assert err is not None and "not an account" in err
 
     def test_a_bare_host_is_fine(self):
-        assert address.server_error("xmpp-elite.i2p") is None
+        assert address.server_error("otrv4plus.i2p") is None
 
     def test_whitespace_is_caught_rather_than_stripped(self):
         """Silently trimming hides a paste that brought a newline with it."""
-        assert address.server_error(" xmpp-elite.i2p") is not None
+        assert address.server_error(" otrv4plus.i2p") is not None
 
 
 class TestThePortField:
@@ -168,7 +168,7 @@ class TestTheB32ShapeIsChecked:
 
     def test_a_short_i2p_name_has_no_shape_to_check(self):
         """Resolved by the hosts file or a NAMING LOOKUP, not by its spelling."""
-        assert address.b32_error("xmpp-elite.i2p") is None
+        assert address.b32_error("otrv4plus.i2p") is None
         assert address.b32_error("anything-at-all.i2p") is None
 
     def test_extra_labels_before_the_suffix_are_rejected(self):
@@ -189,10 +189,10 @@ class TestTheShippedDefault:
         A NAME, resolved by the router's NAMING LOOKUP on every connect --
         never a compiled-in destination, which is what stranded every
         install when the server was recreated (test_i2p_naming_no_dns.py)."""
-        assert DEFAULT_SERVER == "xmpp-elite.i2p"
+        assert DEFAULT_SERVER == "otrv4plus.i2p"
 
     def test_a_fresh_install_gets_a_usable_profile(self):
-        p = default_profile("alice@xmpp-elite.i2p")
+        p = default_profile("alice@otrv4plus.i2p")
         assert p is not None
         assert p.is_default_server is True
         assert p.is_complete is True
@@ -233,7 +233,7 @@ class TestTheUserCanLeaveTheDefaultServer:
 
     def test_an_unset_server_falls_back_to_the_jid_domain(self):
         """What the command line does when --server is not given."""
-        assert ConnectionProfile(jid=GOOD).effective_server == "xmpp-elite.i2p"
+        assert ConnectionProfile(jid=GOOD).effective_server == "otrv4plus.i2p"
 
     def test_the_default_is_only_the_default_when_one_is_configured(self):
         """Shipping without a default must not make everything "the default"."""

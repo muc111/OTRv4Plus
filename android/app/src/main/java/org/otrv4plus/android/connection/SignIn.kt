@@ -20,7 +20,7 @@ package org.otrv4plus.android.connection
  * WHAT THE USER SHOULD HAVE TO KNOW
  * ---------------------------------
  * Their username, their password, and which server they are on. NOT a b32
- * address: a short name like "xmpp-elite.i2p" is resolved by the phone's I2P
+ * address: a short name like "otrv4plus.i2p" is resolved by the phone's I2P
  * router (SAM NAMING LOOKUP) every time the app connects, so the sign-in
  * screen is an ordinary sign-in screen. No destination is compiled in: one
  * was, and when the server was recreated the app kept dialling the old one.
@@ -44,7 +44,7 @@ object SignIn {
      * leaving [Target.server] blank, which is what "route to the JID's own
      * default" means at the bridge.
      */
-    const val DEFAULT_DOMAIN = "xmpp-elite.i2p"
+    const val DEFAULT_DOMAIN = "otrv4plus.i2p"
 
     /**
      * The username field on first launch: EMPTY. Never a demo, test or admin
@@ -100,7 +100,7 @@ object SignIn {
      * Resolve what was typed.
      *
      * A bare username takes the selected server's domain, which is the whole
-     * point of the dropdown: "alice" plus "xmpp-elite.i2p" is an account, and
+     * point of the dropdown: "alice" plus "otrv4plus.i2p" is an account, and
      * making somebody type the domain they just picked from a list is the kind
      * of thing that makes an app feel like a configuration file.
      *

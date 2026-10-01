@@ -5,7 +5,7 @@ THE PROBLEM
 ===========
 `.i2p` names are not DNS.  A router resolves only what is in its own address
 book, built from subscriptions, and a private server is in nobody's
-subscription.  So `xmpp-elite.i2p` resolves on the machine that created it and
+subscription.  So `otrv4plus.i2p` resolves on the machine that created it and
 nowhere else, while the 52-character `.b32.i2p` form works everywhere because
 it *is* the destination hash.
 
@@ -51,22 +51,22 @@ def _hosts(text):
 class TestTheFileFormat:
 
     def test_a_simple_mapping(self):
-        assert otr.i2p_aliases(_hosts("xmpp-elite.i2p = %s\n" % B32)) == {
-            "xmpp-elite.i2p": B32}
+        assert otr.i2p_aliases(_hosts("otrv4plus.i2p = %s\n" % B32)) == {
+            "otrv4plus.i2p": B32}
 
     def test_whitespace_form_works_too(self):
-        assert otr.i2p_aliases(_hosts("xmpp-elite.i2p   %s\n" % B32)) == {
-            "xmpp-elite.i2p": B32}
+        assert otr.i2p_aliases(_hosts("otrv4plus.i2p   %s\n" % B32)) == {
+            "otrv4plus.i2p": B32}
 
     def test_comments_and_blank_lines_are_ignored(self):
         text = ("# my server\n"
                 "\n"
-                "xmpp-elite.i2p = %s   # trailing note\n" % B32)
-        assert otr.i2p_aliases(_hosts(text)) == {"xmpp-elite.i2p": B32}
+                "otrv4plus.i2p = %s   # trailing note\n" % B32)
+        assert otr.i2p_aliases(_hosts(text)) == {"otrv4plus.i2p": B32}
 
     def test_names_are_case_insensitive(self):
-        assert "xmpp-elite.i2p" in otr.i2p_aliases(
-            _hosts("XMPP-Elite.I2P = %s\n" % B32))
+        assert "otrv4plus.i2p" in otr.i2p_aliases(
+            _hosts("OTRv4Plus.I2P = %s\n" % B32))
 
     def test_a_missing_file_is_not_an_error(self):
         assert otr.i2p_aliases("/no/such/file") == {}
@@ -74,8 +74,8 @@ class TestTheFileFormat:
     def test_one_bad_line_does_not_break_the_rest(self):
         """A typo must not make the client unusable."""
         text = ("broken line with no destination at all here now\n"
-                "xmpp-elite.i2p = %s\n" % B32)
-        assert otr.i2p_aliases(_hosts(text)) == {"xmpp-elite.i2p": B32}
+                "otrv4plus.i2p = %s\n" % B32)
+        assert otr.i2p_aliases(_hosts(text)) == {"otrv4plus.i2p": B32}
 
 
 class TestWhatIsRefused:
@@ -103,12 +103,12 @@ class TestWhatIsRefused:
 class TestSubstitution:
 
     def test_a_short_name_is_substituted(self, monkeypatch, capsys):
-        path = _hosts("xmpp-elite.i2p = %s\n" % B32)
+        path = _hosts("otrv4plus.i2p = %s\n" % B32)
         monkeypatch.setattr(otr, "i2p_hosts_path", lambda: path)
-        host, source = otr.I2PSAMConnection._apply_i2p_alias("xmpp-elite.i2p")
+        host, source = otr.I2PSAMConnection._apply_i2p_alias("otrv4plus.i2p")
         assert host == B32
         assert source == path
-        assert "xmpp-elite.i2p" in capsys.readouterr().out, (
+        assert "otrv4plus.i2p" in capsys.readouterr().out, (
             "the substitution is silent; the user cannot see which "
             "destination they actually reached")
 
@@ -133,10 +133,10 @@ class TestTheErrorSaysWhatToDo:
 
     def test_an_unresolvable_short_name_names_the_file_and_the_line(self):
         msg = otr.I2PSAMConnection._explain_resolve_failure(
-            "xmpp-elite.i2p", "NAMING REPLY RESULT=KEY_NOT_FOUND", None)
+            "otrv4plus.i2p", "NAMING REPLY RESULT=KEY_NOT_FOUND", None)
         assert "not global the way DNS is" in msg
         assert "b32.i2p" in msg
-        assert "xmpp-elite.i2p = " in msg, (
+        assert "otrv4plus.i2p = " in msg, (
             "the message does not show the line to add")
         assert otr.i2p_hosts_path() in msg
 
@@ -158,7 +158,7 @@ class TestTheTransportChoiceIsUnchanged:
     TRANSPORT_POLICY.md."""
 
     def test_a_short_name_still_reads_as_i2p(self):
-        for name in ("xmpp-elite.i2p", B32):
+        for name in ("otrv4plus.i2p", B32):
             assert name.endswith(".i2p")
 
     def test_the_alias_file_cannot_point_at_a_non_i2p_destination(self):
@@ -291,49 +291,49 @@ class TestShippedDefaults:
         assert otr.i2p_aliases(otr.i2p_hosts_defaults_path()) == {}
 
     def test_a_default_applies_when_the_user_has_no_file(self):
-        d = self._defaults("xmpp-elite.i2p = %s\n" % B32)
+        d = self._defaults("otrv4plus.i2p = %s\n" % B32)
         merged = otr.resolve_i2p_aliases(user_path="/no/such/file",
                                          defaults_path=d)
-        assert merged == {"xmpp-elite.i2p": B32}
+        assert merged == {"otrv4plus.i2p": B32}
 
     def test_a_hand_written_entry_beats_the_shipped_default(self):
         """Someone who typed a line meant it.  An update does not overrule
         them."""
-        d = self._defaults("xmpp-elite.i2p = %s\n" % OTHER_B32)
-        u = _hosts("xmpp-elite.i2p = %s\n" % B32)          # no learned marker
+        d = self._defaults("otrv4plus.i2p = %s\n" % OTHER_B32)
+        u = _hosts("otrv4plus.i2p = %s\n" % B32)          # no learned marker
         merged = otr.resolve_i2p_aliases(user_path=u, defaults_path=d)
-        assert merged["xmpp-elite.i2p"] == B32
+        assert merged["otrv4plus.i2p"] == B32
 
     def test_a_learned_entry_yields_to_a_changed_default(self, capsys):
         """The case this whole layer exists for: the server moved, and a user
         who connected once must not be pinned to the old address forever."""
-        d = self._defaults("xmpp-elite.i2p = %s\n" % OTHER_B32)
-        u = _hosts("xmpp-elite.i2p = %s  %s\n" % (B32, otr.LEARNED_MARKER))
+        d = self._defaults("otrv4plus.i2p = %s\n" % OTHER_B32)
+        u = _hosts("otrv4plus.i2p = %s  %s\n" % (B32, otr.LEARNED_MARKER))
         merged = otr.resolve_i2p_aliases(user_path=u, defaults_path=d)
-        assert merged["xmpp-elite.i2p"] == OTHER_B32
+        assert merged["otrv4plus.i2p"] == OTHER_B32
         out = capsys.readouterr().out
         assert "has changed" in out, "the switch happened silently"
         assert B32 in out and OTHER_B32 in out, (
             "the notice does not show both addresses")
 
     def test_the_notice_says_how_to_keep_the_old_one(self, capsys):
-        d = self._defaults("xmpp-elite.i2p = %s\n" % OTHER_B32)
-        u = _hosts("xmpp-elite.i2p = %s  %s\n" % (B32, otr.LEARNED_MARKER))
+        d = self._defaults("otrv4plus.i2p = %s\n" % OTHER_B32)
+        u = _hosts("otrv4plus.i2p = %s  %s\n" % (B32, otr.LEARNED_MARKER))
         otr.resolve_i2p_aliases(user_path=u, defaults_path=d)
         assert otr.LEARNED_MARKER in capsys.readouterr().out
 
     def test_a_learned_entry_that_agrees_is_left_alone(self, capsys):
-        d = self._defaults("xmpp-elite.i2p = %s\n" % B32)
-        u = _hosts("xmpp-elite.i2p = %s  %s\n" % (B32, otr.LEARNED_MARKER))
+        d = self._defaults("otrv4plus.i2p = %s\n" % B32)
+        u = _hosts("otrv4plus.i2p = %s  %s\n" % (B32, otr.LEARNED_MARKER))
         merged = otr.resolve_i2p_aliases(user_path=u, defaults_path=d)
-        assert merged["xmpp-elite.i2p"] == B32
+        assert merged["otrv4plus.i2p"] == B32
         assert "has changed" not in capsys.readouterr().out
 
     def test_user_names_the_defaults_do_not_mention_still_work(self):
-        d = self._defaults("xmpp-elite.i2p = %s\n" % B32)
+        d = self._defaults("otrv4plus.i2p = %s\n" % B32)
         u = _hosts("private.i2p = %s\n" % OTHER_B32)
         merged = otr.resolve_i2p_aliases(user_path=u, defaults_path=d)
-        assert merged == {"xmpp-elite.i2p": B32, "private.i2p": OTHER_B32}
+        assert merged == {"otrv4plus.i2p": B32, "private.i2p": OTHER_B32}
 
     def test_learned_entries_are_written_with_the_marker(self):
         d = tempfile.mkdtemp()
@@ -353,7 +353,7 @@ class TestShippedDefaults:
     def test_nothing_is_recorded_when_the_defaults_already_say_it(self):
         """Otherwise every user accumulates a learned copy of the shipped
         address, which would then have to lose an argument with it later."""
-        name, dest = "xmpp-elite.i2p", B32
+        name, dest = "otrv4plus.i2p", B32
         defaults = self._defaults("%s = %s\n" % (name, dest))
         d = tempfile.mkdtemp()
         path = os.path.join(d, "i2p_hosts")
@@ -367,20 +367,20 @@ class TestRetiredAddresses:
     """An old command that names the old b32 in full."""
 
     def test_a_retired_address_is_explained_not_redirected(self, capsys):
-        d = _hosts("retired %s xmpp-elite.i2p\n" % OTHER_B32)
+        d = _hosts("retired %s otrv4plus.i2p\n" % OTHER_B32)
         host, source = otr.I2PSAMConnection._apply_i2p_alias.__func__(OTHER_B32) \
             if False else (None, None)
         # _apply_i2p_alias reads the shipped path; drive the parser directly
         # and then the substitution rule, which must not rewrite a b32.
         assert otr.I2PSAMConnection._retired_destinations(d) == {
-            OTHER_B32: "xmpp-elite.i2p"}
+            OTHER_B32: "otrv4plus.i2p"}
 
     def test_the_substitution_still_refuses_to_rewrite_a_b32(self):
         host, source = otr.I2PSAMConnection._apply_i2p_alias(OTHER_B32)
         assert host == OTHER_B32 and source is None
 
     def test_a_defaults_file_with_no_retired_lines_is_fine(self):
-        d = _hosts("xmpp-elite.i2p = %s\n" % B32)
+        d = _hosts("otrv4plus.i2p = %s\n" % B32)
         assert otr.I2PSAMConnection._retired_destinations(d) == {}
 
     def test_a_missing_defaults_file_is_fine(self):
@@ -400,7 +400,7 @@ class TestStreamFailuresAreClassified:
     def _msg(self, result, message="LeaseSet not found"):
         reply = 'STREAM STATUS RESULT=%s MESSAGE="%s"' % (result, message)
         return otr.I2PSAMConnection._explain_stream_failure(
-            "xmpp-elite.i2p", {"RESULT": result}, reply)
+            "otrv4plus.i2p", {"RESULT": result}, reply)
 
     def test_cant_reach_peer_does_not_blame_the_address(self):
         msg = self._msg("CANT_REACH_PEER")

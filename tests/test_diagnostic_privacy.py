@@ -47,9 +47,9 @@ import otrv4plus_alias as alias
 from android_bridge import report
 from android_bridge.trace import REDACTED, TraceLog
 
-JID = "alice@xmpp-elite.i2p"
-PEER = "bob@xmpp-elite.i2p"
-SERVER = "xmpp-elite.i2p"
+JID = "alice@otrv4plus.i2p"
+PEER = "bob@otrv4plus.i2p"
+SERVER = "otrv4plus.i2p"
 B32 = "hq4t24b7vkllfbk55e5xfocqhfi7hxprwc47zyuilbg6wgzikidq.b32.i2p"
 ONION = "expyuzz4wqqyqhjn.onion"
 PASSWORD = "correct-horse-battery-staple"
@@ -138,7 +138,7 @@ class TestTheSweepFindsIdentitiesInASentence:
     def test_a_jid_is_replaced_localpart_and_all(self, book, value):
         out = book.scrub("could not reach %s, giving up" % value)
         assert "alice" not in out and "bob" not in out
-        assert "xmpp-elite" not in out
+        assert "otrv4plus" not in out
         assert "user-" in out
 
     def test_an_i2p_hostname_is_replaced(self, book):
@@ -317,7 +317,7 @@ class TestTheTraceAliasesEveryField:
         log.record("transport", "session_started", jid=JID, server=SERVER)
         log.record("roster", "presence", peer=PEER)
         text = log.render()
-        for secret in ("alice", "bob", "xmpp-elite"):
+        for secret in ("alice", "bob", "otrv4plus"):
             assert secret not in text, secret
 
 
@@ -344,7 +344,7 @@ class TestNothingIdentifyingReachesTheFile:
         return _report(log)
 
     @pytest.mark.parametrize("secret", [
-        JID, PEER, SERVER, B32, "alice", "bob", "xmpp-elite",
+        JID, PEER, SERVER, B32, "alice", "bob", "otrv4plus",
         "hq4t24b7", "127.0.0.1",
     ])
     def test_it_is_not_in_the_report(self, exported, secret):

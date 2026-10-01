@@ -81,7 +81,7 @@ class TestOrdinaryNamesAreClearnet:
 class TestI2PAndTorNames:
 
     def test_named_i2p_goes_to_sam_lookup(self):
-        r = R.classify("xmpp-elite.i2p")
+        r = R.classify("otrv4plus.i2p")
         assert r.kind == R.I2P_SAM and r.resolver == "sam"
         assert r.self_authenticating is False, (
             "a human-readable .i2p name is bound by the address book, not by "
@@ -99,7 +99,7 @@ class TestI2PAndTorNames:
         assert r.self_authenticating is True
 
     def test_i2p_port(self):
-        assert R.classify("xmpp-elite.i2p:5223").port == 5223
+        assert R.classify("otrv4plus.i2p:5223").port == 5223
 
 
 class TestOverrides:
@@ -115,7 +115,7 @@ class TestOverrides:
         assert R.classify("example.com", "clearnet_tls").kind == R.CLEARNET_TLS
 
     @pytest.mark.parametrize("name,override", [
-        ("xmpp-elite.i2p", "clearnet_tls"), ("xmpp-elite.i2p", "tor"),
+        ("otrv4plus.i2p", "clearnet_tls"), ("otrv4plus.i2p", "tor"),
         (B32, "clearnet_tls"), (ONION, "clearnet_tls"), (ONION, "i2p_sam"),
         ("example.com", "i2p_sam"),
     ])
@@ -156,7 +156,7 @@ class TestTheProfileKotlinBuilds:
         assert ctl._profile.route.kind == R.CLEARNET_TLS
 
     def test_controller_for_the_default_server_is_i2p(self):
-        ctl = controller_for(object(), "alice@xmpp-elite.i2p", "")
+        ctl = controller_for(object(), "alice@otrv4plus.i2p", "")
         assert ctl._profile.route.kind == R.I2P_SAM
 
     def test_a_stale_use_i2p_flag_decides_nothing(self):
@@ -172,7 +172,7 @@ class TestTheProfileKotlinBuilds:
     def test_policy_answer_follows_the_route(self):
         assert endpoint_authenticated_by(ConnectionProfile(jid="a@07f.de")) is None
         assert endpoint_authenticated_by(
-            ConnectionProfile(jid="a@xmpp-elite.i2p")) == "I2P"
+            ConnectionProfile(jid="a@otrv4plus.i2p")) == "I2P"
         assert endpoint_authenticated_by(ConnectionProfile(jid="a@" + ONION)) == "Tor"
         assert endpoint_authenticated_by(
             ConnectionProfile(jid="a@07f.de", transport="tor")) is None
@@ -273,14 +273,14 @@ class TestClearnetNeverEntersCheckingRouter:
     def test_i2p_still_checks_the_router(self):
         called = []
         ctl, _, seen = _controller(
-            "alice@xmpp-elite.i2p",
+            "alice@otrv4plus.i2p",
             prober=lambda p, **k: called.append(p) or SamProbe(True, "ok", "", "3.1"))
         assert ctl.connect("pw")["ok"]
         assert called and seen[0] == "checking_router"
 
     def test_i2p_without_a_router_fails_at_checking_router(self):
         ctl, made, seen = _controller(
-            "alice@xmpp-elite.i2p",
+            "alice@otrv4plus.i2p",
             prober=lambda p, **k: SamProbe(False, "refused", "start i2pd"))
         got = ctl.connect("pw")
         assert got["code"] == "refused" and "t" not in made
@@ -500,7 +500,7 @@ class TestTheRealTransportOnTorAndI2P:
     def test_a_forwarder_that_cannot_verify_is_refused(self):
         """X1: without the destination check, a substituted server could
         receive the stream; the transport refuses to go on."""
-        t, made = _transport("alice@xmpp-elite.i2p")
+        t, made = _transport("alice@otrv4plus.i2p")
 
         async def old(dest, port, sam_host, sam_port):
             raise AssertionError("must not be called")

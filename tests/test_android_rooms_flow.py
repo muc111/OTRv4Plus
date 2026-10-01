@@ -26,9 +26,9 @@ import otrv4plus_muc as muc
 from android_bridge.connection import ConnectionController, SamProbe
 from android_bridge.settings import ConnectionProfile
 
-JID = "alice@xmpp-elite.i2p"
+JID = "alice@otrv4plus.i2p"
 SERVER = "hq4t24b7vkllfbk55e5xfocqhfi7hxprwc47zyuilbg6wgzikidq.b32.i2p"
-MUC_SERVICE = "rooms.xmpp-elite.i2p"
+MUC_SERVICE = "rooms.otrv4plus.i2p"
 ROOM = "general@" + MUC_SERVICE
 NICK = "alice"
 
@@ -252,7 +252,7 @@ class TestItRecordsWhatWasDoneNotWhereOrByWhom:
         ctl.discover_rooms(MUC_SERVICE)
         text = ctl.diagnostic_report()
         assert "general" not in text
-        assert "rooms.xmpp-elite" not in text
+        assert "rooms.otrv4plus" not in text
 
     def test_the_nickname_is_not(self):
         ctl, _ = build()

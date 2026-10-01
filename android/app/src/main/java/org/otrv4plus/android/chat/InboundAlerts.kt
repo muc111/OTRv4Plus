@@ -11,7 +11,7 @@ package org.otrv4plus.android.chat
  * oversight or a placeholder for a richer notification later: a notification is
  * rendered on a lock screen, in a car, on a watch, over the user's shoulder,
  * and is read by every accessibility service and notification-listener app on
- * the device. "alice@xmpp-elite.i2p: are you free tonight" on a lock screen
+ * the device. "alice@otrv4plus.i2p: are you free tonight" on a lock screen
  * undoes what the I2P tunnel underneath it is for.
  *
  * So [Alert] carries an integer. The messages themselves are behind the app,

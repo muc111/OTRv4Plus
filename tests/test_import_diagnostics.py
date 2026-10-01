@@ -2,7 +2,7 @@
 
 From an IRC session with a tester on Alpine:
 
-    $ python3 otrv4plus_xmpp.py --jid everchange000@xmpp-elite.i2p ...
+    $ python3 otrv4plus_xmpp.py --jid everchange000@otrv4plus.i2p ...
     Could not import OTR engine from 'otrv4plus': No module named 'socks'
     Ensure otrv4+.py, the otrv4plus.py symlink, and otrv4_core.so are in
     this directory.

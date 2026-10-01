@@ -26,8 +26,8 @@ import kotlin.test.assertTrue
  */
 class SubscriptionRequestTest {
 
-    private val alice = "alice@xmpp-elite.i2p"
-    private val bob = "bob@xmpp-elite.i2p"
+    private val alice = "alice@otrv4plus.i2p"
+    private val bob = "bob@otrv4plus.i2p"
     private val mallory = "mallory@elsewhere.i2p"
 
     private fun signedIn(jid: String = alice): ChatState {

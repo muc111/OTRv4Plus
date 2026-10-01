@@ -7,7 +7,7 @@ THE DEFECT
 A short `.i2p` name is not an identity. The router's address book binds it
 to a destination, and whoever can influence that binding -- a subscription
 feed, a jump service, a name registered first -- decides which key-holder
-`xmpp-elite.i2p` reaches. Over I2P the transport turns TLS certificate checks
+`otrv4plus.i2p` reaches. Over I2P the transport turns TLS certificate checks
 off (there is no CA for `.i2p`), so nothing else stood between a substituted
 destination and the account password the client then sent it.
 

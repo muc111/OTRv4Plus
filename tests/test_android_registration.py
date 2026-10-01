@@ -31,7 +31,7 @@ from android_bridge.settings import ConnectionProfile
 from tests.fake_sasl import sasl_plugins
 from android_bridge.transport import DEFAULT_C2S_PORT, XmppTransport
 
-JID = "alice@xmpp-elite.i2p"
+JID = "alice@otrv4plus.i2p"
 SERVER = "hq4t24b7vkllfbk55e5xfocqhfi7hxprwc47zyuilbg6wgzikidq.b32.i2p"
 PASSWORD = "correct-horse-battery-staple"
 
@@ -290,7 +290,7 @@ class TestRefusals:
         try:
             _, detail = t.register_account()
             assert "alice" not in detail
-            assert "xmpp-elite" not in detail
+            assert "otrv4plus" not in detail
         finally:
             t.close()
 
@@ -357,7 +357,7 @@ class TestItIsCheckedLocallyFirst:
             t.close()
 
     def test_a_malformed_username_never_opens_a_tunnel(self):
-        t, made = build(Outcome(), jid="al ice@xmpp-elite.i2p")
+        t, made = build(Outcome(), jid="al ice@otrv4plus.i2p")
         try:
             assert t.register_account()[0] == "not_acceptable"
             assert "forward" not in made
@@ -499,7 +499,7 @@ class TestItLeavesNothingIdentifyingInTheTrace:
             text = repr(TRACE.events()[before:])
             assert "alice" not in text
             assert PASSWORD not in text
-            assert "xmpp-elite" not in text
+            assert "otrv4plus" not in text
         finally:
             t.close()
 

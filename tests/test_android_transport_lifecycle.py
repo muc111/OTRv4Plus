@@ -51,7 +51,7 @@ from android_bridge.transport import (
 )
 import android_bridge.transport as transport_module
 
-JID = "alice@xmpp-elite.i2p"
+JID = "alice@otrv4plus.i2p"
 SERVER = "hq4t24b7vkllfbk55e5xfocqhfi7hxprwc47zyuilbg6wgzikidq.b32.i2p"
 PASSWORD = "correct-horse-battery-staple"
 

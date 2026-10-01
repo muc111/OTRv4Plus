@@ -24,8 +24,8 @@ import otrv4plus_presence as presence
 from android_bridge.app import OtrApp, Transport
 from android_bridge.events import SecurityState
 
-ALICE = "alice@xmpp-elite.i2p"
-BOB = "bob@xmpp-elite.i2p"
+ALICE = "alice@otrv4plus.i2p"
+BOB = "bob@otrv4plus.i2p"
 
 
 class Engine:

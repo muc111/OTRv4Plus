@@ -23,9 +23,9 @@ import kotlin.test.assertTrue
  */
 class OnlineUsersTest {
 
-    private val me = "me@xmpp-elite.i2p"
-    private val alice = "alice@xmpp-elite.i2p"
-    private val bob = "bob@xmpp-elite.i2p"
+    private val me = "me@otrv4plus.i2p"
+    private val alice = "alice@otrv4plus.i2p"
+    private val bob = "bob@otrv4plus.i2p"
 
     private fun contact(jid: String, presence: PeerPresence,
                         security: SecurityState = SecurityState.PLAINTEXT) =
@@ -84,7 +84,7 @@ class OnlineUsersTest {
 
     @Test
     fun `a person is one row and one conversation, whatever the spelling`() {
-        val s = state(contact("Alice@XMPP-Elite.i2p/phone", PeerPresence.ONLINE))
+        val s = state(contact("Alice@OTRv4Plus.i2p/phone", PeerPresence.ONLINE))
         s.receive(OtrEvent.MessageReceived(alice, "hi", 1.0))
         val r = s.directory().single()
         assertEquals(alice, r.jid)
@@ -105,13 +105,13 @@ class OnlineUsersTest {
                           entry("carol@other.i2p", "Carol"))
         assertEquals(list, OnlineUsers.search(list, "  "))
         assertEquals(listOf(alice), OnlineUsers.search(list, "ALI").map { it.jid })
-        assertEquals(listOf(alice, bob), OnlineUsers.search(list, "xmpp-elite").map { it.jid })
+        assertEquals(listOf(alice, bob), OnlineUsers.search(list, "otrv4plus").map { it.jid })
         assertEquals(emptyList(), OnlineUsers.search(list, "zed"))
     }
 
     @Test
     fun `search over a thousand people stays a local filter`() {
-        val many = (0 until 1000).map { entry("user$it@xmpp-elite.i2p", "User $it") }
+        val many = (0 until 1000).map { entry("user$it@otrv4plus.i2p", "User $it") }
         val hit = OnlineUsers.search(many, "user99")
         assertEquals(listOf("user99", "user990", "user991", "user992", "user993",
                             "user994", "user995", "user996", "user997", "user998",

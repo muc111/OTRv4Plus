@@ -40,9 +40,9 @@ import kotlin.test.assertTrue
  */
 class AccountIsolationTest {
 
-    private val bob = "bob@xmpp-elite.i2p"
-    private val dave = "dave@xmpp-elite.i2p"
-    private val alice = "alice@xmpp-elite.i2p"
+    private val bob = "bob@otrv4plus.i2p"
+    private val dave = "dave@otrv4plus.i2p"
+    private val alice = "alice@otrv4plus.i2p"
 
     private fun message(
         id: String,
@@ -216,7 +216,7 @@ class AccountIsolationTest {
     @Test
     fun `case does not create a second account`() {
         val vault: Vault = InMemoryVault()
-        storeFor(vault, "BOB@XMPP-ELITE.I2P").append(message("m1"))
+        storeFor(vault, "BOB@OTRV4PLUS.I2P").append(message("m1"))
         assertEquals(1, storeFor(vault, bob).messages(alice).size)
     }
 
@@ -376,7 +376,7 @@ class AccountIsolationTest {
         // Names are not sealed, only values are. A directory listing must not
         // be a record of who uses this phone and who they talk to.
         val name = AccountScope.of(bob).entryFor(alice)
-        for (fragment in listOf("bob", "alice", "@", "i2p", "xmpp-elite")) {
+        for (fragment in listOf("bob", "alice", "@", "i2p", "otrv4plus")) {
             assertFalse(name.contains(fragment), fragment)
         }
     }

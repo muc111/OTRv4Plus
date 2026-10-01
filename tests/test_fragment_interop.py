@@ -37,9 +37,9 @@ from android_bridge.settings import ConnectionProfile
 from tests.fake_sasl import sasl_plugins
 from android_bridge.transport import XmppTransport
 
-JID = "alice@xmpp-elite.i2p"
+JID = "alice@otrv4plus.i2p"
 SERVER = "hq4t24b7vkllfbk55e5xfocqhfi7hxprwc47zyuilbg6wgzikidq.b32.i2p"
-PEER = "bob@xmpp-elite.i2p"
+PEER = "bob@otrv4plus.i2p"
 
 #: Sizes that matter, and why.
 DAKE2 = 11716      # forces fragmentation; the frame that blocked interop

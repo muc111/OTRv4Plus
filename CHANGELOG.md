@@ -4,6 +4,20 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.10 — 2026-10-01 — default server is now otrv4plus.i2p (core 0.11.0)
+
+- **The app and the terminal clients point at `otrv4plus.i2p`**, which
+  replaces `xmpp-elite.i2p`. The sign-in screen's Server dropdown shows the
+  new name, and a bare username becomes `name@otrv4plus.i2p`. It is a name,
+  resolved by the phone's I2P router each time (SAM NAMING LOOKUP); no
+  destination is compiled in, and its b32 is pinned on first contact (X1).
+- An account is per server: anyone signed in on `xmpp-elite.i2p` signs in
+  (or registers) again on `otrv4plus.i2p`. Saved accounts on the old server
+  are not changed or deleted.
+- The Termux build script (`Rust/build.sh`) now removes older otrv4_core
+  copies before installing, reports progress, stalls and kills on a phone,
+  and logs every run (entries under rc.9 below).
+
 ## Android 0.7.0-experimental.rc.9 — 2026-09-29 — Termux joins the same secure groups (core 0.11.0)
 
 - **No change to the app's behaviour or wire format.** The APK now also

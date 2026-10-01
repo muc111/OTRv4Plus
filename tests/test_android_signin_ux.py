@@ -55,7 +55,7 @@ class TestTheUserNeverTypesAB32:
         been recreated (test_i2p_naming_no_dns.py)."""
         settings = _read(ROOT, "android_bridge", "settings.py")
         assert B32 not in settings
-        assert 'DEFAULT_SERVER = "xmpp-elite.i2p"' in settings
+        assert 'DEFAULT_SERVER = "otrv4plus.i2p"' in settings
 
     def test_it_is_not_duplicated_into_kotlin(self):
         """Two copies is two places to change when the server moves, and the
@@ -75,7 +75,7 @@ class TestTheUserNeverTypesAB32:
                     "%s hard-codes the default destination" % name)
 
     def test_the_sign_in_layer_holds_a_name_not_a_route(self, signin):
-        assert 'DEFAULT_DOMAIN = "xmpp-elite.i2p"' in signin
+        assert 'DEFAULT_DOMAIN = "otrv4plus.i2p"' in signin
         assert ".b32." not in _code_only(signin)
 
     def test_the_default_leaves_the_route_to_the_bridge(self, signin):

@@ -37,9 +37,9 @@ class WipePersistenceTest {
         val chat = ChatState(store).apply { bindVault(vault) }
     }
 
-    private val owner = "owner@xmpp-elite.i2p"
-    private val alice = "alice@xmpp-elite.i2p"
-    private val bob = "bob@xmpp-elite.i2p"
+    private val owner = "owner@otrv4plus.i2p"
+    private val alice = "alice@otrv4plus.i2p"
+    private val bob = "bob@otrv4plus.i2p"
 
     private fun signIn(p: Process) = p.chat.bindAccount(AccountScope.of(owner))
 

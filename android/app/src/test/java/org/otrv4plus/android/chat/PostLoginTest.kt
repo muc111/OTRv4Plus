@@ -82,9 +82,9 @@ class PostLoginTest {
     @Test
     fun `discovery is recorded with whatever it found`() {
         val p = PostLogin()
-        p.onServices("rooms.xmpp-elite.i2p")
+        p.onServices("rooms.otrv4plus.i2p")
         assertTrue(p.servicesDiscovered)
-        assertEquals("rooms.xmpp-elite.i2p", p.roomService)
+        assertEquals("rooms.otrv4plus.i2p", p.roomService)
     }
 
     @Test
@@ -105,7 +105,7 @@ class PostLoginTest {
         val p = PostLogin()
         p.onAuthenticated()
         p.onRoster(4)
-        p.onServices("rooms.xmpp-elite.i2p")
+        p.onServices("rooms.otrv4plus.i2p")
         p.onSignedOut()
         assertFalse(p.authenticated)
         assertFalse(p.rosterSeen)

@@ -33,7 +33,7 @@ import otrv4plus_registration as reg
 from android_bridge.connection import ConnectionController, SamProbe
 from android_bridge.settings import ConnectionProfile
 
-JID = "alice@xmpp-elite.i2p"
+JID = "alice@otrv4plus.i2p"
 SERVER = "hq4t24b7vkllfbk55e5xfocqhfi7hxprwc47zyuilbg6wgzikidq.b32.i2p"
 
 
@@ -299,7 +299,7 @@ class TestTheReportSaysWhatHappenedWithoutSayingWhoTo:
         ctl.register("correct-horse-battery")
         text = ctl.diagnostic_report()
         assert "alice" not in text
-        assert "xmpp-elite" not in text
+        assert "otrv4plus" not in text
 
 
 # ── the fake cannot agree with a mistake ─────────────────────────────────────

@@ -768,7 +768,7 @@ class NetworkConstants:
 #
 # `.i2p` names are NOT DNS.  There is no global resolver: a router only knows
 # the names in its own address book, which it builds from subscriptions.  A
-# private server is in nobody's subscription, so `xmpp-elite.i2p` resolves on
+# private server is in nobody's subscription, so `otrv4plus.i2p` resolves on
 # the machine that created it and nowhere else, while the 52-character
 # `.b32.i2p` form works everywhere because it IS the destination hash.
 #
@@ -777,7 +777,7 @@ class NetworkConstants:
 #
 # This file is the local answer.  One line per name:
 #
-#     xmpp-elite.i2p = hq4t24b7…q.b32.i2p
+#     otrv4plus.i2p = <52 characters>.b32.i2p
 #
 # WHAT AN ALIAS IS AND IS NOT.  It is a note to yourself about what a name
 # means on this device.  It is not authenticated, it is not published, and it

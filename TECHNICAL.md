@@ -793,7 +793,7 @@ in any case, since it is outside the public DNS namespace.
 
 `.i2p` names are **not DNS**. A router resolves only the names in its own
 address book, which it builds from subscriptions, and a private server is in
-nobody's subscription — so `xmpp-elite.i2p` resolves on the machine that
+nobody's subscription — so `otrv4plus.i2p` resolves on the machine that
 created it and nowhere else, while the 52-character `.b32.i2p` form works
 everywhere because it *is* the destination hash. That is why the long form has
 to be pasted, and it is unreasonable on a phone keyboard.
@@ -803,8 +803,8 @@ ships with the source, so a fresh clone connects with the short name and never
 sees a b32:
 
 ```bash
-python otrv4plus_xmpp.py --jid alice@xmpp-elite.i2p \
-                         --peer bob@xmpp-elite.i2p
+python otrv4plus_xmpp.py --jid alice@otrv4plus.i2p \
+                         --peer bob@otrv4plus.i2p
 ```
 
 That file is also how a **server move** reaches people. Ship a new line, users
@@ -823,8 +823,8 @@ address forever and a server move would strand you.
 destination is recorded automatically, and it says so:
 
 ```
-[i2p] recorded xmpp-elite.i2p = hq4t24b7…q.b32.i2p in ~/.otrv4plus/i2p_hosts
-[i2p] next time:  --jid bob@xmpp-elite.i2p --peer <peer> (no --server needed)
+[i2p] recorded otrv4plus.i2p = <52 characters>.b32.i2p in ~/.otrv4plus/i2p_hosts
+[i2p] next time:  --jid bob@otrv4plus.i2p --peer <peer> (no --server needed)
 ```
 
 It records only after the connection worked, because that is the only moment
@@ -836,7 +836,7 @@ Or write it by hand, in `~/.otrv4plus/i2p_hosts`:
 
 ```
 # name = destination
-xmpp-elite.i2p = hq4t24b7vkllfbk55e5xfocqhfi7hxprwc47zyuilbg6wgzikidq.b32.i2p
+otrv4plus.i2p = <the server's 52-character address>.b32.i2p
 ```
 
 Then the address is the JID's own domain and **`--server` is no longer
@@ -844,8 +844,8 @@ needed**:
 
 ```bash
 python otrv4plus_xmpp.py \
-  --jid alice@xmpp-elite.i2p \
-  --peer bob@xmpp-elite.i2p
+  --jid alice@otrv4plus.i2p \
+  --peer bob@otrv4plus.i2p
 ```
 
 The client prints the substitution when it uses one, so you always see which

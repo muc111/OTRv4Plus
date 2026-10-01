@@ -55,7 +55,7 @@ __all__ = [
 #: that could reach a user as if it were a real address.
 #:
 #: Set it to the c2s destination of the server the app should use, for example
-#: "xmpp-elite.i2p" or a full "<52 chars>.b32.i2p". The JID domain a user types
+#: "otrv4plus.i2p" or a full "<52 chars>.b32.i2p". The JID domain a user types
 #: does not have to match it: `server` is the host the SAM stream is opened to,
 #: `jid`'s domain is the XMPP virtual host, and a server can front several --
 #: which is why a profile carries both and why `effective_server` exists.
@@ -75,7 +75,7 @@ __all__ = [
 #: account password: certificate checks are off over I2P, so a server that
 #: the address book substituted for this name may offer only SASL PLAIN
 #: (SECURITY_ISSUES X1). A full `.b32.i2p` address avoids that.
-DEFAULT_SERVER = "xmpp-elite.i2p"
+DEFAULT_SERVER = "otrv4plus.i2p"
 
 
 class ProfileError(ValueError):

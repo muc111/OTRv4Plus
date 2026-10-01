@@ -31,7 +31,7 @@ from tests.test_android_rooms import FakeDisco, IqError, build
 slixmpp = pytest.importorskip("slixmpp")
 from slixmpp.xmlstream import ET  # noqa: E402
 
-DOMAIN = "xmpp-elite.i2p"
+DOMAIN = "otrv4plus.i2p"
 NODE = XmppTransport.ONLINE_USERS_NODE
 
 PROSODY_FORM = """

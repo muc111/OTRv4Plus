@@ -13,10 +13,10 @@ import kotlin.test.assertTrue
 /** Secure groups in the chat model: labels, invitations and room state. */
 class SecureGroupStateTest {
 
-    private val room = "sealed@conference.xmpp-elite.i2p"
+    private val room = "sealed@conference.otrv4plus.i2p"
 
     private fun state() = ChatState().also {
-        it.bindAccount(AccountScope.of("owner@xmpp-elite.i2p"))
+        it.bindAccount(AccountScope.of("owner@otrv4plus.i2p"))
         it.applyConnection(ConnectionStatus(stage = "connected", connected = true))
     }
 

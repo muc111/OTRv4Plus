@@ -29,10 +29,10 @@ class ChatDeletionTest {
         override fun clear() { entries.clear() }
     }
 
-    private val owner = "owner@xmpp-elite.i2p"
-    private val alice = "alice@xmpp-elite.i2p"
-    private val bob = "bob@xmpp-elite.i2p"
-    private val room = "english@conference.xmpp-elite.i2p"
+    private val owner = "owner@otrv4plus.i2p"
+    private val alice = "alice@otrv4plus.i2p"
+    private val bob = "bob@otrv4plus.i2p"
+    private val room = "english@conference.otrv4plus.i2p"
 
     private fun process(disk: Disk): Pair<ChatState, PersistentMessageStore> {
         val store = PersistentMessageStore(disk)

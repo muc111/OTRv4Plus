@@ -42,7 +42,7 @@ import kotlin.test.assertTrue
  */
 class JidCanonicalisationTest {
 
-    private val bob = "bob@xmpp-elite.i2p"
+    private val bob = "bob@otrv4plus.i2p"
 
     private fun state(): ChatState {
         val s = ChatState()
@@ -66,9 +66,9 @@ class JidCanonicalisationTest {
 
     @Test
     fun `bare folds case as well as dropping the resource`() {
-        assertEquals(bob, ChatState.bare("Bob@XMPP-Elite.i2p"))
-        assertEquals(bob, ChatState.bare("BOB@XMPP-ELITE.I2P/Phone"))
-        assertEquals(bob, ChatState.bare("  bob@xmpp-elite.i2p/laptop  "))
+        assertEquals(bob, ChatState.bare("Bob@OTRv4Plus.i2p"))
+        assertEquals(bob, ChatState.bare("BOB@OTRV4PLUS.I2P/Phone"))
+        assertEquals(bob, ChatState.bare("  bob@otrv4plus.i2p/laptop  "))
     }
 
     @Test
@@ -91,7 +91,7 @@ class JidCanonicalisationTest {
         // the same person twice, one row with the history and one without.
         val s = state()
         s.receive(OtrEvent.MessageReceived(peer = bob, body = "hi", timestamp = 1_700.0))
-        s.applyRoster(listOf(contact("Bob@XMPP-Elite.i2p")))
+        s.applyRoster(listOf(contact("Bob@OTRv4Plus.i2p")))
 
         val rows = s.conversations().filter { ChatState.bare(it.jid) == bob }
         assertEquals(1, rows.size, "one person is showing as two conversations")
@@ -117,7 +117,7 @@ class JidCanonicalisationTest {
     @Test
     fun `the roster row keeps its display name under the folded key`() {
         val s = state()
-        s.applyRoster(listOf(contact("Bob@XMPP-Elite.i2p", displayName = "Bob")))
+        s.applyRoster(listOf(contact("Bob@OTRv4Plus.i2p", displayName = "Bob")))
         val row = s.conversations().single { ChatState.bare(it.jid) == bob }
         assertEquals("Bob", row.displayName,
             "folding the key lost the roster entry it belongs to")
@@ -133,7 +133,7 @@ class JidCanonicalisationTest {
         // session was stored labelled as if it had arrived in the clear.
         val s = state()
         s.applyRoster(listOf(
-            contact("Bob@XMPP-Elite.i2p", security = SecurityState.ENCRYPTED)))
+            contact("Bob@OTRv4Plus.i2p", security = SecurityState.ENCRYPTED)))
         s.receive(OtrEvent.MessageReceived(peer = bob, body = "hi", timestamp = 1_700.0))
 
         val stored = s.messages(bob).single()
@@ -147,7 +147,7 @@ class JidCanonicalisationTest {
         val s = state()
         s.applyRoster(listOf(contact(bob)))
         s.handle(OtrEvent.SmpProgressed(
-            peer = "Bob@XMPP-Elite.i2p/phone",
+            peer = "Bob@OTRv4Plus.i2p/phone",
             progress = SmpProgress(
                 step = 1, total = 4, state = SmpState.SECRET_REQUIRED)))
 
@@ -165,7 +165,7 @@ class JidCanonicalisationTest {
         val s = state()
         s.applyRoster(listOf(contact(bob, smp = SmpState.VERIFIED)))
         s.handle(OtrEvent.SmpFinished(
-            peer = "BOB@XMPP-ELITE.I2P", state = SmpState.FAILED))
+            peer = "BOB@OTRV4PLUS.I2P", state = SmpState.FAILED))
 
         val row = s.conversations().single { ChatState.bare(it.jid) == bob }
         assertEquals(SmpState.FAILED, row.smp,
@@ -178,7 +178,7 @@ class JidCanonicalisationTest {
         val s = state()
         s.applyRoster(listOf(contact(bob)))
         s.handle(OtrEvent.SmpFinished(peer = bob, state = SmpState.VERIFIED))
-        s.bindAccount(AccountScope.of("dave@xmpp-elite.i2p"))
+        s.bindAccount(AccountScope.of("dave@otrv4plus.i2p"))
         s.applyConnection(ConnectionStatus(stage = "connected", connected = true))
         s.applyRoster(listOf(contact(bob)))
 
@@ -196,7 +196,7 @@ class JidCanonicalisationTest {
         // list and proves nothing.
         val s = state()
         s.receive(OtrEvent.MessageReceived(peer = bob, body = "hi", timestamp = 1_700.0))
-        s.applyRoster(listOf(contact("Bob@XMPP-Elite.i2p")))
+        s.applyRoster(listOf(contact("Bob@OTRv4Plus.i2p")))
         assertTrue(s.conversations().single { ChatState.bare(it.jid) == bob }.saved)
 
         s.applyRoster(emptyList())

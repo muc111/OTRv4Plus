@@ -297,7 +297,7 @@ name, every client rewrote the name to the old destination and never asked the
 router; the Android app also had that b32 compiled in as its default. A server
 entered by name was unreachable. Now no destination is shipped or compiled in
 (`i2p_hosts.defaults` maps no name; `android_bridge/settings.DEFAULT_SERVER` is
-the name `xmpp-elite.i2p`), a blank route means the JID's own domain, and the
+the name `otrv4plus.i2p`), a blank route means the JID's own domain, and the
 Android app reads no alias file at all.
 
 Failures reach the app by layer: `sam_unavailable` (the local bridge),

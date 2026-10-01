@@ -3132,8 +3132,8 @@ class OTRv4PlusXMPP(ClientXMPP):
         session with X is that X is not the address the peer is actually on --
         in which case /otr will fail forever and the advice sends the user
         round the same loop. A device run hit exactly that: `--peer
-        bob@xmpp-elite` (missing `.i2p`) while a fully established, SMP-ready
-        session sat under `bob@xmpp-elite.i2p`.
+        bob@otrv4plus` (missing `.i2p`) while a fully established, SMP-ready
+        session sat under `bob@otrv4plus.i2p`.
         """
         try:
             live = sorted(p for p in self._encrypted if p != peer)
@@ -4739,7 +4739,7 @@ class OTRv4PlusXMPP(ClientXMPP):
         which the client knows the name/destination pair is good.  The next
         run needs neither --server nor the 52 characters:
 
-            --jid bob@xmpp-elite.i2p --peer alice@xmpp-elite.i2p
+            --jid bob@otrv4plus.i2p --peer alice@otrv4plus.i2p
 
         This writes only to the client's own file.  It deliberately does NOT
         touch i2pd's address book: that format varies between versions, the
@@ -7303,7 +7303,7 @@ def main():
     def _warn_if_domains_differ(jid, peer):
         """A --peer on a different server than --jid is almost always a typo.
 
-        `_check_jid` accepts `bob@xmpp-elite` -- one `@`, a non-empty local
+        `_check_jid` accepts `bob@otrv4plus` -- one `@`, a non-empty local
         part, a non-empty domain, no doubled dots. Nothing about it is
         malformed. It is simply the wrong server, and a device run lost
         `.i2p` off the end of `--peer` and spent the whole session looking

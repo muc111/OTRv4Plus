@@ -39,7 +39,7 @@ from android_bridge.transport import (
     CONNECT_TIMEOUT, DEFAULT_C2S_PORT, TransportError, XmppTransport,
 )
 
-JID = "alice@xmpp-elite.i2p"
+JID = "alice@otrv4plus.i2p"
 SERVER = "hq4t24b7vkllfbk55e5xfocqhfi7hxprwc47zyuilbg6wgzikidq.b32.i2p"
 PASSWORD = "correct-horse-battery-staple"
 
@@ -281,11 +281,11 @@ class TestItCarriesPayloadsBothWays:
             # OTR frames go to a resource confirmed OTRv4Plus-capable, and to
             # that FULL JID -- never the bare JID (otrv4plus_caps).
             import otrv4plus_caps
-            t._caps.presence_available("bob@xmpp-elite.i2p/phone")
-            t._caps.disco_result("bob@xmpp-elite.i2p/phone", [otrv4plus_caps.FEATURE])
-            t.send("bob@xmpp-elite.i2p", "?OTRv4+ ...frame...")
+            t._caps.presence_available("bob@otrv4plus.i2p/phone")
+            t._caps.disco_result("bob@otrv4plus.i2p/phone", [otrv4plus_caps.FEATURE])
+            t.send("bob@otrv4plus.i2p", "?OTRv4+ ...frame...")
             assert made["client"].sent == [
-                ("bob@xmpp-elite.i2p/phone", "?OTRv4+ ...frame...", "chat")]
+                ("bob@otrv4plus.i2p/phone", "?OTRv4+ ...frame...", "chat")]
         finally:
             t.close()
 
@@ -293,7 +293,7 @@ class TestItCarriesPayloadsBothWays:
         t, _ = build()
         try:
             with pytest.raises(TransportError) as caught:
-                t.send("bob@xmpp-elite.i2p", "x")
+                t.send("bob@otrv4plus.i2p", "x")
             assert caught.value.code == "not_connected"
         finally:
             t.close()
@@ -304,8 +304,8 @@ class TestItCarriesPayloadsBothWays:
         try:
             t.connect()
             made["client"].fire("message", FakeStanza(
-                "bob@xmpp-elite.i2p/phone-a1b2", "?OTRv4+ frame"))
-            assert got == [("bob@xmpp-elite.i2p", "?OTRv4+ frame")]
+                "bob@otrv4plus.i2p/phone-a1b2", "?OTRv4+ frame"))
+            assert got == [("bob@otrv4plus.i2p", "?OTRv4+ frame")]
         finally:
             t.close()
 
@@ -317,7 +317,7 @@ class TestItCarriesPayloadsBothWays:
         try:
             t.connect()
             made["client"].fire("message", FakeStanza(
-                "bob@xmpp-elite.i2p", "hello, this is not an OTR frame"))
+                "bob@otrv4plus.i2p", "hello, this is not an OTR frame"))
             assert got == ["hello, this is not an OTR frame"]
         finally:
             t.close()
@@ -510,10 +510,10 @@ class TestTheRoster:
         try:
             t.connect()
             made["client"].client_roster = {
-                "carol@xmpp-elite.i2p": {"name": "",
+                "carol@otrv4plus.i2p": {"name": "",
                                          "subscription": "none",
                                          "pending_out": True}}
-            assert t.roster() == [{"jid": "carol@xmpp-elite.i2p",
+            assert t.roster() == [{"jid": "carol@otrv4plus.i2p",
                                    "name": "",
                                    "subscription": "none",
                                    "pending": True}]
@@ -525,9 +525,9 @@ class TestTheRoster:
         try:
             t.connect()
             made["client"].client_roster = {
-                "bob@xmpp-elite.i2p": {"name": "Bob",
+                "bob@otrv4plus.i2p": {"name": "Bob",
                                        "subscription": "both"}}
-            assert t.roster() == [{"jid": "bob@xmpp-elite.i2p",
+            assert t.roster() == [{"jid": "bob@otrv4plus.i2p",
                                    "name": "Bob",
                                    "subscription": "both",
                                    "pending": False}]
@@ -900,9 +900,9 @@ class TestAddingAndRemovingContacts:
                 ("roster", str(j), kw))
             made["client"].send_presence_subscription = lambda **kw: calls.append(
                 ("sub", kw.get("pto"), kw.get("ptype")))
-            t.add_contact("bob@xmpp-elite.i2p", "Bob")
-            assert ("roster", "bob@xmpp-elite.i2p", {"name": "Bob"}) in calls
-            assert ("sub", "bob@xmpp-elite.i2p", "subscribe") in calls
+            t.add_contact("bob@otrv4plus.i2p", "Bob")
+            assert ("roster", "bob@otrv4plus.i2p", {"name": "Bob"}) in calls
+            assert ("sub", "bob@otrv4plus.i2p", "subscribe") in calls
         finally:
             t.close()
 
@@ -914,7 +914,7 @@ class TestAddingAndRemovingContacts:
             made["client"].update_roster = lambda j, **kw: calls.append(kw)
             made["client"].send_presence_subscription = lambda **kw: calls.append(
                 kw.get("ptype"))
-            t.remove_contact("bob@xmpp-elite.i2p")
+            t.remove_contact("bob@otrv4plus.i2p")
             assert "unsubscribe" in calls
             assert {"subscription": "remove"} in calls
         finally:
@@ -927,7 +927,7 @@ class TestAddingAndRemovingContacts:
             t.connect()
             made["client"].send_presence_subscription = lambda **kw: calls.append(
                 kw.get("ptype"))
-            t.answer_subscription("bob@xmpp-elite.i2p", True)
+            t.answer_subscription("bob@otrv4plus.i2p", True)
             t.answer_subscription("mallory@elsewhere.i2p", False)
             assert calls == ["subscribed", "unsubscribed"]
         finally:
@@ -995,7 +995,7 @@ class TestTheRosterIsReadWithSlixmppsOwnApi:
         full.update(state)
 
         class _Xmpp:
-            boundjid = JID("alice@xmpp-elite.i2p")
+            boundjid = JID("alice@otrv4plus.i2p")
 
         return RosterItem(_Xmpp(), JID(jid), state=full)
 
@@ -1017,12 +1017,12 @@ class TestTheRosterIsReadWithSlixmppsOwnApi:
         try:
             t.connect()
             made["client"].client_roster = {
-                "bob@xmpp-elite.i2p": self._real_item(
-                    "bob@xmpp-elite.i2p", name="Bob",
+                "bob@otrv4plus.i2p": self._real_item(
+                    "bob@otrv4plus.i2p", name="Bob",
                     subscription="both", **{"from": True, "to": True}),
             }
             assert t.roster() == [{
-                "jid": "bob@xmpp-elite.i2p",
+                "jid": "bob@otrv4plus.i2p",
                 "name": "Bob",
                 "subscription": "both",
                 "pending": False,
@@ -1035,8 +1035,8 @@ class TestTheRosterIsReadWithSlixmppsOwnApi:
         try:
             t.connect()
             made["client"].client_roster = {
-                "carol@xmpp-elite.i2p": self._real_item(
-                    "carol@xmpp-elite.i2p", pending_out=True),
+                "carol@otrv4plus.i2p": self._real_item(
+                    "carol@otrv4plus.i2p", pending_out=True),
             }
             got = t.roster()
             assert got[0]["pending"] is True
@@ -1055,13 +1055,13 @@ class TestTheRosterIsReadWithSlixmppsOwnApi:
         try:
             t.connect()
             made["client"].client_roster = {
-                "bob@xmpp-elite.i2p": self._real_item(
-                    "bob@xmpp-elite.i2p", name="Bob",
+                "bob@otrv4plus.i2p": self._real_item(
+                    "bob@otrv4plus.i2p", name="Bob",
                     subscription="both", **{"from": True, "to": True}),
-                "broken@xmpp-elite.i2p": Hostile(),
+                "broken@otrv4plus.i2p": Hostile(),
             }
             jids = [entry["jid"] for entry in t.roster()]
-            assert "bob@xmpp-elite.i2p" in jids, (
+            assert "bob@otrv4plus.i2p" in jids, (
                 "one unreadable entry discarded the whole roster")
         finally:
             t.close()
@@ -1074,10 +1074,10 @@ class TestTheRosterIsReadWithSlixmppsOwnApi:
         try:
             t.connect()
             made["client"].client_roster = {
-                "dave@xmpp-elite.i2p": {},          # no keys at all
+                "dave@otrv4plus.i2p": {},          # no keys at all
             }
             got = t.roster()
-            assert got == [{"jid": "dave@xmpp-elite.i2p", "name": "",
+            assert got == [{"jid": "dave@otrv4plus.i2p", "name": "",
                             "subscription": "", "pending": False}]
         finally:
             t.close()

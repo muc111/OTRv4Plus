@@ -36,9 +36,9 @@ from android_bridge.settings import ConnectionProfile
 from tests.fake_sasl import sasl_plugins
 from android_bridge.transport import XmppTransport
 
-JID = "alice@xmpp-elite.i2p"
+JID = "alice@otrv4plus.i2p"
 SERVER = "hq4t24b7vkllfbk55e5xfocqhfi7hxprwc47zyuilbg6wgzikidq.b32.i2p"
-MUC_SERVICE = "rooms.xmpp-elite.i2p"
+MUC_SERVICE = "rooms.otrv4plus.i2p"
 ROOM = "general@" + MUC_SERVICE
 NICK = "alice"
 
@@ -144,7 +144,7 @@ class FakeForms:
 
 
 class FakeBoundJid:
-    domain = "xmpp-elite.i2p"
+    domain = "otrv4plus.i2p"
 
 
 class FakeClient:
@@ -312,18 +312,18 @@ class TestDiscoveringWhatTheServerHosts:
 
     def _disco(self):
         return FakeDisco(
-            items={"xmpp-elite.i2p": [(MUC_SERVICE, None, "Chatrooms"),
-                                      ("upload.xmpp-elite.i2p", None, "")]},
+            items={"otrv4plus.i2p": [(MUC_SERVICE, None, "Chatrooms"),
+                                      ("upload.otrv4plus.i2p", None, "")]},
             info={MUC_SERVICE: ([("conference", "text", None, "Chatrooms")],
                                 ["http://jabber.org/protocol/muc"]),
-                  "upload.xmpp-elite.i2p":
+                  "upload.otrv4plus.i2p":
                       ([("store", "file", None, "Uploads")], [])})
 
     def test_it_asks_the_servers_own_domain(self):
         t, made = build(disco=self._disco())
         try:
             t.discover_services()
-            assert "xmpp-elite.i2p" in made["client"]["xep_0030"].asked
+            assert "otrv4plus.i2p" in made["client"]["xep_0030"].asked
         finally:
             t.close()
 
@@ -333,7 +333,7 @@ class TestDiscoveringWhatTheServerHosts:
             code, _detail, services = t.discover_services()
             assert code == "ok"
             assert {s["jid"] for s in services} == {
-                MUC_SERVICE, "upload.xmpp-elite.i2p"}
+                MUC_SERVICE, "upload.otrv4plus.i2p"}
         finally:
             t.close()
 
@@ -352,8 +352,8 @@ class TestDiscoveringWhatTheServerHosts:
 
     def test_a_service_that_will_not_answer_does_not_empty_the_list(self):
         disco = FakeDisco(
-            items={"xmpp-elite.i2p": [(MUC_SERVICE, None, "Chatrooms"),
-                                      ("broken.xmpp-elite.i2p", None, "")]},
+            items={"otrv4plus.i2p": [(MUC_SERVICE, None, "Chatrooms"),
+                                      ("broken.otrv4plus.i2p", None, "")]},
             info={MUC_SERVICE: ([("conference", "text", None, "")], [])})
         t, _ = build(disco=disco)
         try:
@@ -655,6 +655,6 @@ class TestTheTraceDoesNotLearnWhoIsInWhatRoom:
             t.discover_rooms(MUC_SERVICE)
             text = repr(TRACE.events()[before:])
             assert "general" not in text
-            assert "rooms.xmpp-elite" not in text
+            assert "rooms.otrv4plus" not in text
         finally:
             t.close()

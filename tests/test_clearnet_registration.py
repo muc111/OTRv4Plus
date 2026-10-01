@@ -459,7 +459,7 @@ class TestOnlyClearnetUsesDns:
     def test_i2p_and_tor_never_reach_the_srv_code(self, monkeypatch):
         called = []
         monkeypatch.setattr(D, "lookup", lambda *a, **k: called.append(a))
-        for jid in ("alice@xmpp-elite.i2p", "alice@" + "b" * 56 + ".onion"):
+        for jid in ("alice@otrv4plus.i2p", "alice@" + "b" * 56 + ".onion"):
             t = T.XmppTransport(ConnectionProfile(jid=jid), "pw",
                                 on_payload=lambda *a: None)
             try:

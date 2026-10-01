@@ -24,12 +24,12 @@ import kotlin.test.assertTrue
  */
 class PeopleDirectoryTest {
 
-    private val me = "me@xmpp-elite.i2p"
-    private val alice = "alice@xmpp-elite.i2p"
-    private val bob = "bob@xmpp-elite.i2p"
-    private val carol = "carol@xmpp-elite.i2p"
-    private val dave = "dave@xmpp-elite.i2p"
-    private val erin = "erin@xmpp-elite.i2p"
+    private val me = "me@otrv4plus.i2p"
+    private val alice = "alice@otrv4plus.i2p"
+    private val bob = "bob@otrv4plus.i2p"
+    private val carol = "carol@otrv4plus.i2p"
+    private val dave = "dave@otrv4plus.i2p"
+    private val erin = "erin@otrv4plus.i2p"
 
     private fun contact(jid: String, presence: PeerPresence,
                         subscription: Subscription = Subscription.BOTH) =
@@ -55,12 +55,12 @@ class PeopleDirectoryTest {
         )
         s.noteSubscription(OtrEvent.SubscriptionRequested(dave, SubscriptionPolicy.ASK))
         s.applyDiscovery(OnlineDiscovery(OnlineDiscovery.XEP_0133,
-                                         listOf("$alice/phone", "frank@xmpp-elite.i2p", me)))
+                                         listOf("$alice/phone", "frank@otrv4plus.i2p", me)))
         val rows = s.directory()
         assertEquals(
             listOf(dave to OnlineUsers.Relation.ACCEPT,
                    alice to OnlineUsers.Relation.ADDED_ONLINE,
-                   "frank@xmpp-elite.i2p" to OnlineUsers.Relation.ONLINE_ADD,
+                   "frank@otrv4plus.i2p" to OnlineUsers.Relation.ONLINE_ADD,
                    carol to OnlineUsers.Relation.PENDING,
                    bob to OnlineUsers.Relation.ADDED_OFFLINE,
                    erin to OnlineUsers.Relation.ADDED_UNKNOWN),
@@ -94,7 +94,7 @@ class PeopleDirectoryTest {
         s.applyConnection(ConnectionStatus(stage = "failed", connected = false))
         assertTrue(s.directory().isEmpty(), "a stale online outlived our connection")
         s.applyConnection(ConnectionStatus(stage = "connected", connected = true))
-        s.bindAccount(AccountScope.of("other@xmpp-elite.i2p"))
+        s.bindAccount(AccountScope.of("other@otrv4plus.i2p"))
         assertNull(s.discovery, "one account's server answer carried to another")
     }
 

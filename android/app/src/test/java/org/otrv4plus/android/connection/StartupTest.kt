@@ -62,15 +62,15 @@ class StartupTest {
     @Test
     fun `an explicit connect starts`() {
         assertEquals(Startup.Decision.CONNECT,
-                     decide(intentJid = "alice@xmpp-elite.i2p",
+                     decide(intentJid = "alice@otrv4plus.i2p",
                             intentPassword = "pw"))
     }
 
     @Test
     fun `an explicit connect uses what was typed`() {
-        val account = accountFor(intentJid = "alice@xmpp-elite.i2p",
+        val account = accountFor(intentJid = "alice@otrv4plus.i2p",
                                  intentPassword = "pw")
-        assertEquals("alice@xmpp-elite.i2p", account?.jid)
+        assertEquals("alice@otrv4plus.i2p", account?.jid)
         assertEquals("pw", account?.password)
     }
 
@@ -79,16 +79,16 @@ class StartupTest {
         // Signing in as somebody else must not silently reconnect as the
         // previous account.
         val account = accountFor(
-            intentJid = "bob@xmpp-elite.i2p", intentPassword = "bobs",
-            storedJid = "alice@xmpp-elite.i2p", storedPassword = "alices")
-        assertEquals("bob@xmpp-elite.i2p", account?.jid)
+            intentJid = "bob@otrv4plus.i2p", intentPassword = "bobs",
+            storedJid = "alice@otrv4plus.i2p", storedPassword = "alices")
+        assertEquals("bob@otrv4plus.i2p", account?.jid)
         assertEquals("bobs", account?.password)
     }
 
     @Test
     fun `surrounding space in a typed account is trimmed`() {
-        assertEquals("alice@xmpp-elite.i2p",
-                     accountFor(intentJid = "  alice@xmpp-elite.i2p  ",
+        assertEquals("alice@otrv4plus.i2p",
+                     accountFor(intentJid = "  alice@otrv4plus.i2p  ",
                                 intentPassword = "pw")?.jid)
     }
 
@@ -97,7 +97,7 @@ class StartupTest {
         // A space is a character in a password. Trimming one would make a
         // correct password fail, silently, only for some users.
         assertEquals(" pw ",
-                     accountFor(intentJid = "alice@xmpp-elite.i2p",
+                     accountFor(intentJid = "alice@otrv4plus.i2p",
                                 intentPassword = " pw ")?.password)
     }
 
@@ -108,15 +108,15 @@ class StartupTest {
         // THE CASE THE FIX MUST NOT BREAK. Somebody who signed in yesterday
         // is not shown a login form because the process restarted.
         assertEquals(Startup.Decision.CONNECT,
-                     decide(storedJid = "alice@xmpp-elite.i2p",
+                     decide(storedJid = "alice@otrv4plus.i2p",
                             storedPassword = "pw"))
     }
 
     @Test
     fun `a remembered account is the one connected as`() {
-        val account = accountFor(storedJid = "alice@xmpp-elite.i2p",
+        val account = accountFor(storedJid = "alice@otrv4plus.i2p",
                                  storedPassword = "pw")
-        assertEquals("alice@xmpp-elite.i2p", account?.jid)
+        assertEquals("alice@otrv4plus.i2p", account?.jid)
         assertEquals("pw", account?.password)
     }
 
@@ -125,7 +125,7 @@ class StartupTest {
         // `resume()` sends ACTION_START with no extras at all, and
         // `getStringExtra` returns null rather than "".
         assertNotNull(accountFor(intentJid = null, intentPassword = null,
-                                 storedJid = "alice@xmpp-elite.i2p",
+                                 storedJid = "alice@otrv4plus.i2p",
                                  storedPassword = "pw"))
     }
 
@@ -136,7 +136,7 @@ class StartupTest {
         // A truncated or half-written vault record. Connecting would fail
         // authentication over and over and look exactly like the bug above.
         assertEquals(Startup.Decision.WAIT,
-                     decide(storedJid = "alice@xmpp-elite.i2p",
+                     decide(storedJid = "alice@otrv4plus.i2p",
                             storedPassword = ""))
     }
 
@@ -151,7 +151,7 @@ class StartupTest {
     @Test
     fun `a jid that is only a domain is not an account`() {
         assertEquals(Startup.Decision.WAIT,
-                     decide(storedJid = "@xmpp-elite.i2p", storedPassword = "pw"))
+                     decide(storedJid = "@otrv4plus.i2p", storedPassword = "pw"))
     }
 
     @Test
@@ -171,9 +171,9 @@ class StartupTest {
         // Not a rule anybody should rely on, but it must be DECIDED rather
         // than accidental: a malformed Intent is not a reason to drop a
         // working session on a restart.
-        assertEquals("alice@xmpp-elite.i2p",
+        assertEquals("alice@otrv4plus.i2p",
                      accountFor(intentJid = "nonsense", intentPassword = "pw",
-                                storedJid = "alice@xmpp-elite.i2p",
+                                storedJid = "alice@otrv4plus.i2p",
                                 storedPassword = "stored")?.jid)
     }
 
@@ -202,7 +202,7 @@ class StartupTest {
 
     @Test
     fun `the account does not print its password`() {
-        val account = accountFor(intentJid = "alice@xmpp-elite.i2p",
+        val account = accountFor(intentJid = "alice@otrv4plus.i2p",
                                  intentPassword = "hunter2")
         assertEquals(false, account.toString().contains("hunter2"))
     }

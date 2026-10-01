@@ -51,9 +51,9 @@ from android_bridge.transport import (
     XmppTransport,
 )
 
-JID = "alice@xmpp-elite.i2p"
+JID = "alice@otrv4plus.i2p"
 SERVER = "hq4t24b7vkllfbk55e5xfocqhfi7hxprwc47zyuilbg6wgzikidq.b32.i2p"
-PEER = "bob@xmpp-elite.i2p"
+PEER = "bob@otrv4plus.i2p"
 
 
 class FakePing:
@@ -95,7 +95,7 @@ IqErrorLookalike.__name__ = "IqError"
 
 
 class FakeBoundJid:
-    host = "xmpp-elite.i2p"
+    host = "otrv4plus.i2p"
     full = JID + "/resource"
 
 
@@ -328,7 +328,7 @@ class TestTheKeepalive:
         assert _settle(lambda: ping.calls), (
             "whitespace only. Writing to the socket succeeds whether or not "
             "anything is listening, so this reports a healthy stream forever")
-        assert ping.calls[0][0] == "xmpp-elite.i2p"
+        assert ping.calls[0][0] == "otrv4plus.i2p"
         transport.close()
 
     def test_a_server_that_answers_an_error_counts_as_alive(self, monkeypatch):

@@ -19,10 +19,10 @@ import kotlin.test.assertTrue
  */
 class SmpCarrierTest {
 
-    private val bob = "bob@xmpp-elite.i2p"
+    private val bob = "bob@otrv4plus.i2p"
 
     private fun state() = ChatState().also {
-        it.bindAccount(AccountScope.of("owner@xmpp-elite.i2p"))
+        it.bindAccount(AccountScope.of("owner@otrv4plus.i2p"))
         it.applyConnection(ConnectionStatus(stage = "connected", connected = true))
     }
 

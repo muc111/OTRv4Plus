@@ -48,7 +48,7 @@ class IqError(Exception):
     `classify` not using it is that the real one does.
     """
 
-    def __init__(self, condition, jid="alice@xmpp-elite.i2p"):
+    def __init__(self, condition, jid="alice@otrv4plus.i2p"):
         super().__init__("iq error: <error type='cancel'><%s/></error> "
                          "to %s" % (condition, jid))
         self.condition = condition
@@ -102,7 +102,7 @@ class TestInvalidUsernames:
     def test_a_full_jid_is_refused_with_advice_rather_than_a_rule(self):
         """The likeliest mistake: typing the whole address into the username
         box. Saying "cannot contain '@'" is true and useless."""
-        code, detail = reg.validate("alice@xmpp-elite.i2p", "battery-staple")
+        code, detail = reg.validate("alice@otrv4plus.i2p", "battery-staple")
         assert code == "not_acceptable"
         assert "without" in detail.lower()
 
@@ -308,10 +308,10 @@ class TestClassifyNeverReturnsTheExceptionsOwnText:
     """The property this module exists for."""
 
     def test_the_jid_inside_the_stanza_does_not_reach_the_sentence(self):
-        exc = IqError("conflict", jid="alice@xmpp-elite.i2p")
+        exc = IqError("conflict", jid="alice@otrv4plus.i2p")
         _, detail = reg.classify(exc)
         assert "alice" not in detail
-        assert "xmpp-elite" not in detail
+        assert "otrv4plus" not in detail
 
     def test_no_classification_returns_the_exception_string(self):
         for exc in (IqError("conflict"), IqError("not-acceptable"),

@@ -35,7 +35,7 @@ core = pytest.importorskip("otrv4_core")
 smpflow = pytest.importorskip("otrv4plus_smpflow")
 xmpp = pytest.importorskip("otrv4plus_xmpp")
 
-PEER = "alice@xmpp-elite.i2p"
+PEER = "alice@otrv4plus.i2p"
 SECRET = "correct-horse-battery-staple"
 
 

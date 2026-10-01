@@ -27,8 +27,8 @@ from tests.test_android_rooms import (FakeClient, FakeDisco, FakeMuc, IqError,
 slixmpp = pytest.importorskip("slixmpp")
 from slixmpp.xmlstream import ET  # noqa: E402
 
-ME = "me@xmpp-elite.i2p"
-DOMAIN = "xmpp-elite.i2p"
+ME = "me@otrv4plus.i2p"
+DOMAIN = "otrv4plus.i2p"
 MUC = "muc.fixture.i2p"            # a fixture; discovered, never assumed
 ROOM = "lobby@" + MUC
 OTHER_SERVICE = "upload.fixture.i2p"

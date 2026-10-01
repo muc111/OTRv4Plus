@@ -53,7 +53,7 @@ from android_bridge.transport import (  # noqa: E402
     SCRAM_ONLY, TransportError, XmppTransport)
 from tests.fake_sasl import sasl_plugins  # noqa: E402
 
-NAME = "xmpp-elite.i2p"
+NAME = "otrv4plus.i2p"
 JID = "alice@" + NAME
 PASSWORD = "correct-horse-battery-staple-X1"
 
