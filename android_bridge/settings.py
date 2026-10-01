@@ -63,7 +63,8 @@ __all__ = [
 #: A NAME, not a destination. The router resolves it with SAM NAMING LOOKUP
 #: every time the app connects (`I2PSAMConnection.resolve`), so a server that
 #: is recreated or moves under this name is reached at its current
-#: destination. This used to be the server's 52-character b32, compiled in:
+#: destination. Only when the router has never heard of the name is the b32
+#: shipped for it in otrv4+.py `SERVER_NAME_FALLBACKS` dialled instead. This used to be the server's 52-character b32, compiled in:
 #: when the server was recreated, the app kept dialling the old destination
 #: and nothing a user typed could change that for this name (device report,
 #: 2026-09-28). No build depends on a destination now.

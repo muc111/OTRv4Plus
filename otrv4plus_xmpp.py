@@ -1199,6 +1199,10 @@ async def start_i2p_sam_forwarder(
     say(f"[i2p] opening SAM stream to {dest_b32} "
         "(the router resolves the name; a cold tunnel can take 30-90s)...")
     sam_sock = await loop.run_in_executor(None, _do_sam)
+    if getattr(sam, "used_builtin_fallback", False):
+        # The name, never the destination: on Android `say` reaches logcat.
+        say(f"[i2p] the router does not know {dest_b32} yet; used the address "
+            "this version ships for it.")
     say("[i2p] SAM stream established.")
 
     sam_reader, sam_writer = await asyncio.open_connection(sock=sam_sock)

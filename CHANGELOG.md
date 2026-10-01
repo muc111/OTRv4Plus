@@ -9,8 +9,16 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 - **The app and the terminal clients point at `otrv4plus.i2p`**, which
   replaces `xmpp-elite.i2p`. The sign-in screen's Server dropdown shows the
   new name, and a bare username becomes `name@otrv4plus.i2p`. It is a name,
-  resolved by the phone's I2P router each time (SAM NAMING LOOKUP); no
-  destination is compiled in, and its b32 is pinned on first contact (X1).
+  resolved by the phone's I2P router each time (SAM NAMING LOOKUP), and its
+  destination is pinned on first contact (X1).
+- **Works before the name is in any address book.** When the router answers
+  KEY_NOT_FOUND for `otrv4plus.i2p`, the app and the terminal clients dial
+  the server's c2s address shipped with this version,
+  `nquyxk5atgvp5yn3d4czvtb4qavysbxwjormmewhoyrdux5i4ika.b32.i2p`. The
+  router is always asked first: once it knows the name, its answer is used,
+  and a router that maps the name to a different destination than the pinned
+  one is refused (X1). On Termux a hand-written `~/.otrv4plus/i2p_hosts`
+  line for the name still takes precedence. No other name has a fallback.
 - An account is per server: anyone signed in on `xmpp-elite.i2p` signs in
   (or registers) again on `otrv4plus.i2p`. Saved accounts on the old server
   are not changed or deleted.

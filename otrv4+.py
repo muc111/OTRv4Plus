@@ -792,6 +792,24 @@ class NetworkConstants:
 
 I2P_HOSTS_FILENAME = "i2p_hosts"
 
+#: The project's own XMPP server, by name, with the destination of its c2s
+#: (port 5222) tunnel as a FALLBACK. The router is still asked first, every
+#: time: this is used only when it answers KEY_NOT_FOUND -- a phone whose
+#: address book has never heard of the name, which is every phone until the
+#: name is registered -- and in the Android app as well as the terminal.
+#:
+#: Not a rewrite. The old shipped mapping (i2p_hosts.defaults) was consulted
+#: BEFORE the router, so a server recreated under the same name stayed
+#: unreachable until every client was updated. Here a router that knows the
+#: name always wins; and the connection is then pinned by destination (X1), so
+#: a router that later maps the name somewhere else is refused, not followed.
+#:
+#: A b32 is the hash of the destination, so the router resolves it with no
+#: address book and nothing can substitute it.
+SERVER_NAME_FALLBACKS = {
+    "otrv4plus.i2p": "nquyxk5atgvp5yn3d4czvtb4qavysbxwjormmewhoyrdux5i4ika.b32.i2p",
+}
+
 
 def remember_i2p_alias(name: str, destination: str, path: str = None,
                        learned: bool = True) -> str:
@@ -1043,6 +1061,9 @@ class I2PSAMConnection:
         self._session_id = f"otrv4plus_{secrets .token_hex (4 )}"
         self._control_sock = None
         self._our_destination = None
+        #: Set by `resolve`: the router did not know the name and the
+        #: destination shipped in SERVER_NAME_FALLBACKS was used instead.
+        self.used_builtin_fallback = False
 
     def _send_cmd(self, sock, cmd: str) -> str:
         """Send a SAM command and read ONE reply line.
@@ -1280,10 +1301,12 @@ class I2PSAMConnection:
           recreated under that name was therefore never looked up: the name
           was quietly rewritten to the retired destination (Android, device
           report 2026-09-28).
+        * The project's own server name (SERVER_NAME_FALLBACKS) is dialled
+          at its shipped b32 when the router -- and, on Termux, the alias
+          file -- answers KEY_NOT_FOUND for it, and only then.
         * INVALID_KEY, a malformed name, or any other result is a clean
-          naming failure. There is no fallback to DNS, to a hard-coded
-          destination, or to anything else: no path in this class hands an
-          .i2p name to a system resolver.
+          naming failure. There is no fallback to DNS or to anything else:
+          no path in this class hands an .i2p name to a system resolver.
         """
         target = (target_host or "").strip().lower()
         problem = i2p_target_error(target)
@@ -1298,22 +1321,34 @@ class I2PSAMConnection:
                 return self.naming_lookup(target)
             except SamError as exc:
                 raise self._naming_failure(target, exc) from None
+        self.used_builtin_fallback = False
         try:
             return self.naming_lookup(target)
         except SamError as exc:
-            if not (allow_aliases and exc.stage == "naming"
-                    and exc.result == "KEY_NOT_FOUND"):
+            if not (exc.stage == "naming" and exc.result == "KEY_NOT_FOUND"):
                 raise self._naming_failure(target, exc) from None
             router_reply = exc
-        alias, alias_source = self._apply_i2p_alias(target)
-        if not alias_source:
+        if allow_aliases:
+            alias, alias_source = self._apply_i2p_alias(target)
+            if alias_source:
+                if _I2P_DEST_RE.match(alias):
+                    return alias
+                try:
+                    return self.naming_lookup(alias)
+                except SamError as exc:
+                    raise self._naming_failure(alias, exc, alias_source) from None
+        fallback = SERVER_NAME_FALLBACKS.get(target)
+        if not fallback:
             raise self._naming_failure(target, router_reply) from None
-        if _I2P_DEST_RE.match(alias):
-            return alias
+        # The router does not know the project's server name yet: dial the
+        # destination this version ships for it. Reported by the caller
+        # (`used_builtin_fallback`), which knows whether its log may name it.
         try:
-            return self.naming_lookup(alias)
+            dest = self.naming_lookup(fallback)
         except SamError as exc:
-            raise self._naming_failure(alias, exc, alias_source) from None
+            raise self._naming_failure(fallback, exc) from None
+        self.used_builtin_fallback = True
+        return dest
 
     def connect(self, target_host: str, target_port: int = 0,
                 allow_aliases: bool = True,

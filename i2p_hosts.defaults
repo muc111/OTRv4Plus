@@ -17,6 +17,11 @@
 # router answers KEY_NOT_FOUND for, and its use is announced. The Android app
 # does not read either file.
 #
+# The project's own server is different, and is not configured here:
+# SERVER_NAME_FALLBACKS in otrv4+.py gives otrv4plus.i2p a b32 that is used
+# only when the router answers KEY_NOT_FOUND for the name -- the router is
+# still asked first -- on Termux and Android alike.
+#
 # Name lines, if ever added again, use:   name.i2p = <52 chars>.b32.i2p
 #
 # Retired destinations.  A b32 is NEVER silently redirected -- an address
