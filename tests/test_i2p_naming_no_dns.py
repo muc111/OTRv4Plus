@@ -48,7 +48,10 @@ class FakeSam:
 
     def __init__(self, names=None, naming_reply=None, stream_result="OK",
                  hello="HELLO REPLY RESULT=OK VERSION=3.1", silent_on=None,
-                 raw_naming=None):
+                 raw_naming=None, unknown_result="KEY_NOT_FOUND"):
+        # unknown_result: what this router says for a name it does not have.
+        # Java I2P: KEY_NOT_FOUND. i2pd: INVALID_KEY.
+        self.unknown_result = unknown_result
         self.names = dict(names or {})
         self.naming_reply = naming_reply
         self.raw_naming = raw_naming
@@ -91,7 +94,7 @@ class FakeSam:
                     elif name in self.names:
                         out = "NAMING REPLY RESULT=OK NAME=%s VALUE=%s" % (name, self.names[name])
                     else:
-                        out = "NAMING REPLY RESULT=KEY_NOT_FOUND NAME=%s" % name
+                        out = "NAMING REPLY RESULT=%s NAME=%s" % (self.unknown_result, name)
                 elif line.startswith("SESSION CREATE"):
                     out = "SESSION STATUS RESULT=OK DESTINATION=" + "C" * 600
                 elif line.startswith("STREAM CONNECT"):
@@ -192,12 +195,20 @@ class TestShortNames:
         assert not any(c.startswith(("SESSION", "STREAM")) for c in fake.commands)
         assert no_dns == []
 
-    def test_invalid_key_fails_cleanly_with_no_fallback(self, no_dns, aliases):
-        fake = FakeSam(naming_reply="NAMING REPLY RESULT=INVALID_KEY NAME={name}")
+    def test_i2pd_says_invalid_key_for_an_unknown_name(self, no_dns, aliases):
+        """i2pd answers INVALID_KEY where Java I2P says KEY_NOT_FOUND. Both
+        mean the router does not know the name, so the alias file applies."""
+        fake = FakeSam(names={B32: OTHER_DEST}, unknown_result="INVALID_KEY")
+        _sam(fake).connect("known-only-locally.i2p").close()
+        assert fake.looked_up() == ["known-only-locally.i2p", B32]
+        assert fake.connected_to() == [OTHER_DEST]
+
+    def test_any_other_naming_result_gets_no_fallback(self, no_dns, aliases):
+        fake = FakeSam(naming_reply="NAMING REPLY RESULT=I2P_ERROR NAME={name}")
         with pytest.raises(otr.SamError) as exc:
             _sam(fake).connect(NEW)
-        assert (exc.value.stage, exc.value.result) == ("naming", "INVALID_KEY")
-        assert fake.looked_up() == [NEW], "INVALID_KEY fell back to something"
+        assert (exc.value.stage, exc.value.result) == ("naming", "I2P_ERROR")
+        assert fake.looked_up() == [NEW], "I2P_ERROR fell back to something"
         assert fake.connected_to() == []
 
 
@@ -447,11 +458,21 @@ class TestTheProjectServerFallback:
         assert fake.connected_to() == [DEST]
         assert sam.used_builtin_fallback is False
 
-    def test_invalid_key_gets_no_fallback(self, no_dns, aliases):
-        fake = FakeSam(naming_reply="NAMING REPLY RESULT=INVALID_KEY NAME={name}")
+    def test_i2pd_invalid_key_also_uses_the_fallback(self, no_dns, aliases):
+        """The device report: i2pd answered INVALID_KEY for otrv4plus.i2p and
+        the app stopped at i2p_name_not_found instead of using the b32."""
+        fake = FakeSam(names={self.SHIPPED: OTHER_DEST}, unknown_result="INVALID_KEY")
+        sam = _sam(fake)
+        sam.connect(self.SERVER, allow_aliases=False).close()
+        assert fake.looked_up() == [self.SERVER, self.SHIPPED]
+        assert fake.connected_to() == [OTHER_DEST]
+        assert sam.used_builtin_fallback is True
+
+    def test_another_naming_result_gets_no_fallback(self, no_dns, aliases):
+        fake = FakeSam(naming_reply="NAMING REPLY RESULT=I2P_ERROR NAME={name}")
         with pytest.raises(otr.SamError) as exc:
             _sam(fake).connect(self.SERVER, allow_aliases=False)
-        assert exc.value.result == "INVALID_KEY"
+        assert exc.value.result == "I2P_ERROR"
         assert fake.looked_up() == [self.SERVER]
 
     def test_other_names_get_no_fallback(self, no_dns, aliases):

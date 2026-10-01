@@ -4,6 +4,18 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.11 — 2026-10-01 — the otrv4plus.i2p fallback works with i2pd (core 0.11.0)
+
+*Device report on rc.10 (Xiaomi, Android 15): sign-in stopped at
+`i2p_name_not_found ... (INVALID_KEY)`.*
+
+- **Fixed: the shipped address for `otrv4plus.i2p` was never used with
+  i2pd.** A router answers NAMING LOOKUP for a name its address book lacks
+  with KEY_NOT_FOUND (Java I2P) or INVALID_KEY (i2pd); rc.10 fell back only
+  on the first. Both now mean "unknown name" for a well-formed short name (it
+  is validated before it is sent), for the shipped fallback and for the
+  Termux alias file alike. Any other naming result still gets no fallback.
+
 ## Android 0.7.0-experimental.rc.10 — 2026-10-01 — default server is now otrv4plus.i2p (core 0.11.0)
 
 - **The app and the terminal clients point at `otrv4plus.i2p`**, which

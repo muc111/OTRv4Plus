@@ -794,7 +794,7 @@ I2P_HOSTS_FILENAME = "i2p_hosts"
 
 #: The project's own XMPP server, by name, with the destination of its c2s
 #: (port 5222) tunnel as a FALLBACK. The router is still asked first, every
-#: time: this is used only when it answers KEY_NOT_FOUND -- a phone whose
+#: time: this is used only when it does not know the name -- a phone whose
 #: address book has never heard of the name, which is every phone until the
 #: name is registered -- and in the Android app as well as the terminal.
 #:
@@ -806,6 +806,15 @@ I2P_HOSTS_FILENAME = "i2p_hosts"
 #:
 #: A b32 is the hash of the destination, so the router resolves it with no
 #: address book and nothing can substitute it.
+#: What a router answers NAMING LOOKUP with for a well-formed short name its
+#: address book does not have. Java I2P says KEY_NOT_FOUND; i2pd says
+#: INVALID_KEY (it keeps KEY_NOT_FOUND for a b32 whose LeaseSet it cannot
+#: find). The name is validated before it is sent, so for a short name both
+#: mean "unknown here" -- the case the alias file and the fallback below are
+#: for. Device report 2026-10-01: i2pd answered INVALID_KEY for otrv4plus.i2p
+#: and the fallback, which accepted only KEY_NOT_FOUND, never ran.
+I2P_NAME_UNKNOWN_RESULTS = ("KEY_NOT_FOUND", "INVALID_KEY")
+
 SERVER_NAME_FALLBACKS = {
     "otrv4plus.i2p": "nquyxk5atgvp5yn3d4czvtb4qavysbxwjormmewhoyrdux5i4ika.b32.i2p",
 }
@@ -1295,18 +1304,21 @@ class I2PSAMConnection:
         * A short `x.i2p` is asked of the router first -- NAMING LOOKUP,
           always. The router's address book is the authority for what a name
           means NOW. The local alias file (Termux) is consulted only when the
-          router answers KEY_NOT_FOUND, and its use is announced.
+          router does not know the name (I2P_NAME_UNKNOWN_RESULTS:
+          KEY_NOT_FOUND from Java I2P, INVALID_KEY from i2pd), and its use is
+          announced.
           It used to be consulted FIRST, together with a shipped defaults file
           that mapped the project's server name to its old b32. A server
           recreated under that name was therefore never looked up: the name
           was quietly rewritten to the retired destination (Android, device
           report 2026-09-28).
         * The project's own server name (SERVER_NAME_FALLBACKS) is dialled
-          at its shipped b32 when the router -- and, on Termux, the alias
-          file -- answers KEY_NOT_FOUND for it, and only then.
-        * INVALID_KEY, a malformed name, or any other result is a clean
-          naming failure. There is no fallback to DNS or to anything else:
-          no path in this class hands an .i2p name to a system resolver.
+          at its shipped b32 when neither the router nor, on Termux, the
+          alias file knows it, and only then.
+        * A malformed name (refused before anything is sent), a bridge
+          fault, or any other result is a clean naming failure. There is no
+          fallback to DNS or to anything else: no path in this class hands
+          an .i2p name to a system resolver.
         """
         target = (target_host or "").strip().lower()
         problem = i2p_target_error(target)
@@ -1325,7 +1337,8 @@ class I2PSAMConnection:
         try:
             return self.naming_lookup(target)
         except SamError as exc:
-            if not (exc.stage == "naming" and exc.result == "KEY_NOT_FOUND"):
+            if not (exc.stage == "naming"
+                    and exc.result in I2P_NAME_UNKNOWN_RESULTS):
                 raise self._naming_failure(target, exc) from None
             router_reply = exc
         if allow_aliases:
