@@ -4,6 +4,22 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.16 — 2026-10-02 — the report says why the I2P stream ended (core 0.11.0)
+
+*Device report on rc.14 (Xiaomi, Android 15): the tunnel to otrv4plus.i2p
+opened, no stream features arrived, and the stream closed about 10 s later.*
+
+- **`connection/i2p_stream_ended`** records which side ended the I2P stream
+  (`server` or `client`), the bytes sent and received, and the kind of the
+  server's first byte (`xml`, `tls`, `other`, `none`). It never records
+  content. When the result points at server setup, a `meaning` field says
+  what to check:
+  - nothing received: the server's I2P tunnel reaches nothing that answers
+    (needs `type = server`, `127.0.0.1:5222`, and the XMPP server running);
+  - TLS first: the tunnel points at the direct-TLS port 5223;
+  - anything else: the wrong tunnel type or port.
+  The Termux client prints the same line.
+
 ## Android 0.7.0-experimental.rc.15 — 2026-10-02 — otrv4plus.i2p always goes to its own address (core 0.11.0)
 
 - **The server list's `otrv4plus.i2p` is dialled at

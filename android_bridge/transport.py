@@ -1416,6 +1416,37 @@ class XmppTransport(Transport):
             _TRACE.record("connection", "shipped_address_used", "info")
         elif "established" in text:
             self._reached("sam_established")
+        elif "I2P stream ended" in text:
+            self._stream_ended(text)
+
+    #: What the end of the I2P stream means, by (who ended it, bytes
+    #: received, first byte kind). Recorded with the counts; never content.
+    _STREAM_END_HINTS = {
+        "silent": ("server sent nothing: its I2P server tunnel reaches nothing "
+                   "that answers. Needs type=server, host 127.0.0.1, port "
+                   "5222, and the XMPP server running"),
+        "tls": ("server answered in TLS, not XMPP: its I2P tunnel points at "
+                "the direct-TLS port (5223). Point it at 5222"),
+        "other": ("server answered with something other than XMPP: the I2P "
+                  "tunnel is the wrong type (needs type=server) or the wrong "
+                  "port"),
+    }
+
+    def _stream_ended(self, text: str) -> None:
+        import re
+        m = re.search(r"ended by the (\w+): sent=(\d+) received=(\d+) "
+                      r"first=(\w+)", text)
+        if not m:
+            return
+        by, sent, got, first = m.group(1), int(m.group(2)), int(m.group(3)), \
+            m.group(4)
+        verdict = ("silent" if by == "server" and got == 0
+                   else first if first in ("tls", "other") else "")
+        fields = dict(ended_by=by, sent=sent, received=got, first=first)
+        if verdict:
+            fields["meaning"] = self._STREAM_END_HINTS[verdict]
+        _TRACE.record("connection", "i2p_stream_ended",
+                      "warning" if verdict else "info", **fields)
 
     def _watch_stages(self, client: Any) -> None:
         """Steps of the XMPP handshake over I2P/Tor, for the diagnostic

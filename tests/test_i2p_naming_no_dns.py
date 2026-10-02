@@ -48,7 +48,11 @@ class FakeSam:
 
     def __init__(self, names=None, naming_reply=None, stream_result="OK",
                  hello="HELLO REPLY RESULT=OK VERSION=3.1", silent_on=None,
-                 raw_naming=None, unknown_result="KEY_NOT_FOUND"):
+                 raw_naming=None, unknown_result="KEY_NOT_FOUND",
+                 after_stream=None):
+        # after_stream: once STREAM CONNECT succeeds, play the far end -- send
+        # these bytes (b"" for none), then close the stream.
+        self.after_stream = after_stream
         # unknown_result: what this router says for a name it does not have.
         # Java I2P: KEY_NOT_FOUND. i2pd: INVALID_KEY.
         self.unknown_result = unknown_result
@@ -103,6 +107,18 @@ class FakeSam:
                     out = "SESSION STATUS RESULT=OK DESTINATION=" + "C" * 600
                 elif line.startswith("STREAM CONNECT"):
                     out = "STREAM STATUS RESULT=%s" % self.stream_result
+                    if self.after_stream is not None:
+                        conn.sendall((out + "\n").encode())
+                        # Let the client's first bytes arrive, as a server
+                        # tunnel that accepted and then found nothing would.
+                        conn.settimeout(2.0)
+                        try:
+                            conn.recv(4096)
+                        except OSError:
+                            pass
+                        conn.sendall(self.after_stream)
+                        conn.close()
+                        return
                 else:
                     out = "UNKNOWN"
                 conn.sendall((out + "\n").encode())
@@ -567,3 +583,70 @@ class TestATimedOutConnectLeavesNoSessionInTheRouter:
             sam.connect(NEW)
         assert exc.value.stage == "cancelled"
         assert sam._control_sock is None
+
+
+class TestTheEndOfTheI2PStreamIsDescribed:
+    """Device report, 2026-10-02: the tunnel opened, then the stream closed
+    and nothing else was known. The forwarder now says who ended it, how many
+    bytes went each way and what kind of byte the server sent first -- never
+    any content -- and the app records what that means."""
+
+    def _run(self, after_stream):
+        import otrv4plus_xmpp
+        fake = FakeSam(names={NEW: DEST}, after_stream=after_stream)
+        lines = []
+        try:
+            async def attempt():
+                host, port = await otrv4plus_xmpp.start_i2p_sam_forwarder(
+                    NEW, 5222, "127.0.0.1", fake.port, resources=[],
+                    log=lines.append, aliases=False)
+                reader, writer = await asyncio.open_connection(host, port)
+                writer.write(b"<?xml version='1.0'?><stream:stream>")
+                await writer.drain()
+                got = await asyncio.wait_for(reader.read(), 5)
+                writer.close()
+                for _ in range(50):
+                    if any("I2P stream ended" in l for l in lines):
+                        break
+                    await asyncio.sleep(0.02)
+                return got
+            asyncio.run(attempt())
+        finally:
+            fake.close()
+        return [l for l in lines if "I2P stream ended" in l]
+
+    def test_a_server_that_says_nothing(self):
+        (line,) = self._run(b"")
+        assert "ended by the server" in line
+        assert "received=0" in line and "first=none" in line
+
+    def test_a_server_that_answers_in_tls(self):
+        (line,) = self._run(b"\x15\x03\x01\x00\x02\x02\x46")
+        assert "first=tls" in line and "received=7" in line
+
+    def test_an_xmpp_server(self):
+        (line,) = self._run(b"<?xml version='1.0'?><stream:stream>")
+        assert "first=xml" in line
+
+    @pytest.mark.parametrize("line,severity,meaning", [
+        ("[i2p] I2P stream ended by the server: sent=120 received=0 first=none",
+         "warning", "sent nothing"),
+        ("[i2p] I2P stream ended by the server: sent=120 received=7 first=tls",
+         "warning", "5223"),
+        ("[i2p] I2P stream ended by the server: sent=120 received=40 first=other",
+         "warning", "type=server"),
+        ("[i2p] I2P stream ended by the client: sent=900 received=4000 first=xml",
+         "info", None),
+    ])
+    def test_the_app_records_what_it_means(self, line, severity, meaning):
+        from android_bridge import transport as T
+        from android_bridge.trace import TRACE
+        TRACE.clear()
+        t = T.XmppTransport.__new__(T.XmppTransport)
+        t._forwarder_progress(line)
+        (ev,) = [e for e in TRACE.events(100) if e["event"] == "i2p_stream_ended"]
+        assert ev["severity"] == severity
+        if meaning:
+            assert meaning in ev["fields"]["meaning"]
+        else:
+            assert "meaning" not in ev["fields"]

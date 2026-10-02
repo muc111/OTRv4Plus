@@ -1139,6 +1139,20 @@ async def start_tor_socks_forwarder(onion_host: str, dest_port: int,
 _TOR_FORWARDERS = []
 
 
+def _first_byte_kind(byte: int) -> str:
+    """What the server's first byte says it is speaking, as one word.
+
+    "xml" is an XMPP server's stream header; "tls" a TLS record (handshake
+    0x16 or alert 0x15) -- a server expecting direct TLS, i.e. port 5223 --
+    and "other" anything else, such as an HTTP reply from a tunnel of the
+    wrong type."""
+    if byte == 0x3C:            # '<'
+        return "xml"
+    if byte in (0x15, 0x16):
+        return "tls"
+    return "other"
+
+
 async def start_i2p_sam_forwarder(
     dest_b32: str, dest_port: int, sam_host: str = "127.0.0.1", sam_port: int = 7656,
     *, resources=None, log=None, aliases: bool = True, verify=None,
@@ -1222,12 +1236,22 @@ async def start_i2p_sam_forwarder(
     SAM_CHUNK_DELAY = 0.02  # seconds between chunks on large messages
 
     async def _handle_local(local_reader, local_writer):
+        # Byte COUNTS, which side ended the stream, and what kind of byte the
+        # server sent first -- never content. A device report showed a tunnel
+        # that opened and then closed with nothing else known; these tell
+        # "the server never said a word" (its I2P tunnel points at nothing,
+        # or at the wrong port) from "it answered in TLS" (a direct-TLS port,
+        # 5223, where XMPP wants 5222) from an XMPP server that answered.
+        seen = {"sent": 0, "got": 0, "first": "", "ended_by": ""}
+
         async def pump_to_i2p(src, dst):
             try:
                 while True:
                     data = await src.read(65536)
                     if not data:
+                        seen["ended_by"] = seen["ended_by"] or "client"
                         break
+                    seen["sent"] += len(data)
                     if len(data) <= SAM_CHUNK:
                         dst.write(data)
                         await dst.drain()
@@ -1249,7 +1273,11 @@ async def start_i2p_sam_forwarder(
                 while True:
                     data = await src.read(65536)
                     if not data:
+                        seen["ended_by"] = seen["ended_by"] or "server"
                         break
+                    if not seen["got"]:
+                        seen["first"] = _first_byte_kind(data[0])
+                    seen["got"] += len(data)
                     dst.write(data)
                     await dst.drain()
             except Exception:
@@ -1264,6 +1292,9 @@ async def start_i2p_sam_forwarder(
             pump_to_i2p(local_reader, sam_writer),
             pump_from_i2p(sam_reader, local_writer),
         )
+        say(f"[i2p] I2P stream ended by the {seen['ended_by'] or 'client'}: "
+            f"sent={seen['sent']} received={seen['got']} "
+            f"first={seen['first'] or 'none'}")
 
     server = await asyncio.start_server(_handle_local, "127.0.0.1", 0)
     host, port = server.sockets[0].getsockname()[:2]
