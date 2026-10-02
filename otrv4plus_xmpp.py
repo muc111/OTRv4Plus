@@ -5443,6 +5443,13 @@ class OTRv4PlusXMPP(ClientXMPP):
         if not line:
             return True
 
+        # Invisible characters a copy from a chat window brings along (zero-
+        # width spaces, a byte-order mark, a non-breaking space) made
+        # "/otr alice@..." fail to match and go out as a chat message instead
+        # (device test, 2026-10-02).
+        line = (line.replace("\u200b", "").replace("\u200c", "")
+                .replace("\u200d", "").replace("\u2060", "")
+                .replace("\ufeff", "").replace("\u00a0", " "))
         lstrip = line.strip()
 
         # --- TUI toggle ---
@@ -5806,6 +5813,12 @@ class OTRv4PlusXMPP(ClientXMPP):
             self.show_help()
 
         # --- Outbound chat ---
+        elif lstrip.startswith("/"):
+            # A command this client does not have. Never sent as a chat
+            # message: a mistyped "/otr" went to the peer as text, and with
+            # no --peer it was answered with a message about --peer.
+            print("unknown command: %s  (type /help for the list)"
+                  % _sanitise(lstrip.split()[0], 40))
         else:
             if peer:
                 self.send_user_text(peer, line)

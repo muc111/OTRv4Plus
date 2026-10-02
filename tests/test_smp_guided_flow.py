@@ -1075,3 +1075,38 @@ class TestAnAbortIsNotAMismatch:
         src = inspect.getsource(xmpp.OTRv4PlusXMPP)
         assert src.count("_smp_reported.add(key_fail)") == 2, (
             "abort and failure share one branch again")
+
+
+class TestCommandsSurviveCopyAndPaste:
+    """Device test, 2026-10-02: "/otr alice@otrv4plus.i2p" pasted from a chat
+    window did not start OTR -- it went out as a chat message and, with no
+    --peer, was answered "no --peer set"."""
+
+    def _client(self):
+        c = _Client()
+        c.started = []
+        c.start_otr = lambda jid: c.started.append(jid)
+        return c
+
+    @pytest.mark.parametrize("junk", ["​", "﻿", "⁠", "‍"])
+    def test_invisible_characters_do_not_hide_a_command(self, capture, junk):
+        c = self._client()
+        c.dispatch_line(None, junk + "/otr alice@otrv4plus.i2p")
+        assert c.started == ["alice@otrv4plus.i2p"]
+        assert c.sent == []
+
+    def test_a_non_breaking_space_separates_like_a_space(self, capture):
+        c = self._client()
+        c.dispatch_line(None, "/otr alice@otrv4plus.i2p")
+        assert c.started == ["alice@otrv4plus.i2p"]
+
+    def test_an_unknown_command_is_never_sent_as_chat(self, capture):
+        c = self._client()
+        c.dispatch_line(PEER, "/otrr alice@otrv4plus.i2p")
+        assert c.sent == [] and c.started == []
+        assert any("unknown command: /otrr" in line for line in capture)
+
+    def test_ordinary_text_still_goes_to_the_peer(self, capture):
+        c = self._client()
+        c.dispatch_line(PEER, "hello there")
+        assert c.sent == [(PEER, "MESSAGE:hello there")]

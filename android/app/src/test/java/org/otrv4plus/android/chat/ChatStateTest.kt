@@ -694,6 +694,23 @@ class ChatStateTest {
     }
 
     @Test
+    fun `a stranger who opens an encrypted session is listed at once`() {
+        // Device test: a Termux user ran /otr against this app to be invited
+        // to a secure group; the session was up and no row appeared.
+        val s = state()
+        s.handle(OtrEvent.SessionChanged(bob, SecurityState.ENCRYPTED))
+        val row = s.conversations().single { it.jid == bob }
+        assertEquals(SecurityState.ENCRYPTED, row.security)
+    }
+
+    @Test
+    fun `a plaintext session state alone lists nobody`() {
+        val s = state()
+        s.handle(OtrEvent.SessionChanged(bob, SecurityState.PLAINTEXT))
+        assertTrue(s.conversations().none { it.jid == bob })
+    }
+
+    @Test
     fun `dropped events are reported`() {
         val s = state()
         s.applyDropped(7)

@@ -856,6 +856,14 @@ class ChatState(
         val jids = (contacts.keys.map { bare(it) }.toSet() +
             store.conversationIds().map { bare(it) } +
             savedContacts.all().map { bare(it.jid) } +
+            // Anybody who has opened an encrypted OTRv4+ session with us,
+            // contact or not, message or not. Device test, 2026-10-02: a
+            // Termux user completed the handshake with this app so it could be
+            // invited to a secure group, and nothing appeared here -- the
+            // session was recorded and never listed, so the person was
+            // invisible and there was no conversation to invite them from.
+            sessionStates.filterValues { it != SecurityState.PLAINTEXT }
+                .keys.map { bare(it) } +
             // The Welcome room is the landing room: listed once joined, even
             // before anybody has said anything in it.
             (if (welcome.joined && welcome.room.isNotBlank()) setOf(bare(welcome.room))

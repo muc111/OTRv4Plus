@@ -4,6 +4,22 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.21 — 2026-10-02 — a new encrypted session is listed; Termux commands survive a paste (core 0.11.0)
+
+*Four-account MLS test: Termux B ran `/otr alice@otrv4plus.i2p` so Alice
+(app) could invite B to the secure group. B showed ENCRYPTED; Alice's app
+showed nothing.*
+
+- **Anyone who opens an encrypted OTRv4+ session with the app is listed in
+  the conversations at once**, contact or not, with or without a message.
+  The session was recorded but only rows with a contact, a message or a
+  saved entry were listed, so the person was invisible and there was no
+  conversation to invite them from.
+- **Termux: a pasted command is still a command.** Zero-width characters,
+  a byte-order mark and non-breaking spaces from a chat window are removed
+  from typed lines. A line starting with `/` that is not a command now
+  prints `unknown command` instead of being sent as a chat message.
+
 ## Android 0.7.0-experimental.rc.20 — 2026-10-02 — the Welcome room is created on otrv4plus.i2p; Termux signs in the same way (core 0.11.0)
 
 *First successful sign-in to the new server (rc.19, after its TLS
