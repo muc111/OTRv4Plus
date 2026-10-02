@@ -187,3 +187,57 @@ class TestAnAccountOnTheShippedB32IsAnAccountOnItsName:
             server.stop()
         assert b"to='otrv4plus.i2p'" in server.received
         assert SHIPPED_B32.encode() not in server.received
+
+
+STARTTLS = ("<stream:features><starttls xmlns='urn:ietf:params:xml:ns:xmpp-tls'>"
+            "<required/></starttls></stream:features>")
+PROCEED = b"<proceed xmlns='urn:ietf:params:xml:ns:xmpp-tls'/>"
+#: A fatal TLS alert, handshake_failure (40): what OpenSSL sends when the
+#: server has no certificate/key it can use.
+ALERT_HANDSHAKE_FAILURE = b"\x15\x03\x03\x00\x02\x02\x28"
+
+
+class TlsRefusingServer(XmppServer):
+    """Offers STARTTLS, says proceed, then answers the client's TLS hello
+    with a fatal alert -- the device report's 670 bytes received."""
+
+    def _serve(self):
+        try:
+            conn, _ = self.sock.accept()
+        except OSError:
+            return
+        conn.settimeout(10)
+        stage = 0
+        try:
+            while True:
+                data = conn.recv(4096)
+                if not data:
+                    return
+                self.received += data
+                if stage == 0 and b"<stream:stream" in self.received:
+                    conn.sendall((HEADER + STARTTLS).encode())
+                    stage = 1
+                elif stage == 1 and b"<starttls" in self.received:
+                    conn.sendall(PROCEED)
+                    stage = 2
+                elif stage == 2 and data[:1] == b"\x16":
+                    conn.sendall(ALERT_HANDSHAKE_FAILURE)
+                    stage = 3
+        except OSError:
+            pass
+
+
+class TestATlsFailureSaysWhyAndBlamesNoCertificate:
+
+    def test_handshake_failure_is_reported_at_once(self, monkeypatch):
+        err, took = _attempt(TlsRefusingServer(""), monkeypatch)
+        assert err.code == "tls_failed"
+        assert "HANDSHAKE_FAILURE" in err.detail.upper()
+        assert "not a certificate check" in err.detail
+        assert "prosodyctl check certs" in err.detail
+        assert took < 10
+
+    def test_the_reason_is_traced(self, monkeypatch):
+        _attempt(TlsRefusingServer(""), monkeypatch)
+        (ev,) = [e for e in TRACE.events(200) if e["event"] == "tls_failed"]
+        assert "HANDSHAKE_FAILURE" in ev["fields"]["reason"].upper()

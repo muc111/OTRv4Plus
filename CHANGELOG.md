@@ -4,6 +4,25 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.19 — 2026-10-02 — a failed TLS handshake over I2P says why (core 0.11.0)
+
+*Device report on rc.18: STARTTLS offered and accepted, client sent 701 bytes
+(132 stream header + 52 `<starttls/>` + a 517-byte ClientHello, measured
+against the same code here), received 670, then `server_closed_connection`.
+The client sent no alert, so it never got a certificate to judge: the
+server ended the handshake before sending one.*
+
+- **The TLS failure reason is recorded and shown** (`connection/tls_failed`,
+  OpenSSL's reason, e.g. `SSLV3_ALERT_HANDSHAKE_FAILURE`). Each reason has a
+  plain explanation. A handshake refused by the server points at its
+  certificate/key setup (`prosodyctl check certs`, a key readable by the
+  prosody user). The message says plainly that certificates are not checked
+  over I2P. slixmpp reports every TLS failure as `ssl_invalid_chain` and
+  logs "Invalid certificate trust chain", which was misleading here.
+- **The vague "closed before sign-in" waits 0.5 s** for that reason to
+  arrive: slixmpp signals `disconnected` before the TLS error, so the
+  precise cause was being replaced by the generic one.
+
 ## Android 0.7.0-experimental.rc.18 — 2026-10-02 — an account on the server's b32 signs in as otrv4plus.i2p (core 0.11.0)
 
 *Device report on rc.16: the client sent 179 bytes, exactly the stream header

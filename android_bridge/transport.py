@@ -736,6 +736,33 @@ _STREAM_ERROR_MEANINGS = {
 }
 
 
+def _tls_failure_text(reason: str, profile) -> str:
+    """A TLS handshake failure over I2P/Tor, for a person. The certificate
+    is never the cause there: it is not checked."""
+    try:
+        domain = str(profile.jid).rsplit("@", 1)[-1].split("/", 1)[0]
+    except Exception:
+        domain = "the server's domain"
+    r = reason.upper()
+    head = ("the TLS handshake with the server failed (%s). Any certificate "
+            "is accepted over I2P, so this is not a certificate check: " % reason)
+    if "HANDSHAKE_FAILURE" in r or "NO_SHARED_CIPHER" in r:
+        return head + (
+            "the server refused the handshake, which is what a server with "
+            "no usable certificate and key for %s does. On the server: "
+            "`prosodyctl check certs`, and make sure the prosody user can "
+            "read the key file." % domain)
+    if "UNRECOGNIZED_NAME" in r:
+        return head + ("the server has no certificate configured for %s."
+                       % domain)
+    if "PROTOCOL_VERSION" in r or "UNSUPPORTED_PROTOCOL" in r:
+        return head + ("the server offers only TLS versions older than 1.2.")
+    if "INTERNAL_ERROR" in r:
+        return head + ("the server reported an internal TLS error; its log "
+                       "will say which.")
+    return head + "the server's log will say why."
+
+
 def _stream_error_text(condition: str, profile) -> str:
     try:
         domain = str(profile.jid).rsplit("@", 1)[-1].split("/", 1)[0]
@@ -1582,9 +1609,37 @@ class XmppTransport(Transport):
                     "xmpp_stream_failure",
                     _stream_error_text(cond, self._profile)))
 
+        def on_tls_error(exc):
+            # slixmpp raises EVERY TLS failure as `ssl_invalid_chain` and logs
+            # "Invalid certificate trust chain" -- wrongly here: over I2P/Tor
+            # the certificate is not checked at all (CERT_NONE), so any
+            # certificate is accepted. What fails is the handshake itself, and
+            # the OpenSSL reason says which side and why. Device report,
+            # 2026-10-02: STARTTLS offered and accepted, the client's hello
+            # sent, a few bytes back, closed -- with no reason recorded.
+            reason = (getattr(exc, "reason", None) or type(exc).__name__)
+            _TRACE.record("connection", "tls_failed", "error",
+                          reason=str(reason)[:80])
+            if not started.done():
+                started.set_exception(TransportError(
+                    "tls_failed", _tls_failure_text(str(reason),
+                                                    self._profile)))
+
         def on_early_disconnect(_event):
             # The stream ended before sign-in finished and nothing above said
             # why: say where it stopped now rather than after the timeout.
+            # slixmpp signals `disconnected` BEFORE the `ssl_invalid_chain`
+            # that carries a failed TLS handshake's reason (the device report
+            # got the vague message, not the reason), so a precise event gets
+            # half a second to land first -- as _StreamWatch does on clearnet.
+            if started.done():
+                return
+            try:
+                asyncio.get_event_loop().call_later(0.5, closed_before_sign_in)
+            except RuntimeError:
+                closed_before_sign_in()
+
+        def closed_before_sign_in():
             if not started.done():
                 step = getattr(self, "_progress", "starting")
                 started.set_exception(TransportError(
@@ -1608,6 +1663,7 @@ class XmppTransport(Transport):
         else:
             client.add_event_handler("connection_failed", on_connection_failed)
             client.add_event_handler("stream_error", on_stream_error)
+            client.add_event_handler("ssl_invalid_chain", on_tls_error)
             client.add_event_handler("disconnected", on_early_disconnect)
             self._watch_stages(client)
 
