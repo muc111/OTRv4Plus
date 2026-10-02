@@ -4,6 +4,30 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.22 — 2026-10-02 — secure groups survive a reconnect and a capitalised invite; no plaintext into a group room (core 0.11.0)
+
+*Four-account MLS test: Alice (app) invited B (Termux). B accepted and waited
+for the Welcome indefinitely. B then tried `/msg mls@conference… hello`,
+which went to the room address unencrypted (the server refused it).*
+
+- **The invitee's address is folded to bare lower case when the invite is
+  stored.** B's answer (its KeyPackage) is matched on the sender as the app
+  reports it, `b@…`. An invite typed as `B@…`, which a phone keyboard does by
+  default, never matched, so the answer was dropped as uninvited and B
+  never got a Welcome. A test reproduces the hang without the fix. The
+  invite field now uses an email keyboard, with no auto-capital.
+- **The app rejoins every secure group's room after each (re)connect**, as
+  the Termux client always has. Only the Welcome room was rejoined, so
+  after a reconnect the group's room dropped everything: Alice's sends
+  failed ("message not sent"), and her commit adding B never came back from
+  the room. MLS kept that commit pending, which refuses every later send,
+  and B got no Welcome. Rejoining replays the room's recent history, which
+  applies a commit that landed while the app was away
+  (`groups/rooms_rejoined` in the report).
+- **Termux `/msg` refuses a secure-group room** and points at `/group say`.
+  `/msg` sends plaintext to one address, which is never right for a room
+  whose text must be MLS.
+
 ## Android 0.7.0-experimental.rc.21 — 2026-10-02 — a new encrypted session is listed; Termux commands survive a paste (core 0.11.0)
 
 *Four-account MLS test: Termux B ran `/otr alice@otrv4plus.i2p` so Alice

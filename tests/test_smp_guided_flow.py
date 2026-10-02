@@ -1110,3 +1110,24 @@ class TestCommandsSurviveCopyAndPaste:
         c = self._client()
         c.dispatch_line(PEER, "hello there")
         assert c.sent == [(PEER, "MESSAGE:hello there")]
+
+
+class TestMsgNeverSendsPlaintextIntoASecureGroupRoom:
+    """Device test, 2026-10-02: `/msg mls@conference... hello` sent "hello"
+    unencrypted to the room's address (the server refused it)."""
+
+    def test_refused_and_pointed_at_group_say(self, capture):
+        c = _Client()
+        c.plain = []
+        c.send_plain = lambda t, txt: c.plain.append((t, txt))
+
+        class Groups:
+            def owns_room(self, jid):
+                return jid.lower().startswith("mls@conference.")
+        c._groups = Groups()
+        c.dispatch_line(None, "/msg mls@conference.otrv4plus.i2p hello")
+        assert c.plain == []
+        assert any("/group say mls@conference.otrv4plus.i2p" in l
+                   for l in capture)
+        c.dispatch_line(None, "/msg bob@otrv4plus.i2p hi")
+        assert c.plain == [("bob@otrv4plus.i2p", "hi")]

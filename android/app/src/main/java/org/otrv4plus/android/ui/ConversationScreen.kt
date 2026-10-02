@@ -1177,6 +1177,10 @@ private fun SecureGroupPanel(model: ChatViewModel, jid: String) {
             onValueChange = { invitee = it },
             label = { Text("Invite a contact (their address)") },
             singleLine = true,
+            // An address, so no auto-capital: "B@otrv4plus.i2p" was stored as
+            // the invitee and B's answer, from "b@...", was dropped as
+            // uninvited (device test). The bridge folds case too.
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email),
             modifier = Modifier.fillMaxWidth(),
         )
         TextButton(

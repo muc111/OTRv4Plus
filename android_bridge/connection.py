@@ -576,6 +576,7 @@ class ConnectionController:
                 start(self._profile.jid.split("@", 1)[0])
             except Exception:
                 _TRACE.record("welcome", "start_failed", "warning")
+        self._rejoin_secure_rooms()
         self._last = {"ok": True, "stage": "connected", "code": "ok",
                       "detail": "Connected to %s as %s"
                                 % (self._profile.effective_server,
@@ -908,6 +909,45 @@ class ConnectionController:
         offers joining a room by address.
         """
         return self._muc_call("discover_rooms", service)
+
+    def _rejoin_secure_rooms(self) -> None:
+        """Re-enter every secure group's room after a (re)connect, in the
+        background.
+
+        A dropped stream takes every room membership with it (forget_rooms),
+        and only the Welcome room was joined again. A secure group's room
+        then dropped everything it carried: our sends failed ("message not
+        sent"), and our own commit adding a member never came back, so MLS
+        held it pending -- which refuses every later send -- and the new
+        member never got its Welcome (device test, 2026-10-02). Rejoining
+        also replays the room's recent history, which is how a commit that
+        landed while we were away is applied. The terminal client has always
+        rejoined its group rooms."""
+        groups = getattr(self._app, "groups", None)
+        rooms_of = getattr(groups, "rooms", None)
+        if rooms_of is None:
+            return
+        try:
+            rooms = list(rooms_of())
+        except Exception:
+            return
+        if not rooms:
+            return
+        nick = self._profile.jid.split("@", 1)[0]
+
+        def run():
+            ok = 0
+            for room in rooms:
+                try:
+                    if self.join_room(room, nick).get("ok"):
+                        ok += 1
+                except Exception:
+                    pass
+            _TRACE.record("groups", "rooms_rejoined", "info" if ok == len(rooms)
+                          else "warning", rejoined=ok, total=len(rooms))
+
+        threading.Thread(target=run, name="secure-room-rejoin",
+                         daemon=True).start()
 
     def join_room(self, room: str, nick: str,
                   password: str = "") -> Dict[str, Any]:

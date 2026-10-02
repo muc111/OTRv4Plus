@@ -395,6 +395,11 @@ class SecureGroups:
 
     def invite(self, room: str, peer: str) -> None:
         """Invite `peer` over our OTRv4+ session with them."""
+        # The KeyPackage that answers this is matched on (room, peer) as the
+        # app reports the sender: bare and lower-case. An invite stored under
+        # the address as typed ("Bob@…", or with a resource) never matched,
+        # and the answer was dropped as uninvited.
+        peer = str(peer or "").strip().split("/", 1)[0].lower()
         with self._lock:
             client = self._need()
             if not client.has_group(room.encode()):

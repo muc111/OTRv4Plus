@@ -157,3 +157,25 @@ def test_wipe_destroys_the_group_state(pair):
     a.wipe_crypto()
     assert a.groups.wiped
     assert not a.groups.is_secure(ROOM)
+
+
+def test_an_invite_typed_with_a_capital_still_admits_the_member(pair):
+    """Device test, 2026-10-02: Alice (app) invited B, B accepted, and B
+    waited for the Welcome forever. A phone keyboard capitalises the first
+    letter of a field: the invite was stored under "Bob@...", B's KeyPackage
+    arrived from "bob@..." (as the app reports every sender), and it was
+    dropped as uninvited."""
+    muc, A, B = pair
+    a, aw, asink, a_jid = A
+    b, bw, bsink, b_jid = B
+    a.note_room_joined(ROOM)
+    muc.members["alice"] = a
+    a.groups.create(ROOM)
+    a.groups.invite(ROOM, b_jid.capitalize() + "/phone")
+    assert any(isinstance(e, GroupInvite) and e.room == ROOM
+               for e in bsink.events), "bob never saw the invitation"
+    b.note_room_joined(ROOM)
+    muc.members["bob"] = b
+    b.groups.accept(ROOM)
+    assert b.groups.is_secure(ROOM), [e for e in asink.events
+                                      if isinstance(e, GroupChanged)]

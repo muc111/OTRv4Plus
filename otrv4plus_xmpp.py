@@ -5568,6 +5568,16 @@ class OTRv4PlusXMPP(ClientXMPP):
             rest = lstrip[5:].strip()
             if " " in rest:
                 t, txt = rest.split(" ", 1)
+                groups = getattr(self, "_groups", None)
+                if groups is not None and groups.owns_room(t):
+                    # A room this client is in for a secure group. /msg is
+                    # PLAINTEXT to one address: it went to the room's JID
+                    # unencrypted (device test, 2026-10-02; the server
+                    # refused it). Group text is MLS or nothing.
+                    print("[group] %s is a secure group room; /msg would "
+                          "send plaintext. Use  /group say %s <text>"
+                          % (_sanitise(t, 80), _sanitise(t, 80)))
+                    return True
                 self.send_plain(t, txt)
                 print(f"[sent plain] -> {t}")
             else:

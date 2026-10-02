@@ -752,3 +752,39 @@ class TestTheRouterCheckIsInTheReport:
             raise ConnectionRefusedError()
         got = probe_sam("127.0.0.1", 7656, opener=refuse)
         assert got.code == "refused" and "Unrestricted" in got.detail
+
+
+class TestSecureGroupRoomsAreRejoined:
+    """Device test, 2026-10-02: after the app's stream came back, only the
+    Welcome room was joined again. The secure group's room dropped
+    everything: sends failed ("message not sent"), the commit adding a member
+    never came back, and the member never got a Welcome."""
+
+    def test_every_secure_room_is_joined_again_on_connect(self):
+        import time
+
+        class Groups:
+            def rooms(self):
+                return ["mls@conference.otrv4plus.i2p",
+                        "other@conference.otrv4plus.i2p"]
+
+        ctl, made = build()
+        made["app"].groups = Groups()
+        joined = []
+        ctl.join_room = lambda room, nick, password="": (
+            joined.append((room, nick)) or {"ok": True})
+        assert ctl.connect("pw")["ok"]
+        for _ in range(100):
+            if len(joined) == 2:
+                break
+            time.sleep(0.01)
+        assert sorted(joined) == [
+            ("mls@conference.otrv4plus.i2p", "alice"),
+            ("other@conference.otrv4plus.i2p", "alice")]
+
+    def test_no_groups_joins_nothing(self):
+        ctl, made = build()
+        joined = []
+        ctl.join_room = lambda *a, **k: joined.append(a) or {"ok": True}
+        assert ctl.connect("pw")["ok"]
+        assert joined == []
