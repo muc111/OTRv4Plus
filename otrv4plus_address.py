@@ -28,7 +28,7 @@ __all__ = [
     "jid_error", "server_error", "sam_host_error", "sam_port_error",
     "jid_domain", "profile_errors", "b32_error",
     "B32_LABEL_LENGTH", "B32_SUFFIX",
-    "SHIPPED_SERVERS", "shipped_server_address",
+    "SHIPPED_SERVERS", "shipped_server_address", "shipped_server_name",
 ]
 
 #: A `.b32.i2p` label is the destination hash itself, base32-encoded: 52
@@ -69,6 +69,20 @@ SHIPPED_SERVERS = {
 def shipped_server_address(name: str) -> Optional[str]:
     """The `.b32.i2p` this version ships for `name`, or None."""
     return SHIPPED_SERVERS.get((name or "").strip().lower().rstrip("."))
+
+
+def shipped_server_name(address: str) -> Optional[str]:
+    """The name a shipped `.b32.i2p` address serves, or None.
+
+    The b32 is where the server IS; its accounts live on the name. A JID on
+    the b32 (`alice@<b32>.b32.i2p`) introduces itself to the server under a
+    domain the server does not host, and Prosody answers `host-unknown`.
+    """
+    wanted = (address or "").strip().lower().rstrip(".")
+    for name, b32 in SHIPPED_SERVERS.items():
+        if b32 == wanted:
+            return name
+    return None
 _B32_ALPHABET = frozenset("abcdefghijklmnopqrstuvwxyz234567")
 _B32_LABEL = re.compile(r"[a-z2-7]{%d}" % B32_LABEL_LENGTH, re.IGNORECASE)
 

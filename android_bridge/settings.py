@@ -121,6 +121,20 @@ class ConnectionProfile:
     socks_host: str = "127.0.0.1"
     socks_port: int = 9050
 
+    def __post_init__(self) -> None:
+        # An account on the project server's b32 is an account on its NAME.
+        # Device report, 2026-10-02: picking "Custom" and typing the b32 (the
+        # only way to reach the server before rc.15) made the JID
+        # alice@<b32>.b32.i2p. The stream then said to='<b32>', the server --
+        # which hosts otrv4plus.i2p -- answered host-unknown, and nothing
+        # connected. A remembered account carries the same JID, so this is
+        # corrected where every profile is built, not only at sign-in.
+        domain = _address.jid_domain(self.jid)
+        name = _address.shipped_server_name(domain)
+        if name:
+            user = self.jid.strip().rsplit("@", 1)[0]
+            object.__setattr__(self, "jid", "%s@%s" % (user, name))
+
     # -- derived --------------------------------------------------------------
 
     @property

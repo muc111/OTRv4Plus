@@ -4,6 +4,20 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.18 — 2026-10-02 — an account on the server's b32 signs in as otrv4plus.i2p (core 0.11.0)
+
+*Device report on rc.16: the client sent 179 bytes, exactly the stream header
+addressed `to='<b32>.b32.i2p'` (for `otrv4plus.i2p` it is 132 bytes). The
+server hosts `otrv4plus.i2p` and refused the domain.*
+
+- **A JID on the project server's b32 becomes a JID on its name.** Choosing
+  "Custom" and typing the b32 (the only way to reach the server before
+  rc.15) made the account `alice@<b32>.b32.i2p`, and the app remembers it.
+  The server was greeted under a domain it does not serve. The profile now
+  maps `<user>@nquyx…ika.b32.i2p` to `<user>@otrv4plus.i2p` wherever it is
+  built, so new and remembered accounts both sign in. The connection still
+  goes to the b32. Other addresses are untouched.
+
 ## Android 0.7.0-experimental.rc.17 — 2026-10-02 — the server's refusal reaches the screen over I2P (core 0.11.0)
 
 *Device report on rc.16 (Xiaomi, Android 15): the tunnel to otrv4plus.i2p

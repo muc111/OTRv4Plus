@@ -141,3 +141,49 @@ def test_the_meaning_of_each_condition():
         "host-unknown", profile)
     assert "(undefined-condition)" in T._stream_error_text(
         "undefined-condition", profile)
+
+
+SHIPPED_B32 = "nquyxk5atgvp5yn3d4czvtb4qavysbxwjormmewhoyrdux5i4ika.b32.i2p"
+
+
+class TestAnAccountOnTheShippedB32IsAnAccountOnItsName:
+    """Device report, 2026-10-02: the client sent 179 bytes -- the stream
+    header with to='<b32>' (60 characters where otrv4plus.i2p is 13; the
+    header for otrv4plus.i2p is 132 bytes) -- and the server, which hosts
+    otrv4plus.i2p, refused the domain. The JID had been built from a server
+    typed as the b32 ("Custom"), which was the only way to reach the server
+    before rc.15, and the app remembers it."""
+
+    @pytest.mark.parametrize("jid,server", [
+        ("alice@" + SHIPPED_B32, SHIPPED_B32),          # Custom: the b32
+        ("alice@" + SHIPPED_B32, ""),                    # remembered account
+        ("Alice@" + SHIPPED_B32.upper(), ""),
+    ])
+    def test_the_jid_takes_the_servers_name(self, jid, server):
+        p = ConnectionProfile(jid=jid, server=server)
+        assert p.jid.lower() == "alice@otrv4plus.i2p"
+        assert p.route.kind == "i2p_sam"
+
+    def test_other_addresses_are_left_alone(self):
+        for jid in ("bob@other.i2p", "bob@" + "a" * 52 + ".b32.i2p",
+                    "carol@07f.de"):
+            assert ConnectionProfile(jid=jid).jid == jid
+
+    def test_the_server_is_greeted_as_otrv4plus_i2p(self, monkeypatch):
+        server = XmppServer(HEADER + HOST_UNKNOWN)
+        monkeypatch.setattr(T, "CONNECT_TIMEOUT", 20.0)
+
+        async def forward(dest, port, sam_host, sam_port, **_kw):
+            return ("127.0.0.1", server.port)
+
+        t = T.XmppTransport(
+            ConnectionProfile(jid="alice@" + SHIPPED_B32, server=SHIPPED_B32),
+            "not-the-password", on_payload=lambda *a: None, forwarder=forward)
+        try:
+            with pytest.raises(T.TransportError):
+                t.connect()
+        finally:
+            t.close()
+            server.stop()
+        assert b"to='otrv4plus.i2p'" in server.received
+        assert SHIPPED_B32.encode() not in server.received
