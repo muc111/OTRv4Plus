@@ -133,12 +133,16 @@ def probe_sam(host: str, port: int, timeout: float = SAM_PROBE_TIMEOUT,
             False, "refused",
             "Nothing is listening on %s:%d. Start your I2P router and make "
             "sure its SAM bridge is enabled (i2pd: sam.enabled=true in "
-            "i2pd.conf)." % (host, port))
+            "i2pd.conf). If the router app says it is running, Android may "
+            "have stopped it in the background: open it, and set its battery "
+            "use to Unrestricted." % (host, port))
     except socket.timeout:
         return SamProbe(
             False, "timeout",
             "%s:%d did not answer within %gs. A SAM bridge on this device "
-            "should answer immediately." % (host, port, timeout))
+            "should answer immediately; one that does not is usually a router "
+            "app Android has frozen in the background. Open the router app, "
+            "and set its battery use to Unrestricted." % (host, port, timeout))
     except OSError as exc:
         # Includes EHOSTUNREACH, ENETUNREACH, EACCES. The type, not the
         # message: an OSError's text carries paths and addresses.
@@ -429,7 +433,7 @@ class ConnectionController:
             self._enter("checking_router")
         else:
             self._enter("checking_tor")
-        probe = self._prober(self._profile)
+        probe = self._traced_probe()
         self._probe_version = getattr(probe, "version", "")
         if not probe.reachable:
             return probe
@@ -1172,7 +1176,26 @@ class ConnectionController:
         A private attribute read across a language boundary is a coupling that
         breaks without a compiler noticing.
         """
-        return self._prober(self._profile).as_dict()
+        return self._traced_probe().as_dict()
+
+    def _traced_probe(self) -> SamProbe:
+        """Run the router check and put its outcome in the diagnostic report.
+
+        Without this a report from a phone whose router check failed said
+        "(no events recorded)", which is the one case where the outcome is all
+        that matters. Only the stable code and the SAM version are traced: the
+        detail sentence names the local host and port, and those stay out.
+        """
+        probe = self._prober(self._profile)
+        try:
+            kind = self._profile.route.kind
+        except Exception:
+            kind = "invalid"
+        _TRACE.record("router", "probe",
+                      "info" if probe.reachable else "warning",
+                      route=kind, code=probe.code,
+                      version=getattr(probe, "version", "") or "")
+        return probe
 
     def test_server(self) -> Dict[str, Any]:
         """Reach the server and stop: DNS (SRV first on clearnet), TCP, TLS

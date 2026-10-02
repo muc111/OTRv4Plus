@@ -4,6 +4,20 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.13 — 2026-10-02 — the router check is in the diagnostic report (core 0.11.0)
+
+*Device report on rc.12 (Xiaomi, Android 15): "i2pd is not reachable" while
+the i2pd app said it was running, and the report said "(no events recorded)".*
+
+- **The router check is recorded**: each check, from the screen or from
+  Connect, adds a `router/probe` event with its code (`ok`, `refused`,
+  `timeout`, `not_sam`, `unreachable`) and the SAM version. The local host
+  and port are not recorded.
+- **"Not reachable" names the usual Android cause**: a router app that
+  Android has stopped or frozen in the background still shows as running.
+  The `refused` and `timeout` messages now say to open the router app and
+  set its battery use to Unrestricted.
+
 ## Android 0.7.0-experimental.rc.12 — 2026-10-02 — a connect that times out says where it stopped (core 0.11.0)
 
 *Device report on rc.11 (Xiaomi, Android 15): "did not finish within 300s",

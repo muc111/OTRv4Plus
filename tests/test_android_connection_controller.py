@@ -711,3 +711,44 @@ class TestAFailedAttemptDoesNotSurviveALaterSuccess:
             assert ctl.connect("pw")["code"] == "transport_failed"
         assert ctl.status()["last"]["code"] == "transport_failed"
         assert ctl.status()["connected"] is False
+
+
+class TestTheRouterCheckIsInTheReport:
+    """A report from a phone whose router check failed said "(no events
+    recorded)": the one outcome that mattered was the one not written down.
+    Only the stable code and SAM version go in -- the detail sentence names
+    the local host and port, and those stay out of a report a user pastes."""
+
+    def _events(self):
+        from android_bridge.trace import TRACE
+        return [e for e in TRACE.events(4000)
+                if e.get("component") == "router" and e.get("event") == "probe"]
+
+    def setup_method(self):
+        from android_bridge.trace import TRACE
+        TRACE.clear()
+
+    def test_the_screen_check_is_recorded(self):
+        ctl, _ = build(probe=SamProbe(False, "timeout",
+                                      "127.0.0.1:7656 did not answer"))
+        assert ctl.probe()["code"] == "timeout"
+        (ev,) = self._events()
+        assert ev["severity"] == "warning"
+        assert ev["fields"]["code"] == "timeout"
+        assert "7656" not in repr(ev) and "127.0.0.1" not in repr(ev)
+
+    def test_the_connect_check_is_recorded(self):
+        ctl, _ = build()
+        ctl.connect("pw")
+        (ev,) = self._events()
+        assert ev["severity"] == "info"
+        assert ev["fields"]["code"] == "ok"
+        assert ev["fields"]["version"] == "3.1"
+
+    def test_a_refused_port_says_android_may_have_stopped_the_router(self):
+        from android_bridge.connection import probe_sam
+
+        def refuse(*_a, **_k):
+            raise ConnectionRefusedError()
+        got = probe_sam("127.0.0.1", 7656, opener=refuse)
+        assert got.code == "refused" and "Unrestricted" in got.detail
