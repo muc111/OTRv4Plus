@@ -1198,7 +1198,16 @@ async def start_i2p_sam_forwarder(
 
     say(f"[i2p] opening SAM stream to {dest_b32} "
         "(the router resolves the name; a cold tunnel can take 30-90s)...")
-    sam_sock = await loop.run_in_executor(None, _do_sam)
+    try:
+        sam_sock = await loop.run_in_executor(None, _do_sam)
+    except BaseException:
+        # Cancelled (the Android connect timed out) or failed: the executor
+        # thread is not stopped by either, and a session it created would stay
+        # open in the router -- one more per retry. See I2PSAMConnection.abandon.
+        abandon = getattr(sam, "abandon", None)
+        if abandon is not None:
+            abandon()
+        raise
     if getattr(sam, "used_builtin_fallback", False):
         # The name, never the destination: on Android `say` reaches logcat.
         say(f"[i2p] the router does not know {dest_b32} yet; used the address "

@@ -1008,7 +1008,8 @@ class SamError(ConnectionError):
                      or sent a malformed / oversized / mismatched reply;
       * "naming"  -- the router could not resolve the name (RESULT= says why);
       * "session" -- SESSION CREATE failed;
-      * "stream"  -- STREAM CONNECT failed: the destination is not reachable.
+      * "stream"  -- STREAM CONNECT failed: the destination is not reachable;
+      * "cancelled" -- the caller gave up (I2PSAMConnection.abandon).
     `result` is the SAM RESULT= value when there was one. These are different
     problems with different remedies, and callers report which one it was.
     """
@@ -1073,6 +1074,9 @@ class I2PSAMConnection:
         #: Set by `resolve`: the router did not know the name and the
         #: destination shipped in SERVER_NAME_FALLBACKS was used instead.
         self.used_builtin_fallback = False
+        #: Set by `abandon`; see there.
+        self._abandoned = False
+        self._pending_stream = None
 
     def _send_cmd(self, sock, cmd: str) -> str:
         """Send a SAM command and read ONE reply line.
@@ -1384,6 +1388,9 @@ class I2PSAMConnection:
             verify_destination(dest_b64)
 
         self._control_sock = self._bridge_socket(90)
+        if self._abandoned:
+            self.close()
+            raise SamError("cancelled", "the SAM connection was abandoned")
         reply = self._send_cmd(
             self._control_sock,
             f"SESSION CREATE STYLE=STREAM ID={self ._session_id } "
@@ -1397,10 +1404,18 @@ class I2PSAMConnection:
         self._our_destination = parsed.get("DESTINATION", "")
 
         stream_sock = self._bridge_socket(NetworkConstants.TIMEOUT_I2P)
-        reply = self._send_cmd(
-            stream_sock,
-            f"STREAM CONNECT ID={self ._session_id } " f"DESTINATION={dest_b64 } SILENT=false",
-        )
+        self._pending_stream = stream_sock
+        try:
+            reply = self._send_cmd(
+                stream_sock,
+                f"STREAM CONNECT ID={self ._session_id } " f"DESTINATION={dest_b64 } SILENT=false",
+            )
+        finally:
+            self._pending_stream = None
+        if self._abandoned:
+            stream_sock.close()
+            self.close()
+            raise SamError("cancelled", "the SAM connection was abandoned")
         parsed = self._parse_reply(reply, "STREAM STATUS ")
         if parsed.get("RESULT") != "OK":
             stream_sock.close()
@@ -1411,6 +1426,33 @@ class I2PSAMConnection:
 
         stream_sock.settimeout(1.0)
         return stream_sock
+
+    def abandon(self):
+        """Give up on a `connect` that another thread is still inside.
+
+        A connect that times out on Android is cancelled, but the thread
+        doing the SAM work is not: it went on to finish SESSION CREATE and
+        sat in STREAM CONNECT, and the session -- a transient destination
+        with its own tunnels -- stayed open in the router for the life of the
+        app. Every retry added another. Closing the sockets here ends the
+        session in the router and wakes the blocked thread; the flag stops a
+        step that was already past its socket from opening a new one.
+        """
+        self._abandoned = True
+        # shutdown before close: on Linux, close() from another thread does
+        # not wake a recv() blocked on the same socket; shutdown() does.
+        for sock in (self._pending_stream, self._control_sock):
+            if sock is None:
+                continue
+            try:
+                sock.shutdown(socket.SHUT_RDWR)
+            except Exception:
+                pass
+            try:
+                sock.close()
+            except Exception:
+                pass
+        self.close()
 
     def close(self):
         """Close the SAM control session."""

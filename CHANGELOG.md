@@ -4,6 +4,20 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.14 — 2026-10-02 — a timed-out connect no longer leaves a session in the router (core 0.11.0)
+
+*Device reports on rc.11-rc.13 (Xiaomi, Android 15): connects that ran out
+the 300 s wait, then a router the app could no longer reach.*
+
+- **A connect that times out closes its I2P session.** The wait cancelled
+  the connect but not the thread doing the SAM work. That thread had
+  already created a session (a temporary I2P identity with its own tunnels)
+  and stayed blocked waiting for the server. The session stayed open in
+  i2pd for as long as the app ran, and every retry added another, all
+  competing for the same phone router. The session is now closed when the
+  wait expires, and the blocked thread is woken and ends. The Termux client
+  shares this code and gets the same fix.
+
 ## Android 0.7.0-experimental.rc.13 — 2026-10-02 — the router check is in the diagnostic report (core 0.11.0)
 
 *Device report on rc.12 (Xiaomi, Android 15): "i2pd is not reachable" while

@@ -59,6 +59,9 @@ class FakeSam:
         self.hello = hello
         self.silent_on = silent_on
         self.commands = []
+        #: Connections that created a session and are still open. The router
+        #: keeps a session -- and its tunnels -- for exactly this long.
+        self.open_sessions = set()
         self.sock = socket.socket()
         self.sock.bind(("127.0.0.1", 0))
         self.sock.listen(16)
@@ -96,6 +99,7 @@ class FakeSam:
                     else:
                         out = "NAMING REPLY RESULT=%s NAME=%s" % (self.unknown_result, name)
                 elif line.startswith("SESSION CREATE"):
+                    self.open_sessions.add(conn)
                     out = "SESSION STATUS RESULT=OK DESTINATION=" + "C" * 600
                 elif line.startswith("STREAM CONNECT"):
                     out = "STREAM STATUS RESULT=%s" % self.stream_result
@@ -104,6 +108,7 @@ class FakeSam:
                 conn.sendall((out + "\n").encode())
         except OSError:
             pass
+        self.open_sessions.discard(conn)
 
     def close(self):
         self._stop = True
@@ -487,3 +492,56 @@ class TestTheProjectServerFallback:
             _sam(fake).connect(self.SERVER, allow_aliases=False)
         assert exc.value.stage == "naming"
         assert "router or tunnel problem" in str(exc.value)
+
+
+class TestATimedOutConnectLeavesNoSessionInTheRouter:
+    """Device reports, 2026-10-02: connects that ran out the 300 s wait, then
+    a router the app could no longer reach. The wait cancelled the coroutine,
+    but not the thread doing the SAM work: that thread had a session open
+    (a transient destination with its own tunnels) and stayed blocked in
+    STREAM CONNECT, so the session stayed in the router for the life of the
+    app -- one more for every retry."""
+
+    def _wait_for(self, cond, seconds=5.0):
+        import time
+        end = time.monotonic() + seconds
+        while time.monotonic() < end:
+            if cond():
+                return True
+            time.sleep(0.02)
+        return cond()
+
+    def test_the_session_is_closed_when_the_wait_expires(self):
+        import otrv4plus_xmpp
+        fake = FakeSam(names={NEW: DEST}, silent_on="STREAM CONNECT")
+        try:
+            async def attempt():
+                await asyncio.wait_for(
+                    otrv4plus_xmpp.start_i2p_sam_forwarder(
+                        NEW, 5222, "127.0.0.1", fake.port,
+                        resources=[], log=lambda _m: None, aliases=False),
+                    timeout=1.0)
+
+            import time
+            started = time.monotonic()
+            with pytest.raises((asyncio.TimeoutError, TimeoutError)):
+                asyncio.run(attempt())
+            # asyncio.run waits for the executor thread: a thread still
+            # blocked in STREAM CONNECT holds this for the SAM reply timeout.
+            assert time.monotonic() - started < 10, \
+                "the SAM thread kept running after the connect was abandoned"
+            assert any(c.startswith("SESSION CREATE") for c in fake.commands)
+            assert self._wait_for(lambda: not fake.open_sessions), \
+                "the SAM session outlived the cancelled connect"
+        finally:
+            fake.close()
+
+    def test_a_step_finishing_after_the_abandon_opens_nothing(self):
+        sam = otr.I2PSAMConnection(sam_host="127.0.0.1", sam_port=1)
+        sam.abandon()
+        sam._bridge_socket = lambda _t: socket.socket()
+        sam.resolve = lambda *_a, **_k: DEST
+        with pytest.raises(otr.SamError) as exc:
+            sam.connect(NEW)
+        assert exc.value.stage == "cancelled"
+        assert sam._control_sock is None
