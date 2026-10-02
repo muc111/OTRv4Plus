@@ -718,6 +718,37 @@ _PROGRESS_HINTS = {
 }
 
 
+#: What a server's stream error means for someone signing in, by RFC 6120
+#: condition. Anything else is named as the condition.
+_STREAM_ERROR_MEANINGS = {
+    "host-unknown": (
+        "the server does not host %(domain)s, the domain in your address. "
+        "The account's domain must be one the server serves (Prosody: a "
+        "VirtualHost \"%(domain)s\" in its configuration), or use an address "
+        "on a domain it does serve"),
+    "host-gone": "the server no longer hosts %(domain)s",
+    "see-other-host": "the server sent this client to another host",
+    "policy-violation": "the server refused this connection by its policy",
+    "not-authorized": "the server refused this connection before sign-in",
+    "system-shutdown": "the server is shutting down",
+    "connection-timeout": "the server timed the connection out",
+    "unsupported-version": "the server does not support this XMPP version",
+}
+
+
+def _stream_error_text(condition: str, profile) -> str:
+    try:
+        domain = str(profile.jid).rsplit("@", 1)[-1].split("/", 1)[0]
+    except Exception:
+        domain = "the address's domain"
+    meaning = _STREAM_ERROR_MEANINGS.get(condition)
+    if meaning:
+        return ("the server ended the stream with an error (%s): %s."
+                % (condition, meaning % {"domain": domain}))
+    return ("the server ended the stream with an error (%s) before sign-in."
+            % condition)
+
+
 class TransportError(RuntimeError):
     """The transport could not do what was asked.
 
@@ -1530,6 +1561,38 @@ class XmppTransport(Transport):
                     "stream_failed",
                     _stream_failure_text(self._route, type(event).__name__)))
 
+        def on_stream_error(stanza):
+            # Over I2P/Tor the server's own refusal -- `host-unknown` for a
+            # domain it does not serve, above all -- was dropped: slixmpp
+            # closed the stream, nothing failed the wait, and the attempt sat
+            # until the 300 s timeout with the reason thrown away (device
+            # report, 2026-10-02: 492 bytes of XMPP received, then nothing).
+            # _StreamWatch does this on clearnet only. The condition is a
+            # fixed RFC 6120 word and is traced; the server's free text is
+            # not -- it can name hosts.
+            try:
+                cond = str(stanza["condition"] or "") or "unknown"
+            except Exception:
+                cond = "unknown"
+            _TRACE.record("connection", "stream_error", "error",
+                          condition=cond,
+                          last_step=getattr(self, "_progress", ""))
+            if not started.done():
+                started.set_exception(TransportError(
+                    "xmpp_stream_failure",
+                    _stream_error_text(cond, self._profile)))
+
+        def on_early_disconnect(_event):
+            # The stream ended before sign-in finished and nothing above said
+            # why: say where it stopped now rather than after the timeout.
+            if not started.done():
+                step = getattr(self, "_progress", "starting")
+                started.set_exception(TransportError(
+                    "server_closed_connection",
+                    "the server closed the connection before sign-in "
+                    "finished. Last step reached: %s -- %s."
+                    % (step, _PROGRESS_HINTS.get(step, step))))
+
         client.add_event_handler("session_start", on_session)
         client.add_event_handler("failed_auth", on_failed)
         client.add_event_handler("no_auth", on_no_auth)
@@ -1544,6 +1607,8 @@ class XmppTransport(Transport):
             self._plan_clearnet_dns(client, watch, host)
         else:
             client.add_event_handler("connection_failed", on_connection_failed)
+            client.add_event_handler("stream_error", on_stream_error)
+            client.add_event_handler("disconnected", on_early_disconnect)
             self._watch_stages(client)
 
         # host= and port= point slixmpp at the local end of the SAM tunnel

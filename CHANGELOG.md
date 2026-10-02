@@ -4,6 +4,27 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.17 — 2026-10-02 — the server's refusal reaches the screen over I2P (core 0.11.0)
+
+*Device report on rc.16 (Xiaomi, Android 15): the tunnel to otrv4plus.i2p
+opened, the server answered in XMPP (`first=xml`, 492 bytes), and the client
+closed the stream 2 s later. No reason was recorded, and the attempt waited
+for the 300 s timeout.*
+
+- **A stream error from the server fails the connect at once, with its
+  meaning.** Over I2P and Tor a server's stream error was dropped: slixmpp
+  closed the stream, nothing ended the wait, and the reason was lost. This
+  was handled on clearnet only. `host-unknown` now reads "the server does
+  not host <domain>, the domain in your address", with the Prosody
+  `VirtualHost` fix. Other RFC 6120 conditions are named. The condition is
+  recorded as `connection/stream_error`; the server's free text is not.
+- **A stream that closes before sign-in says where it stopped**
+  (`server_closed_connection`, with the last step) instead of waiting for
+  the timeout.
+- Sign-in rules are unchanged: SCRAM only over I2P/Tor, and only inside the
+  server's TLS. A server offering no STARTTLS still fails with
+  `no_safe_auth_mechanism`, which now arrives at once as well.
+
 ## Android 0.7.0-experimental.rc.16 — 2026-10-02 — the report says why the I2P stream ended (core 0.11.0)
 
 *Device report on rc.14 (Xiaomi, Android 15): the tunnel to otrv4plus.i2p

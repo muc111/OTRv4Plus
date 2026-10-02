@@ -1,0 +1,143 @@
+# SPDX-License-Identifier: AGPL-3.0-only OR LicenseRef-OTRv4Plus-Commercial
+# Copyright (C) 2025-2026 muc111
+"""What the server says over I2P reaches the user, at once.
+
+Device report, 2026-10-02 (rc.16): the tunnel to otrv4plus.i2p opened, the
+server sent 492 bytes of XMPP, and the client closed the stream 2 s later --
+with no reason recorded and the attempt left waiting for its 300 s timeout.
+A server's stream error (`host-unknown` for a domain it does not serve) was
+handled on clearnet only (`_StreamWatch`); over I2P and Tor it was dropped.
+
+These run the REAL XmppTransport and the real slixmpp against a scripted XMPP
+server on 127.0.0.1, reached through a forwarder that stands in for the SAM
+tunnel.
+"""
+
+import os
+import socket
+import sys
+import threading
+import time
+
+import pytest
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if ROOT not in sys.path:
+    sys.path.insert(0, ROOT)
+
+pytest.importorskip("slixmpp")
+
+from android_bridge import transport as T  # noqa: E402
+from android_bridge.settings import ConnectionProfile  # noqa: E402
+from android_bridge.trace import TRACE  # noqa: E402
+
+JID = "alice@otrv4plus.i2p"
+HEADER = ("<?xml version='1.0'?><stream:stream "
+          "xmlns:stream='http://etherx.jabber.org/streams' xml:lang='en' "
+          "id='0f1e2d3c' from='otrv4plus.i2p' version='1.0' "
+          "xmlns='jabber:client'>")
+HOST_UNKNOWN = ("<stream:error><host-unknown "
+                "xmlns='urn:ietf:params:xml:ns:xmpp-streams'/>"
+                "<text xmlns='urn:ietf:params:xml:ns:xmpp-streams'>This server "
+                "does not serve otrv4plus.i2p</text></stream:error>")
+MECHS = ("<stream:features><mechanisms xmlns='urn:ietf:params:xml:ns:xmpp-sasl'>"
+         "%s</mechanisms></stream:features>")
+
+
+class XmppServer:
+    """Answers the client's stream header with `reply`, records every byte,
+    and (with close=True) hangs up straight after."""
+
+    def __init__(self, reply: str, close: bool = False):
+        self.reply, self.close_after = reply.encode(), close
+        self.received = b""
+        self.sock = socket.socket()
+        self.sock.bind(("127.0.0.1", 0))
+        self.sock.listen(4)
+        self.port = self.sock.getsockname()[1]
+        threading.Thread(target=self._serve, daemon=True).start()
+
+    def _serve(self):
+        try:
+            conn, _ = self.sock.accept()
+        except OSError:
+            return
+        conn.settimeout(10)
+        answered = False
+        try:
+            while True:
+                data = conn.recv(4096)
+                if not data:
+                    return
+                self.received += data
+                if not answered and b"<stream:stream" in self.received:
+                    conn.sendall(self.reply)
+                    answered = True
+                    if self.close_after:
+                        conn.close()
+                        return
+        except OSError:
+            pass
+
+    def stop(self):
+        self.sock.close()
+
+
+def _attempt(server, monkeypatch, timeout=20.0):
+    monkeypatch.setattr(T, "CONNECT_TIMEOUT", timeout)
+
+    async def forward(dest, port, sam_host, sam_port, **_kw):
+        return ("127.0.0.1", server.port)
+
+    TRACE.clear()
+    t = T.XmppTransport(ConnectionProfile(jid=JID, server="otrv4plus.i2p"),
+                        "not-the-password", on_payload=lambda *a: None,
+                        forwarder=forward)
+    started = time.monotonic()
+    try:
+        with pytest.raises(T.TransportError) as exc:
+            t.connect()
+    finally:
+        t.close()
+        server.stop()
+    return exc.value, time.monotonic() - started
+
+
+class TestAStreamErrorIsReportedAtOnce:
+
+    def test_host_unknown_names_the_domain_and_does_not_wait(self, monkeypatch):
+        err, took = _attempt(XmppServer(HEADER + HOST_UNKNOWN), monkeypatch)
+        assert err.code == "xmpp_stream_failure"
+        assert "host-unknown" in err.detail
+        assert "otrv4plus.i2p" in err.detail and "VirtualHost" in err.detail
+        assert took < 10, "waited for the timeout instead of failing"
+
+    def test_the_condition_is_traced_but_not_the_servers_text(self, monkeypatch):
+        _attempt(XmppServer(HEADER + HOST_UNKNOWN), monkeypatch)
+        (ev,) = [e for e in TRACE.events(200) if e["event"] == "stream_error"]
+        assert ev["fields"]["condition"] == "host-unknown"
+        assert "does not serve" not in repr(TRACE.events(200))
+
+    def test_a_server_that_hangs_up_says_where(self, monkeypatch):
+        err, took = _attempt(XmppServer(HEADER, close=True), monkeypatch)
+        assert err.code in ("server_closed_connection", "xmpp_stream_failure",
+                            "stream_failed")
+        assert took < 10
+
+
+class TestSignInRulesAreUnchanged:
+
+    def test_plain_only_is_still_refused_and_said_at_once(self, monkeypatch):
+        server = XmppServer(HEADER + MECHS % "<mechanism>PLAIN</mechanism>")
+        err, took = _attempt(server, monkeypatch)
+        assert err.code == "no_safe_auth_mechanism"
+        assert b"<auth" not in server.received
+        assert took < 10
+
+
+def test_the_meaning_of_each_condition():
+    profile = ConnectionProfile(jid=JID, server="otrv4plus.i2p")
+    assert "does not host otrv4plus.i2p" in T._stream_error_text(
+        "host-unknown", profile)
+    assert "(undefined-condition)" in T._stream_error_text(
+        "undefined-condition", profile)
