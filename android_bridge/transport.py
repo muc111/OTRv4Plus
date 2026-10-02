@@ -692,6 +692,32 @@ def _forwarder_log(message: str) -> None:
         _log.info("i2p: opening a SAM stream (a cold tunnel can take 30-90s)")
 
 
+#: The steps of a connection over I2P or Tor, in order, each recorded in the
+#: diagnostic log as it is reached ("connection" / <step>), and what it means
+#: when the 300 s wait expires after that step and before the next. A device
+#: report (2026-10-02) said only "did not finish within 300s": nothing
+#: between "building tunnels" and "connected" was recorded, so a tunnel that
+#: never opened and a server that never answered looked the same.
+_PROGRESS_HINTS = {
+    "starting": "the connection had not started",
+    "sam_opening": (
+        "the I2P tunnel to the server was never built. Usually the server's "
+        "I2P tunnel is down or not yet published, or this phone's router has "
+        "not integrated into the network yet (a freshly started router can "
+        "need 5-10 minutes)"),
+    "sam_established": "the I2P tunnel opened but the local bridge to it did not start",
+    "tunnel_open": (
+        "the I2P tunnel to the server opened, but the XMPP server never "
+        "answered over it. Check that the server's XMPP service is running "
+        "and that this is the address of its XMPP (port 5222) tunnel"),
+    "stream_features": (
+        "the XMPP server answered, but the encrypted (TLS) handshake or "
+        "sign-in did not finish"),
+    "tls": "the encrypted (TLS) connection was set up, but signing in did not finish",
+    "signed_in": "signed in, but the session was not completed by the server",
+}
+
+
 class TransportError(RuntimeError):
     """The transport could not do what was asked.
 
@@ -963,11 +989,14 @@ class XmppTransport(Transport):
             # slixmpp's _connect_loop keeps rescheduling against a tunnel
             # nobody is waiting on any more.
             future.cancel()
+            step = getattr(self, "_progress", "starting")
+            _TRACE.record("connection", "timed_out", "error", last_step=step)
             raise TransportError(
                 "timeout",
                 "the operation did not finish within %gs and nothing raised. "
-                "The connection was still in progress when the wait expired."
-                % CONNECT_TIMEOUT)
+                "The connection was still in progress when the wait expired. "
+                "Last step reached: %s -- %s."
+                % (CONNECT_TIMEOUT, step, _PROGRESS_HINTS.get(step, step)))
         except Exception as exc:
             raise TransportError("unexpected_error", type(exc).__name__)
         finally:
@@ -1364,8 +1393,56 @@ class XmppTransport(Transport):
             await self._abandon()
             raise
 
+    def _reached(self, step: str, **fields: Any) -> None:
+        """Record a connection step (see _PROGRESS_HINTS). Never the
+        destination, the password or a stanza."""
+        self._progress = step
+        _TRACE.record("connection", step, "info", **fields)
+
+    def _forwarder_progress(self, message: str) -> None:
+        """The forwarder's progress lines, as connection steps.
+
+        `_forwarder_log` still decides what reaches logcat (never the
+        destination); this records the step in the diagnostic log, which a
+        report carries, and remembers it for a timeout message."""
+        _forwarder_log(message)
+        text = str(message)
+        if "opening SAM stream" in text:
+            self._reached("sam_opening")
+        elif "used the address" in text:
+            # The router did not know the name; the address this version
+            # ships for the project's server was dialled (otrv4+.py
+            # SERVER_NAME_FALLBACKS). The step stays sam_opening.
+            _TRACE.record("connection", "builtin_address_used", "info")
+        elif "established" in text:
+            self._reached("sam_established")
+
+    def _watch_stages(self, client: Any) -> None:
+        """Steps of the XMPP handshake over I2P/Tor, for the diagnostic
+        record: the server answered (stream features), TLS is up, the account
+        is signed in."""
+        def features(stanza):
+            if (type(stanza).__name__ == "StreamFeatures"
+                    and getattr(self, "_progress", "") == "tunnel_open"):
+                # Recorded, not emitted: the controller maps the transport's
+                # later "connected" to its own "connecting", so a stage here
+                # would make the screen step backwards.
+                self._reached("stream_features")
+            return stanza
+
+        if hasattr(client, "add_filter"):
+            client.add_filter("in", features)
+        client.add_event_handler("tls_success", lambda _e: self._reached("tls"))
+        client.add_event_handler("auth_success",
+                                 lambda _e: self._reached("signed_in"))
+
     async def _connect_inner(self) -> None:
+        self._progress = "starting"
         host, port = await self._endpoint()
+        if self._route.kind != _route_mod.CLEARNET_TLS:
+            # The tunnel is up; what is left is the XMPP handshake over it.
+            self._reached("tunnel_open")
+            self._emit_state("connecting")
         # Separately coded for the same reason as the forwarder above: a
         # slixmpp that will not import is a packaging fault, and reporting it
         # as a generic connect failure sends someone to look at their router.
@@ -1436,6 +1513,7 @@ class XmppTransport(Transport):
             self._plan_clearnet_dns(client, watch, host)
         else:
             client.add_event_handler("connection_failed", on_connection_failed)
+            self._watch_stages(client)
 
         # host= and port= point slixmpp at the local end of the SAM tunnel
         # rather than at a DNS lookup of the JID's domain. getaddrinfo is never
@@ -1902,7 +1980,7 @@ class XmppTransport(Transport):
                     route.host, route.port or DEFAULT_C2S_PORT,
                     getattr(self._profile, "socks_host", "127.0.0.1"),
                     getattr(self._profile, "socks_port", 9050),
-                    resources=self._i2p_resources, log=_forwarder_log)
+                    resources=self._i2p_resources, log=self._forwarder_progress)
             except Exception as exc:
                 self._emit_state("failed")
                 raise TransportError(
@@ -1936,7 +2014,7 @@ class XmppTransport(Transport):
         if _accepts(forward, "resources"):
             extra["resources"] = self._i2p_resources
         if _accepts(forward, "log"):
-            extra["log"] = _forwarder_log
+            extra["log"] = self._forwarder_progress
         if _accepts(forward, "aliases"):
             # The app reads no alias file: a name means what the router says.
             extra["aliases"] = False
@@ -2306,7 +2384,13 @@ class XmppTransport(Transport):
         # as an occasional empty contact list rather than as a crash.
         try:
             entries = self._run(self._roster(), CALL_TIMEOUT)
-            _TRACE.record("roster", "read", "info", entries=len(entries))
+            # The screen polls this about twice a second. Recorded on every
+            # call, it filled the 4000-entry diagnostic ring in minutes and a
+            # report lost the connection steps it was sent to explain (57568
+            # events dropped, device report 2026-10-02). Only a change now.
+            if len(entries) != getattr(self, "_roster_traced", None):
+                self._roster_traced = len(entries)
+                _TRACE.record("roster", "read", "info", entries=len(entries))
             return entries
         except TransportError as exc:
             _log.warning("could not read the roster")
@@ -2393,8 +2477,10 @@ class XmppTransport(Transport):
                 _log.warning("could not read one roster entry")
                 _TRACE.record_exception("roster", "entry_failed", exc)
                 continue
-        _TRACE.record("roster", "iterated", "info",
-                      entries=len(out), seen=len(jids))
+        if (len(out), len(jids)) != getattr(self, "_roster_iter_traced", None):
+            self._roster_iter_traced = (len(out), len(jids))
+            _TRACE.record("roster", "iterated", "info",
+                          entries=len(out), seen=len(jids))
         return out
 
     def run_on_loop_thread(self, fn, timeout: float = CALL_TIMEOUT):

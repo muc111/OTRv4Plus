@@ -476,7 +476,10 @@ class TestLifecycle:
         try:
             t.connect()
             t.disconnect()
-            assert seen == ["building_tunnels", "connected", "disconnected"]
+            # "connecting": the tunnel is open and the XMPP handshake runs
+            # over it -- a stage of its own, so a stall there is attributable.
+            assert seen == ["building_tunnels", "connecting", "connected",
+                            "disconnected"]
         finally:
             t.close()
 
@@ -1105,3 +1108,119 @@ class TestTheRosterIsReadWithSlixmppsOwnApi:
         source = inspect.getsource(XmppTransport._roster)
         assert ".get(" not in source, (
             "_roster calls .get() on something again; RosterItem has no .get")
+
+
+class TestEveryStepOfAnI2PConnectIsRecorded:
+    """Device report 2026-10-02: a connect ended in "did not finish within
+    300s" with nothing recorded between "building tunnels" and the timeout,
+    and roster polling had pushed everything else out of the ring. Each step
+    is now recorded, and the timeout names the last one reached."""
+
+    @pytest.fixture
+    def short_timeout(self, monkeypatch):
+        import android_bridge.transport as transport_module
+        monkeypatch.setattr(transport_module, "CONNECT_TIMEOUT", 1.0)
+
+    @staticmethod
+    def _steps():
+        from android_bridge.trace import TRACE
+        return [e["event"] for e in TRACE.events() if e["component"] == "connection"]
+
+    @staticmethod
+    def _transport(forwarder, client_factory):
+        return XmppTransport(profile(), PASSWORD, on_payload=lambda *a: None,
+                             client_factory=client_factory, forwarder=forwarder)
+
+    class _SilentClient(FakeClient):
+        """The tunnel opens; the server never answers."""
+
+        def connect(self, host=None, port=None):
+            self.connected_to = (host, port)
+
+    def test_a_tunnel_that_never_opens_is_named(self, short_timeout):
+        import asyncio
+
+        async def fwd(dest, port, sh, sp, *, verify=None, log=None):
+            log("[i2p] opening SAM stream to %s (...)" % dest)
+            await asyncio.sleep(30)
+
+        t = self._transport(fwd, lambda j, p: FakeClient(j, p))
+        try:
+            with pytest.raises(TransportError) as exc:
+                t.connect()
+            assert exc.value.code == "timeout"
+            assert "Last step reached: sam_opening" in exc.value.detail
+            assert "tunnel to the server was never built" in exc.value.detail
+            assert SERVER not in exc.value.detail
+            assert self._steps()[-2:] == ["sam_opening", "timed_out"]
+        finally:
+            t.close()
+
+    def test_a_server_that_never_answers_over_an_open_tunnel_is_named(self, short_timeout):
+        async def fwd(dest, port, sh, sp, *, verify=None, log=None):
+            log("[i2p] opening SAM stream to %s (...)" % dest)
+            log("[i2p] SAM stream established.")
+            return ("127.0.0.1", 41234)
+
+        t = self._transport(fwd, lambda j, p: self._SilentClient(j, p))
+        try:
+            with pytest.raises(TransportError) as exc:
+                t.connect()
+            assert "Last step reached: tunnel_open" in exc.value.detail
+            assert "XMPP server never answered" in exc.value.detail
+            assert self._steps()[-4:] == ["sam_opening", "sam_established",
+                                          "tunnel_open", "timed_out"]
+        finally:
+            t.close()
+
+    def test_the_shipped_address_is_recorded_without_the_address(self):
+        from android_bridge.trace import TRACE
+        shipped = "nquyxk5atgvp5yn3d4czvtb4qavysbxwjormmewhoyrdux5i4ika.b32.i2p"
+
+        async def fwd(dest, port, sh, sp, *, verify=None, log=None):
+            log("[i2p] opening SAM stream to %s (...)" % dest)
+            log("[i2p] the router does not know %s yet; used the address "
+                "this version ships for it." % dest)
+            log("[i2p] SAM stream established.")
+            return ("127.0.0.1", 41234)
+
+        t = self._transport(fwd, lambda j, p: FakeClient(j, p))
+        try:
+            t.connect()
+            assert "builtin_address_used" in self._steps()
+            dump = repr(TRACE.events())
+            assert shipped not in dump and SERVER not in dump
+        finally:
+            t.close()
+
+    def test_the_handshake_steps_follow_the_tunnel(self):
+        class Handshaking(FakeClient):
+            def connect(self, host=None, port=None):
+                self.connected_to = (host, port)
+                for name in ("tls_success", "auth_success", "session_start"):
+                    self.fire(name, None)
+
+        async def fwd(dest, port, sh, sp, *, verify=None, log=None):
+            return ("127.0.0.1", 41234)
+
+        t = self._transport(fwd, lambda j, p: Handshaking(j, p))
+        try:
+            t.connect()
+            assert self._steps()[-3:] == ["tunnel_open", "tls", "signed_in"]
+        finally:
+            t.close()
+
+    def test_polling_the_roster_does_not_flood_the_record(self):
+        from android_bridge.trace import TRACE
+        t, _ = build()
+        try:
+            t.connect()
+            # Cleared rather than sliced: the ring is bounded, and in a full
+            # run it may already be full, so a position proves nothing.
+            TRACE.clear()
+            for _ in range(200):
+                t.roster()
+            roster = [e for e in TRACE.events() if e["component"] == "roster"]
+            assert len(roster) <= 2, "each poll was recorded: %d events" % len(roster)
+        finally:
+            t.close()

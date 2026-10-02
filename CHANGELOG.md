@@ -4,6 +4,25 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.12 — 2026-10-02 — a connect that times out says where it stopped (core 0.11.0)
+
+*Device report on rc.11 (Xiaomi, Android 15): "did not finish within 300s",
+with 57568 events dropped and none of them about the connection.*
+
+- **The timeout names the last step reached and what it means**: the I2P
+  tunnel to the server was never built (server tunnel down, or a router
+  still integrating); the tunnel opened but the XMPP server never answered
+  (XMPP service down, or not its port-5222 tunnel); the server answered but
+  TLS or sign-in did not finish; and so on.
+- **Every step of an I2P/Tor connect is in the diagnostic report**:
+  opening the SAM stream, the shipped address being used for
+  `otrv4plus.i2p`, the stream established, the tunnel open, the server's
+  stream features, TLS, signed in. No destination is recorded. The screen
+  shows "Connecting to the server" once the tunnel is open.
+- **Roster polling no longer floods the report.** The screen reads the
+  roster about twice a second and each read was recorded, filling the
+  4000-entry ring within minutes; it is recorded only when it changes.
+
 ## Android 0.7.0-experimental.rc.11 — 2026-10-01 — the otrv4plus.i2p fallback works with i2pd (core 0.11.0)
 
 *Device report on rc.10 (Xiaomi, Android 15): sign-in stopped at
