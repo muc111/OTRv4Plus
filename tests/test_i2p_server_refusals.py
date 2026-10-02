@@ -241,3 +241,17 @@ class TestATlsFailureSaysWhyAndBlamesNoCertificate:
         _attempt(TlsRefusingServer(""), monkeypatch)
         (ev,) = [e for e in TRACE.events(200) if e["event"] == "tls_failed"]
         assert "HANDSHAKE_FAILURE" in ev["fields"]["reason"].upper()
+
+
+def test_the_terminal_client_uses_the_same_rule():
+    """otrv4plus_xmpp.main() rewrites --jid with canonical_jid, the function
+    the Android profile uses."""
+    import inspect
+    import otrv4plus_address as A
+    import otrv4plus_xmpp
+    assert "_address.canonical_jid(args.jid)" in inspect.getsource(
+        otrv4plus_xmpp.main)
+    assert A.canonical_jid("bob@" + SHIPPED_B32) == "bob@otrv4plus.i2p"
+    assert A.canonical_jid("bob@" + SHIPPED_B32 + "/termux") == \
+        "bob@otrv4plus.i2p/termux"
+    assert A.canonical_jid("bob@other.i2p") == "bob@other.i2p"

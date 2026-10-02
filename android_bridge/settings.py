@@ -129,11 +129,9 @@ class ConnectionProfile:
         # which hosts otrv4plus.i2p -- answered host-unknown, and nothing
         # connected. A remembered account carries the same JID, so this is
         # corrected where every profile is built, not only at sign-in.
-        domain = _address.jid_domain(self.jid)
-        name = _address.shipped_server_name(domain)
-        if name:
-            user = self.jid.strip().rsplit("@", 1)[0]
-            object.__setattr__(self, "jid", "%s@%s" % (user, name))
+        canonical = _address.canonical_jid(self.jid)
+        if canonical != self.jid:
+            object.__setattr__(self, "jid", canonical)
 
     # -- derived --------------------------------------------------------------
 

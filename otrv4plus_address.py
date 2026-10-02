@@ -29,6 +29,7 @@ __all__ = [
     "jid_domain", "profile_errors", "b32_error",
     "B32_LABEL_LENGTH", "B32_SUFFIX",
     "SHIPPED_SERVERS", "shipped_server_address", "shipped_server_name",
+    "canonical_jid",
 ]
 
 #: A `.b32.i2p` label is the destination hash itself, base32-encoded: 52
@@ -264,3 +265,22 @@ def profile_errors(jid: str, server: str, sam_host: str, sam_port) -> List[str]:
         if err is not None:
             found.append(err)
     return found
+
+
+def canonical_jid(jid: str) -> str:
+    """`jid` with a shipped server's b32 domain replaced by the name it
+    serves; anything else unchanged. A resource, if any, is kept.
+
+    The server hosts its NAME and answers `host-unknown` to a stream
+    addressed to its b32 (device report, 2026-10-02). Used by the Android
+    profile and the terminal client alike.
+    """
+    text = (jid or "").strip()
+    user, at, rest = text.rpartition("@")
+    if not at or not user:
+        return jid
+    domain, slash, resource = rest.partition("/")
+    name = shipped_server_name(domain)
+    if not name:
+        return jid
+    return "%s@%s%s%s" % (user, name, slash, resource)

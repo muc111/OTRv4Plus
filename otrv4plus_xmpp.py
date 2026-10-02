@@ -7393,6 +7393,16 @@ def main():
     _check_jid(args.peer, "--peer")
     _warn_if_domains_differ(args.jid, args.peer)
 
+    # An account on the project server's b32 is an account on its NAME: the
+    # server hosts otrv4plus.i2p and answers host-unknown to a stream
+    # addressed to the b32. Same rule as the Android app
+    # (android_bridge.settings.ConnectionProfile).
+    _canonical = _address.canonical_jid(args.jid)
+    if _canonical != args.jid:
+        args.jid = _canonical
+        print(f"[i2p] signing in as {args.jid} (the server's accounts live "
+              "on its name, not on its .b32.i2p address)")
+
     password = getpass.getpass(f"Password for {args.jid}: ")
     try:
         client = OTRv4PlusXMPP(args.jid, password, peer=args.peer,

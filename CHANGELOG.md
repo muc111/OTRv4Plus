@@ -4,6 +4,24 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.20 — 2026-10-02 — the Welcome room is created on otrv4plus.i2p; Termux signs in the same way (core 0.11.0)
+
+*First successful sign-in to the new server (rc.19, after its TLS
+certificate was restored). Owner: "we should be auto creating the welcome
+room like the old app had", and Termux must work the same for a four-account
+MLS test.*
+
+- **The OTRv4Plus Welcome room is created automatically on `otrv4plus.i2p`.**
+  The first account to sign in creates it, with the same settings as the
+  button: public, persistent, addresses visible. Later accounts find it by
+  name and join. If another client created it a moment earlier, the app
+  does not create a second one. On any other server the app still asks
+  before creating, because the room shows every occupant's address.
+- **Termux signs in as `<user>@otrv4plus.i2p` when given the b32**
+  (`otrv4plus_address.canonical_jid`, now shared with the Android profile).
+  `--jid you@otrv4plus.i2p` alone already reaches the server at its shipped
+  b32, with no `--server` needed.
+
 ## Android 0.7.0-experimental.rc.19 — 2026-10-02 — a failed TLS handshake over I2P says why (core 0.11.0)
 
 *Device report on rc.18: STARTTLS offered and accepted, client sent 701 bytes

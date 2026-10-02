@@ -3247,6 +3247,27 @@ class XmppTransport(Transport):
                 except Exception:
                     rooms[service["jid"]] = []
             room, reason = _welcome.find_room(services, rooms)
+            if (room is None and reason == _welcome.NOT_FOUND
+                    and _address.shipped_server_address(
+                        _address.jid_domain(self._profile.jid))):
+                # The project's own server: its operator wants the Welcome
+                # room there, so the first account to arrive creates it,
+                # as the earlier app did. On any other server the user is
+                # asked first (create_welcome), because the room shows every
+                # occupant's address.
+                _TRACE.record("welcome", "auto_create", "info")
+                try:
+                    await self._create_welcome(nick)
+                    return
+                except TransportError as exc:
+                    if exc.code != "welcome_address_taken":
+                        raise
+                    # Another client created it a moment ago and the listing
+                    # had not caught up: look again, once.
+                    rooms = {s["jid"]: await self._discover_rooms(s["jid"])
+                             for s in services
+                             if s.get("category") == "conference"}
+                    room, reason = _welcome.find_room(services, rooms)
             if room is None:
                 self._welcome.not_found(reason)
                 _TRACE.record("welcome", reason, "info")
