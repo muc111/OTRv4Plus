@@ -28,6 +28,7 @@ __all__ = [
     "jid_error", "server_error", "sam_host_error", "sam_port_error",
     "jid_domain", "profile_errors", "b32_error",
     "B32_LABEL_LENGTH", "B32_SUFFIX",
+    "SHIPPED_SERVERS", "shipped_server_address",
 ]
 
 #: A `.b32.i2p` label is the destination hash itself, base32-encoded: 52
@@ -44,6 +45,30 @@ __all__ = [
 #: thing that arrives truncated by a chat client's line wrapping.
 B32_LABEL_LENGTH = 52
 B32_SUFFIX = ".b32.i2p"
+
+#: The project's own XMPP server: the name the app offers in its server list,
+#: and the `.b32.i2p` address of that server's c2s (port 5222) tunnel.
+#:
+#: The name is DIALLED AT THIS ADDRESS. The router's address book is not
+#: asked what the name means: an address book is whatever its subscriptions
+#: say, and one that mapped the name to another destination sent this server
+#: list entry somewhere else (owner's instruction, 2026-10-02: "the drop down
+#: otrv4plus.i2p should go to the correct address"). The b32 is the hash of the
+#: server's key, so the router can only hand back that server's destination
+#: for it -- which makes this entry stronger than a destination pinned on first
+#: use, and the Android pin is not consulted for it. Moving the server means a
+#: release with the new address here; anyone can type a b32 in the meantime.
+#:
+#: Shared by the terminal client (otrv4+.py `I2PSAMConnection.resolve`) and
+#: the Android app (`android_bridge.transport`).
+SHIPPED_SERVERS = {
+    "otrv4plus.i2p": "nquyxk5atgvp5yn3d4czvtb4qavysbxwjormmewhoyrdux5i4ika.b32.i2p",
+}
+
+
+def shipped_server_address(name: str) -> Optional[str]:
+    """The `.b32.i2p` this version ships for `name`, or None."""
+    return SHIPPED_SERVERS.get((name or "").strip().lower().rstrip("."))
 _B32_ALPHABET = frozenset("abcdefghijklmnopqrstuvwxyz234567")
 _B32_LABEL = re.compile(r"[a-z2-7]{%d}" % B32_LABEL_LENGTH, re.IGNORECASE)
 

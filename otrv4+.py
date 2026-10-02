@@ -63,6 +63,9 @@ if not all(hasattr(socks, _attr) for _attr in
 # from a remote transition into AWAITING_SECRET.  A second copy of the logic
 # here would be a second chance to get it wrong.
 import otrv4plus_smpflow as _smpflow
+# Address rules shared with the Android app, including the project server's
+# shipped address (SHIPPED_SERVERS). Standard library only.
+import otrv4plus_address as _address
 
 try:
     from otrv4plus_log import ChannelLogManager as _ChannelLogManager
@@ -792,20 +795,6 @@ class NetworkConstants:
 
 I2P_HOSTS_FILENAME = "i2p_hosts"
 
-#: The project's own XMPP server, by name, with the destination of its c2s
-#: (port 5222) tunnel as a FALLBACK. The router is still asked first, every
-#: time: this is used only when it does not know the name -- a phone whose
-#: address book has never heard of the name, which is every phone until the
-#: name is registered -- and in the Android app as well as the terminal.
-#:
-#: Not a rewrite. The old shipped mapping (i2p_hosts.defaults) was consulted
-#: BEFORE the router, so a server recreated under the same name stayed
-#: unreachable until every client was updated. Here a router that knows the
-#: name always wins; and the connection is then pinned by destination (X1), so
-#: a router that later maps the name somewhere else is refused, not followed.
-#:
-#: A b32 is the hash of the destination, so the router resolves it with no
-#: address book and nothing can substitute it.
 #: What a router answers NAMING LOOKUP with for a well-formed short name its
 #: address book does not have. Java I2P says KEY_NOT_FOUND; i2pd says
 #: INVALID_KEY (it keeps KEY_NOT_FOUND for a b32 whose LeaseSet it cannot
@@ -815,9 +804,10 @@ I2P_HOSTS_FILENAME = "i2p_hosts"
 #: and the fallback, which accepted only KEY_NOT_FOUND, never ran.
 I2P_NAME_UNKNOWN_RESULTS = ("KEY_NOT_FOUND", "INVALID_KEY")
 
-SERVER_NAME_FALLBACKS = {
-    "otrv4plus.i2p": "nquyxk5atgvp5yn3d4czvtb4qavysbxwjormmewhoyrdux5i4ika.b32.i2p",
-}
+#: The project's own server name and the b32 it is dialled at, without asking
+#: the router (otrv4plus_address.SHIPPED_SERVERS says why). Re-exported here
+#: for the terminal client's callers.
+SHIPPED_SERVERS = _address.SHIPPED_SERVERS
 
 
 def remember_i2p_alias(name: str, destination: str, path: str = None,
@@ -1071,9 +1061,9 @@ class I2PSAMConnection:
         self._session_id = f"otrv4plus_{secrets .token_hex (4 )}"
         self._control_sock = None
         self._our_destination = None
-        #: Set by `resolve`: the router did not know the name and the
-        #: destination shipped in SERVER_NAME_FALLBACKS was used instead.
-        self.used_builtin_fallback = False
+        #: Set by `resolve`: the name is the project's server and was dialled
+        #: at the address shipped for it (SHIPPED_SERVERS).
+        self.used_shipped_address = False
         #: Set by `abandon`; see there.
         self._abandoned = False
         self._pending_stream = None
@@ -1316,9 +1306,11 @@ class I2PSAMConnection:
           recreated under that name was therefore never looked up: the name
           was quietly rewritten to the retired destination (Android, device
           report 2026-09-28).
-        * The project's own server name (SERVER_NAME_FALLBACKS) is dialled
-          at its shipped b32 when neither the router nor, on Termux, the
-          alias file knows it, and only then.
+        * The project's own server name (SHIPPED_SERVERS) is the exception:
+          it is dialled at its shipped b32 and the router is not asked what
+          the name means. An address book that mapped it elsewhere sent the
+          app's server list entry to another destination; the b32 can only
+          reach the server's own key. The alias file is not consulted for it.
         * A malformed name (refused before anything is sent), a bridge
           fault, or any other result is a clean naming failure. There is no
           fallback to DNS or to anything else: no path in this class hands
@@ -1337,7 +1329,17 @@ class I2PSAMConnection:
                 return self.naming_lookup(target)
             except SamError as exc:
                 raise self._naming_failure(target, exc) from None
-        self.used_builtin_fallback = False
+        self.used_shipped_address = False
+        shipped = _address.shipped_server_address(target)
+        if shipped:
+            # Reported by the caller (`used_shipped_address`), which knows
+            # whether its log may name the address.
+            try:
+                dest = self.naming_lookup(shipped)
+            except SamError as exc:
+                raise self._naming_failure(shipped, exc) from None
+            self.used_shipped_address = True
+            return dest
         try:
             return self.naming_lookup(target)
         except SamError as exc:
@@ -1354,18 +1356,7 @@ class I2PSAMConnection:
                     return self.naming_lookup(alias)
                 except SamError as exc:
                     raise self._naming_failure(alias, exc, alias_source) from None
-        fallback = SERVER_NAME_FALLBACKS.get(target)
-        if not fallback:
-            raise self._naming_failure(target, router_reply) from None
-        # The router does not know the project's server name yet: dial the
-        # destination this version ships for it. Reported by the caller
-        # (`used_builtin_fallback`), which knows whether its log may name it.
-        try:
-            dest = self.naming_lookup(fallback)
-        except SamError as exc:
-            raise self._naming_failure(fallback, exc) from None
-        self.used_builtin_fallback = True
-        return dest
+        raise self._naming_failure(target, router_reply) from None
 
     def connect(self, target_host: str, target_port: int = 0,
                 allow_aliases: bool = True,

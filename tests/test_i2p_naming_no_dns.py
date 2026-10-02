@@ -405,93 +405,115 @@ class TestAndroidFlow:
         assert err.code == code
 
 
-class TestTheProjectServerFallback:
-    """otrv4plus.i2p is dialled at its shipped b32 when -- and only when --
-    the router has never heard of the name. The router stays the authority:
-    a router that knows the name is used, and the result is still pinned."""
+class TestTheProjectServerIsDialledAtItsShippedAddress:
+    """otrv4plus.i2p -- the app's server list entry -- is dialled at its
+    shipped b32, and the router is never asked what the name means. Owner's
+    instruction, 2026-10-02: "the drop down otrv4plus.i2p should go to the
+    correct address". Before this the router was asked first, and an address
+    book that mapped the name to another destination was followed."""
 
     SERVER = "otrv4plus.i2p"
     SHIPPED = "nquyxk5atgvp5yn3d4czvtb4qavysbxwjormmewhoyrdux5i4ika.b32.i2p"
 
     def test_the_shipped_address_is_the_one_the_operator_gave(self):
-        assert otr.SERVER_NAME_FALLBACKS == {self.SERVER: self.SHIPPED}
+        import otrv4plus_address as A
+        assert A.SHIPPED_SERVERS == {self.SERVER: self.SHIPPED}
+        assert otr.SHIPPED_SERVERS is A.SHIPPED_SERVERS
         assert otr._B32_RE.match(self.SHIPPED)
+        assert A.shipped_server_address("OtrV4Plus.I2P ") == self.SHIPPED
+        assert A.shipped_server_address("someone-else.i2p") is None
 
-    def test_the_apps_default_server_has_a_fallback(self):
+    def test_the_apps_default_server_is_the_shipped_one(self):
         from android_bridge import settings
-        assert settings.DEFAULT_SERVER in otr.SERVER_NAME_FALLBACKS
+        assert settings.DEFAULT_SERVER in otr.SHIPPED_SERVERS
 
-    def test_a_router_that_knows_the_name_is_used(self, no_dns, aliases):
+    def test_an_address_book_that_maps_the_name_elsewhere_is_not_asked(
+            self, no_dns, aliases):
         fake = FakeSam(names={self.SERVER: DEST, self.SHIPPED: OTHER_DEST})
         sam = _sam(fake)
         sam.connect(self.SERVER, allow_aliases=False).close()
-        assert fake.looked_up() == [self.SERVER]
-        assert fake.connected_to() == [DEST]
-        assert sam.used_builtin_fallback is False
-
-    def test_an_unknown_name_is_dialled_at_the_shipped_address(self, no_dns, aliases):
-        """The Android app: no alias file, and still a working default."""
-        fake = FakeSam(names={self.SHIPPED: OTHER_DEST})
-        sam = _sam(fake)
-        sam.connect(self.SERVER, allow_aliases=False).close()
-        assert fake.looked_up() == [self.SERVER, self.SHIPPED]
+        assert fake.looked_up() == [self.SHIPPED]
         assert fake.connected_to() == [OTHER_DEST]
-        assert sam.used_builtin_fallback is True
+        assert sam.used_shipped_address is True
         assert no_dns == []
 
-    def test_the_fallback_destination_still_goes_through_the_pin(self, no_dns, aliases):
+    def test_the_terminal_alias_file_does_not_override_it(self, no_dns, aliases):
+        with open(aliases, "a") as fh:
+            fh.write("%s = %s\n" % (self.SERVER, B32))
+        fake = FakeSam(names={B32: DEST, self.SHIPPED: OTHER_DEST})
+        _sam(fake).connect(self.SERVER).close()
+        assert fake.looked_up() == [self.SHIPPED]
+        assert fake.connected_to() == [OTHER_DEST]
+
+    def test_the_destination_still_goes_through_the_check(self, no_dns, aliases):
         fake = FakeSam(names={self.SHIPPED: OTHER_DEST})
         seen = []
 
         def refuse(dest):
             seen.append(dest)
-            raise RuntimeError("pinned elsewhere")
+            raise RuntimeError("refused")
 
         with pytest.raises(RuntimeError):
             _sam(fake).connect(self.SERVER, allow_aliases=False,
                                verify_destination=refuse)
         assert seen == [OTHER_DEST]
-        assert fake.connected_to() == [], "a stream opened before the pin check"
+        assert fake.connected_to() == [], "a stream opened before the check"
 
-    def test_a_users_own_alias_wins_over_the_shipped_address(self, no_dns, aliases):
-        with open(aliases, "a") as fh:
-            fh.write("%s = %s\n" % (self.SERVER, B32))
-        fake = FakeSam(names={B32: DEST, self.SHIPPED: OTHER_DEST})
+    def test_other_names_are_still_asked_of_the_router(self, no_dns, aliases):
+        fake = FakeSam(names={"someone-else.i2p": DEST})
         sam = _sam(fake)
-        sam.connect(self.SERVER).close()
-        assert fake.looked_up() == [self.SERVER, B32]
-        assert fake.connected_to() == [DEST]
-        assert sam.used_builtin_fallback is False
-
-    def test_i2pd_invalid_key_also_uses_the_fallback(self, no_dns, aliases):
-        """The device report: i2pd answered INVALID_KEY for otrv4plus.i2p and
-        the app stopped at i2p_name_not_found instead of using the b32."""
-        fake = FakeSam(names={self.SHIPPED: OTHER_DEST}, unknown_result="INVALID_KEY")
-        sam = _sam(fake)
-        sam.connect(self.SERVER, allow_aliases=False).close()
-        assert fake.looked_up() == [self.SERVER, self.SHIPPED]
-        assert fake.connected_to() == [OTHER_DEST]
-        assert sam.used_builtin_fallback is True
-
-    def test_another_naming_result_gets_no_fallback(self, no_dns, aliases):
-        fake = FakeSam(naming_reply="NAMING REPLY RESULT=I2P_ERROR NAME={name}")
-        with pytest.raises(otr.SamError) as exc:
-            _sam(fake).connect(self.SERVER, allow_aliases=False)
-        assert exc.value.result == "I2P_ERROR"
-        assert fake.looked_up() == [self.SERVER]
-
-    def test_other_names_get_no_fallback(self, no_dns, aliases):
-        fake = FakeSam(names={self.SHIPPED: OTHER_DEST})
-        with pytest.raises(otr.SamError):
-            _sam(fake).connect("someone-else.i2p", allow_aliases=False)
-        assert self.SHIPPED not in fake.looked_up()
+        sam.connect("someone-else.i2p", allow_aliases=False).close()
+        assert fake.looked_up() == ["someone-else.i2p"]
+        assert sam.used_shipped_address is False
 
     def test_an_offline_server_says_it_is_a_tunnel_problem(self, no_dns, aliases):
-        fake = FakeSam()   # the router knows neither the name nor the b32
+        fake = FakeSam()   # the router cannot find the b32's LeaseSet
         with pytest.raises(otr.SamError) as exc:
             _sam(fake).connect(self.SERVER, allow_aliases=False)
         assert exc.value.stage == "naming"
         assert "router or tunnel problem" in str(exc.value)
+
+
+class TestTheAppAcceptsOnlyTheShippedDestination:
+    """Android: the destination for otrv4plus.i2p must hash to the shipped
+    b32, and a pin left by an earlier address-book answer cannot block it."""
+
+    SERVER = "otrv4plus.i2p"
+    SHIPPED = "nquyxk5atgvp5yn3d4czvtb4qavysbxwjormmewhoyrdux5i4ika.b32.i2p"
+
+    def _transport(self):
+        from android_bridge import transport as T, server_pins as P
+        from android_bridge.settings import ConnectionProfile
+        profile = ConnectionProfile(jid="alice@" + self.SERVER, server=self.SERVER)
+        t = T.XmppTransport.__new__(T.XmppTransport)
+        t._profile = profile
+        t._route = profile.route
+        t._server_pins = P.ServerPins(
+            os.path.join(tempfile.mkdtemp(), "pins.json"))
+        return t, P
+
+    @staticmethod
+    def _some_destination():
+        import base64
+        raw = b"\x01" * 391
+        dest = base64.b64encode(raw).decode().replace("+", "-").replace("/", "~")
+        return dest
+
+    def test_a_stale_pin_does_not_block_the_shipped_server(self, monkeypatch):
+        import otrv4plus_address as A
+        t, P = self._transport()
+        dest = self._some_destination()
+        real = P.b32_of_destination(dest)
+        monkeypatch.setitem(A.SHIPPED_SERVERS, self.SERVER, real)
+        # A pin from an address book that mapped the name somewhere else.
+        t._server_pins._pins[self.SERVER] = {"b32": "x" * 52 + ".b32.i2p",
+                                             "since": 0}
+        t._verify_destination(dest)          # accepted, not refused
+
+    def test_any_other_destination_is_refused(self):
+        t, P = self._transport()
+        with pytest.raises(P.DestinationChanged):
+            t._verify_destination(self._some_destination())
 
 
 class TestATimedOutConnectLeavesNoSessionInTheRouter:

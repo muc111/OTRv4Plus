@@ -18,9 +18,8 @@
 # does not read either file.
 #
 # The project's own server is different, and is not configured here:
-# SERVER_NAME_FALLBACKS in otrv4+.py gives otrv4plus.i2p a b32 that is used
-# only when the router answers KEY_NOT_FOUND for the name -- the router is
-# still asked first -- on Termux and Android alike.
+# SHIPPED_SERVERS in otrv4plus_address.py dials otrv4plus.i2p at its shipped
+# b32, without asking the router, on Termux and Android alike.
 #
 # Name lines, if ever added again, use:   name.i2p = <52 chars>.b32.i2p
 #

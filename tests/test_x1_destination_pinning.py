@@ -53,7 +53,9 @@ from android_bridge.transport import (  # noqa: E402
     SCRAM_ONLY, TransportError, XmppTransport)
 from tests.fake_sasl import sasl_plugins  # noqa: E402
 
-NAME = "otrv4plus.i2p"
+# Any server named by a short name -- NOT the project's own server, which is
+# dialled at its shipped b32 and never pinned (otrv4plus_address.SHIPPED_SERVERS).
+NAME = "example-server.i2p"
 JID = "alice@" + NAME
 PASSWORD = "correct-horse-battery-staple-X1"
 

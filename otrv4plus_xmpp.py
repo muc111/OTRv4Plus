@@ -1208,10 +1208,10 @@ async def start_i2p_sam_forwarder(
         if abandon is not None:
             abandon()
         raise
-    if getattr(sam, "used_builtin_fallback", False):
+    if getattr(sam, "used_shipped_address", False):
         # The name, never the destination: on Android `say` reaches logcat.
-        say(f"[i2p] the router does not know {dest_b32} yet; used the address "
-            "this version ships for it.")
+        say(f"[i2p] {dest_b32} was dialled at the address this version "
+            "ships for it.")
     say("[i2p] SAM stream established.")
 
     sam_reader, sam_writer = await asyncio.open_connection(sock=sam_sock)

@@ -1179,15 +1179,15 @@ class TestEveryStepOfAnI2PConnectIsRecorded:
 
         async def fwd(dest, port, sh, sp, *, verify=None, log=None):
             log("[i2p] opening SAM stream to %s (...)" % dest)
-            log("[i2p] the router does not know %s yet; used the address "
-                "this version ships for it." % dest)
+            log("[i2p] %s was dialled at the address this version "
+                "ships for it." % dest)
             log("[i2p] SAM stream established.")
             return ("127.0.0.1", 41234)
 
         t = self._transport(fwd, lambda j, p: FakeClient(j, p))
         try:
             t.connect()
-            assert "builtin_address_used" in self._steps()
+            assert "shipped_address_used" in self._steps()
             dump = repr(TRACE.events())
             assert shipped not in dump and SERVER not in dump
         finally:

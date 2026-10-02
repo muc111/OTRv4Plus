@@ -60,14 +60,10 @@ __all__ = [
 #: `jid`'s domain is the XMPP virtual host, and a server can front several --
 #: which is why a profile carries both and why `effective_server` exists.
 #:
-#: A NAME, not a destination. The router resolves it with SAM NAMING LOOKUP
-#: every time the app connects (`I2PSAMConnection.resolve`), so a server that
-#: is recreated or moves under this name is reached at its current
-#: destination. Only when the router has never heard of the name is the b32
-#: shipped for it in otrv4+.py `SERVER_NAME_FALLBACKS` dialled instead. This used to be the server's 52-character b32, compiled in:
-#: when the server was recreated, the app kept dialling the old destination
-#: and nothing a user typed could change that for this name (device report,
-#: 2026-09-28). No build depends on a destination now.
+#: Shown as a name; dialled at the b32 shipped for it in
+#: `otrv4plus_address.SHIPPED_SERVERS`, without asking the router's address
+#: book (which can map the name anywhere). Any other server, typed as a name,
+#: is still resolved by the router.
 #:
 #: Not a trust anchor either way. The server is a relay the DAKE
 #: authenticates *through*: the peer's identity key is pinned by TOFU end to

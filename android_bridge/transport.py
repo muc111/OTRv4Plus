@@ -1409,11 +1409,11 @@ class XmppTransport(Transport):
         text = str(message)
         if "opening SAM stream" in text:
             self._reached("sam_opening")
-        elif "used the address" in text:
-            # The router did not know the name; the address this version
-            # ships for the project's server was dialled (otrv4+.py
-            # SERVER_NAME_FALLBACKS). The step stays sam_opening.
-            _TRACE.record("connection", "builtin_address_used", "info")
+        elif "ships for it" in text:
+            # The project's server name, dialled at the address this version
+            # ships for it (otrv4plus_address.SHIPPED_SERVERS). The step
+            # stays sam_opening.
+            _TRACE.record("connection", "shipped_address_used", "info")
         elif "established" in text:
             self._reached("sam_established")
 
@@ -1908,6 +1908,18 @@ class XmppTransport(Transport):
         from . import server_pins as _pins_mod
         route = self._route
         seen = _pins_mod.b32_of_destination(dest_b64)
+        shipped = _address.shipped_server_address(route.host)
+        if shipped:
+            # The project's server: dialled at its shipped b32, which is the
+            # key hash, so it is checked like a typed b32 and no pin is
+            # consulted -- a pin left by an address book that mapped the name
+            # elsewhere must not block the right server.
+            if seen != shipped:
+                _TRACE.record("i2p", "destination_mismatch", "error")
+                raise _pins_mod.DestinationChanged(route.host, shipped, seen)
+            _TRACE.record("i2p", "destination_accepted", "info",
+                          basis="shipped address")
+            return
         if route.self_authenticating:
             # A typed .b32.i2p IS the key hash: the router must hand back the
             # destination that hashes to it.

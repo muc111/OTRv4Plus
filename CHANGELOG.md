@@ -4,6 +4,22 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.15 — 2026-10-02 — otrv4plus.i2p always goes to its own address (core 0.11.0)
+
+- **The server list's `otrv4plus.i2p` is dialled at
+  `nquyxk5atgvp5yn3d4czvtb4qavysbxwjormmewhoyrdux5i4ika.b32.i2p`**, and the
+  router's address book is no longer asked what the name means. Before, the
+  router was asked first, and an address book that mapped the name to
+  another destination was followed. The destination must hash to that b32.
+  A pin left over from an earlier address-book answer no longer blocks it.
+  Termux does the same, and its alias file no longer overrides the name.
+  The address now lives in `otrv4plus_address.SHIPPED_SERVERS`, shared by
+  both clients; `SERVER_NAME_FALLBACKS` is gone.
+- **The server's own TLS certificate (self-signed) is accepted over I2P**,
+  as before: no prompt and no CA check. The `.b32.i2p` address already
+  authenticates the server, and sign-in stays SCRAM-only, so the password
+  itself is never sent.
+
 ## Android 0.7.0-experimental.rc.14 — 2026-10-02 — a timed-out connect no longer leaves a session in the router (core 0.11.0)
 
 *Device reports on rc.11-rc.13 (Xiaomi, Android 15): connects that ran out
