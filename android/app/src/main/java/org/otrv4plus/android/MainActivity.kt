@@ -32,6 +32,7 @@ import org.otrv4plus.android.ui.ConversationScreen
 import org.otrv4plus.android.ui.ConversationsScreen
 import org.otrv4plus.android.ui.DevShellScreen
 import org.otrv4plus.android.ui.PeopleScreen
+import org.otrv4plus.android.ui.ProfileScreen
 import org.otrv4plus.android.ui.RoomsScreen
 import org.otrv4plus.android.ui.FingerprintAlertDialog
 import org.otrv4plus.android.ui.IncomingFileDialog
@@ -85,7 +86,7 @@ import org.otrv4plus.android.security.WipeAndExit
  */
 class MainActivity : ComponentActivity() {
 
-    private enum class Screen { CONNECT, CONVERSATIONS, CONVERSATION, ROOMS, PEOPLE, ABOUT, DIAGNOSTICS }
+    private enum class Screen { CONNECT, CONVERSATIONS, CONVERSATION, ROOMS, PEOPLE, ABOUT, DIAGNOSTICS, PROFILE }
 
     /**
      * Asking for POST_NOTIFICATIONS, which on API 33+ is not optional.
@@ -215,6 +216,8 @@ class MainActivity : ComponentActivity() {
                     // A JID, never a Conversation object. Stable, saveable, and
                     // still correct after the roster is refetched.
                     var openJid by rememberSaveable { mutableStateOf<String?>(null) }
+                    // Whose profile the Profile screen shows; blank = ours.
+                    var profileOf by rememberSaveable { mutableStateOf("") }
 
                     // One place that hands the core over, and it is idempotent:
                     // a second attach with the same core is a no-op, so a
@@ -236,6 +239,20 @@ class MainActivity : ComponentActivity() {
                     }
 
                     when (screen) {
+                        Screen.PROFILE -> {
+                            // Our own profile from the list; a contact's from
+                            // their conversation (profileOf holds whose).
+                            val back = if (profileOf.isBlank()) Screen.CONVERSATIONS
+                                       else Screen.CONVERSATION
+                            BackHandler { screen = back }
+                            ProfileScreen(
+                                model = chat,
+                                ownJid = connection.status.jid,
+                                jid = profileOf,
+                                onBack = { screen = back },
+                            )
+                        }
+
                         Screen.ABOUT -> {
                             BackHandler { screen = Screen.CONVERSATIONS }
                             AboutScreen(onBack = { screen = Screen.CONVERSATIONS })
@@ -281,6 +298,10 @@ class MainActivity : ComponentActivity() {
                                         chat.closeConversation()
                                         screen = Screen.CONVERSATIONS
                                     },
+                                    onOpenProfile = { who ->
+                                        profileOf = who
+                                        screen = Screen.PROFILE
+                                    },
                                 )
                             }
                         }
@@ -301,6 +322,10 @@ class MainActivity : ComponentActivity() {
                                 onOpenPeople = { screen = Screen.PEOPLE },
                                 onOpenDiagnostics = { screen = Screen.DIAGNOSTICS },
                                 onOpenAbout = { screen = Screen.ABOUT },
+                                onOpenProfile = {
+                                    profileOf = ""
+                                    screen = Screen.PROFILE
+                                },
                                 onWipeAndExit = { connection.wipeAndExit() },
                                 theme = themeMode,
                                 onTheme = { mode ->

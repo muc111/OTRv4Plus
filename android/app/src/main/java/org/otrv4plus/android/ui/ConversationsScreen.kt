@@ -2,10 +2,10 @@
 // Copyright (C) 2025-2026 muc111
 package org.otrv4plus.android.ui
 
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
@@ -22,7 +22,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
@@ -57,18 +56,12 @@ fun ConversationsScreen(
     onOpenPeople: () -> Unit = {},
     onOpenDiagnostics: () -> Unit = {},
     onOpenAbout: () -> Unit = {},
+    onOpenProfile: () -> Unit = {},
     onWipeAndExit: (() -> Unit)? = null,
     theme: ThemeTokens.Mode = ThemeTokens.DEFAULT,
     onTheme: ((ThemeTokens.Mode) -> Unit)? = null,
 ) {
     var choosingTheme by rememberSaveable { mutableStateOf(false) }
-    var choosingPicture by rememberSaveable { mutableStateOf(false) }
-    val context = LocalContext.current
-    val picturePicker = rememberLauncherForActivityResult(
-        ActivityResultContracts.OpenDocument()
-    ) { uri ->
-        if (uri != null) model.setOwnAvatar(OwnAvatar.pngFrom(context, uri))
-    }
     val conversations = model.conversations()
     var showAdd by rememberSaveable { mutableStateOf(false) }
     // A JID, not a Conversation: the row can change under an open dialog.
@@ -95,6 +88,46 @@ fun ConversationsScreen(
                     }
                 },
             )
+        },
+        // THE FOOTER IS THE BOTTOM BAR. It used to be the last thing in the
+        // content column, and Scaffold places its floating "+" over the
+        // content -- on top of Wipe & Exit (device report, 2026-10-03). A
+        // bottom bar is laid out below the floating button, so the two can
+        // no longer overlap. The buttons scroll sideways rather than squash
+        // on a narrow phone.
+        bottomBar = {
+            Surface(tonalElevation = 2.dp) {
+                Column(Modifier.fillMaxWidth().navigationBarsPadding()) {
+                    Row(
+                        Modifier.fillMaxWidth()
+                            .horizontalScroll(rememberScrollState())
+                            .padding(horizontal = 8.dp),
+                        horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    ) {
+                        // Rooms sit alongside one-to-one conversations rather
+                        // than inside them: a room is group chat and is not
+                        // end-to-end encrypted, and listing rooms among
+                        // conversations would blur two things that have
+                        // different guarantees.
+                        TextButton(onClick = onOpenRooms) { Text("Rooms") }
+                        TextButton(onClick = onOpenProfile) { Text("Profile") }
+                        TextButton(onClick = onOpenDiagnostics) { Text("Debug") }
+                        TextButton(onClick = onOpenAbout) { Text("About & licences") }
+                        if (onTheme != null) {
+                            TextButton(onClick = { choosingTheme = true }) { Text("Theme") }
+                        }
+                    }
+                    // Beside Debug and Licences, so it is reachable without
+                    // going back to the connection screen. The same control,
+                    // confirmation and teardown as there.
+                    onWipeAndExit?.let { wipe ->
+                        Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp),
+                            horizontalArrangement = Arrangement.End) {
+                            WipeAndExitButton(onWipe = wipe)
+                        }
+                    }
+                }
+            }
         },
         floatingActionButton = {
             if (model.canSend()) {
@@ -208,40 +241,6 @@ fun ConversationsScreen(
                     }
                 }
             }
-
-            Row(
-                Modifier.fillMaxWidth().padding(horizontal = 8.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                // Rooms sit alongside one-to-one conversations rather
-                // than inside them: a room is group chat and is not
-                // end-to-end encrypted, and listing rooms among
-                // conversations would blur two things that have
-                // different guarantees.
-                TextButton(onClick = onOpenRooms) { Text("Rooms") }
-                TextButton(onClick = onOpenDiagnostics) { Text("Debug") }
-                TextButton(onClick = onOpenAbout) { Text("About & licences") }
-                if (onTheme != null) {
-                    TextButton(onClick = { choosingTheme = true }) { Text("Theme") }
-                }
-                TextButton(onClick = { choosingPicture = true }) { Text("Picture") }
-            }
-            // At the foot of the main list, beside Debug and Licences, so it
-            // is reachable without going back to the connection screen. The
-            // same control, confirmation and teardown as there.
-            onWipeAndExit?.let { wipe ->
-                Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp),
-                    horizontalArrangement = Arrangement.End) {
-                    WipeAndExitButton(onWipe = wipe)
-                }
-            }
-            model.avatarStatus?.let { status ->
-                Text(
-                    status,
-                    style = MaterialTheme.typography.bodySmall,
-                    modifier = Modifier.padding(horizontal = 16.dp),
-                )
-            }
         }
     }
 
@@ -279,35 +278,6 @@ fun ConversationsScreen(
             },
             confirmButton = {
                 TextButton(onClick = { choosingTheme = false }) { Text("Done") }
-            },
-        )
-    }
-
-    if (choosingPicture) {
-        AlertDialog(
-            onDismissRequest = { choosingPicture = false },
-            title = { Text("Your picture") },
-            text = {
-                Text("Shown to your contacts. It is scaled to 96 × 96 and " +
-                     "saved again as a plain PNG, so nothing else from the " +
-                     "original file (such as where a photo was taken) is " +
-                     "sent. Contacts' pictures are checked and decoded " +
-                     "safely before they are shown.")
-            },
-            confirmButton = {
-                TextButton(onClick = {
-                    choosingPicture = false
-                    picturePicker.launch(arrayOf("image/*"))
-                }) { Text("Choose a picture") }
-            },
-            dismissButton = {
-                Row {
-                    TextButton(onClick = {
-                        choosingPicture = false
-                        model.removeOwnAvatar()
-                    }) { Text("Remove") }
-                    TextButton(onClick = { choosingPicture = false }) { Text("Cancel") }
-                }
             },
         )
     }

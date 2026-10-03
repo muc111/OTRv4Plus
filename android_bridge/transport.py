@@ -51,6 +51,7 @@ import otrv4plus_address as _address
 import otrv4plus_caps as _caps
 from . import route as _route_mod
 from . import avatar as _avatar
+from . import profile as _profile
 from . import welcome as _welcome
 import otrv4plus_fragment as _fragment
 import otrv4plus_muc as _muc
@@ -3642,6 +3643,50 @@ class XmppTransport(Transport):
         await plugin.publish_avatar_metadata(
             [{"id": avatar_id, "type": _avatar.PNG_TYPE, "bytes": len(png),
               "width": w, "height": h}], timeout=CALL_TIMEOUT)
+
+    # -- the XMPP profile (vcard-temp, XEP-0054) --------------------------------
+
+    def get_profile(self, jid: str = "") -> Dict[str, str]:
+        """`jid`'s profile (ours when empty), sanitised by
+        android_bridge.profile. {} when there is none. Raises TransportError."""
+        if not self.is_connected:
+            raise TransportError("not_connected", "not connected")
+        return self._run(self._get_profile(jid), CALL_TIMEOUT)
+
+    async def _get_profile(self, jid: str) -> Dict[str, str]:
+        iq = self._client.Iq()
+        iq["type"] = "get"
+        if jid:
+            iq["to"] = str(jid).split("/", 1)[0]
+        iq.append(_profile.ET.Element("{%s}vCard" % _profile.NS))
+        try:
+            reply = await iq.send(timeout=CALL_TIMEOUT)
+        except Exception as exc:
+            cond = ""
+            try:
+                cond = exc.iq["error"]["condition"]
+            except Exception:
+                pass
+            if cond == "item-not-found":
+                return {}
+            raise TransportError("profile_unavailable", cond or type(exc).__name__)
+        element = next(reply.xml.iter("{%s}vCard" % _profile.NS), None)
+        return _profile.from_vcard(element)
+
+    def set_profile(self, values: Dict[str, str]) -> Dict[str, str]:
+        """Publish our profile; returns what was actually published (after
+        sanitising). Raises TransportError."""
+        if not self.is_connected:
+            raise TransportError("not_connected", "not connected")
+        clean = _profile.clean_profile(values)
+        self._run(self._set_profile(clean), CALL_TIMEOUT)
+        return clean
+
+    async def _set_profile(self, clean: Dict[str, str]) -> None:
+        iq = self._client.Iq()
+        iq["type"] = "set"
+        iq.append(_profile.to_vcard(clean))
+        await iq.send(timeout=CALL_TIMEOUT)
 
     def remove_avatar(self) -> None:
         """Stop publishing our avatar (empty metadata). Raises TransportError."""

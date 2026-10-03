@@ -783,6 +783,14 @@ class AvatarImage(
     override fun hashCode(): Int = id.hashCode()
 }
 
+/** One editable XMPP profile field, as the bridge defines it. */
+data class ProfileField(
+    val key: String,
+    val label: String,
+    val maxLength: Int,
+    val multiline: Boolean,
+)
+
 data class RoomOutcome(
     val ok: Boolean,
     val code: String,

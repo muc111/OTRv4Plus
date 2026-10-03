@@ -243,6 +243,12 @@ class SecureGroups:
     #: How many times one of our commits is posted again when it does not
     #: come back from the room (bounced, or lost across a reconnect).
     MAX_COMMIT_RESENDS = 3
+    #: Automatic rekey (MLS self-update) for post-compromise security: after
+    #: this many messages we sent, or this long since our own last commit,
+    #: whichever comes first. Checked after a send, never while a commit of
+    #: ours is pending or still going out.
+    AUTO_REKEY_MESSAGES = 100
+    AUTO_REKEY_SECONDS = 24 * 3600
 
     def __init__(self, *,
                  send_room: Callable[[str, str], None],
@@ -280,6 +286,8 @@ class SecureGroups:
         #: yet seen back from the room. MLS holds it pending, which refuses
         #: every send, until it lands -- so it is kept to post again.
         self._unconfirmed: Dict[str, List[Any]] = {}
+        #: room -> [messages sent since our last commit, time of that commit].
+        self._since_rekey: Dict[str, List[float]] = {}
         self._pacer = RoomPacer(
             send_room, burst=self.ROOM_BURST, interval=self.ROOM_INTERVAL,
             on_error=lambda room: self._emit(
@@ -427,6 +435,7 @@ class SecureGroups:
             self._bound.clear()
             self._reassembler.clear()
             self._unconfirmed.clear()
+            self._since_rekey.clear()
             self._pacer.close()
 
     @property
@@ -496,6 +505,7 @@ class SecureGroups:
             except ValueError:
                 raise GroupError("group_exists")
             self.save()
+            self._since_rekey[room] = [0, self._clock()]
         self._emit(GroupChanged(peer=room, change="created",
                                 epoch=self.epoch(room)))
 
@@ -659,6 +669,7 @@ class SecureGroups:
             self._awaiting_welcome.pop(room, None)
             self.save()
             epoch = int(client.epoch(room.encode()))
+        self._since_rekey[room] = [0, self._clock()]
         self._emit(GroupChanged(peer=room, change="joined", epoch=epoch))
 
     def _on_decline(self, peer: str, room: str) -> None:
@@ -750,6 +761,37 @@ class SecureGroups:
                 self.resend_pending_commit(room, "send_blocked")
             raise err
         self._post(room, ct)
+        self._maybe_rekey(room)
+
+    def _maybe_rekey(self, room: str) -> None:
+        """Self-update once enough messages or time have passed (see
+        AUTO_REKEY_*). Best effort: a refusal is reported, never raised into
+        the send that triggered it."""
+        with self._lock:
+            entry = self._since_rekey.setdefault(room, [0, self._clock()])
+            entry[0] += 1
+            due = (entry[0] >= self.AUTO_REKEY_MESSAGES
+                   or self._clock() - entry[1] >= self.AUTO_REKEY_SECONDS)
+            client = self._client
+            if not due or client is None or self._wiped:
+                return
+            try:
+                if client.has_pending_commit(room.encode()):
+                    return
+            except Exception:
+                return
+            if room in self._unconfirmed or self._pacer.pending(room):
+                return
+        try:
+            self.rekey(room)
+        except Exception:
+            self._emit(ErrorOccurred(peer=room, code="group_rekey_failed"))
+            return
+        # Counted from now; confirmed (and reset again) when it lands.
+        with self._lock:
+            self._since_rekey[room] = [0, self._clock()]
+        self._emit(GroupChanged(peer=room, change="rekeyed",
+                                epoch=self.epoch(room)))
 
     def remove(self, room: str, member: str) -> None:
         with self._lock:
@@ -842,6 +884,9 @@ class SecureGroups:
         if ev.get("ours") or ev.get("dropped_ours"):
             # Landed, or superseded by somebody else's: nothing to re-send.
             self._unconfirmed.pop(room, None)
+        if ev.get("ours"):
+            # Our leaf key is fresh as of this epoch.
+            self._since_rekey[room] = [0, self._clock()]
         if ev.get("removed_us"):
             self._bound.pop(room, None)
             self.save()

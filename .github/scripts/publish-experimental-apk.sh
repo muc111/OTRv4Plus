@@ -128,6 +128,18 @@ against the live server over I2P, with a Termux client as the peer:
 - **rooms**: the MUC service is discovered without anything being typed, a
   room can be created by name, and the app navigates into it.
 
+Reported on 2026-10-02/03, on the project's new server \`otrv4plus.i2p\`:
+
+- **signing in to \`otrv4plus.i2p\`** from the app (server picked from the
+  list, dialled at its built-in .b32.i2p address) and from the **Termux
+  client** (\`--jid you@otrv4plus.i2p\`, no \`--server\` needed), once the
+  server's TLS certificate for the host was in place;
+- **OTRv4+ between the app and Termux** starts in the background with
+  \`/otr\` and needs no user input until somebody chooses to verify;
+- **a secure group (MLS), app to Termux**: Alice created the group in the
+  app, invited a Termux user over OTRv4+, the Termux user joined at epoch 1
+  and read Alice's group messages, decrypted by MLS.
+
 No cryptography runs in Kotlin or Python: every session, SMP and file key is
 held by the Rust core.
 
@@ -158,10 +170,17 @@ Asserted on every run rather than assumed:
 
 ## NOT verified, and the reason this is still experimental
 
-- **What this version adds on top**, not yet run on a handset: automatic
+- **Secure groups beyond two members**, and **Termux to app** group text
+  (only app to Termux has been seen). A three- and four-member test across
+  two phones (app and Termux on each) is next; PHYSICAL_TEST_PLAN.md §7a.
+- **Added since the last handset test**, not yet run on one: the Profile
+  screen (vcard-temp), avatars, automatic MLS rekey, the paced group
+  fragments and the automatic re-send of a lost group change, and the
+  auto-created Welcome room. See CHANGELOG.md, rc.20-rc.25.
+- **What earlier versions added**, not yet run on a handset: automatic
   OTRv4+ only toward clients that advertise OTRv4Plus, the People list, file
   progress with ETA, the in-app viewer, Wipe & Exit from the conversation
-  list, and the theme. See CHANGELOG.md for this version.
+  list, and the theme.
 - **Background survival, and reconnect** after a transient failure.
 - **The subscription banner**: what the app shows when somebody else asks to
   see your presence.
@@ -170,6 +189,31 @@ Asserted on every run rather than assumed:
 - **Metadata stripping of a handset camera photo**, and a re-run of Wipe &
   Exit: \`ANDROID_CALL_AND_FILE_DEVICE_TEST.md\` lists every step, separating
   what CI has verified from what needs hardware.
+
+## The server (Prosody): what it needs
+
+Found while testing against \`otrv4plus.i2p\`. The app copes with each of
+these where it can, but the server settings decide how well:
+
+- **\`muc_limits\` on the conference component.** It refuses any room
+  message over 5664 characters and allows about one message every two
+  seconds. Every secure-group message is larger than that (post-quantum
+  signatures), so the app splits group messages into 4000-character pieces
+  and paces them; adding a member then takes about 20 s. **Remove
+  \`muc_limits\` from \`Component "conference.<host>"\`** (or raise
+  \`muc_max_char_count\` and \`muc_event_rate\`) for groups to be quick.
+- **A TLS certificate for every host**, \`<host>\` and \`conference.<host>\`,
+  named \`<host>.crt\`/\`.key\` in Prosody's \`certs\` folder, readable by the
+  prosody user (\`prosodyctl check certs\`). Without one Prosody refuses the
+  TLS handshake and the app reports \`tls_failed\`. The app accepts any
+  certificate over I2P, because the .b32.i2p address already proves the
+  server.
+- **Accounts live on the host name.** \`aliases\` is not a Prosody option:
+  an account must be \`user@otrv4plus.i2p\`, not \`user@<b32>.b32.i2p\` (the
+  app maps the latter for the built-in server).
+- **Profiles are public on the server.** Prosody's \`vcard\` module lets any
+  user of the server read any user's profile; the Profile screen says so.
+  Pictures (XEP-0084, PEP) are contacts-only.
 
 Also absent by design at this stage: **no in-APK I2P router** (an I2P router
 app with SAM enabled must be running on the phone). The icon is a

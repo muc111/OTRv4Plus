@@ -1145,6 +1145,59 @@ class ConnectionController:
                     "detail": "The picture could not be removed.", "value": None}
         return {"ok": True, "code": "ok", "detail": "", "value": None}
 
+    # -- the XMPP profile ----------------------------------------------------
+
+    def profile_fields(self) -> List[str]:
+        """The editable fields, as "key<TAB>label<TAB>maxlen<TAB>multiline".
+        The app builds its form from this, so the two cannot drift."""
+        from . import profile as _p
+        return ["%s\t%s\t%d\t%d" % (k, label, limit, 1 if multi else 0)
+                for k, label, _path, limit, multi in _p.FIELDS]
+
+    def profile_get_json(self, jid: str = "") -> Dict[str, Any]:
+        """{ok, code, detail, value: JSON object of fields}. `jid` empty =
+        our own. Everything in `value` has been sanitised."""
+        import json
+        transport = self._transport
+        if transport is None or not hasattr(transport, "get_profile"):
+            return {"ok": False, "code": "not_connected",
+                    "detail": "Connect first.", "value": None}
+        try:
+            values = transport.get_profile(str(jid or ""))
+        except Exception as exc:
+            code = getattr(exc, "code", None) or type(exc).__name__
+            _TRACE.record("profile", "get_failed", "warning", code=code)
+            return {"ok": False, "code": code,
+                    "detail": "The profile could not be read.", "value": None}
+        return {"ok": True, "code": "ok", "detail": "",
+                "value": json.dumps(values, ensure_ascii=False)}
+
+    def profile_set_json(self, text: str) -> Dict[str, Any]:
+        """Publish our profile from a JSON object of fields. Returns what was
+        published (sanitised), as JSON."""
+        import json
+        transport = self._transport
+        if transport is None or not hasattr(transport, "set_profile"):
+            return {"ok": False, "code": "not_connected",
+                    "detail": "Connect first.", "value": None}
+        try:
+            values = json.loads(str(text or "{}")[:20000])
+            if not isinstance(values, dict):
+                raise ValueError("not an object")
+        except ValueError:
+            return {"ok": False, "code": "bad_request",
+                    "detail": "The profile could not be read.", "value": None}
+        try:
+            published = transport.set_profile(values)
+        except Exception as exc:
+            code = getattr(exc, "code", None) or type(exc).__name__
+            _TRACE.record("profile", "set_failed", "warning", code=code)
+            return {"ok": False, "code": code,
+                    "detail": "The profile could not be saved.", "value": None}
+        _TRACE.record("profile", "published", "info", fields=len(published))
+        return {"ok": True, "code": "ok", "detail": "",
+                "value": json.dumps(published, ensure_ascii=False)}
+
     def welcome_directory(self) -> Dict[str, Any]:
         """The Welcome room's state and discoverable people. Local state
         only: no network, so no `_muc_call`."""

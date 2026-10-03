@@ -620,6 +620,40 @@ class ChaquopyOtrCore(private val appContext: Context) : OtrCore {
         return outcomeOf(result)
     }
 
+    // ── the XMPP profile (vcard-temp) ────────────────────────────────────
+
+    /** The editable fields, defined once, in `android_bridge/profile.py`. */
+    fun profileFields(): List<ProfileField> {
+        val v = call("profile_fields") ?: return emptyList()
+        return runCatching {
+            v.asList().mapNotNull { item ->
+                val parts = item.toString().split('\t')
+                if (parts.size != 4) null
+                else ProfileField(parts[0], parts[1], parts[2].toIntOrNull() ?: 0,
+                                  parts[3] == "1")
+            }
+        }.getOrDefault(emptyList())
+    }
+
+    /** A profile (ours when [jid] is blank), already sanitised by the bridge. */
+    fun profileGet(jid: String = ""): Pair<RoomOutcome, Map<String, String>> {
+        val result = call("profile_get_json", jid) ?: return notPrepared() to emptyMap()
+        return outcomeOf(result) to jsonMap(entry(result, "value"))
+    }
+
+    /** Publish our profile. Returns what was actually published. */
+    fun profileSet(values: Map<String, String>): Pair<RoomOutcome, Map<String, String>> {
+        val json = org.json.JSONObject(values as Map<*, *>).toString()
+        val result = call("profile_set_json", json) ?: return notPrepared() to emptyMap()
+        return outcomeOf(result) to jsonMap(entry(result, "value"))
+    }
+
+    private fun jsonMap(text: String): Map<String, String> = runCatching {
+        if (text.isBlank() || text == "None") return emptyMap()
+        val obj = org.json.JSONObject(text)
+        obj.keys().asSequence().associateWith { obj.optString(it, "") }
+    }.getOrDefault(emptyMap())
+
     fun removeAvatar(): RoomOutcome {
         val result = call("remove_avatar") ?: return notPrepared()
         return outcomeOf(result)

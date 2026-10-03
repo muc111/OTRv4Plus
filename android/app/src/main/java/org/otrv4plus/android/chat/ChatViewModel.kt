@@ -512,6 +512,67 @@ class ChatViewModel : ViewModel() {
         }
     }
 
+    // ── the XMPP profile ─────────────────────────────────────────────────
+
+    /** The fields the bridge defines; loaded with the first profile. */
+    var profileFields: List<org.otrv4plus.android.bridge.ProfileField> by mutableStateOf(emptyList())
+        private set
+
+    /** The profile on screen: ours, or a contact's (read-only). */
+    var profileValues: Map<String, String> by mutableStateOf(emptyMap())
+        private set
+    var profileJid: String by mutableStateOf("")
+        private set
+    var profileBusy by mutableStateOf(false)
+        private set
+    var profileStatus: String? by mutableStateOf(null)
+
+    /** Load [jid]'s profile; blank means our own. */
+    fun loadProfile(jid: String = "") {
+        val core = this.core ?: run { profileStatus = "Connect first."; return }
+        profileJid = jid
+        profileValues = emptyMap()
+        profileBusy = true
+        profileStatus = null
+        viewModelScope.launch {
+            val (fields, result) = withContext(Dispatchers.IO) {
+                val f = if (profileFields.isEmpty())
+                    runCatching { core.profileFields() }.getOrDefault(emptyList())
+                    else profileFields
+                f to runCatching { core.profileGet(jid) }.getOrNull()
+            }
+            if (fields.isNotEmpty()) profileFields = fields
+            profileBusy = false
+            if (profileJid != jid) return@launch       // another profile was opened
+            if (result == null || !result.first.ok) {
+                profileStatus = "The profile could not be read. " +
+                    (result?.first?.code?.let { "($it)" } ?: "")
+                return@launch
+            }
+            profileValues = result.second
+            if (result.second.isEmpty()) profileStatus = ProfileText.empty(jid)
+        }
+    }
+
+    /** Publish our profile. The bridge sanitises it and says what it kept. */
+    fun saveProfile(values: Map<String, String>) {
+        val core = this.core ?: run { profileStatus = "Connect first."; return }
+        profileBusy = true
+        profileStatus = "Saving…"
+        viewModelScope.launch {
+            val result = withContext(Dispatchers.IO) {
+                runCatching { core.profileSet(values) }.getOrNull()
+            }
+            profileBusy = false
+            if (result == null || !result.first.ok) {
+                profileStatus = "Your profile could not be saved."
+                return@launch
+            }
+            profileValues = result.second
+            profileStatus = ProfileText.saved(values, result.second, profileFields)
+        }
+    }
+
     private var lastWelcome = 0L
 
     /**

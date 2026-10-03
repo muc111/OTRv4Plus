@@ -942,3 +942,60 @@ class TestTermuxSendsRoomFragmentsOnItsLoop:
         t.start()
         t.join()
         assert calls == ["threadsafe"] and g.host.sent == [(ROOM, "groupchat")]
+
+
+class TestAutomaticRekey:
+    """Post-compromise security without anybody typing /group rekey: after
+    AUTO_REKEY_MESSAGES sends (or AUTO_REKEY_SECONDS) the sender's client
+    self-updates. Everyone moves to the new epoch and keeps reading."""
+
+    def _group(self, w):
+        async def go():
+            w.b.start_otr(w.c.jid)
+            await w.server.pump()
+            w.server.rooms.setdefault(ROOM, {})[w.c.jid] = w.c.jid.split("@")[0]
+            w.c.app.note_room_joined(ROOM)
+            w.c.app.groups.create(ROOM)
+            w.c.app.groups.invite(ROOM, w.b.jid)
+            await w.server.pump()
+            await w.b.cmd("/group accept " + ROOM)
+            await w.server.pump()
+        run(go())
+        assert w.b.groups.groups.is_secure(ROOM)
+
+    def test_the_sender_rekeys_after_enough_messages(self, world, monkeypatch):
+        from android_bridge.groups import SecureGroups
+        monkeypatch.setattr(SecureGroups, "AUTO_REKEY_MESSAGES", 3)
+        w = world
+        self._group(w)
+        start = w.c.app.groups.epoch(ROOM)
+        for i in range(3):
+            assert w.c.app.send_user_text(ROOM, "m%d" % i) == OtrApp.SEND_ENCRYPTED
+            run(w.server.pump())
+        assert w.c.app.groups.epoch(ROOM) == start + 1
+        assert w.b.groups.groups.epoch(ROOM) == start + 1
+        assert w.c.app.send_user_text(ROOM, "after the rekey") == OtrApp.SEND_ENCRYPTED
+        run(w.server.pump())
+        assert w.b.lines("after the rekey") and w.b.lines("m2")
+
+    def test_the_sender_rekeys_after_enough_time(self, world, monkeypatch):
+        from android_bridge.groups import SecureGroups
+        w = world
+        self._group(w)
+        start = w.c.app.groups.epoch(ROOM)
+        monkeypatch.setattr(SecureGroups, "AUTO_REKEY_SECONDS", 0)
+        assert w.c.app.send_user_text(ROOM, "late") == OtrApp.SEND_ENCRYPTED
+        run(w.server.pump())
+        assert w.c.app.groups.epoch(ROOM) == start + 1 == w.b.groups.groups.epoch(ROOM)
+
+    def test_no_rekey_while_a_commit_is_pending(self, world, monkeypatch):
+        from android_bridge.groups import SecureGroups
+        monkeypatch.setattr(SecureGroups, "AUTO_REKEY_MESSAGES", 1)
+        w = world
+        self._group(w)
+        g = w.c.app.groups
+        g._unconfirmed[ROOM] = [b"x", 0]                 # ours, not yet back
+        before = g.epoch(ROOM)
+        g._maybe_rekey(ROOM)
+        assert not g._client.has_pending_commit(ROOM.encode())
+        assert g.epoch(ROOM) == before

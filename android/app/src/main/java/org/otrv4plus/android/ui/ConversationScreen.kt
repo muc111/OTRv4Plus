@@ -66,6 +66,7 @@ fun ConversationScreen(
     model: ChatViewModel,
     jid: String,
     onBack: () -> Unit,
+    onOpenProfile: ((String) -> Unit)? = null,
 ) {
     val conversation = model.conversation(jid)
     val messages = model.messages(jid)
@@ -116,6 +117,12 @@ fun ConversationScreen(
                             style = MaterialTheme.typography.titleMedium,
                         )
                         PresenceDot(conversation.presence)
+                    }
+                },
+                actions = {
+                    // A person's profile; a room has none.
+                    if (onOpenProfile != null && !model.isRoom(jid)) {
+                        TextButton(onClick = { onOpenProfile(jid) }) { Text("Profile") }
                     }
                 },
             )

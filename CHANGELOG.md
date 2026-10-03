@@ -4,6 +4,39 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.25 — 2026-10-03 — Profile screen, no overlapping buttons, automatic MLS rekey (core 0.11.0)
+
+*Device test: MLS works from the app to Termux. Alice created `mls`, B
+(Termux) accepted, joined at epoch 1 and read Alice's messages. The "+"
+button sat on top of Wipe & Exit.*
+
+- **No overlapping buttons.** The footer (Rooms, Profile, Debug, About,
+  Theme, Wipe & Exit) is now the screen's bottom bar, which Material places
+  below the floating "+". Before, the footer was part of the content and
+  the "+" covered it. The buttons scroll sideways on a narrow phone instead
+  of squashing.
+- **Profile screen** ("Profile" on the main list): your picture (chosen,
+  scaled to 96×96 and re-encoded as PNG, as in rc.24) and your full XMPP
+  profile (vcard-temp, XEP-0054, which Prosody's `vcard` module serves).
+  Fields: full name, first and last name, nickname, birthday, e-mail, phone,
+  web site, organisation, job title, role, town, region, country, about me.
+  "Profile" in a conversation shows that contact's profile, read-only.
+  - Every field is defined once in `android_bridge/profile.py`. Each is
+    length-capped. Control and formatting characters are stripped, including
+    bidi overrides (so "gpj.exe" cannot pose as "exe.jpg"), and text is
+    NFC-normalised. Shaped fields are checked: birthday YYYY-MM-DD, phone
+    digits, e-mail, and web addresses http(s) only, shown as text, never as a
+    link. Anything else in a received vCard (PHOTO, KEY, extensions) is
+    ignored. This applies to what we publish and to what we show.
+  - The screen says that a vcard-temp profile is readable by every user of
+    the server and is not encrypted.
+- **Automatic MLS rekey** (post-compromise security): after 100 messages
+  we sent, or 24 h since our last commit, our client self-updates its
+  group key. It never does so while one of our commits is pending. Every
+  member moves to the new epoch and keeps reading (interop tests: app
+  sends, Termux reads across the rekey). `/group rekey` still works by
+  hand.
+
 ## Android 0.7.0-experimental.rc.24 — 2026-10-03 — secure groups recover by themselves; safe avatars (core 0.11.0)
 
 ### Secure groups (MLS): no more stuck groups
