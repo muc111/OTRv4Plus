@@ -49,7 +49,7 @@ use openmls::prelude::{tls_codec::*, *};
 use sha2::{Digest, Sha384};
 use zeroize::Zeroizing;
 
-use crate::provider::{CoreProvider, SignatureKeyPair, CIPHERSUITE};
+use crate::provider::{CoreProvider, SignatureKeyPair, CIPHERSUITE, LEGACY_CIPHERSUITE};
 
 /// Sealed-state header: magic, then format version.
 const STATE_MAGIC: &[u8; 4] = b"OMLS";
@@ -208,9 +208,19 @@ pub struct MlsClient {
     wiped: bool,
 }
 
+/// What our leaves say they support: the hybrid suite (every new group)
+/// and the earlier PQ-only one (existing groups). The hybrid suite is a
+/// private code point, so it is not in OpenMLS's default list and must be
+/// declared, or OpenMLS refuses a leaf that does not list its own group's
+/// suite.
+fn capabilities() -> Capabilities {
+    Capabilities::new(None, Some(&[CIPHERSUITE, LEGACY_CIPHERSUITE]), None, None, None)
+}
+
 fn create_config() -> MlsGroupCreateConfig {
     MlsGroupCreateConfig::builder()
         .ciphersuite(CIPHERSUITE)
+        .capabilities(capabilities())
         .use_ratchet_tree_extension(true)
         // Handshake messages are encrypted too: the room sees ciphertext only.
         .wire_format_policy(PURE_CIPHERTEXT_WIRE_FORMAT_POLICY)
@@ -286,6 +296,7 @@ impl MlsClient {
         self.live()?;
         let signer = SignatureKeyPair::generate();
         let bundle = KeyPackage::builder()
+            .leaf_node_capabilities(capabilities())
             .build(CIPHERSUITE, &self.provider, &signer,
                    credential_for(&self.identity, &signer))
             .map_err(|_| MlsError::Failed("key package"))?;
@@ -325,6 +336,12 @@ impl MlsClient {
         ids
     }
 
+    /// The group's ciphersuite code point: 0xF0A1 (hybrid) or 0x0907
+    /// (the earlier PQ-only suite).
+    pub fn ciphersuite(&mut self, group_id: &[u8]) -> Result<u16> {
+        Ok(u16::from(self.group(group_id)?.ciphersuite()))
+    }
+
     pub fn epoch(&mut self, group_id: &[u8]) -> Result<u64> {
         Ok(self.group(group_id)?.epoch().as_u64())
     }
@@ -359,6 +376,7 @@ impl MlsClient {
     pub fn add_members(&mut self, group_id: &[u8], key_packages: &[Vec<u8>]) -> Result<Vec<u8>> {
         self.live()?;
         self.refuse_if_pending(group_id)?;
+        let suite = self.groups.get(group_id).ok_or(MlsError::NoSuchGroup)?.ciphersuite();
         let mut kps = Vec::with_capacity(key_packages.len());
         for bytes in key_packages {
             let msg = MlsMessageIn::tls_deserialize_exact(bytes.as_slice())
@@ -369,7 +387,9 @@ impl MlsClient {
             };
             let kp = kp_in.validate(self.provider.crypto(), ProtocolVersion::Mls10)
                 .map_err(|_| MlsError::Refused("invalid key package"))?;
-            if kp.ciphersuite() != CIPHERSUITE {
+            if kp.ciphersuite() != suite {
+                // A group of the earlier PQ-only suite cannot take members
+                // whose clients now make hybrid KeyPackages: re-create it.
                 return Err(MlsError::Refused("key package for another ciphersuite"));
             }
             kps.push(kp);
@@ -407,7 +427,10 @@ impl MlsClient {
         self.live()?;
         self.refuse_if_pending(group_id)?;
         let identity = self.identity.clone();
-        let new_signer = SignatureKeyPair::generate();
+        let scheme = self.groups.get(group_id).ok_or(MlsError::NoSuchGroup)?
+            .ciphersuite().signature_algorithm();
+        let new_signer = SignatureKeyPair::generate_for(scheme)
+            .map_err(|_| MlsError::Failed("signing key"))?;
         let (provider, signer, group) = self.group_and_signer(group_id)?;
         let bundle = NewSignerBundle {
             signer: &new_signer,
@@ -434,7 +457,7 @@ impl MlsClient {
             .map_err(|_| MlsError::Refused("welcome not for us or invalid"))?
             .into_group(&self.provider)
             .map_err(|_| MlsError::Failed("join"))?;
-        if group.ciphersuite() != CIPHERSUITE {
+        if group.ciphersuite() != CIPHERSUITE && group.ciphersuite() != LEGACY_CIPHERSUITE {
             return Err(MlsError::Refused("group uses another ciphersuite"));
         }
         let id = group.group_id().as_slice().to_vec();

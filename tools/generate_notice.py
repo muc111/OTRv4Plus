@@ -104,8 +104,14 @@ def shipped_packages(meta):
            if (p["name"], p["version"]) in wanted}
     # First-party path crates (Rust/opus-codec, Rust/mls) are this project's
     # own code under its own licence, not third-party material to
-    # attribute. A path crate has no registry `source`.
-    first_party = {p["id"] for p in meta["packages"] if p.get("source") is None}
+    # attribute. A path crate has no registry `source` -- but a VENDORED
+    # crate (Rust/vendor/, third-party code patched in place; see
+    # Rust/vendor/VENDORED.md) is a path crate too, and is still somebody
+    # else's code under their licence, so it stays attributed.
+    vendor_dir = os.sep + os.path.join("Rust", "vendor") + os.sep
+    first_party = {p["id"] for p in meta["packages"]
+                   if p.get("source") is None
+                   and vendor_dir not in (p.get("manifest_path") or "")}
     return ids - first_party
 
 

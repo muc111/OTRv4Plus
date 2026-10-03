@@ -794,3 +794,33 @@ class TestMaintenance:
         assert G._env_int("OTRV4PLUS_MLS_IDLE_REMOVE_HOURS", 72, 0, 8760) == 24
         del importlib
 
+
+# ── M4: the hybrid ciphersuite ───────────────────────────────────────────────
+
+class TestHybridSuite:
+    """MLS_SECURITY_HARDENING.md §2 / M4: every new group is
+    X448+ML-KEM-1024 / Ed448+ML-DSA-87 (0xF0A1); a group of the earlier
+    PQ-only suite keeps working but takes no new members."""
+
+    def test_every_new_group_is_hybrid_for_every_member(self):
+        w, members = _group(3)
+        for m in members:
+            assert m.groups.suite(ROOM) == "hybrid"
+            assert int(m.groups._need().ciphersuite(ROOM.encode())) == 0xF0A1
+
+    def test_a_pq_only_group_takes_no_new_members(self, monkeypatch):
+        w, (a, b) = _group(2)
+        monkeypatch.setattr(a.groups, "suite", lambda room: "pq-only")
+        c = w.add("carol@x.i2p")
+        w.pair("alice@x.i2p", "carol@x.i2p")
+        with pytest.raises(GroupError) as e:
+            a.groups.invite(ROOM, "carol@x.i2p")
+        assert e.value.code == "legacy_group"
+        # ... and still carries messages.
+        a.groups.send(ROOM, "still here")
+        assert ("alice@x.i2p", "still here", True) in b.texts()
+
+    def test_hybrid_messages_still_fit_the_room_pieces(self):
+        w, (a, b) = _group(2)
+        a.groups.send(ROOM, "x" * 2000)
+        assert all(len(body) <= 5664 for _s, body in w.room.log)

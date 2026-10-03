@@ -6,6 +6,13 @@
 //!
 //! If these agree, the PQClean-backed provider computes the same MLS as
 //! everyone else's: deterministic HPKE key derivation, HPKE, and ML-DSA-87.
+//!
+//! The reference provider has no X448+ML-KEM-1024 or Ed448+ML-DSA-87 (they
+//! are private code points), so this runs on the PQ-only suite, whose
+//! ML-KEM and ML-DSA are the post-quantum halves of the hybrid one. The
+//! classical halves are the core's X448 and Ed448, which
+//! tests/test_differential.py already checks against an independent
+//! implementation (`cryptography`).
 
 use openmls::prelude::{tls_codec::*, *};
 use openmls_rust_crypto::OpenMlsRustCrypto;
@@ -14,7 +21,8 @@ use openmls_traits::{
     signatures::{Signer, SignerError},
     OpenMlsProvider,
 };
-use otrv4_mls::{CoreCrypto, CoreProvider, SignatureKeyPair, CIPHERSUITE};
+use otrv4_mls::provider::LEGACY_CIPHERSUITE as CIPHERSUITE;
+use otrv4_mls::{CoreCrypto, CoreProvider, SignatureKeyPair};
 
 /// A signer for the reference provider (its own key format).
 struct RefSigner {
@@ -104,7 +112,7 @@ fn ml_dsa_87_signatures_both_directions() {
     let r = reference();
     let msg = b"MLS leaf node to be signed";
 
-    let mine = SignatureKeyPair::generate();
+    let mine = SignatureKeyPair::generate_for(SignatureScheme::MLDSA87).unwrap();
     let sig = mine.sign(msg).unwrap();
     r.crypto().verify_signature(SignatureScheme::MLDSA87, msg, mine.public(), &sig).unwrap();
 
@@ -132,7 +140,7 @@ fn mixed_group_core_and_reference() {
     // provider, joins from her Welcome; both talk; Bob rotates his key and
     // Alice follows the commit.
     let alice_p = CoreProvider::default();
-    let alice_s = SignatureKeyPair::generate();
+    let alice_s = SignatureKeyPair::generate_for(SignatureScheme::MLDSA87).unwrap();
     let alice_c = CredentialWithKey {
         credential: BasicCredential::new(b"alice".to_vec()).into(),
         signature_key: alice_s.public().to_vec().into(),

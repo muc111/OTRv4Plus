@@ -452,7 +452,12 @@ class TermuxGroups:
                       % (arg1, m["jid"], " (you)" if m["me"] else "",
                          "verified" if m["verified"] else "unverified",
                          m["fingerprint"][:32]))
-                p("[group %s] epoch %d" % (arg1, self.groups.epoch(arg1)))
+                suite = self.groups.suite(arg1)
+                p("[group %s] epoch %d, suite %s" % (
+                    arg1, self.groups.epoch(arg1),
+                    "hybrid X448+ML-KEM-1024 / Ed448+ML-DSA-87" if suite == "hybrid"
+                    else "PQ-only ML-KEM-1024 / ML-DSA-87 (made before rc.27: "
+                         "re-create it to add members)"))
             elif verb == "remove" and arg1 and arg2:
                 self.groups.remove(arg1, _canon(arg2))
                 p("[group %s] removal of %s committed" % (arg1, _canon(arg2)))

@@ -14,8 +14,9 @@ import org.otrv4plus.android.bridge.OtrEvent
 object GroupText {
 
     const val SECURE_HEADER =
-        "End-to-end encrypted group (MLS). The room and its server carry " +
-            "only ciphertext; they still see who is in the room and when."
+        "End-to-end encrypted group (MLS, hybrid X448 + ML-KEM-1024 and " +
+            "Ed448 + ML-DSA-87). The room and its server carry only " +
+            "ciphertext; they still see who is in the room and when."
 
     const val PLAIN_HEADER =
         "Room — not end-to-end encrypted. Everyone in the room and the " +
@@ -66,6 +67,8 @@ object GroupText {
         "groups_unavailable" -> "This build does not include group encryption."
         "no_invite" -> "That invitation has expired."
         "group_exists" -> "That room is already a secure group."
+        "legacy_group" -> "This group was made before the hybrid (X448 + ML-KEM-1024) " +
+            "suite and cannot take new members. Create a new group to add people."
         "commit_pending" -> "Waiting for the room to confirm a group change. Try again shortly."
         else -> "The group operation did not complete ($code)."
     }

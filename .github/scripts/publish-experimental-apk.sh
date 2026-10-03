@@ -174,9 +174,13 @@ Asserted on every run rather than assumed:
   (only app to Termux has been seen). A three- and four-member test across
   two phones (app and Termux on each) is next; PHYSICAL_TEST_PLAN.md §7a.
 - **Added since the last handset test**, not yet run on one: the Profile
-  screen (vcard-temp), avatars, automatic MLS rekey, the paced group
-  fragments and the automatic re-send of a lost group change, and the
-  auto-created Welcome room. See CHANGELOG.md, rc.20-rc.25.
+  screen (vcard-temp), avatars, automatic MLS rekey, the automatic re-send
+  of a lost group change, the auto-created Welcome room (rc.20-rc.25); the
+  **hybrid post-quantum groups** (X448+ML-KEM-1024 / Ed448+ML-DSA-87),
+  **adaptive room pacing**, **per-group MLS signing keys rotated at every
+  rekey**, verification that survives a rekey and a restart, and **removal
+  of members away for 72 hours** (rc.27). Groups made before rc.27 keep
+  working but must be re-created to add members. See CHANGELOG.md.
 - **What earlier versions added**, not yet run on a handset: automatic
   OTRv4+ only toward clients that advertise OTRv4Plus, the People list, file
   progress with ETA, the in-app viewer, Wipe & Exit from the conversation
@@ -195,13 +199,19 @@ Asserted on every run rather than assumed:
 Found while testing against \`otrv4plus.i2p\`. The app copes with each of
 these where it can, but the server settings decide how well:
 
-- **\`muc_limits\` on the conference component.** It refuses any room
-  message over 5664 characters and allows about one message every two
-  seconds. Every secure-group message is larger than that (post-quantum
-  signatures), so the app splits group messages into 4000-character pieces
-  and paces them; adding a member then takes about 20 s. **Remove
-  \`muc_limits\` from \`Component "conference.<host>"\`** (or raise
-  \`muc_max_char_count\` and \`muc_event_rate\`) for groups to be quick.
+- **\`muc_limits\` on the conference component.** With its defaults it
+  refuses any room message over 5664 characters and allows about one
+  message every two seconds. Every secure-group message is larger than that
+  (post-quantum keys and signatures), so the app splits group messages into
+  4000-character pieces. Since rc.27 it sends them **fast** (10 at once,
+  then 4 a second) and, when the server bounces one, **slows that room
+  down** to the default limit's pace for 5 minutes and sends again whatever
+  the room did not echo back. A group therefore works on a stock server,
+  but adding a member is ~1 s on a relaxed server against ~20 s on the
+  defaults. **Recommended:** remove \`muc_limits\` from
+  \`Component "conference.<host>"\`, or set at least
+  \`muc_event_rate = 5\`, \`muc_burst_factor = 10\` (Prosody's names for the
+  limit's rate and burst) and \`muc_max_char_count\` of 5664 or more.
 - **A TLS certificate for every host**, \`<host>\` and \`conference.<host>\`,
   named \`<host>.crt\`/\`.key\` in Prosody's \`certs\` folder, readable by the
   prosody user (\`prosodyctl check certs\`). Without one Prosody refuses the

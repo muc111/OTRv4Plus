@@ -1805,8 +1805,6 @@ dependencies = [
 [[package]]
 name = "openmls_traits"
 version = "0.6.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ac13edad8698eb1917cbc1dab99591fa1594d84320904fe3fc5121854f95831c"
 dependencies = [
  "serde",
  "tls_codec",
@@ -1828,6 +1826,7 @@ version = "0.1.0"
 dependencies = [
  "aes-gcm",
  "ciborium",
+ "ed448-goldilocks-plus",
  "getrandom 0.2.17",
  "hkdf 0.12.4",
  "hmac 0.12.1",
@@ -1842,6 +1841,7 @@ dependencies = [
  "sha3 0.10.9",
  "thiserror 1.0.69",
  "tls_codec",
+ "x448",
  "zeroize",
 ]
 

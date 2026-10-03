@@ -782,6 +782,20 @@ class SecureGroups:
     def epoch(self, room: str) -> int:
         return int(self._need().epoch(room.encode()))
 
+    #: MLS ciphersuite code points (MLS_SECURITY_HARDENING.md §2).
+    SUITE_HYBRID = 0xF0A1
+    SUITE_PQ_ONLY = 0x0907
+
+    def suite(self, room: str) -> str:
+        """"hybrid" (X448+ML-KEM-1024 / Ed448+ML-DSA-87, every group made
+        since rc.27) or "pq-only" (ML-KEM-1024 / ML-DSA-87, a group made
+        before). A pq-only group keeps working but takes no new members."""
+        client = self._need()
+        if not hasattr(client, "ciphersuite"):
+            return "pq-only"
+        code = int(client.ciphersuite(room.encode()))
+        return "hybrid" if code == self.SUITE_HYBRID else "pq-only"
+
     def awaiting_welcome(self, room: str) -> bool:
         """Whether we accepted an invitation to `room` and await its Welcome."""
         with self._lock:
@@ -832,6 +846,11 @@ class SecureGroups:
             client = self._need()
             if not client.has_group(room.encode()):
                 raise GroupError("not_a_group")
+            if self.suite(room) != "hybrid":
+                raise GroupError("legacy_group",
+                                 "this group uses the earlier post-quantum-only "
+                                 "suite and cannot take new members; create a "
+                                 "new group (hybrid X448+ML-KEM-1024)")
             self._require_otr(peer)
             fp = bytes(client.own_fingerprint(room.encode())).hex()
             self._outgoing[(room, peer)] = _Outgoing(room=room, at=self._clock())

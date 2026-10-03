@@ -1,7 +1,8 @@
 # MLS + audio: hardening against the OTRv4+ security posture
 
-Owner's specification of 2026-10-03, checked against the code as it stands
-(rc.25, core 0.11.0). Each requirement is marked **MET**, **PARTIAL** or
+Owner's specification of 2026-10-03, checked against the code as it stood
+(rc.25, core 0.11.0), and updated as each step lands. **Status at rc.27
+(core 0.12.0): M1, M2, M3 and M4 done; M5 (group calls) open.** Each requirement is marked **MET**, **PARTIAL** or
 **NOT MET**, with where in the code it is decided, what is missing, and the
 commit that closes it. "Flag" marks a place where a library forces something
 weaker than the specification; those need an owner decision.
@@ -33,9 +34,9 @@ the property comes from the protocol, not from a library bug.
   fingerprint, sent **inside the OTRv4+ session** (deniable DAKE, deniable
   MACs) when inviting, and checked against the group
   (`android_bridge/groups.py` `_on_welcome`, the binding check).
-- **Gap:** one signature key per client, reused across every group and
-  never rotated. That makes a member linkable across groups, and keeps
-  the proof valid for as long as the key lives.
+- **Gap (closed in M2, rc.27):** one signature key per client, reused
+  across every group and never rotated. That made a member linkable across
+  groups, and kept the proof valid for as long as the key lived.
 
 **What gets the closest to OTRv4+ within RFC 9420** (commit M2):
 
@@ -50,6 +51,18 @@ the property comes from the protocol, not from a library bug.
    a judge who believes the leaked key was published. It costs about 4.9 KB
    per rotation.
 
+**Done in M2 (rc.27):** 1 and 2. Each KeyPackage carries its own key, which
+becomes our key in the group it brings us into; creating a group makes a
+fresh one; every self-update (manual, after 50 messages, or 30 minutes,
+whichever first) replaces it, and the old private key is dropped when the
+commit lands (`Rust/mls/src/client.rs`). The commit is signed with the old
+key, so the core reports `rekeyed: (identity, old fp, new fp)` only for a
+key replaced by its owner's own update -- never for a new leaf under an
+old name -- and the bridge carries an SMP binding across exactly those.
+The inviter's current fingerprint also travels with the Welcome over
+OTRv4+, so a rotation between invite and Welcome does not fail the join.
+3 (publication) remains deferred (decision D1).
+
 Even with all three, a member who records traffic **before** rotation holds
 signatures made by a key that was then private. Full OTRv4-style
 deniability inside MLS (ring-signature or designated-verifier
@@ -57,18 +70,37 @@ authentication of leaves) is current research, for example the "deniable
 MLS" constructions. It is not implementable in RFC 9420 or OpenMLS without
 forking the protocol. **Recommendation:** do 1 and 2 now, and decide on 3.
 
-## 2. Ciphersuite: AES-256-GCM + hybrid PQ — PARTIAL
+## 2. Ciphersuite: AES-256-GCM + hybrid PQ — MET (M4, rc.27)
 
-**Today:** `MLS_256_MLKEM1024_AES256GCM_SHA384_MLDSA87` (0x0907,
-draft-ietf-mls-pq-ciphersuites), served by our own provider
-(`Rust/mls/src/provider.rs`, which refuses everything else):
+**Since rc.27 (M4):** every new group uses
+`MLS_256_X448MLKEM1024_AES256GCM_SHA384_ED448MLDSA87` (private code point
+0xF0A1), served by our own provider (`Rust/mls/src/provider.rs`, which
+refuses everything else). Before rc.27 it was
+`MLS_256_MLKEM1024_AES256GCM_SHA384_MLDSA87` (0x0907, PQ-only); groups made
+then keep working (the provider still serves that suite for them) but take
+no new members: a hybrid KeyPackage cannot join a 0x0907 group, and the
+app says to create a new group.
 
-| requirement | today | status |
+| requirement | since rc.27 | status |
 |---|---|---|
 | AEAD AES-256-GCM only | AES-256-GCM (HPKE and MLS) | **MET** |
-| KEM X448 + ML-KEM-1024, binding combiner | ML-KEM-1024 only | **NOT MET** (PQ-only, no classical half) |
-| Signature Ed448 + ML-DSA-87 | ML-DSA-87 only | **NOT MET** (PQ-only) |
+| KEM X448 + ML-KEM-1024, binding combiner | `Rust/mls/src/hpke.rs`, KEM 0xF0A1 | **MET** |
+| Signature Ed448 + ML-DSA-87 | composite, both must verify, 0xFEA1 | **MET** |
 | Hash/KDF | SHA-384 / HKDF-SHA384 | fine |
+
+Measured (4-member group): a KeyPackage is 15.4 KB, adding one member
+31.0 KB (Welcome 26.5 KB), adding two 49.8 KB, a self-update 22.3 KB, a
+two-letter message 4.8 KB (6.4 K characters in the room). The classical
+halves add about 2-3 % to the PQ-only sizes.
+
+As built, versus the design below: the signature code point is 0xFEA1 (the
+TLS SignatureScheme private range is 0xFE00-0xFFFF, unlike MLS's), the
+composite message is `"OTRv4+MLS/CompositeSig/v1" || m` (MLS already
+labels and length-prefixes what it signs, so no separate context field),
+and the HPKE secret key is `sk_x448 || sk_mlkem` (the ML-KEM public key is
+inside the FIPS 203 decapsulation key, the X448 one is derived). Only
+`openmls_traits` is patched (`Rust/vendor/VENDORED.md`); `openmls` takes
+the suite through each leaf's declared capabilities.
 
 **Flag C1: OpenMLS's ciphersuite list is a closed enum.** OpenMLS 0.9 /
 openmls_traits 0.6 define `Ciphersuite`, `HpkeKemType` and
@@ -113,8 +145,12 @@ be added without patching both crates. Options:
   `Rust/mls/src/storage.rs`). Key material types are `Zeroizing` and
   sealed at rest with a DEK. Nothing secret crosses into Python or
   Kotlin: Python sees ciphertext, public keys and plaintext it is shown.
-- *Improvement (M2):* the per-group signers in §1 must be zeroized when
-  the group is forgotten, as the single signer is today.
+- *Done (M2):* per-group signing keys are `Zeroizing` and dropped when
+  replaced, when the group is forgotten, and on Wipe & Exit. Unused
+  KeyPackage keys are capped at 16.
+- The bridge's own bookkeeping (SMP bindings, invitations in flight, an
+  unconfirmed commit, key-refresh times) is sealed inside the same
+  AES-256-GCM state blob, bound to the account (rc.27).
 
 ## 4. Rekeying, FS and PCS — PARTIAL → mostly MET with M1
 
@@ -125,7 +161,7 @@ be added without patching both crates. Options:
 | Delete previous-epoch secrets at once | **MET**: `max_past_epochs` is left at OpenMLS's default of 0, so no past epoch is kept for decryption |
 | Single-use message keys, deleted after use | **MET**: OpenMLS secret tree, default sender-ratchet window (5 out of order, 1000 forward). Each key is deleted once used |
 | Heal after compromise with one Update+Commit, or Remove | **MET**: `/group rekey` (Termux), automatic self-update, `/group remove` |
-| Idle leaf (no Update/Commit for > 24 h) proposed for removal by the next honest member | **NOT MET**; commit M3, **owner decision on the default** (below) |
+| Idle leaf (no Update/Commit for > 24 h) proposed for removal by the next honest member | **MET in M3 (rc.27)** with the owner's 72 h default (U1), `OTRV4PLUS_MLS_IDLE_REMOVE_HOURS` (0 = off). Every online member self-updates at least every 30 min even when silent (`SecureGroups.maintain`, every 5 min), so only a member away for 72 h is affected; nothing is judged for 10 min after a (re)connect |
 
 **Idle-leaf removal: a usability flag (U1).** A phone that is off
 overnight sends no Update for 24 h and would be removed every morning. It
@@ -177,9 +213,10 @@ This is the largest item: transport, mixing and UI on two clients.
   MAC keys). MLS can only approach it (§1): leaf keys are unlinked to
   identity except through deniable OTRv4+, rotated per group and epoch
   after M2, and optionally published.
-- **PQ resistance:** today ML-KEM-1024 and ML-DSA-87 alone in MLS, hybrid
-  in OTRv4+ and voice. After M4, hybrid everywhere, so a break of either
-  half alone does not break confidentiality or authentication.
+- **PQ resistance:** hybrid everywhere since rc.27: OTRv4+, voice, and MLS
+  (X448+ML-KEM-1024, Ed448+ML-DSA-87), so a break of either half alone does
+  not break confidentiality or authentication. Groups made before rc.27
+  remain PQ-only until re-created.
 - **Metadata:** the room (server) sees member nicknames, timing and sizes.
   Content and the group roster in the tree are encrypted
   (`PURE_CIPHERTEXT` wire format). The server never sees a JID–key link.
@@ -202,8 +239,8 @@ to the commit event (one core change for both).
 | | commit | needs a core rebuild |
 |---|---|---|
 | M1 | rekey defaults 50 msgs / 30 min, env knobs; this document | no |
-| M2 | per-group signature keys, rotated on self-update; zeroized on forget | yes |
-| M3 | idle-leaf removal, 72 h default, needs M2's committer field | no |
-| M4 | hybrid ciphersuite via patched OpenMLS (decision C1) | yes; new groups |
+| M2 | per-group signature keys, rotated on self-update; zeroized on forget — **done, rc.27 / core 0.12.0** | yes |
+| M3 | idle-leaf removal, 72 h default, needs M2's committer field — **done, rc.27** | no |
+| M4 | hybrid ciphersuite via patched OpenMLS (decision C1) — **done, rc.27** | yes; new groups |
 | M5 | group audio calls over MLS exporter keys and I2P | yes |
 | M2b | optional: publish rotated signature keys (decision D1-3) | yes |

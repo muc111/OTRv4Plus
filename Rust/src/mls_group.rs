@@ -149,6 +149,13 @@ impl RustMlsClient {
         Ok(ids.iter().map(|i| PyBytes::new(py, i)).collect())
     }
 
+    /// The group's MLS ciphersuite: 0xF0A1 (hybrid X448+ML-KEM-1024 /
+    /// Ed448+ML-DSA-87, every new group) or 0x0907 (the earlier PQ-only
+    /// suite).
+    fn ciphersuite(&self, group_id: &[u8]) -> PyResult<u16> {
+        self.with(|c| c.ciphersuite(group_id))
+    }
+
     fn epoch(&self, group_id: &[u8]) -> PyResult<u64> {
         self.with(|c| c.epoch(group_id))
     }
@@ -266,3 +273,4 @@ impl RustMlsClient {
         "<RustMlsClient [REDACTED]>"
     }
 }
+

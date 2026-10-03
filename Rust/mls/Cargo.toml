@@ -44,6 +44,10 @@ hmac = "0.12"
 sha2 = "0.10"
 # SHAKE256 for HPKE DeriveKeyPair (src/hpke.rs): the core's sha3.
 sha3 = "0.10"
+# The classical halves of the hybrid suite (MLS_SECURITY_HARDENING.md §2):
+# the core's X448 (DAKE, voice) and Ed448 (identity keys) crates.
+x448 = "0.6"
+ed448-goldilocks-plus = { version = "0.16", default-features = false, features = ["alloc", "signing", "pkcs8"] }
 getrandom = "0.2"
 zeroize = { version = "1.8", features = ["derive", "alloc"] }
 thiserror = "1.0"
@@ -57,3 +61,15 @@ openmls_rust_crypto = { version = "=0.6.0", features = ["draft-ietf-mls-pq-ciphe
 hpke-rs = { version = "=0.7.0", default-features = false, features = ["hazmat"] }
 hpke-rs-crypto = { version = "=0.7.0" }
 rand_core_hpke = { package = "rand_core", version = "0.10" }
+
+# OTRv4Plus PATCH (MLS_SECURITY_HARDENING.md §2, decision C1): OpenMLS's
+# ciphersuite, KEM and signature-scheme lists are closed enums. The vendored
+# openmls_traits adds private-use code points for the hybrid suite
+# MLS_256_X448MLKEM1024_AES256GCM_SHA384_ED448MLDSA87 (0xF0A1), its KEM
+# X448+ML-KEM-1024 (0xF0A1) and composite signature Ed448+ML-DSA-87 (0xFEA1),
+# and nothing else; vendor/VENDORED.md lists every change. The crypto itself
+# is ours (mls/src/hpke.rs, mls/src/provider.rs).
+[patch.crates-io]
+openmls_traits = { path = "../vendor/openmls_traits" }
+# Test-only (dev-dependency): one exhaustive match taught the new KEM.
+openmls_rust_crypto = { path = "../vendor/openmls_rust_crypto" }

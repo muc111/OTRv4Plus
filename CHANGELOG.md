@@ -4,6 +4,59 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.27 — 2026-10-03 — hybrid post-quantum MLS; adaptive group speed; MLS hardening M2-M4 (core 0.12.0)
+
+**Termux: run \`build.sh\` again** -- the core changed (0.12.0). Existing
+groups carry on: the sealed state from rc.26 and earlier is migrated on the
+first start (its one signing key becomes each group's key until that
+group's next rekey).
+
+- **M4: secure groups are hybrid post-quantum.** Every new group uses
+  MLS_256_X448MLKEM1024_AES256GCM_SHA384_ED448MLDSA87 (private code point
+  0xF0A1): HPKE over **X448 + ML-KEM-1024** joined by a binding SHA3-256
+  combiner (both ciphertexts and both public keys enter the secret), and a
+  composite **Ed448 + ML-DSA-87** signature that only verifies if both
+  halves do; AES-256-GCM and SHA-384 as before. Breaking either half alone
+  breaks nothing. OpenMLS's closed suite list is patched in a vendored
+  `openmls_traits` (decision C1; every change in
+  `Rust/vendor/VENDORED.md`); the crypto is the project's own, on the
+  primitives the core already uses. Groups made before rc.27 (PQ-only)
+  keep working but take no new members -- create a new group to add
+  people; Termux \`/group members\` shows which suite a group uses. Sizes
+  grow by 2-3 % (a self-update in a 4-member group is 22.3 KB).
+- **Adaptive room speed.** Group pieces go out fast (10 at once, then 4 a
+  second) instead of always at the stock-Prosody pace. Each piece is held
+  until the room echoes it back. When the server bounces one
+  (mod_muc_limits), that room slows to the old pace for 5 minutes (doubling
+  per further bounce, at most an hour) and everything not yet echoed goes
+  again; a piece not echoed within 20 s goes again too, at most 3 times.
+  Repeats are harmless (MLS drops a replay and a stale commit). The Termux
+  client says it once a minute, not per piece.
+- **M2: one MLS signing key per group, replaced at every rekey**
+  (MLS_SECURITY_HARDENING.md §1, decision D1 "rotate only"). A member can no
+  longer be linked across groups by key, and each key signs only until the
+  next rekey; the old private key is dropped. The rotation is signed with
+  the old key, so a member verified over SMP **stays verified** across it;
+  a new leaf under an old name (removed, then someone added as them) is
+  not. The core now reports who made each commit.
+- **The inviter's fingerprint now travels with the Welcome** as well as the
+  invite (both over the same OTRv4+ session), so a rekey between the two no
+  longer fails the join. An older inviter that sends none is checked
+  against the invite as before.
+- **M3: members away for 72 hours are removed** (decision U1,
+  \`OTRV4PLUS_MLS_IDLE_REMOVE_HOURS\`, 0 = off). Every online member now
+  rekeys at least every 30 minutes even when silent (that is also how the
+  others know it is there); a member whose key nobody has seen refreshed
+  for 72 h is removed by the next member that notices, and is told to be
+  re-invited. Nothing is judged in the first 10 minutes after a
+  (re)connect, while missed commits arrive.
+- **Group bookkeeping survives a restart**: who was verified over SMP,
+  invitations in flight, a commit of ours still waiting for the room, and
+  key-refresh times are sealed inside the MLS state (AES-256-GCM, bound to
+  the account). Previously a restart forgot them.
+- A KeyPackage that arrives while one of our commits is out is added once
+  it lands, instead of being refused.
+
 ## Android 0.7.0-experimental.rc.26 — 2026-10-03 — MLS hardening, step M1 (core 0.11.0)
 
 The owner's MLS + audio hardening specification is audited, point by point,

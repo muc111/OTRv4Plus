@@ -33,6 +33,7 @@ path = [
     "PROSODY_USER_DISCOVERY.md",
     "MLS_FEASIBILITY.md",
     "MLS_SECURITY_HARDENING.md",
+    "Rust/vendor/VENDORED.md",
     "RUST_AUTHORITY_AUDIT.md",
     "ANDROID_PHASE2_REPORT.md",
     "ANDROID_STORAGE_AUDIT.md",
@@ -113,6 +114,15 @@ path = ["LICENSE", "LICENSE-COMMERCIAL.md", "CLA.md", "CONTRACTOR-IP.md", "NOTIC
 precedence = "override"
 SPDX-FileCopyrightText = "2025-2026 muc111"
 SPDX-License-Identifier = "LicenseRef-OTRv4Plus-Legal"
+
+# Vendored OpenMLS crates (MIT), patched for the hybrid suite: see
+# Rust/vendor/VENDORED.md for every change.
+[[annotations]]
+path = ["Rust/vendor/openmls_traits/**", "Rust/vendor/openmls_rust_crypto/**",
+        "Rust/vendor/patches/**"]
+precedence = "override"
+SPDX-FileCopyrightText = "OpenMLS Authors"
+SPDX-License-Identifier = "MIT"
 
 # Third-party material: its own terms.
 [[annotations]]

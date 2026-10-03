@@ -236,3 +236,13 @@ hex      = "0.4"
 # build does not warn about the fuzz-only helper in smp.rs.
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(fuzzing)'] }
+
+# OTRv4Plus PATCH (MLS_SECURITY_HARDENING.md §2, decision C1): OpenMLS's
+# ciphersuite, KEM and signature-scheme lists are closed enums. The vendored
+# openmls_traits adds private-use code points for the hybrid suite
+# MLS_256_X448MLKEM1024_AES256GCM_SHA384_ED448MLDSA87 (0xF0A1), its KEM
+# X448+ML-KEM-1024 (0xF0A1) and composite signature Ed448+ML-DSA-87 (0xFEA1),
+# and nothing else; vendor/VENDORED.md lists every change. The crypto itself
+# is ours (mls/src/hpke.rs, mls/src/provider.rs).
+[patch.crates-io]
+openmls_traits = { path = "vendor/openmls_traits" }

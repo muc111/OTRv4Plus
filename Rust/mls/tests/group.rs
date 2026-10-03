@@ -5,7 +5,14 @@
 
 use openmls::prelude::{tls_codec::*, *};
 use openmls_traits::{crypto::OpenMlsCrypto, signatures::Signer, OpenMlsProvider};
+use otrv4_mls::provider::{COMPOSITE, LEGACY_CIPHERSUITE};
 use otrv4_mls::{CoreProvider, SignatureKeyPair, CIPHERSUITE};
+
+/// The hybrid suite is a private code point, outside OpenMLS's default
+/// capabilities: every leaf must declare it (as MlsClient does).
+fn caps() -> Capabilities {
+    Capabilities::new(None, Some(&[CIPHERSUITE, LEGACY_CIPHERSUITE]), None, None, None)
+}
 
 struct Member {
     provider: CoreProvider,
@@ -25,6 +32,7 @@ impl Member {
 
     fn key_package(&self) -> KeyPackage {
         KeyPackage::builder()
+            .leaf_node_capabilities(caps())
             .build(CIPHERSUITE, &self.provider, &self.signer, self.credential.clone())
             .expect("key package")
             .key_package()
@@ -35,6 +43,7 @@ impl Member {
 fn create_config() -> MlsGroupCreateConfig {
     MlsGroupCreateConfig::builder()
         .ciphersuite(CIPHERSUITE)
+        .capabilities(caps())
         .use_ratchet_tree_extension(true)
         .build()
 }
@@ -158,13 +167,21 @@ fn a_tampered_message_is_rejected() {
 }
 
 #[test]
-fn only_the_pq_suite_is_served() {
+fn only_the_two_suites_are_served() {
     let p = CoreProvider::default();
-    assert_eq!(p.crypto().supported_ciphersuites(), vec![CIPHERSUITE]);
+    assert_eq!(p.crypto().supported_ciphersuites(), vec![CIPHERSUITE, LEGACY_CIPHERSUITE]);
+    assert_eq!(u16::from(CIPHERSUITE), 0xF0A1);
+    assert_eq!(CIPHERSUITE.hpke_kem_algorithm(), HpkeKemType::X448MlKem1024);
+    assert_eq!(CIPHERSUITE.signature_algorithm(), COMPOSITE);
+    assert_eq!(CIPHERSUITE.aead_algorithm(), AeadType::Aes256Gcm);
+    assert_eq!(CIPHERSUITE.hash_algorithm(), HashType::Sha2_384);
+    assert_eq!(Ciphersuite::try_from(0xF0A1u16).unwrap(), CIPHERSUITE);
     assert!(p.crypto().supports(Ciphersuite::MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519).is_err());
     assert!(p.crypto().supports(Ciphersuite::MLS_256_MLKEM1024_AES256GCM_SHA512_MLDSA87).is_err());
+    assert!(p.crypto().supports(Ciphersuite::MLS_256_DHKEMX448_AES256GCM_SHA512_Ed448).is_err());
     assert!(p.crypto().hash(HashType::Sha2_256, b"x").is_err());
     assert!(p.crypto().signature_key_gen(SignatureScheme::ED25519).is_err());
+    assert!(p.crypto().signature_key_gen(SignatureScheme::ED448).is_err());
 
     // A group cannot even be created on another suite.
     let alice = Member::new("alice");
@@ -175,14 +192,45 @@ fn only_the_pq_suite_is_served() {
 }
 
 #[test]
-fn signer_uses_ml_dsa_87() {
+fn signer_is_composite_ed448_ml_dsa_87() {
     let s = SignatureKeyPair::generate();
-    assert_eq!(s.signature_scheme(), SignatureScheme::MLDSA87);
-    assert_eq!(s.public().len(), otrv4_mls::provider::MLDSA87_PUBLIC_KEY_BYTES);
+    assert_eq!(s.signature_scheme(), COMPOSITE);
+    assert_eq!(s.public().len(), otrv4_mls::provider::COMPOSITE_PUBLIC_KEY_BYTES);
     let sig = s.sign(b"payload").unwrap();
-    assert_eq!(sig.len(), otrv4_mls::provider::MLDSA87_SIGNATURE_BYTES);
+    assert_eq!(sig.len(), otrv4_mls::provider::COMPOSITE_SIGNATURE_BYTES);
     let crypto = otrv4_mls::CoreCrypto;
-    crypto.verify_signature(SignatureScheme::MLDSA87, b"payload", s.public(), &sig).unwrap();
-    assert!(crypto.verify_signature(SignatureScheme::MLDSA87, b"payloaD", s.public(), &sig).is_err());
+    crypto.verify_signature(COMPOSITE, b"payload", s.public(), &sig).unwrap();
+    assert!(crypto.verify_signature(COMPOSITE, b"payloaD", s.public(), &sig).is_err());
     assert_eq!(format!("{s:?}"), "SignatureKeyPair { .. }", "Debug never prints key bytes");
+}
+
+#[test]
+fn a_group_of_the_earlier_suite_keeps_working() {
+    // Made as rc.27 and earlier made them: ML-KEM-1024 / ML-DSA-87 only.
+    fn legacy(name: &'static str) -> Member {
+        let signer = SignatureKeyPair::generate_for(SignatureScheme::MLDSA87).unwrap();
+        let credential = CredentialWithKey {
+            credential: BasicCredential::new(name.as_bytes().to_vec()).into(),
+            signature_key: signer.public().to_vec().into(),
+        };
+        Member { provider: CoreProvider::default(), signer, credential }
+    }
+    let alice = legacy("alice");
+    let bob = legacy("bob");
+    let config = MlsGroupCreateConfig::builder()
+        .ciphersuite(LEGACY_CIPHERSUITE)
+        .use_ratchet_tree_extension(true)
+        .build();
+    let mut a = MlsGroup::new(&alice.provider, &alice.signer, &config, alice.credential.clone()).unwrap();
+    let kp = KeyPackage::builder()
+        .build(LEGACY_CIPHERSUITE, &bob.provider, &bob.signer, bob.credential.clone())
+        .unwrap().key_package().clone();
+    let (_, welcome, _) = a.add_members(&alice.provider, &alice.signer, &[kp]).unwrap();
+    a.merge_pending_commit(&alice.provider).unwrap();
+    let mut b = join(&bob, &welcome);
+    let m = a.create_message(&alice.provider, &alice.signer, b"still readable").unwrap();
+    assert_eq!(receive(&mut b, &bob.provider, &m).unwrap(), b"still readable");
+    // A hybrid KeyPackage cannot be added to it.
+    let carol = Member::new("carol");
+    assert!(a.add_members(&alice.provider, &alice.signer, &[carol.key_package()]).is_err());
 }
