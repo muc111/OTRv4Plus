@@ -40,6 +40,9 @@ object GroupText {
         "commit_lost" -> "A group change in ${event.room} crossed with another " +
             "member's and was dropped. Try it again."
         "invite_declined" -> "${event.detail} declined the invitation to ${event.room}."
+        "idle_removed" -> "Removed from ${event.room} after 72 hours without a key " +
+            "update (their device was away): ${event.detail}. Invite them again " +
+            "over OTRv4+ to bring them back."
         "refused" -> refusal(event.detail, event.room)
         else -> null
     }

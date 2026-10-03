@@ -1,6 +1,22 @@
 // SPDX-License-Identifier: AGPL-3.0-only OR LicenseRef-OTRv4Plus-Commercial
 // Copyright (C) 2025-2026 muc111
-//! One user's MLS state: identity, signing key, groups, storage.
+//! One user's MLS state: identity, signing keys, groups, storage.
+//!
+//! SIGNING KEYS: ONE PER GROUP, ROTATED
+//! ====================================
+//! MLS signs every message with the sender leaf's signature key, and a
+//! signature is evidence anyone can check (MLS_SECURITY_HARDENING.md §1). To
+//! keep that evidence as narrow as RFC 9420 allows:
+//!   * every group gets its own ML-DSA-87 key -- made for the KeyPackage that
+//!     brought us in, or when we created the group -- so a member cannot be
+//!     linked across groups by key;
+//!   * every self-update replaces it (`self_update_with_new_signer`), so a
+//!     key signs only until our next rekey; the old private key is dropped
+//!     (zeroized) once the new one is in the group;
+//!   * forgetting a group drops its key.
+//! A rotation is authenticated by the OLD key (the commit is signed with it),
+//! so a member that had bound our old key over OTRv4+ carries the binding to
+//! the new one: `Event::Commit::rekeyed`.
 //!
 //! This is the whole security surface of OTRv4Plus group chat. Callers --
 //! the Python transport, via `otrv4_core` -- hand in wire bytes and a group
@@ -37,29 +53,70 @@ use crate::provider::{CoreProvider, SignatureKeyPair, CIPHERSUITE};
 
 /// Sealed-state header: magic, then format version.
 const STATE_MAGIC: &[u8; 4] = b"OMLS";
-const STATE_VERSION: u8 = 1;
+const STATE_VERSION: u8 = 2;
+/// The format before per-group signing keys; still opened (and migrated).
+const STATE_VERSION_1: u8 = 1;
+/// KeyPackages we made and nobody has used yet: each holds its own key.
+/// Older ones are forgotten (an invitation that old has expired anyway).
+const MAX_KP_SIGNERS: usize = 16;
+/// The caller's own state sealed alongside ours (bindings, pending work).
+pub const MAX_APP_DATA: usize = 1 << 20;
 const STATE_KDF_INFO: &[u8] = b"OTRv4Plus MLS sealed state v1";
 /// Upper bound on a sealed blob we will try to open (64 MiB).
 const STATE_MAX: usize = 64 << 20;
 
+type SignerOut<'a> = (&'a serde_bytes::Bytes, &'a serde_bytes::Bytes);
+type SignerIn = (serde_bytes::ByteBuf, serde_bytes::ByteBuf);
+
 #[derive(serde::Serialize)]
 struct StateOut<'a> {
     identity: &'a serde_bytes::Bytes,
-    sig_pub: &'a serde_bytes::Bytes,
-    sig_sk: &'a serde_bytes::Bytes,
     groups: Vec<&'a serde_bytes::Bytes>,
-    pending: Vec<(&'a serde_bytes::Bytes, &'a serde_bytes::Bytes, Option<&'a serde_bytes::Bytes>)>,
+    /// (group, its signing key public, private)
+    signers: Vec<(&'a serde_bytes::Bytes, &'a serde_bytes::Bytes, &'a serde_bytes::Bytes)>,
+    kp_signers: Vec<SignerOut<'a>>,
+    /// (group, commit, welcome, the key that commit rotates to)
+    #[allow(clippy::type_complexity)]
+    pending: Vec<(&'a serde_bytes::Bytes, &'a serde_bytes::Bytes,
+                  Option<&'a serde_bytes::Bytes>, Option<SignerOut<'a>>)>,
     storage: &'a serde_bytes::Bytes,
+    app_data: &'a serde_bytes::Bytes,
 }
 
 #[derive(serde::Deserialize)]
 struct StateIn {
+    identity: serde_bytes::ByteBuf,
+    groups: Vec<serde_bytes::ByteBuf>,
+    signers: Vec<(serde_bytes::ByteBuf, serde_bytes::ByteBuf, serde_bytes::ByteBuf)>,
+    kp_signers: Vec<SignerIn>,
+    #[allow(clippy::type_complexity)]
+    pending: Vec<(serde_bytes::ByteBuf, serde_bytes::ByteBuf, Option<serde_bytes::ByteBuf>,
+                  Option<SignerIn>)>,
+    storage: serde_bytes::ByteBuf,
+    app_data: serde_bytes::ByteBuf,
+}
+
+/// Version 1: one signing key for the whole client.
+#[derive(serde::Deserialize)]
+struct StateInV1 {
     identity: serde_bytes::ByteBuf,
     sig_pub: serde_bytes::ByteBuf,
     sig_sk: serde_bytes::ByteBuf,
     groups: Vec<serde_bytes::ByteBuf>,
     pending: Vec<(serde_bytes::ByteBuf, serde_bytes::ByteBuf, Option<serde_bytes::ByteBuf>)>,
     storage: serde_bytes::ByteBuf,
+}
+
+fn signer_out(s: &SignatureKeyPair) -> SignerOut<'_> {
+    (serde_bytes::Bytes::new(s.public()), serde_bytes::Bytes::new(s.secret()))
+}
+
+fn signer_from(public: serde_bytes::ByteBuf, secret: serde_bytes::ByteBuf)
+    -> Result<SignatureKeyPair>
+{
+    let secret = Zeroizing::new(secret.into_vec());
+    SignatureKeyPair::from_parts(public.into_vec(), secret)
+        .ok_or(MlsError::Refused("sealed MLS state has a bad signing key"))
 }
 
 /// The sealing key for MLS state, derived from the caller's data-encryption
@@ -117,8 +174,16 @@ pub enum Event {
     Application { sender: Vec<u8>, plaintext: Zeroizing<Vec<u8>> },
     /// A commit moved the group to `epoch`. `welcome` is set when it was our
     /// own add-commit that won: the caller now delivers it to the invitees.
+    ///
+    /// `committer` is the identity of the member whose commit it was (ours
+    /// when `ours`). `rekeyed` lists members whose signature key this commit
+    /// replaced by their own update -- authenticated by their old key -- as
+    /// (identity, old fingerprint, new fingerprint). A leaf replaced any
+    /// other way (removed, then someone added under the same name) is never
+    /// listed: that is a new member, not a rotation.
     Commit { epoch: u64, ours: bool, welcome: Option<Vec<u8>>, removed_us: bool,
-             dropped_ours: bool },
+             dropped_ours: bool, committer: Vec<u8>,
+             rekeyed: Vec<(Vec<u8>, Vec<u8>, Vec<u8>)> },
     /// A standalone proposal was queued (not used by this client, accepted).
     Proposal,
 }
@@ -126,15 +191,20 @@ pub enum Event {
 struct Pending {
     commit: Vec<u8>,
     welcome: Option<Vec<u8>>,
+    /// A self-update's new signing key: ours once the commit lands.
+    new_signer: Option<SignatureKeyPair>,
 }
 
 pub struct MlsClient {
     identity: Vec<u8>,
     provider: CoreProvider,
-    signer: SignatureKeyPair,
-    credential: CredentialWithKey,
+    /// group -> our leaf's signing key in it.
+    signers: HashMap<Vec<u8>, SignatureKeyPair>,
+    /// Keys of KeyPackages not yet used, oldest first.
+    kp_signers: Vec<SignatureKeyPair>,
     groups: HashMap<Vec<u8>, MlsGroup>,
     pending: HashMap<Vec<u8>, Pending>,
+    app_data: Zeroizing<Vec<u8>>,
     wiped: bool,
 }
 
@@ -158,6 +228,13 @@ fn out_bytes(msg: &MlsMessageOut) -> Result<Vec<u8>> {
     msg.to_bytes().map_err(|_| MlsError::Failed("serialise"))
 }
 
+fn credential_for(identity: &[u8], signer: &SignatureKeyPair) -> CredentialWithKey {
+    CredentialWithKey {
+        credential: BasicCredential::new(identity.to_vec()).into(),
+        signature_key: signer.public().to_vec().into(),
+    }
+}
+
 fn identity_of(credential: &Credential) -> Vec<u8> {
     BasicCredential::try_from(credential.clone())
         .map(|c| c.identity().to_vec())
@@ -166,20 +243,17 @@ fn identity_of(credential: &Credential) -> Vec<u8> {
 
 impl MlsClient {
     /// A fresh MLS identity: `identity` is what other members see (the bare
-    /// JID). The ML-DSA-87 signing key is generated here and never leaves.
+    /// JID). Signing keys (ML-DSA-87, one per group) are generated here and
+    /// never leave.
     pub fn new(identity: &[u8]) -> Self {
-        let signer = SignatureKeyPair::generate();
-        let credential = CredentialWithKey {
-            credential: BasicCredential::new(identity.to_vec()).into(),
-            signature_key: signer.public().to_vec().into(),
-        };
         Self {
             identity: identity.to_vec(),
             provider: CoreProvider::default(),
-            signer,
-            credential,
+            signers: HashMap::new(),
+            kp_signers: Vec::new(),
             groups: HashMap::new(),
             pending: HashMap::new(),
+            app_data: Zeroizing::new(Vec::new()),
             wiped: false,
         }
     }
@@ -195,15 +269,34 @@ impl MlsClient {
 
     pub fn identity(&self) -> &[u8] { &self.identity }
 
+    /// Our group and our signing key in it, together (disjoint borrows).
+    fn group_and_signer(&mut self, group_id: &[u8])
+        -> Result<(&CoreProvider, &SignatureKeyPair, &mut MlsGroup)>
+    {
+        self.live()?;
+        let group = self.groups.get_mut(group_id).ok_or(MlsError::NoSuchGroup)?;
+        let signer = self.signers.get(group_id).ok_or(MlsError::Failed("no signing key"))?;
+        Ok((&self.provider, signer, group))
+    }
+
     /// A KeyPackage (public: lets someone add us to a group), as MLS wire
-    /// bytes. Its private half stays in this client's storage.
+    /// bytes. It carries a signing key of its own, which becomes our key in
+    /// the group it brings us into. Private halves stay in this client.
     pub fn key_package(&mut self) -> Result<Vec<u8>> {
         self.live()?;
+        let signer = SignatureKeyPair::generate();
         let bundle = KeyPackage::builder()
-            .build(CIPHERSUITE, &self.provider, &self.signer, self.credential.clone())
+            .build(CIPHERSUITE, &self.provider, &signer,
+                   credential_for(&self.identity, &signer))
             .map_err(|_| MlsError::Failed("key package"))?;
         let msg: MlsMessageOut = bundle.key_package().clone().into();
-        out_bytes(&msg)
+        let out = out_bytes(&msg)?;
+        self.kp_signers.push(signer);
+        if self.kp_signers.len() > MAX_KP_SIGNERS {
+            let excess = self.kp_signers.len() - MAX_KP_SIGNERS;
+            self.kp_signers.drain(..excess);       // dropped: zeroized
+        }
+        Ok(out)
     }
 
     pub fn create_group(&mut self, group_id: &[u8]) -> Result<()> {
@@ -211,11 +304,13 @@ impl MlsClient {
         if self.groups.contains_key(group_id) {
             return Err(MlsError::GroupExists);
         }
+        let signer = SignatureKeyPair::generate();
         let group = MlsGroup::new_with_group_id(
-            &self.provider, &self.signer, &create_config(),
-            GroupId::from_slice(group_id), self.credential.clone(),
+            &self.provider, &signer, &create_config(),
+            GroupId::from_slice(group_id), credential_for(&self.identity, &signer),
         ).map_err(|_| MlsError::Failed("create group"))?;
         self.groups.insert(group_id.to_vec(), group);
+        self.signers.insert(group_id.to_vec(), signer);
         Ok(())
     }
 
@@ -246,10 +341,11 @@ impl MlsClient {
         self.pending.contains_key(group_id)
     }
 
-    fn hold(&mut self, group_id: &[u8], commit: Vec<u8>, welcome: Option<Vec<u8>>)
-        -> Result<Vec<u8>>
+    fn hold(&mut self, group_id: &[u8], commit: Vec<u8>, welcome: Option<Vec<u8>>,
+            new_signer: Option<SignatureKeyPair>) -> Result<Vec<u8>>
     {
-        self.pending.insert(group_id.to_vec(), Pending { commit: commit.clone(), welcome });
+        self.pending.insert(group_id.to_vec(),
+                            Pending { commit: commit.clone(), welcome, new_signer });
         Ok(commit)
     }
 
@@ -278,20 +374,18 @@ impl MlsClient {
             }
             kps.push(kp);
         }
-        let (provider, signer) = (&self.provider, &self.signer);
-        let group = self.groups.get_mut(group_id).ok_or(MlsError::NoSuchGroup)?;
+        let (provider, signer, group) = self.group_and_signer(group_id)?;
         let (commit, welcome, _) = group.add_members(provider, signer, &kps)
             .map_err(|_| MlsError::Failed("add members"))?;
         let (c, w) = (out_bytes(&commit)?, out_bytes(&welcome)?);
-        self.hold(group_id, c, Some(w))
+        self.hold(group_id, c, Some(w), None)
     }
 
     /// Commit removing the members with these identities.
     pub fn remove_members(&mut self, group_id: &[u8], identities: &[Vec<u8>]) -> Result<Vec<u8>> {
         self.live()?;
         self.refuse_if_pending(group_id)?;
-        let (provider, signer) = (&self.provider, &self.signer);
-        let group = self.groups.get_mut(group_id).ok_or(MlsError::NoSuchGroup)?;
+        let (provider, signer, group) = self.group_and_signer(group_id)?;
         let mut leaves = Vec::new();
         for id in identities {
             let leaf = group.members()
@@ -302,20 +396,30 @@ impl MlsClient {
         let (commit, _, _) = group.remove_members(provider, signer, &leaves)
             .map_err(|_| MlsError::Failed("remove members"))?;
         let c = out_bytes(&commit)?;
-        self.hold(group_id, c, None)
+        self.hold(group_id, c, None, None)
     }
 
-    /// Commit a fresh leaf key for ourselves (post-compromise security).
+    /// Commit a fresh leaf for ourselves (post-compromise security): new
+    /// encryption keys along the path AND a new signing key. The commit is
+    /// signed with the old key, which authenticates the new one to every
+    /// member; the old key is dropped when the commit lands.
     pub fn self_update(&mut self, group_id: &[u8]) -> Result<Vec<u8>> {
         self.live()?;
         self.refuse_if_pending(group_id)?;
-        let (provider, signer) = (&self.provider, &self.signer);
-        let group = self.groups.get_mut(group_id).ok_or(MlsError::NoSuchGroup)?;
-        let (commit, _, _) = group.self_update(provider, signer, LeafNodeParameters::default())
+        let identity = self.identity.clone();
+        let new_signer = SignatureKeyPair::generate();
+        let (provider, signer, group) = self.group_and_signer(group_id)?;
+        let bundle = NewSignerBundle {
+            signer: &new_signer,
+            credential_with_key: credential_for(&identity, &new_signer),
+        };
+        let (commit, _, _) = group
+            .self_update_with_new_signer(provider, signer, bundle,
+                                         LeafNodeParameters::default())
             .map_err(|_| MlsError::Failed("self update"))?
             .into_contents();
         let c = out_bytes(&commit)?;
-        self.hold(group_id, c, None)
+        self.hold(group_id, c, None, Some(new_signer))
     }
 
     /// Join from a Welcome (MLS wire bytes). Returns the group id.
@@ -337,7 +441,17 @@ impl MlsClient {
         if self.groups.contains_key(&id) {
             return Err(MlsError::GroupExists);
         }
+        // Our leaf carries the key of the KeyPackage it was made from.
+        let ours = group.own_leaf_node().map(|l| l.signature_key().as_slice().to_vec());
+        let at = ours.and_then(|pk| self.kp_signers.iter().position(|s| s.public() == pk));
+        let Some(at) = at else {
+            let mut group = group;
+            let _ = group.delete(self.provider.storage());
+            return Err(MlsError::Refused("welcome for a key package we no longer hold"));
+        };
+        let signer = self.kp_signers.remove(at);
         self.groups.insert(id.clone(), group);
+        self.signers.insert(id.clone(), signer);
         Ok(id)
     }
 
@@ -346,8 +460,7 @@ impl MlsClient {
     pub fn encrypt(&mut self, group_id: &[u8], plaintext: &[u8]) -> Result<Vec<u8>> {
         self.live()?;
         self.refuse_if_pending(group_id)?;
-        let (provider, signer) = (&self.provider, &self.signer);
-        let group = self.groups.get_mut(group_id).ok_or(MlsError::NoSuchGroup)?;
+        let (provider, signer, group) = self.group_and_signer(group_id)?;
         let msg = group.create_message(provider, signer, plaintext)
             .map_err(|_| MlsError::Failed("encrypt"))?;
         out_bytes(&msg)
@@ -367,9 +480,19 @@ impl MlsClient {
                 let group = self.groups.get_mut(group_id).expect("present");
                 group.merge_pending_commit(provider)
                     .map_err(|_| MlsError::Failed("merge own commit"))?;
-                return Ok(Event::Commit { epoch: group.epoch().as_u64(), ours: true,
-                                          welcome: p.welcome, removed_us: false,
-                                          dropped_ours: false });
+                let epoch = group.epoch().as_u64();
+                let mut rekeyed = Vec::new();
+                if let Some(new_signer) = p.new_signer {
+                    // The new key is in the group: the old one goes (zeroized).
+                    let old = self.signers.insert(group_id.to_vec(), new_signer);
+                    if let (Some(old), Some(new)) = (old, self.signers.get(group_id)) {
+                        rekeyed.push((self.identity.clone(), fingerprint(old.public()),
+                                      fingerprint(new.public())));
+                    }
+                }
+                return Ok(Event::Commit { epoch, ours: true, welcome: p.welcome,
+                                          removed_us: false, dropped_ours: false,
+                                          committer: self.identity.clone(), rekeyed });
             }
         }
 
@@ -383,12 +506,45 @@ impl MlsClient {
         let processed = group.process_message(provider, protocol)
             .map_err(|_| MlsError::Refused("did not authenticate, replayed, or wrong epoch"))?;
         let sender = identity_of(processed.credential());
+        let sender_leaf = match processed.sender() {
+            Sender::Member(index) => Some(*index),
+            _ => None,
+        };
         match processed.into_content() {
             ProcessedMessageContent::ApplicationMessage(m) => {
                 Ok(Event::Application { sender, plaintext: Zeroizing::new(m.into_bytes()) })
             }
             ProcessedMessageContent::StagedCommitMessage(staged) => {
                 let removed_us = staged.self_removed();
+                // Signature keys replaced by their owner's own update: the
+                // committer's update path, and Update proposals it carries.
+                let mut updates: Vec<(LeafNodeIndex, Vec<u8>, Vec<u8>)> = Vec::new();
+                if let (Some(leaf), Some(index)) = (staged.update_path_leaf_node(), sender_leaf) {
+                    updates.push((index, identity_of(leaf.credential()),
+                                  leaf.signature_key().as_slice().to_vec()));
+                }
+                for queued in staged.update_proposals() {
+                    if let Sender::Member(index) = queued.sender() {
+                        let leaf = queued.update_proposal().leaf_node();
+                        updates.push((*index, identity_of(leaf.credential()),
+                                      leaf.signature_key().as_slice().to_vec()));
+                    }
+                }
+                let removed: Vec<LeafNodeIndex> =
+                    staged.remove_proposals().map(|r| r.remove_proposal().removed()).collect();
+                let mut rekeyed = Vec::new();
+                for (index, new_identity, new_key) in updates {
+                    if removed.contains(&index) {
+                        continue;
+                    }
+                    let Some(before) = group.member_at(index) else { continue };
+                    if identity_of(&before.credential) == new_identity
+                        && before.signature_key != new_key
+                    {
+                        rekeyed.push((new_identity, fingerprint(&before.signature_key),
+                                      fingerprint(&new_key)));
+                    }
+                }
                 // Someone else's commit came first: ours can never apply.
                 let dropped_ours = self.pending.remove(group_id).is_some();
                 if dropped_ours {
@@ -401,7 +557,8 @@ impl MlsClient {
                 if removed_us {
                     self.forget_group(group_id);
                 }
-                Ok(Event::Commit { epoch, ours: false, welcome: None, removed_us, dropped_ours })
+                Ok(Event::Commit { epoch, ours: false, welcome: None, removed_us, dropped_ours,
+                                   committer: sender, rekeyed })
             }
             ProcessedMessageContent::ProposalMessage(p) => {
                 group.store_pending_proposal(provider.storage(), *p)
@@ -415,6 +572,7 @@ impl MlsClient {
     /// Drop a group and every secret it holds (we left, or were removed).
     pub fn forget_group(&mut self, group_id: &[u8]) {
         self.pending.remove(group_id);
+        self.signers.remove(group_id);           // dropped: zeroized
         if let Some(mut group) = self.groups.remove(group_id) {
             let _ = group.delete(self.provider.storage());
         }
@@ -426,14 +584,34 @@ impl MlsClient {
         self.pending.clear();
         self.groups.clear();          // OpenMLS secrets zeroize on drop
         self.provider.wipe();         // every stored entry, zeroized
-        self.signer = SignatureKeyPair::generate(); // the old key is dropped (wiped)
+        self.signers.clear();         // signing keys zeroize on drop
+        self.kp_signers.clear();
+        self.app_data = Zeroizing::new(Vec::new());
         self.wiped = true;
     }
 
     pub fn is_wiped(&self) -> bool { self.wiped }
 
-    /// Our own MLS fingerprint (SHA-384 of our signature public key).
-    pub fn own_fingerprint(&self) -> Vec<u8> { fingerprint(self.signer.public()) }
+    /// Our MLS fingerprint in a group (SHA-384 of our signature public key
+    /// there). Different in every group, and new after each self-update.
+    pub fn own_fingerprint(&self, group_id: &[u8]) -> Result<Vec<u8>> {
+        self.live()?;
+        self.signers.get(group_id).map(|s| fingerprint(s.public()))
+            .ok_or(MlsError::NoSuchGroup)
+    }
+
+    /// The caller's own state, sealed with ours by `export_sealed` (it is
+    /// opaque here). Bounded by MAX_APP_DATA.
+    pub fn set_app_data(&mut self, data: &[u8]) -> Result<()> {
+        self.live()?;
+        if data.len() > MAX_APP_DATA {
+            return Err(MlsError::Refused("app data too large"));
+        }
+        self.app_data = Zeroizing::new(data.to_vec());
+        Ok(())
+    }
+
+    pub fn app_data(&self) -> &[u8] { &self.app_data }
 
     /// The fingerprint a group holds for the member with this identity.
     ///
@@ -461,25 +639,30 @@ impl MlsClient {
         let storage = self.provider.secure_storage().snapshot()
             .map_err(|_| MlsError::Failed("snapshot"))?;
         let group_ids: Vec<Vec<u8>> = self.group_ids();
-        let pending: Vec<(&[u8], &Pending)> =
-            self.pending.iter().map(|(k, v)| (k.as_slice(), v)).collect();
+        let b = serde_bytes::Bytes::new;
         let state = StateOut {
-            identity: serde_bytes::Bytes::new(&self.identity),
-            sig_pub: serde_bytes::Bytes::new(self.signer.public()),
-            sig_sk: serde_bytes::Bytes::new(self.signer.secret()),
-            groups: group_ids.iter().map(|g| serde_bytes::Bytes::new(g)).collect(),
-            pending: pending.iter().map(|(g, p)| (
-                serde_bytes::Bytes::new(g),
-                serde_bytes::Bytes::new(&p.commit),
-                p.welcome.as_deref().map(serde_bytes::Bytes::new),
+            identity: b(&self.identity),
+            groups: group_ids.iter().map(|g| b(g)).collect(),
+            signers: self.signers.iter()
+                .map(|(g, s)| (b(g), b(s.public()), b(s.secret()))).collect(),
+            kp_signers: self.kp_signers.iter().map(|s| signer_out(s)).collect(),
+            pending: self.pending.iter().map(|(g, p)| (
+                b(g),
+                b(&p.commit),
+                p.welcome.as_deref().map(b),
+                p.new_signer.as_ref().map(|s| signer_out(s)),
             )).collect(),
-            storage: serde_bytes::Bytes::new(&storage),
+            storage: b(&storage),
+            app_data: b(&self.app_data),
         };
-        let need = storage.len() + self.signer.secret().len() + self.signer.public().len()
-            + self.identity.len()
+        let key_bytes = |s: &SignatureKeyPair| s.public().len() + s.secret().len() + 16;
+        let need = storage.len() + self.identity.len() + self.app_data.len()
             + group_ids.iter().map(|g| g.len() + 16).sum::<usize>()
+            + self.signers.iter().map(|(g, s)| g.len() + key_bytes(s)).sum::<usize>()
+            + self.kp_signers.iter().map(key_bytes).sum::<usize>()
             + self.pending.values().map(|p| p.commit.len()
-                + p.welcome.as_ref().map_or(0, |w| w.len()) + 32).sum::<usize>()
+                + p.welcome.as_ref().map_or(0, |w| w.len())
+                + p.new_signer.as_ref().map_or(0, key_bytes) + 32).sum::<usize>()
             + 256;
         let mut plain = Zeroizing::new(Vec::with_capacity(need));
         ciborium::ser::into_writer(&state, &mut *plain).map_err(|_| MlsError::Failed("encode"))?;
@@ -506,28 +689,32 @@ impl MlsClient {
     /// nothing partial is returned.
     pub fn import_sealed(dek: &[u8], context: &[u8], blob: &[u8]) -> Result<Self> {
         if blob.len() > STATE_MAX || blob.len() < 5 + 12 + 16
-            || &blob[..4] != STATE_MAGIC || blob[4] != STATE_VERSION
+            || &blob[..4] != STATE_MAGIC
+            || !(blob[4] == STATE_VERSION || blob[4] == STATE_VERSION_1)
         {
             return Err(MlsError::Refused("not a sealed MLS state this build can open"));
         }
+        let version = blob[4];
         let key = state_key(dek)?;
         let cipher = Aes256Gcm::new_from_slice(&key[..]).map_err(|_| MlsError::Failed("key"))?;
-        let aad = state_aad(context);
+        let mut aad = state_aad(context);
+        aad[4] = version;
         let plain = Zeroizing::new(
             cipher.decrypt(<&Nonce<_>>::from(&blob[5..17]), Payload { msg: &blob[17..], aad: &aad })
                 .map_err(|_| MlsError::Refused("sealed MLS state did not open"))?,
         );
-        let state: StateIn = ciborium::de::from_reader(plain.as_slice())
-            .map_err(|_| MlsError::Refused("sealed MLS state is malformed"))?;
-        let sig_sk = Zeroizing::new(state.sig_sk.into_vec());
-        let storage_bytes = Zeroizing::new(state.storage.into_vec());
-        let signer = SignatureKeyPair::from_parts(state.sig_pub.into_vec(), sig_sk)
-            .ok_or(MlsError::Refused("sealed MLS state has a bad signing key"))?;
-        let identity = state.identity.into_vec();
-        let credential = CredentialWithKey {
-            credential: BasicCredential::new(identity.clone()).into(),
-            signature_key: signer.public().to_vec().into(),
+        let state: StateIn = if version == STATE_VERSION_1 {
+            Self::migrate_v1(&plain)?
+        } else {
+            ciborium::de::from_reader(plain.as_slice())
+                .map_err(|_| MlsError::Refused("sealed MLS state is malformed"))?
         };
+        let storage_bytes = Zeroizing::new(state.storage.into_vec());
+        if state.app_data.len() > MAX_APP_DATA {
+            return Err(MlsError::Refused("sealed MLS state is malformed"));
+        }
+        let app_data = Zeroizing::new(state.app_data.into_vec());
+        let identity = state.identity.into_vec();
         let provider = CoreProvider::default();
         provider.secure_storage().restore(&storage_bytes)
             .map_err(|_| MlsError::Refused("sealed MLS state has bad storage"))?;
@@ -539,16 +726,56 @@ impl MlsClient {
                 .ok_or(MlsError::Refused("sealed MLS group missing"))?;
             groups.insert(gid, group);
         }
+        let mut signers = HashMap::new();
+        for (gid, public, secret) in state.signers {
+            let gid = gid.into_vec();
+            if !groups.contains_key(&gid) {
+                return Err(MlsError::Refused("signing key for an unknown group"));
+            }
+            signers.insert(gid, signer_from(public, secret)?);
+        }
+        if groups.keys().any(|g| !signers.contains_key(g)) {
+            return Err(MlsError::Refused("sealed MLS group has no signing key"));
+        }
+        let mut kp_signers = Vec::new();
+        for (public, secret) in state.kp_signers.into_iter().take(MAX_KP_SIGNERS) {
+            kp_signers.push(signer_from(public, secret)?);
+        }
         let mut pending = HashMap::new();
-        for (gid, commit, welcome) in state.pending {
+        for (gid, commit, welcome, new_signer) in state.pending {
             let gid = gid.into_vec();
             if !groups.contains_key(&gid) {
                 return Err(MlsError::Refused("pending commit for an unknown group"));
             }
+            let new_signer = match new_signer {
+                Some((public, secret)) => Some(signer_from(public, secret)?),
+                None => None,
+            };
             pending.insert(gid, Pending { commit: commit.into_vec(),
-                                          welcome: welcome.map(|w| w.into_vec()) });
+                                          welcome: welcome.map(|w| w.into_vec()),
+                                          new_signer });
         }
-        Ok(Self { identity, provider, signer, credential, groups, pending, wiped: false })
+        Ok(Self { identity, provider, signers, kp_signers, groups, pending, app_data,
+                  wiped: false })
+    }
+
+    /// A version-1 state (one signing key for everything) in today's shape:
+    /// that key becomes every group's key -- the next self-update in each
+    /// group replaces it -- and stays usable for a KeyPackage already sent.
+    fn migrate_v1(plain: &[u8]) -> Result<StateIn> {
+        let old: StateInV1 = ciborium::de::from_reader(plain)
+            .map_err(|_| MlsError::Refused("sealed MLS state is malformed"))?;
+        let key = (old.sig_pub, old.sig_sk);
+        Ok(StateIn {
+            identity: old.identity,
+            signers: old.groups.iter()
+                .map(|g| (g.clone(), key.0.clone(), key.1.clone())).collect(),
+            groups: old.groups,
+            kp_signers: vec![key],
+            pending: old.pending.into_iter().map(|(g, c, w)| (g, c, w, None)).collect(),
+            storage: old.storage,
+            app_data: serde_bytes::ByteBuf::new(),
+        })
     }
 
     /// Entries in storage (tests: proves the wipe emptied it).
@@ -584,6 +811,58 @@ mod storage_tests {
         assert!(a.provider.storage_values_for_test().is_empty());
     }
 
+    /// A state sealed by the previous format (one signing key for the
+    /// client) opens, and that key becomes the group's key.
+    #[test]
+    fn a_version_1_state_is_migrated() {
+        #[derive(serde::Serialize)]
+        struct V1<'a> {
+            identity: &'a serde_bytes::Bytes,
+            sig_pub: &'a serde_bytes::Bytes,
+            sig_sk: &'a serde_bytes::Bytes,
+            groups: Vec<&'a serde_bytes::Bytes>,
+            pending: Vec<(&'a serde_bytes::Bytes, &'a serde_bytes::Bytes,
+                          Option<&'a serde_bytes::Bytes>)>,
+            storage: &'a serde_bytes::Bytes,
+        }
+        let mut a = MlsClient::new(b"alice");
+        let mut b = MlsClient::new(b"bob");
+        a.create_group(b"g").unwrap();
+        let add = a.add_members(b"g", &[b.key_package().unwrap()]).unwrap();
+        let w = match a.process(b"g", &add).unwrap() {
+            Event::Commit { welcome: Some(w), .. } => w,
+            other => panic!("{other:?}"),
+        };
+        b.join(&w).unwrap();
+        let key = a.signers.get(b"g".as_slice()).unwrap();
+        let storage = a.provider.secure_storage().snapshot().unwrap();
+        let bb = serde_bytes::Bytes::new;
+        let v1 = V1 { identity: bb(b"alice"), sig_pub: bb(key.public()),
+                      sig_sk: bb(key.secret()), groups: vec![bb(b"g")], pending: vec![],
+                      storage: bb(&storage) };
+        let mut plain = Vec::new();
+        ciborium::ser::into_writer(&v1, &mut plain).unwrap();
+        let dek = [9u8; 32];
+        let k = state_key(&dek).unwrap();
+        let cipher = Aes256Gcm::new_from_slice(&k[..]).unwrap();
+        let mut aad = state_aad(b"ctx");
+        aad[4] = STATE_VERSION_1;
+        let nonce = [1u8; 12];
+        let ct = cipher.encrypt(<&Nonce<_>>::from(&nonce[..]),
+                                Payload { msg: &plain, aad: &aad }).unwrap();
+        let mut blob = STATE_MAGIC.to_vec();
+        blob.push(STATE_VERSION_1);
+        blob.extend_from_slice(&nonce);
+        blob.extend_from_slice(&ct);
+
+        let mut opened = MlsClient::import_sealed(&dek, b"ctx", &blob).unwrap();
+        assert_eq!(opened.own_fingerprint(b"g").unwrap(), a.own_fingerprint(b"g").unwrap());
+        let m = opened.encrypt(b"g", b"after migration").unwrap();
+        assert!(matches!(b.process(b"g", &m).unwrap(), Event::Application { .. }));
+        // Saved again, it is the current format.
+        assert_eq!(opened.export_sealed(&dek, b"ctx").unwrap()[4], STATE_VERSION);
+    }
+
     /// A STANDALONE proposal (RFC 9420 §12.1), which no OTRv4Plus client
     /// sends -- they commit their proposals inline -- but which a member may
     /// receive. It must authenticate, be queued rather than shown, refuse a
@@ -603,7 +882,7 @@ mod storage_tests {
 
         // Bob proposes a fresh leaf for himself, without committing it.
         let proposal = {
-            let (provider, signer) = (&b.provider, &b.signer);
+            let (provider, signer) = (&b.provider, b.signers.get(b"g".as_slice()).unwrap());
             let group = b.groups.get_mut(b"g".as_slice()).unwrap();
             let (out, _ref) = group
                 .propose_self_update(provider, signer, LeafNodeParameters::default())

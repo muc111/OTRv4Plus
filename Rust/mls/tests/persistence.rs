@@ -151,17 +151,47 @@ fn restoring_a_stale_snapshot_does_not_decrypt_later_epochs() {
 #[test]
 fn fingerprints_bind_a_member_to_the_key_they_hold() {
     let (mut a, b, c) = three();
-    assert_eq!(a.member_fingerprint(GROUP, b"bob@example.i2p").unwrap(), b.own_fingerprint());
-    assert_eq!(a.member_fingerprint(GROUP, b"carol@example.i2p").unwrap(), c.own_fingerprint());
-    assert_ne!(b.own_fingerprint(), c.own_fingerprint());
-    assert_eq!(a.own_fingerprint().len(), 48);
+    assert_eq!(a.member_fingerprint(GROUP, b"bob@example.i2p").unwrap(),
+               b.own_fingerprint(GROUP).unwrap());
+    assert_eq!(a.member_fingerprint(GROUP, b"carol@example.i2p").unwrap(),
+               c.own_fingerprint(GROUP).unwrap());
+    assert_ne!(b.own_fingerprint(GROUP).unwrap(), c.own_fingerprint(GROUP).unwrap());
+    assert_eq!(a.own_fingerprint(GROUP).unwrap().len(), 48);
+    assert_eq!(a.own_fingerprint(b"no such group"), Err(MlsError::NoSuchGroup));
     assert_eq!(a.member_fingerprint(GROUP, b"nobody"), Err(MlsError::NoSuchMember));
-    // A reload keeps the same signing identity.
+    // A reload keeps the same signing key.
     let r = reload(&a);
-    assert_eq!(r.own_fingerprint(), a.own_fingerprint());
+    assert_eq!(r.own_fingerprint(GROUP).unwrap(), a.own_fingerprint(GROUP).unwrap());
     // A fresh client with the same name is a different key: a name alone
     // proves nothing, which is why the fingerprint is what gets verified.
-    let impostor = MlsClient::new(b"bob@example.i2p");
-    assert_ne!(impostor.own_fingerprint(), b.own_fingerprint());
+    let mut impostor = MlsClient::new(b"bob@example.i2p");
+    impostor.create_group(GROUP).unwrap();
+    assert_ne!(impostor.own_fingerprint(GROUP).unwrap(), b.own_fingerprint(GROUP).unwrap());
     assert_eq!(fingerprint(b"x").len(), 48);
+}
+
+#[test]
+fn the_callers_own_data_is_sealed_with_the_state() {
+    let (mut a, _b, _c) = three();
+    a.set_app_data(b"{\"bound\": {}}").unwrap();
+    let r = reload(&a);
+    assert_eq!(r.app_data(), b"{\"bound\": {}}");
+    let blob = a.export_sealed(&DEK, CTX).unwrap();
+    assert!(!blob.windows(9).any(|w| w == b"\"bound\": "), "app data in the clear");
+    assert!(a.set_app_data(&vec![0u8; otrv4_mls::client::MAX_APP_DATA + 1]).is_err());
+}
+
+#[test]
+fn a_pending_self_update_survives_a_restart_with_its_new_key() {
+    let (mut a, mut b, mut c) = three();
+    let before = a.own_fingerprint(GROUP).unwrap();
+    let commit = a.self_update(GROUP).unwrap();
+    let mut a = reload(&a);
+    assert!(a.has_pending_commit(GROUP));
+    relay(&mut [&mut a, &mut b, &mut c], &commit);
+    let after = a.own_fingerprint(GROUP).unwrap();
+    assert_ne!(before, after);
+    assert_eq!(b.member_fingerprint(GROUP, b"alice@example.i2p").unwrap(), after);
+    let m = a.encrypt(GROUP, b"signed with the new key").unwrap();
+    assert_eq!(text(&b.process(GROUP, &m)), b"signed with the new key");
 }

@@ -8,6 +8,7 @@ simulated OTRv4+ side channel stands in for an encrypted 1:1 session, with
 its SMP state per pair. The MLS is the real Rust core.
 """
 import base64
+import collections
 import os
 import tempfile
 
@@ -44,15 +45,29 @@ class Room:
             i = len(body) - 40
             body = body[:i] + ("A" if body[i] != "A" else "B") + body[i + 1:]
         self.log.append((sender_jid, body))
-        nick = sender_jid.split("@")[0]
-        for jid, m in list(self.occupants.items()):
-            m.groups.on_room_body(ROOM, nick, body, 0.0, own=(jid == sender_jid))
+        self._deliver(sender_jid, body)
+
+    def _deliver(self, sender_jid, body):
+        # Like a real room: one order for everyone. A message posted while
+        # another is being delivered (a member answering a commit at once)
+        # goes out after it, never in the middle.
+        self._queue = getattr(self, "_queue", collections.deque())
+        self._queue.append((sender_jid, body))
+        if getattr(self, "_busy", False):
+            return
+        self._busy = True
+        try:
+            while self._queue:
+                frm, item = self._queue.popleft()
+                nick = frm.split("@")[0]
+                for jid, m in list(self.occupants.items()):
+                    m.groups.on_room_body(ROOM, nick, item, 0.0, own=(jid == frm))
+        finally:
+            self._busy = False
 
     def replay(self, index):
         sender_jid, body = self.log[index]
-        nick = sender_jid.split("@")[0]
-        for jid, m in list(self.occupants.items()):
-            m.groups.on_room_body(ROOM, nick, body, 0.0, own=(jid == sender_jid))
+        self._deliver(sender_jid, body)
 
 
 class World:
@@ -212,6 +227,10 @@ def test_a_welcome_whose_inviter_key_does_not_match_the_invite_is_refused():
     a.groups._outgoing[(ROOM, "bob@x.i2p")] = type(
         "O", (), {"room": ROOM, "at": 1e18})()
     kp = base64.b64encode(bytes(b.groups._need().key_package())).decode()
+    # An older inviter's Welcome carries no fingerprint: the invite's is used.
+    real = w.private
+    w.private = lambda frm, to, body: real(
+        frm, to, body.rsplit("|", 1)[0] if "WELCOME:" in body else body)
     a.groups.on_signal("bob@x.i2p", SIGNAL_PREFIX + "KP:%s|%s" % (ROOM, kp))
     assert not b.groups.is_secure(ROOM)
     assert any(isinstance(e, GroupChanged) and e.detail == "inviter_fingerprint_mismatch"
@@ -592,3 +611,186 @@ class TestRekeyKnobs:
         assert G._env_int("X_KNOB", 50, 1, 100) == 1
         monkeypatch.setenv("X_KNOB", "lots")
         assert G._env_int("X_KNOB", 50, 1, 100) == 50
+
+
+# ── M2: signing keys per group, rotated; bookkeeping survives a restart ──────
+
+def _verified(member, jid):
+    return {m["jid"]: m["verified"] for m in member.groups.members(ROOM)}[jid]
+
+
+class TestSigningKeysRotate:
+    """MLS_SECURITY_HARDENING.md §1 / M2: one signing key per group, a new
+    one at every rekey, and an SMP verification that follows the person
+    across the rotation -- but never across a new leaf under an old name."""
+
+    def test_each_group_has_its_own_fingerprint(self):
+        w, (a, b) = _group(2)
+        other = "other@conference.example.i2p"
+        a.groups.create(other)
+        assert a.groups.own_fingerprint(ROOM) != a.groups.own_fingerprint(other)
+
+    def test_a_rekey_rotates_the_key_and_verification_follows_it(self):
+        w, (a, b, c) = _group(3)
+        before = a.groups.own_fingerprint(ROOM)
+        assert _verified(b, "alice@x.i2p") is True
+        a.groups.rekey(ROOM)
+        after = a.groups.own_fingerprint(ROOM)
+        assert after != before
+        assert {m["jid"]: m["fingerprint"] for m in b.groups.members(ROOM)}[
+            "alice@x.i2p"] == after
+        assert _verified(b, "alice@x.i2p") is True
+        a.groups.send(ROOM, "signed with my new key")
+        assert ("alice@x.i2p", "signed with my new key", True) in b.texts()
+        # Bob's own rotation is followed by Alice.
+        b.groups.rekey(ROOM)
+        assert _verified(a, "bob@x.i2p") is True
+
+    def test_a_new_member_under_an_old_name_is_not_verified(self):
+        w, (a, b, c) = _group(3)
+        assert _verified(a, "carol@x.i2p") is True
+        a.groups.remove(ROOM, "carol@x.i2p")
+        # Someone else now joins as "carol" with another key.
+        imp = w.add("carol@x.i2p")
+        w.pair("bob@x.i2p", "carol@x.i2p", SecurityState.ENCRYPTED)
+        _invite(w, "bob@x.i2p", "carol@x.i2p")
+        assert _verified(a, "carol@x.i2p") is False
+
+    def test_a_rekey_between_invite_and_welcome_still_lets_them_in(self):
+        w, (a, b) = _group(2)
+        c = w.add("carol@x.i2p")
+        w.pair("alice@x.i2p", "carol@x.i2p")
+        c.join_room()
+        a.groups.invite(ROOM, "carol@x.i2p")        # Carol holds our old key
+        a.groups.rekey(ROOM)                        # ... which now rotates
+        c.groups.accept(ROOM)
+        assert c.groups.is_secure(ROOM), c.changes()
+        assert _verified(c, "alice@x.i2p") is True
+        a.groups.send(ROOM, "welcome carol")
+        assert ("alice@x.i2p", "welcome carol", True) in c.texts()
+
+    def test_a_welcome_naming_another_key_is_refused(self):
+        w = World()
+        a, b = w.add("alice@x.i2p"), w.add("bob@x.i2p")
+        w.pair("alice@x.i2p", "bob@x.i2p")
+        a.join_room()
+        a.groups.create(ROOM)
+        b.join_room()
+        a.groups.invite(ROOM, "bob@x.i2p")
+        # The Welcome is relayed with a fingerprint that is not Alice's.
+        real = w.private
+
+        def swap(frm, to, body):
+            if "WELCOME:" in body:
+                body = body.rsplit("|", 1)[0] + "|" + "cd" * 48
+            real(frm, to, body)
+        w.private = swap
+        b.groups.accept(ROOM)
+        assert not b.groups.is_secure(ROOM)
+        assert any(isinstance(e, GroupChanged) and e.detail == "inviter_fingerprint_mismatch"
+                   for e in b.events)
+
+    def test_a_key_package_during_our_pending_commit_is_added_after_it(self):
+        w, (a, b) = _group(2)
+        c = w.add("carol@x.i2p")
+        w.pair("alice@x.i2p", "carol@x.i2p")
+        c.join_room()
+        a.groups.invite(ROOM, "carol@x.i2p")
+        w.room.drop_next = 100                      # the room holds Alice's rekey
+        a.groups.rekey(ROOM)
+        c.groups.accept(ROOM)                       # KP arrives while pending
+        assert not c.groups.is_secure(ROOM)
+        w.room.drop_next = 0
+        a.groups.resend_pending_commit(ROOM)        # the rekey lands
+        assert c.groups.is_secure(ROOM), (a.changes(), c.changes())
+        assert len(b.groups.members(ROOM)) == 3
+
+    def test_verification_and_a_pending_commit_survive_a_restart(self):
+        root = tempfile.mkdtemp()
+        w = World()
+        a = w.add("alice@x.i2p", os.path.join(root, "a"))
+        b = w.add("bob@x.i2p", os.path.join(root, "b"))
+        w.pair("alice@x.i2p", "bob@x.i2p")
+        a.join_room()
+        a.groups.create(ROOM)
+        _invite(w, "alice@x.i2p", "bob@x.i2p")
+        assert _verified(a, "bob@x.i2p") is True
+        w.room.drop_next = 100
+        a.groups.rekey(ROOM)                        # lost with the old stream
+        a2 = Member(w, "alice@x.i2p", os.path.join(root, "a"))
+        w.members["alice@x.i2p"] = a2
+        a2.join_room()
+        assert _verified(a2, "bob@x.i2p") is True
+        w.room.drop_next = 0
+        a2.groups.on_room_rejoined(ROOM)            # re-sent from sealed state
+        assert "commit_resent" in a2.changes()
+        a2.groups.send(ROOM, "after restart and rekey")
+        assert ("alice@x.i2p", "after restart and rekey", True) in b.texts()
+
+
+# ── M3: timed rekey and idle members (72 h) ──────────────────────────────────
+
+class TestMaintenance:
+
+    def _clocked(self, n=3):
+        w, members = _group(n)
+        now = [1_000_000.0]
+        for m in members:
+            m.groups._clock = lambda: now[0]
+            m.groups._settled_from = now[0]
+            for room in m.groups._activity:
+                for ident in m.groups._activity[room]:
+                    m.groups._activity[room][ident] = now[0]
+            for room in m.groups._since_rekey:
+                m.groups._since_rekey[room][1] = now[0]
+        return w, members, now
+
+    def test_a_quiet_member_still_rekeys_on_time(self):
+        w, (a, b, c), now = self._clocked()
+        assert a.groups.maintain() == []
+        now[0] += SecureGroups.AUTO_REKEY_SECONDS + 1
+        before = a.groups.own_fingerprint(ROOM)
+        assert a.groups.maintain() == ["rekey:" + ROOM]
+        assert a.groups.own_fingerprint(ROOM) != before
+
+    def test_a_member_away_for_72_hours_is_removed(self):
+        w, (a, b, c), now = self._clocked()
+        del w.room.occupants["carol@x.i2p"]          # Carol's phone is off
+        for _ in range(int(73 * 3600 // SecureGroups.AUTO_REKEY_SECONDS) + 1):
+            now[0] += SecureGroups.AUTO_REKEY_SECONDS + 1
+            a.groups.maintain()
+            b.groups.maintain()
+        assert sorted(m["jid"] for m in a.groups.members(ROOM)) == [
+            "alice@x.i2p", "bob@x.i2p"]
+        assert sorted(m["jid"] for m in b.groups.members(ROOM)) == [
+            "alice@x.i2p", "bob@x.i2p"]
+        assert "idle_removed" in a.changes() + b.changes()
+        # Those who stayed keep talking.
+        a.groups.send(ROOM, "still here")
+        assert ("alice@x.i2p", "still here", True) in b.texts()
+
+    def test_nobody_is_judged_idle_straight_after_a_reconnect(self):
+        w, (a, b, c), now = self._clocked()
+        now[0] += SecureGroups.IDLE_REMOVE_SECONDS + 10
+        a.groups._since_rekey[ROOM][1] = now[0]       # no rekey due
+        a.groups.on_room_rejoined(ROOM)
+        assert a.groups.maintain() == []
+        now[0] += SecureGroups.IDLE_GRACE_SECONDS + 1
+        a.groups._since_rekey[ROOM][1] = now[0]
+        assert a.groups.maintain() == ["removed:" + ROOM]
+
+    def test_idle_removal_can_be_turned_off(self):
+        w, (a, b, c), now = self._clocked()
+        a.groups.IDLE_REMOVE_SECONDS = 0
+        now[0] += 10 * 86400
+        a.groups._since_rekey[ROOM][1] = now[0]
+        assert a.groups.maintain() == []
+
+    def test_the_knob_is_read_in_hours(self, monkeypatch):
+        import importlib
+        from android_bridge import groups as G
+        assert G.SecureGroups.IDLE_REMOVE_SECONDS == 72 * 3600
+        monkeypatch.setenv("OTRV4PLUS_MLS_IDLE_REMOVE_HOURS", "24")
+        assert G._env_int("OTRV4PLUS_MLS_IDLE_REMOVE_HOURS", 72, 0, 8760) == 24
+        del importlib
+

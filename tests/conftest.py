@@ -248,6 +248,8 @@ def _no_room_pacing(request, monkeypatch):
         yield
         return
     monkeypatch.setattr(_groups.SecureGroups, "ROOM_INTERVAL", 0.0)
+    # No background maintenance timer either: tests call maintain().
+    monkeypatch.setattr(_groups.SecureGroups, "MAINTAIN_SECONDS", 0)
     yield
 
 

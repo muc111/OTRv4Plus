@@ -103,9 +103,24 @@ impl RustMlsClient {
         Ok(PyBytes::new(py, &id))
     }
 
-    fn own_fingerprint<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {
-        let fp = self.with(|c| Ok(c.own_fingerprint()))?;
+    /// Our fingerprint in `group_id`: each group has its own signing key,
+    /// replaced by every self-update.
+    fn own_fingerprint<'py>(&self, py: Python<'py>, group_id: &[u8])
+        -> PyResult<Bound<'py, PyBytes>>
+    {
+        let fp = self.with(|c| c.own_fingerprint(group_id))?;
         Ok(PyBytes::new(py, &fp))
+    }
+
+    /// The caller's own state (bindings, work in progress), sealed with
+    /// this client's by `seal`. Opaque here; at most 1 MiB.
+    fn set_app_data(&self, data: &[u8]) -> PyResult<()> {
+        self.with(|c| c.set_app_data(data))
+    }
+
+    fn app_data<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {
+        let data = self.with(|c| Ok(c.app_data().to_vec()))?;
+        Ok(PyBytes::new(py, &data))
     }
 
     fn member_fingerprint<'py>(&self, py: Python<'py>, group_id: &[u8], identity: &[u8])
@@ -192,7 +207,8 @@ impl RustMlsClient {
     /// Process one room message in room order. Returns a dict:
     ///   {"kind": "application", "sender": bytes, "plaintext": bytes}
     ///   {"kind": "commit", "epoch": int, "ours": bool, "welcome": bytes|None,
-    ///    "removed_us": bool, "dropped_ours": bool}
+    ///    "removed_us": bool, "dropped_ours": bool, "committer": bytes,
+    ///    "rekeyed": [(identity, old fingerprint, new fingerprint), ...]}
     ///   {"kind": "proposal"}
     fn process<'py>(&self, py: Python<'py>, group_id: &[u8], message: &[u8])
         -> PyResult<Bound<'py, PyDict>>
@@ -206,13 +222,19 @@ impl RustMlsClient {
                 d.set_item("sender", PyBytes::new(py, &sender))?;
                 d.set_item("plaintext", PyBytes::new(py, &plaintext))?;
             }
-            Event::Commit { epoch, ours, welcome, removed_us, dropped_ours } => {
+            Event::Commit { epoch, ours, welcome, removed_us, dropped_ours, committer,
+                             rekeyed } => {
                 d.set_item("kind", "commit")?;
                 d.set_item("epoch", epoch)?;
                 d.set_item("ours", ours)?;
                 d.set_item("welcome", welcome.map(|w| PyBytes::new(py, &w)))?;
                 d.set_item("removed_us", removed_us)?;
                 d.set_item("dropped_ours", dropped_ours)?;
+                d.set_item("committer", PyBytes::new(py, &committer))?;
+                let rk: Vec<_> = rekeyed.iter().map(|(who, old, new)| (
+                    PyBytes::new(py, who), PyBytes::new(py, old), PyBytes::new(py, new),
+                )).collect();
+                d.set_item("rekeyed", rk)?;
             }
             Event::Proposal => d.set_item("kind", "proposal")?,
         }
@@ -225,7 +247,7 @@ impl RustMlsClient {
         }
     }
 
-    /// Wipe & Exit: every group, secret and the signing key, destroyed.
+    /// Wipe & Exit: every group, secret and signing key, destroyed.
     fn wipe(&self) {
         let mut c = self.inner.lock().unwrap_or_else(|p| p.into_inner());
         c.wipe();

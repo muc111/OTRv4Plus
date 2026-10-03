@@ -320,6 +320,11 @@ class TermuxGroups:
             p("[group %s] %s%s%s" % (ev.peer[:64], change, detail, epoch))
             if change == "joined":
                 self._flush_prejoin(ev.peer)
+            elif change == "idle_removed":
+                p("[group %s] removed after 72 hours without a key update "
+                  "(device away): %s. Re-invite them over OTRv4+ "
+                  "(/group invite) to bring them back."
+                  % (ev.peer[:64], (ev.detail or "")[:200]))
             elif change == "removed_us":
                 p("[group %s] you were removed: new messages in this group can "
                   "no longer be read here." % ev.peer[:64])

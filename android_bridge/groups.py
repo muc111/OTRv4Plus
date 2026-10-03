@@ -30,7 +30,11 @@ WIRE
 Room body:      ?OTRv4MLS1:<base64 MLS message>       (fragmented if large)
 Over OTRv4+:    ?OTRv4-MLS:INVITE:<room>|<our fingerprint hex>
                 ?OTRv4-MLS:KP:<room>|<base64 KeyPackage>
-                ?OTRv4-MLS:WELCOME:<room>|<base64 Welcome>
+                ?OTRv4-MLS:WELCOME:<room>|<base64 Welcome>|<our fingerprint hex>
+                (the fingerprint as of the Welcome: our signing key is per
+                group and rotates, so it may differ from the INVITE's. Both
+                come over the same OTRv4+ session. Older clients omit it, and
+                the INVITE's is used.)
                 ?OTRv4-MLS:DECLINE:<room>
 
 NO PLAINTEXT FALLBACK
@@ -47,6 +51,7 @@ from __future__ import annotations
 import base64
 import binascii
 import collections
+import json
 import os
 import re
 import threading
@@ -425,6 +430,19 @@ class SecureGroups:
     #: A self-update in a 4-member group is ~22 KB (8 room fragments).
     AUTO_REKEY_MESSAGES = _env_int("OTRV4PLUS_MLS_REKEY_MESSAGES", 50, 1, 100000)
     AUTO_REKEY_SECONDS = _env_int("OTRV4PLUS_MLS_REKEY_SECONDS", 30 * 60, 60, 30 * 86400)
+    #: A member whose leaf has not been refreshed by a commit of theirs for
+    #: this long is removed by the next member that notices (owner decision
+    #: U1: 72 h, MLS_SECURITY_HARDENING.md §4). Online members refresh at
+    #: least every AUTO_REKEY_SECONDS through `maintain`, so only a member
+    #: that has been away this long is affected; they are re-invited over
+    #: OTRv4+ to come back. 0 turns it off.
+    IDLE_REMOVE_SECONDS = 3600 * _env_int("OTRV4PLUS_MLS_IDLE_REMOVE_HOURS", 72, 0, 24 * 365)
+    #: Nothing is judged idle until we have been in the room this long: a
+    #: reconnect first replays the commits we missed.
+    IDLE_GRACE_SECONDS = 600
+    #: How often `maintain` runs by itself (timed rekey, idle removal).
+    #: 0: never by itself (tests call `maintain` directly).
+    MAINTAIN_SECONDS = 300
 
     def __init__(self, *,
                  send_room: Callable[[str, str], None],
@@ -464,6 +482,14 @@ class SecureGroups:
         self._unconfirmed: Dict[str, List[Any]] = {}
         #: room -> [messages sent since our last commit, time of that commit].
         self._since_rekey: Dict[str, List[float]] = {}
+        #: room -> {member identity: when a commit of theirs last refreshed
+        #: their leaf (or they joined)} -- what idle removal judges.
+        self._activity: Dict[str, Dict[str, float]] = {}
+        #: room -> [(peer, KeyPackage, verified)] that arrived while one of our
+        #: commits was pending; added once it settles.
+        self._queued_kps: Dict[str, List[Tuple[str, bytes, bool]]] = {}
+        self._settled_from = 0.0
+        self._maintain_timer: Any = None
         self._pacer = RoomPacer(
             send_room, burst=self.ROOM_BURST, interval=self.ROOM_INTERVAL,
             slow_burst=self.ROOM_SLOW_BURST,
@@ -527,6 +553,9 @@ class SecureGroups:
                 client = core.RustMlsClient(account.encode())
             self._client = client
             self._account = account
+            self._load_app_state()
+            self._settled_from = self._clock()
+        self._arm_maintenance()
 
     def _need(self):
         if self._wiped:
@@ -535,12 +564,97 @@ class SecureGroups:
             raise GroupError("not_ready", "groups are not open for an account")
         return self._client
 
+    # -- our bookkeeping, sealed with the MLS state --------------------------
+    #
+    # Who we bound over OTRv4+, invitations in flight, our commit waiting for
+    # the room, when members last refreshed their leaves. Sealed inside the
+    # MLS state blob (AES-256-GCM, bound to the account), so a restart in the
+    # middle of an invitation or a commit picks up where it was, and a
+    # member verified over SMP is still verified after it.
+
+    _APP_STATE_VERSION = 1
+
+    def _store_app_state(self) -> None:
+        client = self._client
+        if client is None or not hasattr(client, "set_app_data"):
+            return
+        state = {
+            "v": self._APP_STATE_VERSION,
+            "bound": {r: {j: [fp, bool(v)] for j, (fp, v) in m.items()}
+                      for r, m in self._bound.items()},
+            "invites": {r: [i.peer, i.fingerprint, i.at, i.accepted]
+                        for r, i in self._invites.items()},
+            "outgoing": [[r, p, o.at] for (r, p), o in self._outgoing.items()],
+            "awaiting": dict(self._awaiting_welcome),
+            "welcome_for": {r: list(p) for r, p in self._welcome_for.items()},
+            "pending_binding": {r: [[p, bool(v)] for p, v in l]
+                                for r, l in self._pending_binding.items()},
+            "unconfirmed": {r: [_b64e(bytes(e[0])), int(e[1])]
+                            for r, e in self._unconfirmed.items()},
+            "since_rekey": {r: [int(e[0]), float(e[1])]
+                            for r, e in self._since_rekey.items()},
+            "activity": {r: dict(m) for r, m in self._activity.items()},
+        }
+        try:
+            client.set_app_data(json.dumps(state, separators=(",", ":")).encode())
+        except Exception:
+            self._emit(ErrorOccurred(peer=None, code="groups_state_too_large"))
+
+    def _load_app_state(self) -> None:
+        """Our bookkeeping back from the sealed state. It was sealed by us,
+        but is still read field by field: a part that does not parse is
+        dropped, never trusted."""
+        client = self._client
+        if client is None or not hasattr(client, "app_data"):
+            return
+        try:
+            raw = bytes(client.app_data())
+            state = json.loads(raw.decode()) if raw else {}
+        except Exception:
+            state = {}
+        if not isinstance(state, dict) or state.get("v") != self._APP_STATE_VERSION:
+            return
+
+        def section(name):
+            value = state.get(name)
+            return value if isinstance(value, (dict, list)) else {}
+
+        def each(name, fn):
+            items = section(name)
+            for item in (items.items() if isinstance(items, dict) else items):
+                try:
+                    fn(item)
+                except Exception:
+                    pass
+
+        each("bound", lambda kv: self._bound.setdefault(str(kv[0]), {}).update(
+            {str(j): (str(v[0]), bool(v[1])) for j, v in kv[1].items()}))
+        each("invites", lambda kv: self._invites.__setitem__(str(kv[0]), _Invite(
+            peer=str(kv[1][0]), fingerprint=str(kv[1][1]), at=float(kv[1][2]),
+            accepted=bool(kv[1][3]))))
+        each("outgoing", lambda v: self._outgoing.__setitem__(
+            (str(v[0]), str(v[1])), _Outgoing(room=str(v[0]), at=float(v[2]))))
+        each("awaiting", lambda kv: self._awaiting_welcome.__setitem__(
+            str(kv[0]), str(kv[1])))
+        each("welcome_for", lambda kv: self._welcome_for.__setitem__(
+            str(kv[0]), [str(p) for p in kv[1]]))
+        each("pending_binding", lambda kv: self._pending_binding.__setitem__(
+            str(kv[0]), [(str(p), bool(v)) for p, v in kv[1]]))
+        each("unconfirmed", lambda kv: self._unconfirmed.__setitem__(
+            str(kv[0]), [_b64d(str(kv[1][0])), int(kv[1][1])]))
+        each("since_rekey", lambda kv: self._since_rekey.__setitem__(
+            str(kv[0]), [int(kv[1][0]), float(kv[1][1])]))
+        each("activity", lambda kv: self._activity.__setitem__(
+            str(kv[0]), {str(j): float(t) for j, t in kv[1].items()}))
+        self._expire()
+
     def save(self) -> None:
         """Seal the state to disk, atomically. No-op without a state dir."""
         with self._lock:
             state_path, _ = self._paths()
             if not state_path or self._client is None or self._wiped:
                 return
+            self._store_app_state()
             blob = self._client.seal(self._dek, self._account.encode())
             tmp = state_path + ".tmp"
             fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
@@ -576,6 +690,9 @@ class SecureGroups:
                         pass
                 self._client = None
                 self._dek = None
+                self._stop_maintenance()
+                self._activity.clear()
+                self._queued_kps.clear()
                 self._invites.clear()
                 self._outgoing.clear()
                 self._awaiting_welcome.clear()
@@ -615,6 +732,9 @@ class SecureGroups:
             self._reassembler.clear()
             self._unconfirmed.clear()
             self._since_rekey.clear()
+            self._activity.clear()
+            self._queued_kps.clear()
+            self._stop_maintenance()
             self._pacer.close()
 
     @property
@@ -635,8 +755,10 @@ class SecureGroups:
                 return []
             return sorted(g.decode() for g in self._client.group_ids())
 
-    def own_fingerprint(self) -> str:
-        return bytes(self._need().own_fingerprint()).hex()
+    def own_fingerprint(self, room: str) -> str:
+        """Our fingerprint in `room`: every group has its own signing key,
+        replaced by each of our rekeys."""
+        return bytes(self._need().own_fingerprint(room.encode())).hex()
 
     def members(self, room: str) -> List[Dict[str, Any]]:
         """Each member: jid, fingerprint, verified, and whether it is us."""
@@ -683,8 +805,9 @@ class SecureGroups:
                 client.create_group(room.encode())
             except ValueError:
                 raise GroupError("group_exists")
-            self.save()
             self._since_rekey[room] = [0, self._clock()]
+            self._activity[room] = {self._account: self._clock()}
+            self.save()
         self._emit(GroupChanged(peer=room, change="created",
                                 epoch=self.epoch(room)))
 
@@ -710,8 +833,9 @@ class SecureGroups:
             if not client.has_group(room.encode()):
                 raise GroupError("not_a_group")
             self._require_otr(peer)
-            fp = bytes(client.own_fingerprint()).hex()
+            fp = bytes(client.own_fingerprint(room.encode())).hex()
             self._outgoing[(room, peer)] = _Outgoing(room=room, at=self._clock())
+            self.save()
         self._send_private(peer, "%sINVITE:%s|%s" % (SIGNAL_PREFIX, room, fp))
         self._emit(GroupChanged(peer=room, change="invite_sent", detail=peer))
 
@@ -726,6 +850,7 @@ class SecureGroups:
             kp = bytes(self._need().key_package())
             inv.accepted = True
             self._awaiting_welcome[room] = inv.peer
+            self.save()
         self._send_private(inv.peer, "%sKP:%s|%s" % (SIGNAL_PREFIX, room, _b64e(kp)))
 
     def decline(self, room: str) -> None:
@@ -804,6 +929,14 @@ class SecureGroups:
                 kp = _b64d(b64)
             except (ValueError, binascii.Error):
                 raise GroupError("malformed")
+            if client.has_pending_commit(room.encode()):
+                # One of our commits (a rekey, another add) is out: add them
+                # once it settles, rather than refuse an invitee who did
+                # everything right.
+                queued = self._queued_kps.setdefault(room, [])
+                if len(queued) < MAX_PENDING_INVITES:
+                    queued.append((peer, kp, verified))
+                return
             try:
                 commit = bytes(client.add_members(room.encode(), [kp]))
             except ValueError as exc:
@@ -816,8 +949,34 @@ class SecureGroups:
             self.save()
         self._post_commit(room, commit)
 
+    def _add_queued(self, room: str) -> None:
+        """Add the invitees whose KeyPackages waited for our commit."""
+        with self._lock:
+            queued = self._queued_kps.pop(room, [])
+            client = self._client
+            if not queued or client is None or self._wiped:
+                return
+            try:
+                commit = bytes(client.add_members(room.encode(),
+                                                  [kp for _p, kp, _v in queued]))
+            except Exception:
+                for peer, _kp, _v in queued:
+                    self._outgoing.pop((room, peer), None)
+                    self._emit(GroupChanged(peer=room, change="refused",
+                                            detail="add_refused"))
+                return
+            for peer, _kp, verified in queued:
+                self._outgoing.pop((room, peer), None)
+                self._welcome_for.setdefault(room, []).append(peer)
+                self._pending_binding.setdefault(room, []).append((peer, verified))
+            self.save()
+        self._post_commit(room, commit)
+
     def _on_welcome(self, peer: str, arg: str, verified: bool) -> None:
-        room, _, b64 = arg.partition("|")
+        room, _, rest = arg.partition("|")
+        b64, _, sent_fp = rest.partition("|")
+        if sent_fp and not _FP_RE.match(sent_fp):
+            raise GroupError("malformed")
         with self._lock:
             client = self._need()
             if self._awaiting_welcome.get(room) != peer:
@@ -841,14 +1000,23 @@ class SecureGroups:
                 held = bytes(client.member_fingerprint(room.encode(), peer.encode())).hex()
             except ValueError:
                 held = ""
-            if inv is None or held != inv.fingerprint:
+            # The key the inviter holds NOW (sent with the Welcome, over the
+            # same OTRv4+ session as the invite): it may have rotated since
+            # the invite. An older client sends none; the invite's is used.
+            expected = sent_fp or (inv.fingerprint if inv is not None else "")
+            if inv is None or not expected or held != expected:
                 client.forget_group(room.encode())
                 raise GroupError("inviter_fingerprint_mismatch")
+            if sent_fp:
+                self._bound.setdefault(room, {})[peer] = (sent_fp, verified)
             self._invites.pop(room, None)
             self._awaiting_welcome.pop(room, None)
+            now = self._clock()
+            self._since_rekey[room] = [0, now]
+            self._activity[room] = {bytes(m).decode(errors="replace"): now
+                                    for m in client.members(room.encode())}
             self.save()
             epoch = int(client.epoch(room.encode()))
-        self._since_rekey[room] = [0, self._clock()]
         self._emit(GroupChanged(peer=room, change="joined", epoch=epoch))
 
     def _on_decline(self, peer: str, room: str) -> None:
@@ -869,6 +1037,7 @@ class SecureGroups:
         """Post one of OUR commits and keep it until it comes back."""
         with self._lock:
             self._unconfirmed[room] = [bytes(commit), 0]
+            self.save()               # a restart now still has it to re-send
         self._post(room, commit)
 
     def resend_pending_commit(self, room: str, reason: str = "") -> bool:
@@ -917,6 +1086,7 @@ class SecureGroups:
         """We are in `room` again after a reconnect: a commit lost with the
         old stream goes out again (the room's history replay may also bring
         it back, which settles it first)."""
+        self._settled_from = self._clock()
         self.resend_pending_commit(room, "rejoined")
 
     def send(self, room: str, text: str) -> None:
@@ -947,35 +1117,126 @@ class SecureGroups:
         self._post(room, ct)
         self._maybe_rekey(room)
 
-    def _maybe_rekey(self, room: str) -> None:
+    def _maybe_rekey(self, room: str, count: bool = True) -> bool:
         """Self-update once enough messages or time have passed (see
         AUTO_REKEY_*). Best effort: a refusal is reported, never raised into
-        the send that triggered it."""
+        the send that triggered it. True if a rekey was posted."""
         with self._lock:
             entry = self._since_rekey.setdefault(room, [0, self._clock()])
-            entry[0] += 1
+            if count:
+                entry[0] += 1
             due = (entry[0] >= self.AUTO_REKEY_MESSAGES
                    or self._clock() - entry[1] >= self.AUTO_REKEY_SECONDS)
             client = self._client
             if not due or client is None or self._wiped:
-                return
+                return False
             try:
                 if client.has_pending_commit(room.encode()):
-                    return
+                    return False
             except Exception:
-                return
+                return False
             if room in self._unconfirmed or self._pacer.pending(room):
-                return
+                return False
         try:
             self.rekey(room)
         except Exception:
             self._emit(ErrorOccurred(peer=room, code="group_rekey_failed"))
-            return
+            return False
         # Counted from now; confirmed (and reset again) when it lands.
         with self._lock:
             self._since_rekey[room] = [0, self._clock()]
         self._emit(GroupChanged(peer=room, change="rekeyed",
                                 epoch=self.epoch(room)))
+        return True
+
+    # -- maintenance: timed rekey, idle members --------------------------------
+
+    def _arm_maintenance(self) -> None:
+        if self.MAINTAIN_SECONDS <= 0:
+            return
+        with self._lock:
+            if self._wiped or self._client is None or self._maintain_timer is not None:
+                return
+            timer = threading.Timer(self.MAINTAIN_SECONDS, self._maintain_tick)
+            timer.daemon = True
+            self._maintain_timer = timer
+        timer.start()
+
+    def _stop_maintenance(self) -> None:
+        timer, self._maintain_timer = self._maintain_timer, None
+        if timer is not None:
+            try:
+                timer.cancel()
+            except Exception:
+                pass
+
+    def _maintain_tick(self) -> None:
+        with self._lock:
+            self._maintain_timer = None
+        try:
+            self.maintain()
+        except Exception:
+            pass
+        self._arm_maintenance()
+
+    def maintain(self) -> List[str]:
+        """Housekeeping for every group, at most one commit each:
+
+          * members whose leaf nobody has seen refreshed for
+            IDLE_REMOVE_SECONDS are removed;
+          * otherwise our leaf is refreshed (rekey) once AUTO_REKEY_SECONDS
+            have passed since our last commit, even if we sent nothing --
+            this is also what tells the others we are still here.
+
+        Returns what was done, as "rekey:<room>" / "removed:<room>"."""
+        done = []
+        for room in self.rooms():
+            # A removal commit refreshes our path too, so it goes first.
+            if self._remove_idle(room):
+                done.append("removed:" + room)
+            elif self._maybe_rekey(room, count=False):
+                done.append("rekey:" + room)
+        return done
+
+    def _remove_idle(self, room: str) -> bool:
+        if self.IDLE_REMOVE_SECONDS <= 0:
+            return False
+        with self._lock:
+            client = self._client
+            if client is None or self._wiped:
+                return False
+            now = self._clock()
+            if now - self._settled_from < self.IDLE_GRACE_SECONDS:
+                return False
+            try:
+                if client.has_pending_commit(room.encode()):
+                    return False
+                members = [bytes(m).decode(errors="replace")
+                           for m in client.members(room.encode())]
+            except Exception:
+                return False
+            if room in self._unconfirmed or self._pacer.pending(room):
+                return False
+            seen = self._activity.setdefault(room, {})
+            for m in members:
+                seen.setdefault(m, now)        # first sight starts the clock
+            for gone in [m for m in seen if m not in members]:
+                seen.pop(gone, None)
+            idle = sorted(m for m in members if m != self._account
+                          and now - seen[m] > self.IDLE_REMOVE_SECONDS)
+            if not idle:
+                return False
+            try:
+                commit = bytes(client.remove_members(
+                    room.encode(), [m.encode() for m in idle]))
+            except Exception:
+                self._emit(ErrorOccurred(peer=room, code="group_remove_failed"))
+                return False
+            self.save()
+        self._post_commit(room, commit)
+        self._emit(GroupChanged(peer=room, change="idle_removed",
+                                detail=",".join(idle)[:200]))
+        return True
 
     def remove(self, room: str, member: str) -> None:
         with self._lock:
@@ -1058,15 +1319,33 @@ class SecureGroups:
                                             sender_identity=sender, verified=verified)
             elif kind == "commit":
                 event = self._on_commit(room, ev)
+                settled = bool(ev.get("ours") or ev.get("dropped_ours"))
             else:
                 event = None
         if event is not None:
             self._emit(event)
+        if kind == "commit" and settled and self._queued_kps.get(room):
+            self._add_queued(room)
         return True
 
     def _on_commit(self, room: str, ev: Dict[str, Any]) -> Optional[Any]:
         client = self._client
         epoch = int(ev.get("epoch", 0))
+        now = self._clock()
+        seen = self._activity.setdefault(room, {})
+        committer = bytes(ev.get("committer") or b"").decode(errors="replace")
+        if committer:
+            seen[committer] = now
+        # A member replaced their signing key with their own update, signed
+        # by the old one: a binding we hold for the old key carries over.
+        # Anything else (a new leaf under an old name) is NOT carried.
+        for who, old, new in ev.get("rekeyed") or []:
+            ident = bytes(who).decode(errors="replace")
+            seen[ident] = now
+            held = self._bound.get(room, {}).get(ident)
+            if held is not None and held[0] == bytes(old).hex():
+                self._bound[room][ident] = (bytes(new).hex(), held[1])
+
         if ev.get("ours") or ev.get("dropped_ours"):
             # Landed, or superseded by somebody else's: nothing to re-send.
             self._unconfirmed.pop(room, None)
@@ -1075,6 +1354,8 @@ class SecureGroups:
             self._since_rekey[room] = [0, self._clock()]
         if ev.get("removed_us"):
             self._bound.pop(room, None)
+            self._activity.pop(room, None)
+            self._queued_kps.pop(room, None)
             self.save()
             return GroupChanged(peer=room, change="removed_us", epoch=epoch)
         if ev.get("dropped_ours"):
@@ -1084,6 +1365,12 @@ class SecureGroups:
             self._emit(GroupChanged(peer=room, change="commit_lost", epoch=epoch))
         welcome = ev.get("welcome")
         invitees = self._welcome_for.pop(room, []) if ev.get("ours") else []
+        own_fp = ""
+        if welcome is not None:
+            try:
+                own_fp = bytes(client.own_fingerprint(room.encode())).hex()
+            except Exception:
+                own_fp = ""
         bindings = self._pending_binding.pop(room, []) if ev.get("ours") else []
         for peer, verified in bindings:
             try:
@@ -1091,12 +1378,14 @@ class SecureGroups:
                 self._bound.setdefault(room, {})[peer] = (fp, verified)
             except ValueError:
                 pass
+            seen[peer] = now
         self.save()
         if welcome is not None:
             for peer in invitees:
                 try:
-                    self._send_private(peer, "%sWELCOME:%s|%s"
-                                       % (SIGNAL_PREFIX, room, _b64e(bytes(welcome))))
+                    self._send_private(peer, "%sWELCOME:%s|%s|%s"
+                                       % (SIGNAL_PREFIX, room, _b64e(bytes(welcome)),
+                                          own_fp))
                 except Exception:
                     self._emit(ErrorOccurred(peer=peer, code="group_welcome_send_failed"))
             return GroupChanged(peer=room, change="member_added", epoch=epoch)

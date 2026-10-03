@@ -64,6 +64,8 @@ class SecureGroupStateTest {
 
     @Test
     fun `the words say what is and is not protected`() {
+        val idle = GroupText.describe(OtrEvent.GroupChanged(room, "idle_removed", 9, "carol@x"))
+        assertTrue(idle != null && "carol@x" in idle && "Invite them again" in idle)
         assertTrue("ciphertext" in GroupText.header(true))
         assertTrue("not end-to-end encrypted" in GroupText.header(false))
         assertTrue("verified" in GroupText.memberLine("b@x", false, true, true))
