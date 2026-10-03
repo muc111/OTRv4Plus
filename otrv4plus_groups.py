@@ -45,6 +45,7 @@ with everything else (`wipe`). Android's Wipe & Exit is untouched.
 """
 from __future__ import annotations
 
+import asyncio
 import os
 import time
 from typing import Any, Callable, Dict, List, Optional, Tuple
@@ -185,7 +186,20 @@ class TermuxGroups:
             peer, frame if isinstance(frame, str) else frame.decode("utf-8"))
 
     def _send_room(self, room: str, body: str) -> None:
-        self.host.send_message(mto=room, mbody=body, mtype="groupchat")
+        # Paced fragments (RoomPacer) are sent from a timer thread, and
+        # slixmpp's send queue is not thread-safe: hand those to the loop.
+        loop = getattr(self.host, "loop", None)
+        send = lambda: self.host.send_message(mto=room, mbody=body,  # noqa: E731
+                                              mtype="groupchat")
+        if loop is not None and loop.is_running():
+            try:
+                running = asyncio.get_running_loop()
+            except RuntimeError:
+                running = None
+            if running is not loop:
+                loop.call_soon_threadsafe(send)
+                return
+        send()
 
     # -- inbound --------------------------------------------------------------
 
@@ -351,6 +365,23 @@ class TermuxGroups:
             except Exception as exc:
                 self._print("[group %s] could not rejoin the room (%s)"
                             % (room[:64], type(exc).__name__))
+                continue
+            # A commit of ours lost with the old stream goes out again.
+            self.groups.on_room_rejoined(room)
+
+    def on_room_rejected(self, room: str) -> bool:
+        """The server bounced our message to `room`. True when it is one of
+        our secure groups (and the caller need say nothing more)."""
+        room = _canon(room)
+        if not (self._opened and self.groups.is_secure(room)):
+            return False
+        self._print("[group %s] the server refused a group message; if it "
+                    "was a membership change it is sent again. If this "
+                    "repeats, the room's server limits are too low for MLS "
+                    "(Prosody: remove muc_limits from the conference "
+                    "component)." % room[:64])
+        self.groups.on_room_rejected(room)
+        return True
 
     def owns_room(self, jid: str) -> bool:
         """Whether `jid` is a room this client joined (for a secure group)."""

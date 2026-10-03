@@ -383,3 +383,56 @@ def test_malformed_signals_do_nothing():
         b.groups.on_signal("alice@x.i2p", SIGNAL_PREFIX + body)
     assert b.groups.pending_invites() == []
     assert b.groups.rooms() == []
+
+
+
+class TestRoomPacer:
+    """Room fragments under mod_muc_limits' rate: a burst, then spaced, in
+    order, never overtaking (unit, with a manual clock and scheduler)."""
+
+    def _pacer(self, burst=3, interval=2.0):
+        from android_bridge.groups import RoomPacer
+        now = [0.0]
+        timers = []
+        sent = []
+        p = RoomPacer(lambda room, part: sent.append(part), burst=burst,
+                      interval=interval, on_error=lambda room: None,
+                      clock=lambda: now[0],
+                      schedule=lambda delay, fn: timers.append((delay, fn)))
+        return p, now, timers, sent
+
+    def test_burst_then_one_per_interval_in_order(self):
+        p, now, timers, sent = self._pacer()
+        p.post("r", ["a1", "a2", "a3", "a4", "a5"])
+        p.post("r", ["b1"])
+        assert sent == ["a1", "a2", "a3"]
+        for expected in (["a4"], ["a5"], ["b1"]):
+            now[0] += 2.0
+            _delay, fn = timers.pop(0)
+            fn()
+            assert sent[-1:] == expected
+        assert p.pending("r") == 0
+
+    def test_zero_interval_sends_at_once(self):
+        p, now, timers, sent = self._pacer(interval=0)
+        p.post("r", ["1", "2", "3", "4", "5"])
+        assert sent == ["1", "2", "3", "4", "5"] and timers == []
+
+    def test_a_failed_send_drops_the_rest_of_that_set(self):
+        from android_bridge.groups import RoomPacer
+        errors = []
+
+        def boom(room, part):
+            raise OSError("gone")
+        p = RoomPacer(boom, burst=3, interval=1.0, on_error=errors.append,
+                      clock=lambda: 0.0, schedule=lambda d, f: None)
+        p.post("r", ["1", "2"])
+        assert errors == ["r"] and p.pending("r") == 0
+
+    def test_close_stops_everything(self):
+        p, now, timers, sent = self._pacer()
+        p.post("r", ["1", "2", "3", "4"])
+        p.close()
+        now[0] += 10
+        timers[0][1]()
+        assert sent == ["1", "2", "3"]

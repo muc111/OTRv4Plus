@@ -517,6 +517,10 @@ class ConnectionController:
         self._app._transport = self._transport
         # Room messages by a setter rather than the factory call, so a
         # transport without rooms (and every test double) needs no change.
+        bounced = getattr(self._transport, "set_room_rejected_handler", None)
+        rejected = getattr(self._app, "note_room_rejected", None)
+        if bounced is not None and rejected is not None:
+            bounced(rejected)
         attach = getattr(self._transport, "set_room_handler", None)
         receive = getattr(self._app, "receive_room_message", None)
         if attach is not None and receive is not None:
@@ -1049,6 +1053,97 @@ class ConnectionController:
     def room_occupants(self, room: str) -> Dict[str, Any]:
         """Who is in [room], as `{nick, role, affiliation}` rows."""
         return self._muc_call("room_occupants", room)
+
+    # -- avatars --------------------------------------------------------------
+
+    def avatar_ids(self) -> Dict[str, str]:
+        """Bare JID -> avatar id, for every avatar held. Cheap: the app polls
+        it and fetches pixels only for an id it has not drawn yet."""
+        ids = getattr(self._transport, "avatar_ids", None)
+        if ids is None:
+            return {}
+        try:
+            return dict(ids())
+        except Exception:
+            return {}
+
+    def avatar_pixels(self, jid: str) -> Optional[Dict[str, Any]]:
+        """{id, width, height, rgba} for `jid`, or None.
+
+        `rgba` is raw pixels, 4 bytes each -- the app turns them into the
+        int array Bitmap.createBitmap(int[], ...) takes, so the picture is
+        built from numbers and no image decoder of the platform reads the
+        file a peer sent (android_bridge.avatar)."""
+        get = getattr(self._transport, "avatar", None)
+        if get is None:
+            return None
+        try:
+            avatar = get(jid)
+        except Exception:
+            return None
+        if avatar is None:
+            return None
+        import base64
+        rgba = bytes(avatar.rgba)
+        # Base64 TEXT for Kotlin (android.util.Base64 -- a text decoder, not
+        # an image decoder), plus the raw bytes for Python callers.
+        return {"id": avatar.id, "width": avatar.width,
+                "height": avatar.height, "rgba": rgba,
+                "rgba_b64": base64.b64encode(rgba).decode("ascii")}
+
+    def avatar_index(self) -> List[str]:
+        """`avatar_ids` as "jid<TAB>id" strings: a plain list of strings is
+        the one shape the Kotlin side reads everywhere."""
+        return ["%s\t%s" % (jid, aid) for jid, aid in sorted(self.avatar_ids().items())]
+
+    def set_avatar(self, png) -> Dict[str, Any]:
+        """Publish our avatar: PNG bytes the app made (scaled, re-encoded)."""
+        transport = self._transport
+        if transport is None or not hasattr(transport, "publish_avatar"):
+            return {"ok": False, "code": "not_connected",
+                    "detail": "Connect first.", "value": None}
+        try:
+            transport.publish_avatar(bytes(png))
+        except Exception as exc:
+            # TransportError carries `code` and `detail`; anything else is
+            # named by its type only.
+            code = getattr(exc, "code", None) or type(exc).__name__
+            _TRACE.record("avatar", "publish_failed", "warning", code=code)
+            return {"ok": False, "code": code,
+                    "detail": "The picture could not be used (%s)."
+                    % getattr(exc, "detail", "") if code == "avatar_refused"
+                    else "The picture could not be published.", "value": None}
+        _TRACE.record("avatar", "published", "info")
+        return {"ok": True, "code": "ok", "detail": "", "value": None}
+
+    def set_avatar_b64(self, text: str) -> Dict[str, Any]:
+        """`set_avatar` for the Kotlin side, which passes base64 text (the
+        one byte transport this bridge uses everywhere)."""
+        import base64
+        import binascii
+        from . import avatar as _avatar_mod
+        text = str(text or "")
+        if len(text) > _avatar_mod.MAX_B64_CHARS:
+            return {"ok": False, "code": "avatar_refused",
+                    "detail": "The picture is too large.", "value": None}
+        try:
+            png = base64.b64decode(text, validate=True)
+        except (binascii.Error, ValueError):
+            return {"ok": False, "code": "avatar_refused",
+                    "detail": "The picture could not be read.", "value": None}
+        return self.set_avatar(png)
+
+    def remove_avatar(self) -> Dict[str, Any]:
+        transport = self._transport
+        if transport is None or not hasattr(transport, "remove_avatar"):
+            return {"ok": False, "code": "not_connected",
+                    "detail": "Connect first.", "value": None}
+        try:
+            transport.remove_avatar()
+        except Exception as exc:
+            return {"ok": False, "code": getattr(exc, "code", "unexpected_error"),
+                    "detail": "The picture could not be removed.", "value": None}
+        return {"ok": True, "code": "ok", "detail": "", "value": None}
 
     def welcome_directory(self) -> Dict[str, Any]:
         """The Welcome room's state and discoverable people. Local state

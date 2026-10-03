@@ -577,6 +577,54 @@ class ChaquopyOtrCore(private val appContext: Context) : OtrCore {
         return outcome to missing
     }
 
+    // ── avatars ──────────────────────────────────────────────────────────
+
+    /**
+     * Bare JID -> avatar id for every avatar the bridge holds. Cheap: no
+     * network. Lines of "jid<TAB>id", parsed by [AvatarPixels.index].
+     */
+    fun avatarIndex(): Map<String, String> {
+        val v = call("avatar_index") ?: return emptyMap()
+        return runCatching {
+            org.otrv4plus.android.chat.AvatarPixels.index(
+                v.asList().map { it.toString() })
+        }.getOrDefault(emptyMap())
+    }
+
+    /**
+     * A contact's avatar as decoded PIXELS (RGBA), never the file they sent:
+     * `android_bridge/avatar.py` validated and decoded it in bounded Python.
+     * The base64 here is text decoding, not image decoding.
+     */
+    fun avatarImage(jid: String): AvatarImage? {
+        val v = call("avatar_pixels", jid) ?: return null
+        return runCatching {
+            val rgba = android.util.Base64.decode(
+                entry(v, "rgba_b64"), android.util.Base64.DEFAULT)
+            AvatarImage(
+                id = entry(v, "id"),
+                width = v.callAttr("get", "width")?.toInt() ?: 0,
+                height = v.callAttr("get", "height")?.toInt() ?: 0,
+                rgba = rgba,
+            )
+        }.getOrNull()
+    }
+
+    /**
+     * Publish our avatar: PNG bytes the app made by scaling and re-encoding
+     * the user's own picture. The bridge checks it like anybody's.
+     */
+    fun setAvatar(png: ByteArray): RoomOutcome {
+        val b64 = android.util.Base64.encodeToString(png, android.util.Base64.NO_WRAP)
+        val result = call("set_avatar_b64", b64) ?: return notPrepared()
+        return outcomeOf(result)
+    }
+
+    fun removeAvatar(): RoomOutcome {
+        val result = call("remove_avatar") ?: return notPrepared()
+        return outcomeOf(result)
+    }
+
     /** The Welcome room's state and discoverable people. No network. */
     fun welcomeDirectory(): WelcomeView {
         val v = call("welcome_directory") ?: return WelcomeView.NONE

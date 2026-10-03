@@ -50,6 +50,7 @@ from typing import Any, Callable, Dict, List, Optional
 import otrv4plus_address as _address
 import otrv4plus_caps as _caps
 from . import route as _route_mod
+from . import avatar as _avatar
 from . import welcome as _welcome
 import otrv4plus_fragment as _fragment
 import otrv4plus_muc as _muc
@@ -831,6 +832,8 @@ class XmppTransport(Transport):
         self._welcome = _welcome.WelcomeDirectory()
         #: bare room JID (lower case) -> the nickname we joined with.
         self._room_nicks: Dict[str, str] = {}
+        #: Contacts' avatars, decoded by android_bridge.avatar. Memory only.
+        self._avatars = _avatar.AvatarBook()
         #: Rooms whose join is in flight -> room messages held until the join
         #: completes. See `_begin_join`: without this, a room's history burst
         #: arriving in the same read as our self-presence reached the app
@@ -2229,6 +2232,12 @@ class XmppTransport(Transport):
     #: Longest room message carried to the UI.
     MAX_ROOM_BODY = 16 * 1024
 
+    def set_room_rejected_handler(self,
+                                  handler: Optional[Callable[[str, str], None]]) -> None:
+        """`handler(room, condition)` when the server bounces a message we
+        sent to a room we are in (see `_on_message_error`)."""
+        self._on_room_rejected = handler
+
     def set_room_handler(self, handler: Optional[Callable[..., None]]) -> None:
         """`handler(room, nick, body, timestamp)` for each room message."""
         self._on_room_message = handler
@@ -2681,6 +2690,9 @@ class XmppTransport(Transport):
         through `_ensure_loop` and got a fresh worker thread nothing would
         ever join.
         """
+        book = getattr(self, "_avatars", None)
+        if book is not None:
+            book.clear()          # contacts' faces do not outlive the session
         with self._lock:
             already = self._closed
             self._closed = True
@@ -3520,6 +3532,8 @@ class XmppTransport(Transport):
         client.add_event_handler("presence_subscribe", self._on_subscribe)
         client.add_event_handler("message", self._on_message)
         client.add_event_handler("message_error", self._on_message_error)
+        client.add_event_handler("avatar_metadata_publish",
+                                 self._on_avatar_metadata)
         # Room messages arrive as type="groupchat", which `_on_message`
         # deliberately ignores: a room is not a peer, and its traffic must
         # never reach the OTR engine as though it were.
@@ -3554,6 +3568,91 @@ class XmppTransport(Transport):
     #: across the JNI boundary into the UI.
     MAX_DIRECT_BODY = 64 * 1024
 
+    # -- avatars (XEP-0084) ----------------------------------------------------
+
+    _AVATAR_META = "{urn:xmpp:avatar:metadata}"
+    _AVATAR_DATA = "{urn:xmpp:avatar:data}data"
+
+    def _on_avatar_metadata(self, msg) -> None:
+        """A contact announced an avatar. Fetched only if acceptable (PNG,
+        within the size limits); see android_bridge.avatar."""
+        try:
+            jid = str(msg["from"]).split("/", 1)[0].lower()
+            meta = next(msg.xml.iter(self._AVATAR_META + "metadata"), None)
+            if not jid or meta is None:
+                return
+            infos = [dict(el.attrib) for el in
+                     meta.iter(self._AVATAR_META + "info")][:16]
+        except Exception:
+            return
+        wanted = self._avatars.note_metadata(jid, infos)
+        if wanted:
+            asyncio.ensure_future(self._fetch_avatar(jid, wanted))
+
+    async def _fetch_avatar(self, jid: str, avatar_id: str) -> None:
+        try:
+            iq = await self._client["xep_0084"].retrieve_avatar(
+                jid, avatar_id, timeout=CALL_TIMEOUT)
+            el = next(iq.xml.iter(self._AVATAR_DATA), None)
+            text = (el.text or "") if el is not None else ""
+        except Exception:
+            _TRACE.record("avatar", "fetch_failed", "info", peer=jid)
+            return
+        if len(text) > _avatar.MAX_B64_CHARS:
+            _TRACE.record("avatar", "refused", "warning", peer=jid,
+                          reason="too_large")
+            return
+        # Decoding is pure Python and can take a moment for a 256x256
+        # image: off the loop thread, so the stream does not stall.
+        loop = asyncio.get_event_loop()
+        ok = await loop.run_in_executor(None, self._avatars.note_data,
+                                        jid, avatar_id, text)
+        _TRACE.record("avatar", "stored" if ok else "refused",
+                      "info" if ok else "warning", peer=jid)
+
+    def avatar_ids(self) -> Dict[str, str]:
+        """Bare JID -> avatar id (SHA-1), for every avatar held."""
+        return self._avatars.ids()
+
+    def avatar(self, jid: str):
+        """The decoded avatar for `jid` (android_bridge.avatar.Avatar) or None."""
+        return self._avatars.get(jid)
+
+    def publish_avatar(self, png: bytes) -> None:
+        """Publish our own avatar. `png` must pass the same checks as any
+        received avatar (android_bridge.avatar.decode_png). Raises
+        TransportError."""
+        if not self.is_connected:
+            raise TransportError("not_connected", "not connected")
+        png = bytes(png)
+        try:
+            if len(png) > _avatar.MAX_BYTES:
+                raise _avatar.AvatarError("too_large")
+            w, h, _rgba = _avatar.decode_png(png)
+        except _avatar.AvatarError as exc:
+            raise TransportError("avatar_refused", exc.code)
+        self._run(self._publish_avatar(png, w, h), CALL_TIMEOUT)
+        self._avatars.set_own(self._profile.jid, png)
+
+    async def _publish_avatar(self, png: bytes, w: int, h: int) -> None:
+        import hashlib
+        plugin = self._client["xep_0084"]
+        avatar_id = hashlib.sha1(png).hexdigest()
+        await plugin.publish_avatar(png, timeout=CALL_TIMEOUT)
+        await plugin.publish_avatar_metadata(
+            [{"id": avatar_id, "type": _avatar.PNG_TYPE, "bytes": len(png),
+              "width": w, "height": h}], timeout=CALL_TIMEOUT)
+
+    def remove_avatar(self) -> None:
+        """Stop publishing our avatar (empty metadata). Raises TransportError."""
+        if not self.is_connected:
+            raise TransportError("not_connected", "not connected")
+        self._run(self._remove_avatar(), CALL_TIMEOUT)
+        self._avatars.forget(self._profile.jid)
+
+    async def _remove_avatar(self) -> None:
+        await self._client["xep_0084"].stop(timeout=CALL_TIMEOUT)
+
     def _on_message_error(self, stanza) -> None:
         """A message the server bounced. Recorded, never shown as text.
 
@@ -3570,6 +3669,12 @@ class XmppTransport(Transport):
         to_room = sender in self._room_nicks
         _TRACE.record("rooms" if to_room else "chat", "message_rejected",
                       "warning", peer=sender, condition=cond[:40])
+        handler = getattr(self, "_on_room_rejected", None)
+        if to_room and handler is not None:
+            try:
+                handler(sender, cond[:40])
+            except Exception:
+                _log.warning("the room-rejected handler raised")
 
     def _on_message(self, stanza) -> None:
         """Hand the body up, whatever it is.
@@ -3894,6 +3999,13 @@ def _default_client_factory():
             except Exception:
                 _log.warning("could not register %s; rooms and service "
                              "discovery will not work", plugin)
+        # XEP-0084 user avatars (PEP). Its +notify feature goes into our caps,
+        # which is how contacts' servers know to send us their avatars.
+        # Decoding is android_bridge.avatar's, never slixmpp's or Android's.
+        try:
+            client.register_plugin("xep_0084")
+        except Exception:
+            _log.warning("could not register xep_0084; avatars are off")
         return client
 
     return factory

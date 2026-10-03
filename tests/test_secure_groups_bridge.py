@@ -179,3 +179,35 @@ def test_an_invite_typed_with_a_capital_still_admits_the_member(pair):
     b.groups.accept(ROOM)
     assert b.groups.is_secure(ROOM), [e for e in asink.events
                                       if isinstance(e, GroupChanged)]
+
+
+def test_bounces_and_rejoins_reach_the_groups_off_the_calling_thread(pair):
+    import threading
+    import time
+    muc, A, B = pair
+    a = A[0]
+    seen = []
+    caller = threading.current_thread()
+    a.groups.on_room_rejected = lambda room: seen.append(
+        ("rejected", room, threading.current_thread() is caller))
+    a.groups.on_room_rejoined = lambda room: seen.append(
+        ("rejoined", room, threading.current_thread() is caller))
+    a.note_room_joined(ROOM)
+    a.note_room_rejected(ROOM, "policy-violation")
+    for _ in range(200):
+        if len(seen) == 2:
+            break
+        time.sleep(0.01)
+    assert sorted(seen) == [("rejected", ROOM, False), ("rejoined", ROOM, False)]
+
+
+def test_a_plain_room_join_does_not_create_the_group_machinery():
+    from android_bridge.app import OtrApp
+    from tests.test_wipe_and_exit import Sink, Wire, _manager
+    app = OtrApp(_manager(), Wire(), Sink())
+    try:
+        app.note_room_joined("plain@conference.example.test")
+        app.note_room_rejected("plain@conference.example.test")
+        assert app._groups is None
+    finally:
+        app.shutdown()

@@ -2,6 +2,9 @@
 // Copyright (C) 2025-2026 muc111
 package org.otrv4plus.android.ui
 
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.clickable
@@ -17,6 +20,9 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
@@ -56,6 +62,13 @@ fun ConversationsScreen(
     onTheme: ((ThemeTokens.Mode) -> Unit)? = null,
 ) {
     var choosingTheme by rememberSaveable { mutableStateOf(false) }
+    var choosingPicture by rememberSaveable { mutableStateOf(false) }
+    val context = LocalContext.current
+    val picturePicker = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri != null) model.setOwnAvatar(OwnAvatar.pngFrom(context, uri))
+    }
     val conversations = model.conversations()
     var showAdd by rememberSaveable { mutableStateOf(false) }
     // A JID, not a Conversation: the row can change under an open dialog.
@@ -187,6 +200,7 @@ fun ConversationsScreen(
                     items(conversations, key = { it.jid }) { conversation ->
                         ConversationRow(
                             conversation,
+                            avatar = model.avatar(conversation.jid),
                             onClick = { onOpen(conversation.jid) },
                             onLongClick = { deleting = conversation.jid },
                         )
@@ -210,6 +224,7 @@ fun ConversationsScreen(
                 if (onTheme != null) {
                     TextButton(onClick = { choosingTheme = true }) { Text("Theme") }
                 }
+                TextButton(onClick = { choosingPicture = true }) { Text("Picture") }
             }
             // At the foot of the main list, beside Debug and Licences, so it
             // is reachable without going back to the connection screen. The
@@ -219,6 +234,13 @@ fun ConversationsScreen(
                     horizontalArrangement = Arrangement.End) {
                     WipeAndExitButton(onWipe = wipe)
                 }
+            }
+            model.avatarStatus?.let { status ->
+                Text(
+                    status,
+                    style = MaterialTheme.typography.bodySmall,
+                    modifier = Modifier.padding(horizontal = 16.dp),
+                )
             }
         }
     }
@@ -257,6 +279,35 @@ fun ConversationsScreen(
             },
             confirmButton = {
                 TextButton(onClick = { choosingTheme = false }) { Text("Done") }
+            },
+        )
+    }
+
+    if (choosingPicture) {
+        AlertDialog(
+            onDismissRequest = { choosingPicture = false },
+            title = { Text("Your picture") },
+            text = {
+                Text("Shown to your contacts. It is scaled to 96 × 96 and " +
+                     "saved again as a plain PNG, so nothing else from the " +
+                     "original file (such as where a photo was taken) is " +
+                     "sent. Contacts' pictures are checked and decoded " +
+                     "safely before they are shown.")
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    choosingPicture = false
+                    picturePicker.launch(arrayOf("image/*"))
+                }) { Text("Choose a picture") }
+            },
+            dismissButton = {
+                Row {
+                    TextButton(onClick = {
+                        choosingPicture = false
+                        model.removeOwnAvatar()
+                    }) { Text("Remove") }
+                    TextButton(onClick = { choosingPicture = false }) { Text("Cancel") }
+                }
             },
         )
     }
@@ -428,6 +479,7 @@ private fun EmptyConversations(
 @Composable
 private fun ConversationRow(
     conversation: Conversation,
+    avatar: ImageBitmap?,
     onClick: () -> Unit,
     onLongClick: () -> Unit,
 ) {
@@ -442,7 +494,7 @@ private fun ConversationRow(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        AvatarPlaceholder(conversation.displayName)
+        AvatarPlaceholder(conversation.displayName, avatar)
 
         Column(Modifier.weight(1f)) {
             Row(
@@ -525,8 +577,22 @@ private fun SecurityBadge(conversation: Conversation) {
     )
 }
 
+/**
+ * The contact's picture when the bridge holds one -- a bitmap built from
+ * PIXELS it decoded and checked (`chat.AvatarPixels`), never from the file
+ * the contact sent -- and their initial otherwise.
+ */
 @Composable
-private fun AvatarPlaceholder(name: String) {
+private fun AvatarPlaceholder(name: String, avatar: ImageBitmap? = null) {
+    if (avatar != null) {
+        Image(
+            bitmap = avatar,
+            contentDescription = null,
+            contentScale = ContentScale.Crop,
+            modifier = Modifier.size(40.dp).clip(CircleShape),
+        )
+        return
+    }
     Box(
         Modifier
             .size(40.dp)

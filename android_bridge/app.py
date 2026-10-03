@@ -430,7 +430,35 @@ class OtrApp:
         completing on the loop thread after a wipe began records nothing."""
         if self._wiped:
             return
-        self._rooms.add(self.canonical_peer(room))
+        room = self.canonical_peer(room)
+        self._rooms.add(room)
+        # A secure group whose own commit was lost with the old stream: post
+        # it again now we are back in the room. Off this thread -- it is the
+        # transport's loop thread, and a room send from it would wait on
+        # itself.
+        groups = getattr(self, "_groups", None)
+        if groups is not None and getattr(groups, "on_room_rejoined", None):
+            threading.Thread(target=self._quietly, args=(groups.on_room_rejoined, room),
+                             name="group-rejoin", daemon=True).start()
+
+    def note_room_rejected(self, room: str, condition: str = "") -> None:
+        """The server bounced a message we sent to `room`. For a secure group
+        that may be our commit, which is posted again (off the loop thread,
+        as above)."""
+        if self._wiped:
+            return
+        room = self.canonical_peer(room)
+        groups = getattr(self, "_groups", None)
+        if groups is not None and room in self._rooms:
+            threading.Thread(target=self._quietly, args=(groups.on_room_rejected, room),
+                             name="group-rejected", daemon=True).start()
+
+    @staticmethod
+    def _quietly(fn, *args) -> None:
+        try:
+            fn(*args)
+        except Exception:
+            pass
 
     def note_room_left(self, room: str) -> None:
         self._rooms.discard(self.canonical_peer(room))

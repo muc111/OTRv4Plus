@@ -769,6 +769,20 @@ data class OnlineDiscovery(
     }
 }
 
+/**
+ * A contact's avatar as raw RGBA pixels (see `chat.AvatarPixels`). Equality
+ * by id: two images with the same SHA-1 id are the same picture.
+ */
+class AvatarImage(
+    val id: String,
+    val width: Int,
+    val height: Int,
+    val rgba: ByteArray,
+) {
+    override fun equals(other: Any?): Boolean = other is AvatarImage && other.id == id
+    override fun hashCode(): Int = id.hashCode()
+}
+
 data class RoomOutcome(
     val ok: Boolean,
     val code: String,

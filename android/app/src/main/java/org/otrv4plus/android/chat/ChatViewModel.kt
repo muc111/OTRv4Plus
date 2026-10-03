@@ -5,6 +5,8 @@ package org.otrv4plus.android.chat
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.Dispatchers
@@ -293,6 +295,7 @@ class ChatViewModel : ViewModel() {
                 refreshWelcome()
                 refreshHandshake()
                 refreshSecureRooms()
+                refreshAvatars()
                 delay(REDRAW_INTERVAL_MS)
             }
         }
@@ -419,6 +422,93 @@ class ChatViewModel : ViewModel() {
             lastWelcome = 0L
             refreshWelcome()
             revision++
+        }
+    }
+
+    // ── avatars ──────────────────────────────────────────────────────────
+
+    /**
+     * Bare JID -> picture, built from PIXELS the bridge decoded
+     * ([AvatarPixels]); no Android image decoder reads a peer's file.
+     */
+    // An immutable map swapped whole on a change: a display cache, not
+    // conversation state (which ChatState owns).
+    private var avatarBitmaps by mutableStateOf<Map<String, ImageBitmap>>(emptyMap())
+    private val avatarShown = HashMap<String, String>()     // jid -> id drawn
+    private var lastAvatars = 0L
+
+    fun avatar(jid: String): ImageBitmap? =
+        avatarBitmaps[ChatState.bare(jid)]
+
+    /** What happened to the last "set profile picture", for the screen. */
+    var avatarStatus: String? by mutableStateOf(null)
+
+    private fun refreshAvatars() {
+        val core = this.core ?: return
+        val now = System.currentTimeMillis()
+        if (now - lastAvatars < AVATAR_INTERVAL_MS) return
+        lastAvatars = now
+        viewModelScope.launch {
+            val index = withContext(Dispatchers.IO) {
+                runCatching { core.avatarIndex() }.getOrDefault(emptyMap())
+            }
+            // Gone from the bridge (removed, wiped, signed out): gone here.
+            for (jid in avatarShown.keys.toList()) {
+                if (jid !in index) {
+                    avatarShown.remove(jid)
+                    avatarBitmaps = avatarBitmaps - jid
+                }
+            }
+            for ((jid, id) in index) {
+                if (avatarShown[jid] == id) continue
+                val bitmap = withContext(Dispatchers.Default) {
+                    val image = runCatching { core.avatarImage(jid) }.getOrNull()
+                        ?: return@withContext null
+                    val argb = AvatarPixels.argb(image.rgba, image.width, image.height)
+                        ?: return@withContext null
+                    runCatching {
+                        android.graphics.Bitmap.createBitmap(
+                            argb, image.width, image.height,
+                            android.graphics.Bitmap.Config.ARGB_8888,
+                        ).asImageBitmap()
+                    }.getOrNull()
+                } ?: continue
+                avatarShown[jid] = id
+                avatarBitmaps = avatarBitmaps + (jid to bitmap)
+            }
+        }
+    }
+
+    /** Publish [png] (already scaled and re-encoded by the screen). */
+    fun setOwnAvatar(png: ByteArray?) {
+        val core = this.core ?: run { avatarStatus = "Connect first."; return }
+        if (png == null) {
+            avatarStatus = "That picture could not be used."
+            return
+        }
+        avatarStatus = "Updating your picture…"
+        viewModelScope.launch {
+            val outcome = withContext(Dispatchers.IO) {
+                runCatching { core.setAvatar(png) }.getOrNull()
+            }
+            avatarStatus = when {
+                outcome == null -> "Your picture could not be published."
+                outcome.ok -> "Your picture is updated. Contacts see it when they next connect."
+                else -> outcome.detail.ifBlank { "Your picture could not be published." }
+            }
+            lastAvatars = 0L
+        }
+    }
+
+    fun removeOwnAvatar() {
+        val core = this.core ?: return
+        viewModelScope.launch {
+            val outcome = withContext(Dispatchers.IO) {
+                runCatching { core.removeAvatar() }.getOrNull()
+            }
+            avatarStatus = if (outcome?.ok == true) "Your picture is removed."
+                           else "Your picture could not be removed."
+            lastAvatars = 0L
         }
     }
 
@@ -1327,6 +1417,9 @@ class ChatViewModel : ViewModel() {
         const val AUTO_RETRY_MS = 45_000L
         const val DISCOVERY_INTERVAL_MS = 120_000L
         const val WELCOME_INTERVAL_MS = 3_000L
+
+        /** How often the avatar index is re-read (local, no network). */
+        const val AVATAR_INTERVAL_MS = 5_000L
         const val HANDSHAKE_INTERVAL_MS = 1_000L
     }
 }

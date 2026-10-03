@@ -2609,6 +2609,13 @@ class OTRv4PlusXMPP(ClientXMPP):
         peer = msg["from"].bare
         condition = msg["error"]["condition"]
         text = msg["error"]["text"] or condition
+        groups = getattr(self, "_groups", None)
+        if groups is not None:
+            try:
+                if groups.on_room_rejected(peer):
+                    return
+            except Exception:
+                pass
         print(f"\n[delivery rejected] to {_sanitise(peer, 128)}: {_sanitise(text)}")
         if condition == "forbidden":
             print(

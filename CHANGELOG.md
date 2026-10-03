@@ -4,6 +4,47 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.24 — 2026-10-03 — secure groups recover by themselves; safe avatars (core 0.11.0)
+
+### Secure groups (MLS): no more stuck groups
+- **A commit that never comes back is sent again.** Our own commit (adding
+  or removing a member, or a rekey) is kept until the room echoes it.
+  It is posted again when the server bounces a room message, when we rejoin
+  the room after a reconnect, and when a send is refused because the commit
+  is pending (`commit_resent` group event), at most 3 times. Before, one
+  bounced commit left the group pending forever: every send refused and the
+  new member never got a Welcome. Interop tests cover each trigger with a
+  server that drops the commit.
+- **Room fragments are paced** under Prosody `mod_muc_limits`' default
+  rate: a burst of 3, then one every 2.2 s, in order, per room
+  (`RoomPacer`). An add-member commit is about 11 fragments, so it takes
+  about 20 s on a stock server instead of mostly bouncing. Termux sends
+  the paced fragments on its event loop (slixmpp is not thread-safe).
+- **A bounced room message reaches the group code** on both clients. The
+  app records it (`rooms/message_rejected`) and shows `room_message_rejected`.
+  Termux prints one explanation naming `muc_limits` instead of a raw
+  delivery error.
+
+### Avatars (XEP-0084), without trusting the image
+- Contacts' pictures appear on the conversation list. **No Android image
+  decoder ever reads a peer's file.** `android_bridge/avatar.py` accepts PNG
+  only (the format XEP-0084 requires everyone to support), at most 64 KB
+  and 256×256, 8-bit and not interlaced. It checks the SHA-1 against the
+  published id, every chunk length and CRC, and refuses unknown critical
+  chunks and anything after `IEND`. It decompresses only up to the exact
+  size the header implies, so a 50 MB decompression bomb stops at a few
+  KB. Decoding is pure Python, off the network thread. Only raw RGBA
+  reaches the app, which builds the bitmap from those numbers.
+  `test_avatar_safety.py` covers hostile images and fuzzes 400 random
+  mutations, plus the fetch and publish wiring.
+- **Your own picture** ("Picture" on the main list) is decoded small,
+  centre-cropped, scaled to 96×96 and re-encoded as a plain PNG, so no
+  EXIF, location or trailing data from the original is published. The
+  bridge then checks it with the same decoder before publishing.
+  Avatars are held in memory only, so Wipe & Exit and signing out leave
+  none behind.
+- Termux does not show avatars (it is a terminal).
+
 ## Android 0.7.0-experimental.rc.23 — 2026-10-03 — secure groups fit a stock Prosody room (core 0.11.0)
 
 *Device test: Alice (app) created `mls2`, invited B (Termux). B accepted and

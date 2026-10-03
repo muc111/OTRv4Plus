@@ -46,6 +46,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import collections
 import os
 import re
 import threading
@@ -128,6 +129,103 @@ class _Stats:
     malformed: int = 0
 
 
+class RoomPacer:
+    """Room fragments out at a rate a stock XMPP server accepts.
+
+    Prosody's mod_muc_limits allows about one room message per two seconds
+    per occupant, with a small burst, and bounces the rest. A commit adding a
+    member is ~11 fragments, so sent back to back most of it bounced, the
+    commit never landed, and the group stalled. A token bucket per room:
+    `burst` fragments at once, then one per `interval` seconds, in order --
+    a later frame never overtakes an earlier one's remaining fragments.
+
+    `interval <= 0` sends everything at once (tests, and servers without a
+    limit). `schedule(delay, fn)` runs `fn` later; the default is a daemon
+    timer thread, so `send` must be safe to call from another thread.
+    """
+
+    def __init__(self, send: Callable[[str, str], None], *, burst: int,
+                 interval: float, on_error: Callable[[str], None],
+                 clock: Callable[[], float] = time.monotonic,
+                 schedule: Optional[Callable[[float, Callable[[], None]], Any]] = None):
+        self._send = send
+        self._burst = max(1, int(burst))
+        self._interval = float(interval)
+        self._on_error = on_error
+        self._clock = clock
+        self._schedule = schedule or self._timer
+        self._lock = threading.RLock()
+        self._queues: Dict[str, collections.deque] = {}
+        self._tokens: Dict[str, Tuple[float, float]] = {}   # room -> (tokens, at)
+        self._armed: set = set()
+        self._closed = False
+
+    @staticmethod
+    def _timer(delay: float, fn: Callable[[], None]) -> Any:
+        t = threading.Timer(delay, fn)
+        t.daemon = True
+        t.start()
+        return t
+
+    def post(self, room: str, parts: List[str]) -> None:
+        if self._interval <= 0:
+            for part in parts:
+                self._send(room, part)
+            return
+        with self._lock:
+            if self._closed:
+                return
+            self._queues.setdefault(room, collections.deque()).extend(parts)
+        self._pump(room)
+
+    def pending(self, room: str) -> int:
+        with self._lock:
+            return len(self._queues.get(room, ()))
+
+    def _take_token(self, room: str) -> bool:
+        now = self._clock()
+        tokens, at = self._tokens.get(room, (float(self._burst), now))
+        tokens = min(float(self._burst), tokens + (now - at) / self._interval)
+        if tokens >= 1.0:
+            self._tokens[room] = (tokens - 1.0, now)
+            return True
+        self._tokens[room] = (tokens, now)
+        return False
+
+    def _pump(self, room: str) -> None:
+        while True:
+            with self._lock:
+                if self._closed:
+                    return
+                queue = self._queues.get(room)
+                if not queue:
+                    self._queues.pop(room, None)
+                    return
+                if not self._take_token(room):
+                    if room not in self._armed:
+                        self._armed.add(room)
+                        self._schedule(self._interval, lambda: self._fire(room))
+                    return
+                part = queue.popleft()
+            try:
+                self._send(room, part)
+            except Exception:
+                with self._lock:
+                    self._queues.pop(room, None)   # the rest of a set is useless
+                self._on_error(room)
+                return
+
+    def _fire(self, room: str) -> None:
+        with self._lock:
+            self._armed.discard(room)
+        self._pump(room)
+
+    def close(self) -> None:
+        with self._lock:
+            self._closed = True
+            self._queues.clear()
+
+
 class SecureGroups:
     """Every secure group this account is in, and the setup traffic for them.
 
@@ -137,6 +235,14 @@ class SecureGroups:
 
     STATE_NAME = "groups.sealed"
     DEK_NAME = "groups.dek"
+
+    #: RoomPacer settings, under mod_muc_limits' defaults (0.5 events/s).
+    #: Tests set ROOM_INTERVAL to 0 (tests/conftest.py).
+    ROOM_BURST = 3
+    ROOM_INTERVAL = 2.2
+    #: How many times one of our commits is posted again when it does not
+    #: come back from the room (bounced, or lost across a reconnect).
+    MAX_COMMIT_RESENDS = 3
 
     def __init__(self, *,
                  send_room: Callable[[str, str], None],
@@ -170,6 +276,14 @@ class SecureGroups:
         self._reassembler = _fragment.Reassembler()
         self.stats = _Stats()
         self._wiped = False
+        #: room -> [commit bytes, times re-sent]: our commit, posted and not
+        #: yet seen back from the room. MLS holds it pending, which refuses
+        #: every send, until it lands -- so it is kept to post again.
+        self._unconfirmed: Dict[str, List[Any]] = {}
+        self._pacer = RoomPacer(
+            send_room, burst=self.ROOM_BURST, interval=self.ROOM_INTERVAL,
+            on_error=lambda room: self._emit(
+                ErrorOccurred(peer=room, code="group_send_failed")))
 
     # -- lifecycle ----------------------------------------------------------
 
@@ -312,6 +426,8 @@ class SecureGroups:
             self._pending_binding.clear()
             self._bound.clear()
             self._reassembler.clear()
+            self._unconfirmed.clear()
+            self._pacer.close()
 
     @property
     def wiped(self) -> bool:
@@ -509,7 +625,7 @@ class SecureGroups:
             # leaf this KeyPackage made -- see `_on_commit`.
             self._pending_binding.setdefault(room, []).append((peer, verified))
             self.save()
-        self._post(room, commit)
+        self._post_commit(room, commit)
 
     def _on_welcome(self, peer: str, arg: str, verified: bool) -> None:
         room, _, b64 = arg.partition("|")
@@ -557,8 +673,56 @@ class SecureGroups:
         payload = ROOM_PREFIX + _b64e(mls)
         parts, self._frag_seq = _fragment.fragment(
             payload, self._frag_seq, _fragment.ROOM_FRAGMENT)
-        for part in parts:
-            self._send_room(room, part)
+        self._pacer.post(room, parts)
+
+    def _post_commit(self, room: str, commit: bytes) -> None:
+        """Post one of OUR commits and keep it until it comes back."""
+        with self._lock:
+            self._unconfirmed[room] = [bytes(commit), 0]
+        self._post(room, commit)
+
+    def resend_pending_commit(self, room: str, reason: str = "") -> bool:
+        """Post our unconfirmed commit for `room` again. True if it was.
+
+        Safe to repeat: a commit that did land is stale to every member and
+        dropped; one that did not is the only way the group moves on (MLS
+        refuses every send while it is pending). Bounded by
+        MAX_COMMIT_RESENDS."""
+        with self._lock:
+            entry = self._unconfirmed.get(room)
+            client = self._client
+            if entry is None or client is None or self._wiped:
+                return False
+            try:
+                pending = bool(client.has_pending_commit(room.encode()))
+            except Exception:
+                pending = True
+            if not pending:
+                self._unconfirmed.pop(room, None)
+                return False
+            if entry[1] >= self.MAX_COMMIT_RESENDS:
+                return False
+            if self._pacer.pending(room):
+                return False         # its fragments are still going out
+            entry[1] += 1
+            commit = entry[0]
+        self._emit(GroupChanged(peer=room, change="commit_resent",
+                                detail=reason[:40]))
+        self._post(room, commit)
+        return True
+
+    def on_room_rejected(self, room: str) -> None:
+        """The server bounced a message to `room` (e.g. mod_muc_limits)."""
+        if not self.is_secure(room):
+            return
+        self._emit(ErrorOccurred(peer=room, code="room_message_rejected"))
+        self.resend_pending_commit(room, "rejected")
+
+    def on_room_rejoined(self, room: str) -> None:
+        """We are in `room` again after a reconnect: a commit lost with the
+        old stream goes out again (the room's history replay may also bring
+        it back, which settles it first)."""
+        self.resend_pending_commit(room, "rejoined")
 
     def send(self, room: str, text: str) -> None:
         """Encrypt and post. Raises; never falls back to plaintext."""
@@ -572,7 +736,19 @@ class SecureGroups:
                 ct = bytes(client.encrypt(room.encode(), text.encode("utf-8")))
             except ValueError as exc:
                 code = "commit_pending" if "pending" in str(exc) else "encrypt_refused"
-                raise GroupError(code)
+                if code == "commit_pending":
+                    # The group is waiting for our own change to come back
+                    # from the room. Nudge it rather than leave it stuck.
+                    resend = True
+                else:
+                    resend = False
+                err = GroupError(code)
+            else:
+                err = None
+        if err is not None:
+            if resend:
+                self.resend_pending_commit(room, "send_blocked")
+            raise err
         self._post(room, ct)
 
     def remove(self, room: str, member: str) -> None:
@@ -583,14 +759,14 @@ class SecureGroups:
             except ValueError as exc:
                 raise GroupError("remove_refused", str(exc)[:80])
             self.save()
-        self._post(room, commit)
+        self._post_commit(room, commit)
 
     def rekey(self, room: str) -> None:
         """A fresh leaf key for us (post-compromise security)."""
         with self._lock:
             commit = bytes(self._need().self_update(room.encode()))
             self.save()
-        self._post(room, commit)
+        self._post_commit(room, commit)
 
     def leave(self, room: str) -> None:
         """Forget the group and every secret for it, here.
@@ -663,6 +839,9 @@ class SecureGroups:
     def _on_commit(self, room: str, ev: Dict[str, Any]) -> Optional[Any]:
         client = self._client
         epoch = int(ev.get("epoch", 0))
+        if ev.get("ours") or ev.get("dropped_ours"):
+            # Landed, or superseded by somebody else's: nothing to re-send.
+            self._unconfirmed.pop(room, None)
         if ev.get("removed_us"):
             self._bound.pop(room, None)
             self.save()

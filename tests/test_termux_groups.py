@@ -80,6 +80,9 @@ class Server:
         #: longer room message is bounced, never relayed. None: no limit.
         self.room_char_limit = None
         self.room_bounced = []
+        #: Drop the next N room messages from this jid (a rate-limit bounce).
+        self.drop_room_from = None
+        self.drop_room_count = 0
 
     def attach(self, node):
         self.nodes[node.jid] = node
@@ -90,6 +93,10 @@ class Server:
             nick = self.rooms.get(to, {}).get(frm)
             if nick is None:
                 return                          # not an occupant: dropped
+            if self.drop_room_from == frm and self.drop_room_count > 0:
+                self.drop_room_count -= 1
+                self.room_bounced.append((to, nick, len(body)))
+                return
             if self.room_char_limit and len(body) > self.room_char_limit:
                 self.room_bounced.append((to, nick, len(body)))
                 return                          # policy-violation bounce
@@ -841,3 +848,97 @@ def test_room_fragments_fit_a_stock_prosody():
     assert out[-1] == payload and all(o is None for o in out[:-1])
     # One-to-one chat is unchanged.
     assert max(len(p) for p in frag.fragment(payload, 0)[0]) > 5664
+
+
+
+class TestALostCommitIsSentAgain:
+    """Device test, 2026-10-02: the creator's commit adding a member bounced
+    off the server. MLS held it pending -- every send refused, "message not
+    sent" -- and the member never got a Welcome. Nothing ever sent it again."""
+
+    def _setup(self, w):
+        async def go():
+            w.b.start_otr(w.c.jid)
+            await w.server.pump()
+            w.server.rooms.setdefault(ROOM, {})[w.c.jid] = w.c.jid.split("@")[0]
+            w.c.app.note_room_joined(ROOM)
+            w.c.app.groups.create(ROOM)
+            w.c.app.groups.invite(ROOM, w.b.jid)
+            await w.server.pump()
+            # Every fragment of the coming commit is bounced.
+            w.server.drop_room_from = w.c.jid
+            w.server.drop_room_count = 1000
+            await w.b.cmd("/group accept " + ROOM)
+            await w.server.pump()
+        run(go())
+        assert w.server.room_bounced, "the commit was not posted at all"
+        assert not w.b.groups.groups.is_secure(ROOM)
+        assert w.c.app.groups._client.has_pending_commit(ROOM.encode())
+        w.server.drop_room_count = 0
+
+    def _finish(self, w):
+        run(w.server.pump())
+        assert w.b.groups.groups.is_secure(ROOM), "\n".join(w.b.printed[-10:])
+        assert w.c.app.send_user_text(ROOM, "after the resend") == OtrApp.SEND_ENCRYPTED
+        run(w.server.pump())
+        assert w.b.lines("after the resend")
+
+    def test_a_bounce_notice_sends_it_again(self, world):
+        w = world
+        self._setup(w)
+        w.c.app.groups.on_room_rejected(ROOM)      # what the transport reports
+        self._finish(w)
+
+    def test_trying_to_send_sends_it_again(self, world):
+        w = world
+        self._setup(w)
+        from android_bridge.groups import GroupError
+        with pytest.raises(GroupError) as exc:
+            w.c.app.groups.send(ROOM, "blocked")
+        assert exc.value.code == "commit_pending"
+        self._finish(w)
+
+    def test_rejoining_the_room_sends_it_again(self, world):
+        w = world
+        self._setup(w)
+        w.c.app.groups.on_room_rejoined(ROOM)
+        self._finish(w)
+
+    def test_resends_are_bounded(self, world):
+        w = world
+        self._setup(w)
+        w.server.drop_room_count = 1000
+        sent = [w.c.app.groups.resend_pending_commit(ROOM, "t") for _ in range(6)]
+        assert sent.count(True) == w.c.app.groups.MAX_COMMIT_RESENDS
+
+
+class TestTermuxSendsRoomFragmentsOnItsLoop:
+    """RoomPacer sends from a timer thread; slixmpp's queue is not
+    thread-safe, so TermuxGroups hands an off-loop send to the loop."""
+
+    def test_off_loop_send_goes_through_call_soon_threadsafe(self):
+        import threading
+
+        calls = []
+
+        class Loop:
+            def is_running(self):
+                return True
+
+            def call_soon_threadsafe(self, fn):
+                calls.append("threadsafe")
+                fn()
+
+        class Host:
+            loop = Loop()
+            sent = []
+
+            def send_message(self, mto, mbody, mtype):
+                self.sent.append((mto, mtype))
+
+        g = OG.TermuxGroups.__new__(OG.TermuxGroups)
+        g.host = Host()
+        t = threading.Thread(target=g._send_room, args=(ROOM, "x"))
+        t.start()
+        t.join()
+        assert calls == ["threadsafe"] and g.host.sent == [(ROOM, "groupchat")]

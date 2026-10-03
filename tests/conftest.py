@@ -229,3 +229,28 @@ def _isolated_server_pins():
         yield
     finally:
         _sp._DEFAULT = saved
+
+
+# ── Secure-group room pacing: off in tests ───────────────────────────────────
+#
+# SecureGroups paces room fragments (RoomPacer) under mod_muc_limits' rate,
+# which in production delays a commit's tail by seconds. The interop tests
+# pump a simulated server synchronously, so pacing is off for them; the
+# pacing tests mark themselves `room_pacing` and get the real interval.
+@_pytest.fixture(autouse=True)
+def _no_room_pacing(request, monkeypatch):
+    if request.node.get_closest_marker("room_pacing"):
+        yield
+        return
+    try:
+        from android_bridge import groups as _groups
+    except Exception:
+        yield
+        return
+    monkeypatch.setattr(_groups.SecureGroups, "ROOM_INTERVAL", 0.0)
+    yield
+
+
+def pytest_configure(config):
+    config.addinivalue_line(
+        "markers", "room_pacing: run with SecureGroups' real room pacing")
