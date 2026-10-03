@@ -959,11 +959,18 @@ try:
     assert bytes(b.join(bytes(ev["welcome"]))) == g
     out = b.process(g, bytes(a.encrypt(g, b"mls self-test")))
     assert out["kind"] == "application" and bytes(out["plaintext"]) == b"mls self-test"
+    # Every new group is the hybrid suite (X448+ML-KEM-1024 / Ed448+ML-DSA-87).
+    assert a.ciphersuite(g) == 0xF0A1, hex(a.ciphersuite(g))
+    # Group voice keys from the epoch: one frame each way.
+    va, vb = a.group_voice(g, b"selftest-call"), b.group_voice(g, b"selftest-call")
+    assert bytes(vb.open(bytes(va.seal(b"frame")))[1]) == b"frame"
+    va.zeroize()
+    vb.zeroize()
     a.wipe()
     b.wipe()
 except Exception as exc:
     fail("MLS self-test: %s: %s" % (type(exc).__name__, exc))
-print("MLS self-test (2 members, 1 message): OK")
+print("MLS self-test (2 members, 1 message, hybrid suite, group voice): OK")
 PYEOF
 ) || die "the installed module did not pass the checks above"
 

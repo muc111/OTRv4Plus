@@ -14,6 +14,7 @@
 //!     key signs only until our next rekey; the old private key is dropped
 //!     (zeroized) once the new one is in the group;
 //!   * forgetting a group drops its key.
+//!
 //! A rotation is authenticated by the OLD key (the commit is signed with it),
 //! so a member that had bound our old key over OTRv4+ carries the binding to
 //! the new one: `Event::Commit::rekeyed`.
@@ -714,12 +715,12 @@ impl MlsClient {
             groups: group_ids.iter().map(|g| b(g)).collect(),
             signers: self.signers.iter()
                 .map(|(g, s)| (b(g), b(s.public()), b(s.secret()))).collect(),
-            kp_signers: self.kp_signers.iter().map(|s| signer_out(s)).collect(),
+            kp_signers: self.kp_signers.iter().map(signer_out).collect(),
             pending: self.pending.iter().map(|(g, p)| (
                 b(g),
                 b(&p.commit),
                 p.welcome.as_deref().map(b),
-                p.new_signer.as_ref().map(|s| signer_out(s)),
+                p.new_signer.as_ref().map(signer_out),
             )).collect(),
             storage: b(&storage),
             app_data: b(&self.app_data),
