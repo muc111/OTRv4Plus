@@ -184,13 +184,26 @@ This is the largest item: transport, mixing and UI on two clients.
   Content and the group roster in the tree are encrypted
   (`PURE_CIPHERTEXT` wire format). The server never sees a JID–key link.
 
-## 7. Commit plan
+## 7. Owner decisions (2026-10-03)
+
+- **C1 → patch OpenMLS** (vendored openmls + openmls_traits, private-use
+  code points for the hybrid KEM, composite signature and suite).
+- **U1 → idle-leaf removal after 72 h**, configurable
+  (`OTRV4PLUS_MLS_IDLE_REMOVE_HOURS`).
+- **D1 → rotate only** (per-group leaf keys, rotated on every
+  self-update); publishing old keys is deferred.
+
+Found while planning M3: the core's commit event does not say **who**
+committed, which idle tracking needs. M2 adds the committer's leaf identity
+to the commit event (one core change for both).
+
+## 8. Commit plan
 
 | | commit | needs a core rebuild |
 |---|---|---|
 | M1 | rekey defaults 50 msgs / 30 min, env knobs; this document | no |
 | M2 | per-group signature keys, rotated on self-update; zeroized on forget | yes |
-| M3 | idle-leaf removal (default per decision U1) | no |
+| M3 | idle-leaf removal, 72 h default, needs M2's committer field | no |
 | M4 | hybrid ciphersuite via patched OpenMLS (decision C1) | yes; new groups |
 | M5 | group audio calls over MLS exporter keys and I2P | yes |
 | M2b | optional: publish rotated signature keys (decision D1-3) | yes |
