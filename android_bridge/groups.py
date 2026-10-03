@@ -129,6 +129,16 @@ class _Stats:
     malformed: int = 0
 
 
+def _env_int(name: str, default: int, low: int, high: int) -> int:
+    """A configuration knob from the environment, clamped; the default when
+    unset or unreadable (never an error at import)."""
+    try:
+        value = int(os.environ.get(name, default))
+    except (TypeError, ValueError):
+        return default
+    return max(low, min(high, value))
+
+
 class RoomPacer:
     """Room fragments out at a rate a stock XMPP server accepts.
 
@@ -246,9 +256,11 @@ class SecureGroups:
     #: Automatic rekey (MLS self-update) for post-compromise security: after
     #: this many messages we sent, or this long since our own last commit,
     #: whichever comes first. Checked after a send, never while a commit of
-    #: ours is pending or still going out.
-    AUTO_REKEY_MESSAGES = 100
-    AUTO_REKEY_SECONDS = 24 * 3600
+    #: ours is pending or still going out. Defaults per the owner's hardening
+    #: specification (MLS_SECURITY_HARDENING.md §4): 50 messages / 30 min.
+    #: A self-update in a 4-member group is ~22 KB (8 room fragments).
+    AUTO_REKEY_MESSAGES = _env_int("OTRV4PLUS_MLS_REKEY_MESSAGES", 50, 1, 100000)
+    AUTO_REKEY_SECONDS = _env_int("OTRV4PLUS_MLS_REKEY_SECONDS", 30 * 60, 60, 30 * 86400)
 
     def __init__(self, *,
                  send_room: Callable[[str, str], None],

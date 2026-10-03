@@ -4,6 +4,23 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.26 — 2026-10-03 — MLS hardening, step M1 (core 0.11.0)
+
+The owner's MLS + audio hardening specification is audited, point by point,
+in **MLS_SECURITY_HARDENING.md**, with what is met, what is not, the
+library flags that need a decision, and the commit plan (M1-M5).
+
+- **Automatic MLS rekey every 50 messages or 30 minutes** (was 100 / 24 h),
+  per the specification. Set by `OTRV4PLUS_MLS_REKEY_MESSAGES` and
+  `OTRV4PLUS_MLS_REKEY_SECONDS`, which are clamped and fall back to the
+  defaults. A self-update in a 4-member group is about 22 KB (8 room
+  fragments).
+- Flags raised in the document: **D1**, RFC 9420 signs every message, so
+  MLS cannot be fully deniable (plan: per-group, rotated leaf keys);
+  **C1**, OpenMLS cannot express an X448+ML-KEM-1024 / Ed448+ML-DSA-87
+  suite without being patched; **U1**, removing idle members after 24 h
+  would remove every phone that is off overnight.
+
 ## Android 0.7.0-experimental.rc.25 — 2026-10-03 — Profile screen, no overlapping buttons, automatic MLS rekey (core 0.11.0)
 
 *Device test: MLS works from the app to Termux. Alice created `mls`, B

@@ -436,3 +436,19 @@ class TestRoomPacer:
         now[0] += 10
         timers[0][1]()
         assert sent == ["1", "2", "3"]
+
+
+class TestRekeyKnobs:
+    """MLS_SECURITY_HARDENING.md §4: defaults 50 messages / 30 min, set by
+    environment, clamped, never an import error."""
+
+    def test_defaults_and_clamping(self, monkeypatch):
+        from android_bridge import groups as G
+        assert G.SecureGroups.AUTO_REKEY_MESSAGES == 50
+        assert G.SecureGroups.AUTO_REKEY_SECONDS == 30 * 60
+        monkeypatch.setenv("X_KNOB", "7")
+        assert G._env_int("X_KNOB", 50, 1, 100) == 7
+        monkeypatch.setenv("X_KNOB", "0")
+        assert G._env_int("X_KNOB", 50, 1, 100) == 1
+        monkeypatch.setenv("X_KNOB", "lots")
+        assert G._env_int("X_KNOB", 50, 1, 100) == 50
