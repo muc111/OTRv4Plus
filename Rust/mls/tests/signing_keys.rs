@@ -153,3 +153,33 @@ fn forgetting_a_group_forgets_its_key() {
     assert!(!b.has_group(G2));
     assert_eq!(fingerprint(b"").len(), 48);
 }
+
+#[test]
+fn group_voice_keys_come_from_the_epoch_and_follow_it() {
+    use otrv4_mls::group_voice::VoiceError;
+    let mut a = MlsClient::new(b"alice");
+    let mut b = MlsClient::new(b"bob");
+    pair_in(&mut a, &mut b, G1);
+    let mut va = a.group_voice(G1, b"call").unwrap();
+    let mut vb = b.group_voice(G1, b"call").unwrap();
+    let p = va.seal(b"hello").unwrap();
+    let (sender, frame) = vb.open(&p).unwrap();
+    assert_eq!(&frame[..], b"hello");
+    assert_eq!(b.member_at(G1, sender).unwrap(), b"alice");
+    // An outsider with the same call id has no key.
+    let mut c = MlsClient::new(b"carol");
+    c.create_group(G1).unwrap();
+    let mut vc = c.group_voice(G1, b"call").unwrap();
+    assert!(vc.open(&p).is_err());
+    // A commit (here a rekey) moves the call to the new epoch's keys.
+    let commit = a.self_update(G1).unwrap();
+    a.process(G1, &commit).unwrap();
+    b.process(G1, &commit).unwrap();
+    assert!(a.group_voice_rekey(G1, b"call", &mut va).unwrap());
+    assert!(b.group_voice_rekey(G1, b"call", &mut vb).unwrap());
+    assert!(!b.group_voice_rekey(G1, b"call", &mut vb).unwrap());
+    let q = va.seal(b"new epoch").unwrap();
+    assert_eq!(&vb.open(&q).unwrap().1[..], b"new epoch");
+    vb.drop_previous();
+    assert_eq!(vb.open(&p).unwrap_err(), VoiceError::WrongEpoch);
+}

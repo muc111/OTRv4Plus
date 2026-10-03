@@ -490,6 +490,11 @@ class SecureGroups:
         self._queued_kps: Dict[str, List[Tuple[str, bytes, bool]]] = {}
         self._settled_from = 0.0
         self._maintain_timer: Any = None
+        #: Group calls (android_bridge.group_call): control messages travel
+        #: as MLS application messages with CALL_PREFIX and go here, never
+        #: to the chat; the epoch listener hears about every commit.
+        self._call_handler: Optional[Callable[[str, str, bool, str], None]] = None
+        self._epoch_listener: Optional[Callable[[str], None]] = None
         self._pacer = RoomPacer(
             send_room, burst=self.ROOM_BURST, interval=self.ROOM_INTERVAL,
             slow_burst=self.ROOM_SLOW_BURST,
@@ -781,6 +786,45 @@ class SecureGroups:
 
     def epoch(self, room: str) -> int:
         return int(self._need().epoch(room.encode()))
+
+    # -- group calls (android_bridge.group_call) ------------------------------
+
+    @property
+    def account(self) -> str:
+        return self._account
+
+    def set_call_handler(self, fn: Optional[Callable[[str, str, bool, str], None]]) -> None:
+        self._call_handler = fn
+
+    def set_epoch_listener(self, fn: Optional[Callable[[str], None]]) -> None:
+        self._epoch_listener = fn
+
+    def send_control(self, room: str, text: str) -> None:
+        """A call control message: encrypted and posted like a message, and
+        recognised (by its prefix) and never shown at the other end."""
+        from .group_call import CALL_PREFIX
+        if not text.startswith(CALL_PREFIX):
+            raise GroupError("bad_control")
+        self.send(room, text)
+
+    def group_voice(self, room: str, call_id: bytes):
+        """Media keys for a call, from this epoch's MLS exporter (Rust)."""
+        with self._lock:
+            return self._need().group_voice(room.encode(), bytes(call_id))
+
+    def group_voice_rekey(self, room: str, voice) -> bool:
+        with self._lock:
+            return bool(self._need().group_voice_rekey(room.encode(), voice))
+
+    def member_identity(self, room: str, leaf: int) -> str:
+        with self._lock:
+            return bytes(self._need().member_at(room.encode(), int(leaf))).decode(
+                errors="replace")
+
+    def member_identities(self, room: str) -> List[str]:
+        with self._lock:
+            return [bytes(m).decode(errors="replace")
+                    for m in self._need().members(room.encode())]
 
     #: MLS ciphersuite code points (MLS_SECURITY_HARDENING.md §2).
     SUITE_HYBRID = 0xF0A1
@@ -1326,12 +1370,18 @@ class SecureGroups:
                 self.stats.undecryptable += 1
                 return True
             kind = ev.get("kind")
+            control = None
             if kind == "application":
                 sender = bytes(ev["sender"]).decode(errors="replace")
                 text = bytes(ev["plaintext"]).decode("utf-8", errors="replace")
                 fp = bytes(client.member_fingerprint(room.encode(), bytes(ev["sender"]))).hex()
                 known = self._bound.get(room, {}).get(sender)
                 verified = bool(known and known[0] == fp and known[1])
+            if kind == "application" and text.startswith("\x00OTRv4GC1:"):
+                # A call control message: to the call manager, never shown.
+                control = (sender, verified, text[len("\x00OTRv4GC1:"):])
+                event = None
+            elif kind == "application":
                 self.stats.shown += 1
                 event = RoomMessageReceived(peer=room, sender=nick, body=text,
                                             timestamp=timestamp, encrypted=True,
@@ -1345,6 +1395,16 @@ class SecureGroups:
             self._emit(event)
         if kind == "commit" and settled and self._queued_kps.get(room):
             self._add_queued(room)
+        if control is not None and self._call_handler is not None:
+            try:
+                self._call_handler(room, *control)
+            except Exception:
+                self._emit(ErrorOccurred(peer=room, code="call_control_failed"))
+        if kind == "commit" and self._epoch_listener is not None:
+            try:
+                self._epoch_listener(room)
+            except Exception:
+                self._emit(ErrorOccurred(peer=room, code="call_rekey_failed"))
         return True
 
     def _on_commit(self, room: str, ev: Dict[str, Any]) -> Optional[Any]:

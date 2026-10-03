@@ -120,6 +120,8 @@ fn otrv4_core(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     // Group chat. `hasattr(otrv4_core, "RustMlsClient")` is how callers tell.
     #[cfg(feature = "mls")]
     m.add_class::<mls_group::RustMlsClient>()?;
+    #[cfg(feature = "mls")]
+    m.add_class::<mls_group::RustGroupVoice>()?;
 
     Ok(())
 }

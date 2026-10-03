@@ -592,6 +592,52 @@ impl MlsClient {
         }
     }
 
+    /// Media keys for a call in this group, from the MLS exporter of the
+    /// current epoch (`crate::group_voice`). Nothing secret leaves: the
+    /// returned object seals and opens frames itself.
+    pub fn group_voice(&mut self, group_id: &[u8], call_id: &[u8])
+        -> Result<crate::group_voice::GroupVoice>
+    {
+        let (root, epoch, own) = self.voice_root(group_id, call_id)?;
+        crate::group_voice::GroupVoice::new(&root[..], call_id, epoch, own)
+            .map_err(|_| MlsError::Refused("bad call id"))
+    }
+
+    /// Move a call's keys to the group's current epoch (after a commit).
+    /// A no-op if the call is already there.
+    pub fn group_voice_rekey(&mut self, group_id: &[u8], call_id: &[u8],
+                             voice: &mut crate::group_voice::GroupVoice) -> Result<bool>
+    {
+        let epoch = self.group(group_id)?.epoch().as_u64();
+        if voice.epoch() == Some(epoch) {
+            return Ok(false);
+        }
+        let (root, epoch, own) = self.voice_root(group_id, call_id)?;
+        voice.rekey(&root[..], epoch, own).map_err(|_| MlsError::Refused("call epoch"))?;
+        Ok(true)
+    }
+
+    fn voice_root(&mut self, group_id: &[u8], call_id: &[u8])
+        -> Result<(Zeroizing<Vec<u8>>, u64, u32)>
+    {
+        self.live()?;
+        let crypto_provider = &self.provider;
+        let group = self.groups.get(group_id).ok_or(MlsError::NoSuchGroup)?;
+        let root = group
+            .export_secret(crypto_provider.crypto(), crate::group_voice::EXPORT_LABEL,
+                           call_id, crate::group_voice::ROOT_LEN)
+            .map_err(|_| MlsError::Failed("exporter"))?;
+        Ok((Zeroizing::new(root), group.epoch().as_u64(), group.own_leaf_index().u32()))
+    }
+
+    /// The identity of the member at a leaf index (who a voice frame is from).
+    pub fn member_at(&mut self, group_id: &[u8], leaf: u32) -> Result<Vec<u8>> {
+        let group = self.group(group_id)?;
+        group.member_at(LeafNodeIndex::new(leaf))
+            .map(|m| identity_of(&m.credential))
+            .ok_or(MlsError::NoSuchMember)
+    }
+
     /// Drop a group and every secret it holds (we left, or were removed).
     pub fn forget_group(&mut self, group_id: &[u8]) {
         self.pending.remove(group_id);

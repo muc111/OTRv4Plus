@@ -9,6 +9,7 @@
 #![deny(unsafe_code)]
 
 pub mod client;
+pub mod group_voice;
 pub mod hpke;
 pub mod mlkem;
 pub mod provider;

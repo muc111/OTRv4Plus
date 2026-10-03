@@ -23,6 +23,7 @@ use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict};
 
+use otrv4_mls::group_voice::{GroupVoice, VoiceError};
 use otrv4_mls::{Event, MlsClient, MlsError};
 
 use crate::at_rest::FileDek;
@@ -248,6 +249,30 @@ impl RustMlsClient {
         Ok(d)
     }
 
+    /// Media keys for call `call_id` in this group, from the current
+    /// epoch's MLS exporter. The keys stay in Rust; Python gets an object
+    /// that seals and opens frames.
+    fn group_voice(&self, group_id: &[u8], call_id: &[u8]) -> PyResult<RustGroupVoice> {
+        bounded(call_id, 64, "call id")?;
+        let voice = self.with(|c| c.group_voice(group_id, call_id))?;
+        Ok(RustGroupVoice { inner: Mutex::new(voice), call_id: call_id.to_vec() })
+    }
+
+    /// Move a call to the group's current epoch. True if it moved.
+    fn group_voice_rekey(&self, group_id: &[u8], voice: PyRef<'_, RustGroupVoice>) -> PyResult<bool> {
+        let mut v = voice.inner.lock().unwrap_or_else(|p| p.into_inner());
+        let call_id = voice.call_id.clone();
+        self.with(|c| c.group_voice_rekey(group_id, &call_id, &mut v))
+    }
+
+    /// The identity at a leaf index (who a voice frame is from).
+    fn member_at<'py>(&self, py: Python<'py>, group_id: &[u8], leaf: u32)
+        -> PyResult<Bound<'py, PyBytes>>
+    {
+        let id = self.with(|c| c.member_at(group_id, leaf))?;
+        Ok(PyBytes::new(py, &id))
+    }
+
     fn forget_group(&self, group_id: &[u8]) {
         if let Ok(mut c) = self.inner.lock() {
             c.forget_group(group_id);
@@ -274,3 +299,68 @@ impl RustMlsClient {
     }
 }
 
+fn voice_err(e: VoiceError) -> PyErr {
+    PyValueError::new_err(format!("group voice: {e:?}"))
+}
+
+/// One member's keys for one group call (`otrv4_mls::group_voice`): AES-256-GCM
+/// frames under per-sender keys from the MLS exporter. No key has a getter.
+#[pyclass(name = "RustGroupVoice", module = "otrv4_core")]
+pub struct RustGroupVoice {
+    inner: Mutex<GroupVoice>,
+    call_id: Vec<u8>,
+}
+
+#[pymethods]
+impl RustGroupVoice {
+    fn seal<'py>(&self, py: Python<'py>, frame: &[u8]) -> PyResult<Bound<'py, PyBytes>> {
+        let mut v = self.inner.lock().unwrap_or_else(|p| p.into_inner());
+        let out = v.seal(frame).map_err(voice_err)?;
+        Ok(PyBytes::new(py, &out))
+    }
+
+    /// (sender leaf index, frame).
+    fn open<'py>(&self, py: Python<'py>, packet: &[u8]) -> PyResult<(u32, Bound<'py, PyBytes>)> {
+        let mut v = self.inner.lock().unwrap_or_else(|p| p.into_inner());
+        let (sender, frame) = v.open(packet).map_err(voice_err)?;
+        Ok((sender, PyBytes::new(py, &frame)))
+    }
+
+    fn drop_previous(&self) {
+        self.inner.lock().unwrap_or_else(|p| p.into_inner()).drop_previous();
+    }
+
+    #[getter]
+    fn epoch(&self) -> Option<u64> {
+        self.inner.lock().unwrap_or_else(|p| p.into_inner()).epoch()
+    }
+
+    #[getter]
+    fn own_index(&self) -> u32 {
+        self.inner.lock().unwrap_or_else(|p| p.into_inner()).own_index()
+    }
+
+    #[getter]
+    fn has_previous(&self) -> bool {
+        self.inner.lock().unwrap_or_else(|p| p.into_inner()).has_previous()
+    }
+
+    #[getter]
+    fn send_counter(&self) -> u64 {
+        self.inner.lock().unwrap_or_else(|p| p.into_inner()).send_counter()
+    }
+
+    /// Hang up: every key destroyed.
+    fn zeroize(&self) {
+        self.inner.lock().unwrap_or_else(|p| p.into_inner()).zeroize();
+    }
+
+    #[getter]
+    fn zeroized(&self) -> bool {
+        self.inner.lock().map(|v| v.is_zeroized()).unwrap_or(true)
+    }
+
+    fn __repr__(&self) -> &'static str {
+        "<RustGroupVoice [REDACTED]>"
+    }
+}

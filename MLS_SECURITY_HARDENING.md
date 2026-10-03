@@ -1,8 +1,9 @@
 # MLS + audio: hardening against the OTRv4+ security posture
 
 Owner's specification of 2026-10-03, checked against the code as it stood
-(rc.25, core 0.11.0), and updated as each step lands. **Status at rc.27
-(core 0.12.0): M1, M2, M3 and M4 done; M5 (group calls) open.** Each requirement is marked **MET**, **PARTIAL** or
+(rc.25, core 0.11.0), and updated as each step lands. **Status at rc.28
+(core 0.13.0): M1-M4 done; M5 (group calls) done in the core, the bridge
+and the Termux client -- the Android call screen is the part still open.** Each requirement is marked **MET**, **PARTIAL** or
 **NOT MET**, with where in the code it is decided, what is missing, and the
 commit that closes it. "Flag" marks a place where a library forces something
 weaker than the specification; those need an owner decision.
@@ -171,7 +172,7 @@ again. Proposed: implement it with the timeout configurable
 announced in the group. Or keep 24 h if the stricter posture is worth the
 friction.
 
-## 5. Audio calls — 1:1 MET; group calls NOT MET
+## 5. Audio calls — 1:1 MET; group calls MET on Termux (rc.28), Android screen open
 
 1:1 voice (`Rust/src/voice.rs`, `otrv4plus_voice.py`) already matches the
 specification, on Android and Termux:
@@ -186,7 +187,37 @@ specification, on Android and Termux:
   `_on_invite` before a session exists);
 - media over **I2P datagrams** (SAM); no PSTN, no phone numbers, no clearnet.
 
-**Group (MLS) calls do not exist.** Design for commit M5:
+**Group (MLS) calls, as built (M5, rc.28):**
+
+- keys: `Rust/mls/src/group_voice.rs`, exposed as `RustGroupVoice`
+  (no key getter). root = MLS exporter `("OTRv4+GroupVoice/v1", call_id,
+  64)`; sender key = HKDF-SHA512(root, salt call_id, "…/Sender/v1" ||
+  LP(call_id) || u64(epoch) || u32(leaf)); AES-256-GCM; nonce u32(epoch) ||
+  u64(counter); ratchet every 500 frames (old key dropped); 256-frame
+  replay window per sender; a forged frame never moves a chain; at most
+  16 senders; the previous epoch kept 2 s for frames in flight.
+- rotation: every commit moves the call to the new epoch's keys; the
+  member who started the call forces a self-update every 120 s while it
+  is up, and the commit landing is the confirmation.
+- who: only members we hold an SMP-verified binding for; control messages
+  (ring / join / here / leave, with each member's I2P datagram destination)
+  are MLS application messages, never shown as chat; an unverified joiner
+  is refused and reported, gets nothing and is not heard.
+- transport: one SAM DATAGRAM session per call (TRANSIENT destination,
+  the 1:1 tunnel options), full mesh, at most 5 participants
+  (`android_bridge/group_call.py`, `otrv4plus_groupcall.py`); Opus frames
+  padded to one size as in 1:1; one decoder and a short queue per sender,
+  mixed with clipping.
+- Termux: `/group call`, `/group answer`, `/group hangup`, `/group calls`.
+- limit: every member of the epoch can derive every sender's key, so a
+  member (not an outsider, not the server, not a removed member) could
+  forge another member's audio -- as with SRTP/SFrame group keys. Frames
+  are not signed: a 4.7 KB composite signature per 60 ms frame is not
+  viable.
+- open: the Android call screen and its audio path, and a test on real
+  phones over I2P.
+
+The original design, for reference:
 
 - the media root comes from the MLS exporter
   (`exporter("OTRv4+GroupVoice/v1", call_id, 64)`), which is hybrid once
@@ -242,5 +273,5 @@ to the commit event (one core change for both).
 | M2 | per-group signature keys, rotated on self-update; zeroized on forget — **done, rc.27 / core 0.12.0** | yes |
 | M3 | idle-leaf removal, 72 h default, needs M2's committer field — **done, rc.27** | no |
 | M4 | hybrid ciphersuite via patched OpenMLS (decision C1) — **done, rc.27** | yes; new groups |
-| M5 | group audio calls over MLS exporter keys and I2P | yes |
+| M5 | group audio calls over MLS exporter keys and I2P — **done for Termux, rc.28 / core 0.13.0; Android screen open** | yes |
 | M2b | optional: publish rotated signature keys (decision D1-3) | yes |

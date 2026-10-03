@@ -83,6 +83,10 @@ HELP = """\
   /group rekey <room>                   fresh key for you (post-compromise)
   /group leave <room>                   forget the group's keys here and leave
   /group list                           your secure groups
+  /group call <room>                    start a group voice call (verified members)
+  /group answer <room>                  join a call you were rung for
+  /group hangup                         leave the call (its keys are destroyed)
+  /group calls                          calls ringing, and who is in yours
   /wipe                                 destroy ALL local state (groups too) and exit"""
 
 
@@ -114,6 +118,11 @@ class TermuxGroups:
         self._nicks: Dict[str, str] = {}               # room -> our nick in it
         self._prejoin: Dict[str, List[Tuple[float, str, str, float, bool]]] = {}
         self._stale_run: Dict[str, int] = {}
+        #: Group voice (android_bridge.group_call + otrv4plus_groupcall),
+        #: made on first use so a client that never calls opens nothing.
+        self._calls = None
+        self._media = None
+        self._call_tick = None
         self._rejected_said: Dict[str, float] = {}     # room -> when we said so
         self._opened = False
 
@@ -147,6 +156,7 @@ class TermuxGroups:
 
     def close(self) -> None:
         """/quit: seal to disk, zeroize in memory, keep the files."""
+        self._hangup()
         try:
             self.groups.close()
         except Exception:
@@ -154,6 +164,7 @@ class TermuxGroups:
 
     def wipe(self) -> None:
         """/wipe: every group secret destroyed and the state files removed."""
+        self._hangup()
         try:
             self.groups.wipe()
         except Exception:
@@ -320,6 +331,12 @@ class TermuxGroups:
             p("[group %s] %s%s%s" % (ev.peer[:64], change, detail, epoch))
             if change == "joined":
                 self._flush_prejoin(ev.peer)
+            elif change == "call_ringing":
+                p("[group call %s] %s is calling. /group answer %s"
+                  % (ev.peer[:64], (ev.detail or "")[:96], ev.peer[:64]))
+            elif change == "call_refused_unverified":
+                p("[group call %s] %s tried to join but is not SMP-verified by "
+                  "you: not in your call" % (ev.peer[:64], (ev.detail or "")[:96]))
             elif change == "idle_removed":
                 p("[group %s] removed after 72 hours without a key update "
                   "(device away): %s. Re-invite them over OTRv4+ "
@@ -330,6 +347,87 @@ class TermuxGroups:
                   "no longer be read here." % ev.peer[:64])
         elif isinstance(ev, ErrorOccurred):
             p("[group] warning: %s%s" % (ev.code, (" (%s)" % ev.peer[:64]) if ev.peer else ""))
+
+    # -- group voice calls ----------------------------------------------------
+
+    def _group_calls(self):
+        if self._calls is None:
+            from android_bridge.group_call import GroupCalls
+            self._calls = GroupCalls(
+                self.groups,
+                send_datagram=lambda dest, packet: (
+                    self._media.send_datagram(dest, packet) if self._media else None),
+                local_destination=lambda: self._media.destination if self._media else "",
+                on_audio=lambda room, who, frame: (
+                    self._media.on_audio(room, who, frame) if self._media else None),
+                emit=self._on_event, clock=self._clock)
+        return self._calls
+
+    async def _call(self, room: str, *, start: bool) -> None:
+        # Terminal-only (microphone, speaker, its own SAM session); loaded by
+        # name so the APK, which ships this module but has no terminal
+        # command line, does not have to carry it.
+        import importlib
+        _gc = importlib.import_module("otrv4plus_groupcall")
+        calls = self._group_calls()
+        if self._media is None:
+            self._print("[group call] building an I2P datagram tunnel "
+                        "(this can take a minute)...")
+            media = _gc.GroupCallMedia(
+                loop=self.host.loop,
+                sam_host=getattr(self.host, "_voice_sam_host", "127.0.0.1"),
+                sam_port=getattr(self.host, "_voice_sam_port", 7656),
+                printer=self._print)
+            try:
+                await media.open()
+            except Exception as exc:
+                media.close()
+                self._print("[group call] could not open an I2P datagram "
+                            "session: %s" % str(exc)[:120])
+                return
+            self._media = media
+        try:
+            if start:
+                calls.start(room)
+            else:
+                calls.join(room)
+        except ValueError as exc:
+            self._print("[group call] %s" % {
+                "no_verified_member": "nobody in this group is SMP-verified by "
+                                      "you; verify members over OTRv4+ first",
+                "call_in_progress": "you are already in a call (/group hangup)",
+                "no_call": "nobody is calling in that group",
+            }.get(str(exc), str(exc)))
+            return
+        try:
+            self._media.start_audio(calls)
+        except Exception as exc:
+            self._print("[group call] audio unavailable: %s" % str(exc)[:120])
+        if self._call_tick is None:
+            self._call_tick = self.host.loop.call_later(1.0, self._tick_calls)
+
+    def _tick_calls(self) -> None:
+        self._call_tick = None
+        if self._calls is None:
+            return
+        try:
+            self._calls.tick()
+        except Exception:
+            pass
+        if self._media is not None:
+            self._call_tick = self.host.loop.call_later(1.0, self._tick_calls)
+
+    def _hangup(self) -> None:
+        calls = self._calls
+        if calls is not None:
+            for room in self.groups.rooms():
+                calls.hangup(room)
+        if self._media is not None:
+            self._media.close()
+            self._media = None
+        if self._call_tick is not None:
+            self._call_tick.cancel()
+            self._call_tick = None
 
     # -- the room (XEP-0045) ------------------------------------------------
 
@@ -466,6 +564,21 @@ class TermuxGroups:
             elif verb == "leave" and arg1:
                 self.groups.leave(arg1)
                 self._leave_muc(arg1)
+            elif verb == "call" and arg1:
+                await self._call(arg1, start=True)
+            elif verb == "answer" and arg1:
+                await self._call(arg1, start=False)
+            elif verb == "hangup":
+                self._hangup()
+            elif verb == "calls":
+                calls = self._group_calls()
+                for r in calls.ringing():
+                    p("[group call] %s is calling in %s  (/group answer %s)"
+                      % (r["from"], r["room"], r["room"]))
+                for room in self.groups.rooms():
+                    who = calls.participants(room)
+                    if who:
+                        p("[group call %s] with %s" % (room, ", ".join(who)))
             elif verb == "list":
                 p("[group] secure groups: %s"
                   % (", ".join(self.groups.rooms()) or "none"))

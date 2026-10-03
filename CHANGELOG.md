@@ -4,6 +4,27 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.28 — 2026-10-03 — group voice calls (M5), core and Termux (core 0.13.0)
+
+**Termux: run \`build.sh\` again** (core 0.13.0).
+
+- **Group voice calls in secure groups** (MLS_SECURITY_HARDENING.md §5).
+  Keys come from the group's MLS exporter -- hybrid X448+ML-KEM-1024 since
+  rc.27 -- per epoch and per sender, and never leave Rust
+  (\`RustGroupVoice\`): AES-256-GCM, nonce epoch||counter, a ratchet every
+  500 frames, a replay window per sender. Every commit moves the call to new
+  keys, and whoever started the call forces one every 120 s.
+- **Only SMP-verified members are in a call.** Ring/join/leave travel as MLS
+  messages (never shown as chat) and carry each member's I2P datagram
+  destination; an unverified member's join is refused and reported, and
+  they neither receive nor are heard.
+- **Termux**: \`/group call <room>\`, \`/group answer <room>\`,
+  \`/group hangup\`, \`/group calls\`. One SAM datagram session per call,
+  full mesh, up to 5 people; Opus padded to one frame size as in 1:1
+  calls, mixed per sender.
+- **Not yet**: the Android call screen for group calls; and no group call
+  has been made on real phones over I2P yet.
+
 ## Android 0.7.0-experimental.rc.27 — 2026-10-03 — hybrid post-quantum MLS; adaptive group speed; MLS hardening M2-M4 (core 0.12.0)
 
 **Termux: run \`build.sh\` again** -- the core changed (0.12.0). Existing

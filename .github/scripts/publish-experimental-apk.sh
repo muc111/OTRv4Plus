@@ -180,7 +180,9 @@ Asserted on every run rather than assumed:
   **adaptive room pacing**, **per-group MLS signing keys rotated at every
   rekey**, verification that survives a rekey and a restart, and **removal
   of members away for 72 hours** (rc.27). Groups made before rc.27 keep
-  working but must be re-created to add members. See CHANGELOG.md.
+  working but must be re-created to add members. **Group voice calls**
+  (rc.28) work in the Termux client only so far, and have not been tried on
+  phones; the app has no group call screen yet. See CHANGELOG.md.
 - **What earlier versions added**, not yet run on a handset: automatic
   OTRv4+ only toward clients that advertise OTRv4Plus, the People list, file
   progress with ETA, the in-app viewer, Wipe & Exit from the conversation
