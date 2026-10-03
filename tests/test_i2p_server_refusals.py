@@ -255,3 +255,23 @@ def test_the_terminal_client_uses_the_same_rule():
     assert A.canonical_jid("bob@" + SHIPPED_B32 + "/termux") == \
         "bob@otrv4plus.i2p/termux"
     assert A.canonical_jid("bob@other.i2p") == "bob@other.i2p"
+
+
+def test_a_bounced_room_message_is_in_the_report():
+    """mod_muc_limits bounced every MLS fragment and the app ignored the
+    error, so the report showed nothing (device test, 2026-10-02)."""
+    t = T.XmppTransport.__new__(T.XmppTransport)
+    t._room_nicks = {"mls2@conference.otrv4plus.i2p": "alice"}
+
+    class Stanza(dict):
+        pass
+    st = Stanza()
+    st["from"] = "mls2@conference.otrv4plus.i2p"
+    st["error"] = {"condition": "policy-violation",
+                   "text": "Your message is too long"}
+    TRACE.clear()
+    t._on_message_error(st)
+    (ev,) = [e for e in TRACE.events(10) if e["event"] == "message_rejected"]
+    assert ev["component"] == "rooms"
+    assert ev["fields"]["condition"] == "policy-violation"
+    assert "too long" not in repr(ev)

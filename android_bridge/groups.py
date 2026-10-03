@@ -555,7 +555,8 @@ class SecureGroups:
 
     def _post(self, room: str, mls: bytes) -> None:
         payload = ROOM_PREFIX + _b64e(mls)
-        parts, self._frag_seq = _fragment.fragment(payload, self._frag_seq)
+        parts, self._frag_seq = _fragment.fragment(
+            payload, self._frag_seq, _fragment.ROOM_FRAGMENT)
         for part in parts:
             self._send_room(room, part)
 

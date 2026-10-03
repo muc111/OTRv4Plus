@@ -4,6 +4,34 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.23 — 2026-10-03 — secure groups fit a stock Prosody room (core 0.11.0)
+
+*Device test: Alice (app) created `mls2`, invited B (Termux). B accepted and
+got no Welcome; Alice's sends said "message not sent"; B's `/group say` said
+`not_a_group`.*
+
+**Cause, measured.** Every MLS frame is posted to the room in fragments,
+and each fragment was 6021 characters. Prosody's `mod_muc_limits` (enabled
+on the test server's `conference` component) refuses room messages over
+`muc_max_char_count`, 5664 characters by default. Post-quantum signatures
+make every MLS frame larger than that: "hi" is 6311 characters on the wire,
+and a commit adding a member is 40,439. So every fragment bounced. Alice's
+commit never came back from the room, her group held it pending (refusing
+every send), and the Welcome, sent only when the commit lands, never left.
+A new interop test (the app creates, Termux joins, over a simulated server
+with Prosody's limit) reproduces the failure with the old size.
+
+- **Room fragments are 4000 characters** (`otrv4plus_fragment.ROOM_FRAGMENT`),
+  under the default limit with the header. This applies to both clients,
+  through the shared `SecureGroups`. One-to-one chat is unchanged, and the
+  receiver takes any piece size.
+- **A message the server bounces is in the diagnostic report**
+  (`rooms/message_rejected`, condition only). It was ignored before.
+- **Still a server matter:** `mod_muc_limits` also rate-limits (about 0.5
+  messages per second, with a small burst). A commit is about 11 fragments,
+  so for MLS rooms remove `muc_limits` from the conference component or
+  raise its rate.
+
 ## Android 0.7.0-experimental.rc.22 — 2026-10-02 — secure groups survive a reconnect and a capitalised invite; no plaintext into a group room (core 0.11.0)
 
 *Four-account MLS test: Alice (app) invited B (Termux). B accepted and waited

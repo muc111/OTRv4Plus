@@ -3519,6 +3519,7 @@ class XmppTransport(Transport):
             _log.warning("could not install the inbound filter")
         client.add_event_handler("presence_subscribe", self._on_subscribe)
         client.add_event_handler("message", self._on_message)
+        client.add_event_handler("message_error", self._on_message_error)
         # Room messages arrive as type="groupchat", which `_on_message`
         # deliberately ignores: a room is not a peer, and its traffic must
         # never reach the OTR engine as though it were.
@@ -3552,6 +3553,23 @@ class XmppTransport(Transport):
     #: stanza of whatever size the server allows went to the engine and then
     #: across the JNI boundary into the UI.
     MAX_DIRECT_BODY = 64 * 1024
+
+    def _on_message_error(self, stanza) -> None:
+        """A message the server bounced. Recorded, never shown as text.
+
+        Ignored before, which hid the failure of every secure group on a
+        stock Prosody: mod_muc_limits refused each MLS room fragment as too
+        long (device test, 2026-10-02) and the report said nothing. The
+        condition is a fixed RFC 6120 word; the error text, which can quote
+        the message, is not recorded."""
+        try:
+            sender = str(stanza.get("from") or "").split("/", 1)[0].lower()
+            cond = str(stanza["error"]["condition"] or "") or "unknown"
+        except Exception:
+            return
+        to_room = sender in self._room_nicks
+        _TRACE.record("rooms" if to_room else "chat", "message_rejected",
+                      "warning", peer=sender, condition=cond[:40])
 
     def _on_message(self, stanza) -> None:
         """Hand the body up, whatever it is.

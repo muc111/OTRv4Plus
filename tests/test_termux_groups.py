@@ -76,6 +76,10 @@ class Server:
         self.held = []                         # chat held back (ordering tests)
         self.hold_chat_to = None
         self.room_log = []                     # (room, nick, body)
+        #: Prosody mod_muc_limits `muc_max_char_count` (default 5664): a
+        #: longer room message is bounced, never relayed. None: no limit.
+        self.room_char_limit = None
+        self.room_bounced = []
 
     def attach(self, node):
         self.nodes[node.jid] = node
@@ -86,6 +90,9 @@ class Server:
             nick = self.rooms.get(to, {}).get(frm)
             if nick is None:
                 return                          # not an occupant: dropped
+            if self.room_char_limit and len(body) > self.room_char_limit:
+                self.room_bounced.append((to, nick, len(body)))
+                return                          # policy-violation bounce
             self.room_log.append((to, nick, body))
             for jid, _n in list(self.rooms.get(to, {}).items()):
                 self.queue.append(("groupchat", jid, to, nick, body))
@@ -783,3 +790,54 @@ class TestBoundaries:
         # The import check the procedure (PHYSICAL_TEST_PLAN.md 7a) relies on.
         assert 'print("otrv4_core imported OK")' in build
         assert '"yes" if mls else "NO"' in build
+
+
+class TestTheAppCreatesAndTermuxJoins:
+    """The device test's direction, 2026-10-02: Alice creates the group IN THE
+    APP and invites a Termux user, who opened the OTRv4+ session with /otr.
+    Every test above has Termux create it."""
+
+    @pytest.mark.parametrize("limit", [None, 5664])
+    def test_android_creates_termux_joins_and_both_talk(self, world, limit):
+        """5664: a stock Prosody's mod_muc_limits, as on the device test's
+        server -- where every MLS room fragment (6021 characters) bounced."""
+        w = world
+        w.server.room_char_limit = limit
+
+        async def go():
+            w.b.start_otr(w.c.jid)                 # B: /otr <alice on the app>
+            await w.server.pump()
+            assert w.b.client.otr.has_encrypted_session(w.c.jid)
+            # The app: create (RoomsScreen "Create end-to-end encrypted group").
+            w.server.rooms.setdefault(ROOM, {})[w.c.jid] = w.c.jid.split("@")[0]
+            w.c.app.note_room_joined(ROOM)
+            w.c.app.groups.create(ROOM)
+            w.c.app.groups.invite(ROOM, w.b.jid)
+            await w.server.pump()
+            assert w.b.lines("invites you to the secure group " + ROOM)
+            await w.b.cmd("/group accept " + ROOM)
+            await w.server.pump()
+
+        run(go())
+        assert w.b.groups.groups.is_secure(ROOM), "\n".join(w.b.printed[-15:])
+        assert w.c.app.send_user_text(ROOM, "hello from the app") == OtrApp.SEND_ENCRYPTED
+        run(w.server.pump())
+        assert w.b.lines("hello from the app")
+        run(w.b.cmd("/group say %s hello from termux" % ROOM))
+        run(w.server.pump())
+        assert "hello from termux" in w.c.texts()
+        assert w.server.room_bounced == []
+
+
+def test_room_fragments_fit_a_stock_prosody():
+    """Every room fragment, header included, under mod_muc_limits' default
+    5664 characters, for the largest frame a group posts (a commit adding a
+    member: ~40 KB)."""
+    payload = ROOM_PREFIX + "A" * 40439
+    parts, _ = frag.fragment(payload, 0, frag.ROOM_FRAGMENT)
+    assert max(len(p) for p in parts) < 5664
+    r = frag.Reassembler()
+    out = [r.feed("room/nick", p) for p in parts]
+    assert out[-1] == payload and all(o is None for o in out[:-1])
+    # One-to-one chat is unchanged.
+    assert max(len(p) for p in frag.fragment(payload, 0)[0]) > 5664
