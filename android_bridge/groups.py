@@ -139,35 +139,85 @@ def _env_int(name: str, default: int, low: int, high: int) -> int:
     return max(low, min(high, value))
 
 
+class _PacedRoom:
+    """One room's pacing state (RoomPacer's, under its lock)."""
+
+    __slots__ = ("queue", "tokens", "at", "slow_until", "strikes",
+                 "requeued_at", "inflight", "armed", "check_armed")
+
+    def __init__(self, now: float, burst: int):
+        #: [part, attempts] still to send, oldest first.
+        self.queue: collections.deque = collections.deque()
+        self.tokens = float(burst)
+        self.at = now
+        #: Slow until this time (a rejection); fast after it.
+        self.slow_until = 0.0
+        #: Rejections so far; each doubles the next slow period.
+        self.strikes = 0
+        self.requeued_at = -1e18
+        #: part -> (sent at, attempts): sent, not yet seen back from the room.
+        self.inflight: "collections.OrderedDict[str, Tuple[float, int]]" = \
+            collections.OrderedDict()
+        self.armed = False
+        self.check_armed = False
+
+
 class RoomPacer:
-    """Room fragments out at a rate a stock XMPP server accepts.
+    """Room fragments out as fast as the server takes them, and no faster.
 
-    Prosody's mod_muc_limits allows about one room message per two seconds
-    per occupant, with a small burst, and bounces the rest. A commit adding a
-    member is ~11 fragments, so sent back to back most of it bounced, the
-    commit never landed, and the group stalled. A token bucket per room:
-    `burst` fragments at once, then one per `interval` seconds, in order --
-    a later frame never overtakes an earlier one's remaining fragments.
+    A room reflects every message to its sender (XEP-0045), so each piece
+    sent is held as IN FLIGHT until its own echo comes back (`confirm`).
 
-    `interval <= 0` sends everything at once (tests, and servers without a
-    limit). `schedule(delay, fn)` runs `fn` later; the default is a daemon
-    timer thread, so `send` must be safe to call from another thread.
+      * FAST by default: `burst` pieces at once, then one per `interval`.
+        On a server that allows it a commit adding a member (~11 pieces)
+        is out in about a second.
+      * A REJECTION (`rejected`, e.g. Prosody's mod_muc_limits bouncing a
+        message) switches that room to SLOW (`slow_burst`, one per
+        `slow_interval`, under mod_muc_limits' defaults) and puts every
+        piece still in flight back at the front of the queue. The room
+        stays slow for `slow_for` seconds, doubled per further rejection up
+        to `max_slow_for`, then tries fast again.
+      * A piece not echoed within `echo_timeout` (bounced without a notice,
+        or lost) is sent again. Each piece goes at most `max_attempts`
+        times; then the room is reported (`on_error`).
+
+    Sending a piece twice is harmless: the receiver's reassembler takes the
+    same fragment again, and MLS drops a replayed message or a stale
+    commit. Order is kept: a later frame never overtakes an earlier one's
+    remaining pieces.
+
+    `interval <= 0` sends everything at once with no tracking (tests, and
+    servers without a limit). `schedule(delay, fn)` runs `fn` later; the
+    default is a daemon timer thread, so `send` must be safe to call from
+    another thread.
     """
+
+    MAX_INFLIGHT = 512
+    #: Rejections this close to the last re-queue are for pieces of the
+    #: same burst, already re-queued: they keep the room slow, nothing more.
+    REJECT_SETTLE = 5.0
 
     def __init__(self, send: Callable[[str, str], None], *, burst: int,
                  interval: float, on_error: Callable[[str], None],
+                 slow_burst: int = 3, slow_interval: float = 2.2,
+                 slow_for: float = 300.0, max_slow_for: float = 3600.0,
+                 echo_timeout: float = 20.0, max_attempts: int = 3,
                  clock: Callable[[], float] = time.monotonic,
                  schedule: Optional[Callable[[float, Callable[[], None]], Any]] = None):
         self._send = send
         self._burst = max(1, int(burst))
         self._interval = float(interval)
+        self._slow_burst = max(1, int(slow_burst))
+        self._slow_interval = max(float(slow_interval), self._interval, 0.001)
+        self._slow_for = float(slow_for)
+        self._max_slow_for = max(float(max_slow_for), self._slow_for)
+        self._echo_timeout = float(echo_timeout)
+        self._max_attempts = max(1, int(max_attempts))
         self._on_error = on_error
         self._clock = clock
         self._schedule = schedule or self._timer
         self._lock = threading.RLock()
-        self._queues: Dict[str, collections.deque] = {}
-        self._tokens: Dict[str, Tuple[float, float]] = {}   # room -> (tokens, at)
-        self._armed: set = set()
+        self._rooms: Dict[str, _PacedRoom] = {}
         self._closed = False
 
     @staticmethod
@@ -177,6 +227,14 @@ class RoomPacer:
         t.start()
         return t
 
+    def _room(self, room: str) -> _PacedRoom:
+        state = self._rooms.get(room)
+        if state is None:
+            state = self._rooms[room] = _PacedRoom(self._clock(), self._burst)
+        return state
+
+    # -- what callers see -----------------------------------------------------
+
     def post(self, room: str, parts: List[str]) -> None:
         if self._interval <= 0:
             for part in parts:
@@ -185,55 +243,153 @@ class RoomPacer:
         with self._lock:
             if self._closed:
                 return
-            self._queues.setdefault(room, collections.deque()).extend(parts)
+            self._room(room).queue.extend([part, 0] for part in parts)
         self._pump(room)
 
     def pending(self, room: str) -> int:
+        """Pieces for `room` not yet sent (in flight ones are sent)."""
         with self._lock:
-            return len(self._queues.get(room, ()))
+            state = self._rooms.get(room)
+            return len(state.queue) if state else 0
 
-    def _take_token(self, room: str) -> bool:
+    def in_flight(self, room: str) -> int:
+        with self._lock:
+            state = self._rooms.get(room)
+            return len(state.inflight) if state else 0
+
+    def is_slow(self, room: str) -> bool:
+        with self._lock:
+            state = self._rooms.get(room)
+            return bool(state) and self._clock() < state.slow_until
+
+    def confirm(self, room: str, part: str) -> bool:
+        """Our own piece came back from the room: it was delivered."""
+        with self._lock:
+            state = self._rooms.get(room)
+            if state is None:
+                return False
+            return state.inflight.pop(part, None) is not None
+
+    def rejected(self, room: str) -> None:
+        """The server bounced a message to `room`: slow down, send again."""
+        if self._interval <= 0:
+            return
+        with self._lock:
+            if self._closed:
+                return
+            state = self._room(room)
+            now = self._clock()
+            if now - state.requeued_at < self.REJECT_SETTLE:
+                state.slow_until = max(state.slow_until,
+                                       now + self._slow_period(state))
+                return
+            state.strikes += 1
+            state.slow_until = now + self._slow_period(state)
+            state.tokens = 0.0       # the server's bucket is empty too
+            state.at = now
+            state.requeued_at = now
+            self._requeue(room, state, list(state.inflight))
+        self._pump(room)
+
+    def close(self) -> None:
+        with self._lock:
+            self._closed = True
+            self._rooms.clear()
+
+    # -- inside -----------------------------------------------------------------
+
+    def _slow_period(self, state: _PacedRoom) -> float:
+        return min(self._max_slow_for,
+                   self._slow_for * (2 ** max(0, min(state.strikes - 1, 16))))
+
+    def _requeue(self, room: str, state: _PacedRoom, parts: List[str]) -> None:
+        """Put `parts` (in flight) back at the front, oldest first. Called
+        with the lock held; a piece out of attempts is given up."""
+        again = []
+        failed = False
+        for part in parts:
+            _sent, attempts = state.inflight.pop(part)
+            if attempts >= self._max_attempts:
+                failed = True
+                continue
+            again.append([part, attempts])
+        state.queue.extendleft(reversed(again))
+        if failed:
+            self._schedule(0, lambda: self._on_error(room))
+
+    def _take_token(self, state: _PacedRoom) -> Tuple[bool, float]:
         now = self._clock()
-        tokens, at = self._tokens.get(room, (float(self._burst), now))
-        tokens = min(float(self._burst), tokens + (now - at) / self._interval)
+        slow = now < state.slow_until
+        burst = self._slow_burst if slow else self._burst
+        interval = self._slow_interval if slow else self._interval
+        tokens = min(float(burst), state.tokens + (now - state.at) / interval)
         if tokens >= 1.0:
-            self._tokens[room] = (tokens - 1.0, now)
-            return True
-        self._tokens[room] = (tokens, now)
-        return False
+            state.tokens, state.at = tokens - 1.0, now
+            return True, interval
+        state.tokens, state.at = tokens, now
+        return False, interval * (1.0 - tokens)
 
     def _pump(self, room: str) -> None:
         while True:
             with self._lock:
                 if self._closed:
                     return
-                queue = self._queues.get(room)
-                if not queue:
-                    self._queues.pop(room, None)
+                state = self._rooms.get(room)
+                if state is None or not state.queue:
                     return
-                if not self._take_token(room):
-                    if room not in self._armed:
-                        self._armed.add(room)
-                        self._schedule(self._interval, lambda: self._fire(room))
+                ok, wait = self._take_token(state)
+                if not ok:
+                    if not state.armed:
+                        state.armed = True
+                        self._schedule(max(wait, 0.001), lambda: self._fire(room))
                     return
-                part = queue.popleft()
+                part, attempts = state.queue.popleft()
+                state.inflight.pop(part, None)
+                state.inflight[part] = (self._clock(), attempts + 1)
+                while len(state.inflight) > self.MAX_INFLIGHT:
+                    state.inflight.popitem(last=False)
+                if not state.check_armed:
+                    state.check_armed = True
+                    self._schedule(self._echo_timeout, lambda: self._expire(room))
             try:
                 self._send(room, part)
             except Exception:
                 with self._lock:
-                    self._queues.pop(room, None)   # the rest of a set is useless
+                    # The stream is gone: the rest of a set is useless, and a
+                    # commit is posted again by its owner after a rejoin.
+                    state.queue.clear()
+                    state.inflight.clear()
                 self._on_error(room)
                 return
 
     def _fire(self, room: str) -> None:
         with self._lock:
-            self._armed.discard(room)
+            state = self._rooms.get(room)
+            if state is not None:
+                state.armed = False
         self._pump(room)
 
-    def close(self) -> None:
+    def _expire(self, room: str) -> None:
+        """Pieces sent `echo_timeout` ago and never echoed go again."""
         with self._lock:
-            self._closed = True
-            self._queues.clear()
+            if self._closed:
+                return
+            state = self._rooms.get(room)
+            if state is None:
+                return
+            state.check_armed = False
+            now = self._clock()
+            late = [part for part, (sent, _n) in state.inflight.items()
+                    if now - sent >= self._echo_timeout]
+            if late:
+                self._requeue(room, state, late)
+            if state.inflight:
+                oldest = min(sent for sent, _n in state.inflight.values())
+                state.check_armed = True
+                self._schedule(max(0.001, oldest + self._echo_timeout - now),
+                               lambda: self._expire(room))
+        if late:
+            self._pump(room)
 
 
 class SecureGroups:
@@ -246,10 +402,18 @@ class SecureGroups:
     STATE_NAME = "groups.sealed"
     DEK_NAME = "groups.dek"
 
-    #: RoomPacer settings, under mod_muc_limits' defaults (0.5 events/s).
-    #: Tests set ROOM_INTERVAL to 0 (tests/conftest.py).
-    ROOM_BURST = 3
-    ROOM_INTERVAL = 2.2
+    #: RoomPacer settings. Fast (10 at once, then 4 a second) until the
+    #: server bounces something, then slow -- under mod_muc_limits' defaults
+    #: (0.5 events/s) -- for 5 minutes, doubling per further bounce up to an
+    #: hour. Tests set ROOM_INTERVAL to 0, which sends at once
+    #: (tests/conftest.py).
+    ROOM_BURST = 10
+    ROOM_INTERVAL = 0.25
+    ROOM_SLOW_BURST = 3
+    ROOM_SLOW_INTERVAL = 2.2
+    ROOM_SLOW_FOR = 300.0
+    #: A piece of ours not echoed by the room in this long is sent again.
+    ROOM_ECHO_TIMEOUT = 20.0
     #: How many times one of our commits is posted again when it does not
     #: come back from the room (bounced, or lost across a reconnect).
     MAX_COMMIT_RESENDS = 3
@@ -302,6 +466,9 @@ class SecureGroups:
         self._since_rekey: Dict[str, List[float]] = {}
         self._pacer = RoomPacer(
             send_room, burst=self.ROOM_BURST, interval=self.ROOM_INTERVAL,
+            slow_burst=self.ROOM_SLOW_BURST,
+            slow_interval=self.ROOM_SLOW_INTERVAL,
+            slow_for=self.ROOM_SLOW_FOR, echo_timeout=self.ROOM_ECHO_TIMEOUT,
             on_error=lambda room: self._emit(
                 ErrorOccurred(peer=room, code="group_send_failed")))
 
@@ -725,8 +892,8 @@ class SecureGroups:
                 return False
             if entry[1] >= self.MAX_COMMIT_RESENDS:
                 return False
-            if self._pacer.pending(room):
-                return False         # its fragments are still going out
+            if self._pacer.pending(room) or self._pacer.in_flight(room):
+                return False         # its pieces are still going out
             entry[1] += 1
             commit = entry[0]
         self._emit(GroupChanged(peer=room, change="commit_resent",
@@ -739,7 +906,12 @@ class SecureGroups:
         if not self.is_secure(room):
             return
         self._emit(ErrorOccurred(peer=room, code="room_message_rejected"))
-        self.resend_pending_commit(room, "rejected")
+        # Slow this room down and send again what it has not echoed. That
+        # covers our commit too; resend_pending_commit is the fallback when
+        # nothing of it is left in flight (e.g. pacing off).
+        self._pacer.rejected(room)
+        if not self._pacer.in_flight(room):
+            self.resend_pending_commit(room, "rejected")
 
     def on_room_rejoined(self, room: str) -> None:
         """We are in `room` again after a reconnect: a commit lost with the
@@ -841,6 +1013,8 @@ class SecureGroups:
         Plain rooms return False and the caller treats them as before."""
         if not self.is_secure(room):
             return False
+        if own:
+            self._pacer.confirm(room, body)
         if _fragment.is_fragment(body):
             whole = self._reassembler.feed("%s/%s" % (room, nick), body)
             if whole is None:

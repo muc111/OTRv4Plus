@@ -386,56 +386,196 @@ def test_malformed_signals_do_nothing():
 
 
 
-class TestRoomPacer:
-    """Room fragments under mod_muc_limits' rate: a burst, then spaced, in
-    order, never overtaking (unit, with a manual clock and scheduler)."""
+class _Clock:
+    """A manual clock and scheduler for RoomPacer."""
 
-    def _pacer(self, burst=3, interval=2.0):
+    def __init__(self):
+        self.now = 0.0
+        self.timers = []
+
+    def schedule(self, delay, fn):
+        self.timers.append((self.now + delay, len(self.timers), fn))
+
+    def advance(self, seconds):
+        end = self.now + seconds
+        while True:
+            due = sorted(t for t in self.timers if t[0] <= end)
+            if not due:
+                break
+            first = due[0]
+            self.timers.remove(first)
+            self.now = max(self.now, first[0])
+            first[2]()
+        self.now = end
+
+
+class TestRoomPacer:
+    """Room fragments: fast until the server bounces one, then slow; every
+    piece held until the room echoes it, and sent again if it never does
+    (unit, with a manual clock and scheduler)."""
+
+    def _pacer(self, burst=3, interval=2.0, send=None, **kw):
         from android_bridge.groups import RoomPacer
-        now = [0.0]
-        timers = []
+        clock = _Clock()
         sent = []
-        p = RoomPacer(lambda room, part: sent.append(part), burst=burst,
-                      interval=interval, on_error=lambda room: None,
-                      clock=lambda: now[0],
-                      schedule=lambda delay, fn: timers.append((delay, fn)))
-        return p, now, timers, sent
+        errors = []
+        p = RoomPacer(send or (lambda room, part: sent.append(part)),
+                      burst=burst, interval=interval, on_error=errors.append,
+                      clock=lambda: clock.now, schedule=clock.schedule, **kw)
+        return p, clock, sent, errors
 
     def test_burst_then_one_per_interval_in_order(self):
-        p, now, timers, sent = self._pacer()
+        p, clock, sent, _e = self._pacer()
         p.post("r", ["a1", "a2", "a3", "a4", "a5"])
         p.post("r", ["b1"])
         assert sent == ["a1", "a2", "a3"]
         for expected in (["a4"], ["a5"], ["b1"]):
-            now[0] += 2.0
-            _delay, fn = timers.pop(0)
-            fn()
+            clock.advance(2.0)
             assert sent[-1:] == expected
         assert p.pending("r") == 0
 
+    def test_fast_by_default(self):
+        p, clock, sent, _e = self._pacer(burst=10, interval=0.25)
+        parts = ["p%d" % i for i in range(11)]       # an add-member commit
+        p.post("r", parts)
+        assert len(sent) == 10
+        clock.advance(0.25)
+        assert sent == parts and not p.is_slow("r")
+
     def test_zero_interval_sends_at_once(self):
-        p, now, timers, sent = self._pacer(interval=0)
+        p, clock, sent, _e = self._pacer(interval=0)
         p.post("r", ["1", "2", "3", "4", "5"])
-        assert sent == ["1", "2", "3", "4", "5"] and timers == []
+        assert sent == ["1", "2", "3", "4", "5"] and clock.timers == []
+        assert p.in_flight("r") == 0
 
     def test_a_failed_send_drops_the_rest_of_that_set(self):
-        from android_bridge.groups import RoomPacer
-        errors = []
-
         def boom(room, part):
             raise OSError("gone")
-        p = RoomPacer(boom, burst=3, interval=1.0, on_error=errors.append,
-                      clock=lambda: 0.0, schedule=lambda d, f: None)
+        p, clock, _sent, errors = self._pacer(send=boom, interval=1.0)
         p.post("r", ["1", "2"])
-        assert errors == ["r"] and p.pending("r") == 0
+        assert errors == ["r"] and p.pending("r") == 0 and p.in_flight("r") == 0
 
     def test_close_stops_everything(self):
-        p, now, timers, sent = self._pacer()
+        p, clock, sent, _e = self._pacer()
         p.post("r", ["1", "2", "3", "4"])
         p.close()
-        now[0] += 10
-        timers[0][1]()
+        clock.advance(100)
         assert sent == ["1", "2", "3"]
+
+    def test_an_echo_confirms_a_piece(self):
+        p, clock, sent, _e = self._pacer(echo_timeout=20)
+        p.post("r", ["1", "2"])
+        assert p.in_flight("r") == 2
+        assert p.confirm("r", "1") and not p.confirm("r", "1")
+        assert not p.confirm("other", "2")
+        p.confirm("r", "2")
+        clock.advance(60)
+        assert sent == ["1", "2"]                # nothing sent again
+
+    def test_a_rejection_slows_the_room_and_resends_what_was_not_echoed(self):
+        p, clock, sent, _e = self._pacer(burst=10, interval=0.25, slow_burst=3,
+                                         slow_interval=2.0, slow_for=300)
+        p.post("r", ["1", "2", "3", "4", "5"])
+        p.confirm("r", "1")
+        p.confirm("r", "2")
+        p.rejected("r")
+        assert p.is_slow("r")
+        assert sent == ["1", "2", "3", "4", "5"]  # waits for the server
+        assert p.pending("r") == 3
+        # More bounces for the same burst only keep it slow.
+        p.rejected("r")
+        assert p.pending("r") == 3
+        clock.advance(2.0)
+        assert sent[5:] == ["3"]
+        clock.advance(4.0)
+        assert sent[5:] == ["3", "4", "5"]       # in order, one per 2 s
+
+    def test_slow_ends_after_the_quiet_period_and_doubles_per_strike(self):
+        p, clock, sent, _e = self._pacer(burst=10, interval=0.25, slow_burst=1,
+                                         slow_interval=2.0, slow_for=300,
+                                         max_slow_for=1000)
+        p.rejected("r")
+        clock.advance(299)
+        assert p.is_slow("r")
+        clock.advance(2)
+        assert not p.is_slow("r")
+        p.rejected("r")
+        clock.advance(599)
+        assert p.is_slow("r")
+        clock.advance(2)
+        assert not p.is_slow("r")
+        for _ in range(5):
+            clock.advance(10)
+            p.rejected("r")
+        clock.advance(999)
+        assert p.is_slow("r")                    # capped, not 300 * 2**6
+        clock.advance(2)
+        assert not p.is_slow("r")
+
+    def test_a_piece_never_echoed_goes_again_then_is_given_up(self):
+        p, clock, sent, errors = self._pacer(burst=5, interval=0.5,
+                                             echo_timeout=20, max_attempts=3)
+        p.post("r", ["a", "b"])
+        p.confirm("r", "b")
+        clock.advance(20)
+        assert sent == ["a", "b", "a"]
+        clock.advance(20)
+        assert sent == ["a", "b", "a", "a"]
+        clock.advance(20)
+        assert sent.count("a") == 3 and errors == ["r"]
+        assert p.in_flight("r") == 0
+        clock.advance(100)
+        assert sent.count("a") == 3
+
+
+class TestAdaptivePacingEndToEnd:
+    """A group on a server that rate-limits the room (mod_muc_limits left at
+    its defaults): the first burst is partly bounced, the sender slows
+    down and sends the bounced pieces again, and every message arrives."""
+
+    def test_every_message_arrives_through_a_rate_limited_room(self):
+        from android_bridge.groups import RoomPacer
+        w, (a, b, c) = _group(3)
+        clock = _Clock()
+        for m in (a, b, c):
+            m.groups._pacer = RoomPacer(
+                m.groups._send_room, burst=10, interval=0.25, slow_burst=3,
+                slow_interval=2.2, slow_for=300, echo_timeout=20,
+                on_error=lambda room: None,
+                clock=lambda: clock.now, schedule=clock.schedule)
+
+        # The server: 3 events at once, then one per 2 s per occupant; the
+        # rest bounced, the notice arriving half a second later.
+        bucket = {}
+        bounced = []
+        post = w.room.post
+
+        def limited(sender_jid, body):
+            tokens, at = bucket.get(sender_jid, (3.0, clock.now))
+            tokens = min(3.0, tokens + (clock.now - at) / 2.0)
+            if tokens < 1.0:
+                bucket[sender_jid] = (tokens, clock.now)
+                bounced.append(sender_jid)
+                clock.schedule(0.5, lambda: w.members[sender_jid]
+                               .groups.on_room_rejected(ROOM))
+                return
+            bucket[sender_jid] = (tokens - 1.0, clock.now)
+            post(sender_jid, body)
+        w.room.post = limited
+
+        a.groups.rekey(ROOM)                  # ~8 pieces: most bounce
+        clock.advance(120)
+        assert bounced, "the server never limited anything"
+        assert a.groups._pacer.is_slow(ROOM)
+        for line in ("one", "two", "three"):
+            a.groups.send(ROOM, line)
+        clock.advance(120)
+        for m in (b, c):
+            got = [body for who, body, _v in m.texts() if who == "alice@x.i2p"]
+            assert got == ["one", "two", "three"], got
+            assert m.groups.epoch(ROOM) == a.groups.epoch(ROOM)
+        assert a.groups._pacer.in_flight(ROOM) == 0
+        assert a.groups._pacer.pending(ROOM) == 0
 
 
 class TestRekeyKnobs:

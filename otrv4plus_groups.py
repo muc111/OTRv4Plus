@@ -114,6 +114,7 @@ class TermuxGroups:
         self._nicks: Dict[str, str] = {}               # room -> our nick in it
         self._prejoin: Dict[str, List[Tuple[float, str, str, float, bool]]] = {}
         self._stale_run: Dict[str, int] = {}
+        self._rejected_said: Dict[str, float] = {}     # room -> when we said so
         self._opened = False
 
     # -- lifecycle ----------------------------------------------------------
@@ -375,11 +376,16 @@ class TermuxGroups:
         room = _canon(room)
         if not (self._opened and self.groups.is_secure(room)):
             return False
-        self._print("[group %s] the server refused a group message; if it "
-                    "was a membership change it is sent again. If this "
-                    "repeats, the room's server limits are too low for MLS "
-                    "(Prosody: remove muc_limits from the conference "
-                    "component)." % room[:64])
+        # A fast burst into a limited room bounces several pieces at once:
+        # say it once a minute, not once per piece.
+        now = self._clock()
+        if now - self._rejected_said.get(room, -1e18) >= 60:
+            self._rejected_said[room] = now
+            self._print("[group %s] the server refused group messages (rate "
+                        "limit); slowing down for this room and sending them "
+                        "again. If this repeats, the room's server limits are "
+                        "too low for MLS (Prosody: raise or remove muc_limits "
+                        "on the conference component)." % room[:64])
         self.groups.on_room_rejected(room)
         return True
 
