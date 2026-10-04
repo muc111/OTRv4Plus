@@ -120,6 +120,7 @@ class TermuxGroups:
         self._stale_run: Dict[str, int] = {}
         #: Group voice (android_bridge.group_call + otrv4plus_groupcall),
         #: made on first use so a client that never calls opens nothing.
+        self._invite_after_otr: Dict[str, List[str]] = {}
         self._calls = None
         self._media = None
         self._call_tick = None
@@ -348,6 +349,39 @@ class TermuxGroups:
         elif isinstance(ev, ErrorOccurred):
             p("[group] warning: %s%s" % (ev.code, (" (%s)" % ev.peer[:64]) if ev.peer else ""))
 
+    # -- invitations: OTRv4+ first, by itself ------------------------------------
+
+    def _invite(self, room: str, peer: str) -> None:
+        """Invite over OTRv4+; with no session yet, start one and invite
+        when it is up (no separate /otr needed)."""
+        try:
+            self.groups.invite(room, peer)
+            self._print("[group %s] invitation sent to %s over OTRv4+" % (room[:64], peer))
+            return
+        except GroupError as exc:
+            if exc.code != "otr_required":
+                raise
+        self._invite_after_otr.setdefault(peer, [])
+        if room not in self._invite_after_otr[peer]:
+            self._invite_after_otr[peer].append(room)
+        self._print("[group %s] no OTRv4+ session with %s yet: starting one; the "
+                    "invitation goes when it is ready (usually 1-2 min over I2P)"
+                    % (room[:64], peer))
+        start = getattr(self.host, "start_otr", None)
+        if start is not None:
+            start(peer)
+
+    def on_otr_ready(self, peer: str) -> None:
+        """OTRv4+ with `peer` is up: send the invitations that waited."""
+        for room in self._invite_after_otr.pop(_canon(peer), []):
+            try:
+                self.groups.invite(room, _canon(peer))
+                self._print("[group %s] invitation sent to %s over OTRv4+"
+                            % (room[:64], _canon(peer)))
+            except GroupError as exc:
+                self._print("[group %s] invitation to %s failed: %s"
+                            % (room[:64], _canon(peer), exc.code))
+
     # -- group voice calls ----------------------------------------------------
 
     def _group_calls(self):
@@ -530,7 +564,7 @@ class TermuxGroups:
             if verb == "create" and arg1:
                 await self._create(arg1)
             elif verb == "invite" and arg1 and arg2:
-                self.groups.invite(arg1, _canon(arg2))
+                self._invite(arg1, _canon(arg2))
             elif verb == "invites":
                 inv = self.groups.pending_invites()
                 p("[group] invitations: %s" % (", ".join(

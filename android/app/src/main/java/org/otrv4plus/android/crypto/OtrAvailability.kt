@@ -36,16 +36,16 @@ object OtrAvailability {
         AVAILABLE ->
             "OTRv4Plus available — establishing secure OTRv4+ session…"
         CHECKING ->
-            "Checking whether this contact's client supports OTRv4Plus… " +
-                "Not encrypted yet."
+            "Checking whether this contact's app supports OTRv4+… Not " +
+                "encrypted yet. Anything you type waits here until we know: " +
+                "nothing goes unencrypted to an OTRv4+ contact."
         OFFLINE ->
-            "Contact offline. OTRv4+ starts automatically when they return. " +
-                "Not encrypted."
+            "Contact offline. Not encrypted yet: messages you type wait here " +
+                "and go encrypted when they come back."
         UNAVAILABLE ->
-            "OTRv4Plus unavailable: this contact's client does not advertise " +
-                "OTRv4Plus, so it is not started automatically. If they use an " +
-                "older OTRv4Plus build, they can start it from their side " +
-                "(Termux: /otr). Messages here are NOT encrypted."
+            "OTRv4Plus unavailable: this contact's app does not support " +
+                "OTRv4+, so messages here are NOT encrypted. The server and " +
+                "anything on the way can read them."
         else ->
             "Not encrypted — anything sent here is readable by the server."
     }

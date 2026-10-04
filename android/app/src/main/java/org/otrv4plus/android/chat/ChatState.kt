@@ -524,6 +524,14 @@ class ChatState(
                 capabilities[bare(event.peer)] = event.state
                 false
             }
+            // Lines that waited for the conversation have gone: the oldest
+            // [count] still queued, in order. Labelled with what actually
+            // happened -- encrypted, or in the clear for a contact without
+            // OTRv4+.
+            is OtrEvent.QueuedSent -> {
+                promoteQueued(bare(event.peer), event.count, event.encrypted)
+                true
+            }
             // A verification refusal says WHY, so "wait and try again" is
             // not reported as "could not be started". Other codes are left
             // to the call site that caused them.
@@ -1078,6 +1086,21 @@ class ChatState(
                 },
             )
         )
+
+    /** Mark the oldest [count] QUEUED outgoing messages to [jid] as sent. */
+    fun promoteQueued(jid: String, count: Int, encrypted: Boolean): Int {
+        var left = count
+        for (m in store.messages(jid)) {
+            if (left <= 0) break
+            if (!m.outgoing || m.sendState != SendState.QUEUED) continue
+            store.update(m.copy(
+                sendState = SendState.SENT,
+                security = if (encrypted) SecurityLabel.ENCRYPTED else SecurityLabel.PLAINTEXT,
+            ))
+            left--
+        }
+        return count - left
+    }
 
     /** Whether [jid] is worth sending to the engine as a contact. */
     fun validContact(jid: String): Boolean {

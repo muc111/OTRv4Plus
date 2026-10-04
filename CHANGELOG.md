@@ -4,6 +4,36 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.30 — 2026-10-04 — encrypted by default, nothing lost while it starts (core 0.13.0)
+
+The owner's rules: no plaintext ever to a contact whose app speaks OTRv4+;
+encryption starts by itself; a contact whose app does not speak OTRv4+ is
+written to in the clear, clearly labelled; and say what is happening and
+how long it will take. Same behaviour in the app and the Termux client.
+
+- **Fixed: a message typed while encryption was starting was lost.** Both
+  clients said "queued -- will send once OTR is ready", but the engine's
+  queue was cleared, not sent, when the handshake completed. Lines now wait
+  in the client's own outbox and are sent, in order, the moment the session
+  is up; the app then marks them sent and encrypted.
+- **No plaintext to an OTRv4+ contact, ever.** While the contact's app is
+  still being checked, or they are offline, what you type waits (nothing
+  goes on the wire). Once they are online: OTRv4+ if their app supports
+  it, otherwise the waiting lines go in the clear and are labelled
+  unencrypted. Termux: \`/msg\` refuses to send plaintext to an OTRv4+
+  contact.
+- **OTRv4+ starts by itself when a contact comes online**, so a
+  conversation is usually encrypted before anyone types. Only one side
+  starts it (the lower address), so two handshakes do not collide.
+- **Group invites start OTRv4+ themselves.** Inviting someone with no
+  session yet starts one; the invitation goes as soon as it is up. No more
+  \`/otr\` first (app and \`/group invite\` on Termux).
+- **How long is left.** The handshake card shows "20 s so far, about 40 s
+  left", from how long your past handshakes took (per contact, then
+  overall; 75 s before any), and how many messages are waiting. Termux
+  prints the same estimate and the time each handshake took. The
+  not-encrypted lines now say plainly that messages wait rather than leak.
+
 ## Android 0.7.0-experimental.rc.29 — 2026-10-04 — secure groups: no more stall when members are added (core 0.13.0)
 
 Found on the phones: Alice added B and C, both Termux clients waited for

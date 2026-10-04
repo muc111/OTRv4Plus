@@ -990,6 +990,10 @@ class ConnectionController:
         except GroupError as exc:
             return {"ok": False, "code": exc.code, "detail": exc.detail, "value": None}
         except Exception as exc:
+            code = getattr(exc, "code", None)
+            if isinstance(code, str) and code:
+                return {"ok": False, "code": code,
+                        "detail": str(getattr(exc, "detail", ""))[:200], "value": None}
             return {"ok": False, "code": "group_failed",
                     "detail": type(exc).__name__, "value": None}
         return {"ok": True, "code": "ok", "detail": "", "value": value}
@@ -1010,7 +1014,12 @@ class ConnectionController:
         return result
 
     def invite_to_group(self, room: str, peer: str) -> Dict[str, Any]:
-        return self._group_call(self._app.groups.invite, room, peer)
+        """Invite over OTRv4+; if there is no session with them yet, one is
+        started and the invite goes when it is up (value "waiting_for_otr")."""
+        result = self._group_call(self._app.invite_when_ready, room, peer)
+        if result.get("ok") and result.get("value") == "waiting_for_otr":
+            result["code"] = "waiting_for_otr"
+        return result
 
     def accept_group_invite(self, room: str) -> Dict[str, Any]:
         """Join the room, then answer the invitation over OTRv4+."""

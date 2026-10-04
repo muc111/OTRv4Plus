@@ -153,6 +153,7 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 
 import otrv4plus_address as _address
+import otrv4plus_caps as _caps
 import otrv4plus_coreapi as _coreapi
 import otrv4plus_fragment as _frag
 import otrv4plus_ping as _ping
@@ -1640,6 +1641,16 @@ class OTRv4PlusXMPP(ClientXMPP):
         # unresolved. Presence in this map refuses voice for that peer.
         self._fingerprint_changed = {}
         self._encrypted = set()    # peers whose DAKE has completed
+        # THE OUTBOX: lines typed before a conversation was ready, sent when
+        # it is (encrypted), or in the clear only to a contact seen online
+        # without OTRv4+. The engine's own queue dropped its lines when the
+        # handshake completed, so "[queued] will send" never sent.
+        self._outbox = {}
+        # Contacts whose presence advertises OTRv4Plus (XEP-0115 node).
+        self._otr_capable = set()
+        # Handshake timing, for the ETA: start times and past durations.
+        self._hs_started = {}
+        self._hs_hist = []
         # Which conversations have had OTR asked for -- by us with /otr,
         # or by the peer sending a protocol frame. NOT a security state:
         # it says whether OTR is wanted here, not whether it is working.
@@ -2683,6 +2694,16 @@ class OTRv4PlusXMPP(ClientXMPP):
         if len(resources) < 16:
             resources.add(str(presence["from"].resource or ""))
         self._peer_is_alive(peer)
+        try:
+            node = str(presence["caps"]["node"] or "")
+        except Exception:
+            node = ""
+        ready = getattr(self, "_presence_ready", None)
+        if ready is None or not hasattr(self, "_otr_capable"):
+            return                       # a partial client (tests)
+        if node == _caps.CAPS_NODE:
+            self._otr_capable.add(str(peer))
+        ready(str(peer))
 
     def _on_presence_unavailable(self, presence):
         """One RESOURCE went away; the peer is gone only when none is left.
@@ -3231,6 +3252,20 @@ class OTRv4PlusXMPP(ClientXMPP):
         print("-" * 60)
 
         self._apply_tofu(peer, remote_fp)
+
+        started = getattr(self, "_hs_started", {}).pop(peer, None)
+        if started is not None:
+            took = max(1.0, time.monotonic() - started)
+            self._hs_hist.append(took)
+            del self._hs_hist[:-20]
+            print(f"[secure] handshake took {int(took)} s")
+        self._flush_outbox(peer)
+        groups = getattr(self, "_groups", None)
+        if groups is not None:
+            try:
+                groups.on_otr_ready(peer)
+            except Exception:
+                pass
 
     # -------------------------------------------------------------------------
     # TOFU (XMPP only)
@@ -4552,6 +4587,74 @@ class OTRv4PlusXMPP(ClientXMPP):
     def send_plain(self, peer, text):
         self.send_message(mto=peer, mbody=text, mtype="chat")
 
+    # -- the outbox, and OTRv4+ as soon as a contact is there -------------------
+
+    #: Lines held per contact; the ETA before any handshake was measured.
+    OUTBOX_MAX = 100
+    HANDSHAKE_TYPICAL_SECONDS = 75
+
+    def _hold(self, peer, text):
+        box = self._outbox.setdefault(peer, [])
+        if len(box) >= self.OUTBOX_MAX:
+            print(f"[queued] too many waiting for {peer}; not queued")
+            return False
+        box.append(text)
+        return True
+
+    def _handshake_eta(self):
+        hist = self._hs_hist
+        return int(sorted(hist)[len(hist) // 2]) if hist else self.HANDSHAKE_TYPICAL_SECONDS
+
+    def _presence_ready(self, peer):
+        """A contact came online. OTRv4+ with a capable one starts now (one
+        side only: the lower JID, unless we have something waiting), and a
+        line held for a contact without OTRv4+ goes in the clear."""
+        if peer in self._encrypted:
+            return
+        waiting = bool(self._outbox.get(peer))
+        if peer in self._otr_capable:
+            try:
+                mine = str(self.boundjid.bare)
+            except Exception:
+                mine = ""
+            in_flight = peer in self._hs_started
+            if (waiting or (mine and mine < peer)) and not in_flight:
+                print(f"[otr] {peer} is online with OTRv4+: starting the "
+                      f"encrypted session (about {self._handshake_eta()} s over I2P)")
+                self.start_otr(peer)
+            return
+        _mode = getattr(self, "_otr_mode", None)
+        if waiting and _mode is not None and not _mode.is_otr(peer):
+            box = self._outbox.pop(peer, [])
+            for text in box:
+                try:
+                    self.send_otr_fragmented(peer, text)
+                    self._echo_plain_sent(peer, text)
+                except Exception as e:
+                    print(f"[send error] to {peer}: {e}")
+            print(f"[plain] {len(box)} waiting message(s) sent UNENCRYPTED: "
+                  f"{peer}'s app does not support OTRv4+")
+
+    def _flush_outbox(self, peer):
+        box = self._outbox.get(peer)
+        if not box:
+            return
+        sent = 0
+        while box:
+            try:
+                msg, ok = self.otr.handle_outgoing_message(peer, box[0])
+            except Exception:
+                break
+            if not (ok and msg):
+                break
+            self.send_otr_fragmented(peer, msg if isinstance(msg, str) else msg.decode())
+            self._echo_sent(peer, box.pop(0))
+            sent += 1
+        if not box:
+            self._outbox.pop(peer, None)
+        if sent:
+            print(f"[queued] {sent} waiting message(s) sent, encrypted")
+
     def start_otr(self, peer):
         # Recorded BEFORE anything can fail. From here on this conversation
         # does not send in the clear, and a handshake that goes wrong must not
@@ -4559,6 +4662,7 @@ class OTRv4PlusXMPP(ClientXMPP):
         _m = getattr(self, "_otr_mode", None)
         if _m is not None:
             _m.request(peer)
+        getattr(self, "_hs_started", {}).setdefault(peer, time.monotonic())
         try:
             msg, should_send = self.otr.handle_outgoing_message(peer, "")
         except Exception as e:
@@ -4649,6 +4753,27 @@ class OTRv4PlusXMPP(ClientXMPP):
         # branch: fall through to the engine, which is the old behaviour and
         # cannot leak. An `_OtrMode()` default would have done the opposite.
         _mode = getattr(self, "_otr_mode", None)
+        # NO PLAINTEXT TO AN OTRv4+ CONTACT (owner, 2026-10-04): until the
+        # session is up a line waits in the outbox, and the handshake is
+        # started. A contact not online, whose app we cannot know, waits too.
+        if (_mode is not None and peer not in getattr(self, "_encrypted", ())
+                and hasattr(self, "_outbox")):
+            capable = peer in self._otr_capable
+            online = bool(getattr(self, "_peer_resources", {}).get(peer))
+            if capable or _mode.is_otr(peer) or not online:
+                if not self._hold(peer, text):
+                    return
+                if capable and peer not in self._hs_started:
+                    self.start_otr(peer)
+                if not online:
+                    print(f"[queued] no presence from {peer} yet: will send when "
+                          f"they are online (encrypted if their app supports "
+                          f"OTRv4+). /otr starts encryption now; /msg sends "
+                          f"plaintext on purpose.")
+                else:
+                    print(f"[queued] will send once OTRv4+ with {peer} is ready "
+                          f"(about {self._handshake_eta()} s)")
+                return
         if _mode is not None and _mode.may_send_plaintext(
                 peer, peer in getattr(self, "_encrypted", ())):
             try:
@@ -4670,7 +4795,9 @@ class OTRv4PlusXMPP(ClientXMPP):
             )
             self._echo_sent(peer, text)
         elif not should_send:
-            print(f"[queued] will send once OTR with {peer} is ready")
+            hold = getattr(self, "_hold", None)
+            if hold is None or hold(peer, text):
+                print(f"[queued] will send once OTR with {peer} is ready")
 
     def _echo_plain_sent(self, peer, text):
         """Echo a message that went in the CLEAR.
@@ -5584,6 +5711,11 @@ class OTRv4PlusXMPP(ClientXMPP):
                     print("[group] %s is a secure group room; /msg would "
                           "send plaintext. Use  /group say %s <text>"
                           % (_sanitise(t, 80), _sanitise(t, 80)))
+                    return True
+                if t in getattr(self, "_otr_capable", ()) or t in self._encrypted:
+                    print("[otr] %s uses OTRv4+: /msg would send plaintext. "
+                          "Type to them normally; it goes encrypted."
+                          % _sanitise(t, 80))
                     return True
                 self.send_plain(t, txt)
                 print(f"[sent plain] -> {t}")

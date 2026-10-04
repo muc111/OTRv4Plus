@@ -23,6 +23,11 @@ object HandshakeUi {
         val have: Int = 0,
         val of: Int = 0,
         val elapsed: Int = 0,
+        /** Seconds still expected (the bridge's estimate from past
+         *  handshakes); 0 when unknown. */
+        val eta: Int = 0,
+        /** Lines waiting to go once encrypted. */
+        val queued: Int = 0,
     ) {
         companion object {
             val IDLE = Status("idle", 0)
@@ -65,7 +70,22 @@ object HandshakeUi {
                        else ((done + share) / s.steps).coerceIn(0.05f, 0.95f)
         val title = if (s.stage == FAILED) "OTRv4+ handshake failed"
                     else "Establishing secure OTRv4+ session: step ${s.step} of ${s.steps}"
-        return View(title, detail, progress, elapsedText(s.elapsed))
+        val waiting = if (s.queued > 0)
+            " ${s.queued} message${if (s.queued == 1) "" else "s"} will be sent when it is ready." else ""
+        val time = if (s.stage == FAILED) elapsedText(s.elapsed)
+                   else etaText(s.elapsed, s.eta)
+        return View(title, detail + waiting, progress, time)
+    }
+
+    /** "20 s so far, about 40 s left", or "taking longer than usual". */
+    @JvmStatic
+    fun etaText(elapsed: Int, eta: Int): String {
+        if (eta <= 0) return elapsedText(elapsed)
+        val so = if (elapsed < 60) "$elapsed s" else "${elapsed / 60} min ${elapsed % 60} s"
+        val left = if (eta < 60) "$eta s" else "${eta / 60} min ${eta % 60} s"
+        return if (eta <= 5 && elapsed > 120)
+            "$so so far. Taking longer than usual: I2P routes vary."
+        else "$so so far, about $left left (from your past handshakes over I2P)."
     }
 
     /** "45 s" / "2 min 10 s", plus why it can take this long. */

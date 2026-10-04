@@ -67,6 +67,11 @@ object GroupText {
         "groups_unavailable" -> "This build does not include group encryption."
         "no_invite" -> "That invitation has expired."
         "group_exists" -> "That room is already a secure group."
+        "waiting_for_otr" -> "No encrypted OTRv4+ session with them yet, so one is " +
+            "being started; the invitation goes as soon as it is ready " +
+            "(usually one to two minutes over I2P)."
+        "otrv4plus_unavailable" -> "This contact's app does not support OTRv4+, " +
+            "so they cannot be invited to a secure group."
         "legacy_group" -> "This group was made before the hybrid (X448 + ML-KEM-1024) " +
             "suite and cannot take new members. Create a new group to add people."
         "commit_pending" -> "Waiting for the room to confirm a group change. Try again shortly."

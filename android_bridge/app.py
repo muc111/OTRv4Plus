@@ -48,7 +48,7 @@ from otrv4plus_mode import OtrMode
 from .events import (
     CallState, CallStateChanged, ConnectionState, ConnectionStateChanged,
     ErrorOccurred, Event, EventSink, FingerprintChanged, MessageReceived,
-    OtrCapabilityChanged, RoomMessageReceived,
+    OtrCapabilityChanged, QueuedSent, RoomMessageReceived,
     SecurityState, SessionStateChanged, SmpProgress, SmpResult, SmpState,
     call_state_from_engine, security_state_from_level, smp_state_from_status,
 )
@@ -261,6 +261,19 @@ class OtrApp:
         self._rooms: set = set()
         #: peer -> monotonic time a handshake was first seen, for "elapsed".
         self._handshake_seen: dict = {}
+        #: THE OUTBOX. peer -> lines typed before the conversation was ready
+        #: (no session yet, or the contact's capability not known yet).
+        #: Sent by `_flush_outbox` when it is: encrypted, or in the clear only
+        #: once the contact is confirmed not to speak OTRv4+. This used to be
+        #: the engine's own queue, which dropped its contents when the
+        #: handshake completed: a line typed during a DAKE never arrived.
+        self._outbox: Dict[str, List[str]] = {}
+        #: peer -> rooms to invite them to once OTRv4+ with them is up.
+        self._invite_after_otr: Dict[str, List[str]] = {}
+        #: Handshake durations (seconds): per peer and overall, for the ETA.
+        self._hs_started: Dict[str, float] = {}
+        self._hs_history: Dict[str, List[float]] = {}
+        self._hs_all: List[float] = []
         #: Set by `wipe` and never cleared. See `wipe` for what it refuses.
         self._wiped = False
         self._wipe_lock = threading.Lock()
@@ -681,6 +694,11 @@ class OtrApp:
         report: Dict[str, Any] = {"already_wiped": already, "errors": []}
         if already:
             return report
+        # Lines waiting to be sent are plaintext the user typed: gone too.
+        for box in getattr(self, "_outbox", {}).values():
+            box.clear()
+        getattr(self, "_outbox", {}).clear()
+        getattr(self, "_invite_after_otr", {}).clear()
 
         calls = self._calls_bridge
         if calls is not None:
@@ -1053,6 +1071,145 @@ class OtrApp:
         except Exception:
             return "unknown"
 
+    #: Bounds on the outbox: lines per contact, and characters per line.
+    OUTBOX_MAX = 100
+    #: The handshake ETA before any has been measured (I2P, two tunnels).
+    HANDSHAKE_TYPICAL_SECONDS = 75
+
+    def _hold(self, peer: str, body: str) -> bool:
+        box = self._outbox.setdefault(peer, [])
+        if len(box) >= self.OUTBOX_MAX:
+            return False
+        box.append(body)
+        return True
+
+    def outbox_count(self, peer: str) -> int:
+        return len(self._outbox.get(self.canonical_peer(peer), ()))
+
+    def _flush_outbox(self, peer: str) -> None:
+        """Send what waited for `peer`, if the conversation is ready now."""
+        box = self._outbox.get(peer)
+        invites = self._invite_after_otr.get(peer)
+        secure = self.security_state(peer) is not SecurityState.PLAINTEXT
+        if secure and invites:
+            self._invite_after_otr.pop(peer, None)
+            groups = self._groups
+            for room in invites:
+                try:
+                    groups.invite(room, peer)
+                except Exception:
+                    self._emit(ErrorOccurred(peer=peer, code="group_invite_failed"))
+        if not box:
+            return
+        if secure:
+            sent = 0
+            while box:
+                body = box[0]
+                try:
+                    payload, ok = self._engine.handle_outgoing_message(peer, body)
+                    if not (ok and payload):
+                        break
+                    text = (payload.decode("utf-8", errors="replace")
+                            if isinstance(payload, (bytes, bytearray)) else str(payload))
+                    self._transport.send(peer, text)
+                except Exception:
+                    break
+                box.pop(0)
+                sent += 1
+            if sent:
+                self._touch(peer)
+                self._emit(QueuedSent(peer=peer, count=sent, encrypted=True))
+        elif (self._capability_enforced()
+              and self.otr_capability(peer) == "unavailable"
+              and not self._mode.is_otr(peer)):
+            # Online, and confirmed not to speak OTRv4+: the user's choice
+            # (2026-10-04) is that such a contact is written to in the
+            # clear, labelled as such. Never a contact that ever asked for
+            # OTR (`is_otr`).
+            sent = 0
+            while box:
+                try:
+                    self._transport.send(peer, box[0])
+                except Exception:
+                    break
+                box.pop(0)
+                sent += 1
+            if sent:
+                self._touch(peer)
+                self._emit(QueuedSent(peer=peer, count=sent, encrypted=False))
+        if not box:
+            self._outbox.pop(peer, None)
+
+    def _own_bare(self) -> str:
+        profile = getattr(self._transport, "_profile", None)
+        return str(getattr(profile, "jid", "") or "").split("/", 1)[0].lower()
+
+    def _auto_start(self, peer: str) -> None:
+        """OTRv4+ as soon as a capable contact is online, so the
+        conversation is ready before anyone types. Only ONE side starts it
+        (the lower JID), unless something is waiting on our side: two DAKEs
+        crossing would cost a round of restarts over I2P."""
+        if self.security_state(peer) is not SecurityState.PLAINTEXT:
+            return
+        waiting = bool(self._outbox.get(peer) or self._invite_after_otr.get(peer))
+        me = self._own_bare()
+        if not waiting and not (me and me < peer):
+            return
+        try:
+            if self._engine.has_session(peer):
+                return
+        except Exception:
+            pass
+        try:
+            self.start_session(peer)
+            _TRACE.record("otr", "auto_started", "info", jid=peer)
+        except BridgeError:
+            pass
+
+    def invite_when_ready(self, room: str, peer: str) -> str:
+        """Invite `peer` to a secure group, starting OTRv4+ with them first if
+        need be (the invite needs it). "sent", or "waiting_for_otr"."""
+        peer = self.canonical_peer(peer)
+        if self.security_state(peer) is not SecurityState.PLAINTEXT:
+            self.groups.invite(room, peer)
+            return "sent"
+        rooms = self._invite_after_otr.setdefault(peer, [])
+        if room not in rooms:
+            rooms.append(room)
+        state = self.ensure_otr(peer)
+        if state in ("offline", "checking", "unknown"):
+            return "waiting_for_otr"
+        if state == "unavailable":
+            self._invite_after_otr.pop(peer, None)
+            raise BridgeError("otrv4plus_unavailable",
+                              "this contact's app does not support OTRv4+")
+        return "waiting_for_otr"
+
+    def _session_settled(self, peer: str, before, after) -> None:
+        """A session came up (or went): record the handshake time and send
+        whatever waited for it."""
+        if after is not SecurityState.PLAINTEXT and before is SecurityState.PLAINTEXT:
+            started = self._hs_started.pop(peer, None) or self._handshake_seen.get(peer)
+            if started:
+                took = max(1.0, time.monotonic() - started)
+                hist = self._hs_history.setdefault(peer, [])
+                hist.append(took)
+                del hist[:-5]
+                self._hs_all.append(took)
+                del self._hs_all[:-20]
+            self._flush_outbox(peer)
+
+    def handshake_eta(self, peer: str, elapsed: int) -> int:
+        """Seconds still expected, from how long handshakes have taken
+        (this contact first, then anyone, then a default). A guide only:
+        I2P routes vary; never below 5 while one is still running."""
+        hist = self._hs_history.get(peer) or self._hs_all
+        if hist:
+            typical = sorted(hist)[len(hist) // 2]
+        else:
+            typical = float(self.HANDSHAKE_TYPICAL_SECONDS)
+        return int(max(5.0, typical - elapsed))
+
     def note_capability(self, peer: str, pinned_left: bool = False) -> None:
         """The transport's capability changed for *peer*. Called on its loop.
 
@@ -1076,7 +1233,14 @@ class OtrApp:
                         peer=peer, security=self.security_state(peer)))
             except Exception:
                 _log.warning("could not end the session of a departed resource")
-        self._emit(OtrCapabilityChanged(peer=peer, state=self.otr_capability(peer)))
+        state = self.otr_capability(peer)
+        self._emit(OtrCapabilityChanged(peer=peer, state=state))
+        if peer in self._rooms:
+            return
+        if state == "available":
+            self._auto_start(peer)
+        if state in ("available", "unavailable"):
+            self._flush_outbox(peer)
 
     #: What `ensure_otr` found or did. Stable codes for Kotlin.
     ENSURE_ESTABLISHED = "established"
@@ -1138,7 +1302,9 @@ class OtrApp:
         """
         peer = self.canonical_peer(peer)
         out = {"stage": self.HS_IDLE, "step": 0, "steps": 3,
-               "have": 0, "of": 0, "elapsed": 0}
+               "have": 0, "of": 0, "elapsed": 0, "eta": 0,
+               "capability": self.otr_capability(peer),
+               "queued": len(self._outbox.get(peer, ()))}
         if peer in self._rooms:
             return out
         if self.security_state(peer) is not SecurityState.PLAINTEXT:
@@ -1189,6 +1355,7 @@ class OtrApp:
         else:
             started = self._handshake_seen.setdefault(peer, time.monotonic())
             out["elapsed"] = int(time.monotonic() - started)
+            out["eta"] = self.handshake_eta(peer, out["elapsed"])
         out["stage"], out["step"] = stage, step
         return out
 
@@ -1254,6 +1421,7 @@ class OtrApp:
         # to continue without one.
         self._mode.request(peer)
         _TRACE.record("otr", "dake_requested", "info", jid=peer)
+        self._hs_started.setdefault(peer, time.monotonic())
 
         # AN EXPLICIT REQUEST RESTARTS A HANDSHAKE THAT IS NOT FINISHING.
         # The engine declines to build a DAKE1 while one is in flight, and a
@@ -1432,16 +1600,33 @@ class OtrApp:
                 return self.SEND_FAILED
             return self.SEND_PLAINTEXT
 
-        # A contact whose client speaks OTRv4Plus is never sent plaintext:
-        # the first message starts OTRv4+ and waits for it (QUEUED).
-        if (self._capability_enforced()
-                and self.otr_capability(peer) == "available"
-                and not self._mode.is_otr(peer)
-                and self.security_state(peer) is SecurityState.PLAINTEXT):
-            try:
-                self.start_session(peer)
-            except BridgeError:
+        # NO PLAINTEXT TO ANYONE WHO MIGHT SPEAK OTRv4+ (owner, 2026-10-04).
+        # Until the conversation is encrypted, a line waits in the outbox
+        # (QUEUED) when the contact's app speaks OTRv4+ -- and a handshake is
+        # made sure of -- or when that is not known yet (offline, still
+        # checking). Only a contact confirmed online without OTRv4+, who never
+        # asked for OTR, is written to in the clear (PLAINTEXT, labelled).
+        secure = self.security_state(peer) is not SecurityState.PLAINTEXT
+        if secure and self._outbox.get(peer):
+            # Behind what is already waiting, in order.
+            if not self._hold(peer, body):
                 return self.SEND_FAILED
+            self._flush_outbox(peer)
+            return self.SEND_QUEUED if self._outbox.get(peer) else self.SEND_ENCRYPTED
+        if not secure and self._capability_enforced():
+            capability = self.otr_capability(peer)
+            if capability == "available" or self._mode.is_otr(peer):
+                if not self._hold(peer, body):
+                    return self.SEND_FAILED
+                if capability == "available":
+                    try:
+                        if not self._engine.has_session(peer):
+                            self.start_session(peer)
+                    except (BridgeError, Exception):
+                        pass
+                return self.SEND_QUEUED
+            if capability in ("checking", "unknown", "offline"):
+                return self.SEND_QUEUED if self._hold(peer, body) else self.SEND_FAILED
 
         if self._mode.may_send_plaintext(
                 peer, self.security_state(peer) is not SecurityState.PLAINTEXT):
@@ -1459,8 +1644,9 @@ class OtrApp:
             return self.SEND_FAILED
 
         if not should_send:
-            # The engine is holding it until there is a session. Not an error.
-            return self.SEND_QUEUED
+            # No session yet. The OUTBOX holds it (the engine's own queue is
+            # dropped when its handshake completes) and sends it then.
+            return self.SEND_QUEUED if self._hold(peer, body) else self.SEND_FAILED
         if not payload:
             return self.SEND_FAILED
 
@@ -1504,6 +1690,7 @@ class OtrApp:
             after = self.security_state(peer)
             if after != before:
                 self._emit(SessionStateChanged(peer=peer, security=after))
+                self._session_settled(peer, before, after)
             self._announce_smp_change(peer, before_smp)
             self._recover_if_orphaned(peer)
             return None
@@ -1526,6 +1713,7 @@ class OtrApp:
             after = self.security_state(peer)
             if after != before:
                 self._emit(SessionStateChanged(peer=peer, security=after))
+                self._session_settled(peer, before, after)
             self._announce_smp_change(peer, before_smp)
             return None
 

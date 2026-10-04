@@ -196,7 +196,8 @@ class ChatViewModel : ViewModel() {
         return groupMembers[jid].orEmpty()
     }
 
-    private fun groupCall(label: String, onOk: () -> Unit = {},
+    private fun groupCall(label: String,
+                          onOk: (org.otrv4plus.android.bridge.RoomOutcome) -> Unit = {},
                           op: (ChaquopyOtrCore) -> org.otrv4plus.android.bridge.RoomOutcome) {
         val c = core ?: return
         val state = this.state ?: return
@@ -206,7 +207,7 @@ class ChatViewModel : ViewModel() {
                     org.otrv4plus.android.bridge.RoomOutcome(false, "group_failed", "")
                 }
             }
-            if (outcome.ok) onOk()
+            if (outcome.ok) onOk(outcome)
             GroupText.outcome(outcome.code)?.let { state.note("$label: $it") }
             revision++
         }
@@ -246,7 +247,9 @@ class ChatViewModel : ViewModel() {
             revision++
             return
         }
-        groupCall("Inviting $jid", onOk = { state?.note("Invitation sent to $jid over OTRv4+.") }) {
+        groupCall("Inviting $jid", onOk = {
+            if (it.code == "ok") state?.note("Invitation sent to $jid over OTRv4+.")
+        }) {
             it.inviteToGroup(room, jid)
         }
     }

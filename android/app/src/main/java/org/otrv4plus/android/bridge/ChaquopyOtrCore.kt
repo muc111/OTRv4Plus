@@ -1054,6 +1054,7 @@ class ChaquopyOtrCore(private val appContext: Context) : OtrCore {
                 stage = v.callAttr("get", "stage")?.toString() ?: "idle",
                 step = int("step"), steps = int("steps").takeIf { it > 0 } ?: 3,
                 have = int("have"), of = int("of"), elapsed = int("elapsed"),
+                eta = int("eta"), queued = int("queued"),
             )
         }.getOrDefault(org.otrv4plus.android.crypto.HandshakeUi.Status.IDLE)
 
@@ -1531,6 +1532,11 @@ class ChaquopyOtrCore(private val appContext: Context) : OtrCore {
 
             "OtrCapabilityChanged" ->
                 OtrEvent.CapabilityChanged(str("peer"), str("state"))
+
+            "QueuedSent" ->
+                OtrEvent.QueuedSent(
+                    str("peer"), int("count"),
+                    item.callAttr("get", "encrypted")?.toBoolean() ?: false)
 
             "FileTransferChanged" ->
                 OtrEvent.FileTransferChanged(

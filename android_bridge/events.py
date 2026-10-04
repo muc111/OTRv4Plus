@@ -35,7 +35,7 @@ __all__ = [
     "SecurityState", "SmpState", "ConnectionState", "CallState",
     "security_state_from_level", "smp_state_from_status", "call_state_from_engine",
     "Event", "ConnectionStateChanged", "SessionStateChanged", "MessageReceived",
-    "RoomMessageReceived", "MessageDelivered", "SmpProgress", "SmpResult", "FingerprintChanged",
+    "RoomMessageReceived", "MessageDelivered", "QueuedSent", "SmpProgress", "SmpResult", "FingerprintChanged",
     "CallStateChanged", "ErrorOccurred", "SubscriptionRequested",
     "FileTransferChanged", "OtrCapabilityChanged", "EventSink",
     "GroupInvite", "GroupChanged",
@@ -268,6 +268,15 @@ class GroupChanged(Event):
 @dataclass(frozen=True)
 class MessageDelivered(Event):
     message_id: str = ""
+
+
+@dataclass(frozen=True)
+class QueuedSent(Event):
+    """`count` messages the user typed before the conversation was ready
+    have now gone out -- encrypted, or (`encrypted` False) in the clear
+    because the contact's app turned out not to support OTRv4+. No bodies."""
+    count: int = 0
+    encrypted: bool = True
 
 
 @dataclass(frozen=True)

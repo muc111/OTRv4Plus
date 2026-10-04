@@ -866,6 +866,10 @@ sealed interface OtrEvent {
     ) : OtrEvent
     /** Whether this contact has a resource that speaks OTRv4Plus. See `OtrAvailability`. */
     data class CapabilityChanged(val peer: String, val state: String) : OtrEvent
+    /** [count] lines the user typed before the conversation was ready have
+     *  now gone: encrypted, or ([encrypted] false) in the clear because the
+     *  contact's app turned out not to support OTRv4+. */
+    data class QueuedSent(val peer: String, val count: Int, val encrypted: Boolean) : OtrEvent
     data class SmpProgressed(val peer: String, val progress: SmpProgress) : OtrEvent
     data class SmpFinished(val peer: String, val state: SmpState) : OtrEvent
 
