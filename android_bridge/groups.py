@@ -75,6 +75,10 @@ MAX_ROOM_LEN = 256
 MAX_FRAME_B64 = 2 * 1024 * 1024
 MAX_PENDING_INVITES = 32
 INVITE_TTL = 30 * 60.0
+#: How long, and how often at most, an unconfirmed Welcome is sent again.
+WELCOME_TTL = 24 * 3600.0
+WELCOME_RESEND_EVERY = 120.0
+WELCOME_MAX_SENDS = 20
 MAX_MEMBERS_PER_ADD = 16
 
 _ROOM_RE = re.compile(r"^[^\s@/|]{1,128}@[^\s@/|]{1,120}$")
@@ -493,6 +497,9 @@ class SecureGroups:
         #: Group calls (android_bridge.group_call): control messages travel
         #: as MLS application messages with CALL_PREFIX and go here, never
         #: to the chat; the epoch listener hears about every commit.
+        #: (room, invitee) -> [WELCOME signal, first sent, times sent]:
+        #: re-sent until the invitee answers JOINED (or WELCOME_TTL passes).
+        self._welcome_out: Dict[Tuple[str, str], List[Any]] = {}
         self._call_handler: Optional[Callable[[str, str, bool, str], None]] = None
         self._epoch_listener: Optional[Callable[[str], None]] = None
         self._pacer = RoomPacer(
@@ -599,6 +606,8 @@ class SecureGroups:
             "since_rekey": {r: [int(e[0]), float(e[1])]
                             for r, e in self._since_rekey.items()},
             "activity": {r: dict(m) for r, m in self._activity.items()},
+            "welcome_out": [[r, p, e[0], float(e[1]), int(e[2])]
+                            for (r, p), e in self._welcome_out.items()],
         }
         try:
             client.set_app_data(json.dumps(state, separators=(",", ":")).encode())
@@ -649,6 +658,8 @@ class SecureGroups:
             str(kv[0]), [_b64d(str(kv[1][0])), int(kv[1][1])]))
         each("since_rekey", lambda kv: self._since_rekey.__setitem__(
             str(kv[0]), [int(kv[1][0]), float(kv[1][1])]))
+        each("welcome_out", lambda v: self._welcome_out.__setitem__(
+            (str(v[0]), str(v[1])), [str(v[2]), float(v[3]), int(v[4])]))
         each("activity", lambda kv: self._activity.__setitem__(
             str(kv[0]), {str(j): float(t) for j, t in kv[1].items()}))
         self._expire()
@@ -702,6 +713,7 @@ class SecureGroups:
                 self._outgoing.clear()
                 self._awaiting_welcome.clear()
                 self._welcome_for.clear()
+                self._welcome_out.clear()
                 self._pending_binding.clear()
                 self._reassembler.clear()
 
@@ -732,6 +744,7 @@ class SecureGroups:
             self._outgoing.clear()
             self._awaiting_welcome.clear()
             self._welcome_for.clear()
+            self._welcome_out.clear()
             self._pending_binding.clear()
             self._bound.clear()
             self._reassembler.clear()
@@ -955,6 +968,8 @@ class SecureGroups:
                 self._on_key_package(peer, arg, verified)
             elif kind == "WELCOME":
                 self._on_welcome(peer, arg, verified)
+            elif kind == "JOINED":
+                self._on_joined(peer, arg)
             elif kind == "DECLINE":
                 self._on_decline(peer, arg)
             else:
@@ -1042,8 +1057,19 @@ class SecureGroups:
             raise GroupError("malformed")
         with self._lock:
             client = self._need()
-            if self._awaiting_welcome.get(room) != peer:
+            if (self._awaiting_welcome.get(room) != peer
+                    and client.has_group(room.encode())):
+                # A Welcome sent again after we had joined: say so once more.
+                ack = True
+            elif self._awaiting_welcome.get(room) != peer:
                 raise GroupError("unsolicited_welcome")
+            else:
+                ack = False
+        if ack:
+            self._send_joined(peer, room)
+            return
+        with self._lock:
+            client = self._need()
             inv = self._invites.get(room)
             try:
                 welcome = _b64d(b64)
@@ -1080,7 +1106,42 @@ class SecureGroups:
                                     for m in client.members(room.encode())}
             self.save()
             epoch = int(client.epoch(room.encode()))
+        self._send_joined(peer, room)
         self._emit(GroupChanged(peer=room, change="joined", epoch=epoch))
+
+    def _send_joined(self, peer: str, room: str) -> None:
+        try:
+            self._send_private(peer, "%sJOINED:%s" % (SIGNAL_PREFIX, room))
+        except Exception:
+            pass                    # the inviter sends the Welcome again
+
+    def _on_joined(self, peer: str, room: str) -> None:
+        with self._lock:
+            had = self._welcome_out.pop((room, peer), None)
+            if had is not None:
+                self.save()
+
+    def resend_welcomes(self, force: bool = False) -> int:
+        """Send again every Welcome not yet confirmed (JOINED). Called on a
+        reconnect (force) and from `maintain`. Returns how many went."""
+        now = self._clock()
+        due = []
+        with self._lock:
+            for key, entry in list(self._welcome_out.items()):
+                body, first, sent = entry
+                if now - first > WELCOME_TTL or sent >= WELCOME_MAX_SENDS:
+                    self._welcome_out.pop(key, None)
+                    self._emit(ErrorOccurred(peer=key[1], code="group_welcome_unconfirmed"))
+                    continue
+                if force or now - entry[1] >= WELCOME_RESEND_EVERY * sent:
+                    entry[2] = sent + 1
+                    due.append((key[1], body))
+        for peer, body in due:
+            try:
+                self._send_private(peer, body)
+            except Exception:
+                pass
+        return len(due)
 
     def _on_decline(self, peer: str, room: str) -> None:
         with self._lock:
@@ -1151,6 +1212,7 @@ class SecureGroups:
         it back, which settles it first)."""
         self._settled_from = self._clock()
         self.resend_pending_commit(room, "rejoined")
+        self.resend_welcomes(force=True)
 
     def send(self, room: str, text: str) -> None:
         """Encrypt and post. Raises; never falls back to plaintext."""
@@ -1252,6 +1314,7 @@ class SecureGroups:
             this is also what tells the others we are still here.
 
         Returns what was done, as "rekey:<room>" / "removed:<room>"."""
+        self.resend_welcomes()
         done = []
         for room in self.rooms():
             # A removal commit refreshes our path too, so it goes first.
@@ -1460,12 +1523,16 @@ class SecureGroups:
             seen[peer] = now
         self.save()
         if welcome is not None:
+            body = "%sWELCOME:%s|%s|%s" % (SIGNAL_PREFIX, room, _b64e(bytes(welcome)), own_fp)
             for peer in invitees:
+                # Kept until the invitee says JOINED: a Welcome lost on the
+                # way (a dropped connection, the peer briefly offline) is
+                # sent again, instead of leaving them waiting for ever.
+                self._welcome_out[(room, peer)] = [body, self._clock(), 1]
                 try:
-                    self._send_private(peer, "%sWELCOME:%s|%s|%s"
-                                       % (SIGNAL_PREFIX, room, _b64e(bytes(welcome)),
-                                          own_fp))
+                    self._send_private(peer, body)
                 except Exception:
                     self._emit(ErrorOccurred(peer=peer, code="group_welcome_send_failed"))
+            self.save()
             return GroupChanged(peer=room, change="member_added", epoch=epoch)
         return GroupChanged(peer=room, change="epoch", epoch=epoch)

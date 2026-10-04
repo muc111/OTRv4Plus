@@ -955,6 +955,30 @@ class XmppTransport(Transport):
             self._loop, self._thread = loop, thread
             return loop
 
+    def _on_loop_thread(self) -> bool:
+        thread = getattr(self, "_thread", None)
+        return thread is not None and threading.current_thread() is thread
+
+    def _send_now(self, coro, timeout: float) -> None:
+        """Run a send. From any thread but the loop's, wait for it as `_run`
+        does. FROM THE LOOP THREAD ITSELF -- a room or chat handler that
+        answers at once (a secure group sending a Welcome when its commit
+        comes back, or posting a commit when a KeyPackage arrives) -- waiting
+        would deadlock: the loop cannot run the send while it is blocked
+        waiting for it. That cost 30 s per send and then the connection
+        (the loop could not answer keepalives). There it is queued on the
+        loop instead, in order, and a failure is logged."""
+        if not self._on_loop_thread():
+            self._run(coro, timeout)
+            return
+        task = self._loop.create_task(coro)
+
+        def done(t):
+            if not t.cancelled() and t.exception() is not None:
+                _TRACE.record("transport", "queued_send_failed", "warning",
+                              exception_type=type(t.exception()).__name__)
+        task.add_done_callback(done)
+
     def _run(self, coro, timeout: float):
         """Run *coro* on the loop thread and wait for it."""
         loop = self._ensure_loop()
@@ -2391,7 +2415,7 @@ class XmppTransport(Transport):
         """Send plaintext to a room we are in. Raises TransportError."""
         if not self.is_connected:
             raise TransportError("not_connected", "not connected")
-        self._run(self._send_room(room, body), CALL_TIMEOUT)
+        self._send_now(self._send_room(room, body), CALL_TIMEOUT)
 
     async def _send_room(self, room: str, body: str) -> None:
         self._client.send_message(mto=room, mbody=body, mtype="groupchat")
@@ -2438,7 +2462,7 @@ class XmppTransport(Transport):
                     "no resource of this contact is known to support OTRv4Plus")
             self._caps.pin(peer, _caps.split_jid(target)[1])
             peer = target
-        self._run(self._send(peer, payload), CALL_TIMEOUT)
+        self._send_now(self._send(peer, payload), CALL_TIMEOUT)
 
     # -- OTRv4Plus capability -------------------------------------------------
 

@@ -4,6 +4,30 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.29 — 2026-10-04 — secure groups: no more stall when members are added (core 0.13.0)
+
+Found on the phones: Alice added B and C, both Termux clients waited for
+ever for their Welcome, Alice's messages said "not sent", and the app
+reconnected.
+
+- **The cause: a deadlock.** Room messages are handled on the XMPP event
+  loop's own thread. When Alice's add-member commit came back from the
+  room, the app sent each Welcome from that thread and then waited for the
+  loop to send it -- which it could not, being the thread that was
+  waiting. Each Welcome failed after 30 s, and the stalled loop missed
+  keepalives, so the connection dropped. A send from the loop thread is now
+  queued on the loop instead of waited for. (The same applied to a commit
+  posted when a KeyPackage arrived, and to group fragments re-sent after a
+  bounce.)
+- **A Welcome is now kept until the invitee confirms it** (a new JOINED
+  signal over OTRv4+). It is sent again on every reconnect and every few
+  minutes, for up to 24 hours, and survives a restart. A Welcome that
+  arrives twice is acknowledged, not shown as refused. An older client
+  that sends no JOINED just receives it a few more times.
+
+A group whose Welcomes were lost before this version cannot be repaired:
+create a new one.
+
 ## Android 0.7.0-experimental.rc.28 — 2026-10-03 — group voice calls (M5), core and Termux (core 0.13.0)
 
 **Termux: run \`build.sh\` again** (core 0.13.0).

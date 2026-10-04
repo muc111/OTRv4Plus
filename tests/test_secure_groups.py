@@ -824,3 +824,57 @@ class TestHybridSuite:
         w, (a, b) = _group(2)
         a.groups.send(ROOM, "x" * 2000)
         assert all(len(body) <= 5664 for _s, body in w.room.log)
+
+
+# ── A Welcome is kept until the invitee confirms (rc.28 device report) ───────
+
+class TestWelcomeDelivery:
+
+    def _invite_with_lost_welcome(self):
+        w = World()
+        a, b = w.add("alice@x.i2p"), w.add("bob@x.i2p")
+        w.pair("alice@x.i2p", "bob@x.i2p")
+        a.join_room()
+        a.groups.create(ROOM)
+        b.join_room()
+        real = w.private
+        lost = []
+
+        def lose_welcomes(frm, to, body):
+            if "WELCOME:" in body and not lost:
+                lost.append(body)            # the connection dropped
+                raise OSError("timed out")
+            real(frm, to, body)
+        w.private = lose_welcomes
+        a.groups.invite(ROOM, "bob@x.i2p")
+        b.groups.accept(ROOM)
+        return w, a, b, lost
+
+    def test_a_lost_welcome_is_sent_again_on_reconnect(self):
+        w, a, b, lost = self._invite_with_lost_welcome()
+        assert lost and not b.groups.is_secure(ROOM)
+        assert ("secret@conference.example.i2p", "bob@x.i2p") in a.groups._welcome_out
+        a.groups.on_room_rejoined(ROOM)
+        assert b.groups.is_secure(ROOM)
+        # Bob said JOINED: nothing is pending any more.
+        assert a.groups._welcome_out == {}
+        a.groups.send(ROOM, "made it")
+        assert ("alice@x.i2p", "made it", True) in b.texts()
+
+    def test_maintenance_resends_after_a_while(self):
+        w, a, b, lost = self._invite_with_lost_welcome()
+        now = [a.groups._clock()]
+        a.groups._clock = lambda: now[0]
+        a.groups.maintain()
+        assert not b.groups.is_secure(ROOM)          # not yet due
+        now[0] += 300
+        a.groups.maintain()
+        assert b.groups.is_secure(ROOM)
+
+    def test_a_repeated_welcome_is_acknowledged_not_refused(self):
+        w, (a, b) = _group(2)
+        body = "%sWELCOME:%s|%s|%s" % (SIGNAL_PREFIX, ROOM, "AAAA", "ab" * 48)
+        a.groups._welcome_out[(ROOM, "bob@x.i2p")] = [body, 0.0, 1]
+        b.groups.on_signal("alice@x.i2p", body)
+        assert "refused" not in b.changes()
+        assert a.groups._welcome_out == {}
