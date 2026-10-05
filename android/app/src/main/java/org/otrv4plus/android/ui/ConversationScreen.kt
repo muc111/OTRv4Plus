@@ -1182,7 +1182,7 @@ private fun SecureGroupPanel(model: ChatViewModel, jid: String) {
         androidx.compose.material3.OutlinedTextField(
             value = invitee,
             onValueChange = { invitee = it },
-            label = { Text("Invite a contact (their address)") },
+            label = { Text("Invite a contact (user name or address)") },
             singleLine = true,
             // An address, so no auto-capital: "B@otrv4plus.i2p" was stored as
             // the invitee and B's answer, from "b@...", was dropped as

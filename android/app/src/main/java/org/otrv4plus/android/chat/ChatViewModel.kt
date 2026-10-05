@@ -241,7 +241,11 @@ class ChatViewModel : ViewModel() {
     }
 
     fun inviteToGroup(room: String, peer: String) {
-        val jid = ChatState.bare(peer.trim())
+        // A user name alone ("bob") means a user on our own server.
+        val typed = peer.trim()
+        val domain = state?.account?.bareJid.orEmpty().substringAfter('@', "")
+        val full = if ('@' !in typed && domain.isNotEmpty() && typed.isNotEmpty()) "$typed@$domain" else typed
+        val jid = ChatState.bare(full)
         if (state?.validContact(jid) != true) {
             state?.note("Enter the address of a contact to invite.")
             revision++

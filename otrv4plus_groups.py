@@ -69,15 +69,22 @@ PREJOIN_TTL = 600.0
 STALE_WARN_AFTER = 3
 #: How long a room join may take (a cold I2P tunnel is slow).
 JOIN_TIMEOUT = 120
+#: The `/group` verbs; any other first word is read as a room name.
+VERBS = frozenset(("help", "?", "create", "invite", "invites", "accept", "decline",
+                   "say", "members", "remove", "rekey", "leave", "call", "answer",
+                   "hangup", "calls", "list"))
 
 HELP = """\
-  Secure groups (MLS; the room sees ciphertext only):
-  /group create <room@service>          new room + MLS group, you its only member
+  Secure groups (MLS; the room sees ciphertext only). <room> can be just its
+  name (mls3), <jid> just the user name (bob): your server is filled in.
+  /group create <room>                  new room + MLS group, you its only member
   /group invite <room> <jid>            invite over your OTRv4+ session with them
   /group invites                        invitations waiting for you
   /group accept <room>                  join the room and answer the invitation
   /group decline <room>
   /group say <room> <text>              send an encrypted message to the group
+  /group <room> [text]                  switch to the group (and send text)
+  /to <room or user>                    talk to a group or a contact: then just type
   /group members <room>                 members, fingerprints, verified or not
   /group remove <room> <jid>            remove a member (new epoch)
   /group rekey <room>                   fresh key for you (post-compromise)
@@ -157,6 +164,10 @@ class TermuxGroups:
         if rooms:
             self._print("[group] %d secure group(s) restored: %s"
                         % (len(rooms), ", ".join(rooms)))
+            if len(rooms) == 1:
+                self._activate(rooms[0], only_if_idle=True)
+            else:
+                self._print("[group] /to <name> to talk in one of them")
         return True
 
     def close(self) -> None:
@@ -257,10 +268,12 @@ class TermuxGroups:
                 stamp = delay.timestamp()
         except Exception:
             stamp = 0.0
-        self.on_room_body(room, nick, body, stamp or self._clock(), own=own)
+        # A delayed message is the room's history, replayed on joining.
+        self.on_room_body(room, nick, body, stamp or self._clock(), own=own,
+                          history=bool(stamp))
 
     def on_room_body(self, room: str, nick: str, body: str, timestamp: float,
-                     own: bool = False) -> None:
+                     own: bool = False, history: bool = False) -> None:
         room = _canon(room)
         if not self._opened:
             return
@@ -272,7 +285,10 @@ class TermuxGroups:
             return
         if handled:
             if self.groups.stats.undecryptable > before:
-                self._note_undecryptable(room)
+                # History from before we joined (or already processed) can
+                # never decrypt: expected, not a sign the state is behind.
+                if not history:
+                    self._note_undecryptable(room)
             elif self.groups.stats.shown > shown_before:
                 self._stale_run.pop(room, None)
             return
@@ -302,7 +318,8 @@ class TermuxGroups:
         now = self._clock()
         for at, nick, body, timestamp, own in held:
             if now - at < PREJOIN_TTL:
-                self.on_room_body(room, nick, body, timestamp, own=own)
+                # Held before our Welcome: from before we joined.
+                self.on_room_body(room, nick, body, timestamp, own=own, history=True)
 
     def _note_undecryptable(self, room: str) -> None:
         n = self._stale_run.get(room, 0) + 1
@@ -324,6 +341,7 @@ class TermuxGroups:
             p("[group %s] %s (%s, %s): %s"
               % (ev.peer[:64], ev.sender[:48], (ev.sender_identity or "")[:96],
                  mark, ev.body))
+            self._activate(ev.peer, only_if_idle=True)
         elif isinstance(ev, GroupInvite):
             p("[group] %s invites you to the secure group %s (%s). "
               "/group accept %s  or  /group decline %s"
@@ -336,6 +354,7 @@ class TermuxGroups:
             p("[group %s] %s%s%s" % (ev.peer[:64], change, detail, epoch))
             if change == "joined":
                 self._flush_prejoin(ev.peer)
+                self._activate(ev.peer)
             elif change == "call_ringing":
                 p("[group call %s] %s is calling. /group answer %s"
                   % (ev.peer[:64], (ev.detail or "")[:96], ev.peer[:64]))
@@ -540,6 +559,65 @@ class TermuxGroups:
         room = _canon(jid)
         return room in self._nicks or (self._opened and self.groups.is_secure(room))
 
+    # -- names: "mls3" and "bob" are enough ------------------------------------
+
+    def _domain(self) -> str:
+        try:
+            return str(self.host.boundjid.domain or "").lower()
+        except Exception:
+            return ""
+
+    def contact(self, name: str) -> str:
+        """`bob` -> `bob@<our server>`. A full address is kept as it is."""
+        name = _canon(name)
+        if not name or "@" in name:
+            return name
+        domain = self._domain()
+        return "%s@%s" % (name, domain) if domain else name
+
+    def known_rooms(self) -> List[str]:
+        known = set(self._nicks)
+        if self._opened:
+            known.update(self.groups.rooms())
+            try:
+                known.update(i["room"] for i in self.groups.pending_invites())
+            except Exception:
+                pass
+        return sorted(known)
+
+    def room(self, name: str, *, new: bool = False) -> str:
+        """`mls3` -> the one group (or invitation) of that name, or for a new
+        room `mls3@<the conference service>`. A full address is kept."""
+        name = _canon(name)
+        if not name or "@" in name:
+            return name
+        known = self.known_rooms()
+        if not new:
+            for match in ([r for r in known if r.split("@", 1)[0] == name],
+                          [r for r in known if r.split("@", 1)[0].startswith(name)]):
+                if len(match) == 1:
+                    return match[0]
+                if len(match) > 1:
+                    raise GroupError("ambiguous_room", ", ".join(match)[:300])
+        services = [r.split("@", 1)[1] for r in known]
+        if services:
+            service = max(set(services), key=services.count)
+        elif self._domain():
+            service = "conference." + self._domain()
+        else:
+            raise GroupError("room_needs_full_address")
+        return "%s@%s" % (name, service)
+
+    def _activate(self, room: str, *, only_if_idle: bool = False) -> None:
+        """Make the group the conversation what is typed goes to."""
+        set_conv = getattr(self.host, "set_conversation", None)
+        if set_conv is None:
+            return
+        current = getattr(self.host, "peer", None)
+        if current and (only_if_idle or _canon(current) == _canon(room)):
+            return
+        set_conv(room)
+
     def say(self, room: str, text: str) -> None:
         """Typed text for a room: MLS-encrypted, or refused. Never plaintext."""
         room = _canon(room)
@@ -559,8 +637,6 @@ class TermuxGroups:
         """`/group <verb> ...`. Every failure is reported, none falls back."""
         parts = rest.split(None, 2)
         verb = parts[0].lower() if parts else "help"
-        arg1 = _canon(parts[1]) if len(parts) > 1 else ""
-        arg2 = parts[2] if len(parts) > 2 else ""
         p = self._print
         if verb in ("help", "?"):
             p(HELP)
@@ -570,10 +646,26 @@ class TermuxGroups:
               "has no MLS)")
             return
         try:
+            if verb not in VERBS:
+                # "/group mls3" switches to it; "/group mls3 hello" says it.
+                room = self.room(parts[0])
+                if room not in self.known_rooms():
+                    p("[group] no secure group called %s. /group list shows yours"
+                      % parts[0][:64])
+                    return
+                text = rest.split(None, 1)[1] if len(parts) > 1 else ""
+                if text:
+                    self.say(room, text)
+                else:
+                    self._activate(room)
+                return
+            arg1 = (self.room(parts[1], new=(verb == "create"))
+                    if len(parts) > 1 else "")
+            arg2 = parts[2] if len(parts) > 2 else ""
             if verb == "create" and arg1:
                 await self._create(arg1)
             elif verb == "invite" and arg1 and arg2:
-                self._invite(arg1, _canon(arg2))
+                self._invite(arg1, self.contact(arg2))
             elif verb == "invites":
                 inv = self.groups.pending_invites()
                 p("[group] invitations: %s" % (", ".join(
@@ -600,8 +692,8 @@ class TermuxGroups:
                     else "PQ-only ML-KEM-1024 / ML-DSA-87 (made before rc.27: "
                          "re-create it to add members)"))
             elif verb == "remove" and arg1 and arg2:
-                self.groups.remove(arg1, _canon(arg2))
-                p("[group %s] removal of %s committed" % (arg1, _canon(arg2)))
+                self.groups.remove(arg1, self.contact(arg2))
+                p("[group %s] removal of %s committed" % (arg1, self.contact(arg2)))
             elif verb == "rekey" and arg1:
                 self.groups.rekey(arg1)
             elif verb == "leave" and arg1:
@@ -646,6 +738,7 @@ class TermuxGroups:
         except GroupError:
             self._leave_muc(room)
             raise
+        self._activate(room)
 
     async def _accept(self, room: str) -> None:
         """Join the room, then answer the invitation over OTRv4+."""

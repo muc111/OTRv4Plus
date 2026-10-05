@@ -2682,9 +2682,31 @@ class OTRv4PlusXMPP(ClientXMPP):
         print(f"[sub] {_sanitise(peer, 128)} approved our subscription")
         self.send_presence(pto=peer)
 
+    MUC_USER_NS = "http://jabber.org/protocol/muc#user"
+
+    def _is_room_presence(self, presence):
+        """A presence from a ROOM occupant (`room@service/nick`), not a
+        contact: never "online", never a peer to start OTRv4+ with. A device
+        saw the client start a handshake with the room itself, which the
+        server refused (service-unavailable). As on Android
+        (`XmppTransport._is_room_presence`)."""
+        try:
+            if presence.xml.find("{%s}x" % self.MUC_USER_NS) is not None:
+                return True
+        except Exception:
+            pass
+        groups = getattr(self, "_groups", None)
+        try:
+            return bool(groups is not None
+                        and groups.owns_room(str(presence["from"].bare)))
+        except Exception:
+            return False
+
     def _on_presence_available(self, presence):
         peer = presence["from"].bare
         if peer == self._own_bare:
+            return
+        if _room_presence(self, presence):
             return
         show = presence["show"] or "available"
         status = presence["status"] or ""
@@ -2716,6 +2738,8 @@ class OTRv4PlusXMPP(ClientXMPP):
         """
         peer = presence["from"].bare
         if peer == self._own_bare:
+            return
+        if _room_presence(self, presence):
             return
         resource = str(presence["from"].resource or "")
         resources = self._peer_resources.get(peer, set())
@@ -4610,6 +4634,75 @@ class OTRv4PlusXMPP(ClientXMPP):
     def send_plain(self, peer, text):
         self.send_message(mto=peer, mbody=text, mtype="chat")
 
+    # -- the conversation what is typed goes to ----------------------------------
+
+    def expand_jid(self, name):
+        """`bob` -> `bob@<our server>`; a full address is kept as it is."""
+        name = (name or "").strip()
+        if not name or "@" in name or "/" in name or " " in name:
+            return name
+        try:
+            domain = str(self.boundjid.domain or "")
+        except Exception:
+            domain = ""
+        return "%s@%s" % (name.lower(), domain) if domain else name
+
+    def set_conversation(self, target):
+        """What is typed (no /command) now goes to `target`: a contact, or a
+        secure group's room (MLS, never plaintext)."""
+        self.peer = target
+        groups = getattr(self, "_groups", None)
+        is_group = groups is not None and groups.owns_room(target)
+        pm = getattr(self, "panel_manager", None)
+        if pm is not None and getattr(self, "_tui_enabled", False):
+            try:
+                label = self._tui_label_for(target)
+                pm.get_or_create_panel(label, "private")
+                pm.switch_to_panel(label)
+            except Exception:
+                pass
+        if is_group:
+            print("[to] now talking in the secure group %s: just type, it goes "
+                  "MLS-encrypted to the group. /to <name> to switch."
+                  % _sanitise(target, 96))
+        else:
+            print("[to] now talking to %s: just type. /to <name> to switch."
+                  % _sanitise(target, 96))
+
+    def _cmd_to(self, arg):
+        """`/to mls3`, `/to bob`, `/to bob@server`: switch the conversation."""
+        arg = arg.strip()
+        if not arg:
+            print("[to] talking to: %s" % (_sanitise(self.peer, 96) if self.peer
+                                          else "nobody (use /to <name>)"))
+            return
+        groups = getattr(self, "_groups", None)
+        if groups is not None and "@" not in arg:
+            try:
+                room = groups.room(arg)
+            except Exception as exc:
+                print("[to] %s matches more than one group (%s): give more of "
+                      "the name" % (_sanitise(arg, 64),
+                                    _sanitise(getattr(exc, "detail", ""), 200)))
+                return
+            if groups.owns_room(room):
+                self.set_conversation(room)
+                return
+            if room in groups.known_rooms():
+                print("[to] %s is an invitation: /group accept %s first"
+                      % (_sanitise(room, 96), _sanitise(arg, 64)))
+                return
+        target = self.expand_jid(arg)
+        domain = target.split("@", 1)[1] if "@" in target else ""
+        if groups is not None and not groups.owns_room(target) and (
+                domain.startswith("conference.") or any(
+                    r.endswith("@" + domain) for r in groups.known_rooms())):
+            # A room we hold no group for: typing there would not be MLS.
+            print("[to] %s is a room, not one of your secure groups "
+                  "(/group list)" % _sanitise(target, 96))
+            return
+        self.set_conversation(target)
+
     # -- the outbox, and OTRv4+ as soon as a contact is there -------------------
 
     #: Lines held per contact; the ETA before any handshake was measured.
@@ -5199,7 +5292,10 @@ class OTRv4PlusXMPP(ClientXMPP):
     def show_help():
         print(
             "[help] OTRv4+ XMPP commands:\n"
-            "  /otr [jid]           start OTR session (DAKE)\n"
+            "  /to <name>           talk to a contact or secure group, then\n"
+            "                       just type (/to alice, /to mls3)\n"
+            "  /otr [jid]           start OTR session (DAKE); a user name\n"
+            "                       alone is enough (/otr bob)\n"
             "  /smp start           begin SMP verification\n"
             "  /smp <secret>        set secret and start SMP\n"
             "  /smp                 verify this session — prompts (hidden) for\n"
@@ -5655,7 +5751,11 @@ class OTRv4PlusXMPP(ClientXMPP):
             else:
                 print("no --peer set; use /otr <jid>")
         elif lstrip.startswith("/otr "):
-            self.start_otr(lstrip[5:].strip())
+            self.start_otr(_expand(self, lstrip[5:].strip()))
+
+        # --- The conversation what is typed goes to ---
+        elif lstrip in ("/to", "/talk") or lstrip.startswith(("/to ", "/talk ")):
+            self._cmd_to(lstrip.split(None, 1)[1] if " " in lstrip else "")
 
         # --- SMP ---
         # `/smp` is the normal verb: verify this session, asking for whatever
@@ -5843,7 +5943,7 @@ class OTRv4PlusXMPP(ClientXMPP):
             else:
                 print("usage: /call (set --peer first) or /call <jid>")
         elif lstrip.startswith("/call "):
-            jid = lstrip[6:].strip()
+            jid = _expand(self, lstrip[6:].strip())
             if jid and self._voice_manager:
                 if self._voice_blocked_by_tofu(jid):
                     return True
@@ -5995,7 +6095,8 @@ class OTRv4PlusXMPP(ClientXMPP):
             if peer:
                 self.send_user_text(peer, line)
             else:
-                print("no --peer set; use /msg <jid> <text> or set --peer")
+                print("not talking to anyone yet: /to <name> picks a contact "
+                      "or a secure group (e.g. /to alice, /to mls3)")
 
         return True
 
@@ -6634,6 +6735,17 @@ class OTRv4PlusXMPP(ClientXMPP):
                 p.clear_history()
             return True
         return False
+
+
+def _expand(client, name):
+    """`client.expand_jid`, for partial clients (tests) without it too."""
+    fn = getattr(client, "expand_jid", None)
+    return fn(name) if fn is not None else name
+
+
+def _room_presence(client, presence):
+    fn = getattr(client, "_is_room_presence", None)
+    return bool(fn(presence)) if fn is not None else False
 
 
 # =============================================================================

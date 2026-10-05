@@ -4,6 +4,33 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.32 — 2026-10-05 — just type into a group (core 0.13.0)
+
+From a three-client test (app + two Termux) where the group worked but
+every line needed \`/group say <full room address> ...\`.
+
+- **Termux: names are enough.** \`/group create mls3\`, \`/group invite mls3
+  bob\`, \`/otr bob\`, \`/call bob\`: your server (and its conference service)
+  is filled in. A short room name matches your group of that name, or the
+  one it starts; if it matches several, nothing is sent and they are listed.
+  App: the invite box takes a user name too.
+- **Termux: you are put into the group.** Creating a group, or your Welcome
+  arriving after \`/group accept\`, makes it the conversation: what you type
+  goes to the group, MLS-encrypted. With nothing chosen yet, the first group
+  message (or a single restored group) does the same. \`/to <name>\` switches
+  between contacts and groups; \`/group mls3 hello\` sends without switching.
+  A room you hold no group for is refused, so typing never goes out plain.
+- **Fixed: Termux started OTRv4+ with the room itself.** A room member's
+  presence was read as a contact coming online, so accepting an invitation
+  began a handshake with the room (the server answered
+  \`service-unavailable\`). Room presence is now ignored there, as on
+  Android.
+- **No false alarm on joining.** The room's history from before you joined
+  can never decrypt; it no longer triggers "messages could not be
+  decrypted".
+
+---
+
 ## Android 0.7.0-experimental.rc.31 — 2026-10-05 — groups survive restarts and account switches (core 0.13.0)
 
 From a two-phone test: a Termux client warned \`groups_state_unreadable\`,

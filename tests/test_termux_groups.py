@@ -1003,3 +1003,120 @@ class TestAutomaticRekey:
         g._maybe_rekey(ROOM)
         assert not g._client.has_pending_commit(ROOM.encode())
         assert g.epoch(ROOM) == before
+
+
+# ── names, and typing straight into a group (device report, 2026-10-05) ──────
+
+class Presence(dict):
+    """Just enough of a slixmpp Presence for the presence handlers."""
+
+    def __init__(self, frm, *, muc=False):
+        super().__init__(show="", status="", caps={"node": X._caps.CAPS_NODE})
+        self["from"] = slixmpp.JID(frm)
+        import xml.etree.ElementTree as ET
+        self.xml = ET.Element("presence")
+        if muc:
+            ET.SubElement(self.xml, "{http://jabber.org/protocol/muc#user}x")
+
+
+class TestShortNamesAndTheActiveGroup:
+
+    def test_room_and_user_names_alone_are_enough(self, world):
+        w = world
+        short = ROOM.split("@", 1)[0]
+        bob = w.b.jid.split("@", 1)[0]
+
+        async def go():
+            await _otr_all(w)
+            await w.a.cmd("/group create " + short)
+            assert w.a.groups.groups.is_secure(ROOM)
+            await w.a.cmd("/group invite %s %s" % (short, bob))
+            await w.server.pump()
+            assert w.b.lines("invites you to the secure group " + ROOM)
+            await w.b.cmd("/group accept " + short)
+            await w.server.pump()
+            assert w.b.groups.groups.is_secure(ROOM)
+            await w.b.cmd("/group %s hello by name" % short)
+            await w.server.pump()
+
+        run(go())
+        assert w.a.lines("hello by name")
+
+    def test_joining_switches_to_the_group_and_typing_goes_to_it(self, world):
+        w = world
+
+        async def go():
+            await _otr_all(w)
+            await w.a.cmd("/group create " + ROOM)
+            assert w.a.client.peer == ROOM          # the creator is in it
+            await w.a.cmd("/group invite %s %s" % (ROOM, w.b.jid))
+            await w.server.pump()
+            await w.b.cmd("/group accept " + ROOM)
+            await w.server.pump()
+            assert w.b.client.peer == ROOM          # switched on the Welcome
+            n = len(w.server.room_log)
+            assert w.b.client.dispatch_line(w.b.client.peer, "just typed") is True
+            await w.server.pump()
+            assert len(w.server.room_log) > n
+
+        run(go())
+        assert w.a.lines("just typed")
+        for _room, _nick, body in w.server.room_log:
+            assert "just typed" not in body           # MLS, not plaintext
+
+    def test_slash_to_switches_between_a_contact_and_a_group(self, world):
+        w = world
+        short = ROOM.split("@", 1)[0]
+
+        async def go():
+            await _three_member_group(w)
+            c = w.a.client
+            await w.a.cmd("/to " + w.b.jid.split("@", 1)[0])
+            assert c.peer == w.b.jid
+            await w.a.cmd("/to " + short)
+            assert c.peer == ROOM
+            # A room we hold no group for is refused: typing there is not MLS.
+            await w.a.cmd("/to elsewhere@conference." + DOMAIN)
+            assert c.peer == ROOM
+
+        run(go())
+
+    def test_an_ambiguous_short_name_is_refused(self, world):
+        w = world
+
+        async def go():
+            await _otr_all(w)
+            await w.a.cmd("/group create circle1@conference." + DOMAIN)
+            await w.a.cmd("/group create circle2@conference." + DOMAIN)
+            n = len(w.server.room_log)
+            await w.a.cmd("/group say circle hello")
+            return n
+
+        n = run(go())
+        assert w.a.lines("ambiguous_room")
+        assert len(w.server.room_log) == n
+
+    def test_a_room_presence_never_starts_otr_with_the_room(self, world):
+        w = world
+        c = w.a.client
+        c._encrypted, c._otr_capable, c._outbox, c._hs_started = set(), set(), {}, {}
+        c._peer_resources, c._own_bare, c._hs_hist = {}, w.a.jid, []
+        c._peer_is_alive = lambda peer: None
+        started = []
+        c.start_otr = started.append
+        c._on_presence_available(Presence("zzroom@conference.%s/bob" % DOMAIN, muc=True))
+        assert started == [] and not c._otr_capable
+        c._on_presence_available(Presence("zzbob@%s/phone" % DOMAIN))
+        assert started == ["zzbob@" + DOMAIN]
+
+    def test_room_history_from_before_joining_is_not_a_warning(self, world):
+        w = world
+
+        async def go():
+            await _three_member_group(w)
+            for i in range(OG.STALE_WARN_AFTER + 1):
+                w.b.groups.on_room_body(ROOM, "x", ROOM_PREFIX + "AAAA", 1.0,
+                                        history=True)
+
+        run(go())
+        assert not w.b.lines("could not be decrypted")
