@@ -4,6 +4,16 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.35 — 2026-10-05 — /to takes a name, then a message (core 0.13.1)
+
+- **Fixed (Termux): \`/to secure yes\` made a contact called "secure yes" the
+  conversation.** The name is now the first word, and anything after it is
+  sent there: \`/to secure yes\` switches to the group and says "yes". A name
+  that is no contact or secure group is refused and the conversation stays
+  as it was.
+
+---
+
 ## Android 0.7.0-experimental.rc.34 — 2026-10-05 — both Termux clients after build.sh (core 0.13.1)
 
 - **Fixed: \`python otrv4+.py\` (IRC) failed after \`build.sh\`** with "requires

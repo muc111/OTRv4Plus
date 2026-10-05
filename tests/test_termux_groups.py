@@ -1092,6 +1092,25 @@ class TestShortNamesAndTheActiveGroup:
 
         run(go())
 
+    def test_slash_to_with_text_switches_and_sends_it(self, world):
+        """Device test: "/to secure yes" made a contact named "secure yes"
+        the conversation. The name is one word; the rest is the message."""
+        w = world
+        short = ROOM.split("@", 1)[0]
+
+        async def go():
+            await _three_member_group(w)
+            c = w.a.client
+            await w.a.cmd("/to %s yes I can" % short)
+            await w.server.pump()
+            assert c.peer == ROOM
+            await w.a.cmd("/to @ not a name")       # refused, nothing sent
+            assert c.peer == ROOM
+
+        run(go())
+        assert "yes I can" in w.c.texts()
+        assert "not a name" not in w.c.texts()
+
     def test_an_ambiguous_short_name_is_refused(self, world):
         w = world
 

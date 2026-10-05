@@ -4677,12 +4677,22 @@ class OTRv4PlusXMPP(ClientXMPP):
                   % _sanitise(target, 96))
 
     def _cmd_to(self, arg):
-        """`/to mls3`, `/to bob`, `/to bob@server`: switch the conversation."""
+        """`/to mls3`, `/to bob`, `/to bob@server`: switch the conversation.
+        `/to mls3 hello`: switch, and send "hello" there."""
         arg = arg.strip()
         if not arg:
             print("[to] talking to: %s" % (_sanitise(self.peer, 96) if self.peer
                                           else "nobody (use /to <name>)"))
             return
+        # The name is one word; the rest is a message. "/to secure yes" made
+        # a contact called "secure yes" the conversation (device test).
+        arg, _, text = arg.partition(" ")
+        text = text.strip()
+        if self._switch_to(arg) and text:
+            self.send_user_text(self.peer, text)
+
+    def _switch_to(self, arg):
+        """Make `arg` the conversation. False if it is no contact or group."""
         groups = getattr(self, "_groups", None)
         if groups is not None and "@" not in arg:
             try:
@@ -4691,24 +4701,29 @@ class OTRv4PlusXMPP(ClientXMPP):
                 print("[to] %s matches more than one group (%s): give more of "
                       "the name" % (_sanitise(arg, 64),
                                     _sanitise(getattr(exc, "detail", ""), 200)))
-                return
+                return False
             if groups.owns_room(room):
                 self.set_conversation(room)
-                return
+                return True
             if room in groups.known_rooms():
                 print("[to] %s is an invitation: /group accept %s first"
                       % (_sanitise(room, 96), _sanitise(arg, 64)))
-                return
+                return False
         target = self.expand_jid(arg)
-        domain = target.split("@", 1)[1] if "@" in target else ""
+        local, _, domain = target.partition("@")
+        if not local or not domain or "." not in domain:
+            print("[to] %s is not a contact or one of your secure groups "
+                  "(/group list, /roster)" % _sanitise(arg, 64))
+            return False
         if groups is not None and not groups.owns_room(target) and (
                 domain.startswith("conference.") or any(
                     r.endswith("@" + domain) for r in groups.known_rooms())):
             # A room we hold no group for: typing there would not be MLS.
             print("[to] %s is a room, not one of your secure groups "
                   "(/group list)" % _sanitise(target, 96))
-            return
+            return False
         self.set_conversation(target)
+        return True
 
     # -- the outbox, and OTRv4+ as soon as a contact is there -------------------
 
