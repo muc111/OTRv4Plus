@@ -536,7 +536,8 @@ class ChatState(
             // not reported as "could not be started". Other codes are left
             // to the call site that caused them.
             is OtrEvent.Failed -> {
-                Verification.refusal(event.code)?.let { note(it) }
+                (Verification.refusal(event.code)
+                    ?: GroupText.failure(event.code, event.peer))?.let { note(it) }
                 false
             }
             else -> false

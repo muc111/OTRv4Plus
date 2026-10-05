@@ -145,6 +145,10 @@ class TermuxGroups:
                 self._print("[group] this build of the Rust core has no group "
                             "encryption (rebuild with: maturin develop "
                             "--release --features mls)")
+            elif exc.code == "state_in_use":
+                self._print("[group] another otrv4plus client for this account "
+                            "is still running and holds its secure groups. Quit "
+                            "it (or: pkill -f otrv4plus_xmpp) and start again.")
             else:
                 self._print("[group] could not open group state (%s)" % exc.code)
             return False
@@ -347,6 +351,11 @@ class TermuxGroups:
                 p("[group %s] you were removed: new messages in this group can "
                   "no longer be read here." % ev.peer[:64])
         elif isinstance(ev, ErrorOccurred):
+            if ev.code == "groups_state_unreadable":
+                p("[group] a saved group state on this device did not open for "
+                  "this account and was kept aside (%s). Groups held in it "
+                  "need a new invitation." % (getattr(ev, "detail", "") or "no detail")[:300])
+                return
             p("[group] warning: %s%s" % (ev.code, (" (%s)" % ev.peer[:64]) if ev.peer else ""))
 
     # -- invitations: OTRv4+ first, by itself ------------------------------------

@@ -336,6 +336,12 @@ def test_large_frames_are_fragmented_and_reassembled():
     assert b.texts()[-1][1] == "x" * 20000
 
 
+def _state_file(directory, account):
+    import hashlib
+    return os.path.join(directory, "groups-%s.sealed"
+                        % hashlib.sha256(account.encode()).hexdigest()[:20])
+
+
 def test_state_survives_a_restart_sealed_and_bound_to_the_account():
     root = tempfile.mkdtemp()
     w = World()
@@ -345,9 +351,12 @@ def test_state_survives_a_restart_sealed_and_bound_to_the_account():
     a.join_room()
     a.groups.create(ROOM)
     _invite(w, "alice@x.i2p", "bob@x.i2p")
-    blob = open(os.path.join(root, "b", SecureGroups.STATE_NAME), "rb").read()
+    path = _state_file(os.path.join(root, "b"), "bob@x.i2p")
+    blob = open(path, "rb").read()
     assert b"bob@x.i2p" not in blob and ROOM.encode() not in blob
-    # Bob restarts.
+    assert "bob" not in os.path.basename(path)       # no address in a file name
+    # Bob restarts (the old process is gone).
+    b.groups.close()
     b2 = Member(w, "bob@x.i2p", os.path.join(root, "b"))
     w.members["bob@x.i2p"] = b2
     b2.join_room()
@@ -356,13 +365,71 @@ def test_state_survives_a_restart_sealed_and_bound_to_the_account():
     assert b2.texts()[-1][1] == "after bob restarted"
     b2.groups.send(ROOM, "back")
     assert a.texts()[-1][1] == "back"
-    # The same files opened as another account refuse, and are kept aside.
+    # ANOTHER ACCOUNT on the same device (the app signed in as someone else,
+    # Termux run as another user) has its own state and leaves Bob's alone.
+    b2.groups.close()
     m = SecureGroups(send_room=lambda *a: None, send_private=lambda *a: None,
                      emit=lambda e: None, peer_security=lambda p: SecurityState.PLAINTEXT,
                      state_dir=os.path.join(root, "b"))
     m.open("mallory@x.i2p")
     assert not m.is_secure(ROOM)
-    assert os.path.exists(os.path.join(root, "b", SecureGroups.STATE_NAME + ".unopened"))
+    m.create("other@conference.example.i2p")
+    m.close()
+    assert open(path, "rb").read()                    # Bob's file untouched
+    b3 = Member(w, "bob@x.i2p", os.path.join(root, "b"))
+    assert b3.groups.is_secure(ROOM)
+
+
+def test_a_second_client_for_the_same_account_is_refused():
+    root = tempfile.mkdtemp()
+    w = World()
+    a = w.add("alice@x.i2p", os.path.join(root, "a"))
+    with pytest.raises(GroupError) as e:
+        Member(w, "alice@x.i2p", os.path.join(root, "a"))
+    assert e.value.code == "state_in_use"
+    a.groups.close()
+    Member(w, "alice@x.i2p", os.path.join(root, "a"))
+
+
+def test_the_old_one_file_per_device_state_is_adopted_by_its_account():
+    root = tempfile.mkdtemp()
+    w = World()
+    a = w.add("alice@x.i2p", os.path.join(root, "a"))
+    a.join_room()
+    a.groups.create(ROOM)
+    a.groups.close()
+    d = os.path.join(root, "a")
+    # As an earlier version left it: one shared file, set aside once.
+    os.replace(_state_file(d, "alice@x.i2p"), os.path.join(d, SecureGroups.STATE_NAME + ".unopened"))
+    os.remove(_state_file(d, "alice@x.i2p") + ".prev") if os.path.exists(
+        _state_file(d, "alice@x.i2p") + ".prev") else None
+    events = []
+    other = SecureGroups(send_room=lambda *a: None, send_private=lambda *a: None,
+                         emit=events.append, peer_security=lambda p: SecurityState.PLAINTEXT,
+                         state_dir=d)
+    other.open("carol@x.i2p")                         # not hers: left alone
+    assert not other.is_secure(ROOM)
+    other.close()
+    assert os.path.exists(os.path.join(d, SecureGroups.STATE_NAME + ".unopened"))
+    a2 = Member(w, "alice@x.i2p", d)                   # hers: adopted
+    assert a2.groups.is_secure(ROOM)
+    assert os.path.exists(_state_file(d, "alice@x.i2p"))
+
+
+def test_a_damaged_state_falls_back_to_the_last_good_copy():
+    root = tempfile.mkdtemp()
+    w = World()
+    a = w.add("alice@x.i2p", os.path.join(root, "a"))
+    a.join_room()
+    a.groups.create(ROOM)
+    a.groups.save()                                   # a .prev now exists
+    a.groups.close()
+    path = _state_file(os.path.join(root, "a"), "alice@x.i2p")
+    with open(path, "r+b") as f:
+        f.seek(40)
+        f.write(b"\xff\xff")
+    a2 = Member(w, "alice@x.i2p", os.path.join(root, "a"))
+    assert a2.groups.is_secure(ROOM)
 
 
 def test_wipe_destroys_the_groups_and_their_files():
@@ -717,6 +784,7 @@ class TestSigningKeysRotate:
         assert _verified(a, "bob@x.i2p") is True
         w.room.drop_next = 100
         a.groups.rekey(ROOM)                        # lost with the old stream
+        a.groups.close()                            # the process exits
         a2 = Member(w, "alice@x.i2p", os.path.join(root, "a"))
         w.members["alice@x.i2p"] = a2
         a2.join_room()

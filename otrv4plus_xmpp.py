@@ -3078,6 +3078,7 @@ class OTRv4PlusXMPP(ClientXMPP):
             self._dbg(f"[otr-crypto] done processing DATA from {peer} ({_t.time() - t0:.1f}s).")
 
         self._check_dake_complete(peer)
+        self._recover_if_orphaned(peer)
 
         # Did the engine park an SMP1 because we have no passphrase for this
         # peer?  Asked here, on the event loop, after the executor has
@@ -3226,6 +3227,28 @@ class OTRv4PlusXMPP(ClientXMPP):
         hint += ("\n[peer] Commands act on --peer, so restart with the "
                  "address that has the session.")
         return hint
+
+    #: At most one recovery handshake per contact in this many seconds.
+    ORPHAN_RECOVERY_INTERVAL = 60.0
+
+    def _recover_if_orphaned(self, peer):
+        """The peer encrypted to a session we no longer have (one side
+        restarted, or a DAKE3 was lost): nothing they send can be read and
+        neither side had a reason to start again. Start a new handshake --
+        a DAKE1, never plaintext -- as the Android app does. Bounded."""
+        take = getattr(getattr(self, "otr", None), "take_orphan_data", None)
+        if take is None or not take(peer):
+            return
+        now = time.monotonic()
+        seen = self.__dict__.setdefault("_orphan_at", {})
+        if now - seen.get(peer, -1e18) < self.ORPHAN_RECOVERY_INTERVAL:
+            return
+        seen[peer] = now
+        print(f"[otr] {peer} sent an encrypted message for a session this "
+              f"client no longer has (one of you restarted); it cannot be "
+              f"read. Starting a new encrypted session -- ask them to resend.")
+        self._encrypted.discard(peer)
+        self.start_otr(peer)
 
     def _check_dake_complete(self, peer):
         """When a peer's session first becomes encrypted, show fingerprints

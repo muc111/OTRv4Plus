@@ -679,7 +679,8 @@ class TestPersistenceAndWipe:
         async def go():
             await _three_member_group(w)
             w.a.groups.close()                       # /quit
-            assert os.path.exists(os.path.join(w.a.home, "groups", "groups.sealed"))
+            assert [f for f in os.listdir(os.path.join(w.a.home, "groups"))
+                    if f.startswith("groups-") and f.endswith(".sealed")]
             # A new process: a fresh adapter over the same state directory.
             w.a.printed.clear()
             w.a.client._groups = OG.TermuxGroups(
@@ -747,7 +748,10 @@ class TestPersistenceAndWipe:
         c, xdir = self._cleanup_client(w, monkeypatch, home)
         c.cleanup()
         gdir = os.path.join(xdir, "groups")
-        assert sorted(os.listdir(gdir)) == ["groups.dek", "groups.sealed"]
+        kept = sorted(f for f in os.listdir(gdir) if not f.endswith(".lock"))
+        assert kept[0] == "groups-" + __import__("hashlib").sha256(
+            w.a.jid.encode()).hexdigest()[:20] + ".sealed", kept
+        assert set(kept[1:]) <= {kept[0] + ".prev", "groups.dek"} and "groups.dek" in kept
         assert not os.path.exists(os.path.join(xdir, "trust.json")), \
             "the ordinary /quit wipe no longer ran"
         again = OG.TermuxGroups(c, gdir, printer=lambda *_: None)

@@ -60,6 +60,21 @@ object GroupText {
         else -> "A secure-group operation for $room was refused."
     }
 
+    /** A group failure reported by the bridge, worth telling the user, or null. */
+    fun failure(code: String, room: String?): String? = when (code) {
+        "group_keys_missing" ->
+            "${room ?: "This room"} is an encrypted group, but this device has no " +
+                "keys for it, so its messages cannot be shown and nothing can be " +
+                "sent there. Ask a member to invite you again."
+        "groups_state_unreadable" ->
+            "Your saved secure groups could not be opened on this device. The " +
+                "file was kept. Groups you were in need a new invitation."
+        "state_in_use" ->
+            "Another copy of the app for this account is holding its secure " +
+                "groups. Close it and sign in again."
+        else -> null
+    }
+
     /** For an operation the user started. */
     fun outcome(code: String): String? = when (code) {
         "ok" -> null

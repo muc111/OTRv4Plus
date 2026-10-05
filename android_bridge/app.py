@@ -268,6 +268,8 @@ class OtrApp:
         #: the engine's own queue, which dropped its contents when the
         #: handshake completed: a line typed during a DAKE never arrived.
         self._outbox: Dict[str, List[str]] = {}
+        #: Rooms carrying MLS frames that this device holds no group for.
+        self._keyless_groups: set = set()
         #: peer -> rooms to invite them to once OTRv4+ with them is up.
         self._invite_after_otr: Dict[str, List[str]] = {}
         #: Handshake durations (seconds): per peer and overall, for the ETA.
@@ -516,6 +518,15 @@ class OtrApp:
                     return
             except GroupError:
                 return
+        if body.startswith(("?OTRv4MLS1:", "?OTRv4F|")):
+            # An ENCRYPTED GROUP whose keys this device does not hold (never
+            # joined, or its saved state was lost). Its ciphertext is never
+            # shown as a message, and the room is never treated as plain:
+            # sending into it is refused (`send_user_text`).
+            if room not in self._keyless_groups:
+                self._keyless_groups.add(room)
+                self._emit(ErrorOccurred(peer=room, code="group_keys_missing"))
+            return
         if own:
             return
         self._emit(RoomMessageReceived(peer=room, sender=nick, body=body,
@@ -1591,6 +1602,10 @@ class OtrApp:
                 except (GroupError, Exception):
                     return self.SEND_FAILED
                 return self.SEND_ENCRYPTED
+            if peer in self._keyless_groups:
+                # An encrypted group we have no keys for: never plaintext.
+                self._emit(ErrorOccurred(peer=peer, code="group_keys_missing"))
+                return self.SEND_FAILED
             sender = getattr(self._transport, "send_room_message", None)
             if sender is None:
                 return self.SEND_FAILED

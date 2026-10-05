@@ -50,6 +50,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import hashlib
 import collections
 import json
 import os
@@ -494,6 +495,8 @@ class SecureGroups:
         self._queued_kps: Dict[str, List[Tuple[str, bytes, bool]]] = {}
         self._settled_from = 0.0
         self._maintain_timer: Any = None
+        self._lock_fd: Optional[int] = None
+        self._adopted_from: Optional[str] = None
         #: Group calls (android_bridge.group_call): control messages travel
         #: as MLS application messages with CALL_PREFIX and go here, never
         #: to the chat; the epoch listener hears about every commit.
@@ -522,19 +525,74 @@ class SecureGroups:
     def available(self) -> bool:
         return hasattr(self._core_module(), "RustMlsClient")
 
-    def _paths(self) -> Tuple[Optional[str], Optional[str]]:
+    def _paths(self, account: Optional[str] = None) -> Tuple[Optional[str], Optional[str]]:
+        """(sealed state, DEK). The state is ONE FILE PER ACCOUNT, named by a
+        hash of it (no address in a file name): one file for the device let
+        a second account on the same phone (the app signed in as someone
+        else, Termux run as B then C) find the first one's state, fail to
+        open it and set it aside -- and the next switch overwrite what was
+        set aside, losing the first account's groups."""
         if not self._state_dir:
             return None, None
-        return (os.path.join(self._state_dir, self.STATE_NAME),
+        account = account if account is not None else self._account
+        name = self.STATE_NAME
+        if account:
+            digest = hashlib.sha256(account.encode()).hexdigest()[:20]
+            name = "groups-%s.sealed" % digest
+        return (os.path.join(self._state_dir, name),
                 os.path.join(self._state_dir, self.DEK_NAME))
+
+    def _candidates(self, state_path: str) -> List[str]:
+        """Files that may hold this account's state, best first: its own
+        file, its last good copy, then the old one-per-device file and any
+        state set aside by earlier versions (each is tried, and adopted only
+        if it opens under THIS account)."""
+        out = [state_path, state_path + ".prev"]
+        legacy = os.path.join(self._state_dir, self.STATE_NAME)
+        out += [legacy, legacy + ".unopened"]
+        try:
+            out += sorted(os.path.join(self._state_dir, f)
+                          for f in os.listdir(self._state_dir)
+                          if f.startswith(self.STATE_NAME + ".unopened."))
+        except OSError:
+            pass
+        return [p for p in out if os.path.isfile(p)]
+
+    def _take_lock(self, state_path: str) -> None:
+        """One running client per account's state. Two (a client left
+        running and a new one, or a reconnect racing a timer) would each
+        save their own copy over the other's."""
+        if self._lock_fd is not None:
+            return
+        try:
+            import fcntl
+        except ImportError:                 # not POSIX: no lock, as before
+            return
+        fd = os.open(state_path + ".lock", os.O_RDWR | os.O_CREAT, 0o600)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            os.close(fd)
+            raise GroupError("state_in_use",
+                             "another client for this account is running "
+                             "and holds its group state; close it first")
+        self._lock_fd = fd
+
+    def _release_lock(self) -> None:
+        fd, self._lock_fd = self._lock_fd, None
+        if fd is not None:
+            try:
+                os.close(fd)                # closing releases the flock
+            except OSError:
+                pass
 
     def open(self, account: str) -> None:
         """Create or reopen this account's MLS state.
 
-        Reopened only under the same account: the account is bound into the
-        sealed blob, so another account's state refuses to open, and is then
-        left alone rather than overwritten -- it is not ours to destroy.
-        """
+        Already open for this account (a reconnect): nothing to do -- the
+        state in memory is the newest. A state file that does not open under
+        this account is left where it is, never renamed or overwritten: it
+        may be another account's."""
         with self._lock:
             if self._wiped:
                 raise GroupError("wiped")
@@ -545,28 +603,45 @@ class SecureGroups:
             account = str(account or "").strip().lower()
             if not account:
                 raise GroupError("no_account")
-            state_path, dek_path = self._paths()
+            if self._client is not None and self._account == account:
+                return
+            if self._client is not None:
+                self.close()                 # another account: seal and let go
+            state_path, dek_path = self._paths(account)
             client = None
             if state_path and dek_path:
                 os.makedirs(self._state_dir, mode=0o700, exist_ok=True)
+                self._take_lock(state_path)
                 self._dek = core.FileDek.load_or_create(dek_path)
-                if os.path.exists(state_path):
-                    with open(state_path, "rb") as f:
-                        blob = f.read()
+                reasons = []
+                for path in self._candidates(state_path):
                     try:
+                        with open(path, "rb") as f:
+                            blob = f.read()
                         client = core.RustMlsClient.open_sealed(
                             self._dek, account.encode(), blob)
-                    except Exception:
+                    except Exception as exc:
+                        # Rust's refusal text names the check, never data.
+                        reasons.append("%s: %s" % (os.path.basename(path),
+                                                   str(exc)[:80]))
                         client = None
-                        self._emit(ErrorOccurred(peer=None, code="groups_state_unreadable"))
-                        # Kept aside, not deleted: it may be another account's.
-                        os.replace(state_path, state_path + ".unopened")
+                        continue
+                    if path != state_path:
+                        self._adopted_from = os.path.basename(path)
+                    break
+                if client is None and os.path.isfile(state_path):
+                    self._emit(ErrorOccurred(peer=None, code="groups_state_unreadable",
+                                             detail="; ".join(reasons)[:300]))
+                    # Kept, under a name nothing else writes to.
+                    os.replace(state_path, "%s.unopened.%d" % (state_path, int(time.time())))
             if client is None:
                 client = core.RustMlsClient(account.encode())
             self._client = client
             self._account = account
             self._load_app_state()
             self._settled_from = self._clock()
+            if getattr(self, "_adopted_from", None):
+                self.save()                  # now under this account's own name
         self._arm_maintenance()
 
     def _need(self):
@@ -671,14 +746,22 @@ class SecureGroups:
             if not state_path or self._client is None or self._wiped:
                 return
             self._store_app_state()
-            blob = self._client.seal(self._dek, self._account.encode())
-            tmp = state_path + ".tmp"
+            blob = bytes(self._client.seal(self._dek, self._account.encode()))
+            # A temporary name of our own, so two writers (should there ever
+            # be two) cannot interleave inside one file; then the previous
+            # good state is kept as .prev and the new one replaces it --
+            # each step an atomic rename.
+            tmp = "%s.%d.%d.tmp" % (state_path, os.getpid(), threading.get_ident())
             fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
             try:
-                os.write(fd, bytes(blob))
+                view = memoryview(blob)
+                while view:
+                    view = view[os.write(fd, view):]
                 os.fsync(fd)
             finally:
                 os.close(fd)
+            if os.path.exists(state_path):
+                os.replace(state_path, state_path + ".prev")
             os.replace(tmp, state_path)
 
     def close(self) -> None:
@@ -706,6 +789,8 @@ class SecureGroups:
                         pass
                 self._client = None
                 self._dek = None
+                self._account = ""
+                self._release_lock()
                 self._stop_maintenance()
                 self._activity.clear()
                 self._queued_kps.clear()
@@ -731,15 +816,16 @@ class SecureGroups:
                     self._dek.zeroize()
                 except Exception:
                     pass
-            state_path, dek_path = self._paths()
-            for path in (state_path, dek_path,
-                         state_path and state_path + ".tmp",
-                         state_path and state_path + ".unopened"):
-                if path and os.path.exists(path):
-                    try:
-                        os.remove(path)
-                    except OSError:
-                        pass
+            # Every account's state, its last good copy, anything set aside,
+            # temporaries, locks and the key: all of it, not just ours.
+            self._release_lock()
+            if self._state_dir and os.path.isdir(self._state_dir):
+                for name in os.listdir(self._state_dir):
+                    if name.startswith("groups"):
+                        try:
+                            os.remove(os.path.join(self._state_dir, name))
+                        except OSError:
+                            pass
             self._invites.clear()
             self._outgoing.clear()
             self._awaiting_welcome.clear()

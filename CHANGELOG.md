@@ -4,6 +4,38 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.31 — 2026-10-05 — groups survive restarts and account switches (core 0.13.0)
+
+From a two-phone test: a Termux client warned \`groups_state_unreadable\`,
+a message to a contact who had restarted never arrived, and a rejoined
+secure room showed as unencrypted with raw ciphertext in it.
+
+- **Fixed: one device's group state was shared by every account on it.**
+  Running Termux as one account and then another (or signing the app into
+  a different account) opened the other account's file, failed, set it
+  aside, and a later save overwrote what was left. Each account now has its
+  own state file. An older shared file is adopted by the account it
+  belongs to.
+- **The last good copy is kept.** Every save keeps the previous state as a
+  fallback, writes through a unique temporary file and syncs it to disk; a
+  damaged state falls back to the previous one. If nothing opens, the
+  warning now says why and the file is kept aside, never deleted.
+- **Two clients for the same account on one device are refused**
+  (\`state_in_use\`) instead of overwriting each other's group state.
+  Quit an old Termux client before starting a new one.
+- **Termux recovers when a contact restarts.** Encrypted messages for a
+  session we no longer have now start a new handshake at once (at most
+  once a minute per contact), as the app already did. The message sent
+  during the restart is not recoverable and needs sending again.
+- **A secure room without its keys is never shown as a plain room.** Its
+  ciphertext is hidden, one note explains the keys are missing, and
+  nothing can be sent there until someone re-invites you.
+
+Upgrade note: groups whose state was lost before this release need a new
+invitation (or a new group).
+
+---
+
 ## Android 0.7.0-experimental.rc.30 — 2026-10-04 — encrypted by default, nothing lost while it starts (core 0.13.0)
 
 The owner's rules: no plaintext ever to a contact whose app speaks OTRv4+;
