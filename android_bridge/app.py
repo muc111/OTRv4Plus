@@ -1593,15 +1593,17 @@ class OtrApp:
         # message; sending it as type="chat" to the room's JID -- what this
         # method did before rooms were routed -- is rejected by the server
         # while the UI reported it sent.
+        # A SECURE GROUP is MLS or nothing: a failure is SEND_FAILED, never a
+        # plaintext retry. Checked before room membership: after a re-login
+        # the group is known before its room is joined again, and what is
+        # typed then is held until the group is in sync (QUEUED).
+        if self._groups is not None and self._groups.is_secure(peer):
+            try:
+                outcome = self._groups.send(peer, body)
+            except (GroupError, Exception):
+                return self.SEND_FAILED
+            return self.SEND_QUEUED if outcome == "held" else self.SEND_ENCRYPTED
         if peer in self._rooms:
-            # A SECURE GROUP is MLS or nothing: a failure is SEND_FAILED,
-            # never a plaintext retry.
-            if self._groups is not None and self._groups.is_secure(peer):
-                try:
-                    self._groups.send(peer, body)
-                except (GroupError, Exception):
-                    return self.SEND_FAILED
-                return self.SEND_ENCRYPTED
             if peer in self._keyless_groups:
                 # An encrypted group we have no keys for: never plaintext.
                 self._emit(ErrorOccurred(peer=peer, code="group_keys_missing"))

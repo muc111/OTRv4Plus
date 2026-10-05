@@ -62,7 +62,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import otrv4plus_fragment as _fragment
 
-from .events import (ErrorOccurred, GroupChanged, GroupInvite,
+from .events import (ErrorOccurred, GroupChanged, GroupInvite, QueuedSent,
                      RoomMessageReceived, SecurityState)
 
 __all__ = ["SecureGroups", "GroupError", "ROOM_PREFIX", "SIGNAL_PREFIX",
@@ -494,6 +494,14 @@ class SecureGroups:
         #: commits was pending; added once it settles.
         self._queued_kps: Dict[str, List[Tuple[str, bytes, bool]]] = {}
         self._settled_from = 0.0
+        #: room -> 0.0 while we are not (back) in its room, then the time its
+        #: history counts as applied. A message sent before then is encrypted
+        #: for an epoch the others have left, and they drop it -- the first
+        #: message after a re-login was lost (device test, 2026-10-05). So it
+        #: is held, and sent when the group is in sync.
+        self._syncing: Dict[str, float] = {}
+        self._held: Dict[str, List[str]] = {}
+        self._sync_timers: Dict[str, Any] = {}
         self._maintain_timer: Any = None
         self._lock_fd: Optional[int] = None
         self._adopted_from: Optional[str] = None
@@ -640,6 +648,9 @@ class SecureGroups:
             self._account = account
             self._load_app_state()
             self._settled_from = self._clock()
+            # Restored groups: their rooms are not joined yet.
+            for room in self._room_ids():
+                self._syncing[room] = 0.0
             if getattr(self, "_adopted_from", None):
                 self.save()                  # now under this account's own name
         self._arm_maintenance()
@@ -1292,22 +1303,102 @@ class SecureGroups:
         if not self._pacer.in_flight(room):
             self.resend_pending_commit(room, "rejected")
 
+    #: After the room is joined again, how long its history replay (the
+    #: commits made while we were away) is given to be applied before held
+    #: messages go.
+    SYNC_SETTLE_SECONDS = 3.0
+    MAX_HELD = 100
+
+    def mark_syncing(self, room: Optional[str] = None) -> None:
+        """We are out of `room` (every room, by default) until
+        `on_room_rejoined`: messages typed meanwhile are held."""
+        with self._lock:
+            rooms = [room] if room else self._room_ids()
+            for r in rooms:
+                self._syncing[r] = 0.0
+
+    def is_syncing(self, room: str) -> bool:
+        self._sync_check(room)
+        with self._lock:
+            return room in self._syncing
+
+    def _room_ids(self) -> List[str]:
+        client = self._client
+        if client is None:
+            return []
+        try:
+            return [bytes(g).decode() for g in client.group_ids()]
+        except Exception:
+            return list(self._bound)
+
+    def _sync_check(self, room: str) -> None:
+        """Send what was held once the room's history has had its time."""
+        with self._lock:
+            until = self._syncing.get(room)
+            if until is None or until == 0.0 or self._clock() < until:
+                return
+            self._syncing.pop(room, None)
+            held = self._held.pop(room, [])
+        sent = 0
+        for text in held:
+            try:
+                self.send(room, text)
+                sent += 1
+            except GroupError:
+                self._emit(ErrorOccurred(peer=room, code="group_send_failed"))
+        self._emit(GroupChanged(peer=room, change="synced",
+                                detail=str(sent) if sent else ""))
+        if sent:
+            self._emit(QueuedSent(peer=room, count=sent, encrypted=True))
+
     def on_room_rejoined(self, room: str) -> None:
         """We are in `room` again after a reconnect: a commit lost with the
         old stream goes out again (the room's history replay may also bring
-        it back, which settles it first)."""
+        it back, which settles it first), and held messages go once the
+        history has been applied."""
         self._settled_from = self._clock()
+        with self._lock:
+            settle = self.SYNC_SETTLE_SECONDS
+            if room in self._syncing:
+                self._syncing[room] = self._clock() + max(settle, 1e-9)
         self.resend_pending_commit(room, "rejoined")
         self.resend_welcomes(force=True)
-
-    def send(self, room: str, text: str) -> None:
-        """Encrypt and post. Raises; never falls back to plaintext."""
-        if not text:
+        if settle <= 0:
+            self._sync_check(room)
             return
+        old = self._sync_timers.pop(room, None)
+        if old is not None:
+            old.cancel()
+        timer = threading.Timer(settle + 0.05, self._sync_check, args=(room,))
+        timer.daemon = True
+        self._sync_timers[room] = timer
+        timer.start()
+
+    def send(self, room: str, text: str) -> str:
+        """Encrypt and post: "sent". While the group is not in sync (its room
+        not joined again yet, or its history not applied): held, "held".
+        Raises; never falls back to plaintext."""
+        if not text:
+            return "sent"
+        self._sync_check(room)
         with self._lock:
             client = self._need()
             if not client.has_group(room.encode()):
                 raise GroupError("not_a_group")
+            if room in self._syncing:
+                held = self._held.setdefault(room, [])
+                if len(held) >= self.MAX_HELD:
+                    raise GroupError("too_many_held")
+                held.append(text)
+                first = len(held) == 1
+            else:
+                first = None
+        if first is not None:
+            if first:
+                self._emit(GroupChanged(peer=room, change="syncing"))
+            return "held"
+        with self._lock:
+            client = self._need()
             try:
                 ct = bytes(client.encrypt(room.encode(), text.encode("utf-8")))
             except ValueError as exc:
@@ -1327,6 +1418,7 @@ class SecureGroups:
             raise err
         self._post(room, ct)
         self._maybe_rekey(room)
+        return "sent"
 
     def _maybe_rekey(self, room: str, count: bool = True) -> bool:
         """Self-update once enough messages or time have passed (see
@@ -1339,7 +1431,8 @@ class SecureGroups:
             due = (entry[0] >= self.AUTO_REKEY_MESSAGES
                    or self._clock() - entry[1] >= self.AUTO_REKEY_SECONDS)
             client = self._client
-            if not due or client is None or self._wiped:
+            if not due or client is None or self._wiped or room in self._syncing:
+                # Not while out of sync: a commit on an old epoch is lost.
                 return False
             try:
                 if client.has_pending_commit(room.encode()):
@@ -1403,6 +1496,9 @@ class SecureGroups:
         self.resend_welcomes()
         done = []
         for room in self.rooms():
+            self._sync_check(room)
+            if room in self._syncing:
+                continue                    # no commit from an old epoch
             # A removal commit refreshes our path too, so it goes first.
             if self._remove_idle(room):
                 done.append("removed:" + room)

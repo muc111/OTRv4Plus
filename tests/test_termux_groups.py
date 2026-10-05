@@ -57,6 +57,14 @@ DOMAIN = "example.test"
 ROOM = "circle@conference." + DOMAIN
 
 
+
+@pytest.fixture(autouse=True)
+def _rooms_settle_at_once(monkeypatch):
+    """The simulated room delivers history synchronously: no settling time
+    (TestSyncAfterRejoin sets one where it is the subject)."""
+    from android_bridge.groups import SecureGroups as _SG
+    monkeypatch.setattr(_SG, "SYNC_SETTLE_SECONDS", 0.0)
+
 # ── the simulated server ─────────────────────────────────────────────────────
 
 class Msg(dict):

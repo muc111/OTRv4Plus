@@ -943,13 +943,23 @@ class ConnectionController:
         if not rooms:
             return
         nick = self._profile.jid.split("@", 1)[0]
+        # Until each room is joined again and its history applied, what is
+        # typed is held: sent now it would be encrypted for an epoch the
+        # others may have left, and lost (device test, 2026-10-05).
+        mark = getattr(groups, "mark_syncing", None)
+        if mark is not None:
+            mark()
 
         def run():
             ok = 0
             for room in rooms:
                 try:
-                    if self.join_room(room, nick).get("ok"):
+                    joined = self.join_room(room, nick)
+                    if joined.get("ok") or joined.get("code") == "already_in_room":
                         ok += 1
+                        rejoined = getattr(groups, "on_room_rejoined", None)
+                        if rejoined is not None:
+                            rejoined(room)
                 except Exception:
                     pass
             _TRACE.record("groups", "rooms_rejoined", "info" if ok == len(rooms)

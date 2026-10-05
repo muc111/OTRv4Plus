@@ -361,10 +361,19 @@ class TermuxGroups:
             change = ev.change
             detail = (" " + ev.detail) if getattr(ev, "detail", "") else ""
             epoch = (" (epoch %s)" % ev.epoch) if getattr(ev, "epoch", None) is not None else ""
-            p("[group %s] %s%s%s" % (ev.peer[:64], change, detail, epoch))
+            if change not in ("syncing", "synced"):
+                p("[group %s] %s%s%s" % (ev.peer[:64], change, detail, epoch))
             if change == "joined":
                 self._flush_prejoin(ev.peer)
                 self._activate(ev.peer)
+            elif change == "syncing":
+                p("[group %s] reconnecting to the group: messages wait until "
+                  "it is back in sync (a few seconds), then go encrypted"
+                  % ev.peer[:64])
+            elif change == "synced":
+                p("[group %s] in sync%s" % (
+                    ev.peer[:64], (": %s waiting message(s) sent" % ev.detail)
+                    if ev.detail else ""))
             elif change == "call_ringing":
                 p("[group call %s] %s is calling. /group answer %s"
                   % (ev.peer[:64], (ev.detail or "")[:96], ev.peer[:64]))
@@ -552,6 +561,9 @@ class TermuxGroups:
         The room's history may carry changes made while we were away; they are
         processed in order, and anything that does not fit our state is
         refused, never shown."""
+        # Held until each room is back and its history applied (see
+        # SecureGroups.mark_syncing).
+        self.groups.mark_syncing()
         for room in self.groups.rooms():
             try:
                 await self._join(room, create=False)
@@ -651,10 +663,14 @@ class TermuxGroups:
         if not text:
             return
         try:
-            self.groups.send(room, text)
+            outcome = self.groups.send(room, text)
         except GroupError as exc:
             self._print("[group %s] not sent: %s -- nothing was sent in the "
                         "clear" % (room[:64], exc.code))
+            return
+        if outcome == "held":
+            self._print("[group %s] me (waiting -- the group is syncing; "
+                        "sent once it is): %s" % (room[:64], text))
             return
         self._print("[group %s] me: %s" % (room[:64], text))
 

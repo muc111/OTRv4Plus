@@ -4,6 +4,27 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.36 — 2026-10-05 — no message lost while a group resyncs (core 0.13.1)
+
+From a device test: signed in again on the app, the first message to a
+secure group said "sent, encrypted" and nobody received it; the next one
+worked.
+
+- **Fixed: the first group message after a sign-in or reconnect was lost.**
+  It went out before the client was back in the room and had applied the
+  changes made while it was away (here, the group's automatic rekeys), so
+  it was encrypted for a key generation the others had already left, and
+  they dropped it. Now a group is "syncing" from sign-in (or reconnect)
+  until its room is joined again and its history has been applied (a few
+  seconds); what you type meanwhile waits, shown as queued with a note
+  ("Reconnecting to the group: your messages wait..."), and goes encrypted,
+  in order, once it is in sync. No rekey or other change is sent while out
+  of sync either. Same in Termux.
+- App: the room rejoin after a reconnect now also re-sends a group change
+  of ours that the old connection lost (Termux always did).
+
+---
+
 ## Android 0.7.0-experimental.rc.35 — 2026-10-05 — /to takes a name, then a message (core 0.13.1)
 
 - **Fixed (Termux): \`/to secure yes\` made a contact called "secure yes" the

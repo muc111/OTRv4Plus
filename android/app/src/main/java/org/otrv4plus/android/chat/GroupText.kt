@@ -45,6 +45,13 @@ object GroupText {
             "update (their device was away): ${event.detail}. Invite them again " +
             "over OTRv4+ to bring them back."
         "refused" -> refusal(event.detail, event.room)
+        // Back in the room after a reconnect or sign-in: what is typed waits
+        // until the group is in sync, or it would be sent on an old key and lost.
+        "syncing" -> "Reconnecting to ${event.room}: your messages wait until the " +
+            "group is back in sync (a few seconds), then go encrypted."
+        "synced" -> if (event.detail.isNotEmpty()) {
+            "${event.room} is back in sync: ${event.detail} waiting message(s) sent, encrypted."
+        } else null
         else -> null
     }
 

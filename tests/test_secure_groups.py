@@ -18,7 +18,7 @@ core = pytest.importorskip("otrv4_core")
 if not hasattr(core, "RustMlsClient"):
     pytest.skip("this core was built without the mls feature", allow_module_level=True)
 
-from android_bridge.events import (ErrorOccurred, GroupChanged,      # noqa: E402
+from android_bridge.events import (QueuedSent, ErrorOccurred, GroupChanged,      # noqa: E402
                                    GroupInvite, RoomMessageReceived,
                                    SecurityState)
 from android_bridge.groups import (ROOM_PREFIX, SIGNAL_PREFIX,       # noqa: E402
@@ -69,6 +69,14 @@ class Room:
         sender_jid, body = self.log[index]
         self._deliver(sender_jid, body)
 
+
+
+@pytest.fixture(autouse=True)
+def _rooms_settle_at_once(monkeypatch):
+    """The simulated room delivers history synchronously: no settling time
+    (TestSyncAfterRejoin sets one where it is the subject)."""
+    from android_bridge.groups import SecureGroups as _SG
+    monkeypatch.setattr(_SG, "SYNC_SETTLE_SECONDS", 0.0)
 
 class World:
     def __init__(self, state_root=None):
@@ -361,6 +369,7 @@ def test_state_survives_a_restart_sealed_and_bound_to_the_account():
     w.members["bob@x.i2p"] = b2
     b2.join_room()
     assert b2.groups.is_secure(ROOM)
+    b2.groups.on_room_rejoined(ROOM)
     a.groups.send(ROOM, "after bob restarted")
     assert b2.texts()[-1][1] == "after bob restarted"
     b2.groups.send(ROOM, "back")
@@ -969,3 +978,90 @@ def test_a_member_who_wiped_is_invited_back_with_one_leaf():
     assert (a.jid, "back after the wipe", True) not in c.texts()
     c.groups.send(ROOM, "welcome back")
     assert any(body == "welcome back" for _s, body, _v in a2.texts())
+
+
+class TestSyncAfterRejoin:
+    """Device test (2026-10-05): signed in again, the first message to the
+    group was "sent, encrypted" and nobody got it -- it went out on an epoch
+    the others had left while we were away. Until the room is joined again
+    and its history applied, what is typed waits."""
+
+    def _restarted_bob(self, settle=5.0):
+        root = tempfile.mkdtemp()
+        w = World()
+        a = w.add("alice@x.i2p", os.path.join(root, "a"))
+        b = w.add("bob@x.i2p", os.path.join(root, "b"))
+        w.pair("alice@x.i2p", "bob@x.i2p")
+        a.join_room()
+        a.groups.create(ROOM)
+        _invite(w, "alice@x.i2p", "bob@x.i2p")
+        b.groups.close()
+        del w.room.occupants["bob@x.i2p"]
+        w.away_from = len(w.room.log)
+        a.groups.rekey(ROOM)                    # while Bob is away
+        b2 = Member(w, "bob@x.i2p", os.path.join(root, "b"))
+        w.members["bob@x.i2p"] = b2
+        now = [1000.0]
+        b2.groups._clock = lambda: now[0]
+        b2.groups.SYNC_SETTLE_SECONDS = settle
+        return w, a, b2, now
+
+    def test_typed_before_the_room_is_back_waits_and_then_goes(self):
+        w, a, b2, now = self._restarted_bob()
+        assert b2.groups.is_syncing(ROOM)
+        assert b2.groups.send(ROOM, "typed too early") == "held"
+        assert "syncing" in b2.changes()
+        assert not any(body == "typed too early" for _s, body, _v in a.texts())
+        # Back in the room; its history brings Alice's rekey.
+        b2.join_room()
+        for i in range(w.away_from, len(w.room.log)):   # the history replay
+            w.room.replay(i)
+        b2.groups.on_room_rejoined(ROOM)
+        assert b2.groups.send(ROOM, "still settling") == "held"
+        now[0] += 6
+        b2.groups.maintain()                    # or the settle timer
+        got = [body for _s, body, _v in a.texts()]
+        assert got[-2:] == ["typed too early", "still settling"]
+        assert any(isinstance(e, QueuedSent) and e.count == 2 for e in b2.events)
+        assert b2.groups.send(ROOM, "now direct") == "sent"
+
+    def test_no_commit_while_out_of_sync(self):
+        w, a, b2, now = self._restarted_bob()
+        b2.groups.AUTO_REKEY_SECONDS = 1
+        now[0] += 10_000
+        assert b2.groups.maintain() == []
+
+
+def test_the_app_holds_group_messages_until_each_room_is_back(monkeypatch):
+    """The Android controller marks its groups out of sync before it
+    rejoins their rooms, and tells each group when its room is back."""
+    import threading as _threading
+    from android_bridge.connection import ConnectionController
+
+    calls = []
+
+    class Groups:
+        def rooms(self):
+            return [ROOM]
+
+        def mark_syncing(self, room=None):
+            calls.append(("mark", room))
+
+        def on_room_rejoined(self, room):
+            calls.append(("rejoined", room))
+
+    ctl = ConnectionController.__new__(ConnectionController)
+    ctl._app = type("App", (), {"groups": Groups()})()
+    ctl._profile = type("P", (), {"jid": "dave@x.i2p"})()
+    ctl.join_room = lambda room, nick: (calls.append(("join", room)) or {"ok": True})
+
+    class Inline:
+        def __init__(self, target=None, **_kw):
+            self.target = target
+
+        def start(self):
+            self.target()
+
+    monkeypatch.setattr(_threading, "Thread", Inline)
+    ctl._rejoin_secure_rooms()
+    assert calls == [("mark", None), ("join", ROOM), ("rejoined", ROOM)]
