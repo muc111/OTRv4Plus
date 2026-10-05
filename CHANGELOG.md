@@ -4,6 +4,23 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.34 — 2026-10-05 — both Termux clients after build.sh (core 0.13.1)
+
+- **Fixed: \`python otrv4+.py\` (IRC) failed after \`build.sh\`** with "requires
+  otrv4_core.RustDAKE ... not built with the dake module". The build
+  installs the core into ~/OTRv4Plus/.venv and removes older copies from the
+  system Python, so that Python found no core at all; the message blamed
+  the build. Both terminal clients (IRC and XMPP) now re-run themselves
+  with .venv/bin/python when started with another interpreter (once;
+  \`OTRV4PLUS_NO_VENV=1\` keeps yours), with \`PYTHONMALLOC=malloc\`. Without a
+  .venv, the IRC client says the core is missing for that Python and how to
+  fix it.
+- **build.sh checks both clients.** Its last step loads the OTRv4+ engine
+  (the IRC client, which the XMPP client also uses) and the XMPP client
+  against the module just built, and prints how to start each.
+
+---
+
 ## Android 0.7.0-experimental.rc.33 — 2026-10-05 — coming back after a wipe (core 0.13.1)
 
 From a device test: Alice wiped the app and signed in again; her secure

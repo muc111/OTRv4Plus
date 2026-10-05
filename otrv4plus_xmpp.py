@@ -135,6 +135,13 @@ COMMANDS:
 #  no md5/sha1, and no use of the `random` module for any security decision.
 # =============================================================================
 
+# Started as `python <client>`: run again with the project interpreter
+# (~/OTRv4Plus/.venv, where Rust/build.sh installs otrv4_core). Loaded by
+# name: the APK never runs a client as a script and does not ship it.
+if __name__ == "__main__":
+    import importlib as _importlib
+    _importlib.import_module("otrv4plus_venv").ensure(__file__)
+
 import argparse
 import asyncio
 import builtins

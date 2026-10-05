@@ -30,6 +30,13 @@ import os
 import socket
 import threading
 
+# Started as `python <client>`: run again with the project interpreter
+# (~/OTRv4Plus/.venv, where Rust/build.sh installs otrv4_core). Loaded by
+# name: the APK never runs a client as a script and does not ship it.
+if __name__ == "__main__":
+    import importlib as _importlib
+    _importlib.import_module("otrv4plus_venv").ensure(__file__)
+
 # `socks` comes from the **PySocks** distribution.  Naming it here matters:
 # there is also a PyPI project literally called `socks`, and it is an empty
 # placeholder ("automatically generated with 'register_pypi' and should be
@@ -105,6 +112,16 @@ except ImportError:
 
 
 def _check_rust_requirements():
+    try:
+        import otrv4_core as _probe  # noqa: F401
+    except ImportError:
+        # Not a build without the DAKE: no core at all for THIS Python.
+        # build.sh installs it into ~/OTRv4Plus/.venv only.
+        raise ImportError(
+            "otrv4_core is not installed for this Python (%s).  Start the "
+            "client with the project interpreter:  .venv/bin/python otrv4+.py "
+            "...  -- or build it first:  bash Rust/build.sh" % sys.executable
+        )
     if not RUST_DAKE_AVAILABLE or _RustDAKE is None:
         raise ImportError(
             "OTRv4+ v10.6.11+ requires otrv4_core.RustDAKE.  "

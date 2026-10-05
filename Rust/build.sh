@@ -25,8 +25,10 @@
 # module Python loads is the one just built, from .venv, that it has every
 # function the clients call, and that MLS works on this device.
 #
-# Run the clients with the same interpreter afterwards:
-#     cd ~/OTRv4Plus && .venv/bin/python otrv4plus_xmpp.py ...
+# Run the clients with the same interpreter afterwards (both switch to it
+# by themselves if started with another one):
+#     cd ~/OTRv4Plus && .venv/bin/python otrv4plus_xmpp.py --jid ...
+#     cd ~/OTRv4Plus && .venv/bin/python otrv4+.py -n <nick> -s <server>
 #
 # WHAT YOU SEE WHILE IT RUNS, AND WHERE THE LOG IS
 # Every run is logged in full to ~/.cache/otrv4plus/logs/ (latest.log is the
@@ -899,7 +901,7 @@ info "installing $(basename "${wheels[0]}") into $VENV"
 "$PY" -m pip install --no-deps --ignore-installed "${wheels[0]}" \
     || die "pip could not install ${wheels[0]} into $VENV"
 
-step "7/7 Checks: import, client API, MLS on this device"
+step "7/7 Checks: import, client API, MLS, both clients (IRC and XMPP)"
 # Run from the repository root, as the clients are run, so a module anywhere
 # Python looks first would be found -- and refused.
 (cd "$REPO_ROOT" && OTRV4PLUS_VENV="$VENV" "$PY" - <<'PYEOF'
@@ -971,11 +973,33 @@ try:
 except Exception as exc:
     fail("MLS self-test: %s: %s" % (type(exc).__name__, exc))
 print("MLS self-test (2 members, 1 message, hybrid suite, group voice): OK")
+
+# Both clients load the engine, otrv4+.py (the IRC client; the XMPP client
+# imports it as otrv4plus). Its import-time check names every core entry
+# point the 1:1 path needs (DAKE, ring signatures, key handles).
+import importlib.util
+for name, path in (("otrv4plus", "otrv4+.py"),):
+    try:
+        spec = importlib.util.spec_from_file_location(name, path)
+        mod = importlib.util.module_from_spec(spec)
+        sys.modules[name] = mod
+        spec.loader.exec_module(mod)
+    except Exception as exc:
+        fail("the engine (%s) does not load with this core: %s: %s"
+             % (path, type(exc).__name__, exc))
+print("IRC client / OTRv4+ engine (otrv4+.py): OK")
+try:
+    import otrv4plus_xmpp  # noqa: F401
+except Exception as exc:
+    fail("the XMPP client does not load: %s: %s" % (type(exc).__name__, exc))
+print("XMPP client (otrv4plus_xmpp.py): OK")
 PYEOF
 ) || die "the installed module did not pass the checks above"
 
 step "Done"
 FINISHED=1
 printf '\nBUILD OK in %s\n' "$(fmt_secs $(($(now) - BUILD_T0)))"
-info "run the clients with the project interpreter, from the repository root:"
-info "  cd $REPO_ROOT && PYTHONMALLOC=malloc .venv/bin/python otrv4plus_xmpp.py --jid ..."
+info "run the clients from the repository root:"
+info "  XMPP: cd $REPO_ROOT && PYTHONMALLOC=malloc .venv/bin/python otrv4plus_xmpp.py --jid ..."
+info "  IRC:  cd $REPO_ROOT && PYTHONMALLOC=malloc .venv/bin/python otrv4+.py -n <nick> -s <server>"
+info "('python otrv4+.py' and 'python otrv4plus_xmpp.py' also work: they switch to .venv/bin/python)"
