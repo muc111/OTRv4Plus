@@ -263,6 +263,16 @@ class ChatViewModel : ViewModel() {
         }
     }
 
+    /** Forget the group's keys on this phone and leave its room. */
+    fun leaveSecureGroup(room: String) {
+        groupCall("Leaving $room") { it.leaveSecureGroup(room) }
+    }
+
+    /** Delete the group for everyone: its room goes, and every member's copy. */
+    fun deleteSecureGroup(room: String) {
+        groupCall("Deleting $room") { it.deleteSecureGroup(room) }
+    }
+
     fun removeGroupMember(room: String, member: String) {
         groupCall("Removing $member", onOk = { refreshGroupMembers(room) }) {
             it.removeGroupMember(room, member)

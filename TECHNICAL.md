@@ -1070,7 +1070,7 @@ hello everyone              once you are in a group, just type
 /to mls3  /to alice         switch between a group and a contact
 /group mls3 hi              send to a group without switching
 /group members mls3         members, fingerprints, verified or not
-/group remove|rekey|leave|call|answer|hangup  ...   (/group help)
+/group remove|rekey|leave|delete|call|answer|hangup ... (/group help)
 ```
 
 In the app: Rooms, enter a room name, then "Create end-to-end encrypted

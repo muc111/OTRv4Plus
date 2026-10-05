@@ -512,8 +512,10 @@ class ConnectionController:
         except Exception as exc:
             return self._fail("transport_failed", type(exc).__name__)
         try:
-            # A secure group's room is made persistent (see the transport).
+            # A secure group's room is made persistent (see the transport),
+            # and its destruction by the owner ends the group here too.
             self._transport.persist_room = self._is_group_room
+            self._transport.room_destroyed = self._on_room_destroyed
         except Exception:
             pass
 
@@ -955,6 +957,14 @@ class ConnectionController:
             for room in rooms:
                 try:
                     joined = self.join_room(room, nick)
+                    taken = getattr(self._transport, "take_recreated", None)
+                    if joined.get("ok") and taken is not None and taken(room):
+                        # Gone while we were away: secure groups' rooms are
+                        # persistent, so its owner deleted it. The empty room
+                        # our join made is taken down and the group ends.
+                        self.destroy_room(room, "secure group deleted")
+                        self._on_room_destroyed(room)
+                        continue
                     if joined.get("ok") or joined.get("code") == "already_in_room":
                         ok += 1
                         rejoined = getattr(groups, "on_room_rejoined", None)
@@ -1069,6 +1079,23 @@ class ConnectionController:
 
     def remove_group_member(self, room: str, member: str) -> Dict[str, Any]:
         return self._group_call(self._app.groups.remove, room, member)
+
+    def _on_room_destroyed(self, room: str) -> None:
+        groups = getattr(self._app, "groups", None)
+        if groups is not None:
+            try:
+                groups.on_room_destroyed(room)
+            except Exception:
+                _TRACE.record("groups", "destroy_handling_failed", "warning")
+
+    def delete_secure_group(self, room: str) -> Dict[str, Any]:
+        """Delete a secure group for everyone: destroy its room (the service
+        allows only the owner, the group's creator), which tells the members
+        in it; one who was away finds it gone on return. Then our copy goes."""
+        result = self.destroy_room(room, "secure group deleted")
+        if result.get("ok"):
+            self._on_room_destroyed(room)
+        return result
 
     def leave_secure_group(self, room: str) -> Dict[str, Any]:
         """Forget the group's keys here, then leave the room."""

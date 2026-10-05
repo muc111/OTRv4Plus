@@ -4,6 +4,27 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.40 — 2026-10-05 — delete a group for everyone (core 0.13.1)
+
+Owner request: test groups had to be cleaned up on the server by hand.
+
+- **Delete a group for everyone.** The group's creator (the room's owner)
+  can delete it: app, the group's screen, "Delete group for everyone";
+  Termux, \`/group delete <room>\`. The room is destroyed on the server, which
+  tells every member in it, and their copy of the group ends (its keys are
+  forgotten; messages already on screen stay). A member who was away finds
+  the room gone when they come back and their copy ends too -- a secure
+  group's room is persistent (rc.33), so a missing room means a deleted
+  group, and it is no longer brought back as an empty room. Anyone else
+  asking is refused by the server and told to leave instead.
+- **Leave a group from the app**: "Leave group" on the group's screen
+  (Termux: \`/group leave\`). Both ask first.
+- Removing a member was already there (app: the group's screen, "Group
+  members" > Show > Remove; Termux: \`/group remove <room> <user>\`); after a
+  removal, invite them again to bring them back.
+
+---
+
 ## Android 0.7.0-experimental.rc.39 — 2026-10-05 — invited back into a group (core 0.13.1)
 
 - **Fixed: inviting someone who still held the group did nothing.** Their

@@ -1196,5 +1196,41 @@ private fun SecureGroupPanel(model: ChatViewModel, jid: String) {
             enabled = invitee.isNotBlank(),
             onClick = { model.inviteToGroup(jid, invitee); invitee = "" },
         ) { Text("Invite over OTRv4+") }
+        GroupEndButtons(model, jid)
+    }
+}
+
+/**
+ * Leave the group (this phone only), or delete it for everyone. Deleting is
+ * the group creator's: the server lets only the room's owner destroy it, and
+ * says so to anyone else. Both ask first; neither can be undone.
+ */
+@Composable
+private fun GroupEndButtons(model: ChatViewModel, jid: String) {
+    var asking by androidx.compose.runtime.saveable.rememberSaveable(jid) {
+        androidx.compose.runtime.mutableStateOf("")
+    }
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        TextButton(onClick = { asking = "leave" }) { Text("Leave group") }
+        TextButton(onClick = { asking = "delete" }) {
+            Text("Delete group for everyone", color = MaterialTheme.colorScheme.error)
+        }
+    }
+    if (asking.isNotEmpty()) {
+        val delete = asking == "delete"
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { asking = "" },
+            title = { Text(if (delete) "Delete this group?" else "Leave this group?") },
+            text = {
+                Text(org.otrv4plus.android.chat.GroupText.endConfirm(delete, jid))
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    if (delete) model.deleteSecureGroup(jid) else model.leaveSecureGroup(jid)
+                    asking = ""
+                }) { Text(if (delete) "Delete" else "Leave") }
+            },
+            dismissButton = { TextButton(onClick = { asking = "" }) { Text("Cancel") } },
+        )
     }
 }

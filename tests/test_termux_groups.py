@@ -84,6 +84,7 @@ class Server:
         self.held = []                         # chat held back (ordering tests)
         self.hold_chat_to = None
         self.room_log = []                     # (room, nick, body)
+        self.owners = {}                       # room -> the jid that created it
         #: Prosody mod_muc_limits `muc_max_char_count` (default 5664): a
         #: longer room message is bounced, never relayed. None: no limit.
         self.room_char_limit = None
@@ -184,9 +185,12 @@ class FakeMuc:
         self.server, self.jid = server, jid
         self.configured = []
         self.forms = []
+        self.destroyed = []
 
     async def join_muc_wait(self, room, nick, timeout=None, **_kw):
         created = str(room) not in self.server.rooms
+        if created:
+            self.server.owners[str(room)] = self.jid
         self.server.rooms.setdefault(str(room), {})[self.jid] = nick
         # XEP-0045: our own presence, with status 201 when we created it.
         return ({"muc": {"status_codes": {110, 201} if created else {110}}},
@@ -198,6 +202,14 @@ class FakeMuc:
 
     def leave_muc(self, room, nick, *_a, **_kw):
         self.server.rooms.get(str(room), {}).pop(self.jid, None)
+
+    async def destroy(self, room, reason="", timeout=None, **_kw):
+        """XEP-0045 destroy: the owner (whoever created it here) only."""
+        owner = self.server.owners.get(str(room))
+        if owner is not None and owner != self.jid:
+            raise RuntimeError("forbidden")
+        self.destroyed.append(str(room))
+        self.server.rooms.pop(str(room), None)
 
 
 class FakeForm(dict):
@@ -1167,19 +1179,54 @@ class TestTheRoomOutlivesItsMembers:
         run(w.a.cmd("/group create " + ROOM))
         assert w.a.muc.forms[-1].get("muc#roomconfig_persistentroom") is True
 
-    def test_a_rejoin_that_recreates_the_room_unlocks_it(self, world):
+    def test_a_room_gone_on_rejoin_means_the_group_was_deleted(self, world):
+        """Secure groups' rooms are persistent, so a room that is gone was
+        deleted by its owner while we were away. The empty room our join made
+        is taken down again and the group ends here -- it is never brought
+        back as a fresh room nobody else is in."""
         w = world
 
         async def go():
             await _three_member_group(w)
-            # Everybody left; the service destroyed the room.
-            w.server.rooms.pop(ROOM, None)
-            before = len(w.b.muc.configured)
-            await w.b.groups.rejoin_all()
-            assert len(w.b.muc.configured) == before + 1
-            # An ordinary rejoin of a room that exists configures nothing.
-            before = len(w.a.muc.configured)
+            # An ordinary rejoin of a room that exists changes nothing.
             await w.a.groups.rejoin_all()
-            assert len(w.a.muc.configured) == before
+            assert w.a.groups.groups.is_secure(ROOM)
+            assert not w.a.muc.destroyed
+            w.server.rooms.pop(ROOM, None)
+            w.server.owners.pop(ROOM, None)
+            await w.b.groups.rejoin_all()
+            assert ROOM in w.b.muc.destroyed
+            assert ROOM not in w.server.rooms
+            assert not w.b.groups.groups.is_secure(ROOM)
+            assert w.b.lines("the group was deleted")
+
+        run(go())
+
+
+class TestDeletingAGroup:
+    """The group's creator deletes it for everyone (owner request,
+    2026-10-05: no more cleaning up on the server by hand)."""
+
+    def test_the_creator_deletes_it_and_members_in_the_room_drop_it(self, world):
+        w = world
+        import xml.etree.ElementTree as ET
+
+        async def go():
+            await _three_member_group(w)
+            await w.b.cmd("/group delete " + ROOM)        # not the owner
+            assert w.b.lines("only the group's creator")
+            assert w.b.groups.groups.is_secure(ROOM)
+            await w.a.cmd("/group delete " + ROOM.split("@", 1)[0])
+            assert ROOM in w.a.muc.destroyed
+            assert not w.a.groups.groups.is_secure(ROOM)
+            # The service tells each occupant (XEP-0045 §10.9).
+            ns = "http://jabber.org/protocol/muc#user"
+            pres = Presence("%s/b" % ROOM, muc=True)
+            ET.SubElement(pres.xml.find("{%s}x" % ns), "{%s}destroy" % ns)
+            c = w.b.client
+            c._peer_resources, c._own_bare = {}, w.b.jid
+            c._on_presence_unavailable(pres)
+            assert not w.b.groups.groups.is_secure(ROOM)
+            assert w.b.lines("the group was deleted")
 
         run(go())

@@ -1611,6 +1611,22 @@ class SecureGroups:
             self.save()
         self._emit(GroupChanged(peer=room, change="left"))
 
+    def on_room_destroyed(self, room: str) -> bool:
+        """The group's room was deleted (by its owner, XEP-0045 destroy; or
+        found gone when we came back). The group ends here: its keys are
+        forgotten, as on leaving. False if `room` is no secure group of ours."""
+        with self._lock:
+            client = self._client
+            if client is None or self._wiped or not client.has_group(room.encode()):
+                return False
+            client.forget_group(room.encode())
+            for book in (self._bound, self._syncing, self._held, self._unconfirmed,
+                         self._queued_kps, self._since_rekey, self._activity):
+                book.pop(room, None)
+            self.save()
+        self._emit(GroupChanged(peer=room, change="deleted"))
+        return True
+
     def on_room_body(self, room: str, nick: str, body: str, timestamp: float = 0.0,
                      own: bool = False) -> bool:
         """A body from a secure room. Returns True if it was ours to handle.

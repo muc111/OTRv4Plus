@@ -39,6 +39,14 @@ object GroupText {
         "${event.peer} invited you to the secure group ${event.room}" +
             if (event.verified) "." else " (this contact is not SMP-verified)."
 
+    /** What leaving or deleting a group does, asked before doing it. */
+    fun endConfirm(delete: Boolean, room: String): String = if (delete)
+        "The room $room is deleted on the server and every member's copy of the " +
+            "group ends. Only the group's creator can do this. It cannot be undone."
+    else
+        "This phone forgets the group's keys and leaves $room. The others keep " +
+            "the group; to come back, a member has to invite you again."
+
     /** A notice for a change worth telling the user about, or null. */
     fun describe(event: OtrEvent.GroupChanged): String? = when (event.change) {
         "removed_us" -> "You were removed from ${event.room}. You can no longer read it."
@@ -51,6 +59,8 @@ object GroupText {
         "refused" -> refusal(event.detail, event.room)
         // Back in the room after a reconnect or sign-in: what is typed waits
         // until the group is in sync, or it would be sent on an old key and lost.
+        "deleted" -> "${event.room} was deleted (its room is gone). Its keys are gone " +
+            "from this phone; the messages already here stay."
         "reinvited" -> "${event.detail} invited you again to ${event.room}, which this " +
             "phone is already in. Accept only if the group stopped working here: " +
             "this phone's copy is replaced with the current one."
@@ -104,6 +114,8 @@ object GroupText {
         "legacy_group" -> "This group was made before the hybrid (X448 + ML-KEM-1024) " +
             "suite and cannot take new members. Create a new group to add people."
         "commit_pending" -> "Waiting for the room to confirm a group change. Try again shortly."
+        "forbidden", "not_allowed" -> "Only the group's creator (the room's owner) can " +
+            "delete it for everyone. Leave it instead to remove it from this phone."
         else -> "The group operation did not complete ($code)."
     }
 }

@@ -3054,6 +3054,7 @@ class XmppTransport(Transport):
                 ok = True
                 if _room_was_created(result):
                     await self._unlock_new_room(room)
+                    self._recreated = self._recreated | {str(room).split("/", 1)[0].lower()}
                 return result
             join.cancel()
             if refused in done:
@@ -3074,6 +3075,22 @@ class XmppTransport(Transport):
     #: rejoin re-creates) must be persistent -- a secure group's room. Set by
     #: the controller; None: every room keeps the service's defaults.
     persist_room = None
+
+    #: Rooms a join CREATED (status 201). For a secure group's room on a
+    #: rejoin that means it had been deleted; the controller asks.
+    _recreated: "set" = set()
+
+    def take_recreated(self, room: str) -> bool:
+        """Whether our last join of `room` created it (asked once)."""
+        room = str(room).split("/", 1)[0].lower()
+        if room in self._recreated:
+            self._recreated = self._recreated - {room}
+            return True
+        return False
+
+    #: Called with a room address when its owner destroyed it (XEP-0045
+    #: §10.9). Set by the controller.
+    room_destroyed = None
 
     def _persistent_form(self, room: str):
         form = self._client["xep_0004"].make_form(ftype="submit")
@@ -3983,6 +4000,18 @@ class XmppTransport(Transport):
         self._welcome.occupant(nick, real, online, is_self=is_self)
 
     def _presence(self, stanza, online: bool) -> None:
+        if not online and self._is_room_presence(stanza):
+            try:
+                gone = stanza.xml.find("{%s}x/{%s}destroy" % (
+                    self.MUC_USER_NS, self.MUC_USER_NS)) is not None
+            except Exception:
+                gone = False
+            hook = self.room_destroyed
+            if gone and hook is not None:
+                try:
+                    hook(str(stanza["from"]).split("/", 1)[0].lower())
+                except Exception:
+                    _log.warning("the room-destroyed handler raised")
         if self._is_room_presence(stanza):
             try:
                 self._room_presence(stanza, online)

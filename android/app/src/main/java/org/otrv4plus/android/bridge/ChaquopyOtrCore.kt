@@ -517,6 +517,12 @@ class ChaquopyOtrCore(private val appContext: Context) : OtrCore {
         return outcomeOf(result)
     }
 
+    /** Delete a secure group for everyone (its creator only; the server checks). */
+    fun deleteSecureGroup(room: String): RoomOutcome {
+        val result = call("delete_secure_group", room) ?: return notPrepared()
+        return outcomeOf(result)
+    }
+
     fun leaveSecureGroup(room: String): RoomOutcome {
         val result = call("leave_secure_group", room) ?: return notPrepared()
         return outcomeOf(result)

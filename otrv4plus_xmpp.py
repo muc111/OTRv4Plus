@@ -2747,6 +2747,19 @@ class OTRv4PlusXMPP(ClientXMPP):
         if peer == self._own_bare:
             return
         if _room_presence(self, presence):
+            # XEP-0045 §10.9: the owner destroyed the room. For a secure
+            # group that is its deletion.
+            try:
+                gone = presence.xml.find("{%s}x/{%s}destroy" % (
+                    self.MUC_USER_NS, self.MUC_USER_NS)) is not None
+            except Exception:
+                gone = False
+            groups = getattr(self, "_groups", None)
+            if gone and groups is not None:
+                try:
+                    groups.groups.on_room_destroyed(str(peer).lower())
+                except Exception:
+                    pass
             return
         resource = str(presence["from"].resource or "")
         resources = self._peer_resources.get(peer, set())

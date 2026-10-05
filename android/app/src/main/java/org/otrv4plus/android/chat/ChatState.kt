@@ -785,7 +785,9 @@ class ChatState(
             // A restored group says so as soon as the app opens it.
             "syncing" -> { secureRooms.add(room); rooms.add(room); syncingRooms.add(room) }
             "synced" -> { secureRooms.add(room); syncingRooms.remove(room) }
-            "left", "removed_us" -> { secureRooms.remove(room); syncingRooms.remove(room) }
+            "left", "removed_us", "deleted" -> {
+                secureRooms.remove(room); syncingRooms.remove(room)
+            }
         }
         GroupText.describe(event)?.let { note(it) }
     }

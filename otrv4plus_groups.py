@@ -71,8 +71,8 @@ STALE_WARN_AFTER = 3
 JOIN_TIMEOUT = 120
 #: The `/group` verbs; any other first word is read as a room name.
 VERBS = frozenset(("help", "?", "create", "invite", "invites", "accept", "decline",
-                   "say", "members", "remove", "rekey", "leave", "call", "answer",
-                   "hangup", "calls", "list"))
+                   "say", "members", "remove", "rekey", "leave", "delete", "call",
+                   "answer", "hangup", "calls", "list"))
 
 HELP = """\
   Secure groups (MLS; the room sees ciphertext only). <room> can be just its
@@ -89,6 +89,7 @@ HELP = """\
   /group remove <room> <jid>            remove a member (new epoch)
   /group rekey <room>                   fresh key for you (post-compromise)
   /group leave <room>                   forget the group's keys here and leave
+  /group delete <room>                  delete the group for everyone (its creator)
   /group list                           your secure groups
   /group call <room>                    start a group voice call (verified members)
   /group answer <room>                  join a call you were rung for
@@ -361,13 +362,17 @@ class TermuxGroups:
             change = ev.change
             detail = (" " + ev.detail) if getattr(ev, "detail", "") else ""
             epoch = (" (epoch %s)" % ev.epoch) if getattr(ev, "epoch", None) is not None else ""
-            if change not in ("syncing", "synced", "held", "reinvited"):
+            if change not in ("syncing", "synced", "held", "reinvited", "deleted"):
                 p("[group %s] %s%s%s" % (ev.peer[:64], change, detail, epoch))
             if change == "joined":
                 self._flush_prejoin(ev.peer)
                 self._activate(ev.peer)
             elif change == "syncing":
                 p("[group %s] syncing with the group..." % ev.peer[:64])
+            elif change == "deleted":
+                p("[group %s] the group was deleted (its room is gone); its "
+                  "keys are gone from this device" % ev.peer[:64])
+                self._nicks.pop(ev.peer, None)
             elif change == "reinvited":
                 p("[group %s] %s invites you again, but this device is already "
                   "in the group. If the group stopped working here, "
@@ -526,16 +531,19 @@ class TermuxGroups:
         except Exception:
             return "member"
 
-    async def _join(self, room: str, *, create: bool) -> None:
+    async def _join(self, room: str, *, create: bool,
+                    rejoin: bool = False) -> bool:
+        """Enter `room`. True when this join CREATED it (XEP-0045 status 201)."""
         muc = self.host.plugin["xep_0045"]
         nick = self._nick()
         joined = await muc.join_muc_wait(room, nick, timeout=JOIN_TIMEOUT)
         self._nicks[room] = nick
-        if create or _room_was_created(joined):
+        created = _room_was_created(joined)
+        if create or (created and not rejoin):
             # XEP-0045 §10.1.2: a room we created stays locked, and nobody
-            # else can enter, until we configure it. That includes a rejoin
-            # that RE-created the room because everyone had left it.
+            # else can enter, until we configure it.
             await self._configure(room)
+        return created
 
     async def _configure(self, room: str) -> None:
         """Persistent, so the room (and the commits in its history) outlives
@@ -574,10 +582,18 @@ class TermuxGroups:
         self.groups.mark_syncing()
         for room in self.groups.rooms():
             try:
-                await self._join(room, create=False)
+                created = await self._join(room, create=False, rejoin=True)
             except Exception as exc:
                 self._print("[group %s] could not rejoin the room (%s)"
                             % (room[:64], type(exc).__name__))
+                continue
+            if created:
+                # The room is gone: secure groups' rooms are persistent
+                # (rc.33), so it was deleted -- by its owner while we were
+                # away. Our join just made an empty one; it is taken down
+                # again and the group ends here too.
+                await self._destroy_quietly(room)
+                self.groups.on_room_destroyed(room)
                 continue
             # A commit of ours lost with the old stream goes out again.
             self.groups.on_room_rejoined(room)
@@ -600,6 +616,40 @@ class TermuxGroups:
                         "on the conference component)." % room[:64])
         self.groups.on_room_rejected(room)
         return True
+
+    async def _destroy_quietly(self, room: str) -> None:
+        try:
+            await self.host.plugin["xep_0045"].destroy(
+                room, reason="secure group deleted", timeout=JOIN_TIMEOUT)
+        except Exception:
+            self._leave_muc(room)
+        self._nicks.pop(room, None)
+
+    async def _delete(self, room: str) -> None:
+        """Delete the group for everyone: the room is destroyed (only its
+        owner -- the group's creator -- may), which tells every member in it;
+        a member who was away finds it gone when they come back. Then our
+        own copy goes."""
+        if not self.groups.is_secure(room):
+            self._print("[group] %s is not one of your secure groups" % room[:64])
+            return
+        try:
+            await self.host.plugin["xep_0045"].destroy(
+                room, reason="secure group deleted", timeout=JOIN_TIMEOUT)
+        except Exception as exc:
+            text = str(getattr(exc, "condition", "") or exc)
+            if "forbidden" in text or "not-allowed" in text:
+                self._print("[group %s] only the group's creator (the room's "
+                            "owner) can delete it. /group leave %s leaves it "
+                            "for you." % (room[:64], room[:64]))
+            else:
+                self._print("[group %s] the room was not deleted (%s)"
+                            % (room[:64], type(exc).__name__))
+            return
+        self._nicks.pop(room, None)
+        self.groups.on_room_destroyed(room)
+        if getattr(self.host, "peer", None) == room:
+            self.host.peer = None
 
     def owns_room(self, jid: str) -> bool:
         """Whether `jid` is a room this client joined (for a secure group)."""
@@ -750,6 +800,8 @@ class TermuxGroups:
             elif verb == "leave" and arg1:
                 self.groups.leave(arg1)
                 self._leave_muc(arg1)
+            elif verb == "delete" and arg1:
+                await self._delete(arg1)
             elif verb == "call" and arg1:
                 await self._call(arg1, start=True)
             elif verb == "answer" and arg1:

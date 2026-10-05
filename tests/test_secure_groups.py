@@ -1057,6 +1057,7 @@ def test_the_app_holds_group_messages_until_each_room_is_back(monkeypatch):
     ctl._app = type("App", (), {"groups": Groups()})()
     ctl._profile = type("P", (), {"jid": "dave@x.i2p"})()
     ctl.join_room = lambda room, nick: (calls.append(("join", room)) or {"ok": True})
+    ctl._transport = None
 
     class Inline:
         def __init__(self, target=None, **_kw):
@@ -1095,3 +1096,54 @@ def test_a_member_whose_copy_fell_behind_is_invited_back():
     assert any(body == "bob is back" for _s, body, _v in b.texts())
     b.groups.send(ROOM, "and reading")
     assert any(body == "and reading" for _s, body, _v in a.texts())
+
+
+
+def test_a_deleted_group_ends_for_every_member():
+    w, (a, b, c) = _group(3)
+    assert b.groups.on_room_destroyed(ROOM) is True
+    assert not b.groups.is_secure(ROOM) and "deleted" in b.changes()
+    assert b.groups.on_room_destroyed(ROOM) is False      # once
+    assert b.groups.on_room_destroyed("other@conference.x.i2p") is False
+
+
+def test_the_app_ends_a_group_whose_room_was_gone_on_rejoin(monkeypatch):
+    import threading as _threading
+    from android_bridge.connection import ConnectionController
+
+    calls = []
+
+    class Groups:
+        def rooms(self):
+            return [ROOM]
+
+        def mark_syncing(self, room=None):
+            pass
+
+        def on_room_rejoined(self, room):
+            calls.append(("rejoined", room))
+
+        def on_room_destroyed(self, room):
+            calls.append(("destroyed", room))
+
+    class Transport:
+        def take_recreated(self, room):
+            return True
+
+    ctl = ConnectionController.__new__(ConnectionController)
+    ctl._app = type("App", (), {"groups": Groups()})()
+    ctl._profile = type("P", (), {"jid": "dave@x.i2p"})()
+    ctl._transport = Transport()
+    ctl.join_room = lambda room, nick: {"ok": True}
+    ctl.destroy_room = lambda room, reason="": calls.append(("destroy", room)) or {"ok": True}
+
+    class Inline:
+        def __init__(self, target=None, **_kw):
+            self.target = target
+
+        def start(self):
+            self.target()
+
+    monkeypatch.setattr(_threading, "Thread", Inline)
+    ctl._rejoin_secure_rooms()
+    assert calls == [("destroy", ROOM), ("destroyed", ROOM)]
