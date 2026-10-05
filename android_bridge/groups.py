@@ -787,8 +787,16 @@ class SecureGroups:
         secret held in memory. The sealed files are KEPT, so the groups reopen
         on the next start (`open`). Wipe & Exit is `wipe`, not this.
 
-        Used by the terminal client's /quit. The Android app never exits
-        this way: its only teardown of group state is Wipe & Exit."""
+        Used by the terminal client's /quit, and by the app's sign-out
+        (`OtrApp.shutdown`): until rc.38 the app never closed its groups, so
+        their lock stayed held and signing in again on the same phone found
+        the state "in use" (device test, 2026-10-05)."""
+        for timer in list(self._sync_timers.values()):
+            try:
+                timer.cancel()
+            except Exception:
+                pass
+        self._sync_timers.clear()
         with self._lock:
             if self._wiped:
                 return

@@ -126,3 +126,19 @@ def test_the_eta_comes_from_past_handshakes():
     alice._hs_history[B] = [30.0, 40.0, 50.0]
     assert alice.handshake_eta(B, 10) == 30
     assert alice.handshake_eta(B, 100) == 5
+
+
+def test_sign_out_lets_go_of_the_groups_so_sign_in_can_open_them(monkeypatch, tmp_path_factory):
+    """Device test (2026-10-05): after Sign out the account could not sign in
+    again. The app's shutdown never closed its secure groups, so their state
+    lock stayed held and the next sign-in's groups found it "in use"."""
+    import tempfile
+    d = tempfile.mkdtemp()
+    monkeypatch.setattr(OtrApp, "GROUP_STATE_DIR", d)
+    alice, *_rest = _pair()
+    a_jid = _rest[3]
+    assert alice.open_groups(a_jid)
+    alice.shutdown()                               # Sign out
+    again, *_ = _pair()                            # a new engine, same phone
+    assert again.open_groups(a_jid), "the groups were still held by the old app"
+    again.shutdown()

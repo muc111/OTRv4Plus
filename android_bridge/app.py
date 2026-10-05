@@ -428,6 +428,15 @@ class OtrApp:
             except Exception:
                 _log.warning("transfer teardown reported a problem")
             self._files_bridge = None
+        # The secure groups: sealed to disk and let go, lock included, so the
+        # next sign-in on this phone can open them again. Sign-out used to
+        # leave them open, and the account's next sign-in found its group
+        # state "in use" by the app that had just signed out.
+        if self._groups is not None:
+            try:
+                self._groups.close()
+            except Exception:
+                _log.warning("group teardown reported a problem")
         try:
             self._engine.clear_all_sessions("shutdown")
         except Exception:

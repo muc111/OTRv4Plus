@@ -4,6 +4,20 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.38 — 2026-10-05 — sign out, then sign in again (core 0.13.1)
+
+From a device test, after the first four-client group chat that worked
+end to end (two apps, two Termux): Sign out left the app unable to sign in
+again.
+
+- **Fixed: Sign out kept the secure groups open.** The app's teardown
+  never closed them, so the lock on the account's group state (rc.31)
+  stayed held by the app that had just signed out, and the next sign-in's
+  groups found it "in use". Sign out now seals the groups to disk and lets
+  them go, lock and timers included; signing in again reopens them.
+
+---
+
 ## Android 0.7.0-experimental.rc.37 — 2026-10-05 — a secure group never reads "Not encrypted" (core 0.13.1)
 
 - **Fixed: after signing in again, a secure group's row said "! Not
