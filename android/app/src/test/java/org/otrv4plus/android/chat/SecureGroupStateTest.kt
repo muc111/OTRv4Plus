@@ -55,11 +55,26 @@ class SecureGroupStateTest {
     }
 
     @Test
-    fun `an invitation for a room already secure is not shown`() {
+    fun `an invitation for a group we are in is shown with what accepting does`() {
+        // rc.39 (device test, 2026-10-05): a member invites us back because our
+        // copy stopped working. Hiding it left the inviter waiting for nothing.
         val s = state()
         s.handle(OtrEvent.GroupChanged(room, "created", 0, ""))
+        s.handle(OtrEvent.GroupChanged(room, "reinvited", 0, "alice@x"))
         s.handle(OtrEvent.GroupInvited("alice@x", room, verified = false))
-        assertTrue(s.pendingGroupInvites.isEmpty())
+        assertEquals(listOf(room), s.pendingGroupInvites.map { it.room })
+        val note = GroupText.describe(OtrEvent.GroupChanged(room, "reinvited", 0, "alice@x"))
+        assertTrue(note != null && "already" in note && "replaced" in note)
+    }
+
+    @Test
+    fun `a deleted group is no longer secure here`() {
+        val s = state()
+        s.handle(OtrEvent.GroupChanged(room, "joined", 1, ""))
+        s.handle(OtrEvent.GroupChanged(room, "deleted", 0, ""))
+        assertFalse(s.isSecureRoom(room))
+        assertTrue("deleted" in GroupText.describe(OtrEvent.GroupChanged(room, "deleted", 0, ""))!!)
+        assertTrue("creator" in GroupText.outcome("forbidden")!!)
     }
 
     @Test
