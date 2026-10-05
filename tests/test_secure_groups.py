@@ -1147,3 +1147,19 @@ def test_the_app_ends_a_group_whose_room_was_gone_on_rejoin(monkeypatch):
     monkeypatch.setattr(_threading, "Thread", Inline)
     ctl._rejoin_secure_rooms()
     assert calls == [("destroy", ROOM), ("destroyed", ROOM)]
+
+
+def test_deleting_says_who_may_and_cleans_up_a_room_already_gone():
+    from android_bridge.connection import ConnectionController
+    ended = []
+    ctl = ConnectionController.__new__(ConnectionController)
+    ctl._on_room_destroyed = ended.append
+    ctl.destroy_room = lambda room, reason="": {
+        "ok": False, "code": "forbidden", "detail": "You are banned from this room.",
+        "value": None}
+    out = ctl.delete_secure_group(ROOM)
+    assert not out["ok"] and "creator" in out["detail"] and "banned" not in out["detail"]
+    assert ended == []
+    ctl.destroy_room = lambda room, reason="": {
+        "ok": False, "code": "item_not_found", "detail": "", "value": None}
+    assert ctl.delete_secure_group(ROOM)["ok"] and ended == [ROOM]

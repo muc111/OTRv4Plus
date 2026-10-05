@@ -140,6 +140,53 @@ fun RoomsScreen(
             modifier = Modifier.fillMaxWidth(),
         )
 
+        // ── Encrypted groups (MLS) ────────────────────────────────────────
+        // Listed from the engine, not the server: these are the groups this
+        // account holds keys for, whether or not their room is joined yet.
+        LaunchedEffect(model.core) { if (model.core != null) model.refreshSecureGroups() }
+        var deleting by rememberSaveable { mutableStateOf<String?>(null) }
+        Spacer(Modifier.height(4.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("Your encrypted groups", style = MaterialTheme.typography.titleSmall,
+                 modifier = Modifier.weight(1f))
+            TextButton(enabled = busy == null, onClick = { model.refreshSecureGroups() }) {
+                Text("Refresh")
+            }
+        }
+        if (model.secureGroups.isEmpty()) {
+            Text("None. Create one below, or accept an invitation.",
+                 style = MaterialTheme.typography.bodySmall)
+        }
+        for (group in model.secureGroups) {
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text("\uD83D\uDD12 $group", style = MaterialTheme.typography.bodyMedium)
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(enabled = busy == null,
+                                   onClick = { onOpenRoom(group) }) { Text("Open") }
+                    OutlinedButton(enabled = busy == null,
+                                   onClick = { model.leaveSecureGroup(group) }) { Text("Leave") }
+                    OutlinedButton(enabled = busy == null,
+                                   onClick = { deleting = group }) {
+                        Text("Delete", color = MaterialTheme.colorScheme.error)
+                    }
+                }
+            }
+        }
+        deleting?.let { group ->
+            AlertDialog(
+                onDismissRequest = { deleting = null },
+                title = { Text("Delete this group for everyone?") },
+                text = { Text(org.otrv4plus.android.chat.GroupText.endConfirm(true, group)) },
+                confirmButton = {
+                    TextButton(onClick = {
+                        model.deleteSecureGroup(group)
+                        deleting = null
+                    }) { Text("Delete") }
+                },
+                dismissButton = { TextButton(onClick = { deleting = null }) { Text("Cancel") } },
+            )
+        }
+
         // ── Rooms you are in ──────────────────────────────────────────────
         if (model.joined.isNotEmpty()) {
             Spacer(Modifier.height(4.dp))

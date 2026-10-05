@@ -65,6 +65,57 @@ class RoomsViewModel : ViewModel() {
     /** The rooms this session is in, and what we are in each. */
     val joined = mutableStateMapOf<String, RoomStanding>()
 
+    /** This account's end-to-end encrypted groups (MLS), from the engine. */
+    val secureGroups = mutableStateListOf<String>()
+
+    /** Ask the engine which secure groups this account holds. Cheap: no network. */
+    fun refreshSecureGroups() {
+        val c = core ?: return
+        viewModelScope.launch {
+            val found = withContext(Dispatchers.IO) {
+                runCatching { c.secureGroups() }.getOrDefault(emptyList())
+            }
+            secureGroups.clear()
+            secureGroups.addAll(found.sorted())
+        }
+    }
+
+    /**
+     * Delete a secure group for everyone: its room is destroyed on the server
+     * (only its owner -- the group's creator -- may) and every member's copy
+     * ends. Anyone else gets the service's refusal, said plainly.
+     */
+    fun deleteSecureGroup(room: String) {
+        groupOp("Deleting $room...", room) { it.deleteSecureGroup(room) }
+    }
+
+    /** Forget a secure group on this phone and leave its room. */
+    fun leaveSecureGroup(room: String) {
+        groupOp("Leaving $room...", room) { it.leaveSecureGroup(room) }
+    }
+
+    private fun groupOp(label: String, room: String,
+                        op: (ChaquopyOtrCore) -> RoomOutcome) {
+        val c = core ?: return
+        if (busy != null) return
+        busy = label
+        viewModelScope.launch {
+            try {
+                val outcome = withContext(Dispatchers.IO) {
+                    runCatching { op(c) }.getOrElse { RoomOutcome(false, "unknown", "That did not work.") }
+                }
+                if (outcome.ok) {
+                    joined.remove(room)
+                    secureGroups.remove(room)
+                }
+                last = outcome
+            } finally {
+                busy = null
+            }
+            refreshSecureGroups()
+        }
+    }
+
     /** Non-null while something long-running is in flight; the UI's label. */
     var busy by mutableStateOf<String?>(null)
         private set
@@ -108,6 +159,7 @@ class RoomsViewModel : ViewModel() {
                 busy = null
             }
             roomService?.let { refreshRooms(it) }
+            refreshSecureGroups()
         }
     }
 

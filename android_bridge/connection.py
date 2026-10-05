@@ -1095,6 +1095,17 @@ class ConnectionController:
         result = self.destroy_room(room, "secure group deleted")
         if result.get("ok"):
             self._on_room_destroyed(room)
+        elif result.get("code") in ("forbidden", "not_allowed"):
+            # The service's refusal of a destroy is about ownership; its
+            # generic sentence for "forbidden" ("banned") is not.
+            result = dict(result, detail="Only the group's creator (the room's "
+                          "owner) can delete it for everyone. Leave it instead "
+                          "to remove it from this phone.")
+        elif result.get("code") == "item_not_found":
+            # Already gone on the server: end our copy too.
+            self._on_room_destroyed(room)
+            result = dict(result, ok=True, code="ok",
+                          detail="The group's room was already gone; removed here.")
         return result
 
     def leave_secure_group(self, room: str) -> Dict[str, Any]:

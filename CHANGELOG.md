@@ -4,6 +4,18 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.41 — 2026-10-05 — encrypted groups on the Rooms screen (core 0.13.1)
+
+- **Rooms now lists your encrypted groups**, from this account's keys (so
+  a group shows even before its room is joined), with **Refresh**, and for
+  each group **Open**, **Leave** and **Delete** (for everyone; asks first).
+- A refused delete says why -- only the group's creator (the room's owner)
+  can delete it -- instead of the service's generic "You are banned from
+  this room". Deleting a group whose room is already gone on the server
+  removes it here too.
+
+---
+
 ## Android 0.7.0-experimental.rc.40 — 2026-10-05 — delete a group for everyone (core 0.13.1)
 
 Owner request: test groups had to be cleaned up on the server by hand.
