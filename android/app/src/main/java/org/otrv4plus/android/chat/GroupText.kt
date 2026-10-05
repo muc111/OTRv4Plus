@@ -51,6 +51,9 @@ object GroupText {
         "refused" -> refusal(event.detail, event.room)
         // Back in the room after a reconnect or sign-in: what is typed waits
         // until the group is in sync, or it would be sent on an old key and lost.
+        "reinvited" -> "${event.detail} invited you again to ${event.room}, which this " +
+            "phone is already in. Accept only if the group stopped working here: " +
+            "this phone's copy is replaced with the current one."
         "held" -> "${event.room} is still syncing: your messages wait until the " +
             "group is back in sync (a few seconds), then go encrypted."
         "synced" -> if (event.detail.isNotEmpty()) {

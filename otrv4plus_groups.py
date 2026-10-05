@@ -361,13 +361,19 @@ class TermuxGroups:
             change = ev.change
             detail = (" " + ev.detail) if getattr(ev, "detail", "") else ""
             epoch = (" (epoch %s)" % ev.epoch) if getattr(ev, "epoch", None) is not None else ""
-            if change not in ("syncing", "synced", "held"):
+            if change not in ("syncing", "synced", "held", "reinvited"):
                 p("[group %s] %s%s%s" % (ev.peer[:64], change, detail, epoch))
             if change == "joined":
                 self._flush_prejoin(ev.peer)
                 self._activate(ev.peer)
             elif change == "syncing":
                 p("[group %s] syncing with the group..." % ev.peer[:64])
+            elif change == "reinvited":
+                p("[group %s] %s invites you again, but this device is already "
+                  "in the group. If the group stopped working here, "
+                  "/group accept %s replaces this device's copy with the "
+                  "current one; otherwise ignore it."
+                  % (ev.peer[:64], (ev.detail or "")[:96], ev.peer[:64]))
             elif change == "held":
                 p("[group %s] the group is still syncing: what you type waits "
                   "and goes encrypted once it is in sync (a few seconds)"

@@ -4,6 +4,19 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.39 — 2026-10-05 — invited back into a group (core 0.13.1)
+
+- **Fixed: inviting someone who still held the group did nothing.** Their
+  client dropped the invitation as "already a member" without a word, so
+  the inviter waited and they never saw it -- yet the inviter invites
+  precisely because that member's copy no longer works (behind on changes,
+  or removed). The invitation is now shown, with a note that this device
+  is already in the group; accepting replaces this device's copy with the
+  current one (the inviter's commit replaces the old member entry in the
+  same step, rc.33). Ignoring it changes nothing.
+
+---
+
 ## Android 0.7.0-experimental.rc.38 — 2026-10-05 — sign out, then sign in again (core 0.13.1)
 
 From a device test, after the first four-client group chat that worked

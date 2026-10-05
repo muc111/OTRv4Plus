@@ -1068,3 +1068,30 @@ def test_the_app_holds_group_messages_until_each_room_is_back(monkeypatch):
     monkeypatch.setattr(_threading, "Thread", Inline)
     ctl._rejoin_secure_rooms()
     assert calls == [("mark", None), ("join", ROOM), ("rejoined", ROOM)]
+
+
+def test_a_member_whose_copy_fell_behind_is_invited_back():
+    """Device test (2026-10-05): inviting B, who still held the group but
+    could no longer read it, did nothing -- B's client dropped the invitation
+    because it was "already a member", and the inviter waited."""
+    w, (a, b, c) = _group(3)
+    # Bob misses a change (offline beyond the room's history): he is behind.
+    del w.room.occupants[b.jid]
+    a.groups.rekey(ROOM)
+    b.join_room()
+    a.groups.send(ROOM, "bob cannot read this")
+    assert not any(body == "bob cannot read this" for _s, body, _v in b.texts())
+    # Alice invites him back. He is told, and nothing changes until he accepts.
+    b.events.clear()
+    a.groups.invite(ROOM, b.jid)
+    assert "reinvited" in b.changes()
+    assert any(isinstance(e, GroupInvite) and e.room == ROOM for e in b.events)
+    b.groups.accept(ROOM)                    # KeyPackage -> Welcome -> joined
+    assert "joined" in b.changes()
+    for m in (a, b, c):
+        assert sorted(x["jid"] for x in m.groups.members(ROOM)) == sorted(
+            [a.jid, b.jid, c.jid])
+    c.groups.send(ROOM, "bob is back")
+    assert any(body == "bob is back" for _s, body, _v in b.texts())
+    b.groups.send(ROOM, "and reading")
+    assert any(body == "and reading" for _s, body, _v in a.texts())

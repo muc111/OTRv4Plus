@@ -511,7 +511,9 @@ class ChatState(
             // An invitation is worth a banner, not a buzz: returned false.
             is OtrEvent.GroupInvited -> {
                 val room = bare(event.room)
-                if (room.isNotEmpty() && room !in secureRooms) groupInvites[room] = event
+                // Also for a group we are in: a member invited us again because
+                // our copy stopped working for them (see GroupText "reinvited").
+                if (room.isNotEmpty()) groupInvites[room] = event
                 false
             }
             is OtrEvent.GroupChanged -> {

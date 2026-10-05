@@ -122,6 +122,9 @@ class _Invite:
     fingerprint: str
     at: float
     accepted: bool = False
+    #: We already hold this group: accepting replaces our copy (a device
+    #: whose group stopped working, invited back by a member).
+    rejoin: bool = False
 
 
 @dataclass
@@ -1098,12 +1101,20 @@ class SecureGroups:
         with self._lock:
             self._need()
             self._expire()
-            if self.is_secure(room):
-                return                          # already a member
+            # Already a member here. It used to be dropped without a word, so
+            # the inviter waited and nothing showed (device test,
+            # 2026-10-05): a member who invites us again sees us as gone --
+            # our copy is behind, or they never saw our last change. Shown,
+            # and accepting replaces our copy of the group.
+            rejoin = self.is_secure(room)
             if room not in self._invites and len(self._invites) >= MAX_PENDING_INVITES:
                 raise GroupError("too_many_invites")
-            self._invites[room] = _Invite(peer=peer, fingerprint=fp, at=self._clock())
-            self._bound.setdefault(room, {})[peer] = (fp, verified)
+            self._invites[room] = _Invite(peer=peer, fingerprint=fp, at=self._clock(),
+                                          rejoin=rejoin)
+            if not rejoin:
+                self._bound.setdefault(room, {})[peer] = (fp, verified)
+        if rejoin:
+            self._emit(GroupChanged(peer=room, change="reinvited", detail=peer))
         self._emit(GroupInvite(peer=peer, room=room, verified=verified))
 
     def _on_key_package(self, peer: str, arg: str, verified: bool) -> None:
@@ -1187,6 +1198,13 @@ class SecureGroups:
                 welcome = _b64d(b64)
             except (ValueError, binascii.Error):
                 raise GroupError("malformed")
+            if inv is not None and inv.rejoin and client.has_group(room.encode()):
+                # Invited back and accepted: our old copy of the group goes,
+                # the Welcome brings the current one.
+                client.forget_group(room.encode())
+                for book in (self._syncing, self._held, self._unconfirmed,
+                             self._queued_kps):
+                    book.pop(room, None)
             try:
                 gid = bytes(client.join(welcome)).decode(errors="replace")
             except ValueError:
