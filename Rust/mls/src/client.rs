@@ -395,10 +395,41 @@ impl MlsClient {
             }
             kps.push(kp);
         }
+        let own = self.identity.clone();
         let (provider, signer, group) = self.group_and_signer(group_id)?;
-        let (commit, welcome, _) = group.add_members(provider, signer, &kps)
-            .map_err(|_| MlsError::Failed("add members"))?;
-        let (c, w) = (out_bytes(&commit)?, out_bytes(&welcome)?);
+        // A member who lost their state (a wipe, a new device) comes back
+        // with a new KeyPackage under the same identity. Their old leaf can
+        // never read again: it is removed in the same commit (RFC 9420
+        // allows Remove and Add together), so the group never holds two
+        // leaves for one person.
+        let mut stale = Vec::new();
+        for kp in &kps {
+            let who = identity_of(kp.leaf_node().credential());
+            if who == own {
+                return Err(MlsError::Refused("key package with our own identity"));
+            }
+            stale.extend(group.members()
+                .filter(|m| identity_of(&m.credential) == who)
+                .map(|m| m.index));
+        }
+        let (c, w) = if stale.is_empty() {
+            let (commit, welcome, _) = group.add_members(provider, signer, &kps)
+                .map_err(|_| MlsError::Failed("add members"))?;
+            (out_bytes(&commit)?, out_bytes(&welcome)?)
+        } else {
+            let bundle = group.commit_builder()
+                .propose_removals(stale)
+                .propose_adds(kps)
+                .load_psks(provider.storage())
+                .map_err(|_| MlsError::Failed("re-add members"))?
+                .build(provider.rand(), provider.crypto(), signer, |_| true)
+                .map_err(|_| MlsError::Failed("re-add members"))?
+                .stage_commit(provider)
+                .map_err(|_| MlsError::Failed("re-add members"))?;
+            let (commit, welcome, _) = bundle.into_messages();
+            let welcome = welcome.ok_or(MlsError::Failed("re-add members"))?;
+            (out_bytes(&commit)?, out_bytes(&welcome)?)
+        };
         self.hold(group_id, c, Some(w), None)
     }
 

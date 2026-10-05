@@ -4,6 +4,32 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.33 — 2026-10-05 — coming back after a wipe (core 0.13.1)
+
+From a device test: Alice wiped the app and signed in again; her secure
+group was gone, and the room was not there to find.
+
+- **A member who wiped (or changed device) is invited back cleanly.** Their
+  old member entry can never read again; inviting them now removes it in
+  the same commit that adds the new one (RFC 9420 Remove + Add), so a group
+  never holds two entries for one person. A new device is a new key: the
+  others see them as unverified until they verify again. Adding our own
+  identity is refused. (Core 0.13.1.)
+- **A secure group's room outlives its members.** It is created persistent,
+  so a moment when every member is offline no longer destroys it, with the
+  commits in its history. A service that refuses persistence still gets
+  its defaults.
+- **A rejoin that re-creates the room unlocks it.** When the room was gone
+  and a member's client re-entered it, the server made a new, locked room
+  that nobody else could join. Both clients now configure a room their join
+  created (status 201).
+
+After a wipe the group's keys are gone by design: finding the room again
+does not bring them back. Ask a member to invite you again
+(Termux: \`/group invite mls3 alice\`).
+
+---
+
 ## Android 0.7.0-experimental.rc.32 — 2026-10-05 — just type into a group (core 0.13.0)
 
 From a three-client test (app + two Termux) where the group worked but

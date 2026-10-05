@@ -511,6 +511,11 @@ class ConnectionController:
             )
         except Exception as exc:
             return self._fail("transport_failed", type(exc).__name__)
+        try:
+            # A secure group's room is made persistent (see the transport).
+            self._transport.persist_room = self._is_group_room
+        except Exception:
+            pass
 
         # The transport is what OtrApp sends through. Set before connecting so
         # a stanza arriving during session_start has somewhere to go.
@@ -998,6 +1003,21 @@ class ConnectionController:
                     "detail": type(exc).__name__, "value": None}
         return {"ok": True, "code": "ok", "detail": "", "value": value}
 
+    def _is_group_room(self, room: str) -> bool:
+        """A room that is (or is about to be) a secure group's."""
+        groups = getattr(self._app, "groups", None)
+        if groups is None:
+            return False
+        room = str(room).lower()
+        try:
+            return bool(room in self._creating_groups or groups.is_secure(room)
+                        or groups.awaiting_welcome(room)
+                        or any(i["room"] == room for i in groups.pending_invites()))
+        except Exception:
+            return False
+
+    _creating_groups: "set" = set()
+
     def create_secure_group(self, room: str, password: str = "") -> Dict[str, Any]:
         """A new room that is an OTRv4Plus secure group from its first message.
 
@@ -1005,7 +1025,12 @@ class ConnectionController:
         the room is left rather than kept as a plaintext room the user thinks
         is secure."""
         nick = self._profile.jid.split("@", 1)[0]
-        made = self.create_room(room, nick, password) if password else self.create_room(room, nick)
+        self._creating_groups = self._creating_groups | {str(room).lower()}
+        try:
+            made = (self.create_room(room, nick, password) if password
+                    else self.create_room(room, nick))
+        finally:
+            self._creating_groups = self._creating_groups - {str(room).lower()}
         if not made.get("ok"):
             return made
         result = self._group_call(self._app.groups.create, room)

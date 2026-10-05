@@ -1854,7 +1854,7 @@ dependencies = [
 
 [[package]]
 name = "otrv4_core"
-version = "0.13.0"
+version = "0.13.1"
 dependencies = [
  "aes-gcm",
  "argon2",

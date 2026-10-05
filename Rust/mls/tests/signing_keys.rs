@@ -183,3 +183,44 @@ fn group_voice_keys_come_from_the_epoch_and_follow_it() {
     vb.drop_previous();
     assert_eq!(vb.open(&p).unwrap_err(), VoiceError::WrongEpoch);
 }
+
+#[test]
+fn a_member_who_lost_their_state_is_replaced_not_duplicated() {
+    // Alice, Bob and Carol; Alice wipes her device and is invited again.
+    let mut a = MlsClient::new(b"alice");
+    let mut b = MlsClient::new(b"bob");
+    let mut c = MlsClient::new(b"carol");
+    pair_in(&mut b, &mut c, G1);
+    let commit = b.add_members(G1, &[a.key_package().unwrap()]).unwrap();
+    let w = welcome_of(b.process(G1, &commit));
+    c.process(G1, &commit).unwrap();
+    a.join(&w).unwrap();
+    let old = b.member_fingerprint(G1, b"alice").unwrap();
+
+    let mut a2 = MlsClient::new(b"alice");             // after the wipe
+    let commit = b.add_members(G1, &[a2.key_package().unwrap()]).unwrap();
+    let w = welcome_of(b.process(G1, &commit));
+    assert!(matches!(c.process(G1, &commit).unwrap(), Event::Commit { .. }));
+    a2.join(&w).unwrap();
+
+    for m in [&mut b, &mut c, &mut a2] {
+        let alices = m.members(G1).unwrap().iter().filter(|x| x.as_slice() == b"alice").count();
+        assert_eq!(alices, 1, "exactly one leaf for alice");
+        assert_eq!(m.members(G1).unwrap().len(), 3);
+    }
+    assert_ne!(b.member_fingerprint(G1, b"alice").unwrap(), old);
+    // The new Alice reads and is read; the old leaf's holder is out.
+    let m = a2.encrypt(G1, b"back again").unwrap();
+    assert!(matches!(c.process(G1, &m).unwrap(), Event::Application { .. }));
+    let m = c.encrypt(G1, b"welcome back").unwrap();
+    assert!(matches!(a2.process(G1, &m).unwrap(), Event::Application { .. }));
+    assert!(a.process(G1, &m).is_err(), "the wiped leaf cannot read the new epoch");
+}
+
+#[test]
+fn our_own_identity_is_never_added() {
+    let mut a = MlsClient::new(b"alice");
+    let mut a2 = MlsClient::new(b"alice");
+    a.create_group(G1).unwrap();
+    assert!(a.add_members(G1, &[a2.key_package().unwrap()]).is_err());
+}

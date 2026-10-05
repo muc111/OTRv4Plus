@@ -175,20 +175,31 @@ class FakeMuc:
     def __init__(self, server, jid):
         self.server, self.jid = server, jid
         self.configured = []
+        self.forms = []
 
     async def join_muc_wait(self, room, nick, timeout=None, **_kw):
+        created = str(room) not in self.server.rooms
         self.server.rooms.setdefault(str(room), {})[self.jid] = nick
+        # XEP-0045: our own presence, with status 201 when we created it.
+        return ({"muc": {"status_codes": {110, 201} if created else {110}}},
+                "", [], [])
 
     async def set_room_config(self, room, form, timeout=None, **_kw):
         self.configured.append(str(room))
+        self.forms.append(dict(form.get("fields", {})))
 
     def leave_muc(self, room, nick, *_a, **_kw):
         self.server.rooms.get(str(room), {}).pop(self.jid, None)
 
 
+class FakeForm(dict):
+    def add_field(self, var=None, ftype=None, value=None, **_kw):
+        self.setdefault("fields", {})[var] = value
+
+
 class FakeForms:
     def make_form(self, ftype="form", **_kw):
-        return {"type": ftype}
+        return FakeForm(type=ftype)
 
 
 class TermuxNode:
@@ -1120,3 +1131,28 @@ class TestShortNamesAndTheActiveGroup:
 
         run(go())
         assert not w.b.lines("could not be decrypted")
+
+
+class TestTheRoomOutlivesItsMembers:
+
+    def test_a_new_group_room_is_made_persistent(self, world):
+        w = world
+        run(w.a.cmd("/group create " + ROOM))
+        assert w.a.muc.forms[-1].get("muc#roomconfig_persistentroom") is True
+
+    def test_a_rejoin_that_recreates_the_room_unlocks_it(self, world):
+        w = world
+
+        async def go():
+            await _three_member_group(w)
+            # Everybody left; the service destroyed the room.
+            w.server.rooms.pop(ROOM, None)
+            before = len(w.b.muc.configured)
+            await w.b.groups.rejoin_all()
+            assert len(w.b.muc.configured) == before + 1
+            # An ordinary rejoin of a room that exists configures nothing.
+            before = len(w.a.muc.configured)
+            await w.a.groups.rejoin_all()
+            assert len(w.a.muc.configured) == before
+
+        run(go())

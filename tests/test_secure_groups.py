@@ -946,3 +946,26 @@ class TestWelcomeDelivery:
         b.groups.on_signal("alice@x.i2p", body)
         assert "refused" not in b.changes()
         assert a.groups._welcome_out == {}
+
+
+def test_a_member_who_wiped_is_invited_back_with_one_leaf():
+    """Device report (2026-10-05): Alice wiped the app; Bob invites her
+    again. Her old leaf is replaced in the same commit, never kept beside the
+    new one."""
+    w, (a, b, c) = _group(3)
+    a.groups.wipe()
+    del w.room.occupants[a.jid]
+    a2 = w.add(a.jid)                       # the same account, fresh device
+    w.pair(b.jid, a.jid)
+    _invite(w, b.jid, a.jid)
+    for m in (a2, b, c):
+        assert m.groups.is_secure(ROOM)
+        jids = [x["jid"] for x in m.groups.members(ROOM)]
+        assert sorted(jids) == sorted([a.jid, b.jid, c.jid])
+    a2.groups.send(ROOM, "back after the wipe")
+    # A new device is a new key: Carol verified the old one, not this one,
+    # so Alice reads as unverified to her until they verify again.
+    assert (a.jid, "back after the wipe", False) in c.texts()
+    assert (a.jid, "back after the wipe", True) not in c.texts()
+    c.groups.send(ROOM, "welcome back")
+    assert any(body == "welcome back" for _s, body, _v in a2.texts())

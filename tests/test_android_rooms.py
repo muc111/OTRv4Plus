@@ -535,6 +535,70 @@ class TestCreatingARoom:
             t.close()
 
 
+class _Form(dict):
+    def add_field(self, var=None, ftype=None, value=None, **_kw):
+        self.setdefault("fields", {})[var] = value
+
+
+class _Forms:
+    def make_form(self, ftype="form", **_kw):
+        return _Form(type=ftype)
+
+
+class TestSecureGroupRooms:
+    """A secure group's room outlives its members (device test, 2026-10-05:
+    the group's room was gone after everybody had left it)."""
+
+    def test_a_secure_group_room_is_created_persistent(self):
+        room = FakeMuc()
+        t, _ = build(muc=room)
+        try:
+            t._client.plugins["xep_0004"] = _Forms()
+            t.persist_room = lambda r: r == ROOM.lower()
+            assert t.create_room(ROOM, NICK)[0] == "ok"
+            fields = room.configured[0][1].get("fields", {})
+            assert fields.get("muc#roomconfig_persistentroom") is True
+        finally:
+            t.close()
+
+    def test_an_ordinary_room_keeps_the_defaults(self):
+        room = FakeMuc()
+        t, _ = build(muc=room)
+        try:
+            t._client.plugins["xep_0004"] = _Forms()
+            t.persist_room = lambda r: False
+            t.create_room(ROOM, NICK)
+            assert "fields" not in room.configured[0][1]
+        finally:
+            t.close()
+
+    def test_a_join_that_recreated_the_room_unlocks_it(self):
+        class Recreates(FakeMuc):
+            async def join_muc_wait(self, room, nick, password=None,
+                                    timeout=None, **_kw):
+                self.joined.append((str(room), str(nick), password))
+                return ({"muc": {"status_codes": {110, 201}}}, None, [], [])
+
+        room = Recreates()
+        t, _ = build(muc=room)
+        try:
+            t._client.plugins["xep_0004"] = _Forms()
+            t.persist_room = lambda r: True
+            assert t.join_room(ROOM, NICK)[0] == "ok"
+            assert room.configured and room.configured[0][0] == ROOM
+        finally:
+            t.close()
+
+    def test_a_join_of_an_existing_room_configures_nothing(self):
+        room = FakeMuc()
+        t, _ = build(muc=room)
+        try:
+            t.join_room(ROOM, NICK)
+            assert room.configured == []
+        finally:
+            t.close()
+
+
 class TestLeaving:
 
     def test_it_leaves(self):

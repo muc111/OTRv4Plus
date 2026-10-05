@@ -97,6 +97,16 @@ HELP = """\
   /wipe                                 destroy ALL local state (groups too) and exit"""
 
 
+def _room_was_created(join_result: Any) -> bool:
+    """Whether `join_muc_wait`'s answer says the join created the room
+    (XEP-0045 status 201)."""
+    try:
+        own = join_result[0] if isinstance(join_result, tuple) else join_result
+        return 201 in {int(c) for c in own["muc"]["status_codes"]}
+    except Exception:
+        return False
+
+
 def _canon(jid: str) -> str:
     """A bare JID, lower case -- the same key `SecureGroups` and the OTR engine
     use for a peer."""
@@ -502,13 +512,30 @@ class TermuxGroups:
     async def _join(self, room: str, *, create: bool) -> None:
         muc = self.host.plugin["xep_0045"]
         nick = self._nick()
-        await muc.join_muc_wait(room, nick, timeout=JOIN_TIMEOUT)
+        joined = await muc.join_muc_wait(room, nick, timeout=JOIN_TIMEOUT)
         self._nicks[room] = nick
-        if create:
-            # XEP-0045 §10.1.2 instant room: accept the defaults, or the room
-            # stays locked and nobody else can enter. As on Android.
-            form = self.host.plugin["xep_0004"].make_form(ftype="submit")
+        if create or _room_was_created(joined):
+            # XEP-0045 §10.1.2: a room we created stays locked, and nobody
+            # else can enter, until we configure it. That includes a rejoin
+            # that RE-created the room because everyone had left it.
+            await self._configure(room)
+
+    async def _configure(self, room: str) -> None:
+        """Persistent, so the room (and the commits in its history) outlives
+        a moment when every member is offline. A service that refuses
+        persistence still gets the defaults: never left locked."""
+        muc = self.host.plugin["xep_0045"]
+        forms = self.host.plugin["xep_0004"]
+        form = forms.make_form(ftype="submit")
+        form.add_field(var="FORM_TYPE", ftype="hidden",
+                       value="http://jabber.org/protocol/muc#roomconfig")
+        form.add_field(var="muc#roomconfig_persistentroom", ftype="boolean",
+                       value=True)
+        try:
             await muc.set_room_config(room, form, timeout=JOIN_TIMEOUT)
+        except Exception:
+            await muc.set_room_config(room, forms.make_form(ftype="submit"),
+                                      timeout=JOIN_TIMEOUT)
 
     def _leave_muc(self, room: str) -> None:
         nick = self._nicks.pop(room, None)
