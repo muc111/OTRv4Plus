@@ -1009,8 +1009,11 @@ class TestSyncAfterRejoin:
     def test_typed_before_the_room_is_back_waits_and_then_goes(self):
         w, a, b2, now = self._restarted_bob()
         assert b2.groups.is_syncing(ROOM)
+        # Said at once, so the app shows a restored group as an encrypted
+        # group catching up -- never "Not encrypted".
+        assert b2.changes() == ["syncing"]
         assert b2.groups.send(ROOM, "typed too early") == "held"
-        assert "syncing" in b2.changes()
+        assert b2.changes() == ["syncing", "held"]
         assert not any(body == "typed too early" for _s, body, _v in a.texts())
         # Back in the room; its history brings Alice's rekey.
         b2.join_room()

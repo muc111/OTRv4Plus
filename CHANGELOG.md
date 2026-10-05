@@ -4,6 +4,21 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.37 — 2026-10-05 — a secure group never reads "Not encrypted" (core 0.13.1)
+
+- **Fixed: after signing in again, a secure group's row said "! Not
+  encrypted".** The row took its label from the room address's one-to-one
+  state, which is always plaintext. A secure group's row now says
+  "Encrypted group, syncing…" while it catches up after a sign-in or
+  reconnect, then "Encrypted group"; the conversation header says the same.
+  The app learns which groups it has as soon as they are opened, instead of
+  up to ten seconds later or when the first message arrives.
+- The note about waiting messages appears only when you actually type
+  while the group is syncing. Termux prints "syncing with the group..." and
+  then "in sync".
+
+---
+
 ## Android 0.7.0-experimental.rc.36 — 2026-10-05 — no message lost while a group resyncs (core 0.13.1)
 
 From a device test: signed in again on the app, the first message to a

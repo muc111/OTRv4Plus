@@ -166,4 +166,17 @@ class RowSecurityTest {
             }
         }
     }
+
+    @Test
+    fun `a secure group never reads as not encrypted`() {
+        // Device test, 2026-10-05: a restored group's row said "Not encrypted".
+        val settled = RowSecurity.group(syncing = false)
+        val syncing = RowSecurity.group(syncing = true)
+        assertEquals("Encrypted group", settled.text)
+        assertTrue(syncing.text.contains("syncing"))
+        for (b in listOf(settled, syncing)) {
+            assertTrue(!b.text.contains("Not encrypted"))
+            assertEquals(RowSecurity.Tone.NEUTRAL, b.tone)
+        }
+    }
 }

@@ -183,6 +183,11 @@ class ChatViewModel : ViewModel() {
 
     /** Whether [jid] is an OTRv4Plus secure group, as the engine reported. */
     fun isSecureRoom(jid: String): Boolean { observe(); return state?.isSecureRoom(jid) == true }
+    fun isSyncingRoom(jid: String): Boolean { observe(); return state?.isSyncingRoom(jid) == true }
+
+    /** A secure group's row badge (MLS), or null for any other row. */
+    fun groupBadge(jid: String): RowSecurity.Badge? =
+        if (isSecureRoom(jid)) RowSecurity.group(isSyncingRoom(jid)) else null
 
     fun groupInvites(): List<OtrEvent.GroupInvited> {
         observe()

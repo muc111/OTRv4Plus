@@ -234,6 +234,7 @@ fun ConversationsScreen(
                         ConversationRow(
                             conversation,
                             avatar = model.avatar(conversation.jid),
+                            group = model.groupBadge(conversation.jid),
                             onClick = { onOpen(conversation.jid) },
                             onLongClick = { deleting = conversation.jid },
                         )
@@ -450,6 +451,7 @@ private fun EmptyConversations(
 private fun ConversationRow(
     conversation: Conversation,
     avatar: ImageBitmap?,
+    group: RowSecurity.Badge?,
     onClick: () -> Unit,
     onLongClick: () -> Unit,
 ) {
@@ -513,7 +515,7 @@ private fun ConversationRow(
                     UnreadBadge(conversation.unread)
                 }
             }
-            SecurityBadge(conversation)
+            SecurityBadge(conversation, group)
         }
     }
 }
@@ -529,8 +531,8 @@ private fun ConversationRow(
  * else.
  */
 @Composable
-private fun SecurityBadge(conversation: Conversation) {
-    val badge = RowSecurity.badge(
+private fun SecurityBadge(conversation: Conversation, group: RowSecurity.Badge? = null) {
+    val badge = group ?: RowSecurity.badge(
         security = conversation.security,
         smp = conversation.smp,
         hasHistory = conversation.lastMessage != null,

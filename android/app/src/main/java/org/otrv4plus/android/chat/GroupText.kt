@@ -24,6 +24,10 @@ object GroupText {
 
     fun header(secure: Boolean): String = if (secure) SECURE_HEADER else PLAIN_HEADER
 
+    /** While a secure group catches up after a sign-in or reconnect. */
+    const val SYNCING_HEADER = "Secure group (MLS), syncing: messages you type wait " +
+        "until it is back in sync, then go encrypted."
+
     fun memberLine(jid: String, me: Boolean, verified: Boolean, bound: Boolean): String = when {
         me -> "$jid (you)"
         verified -> "$jid — verified (key received over a verified OTRv4+ session)"
@@ -47,7 +51,7 @@ object GroupText {
         "refused" -> refusal(event.detail, event.room)
         // Back in the room after a reconnect or sign-in: what is typed waits
         // until the group is in sync, or it would be sent on an old key and lost.
-        "syncing" -> "Reconnecting to ${event.room}: your messages wait until the " +
+        "held" -> "${event.room} is still syncing: your messages wait until the " +
             "group is back in sync (a few seconds), then go encrypted."
         "synced" -> if (event.detail.isNotEmpty()) {
             "${event.room} is back in sync: ${event.detail} waiting message(s) sent, encrypted."

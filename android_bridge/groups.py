@@ -617,6 +617,7 @@ class SecureGroups:
                 self.close()                 # another account: seal and let go
             state_path, dek_path = self._paths(account)
             client = None
+            restored: List[str] = []
             if state_path and dek_path:
                 os.makedirs(self._state_dir, mode=0o700, exist_ok=True)
                 self._take_lock(state_path)
@@ -649,10 +650,16 @@ class SecureGroups:
             self._load_app_state()
             self._settled_from = self._clock()
             # Restored groups: their rooms are not joined yet.
-            for room in self._room_ids():
+            restored = self._room_ids()
+            for room in restored:
                 self._syncing[room] = 0.0
             if getattr(self, "_adopted_from", None):
                 self.save()                  # now under this account's own name
+        # Says, before anything else, which rooms are secure groups and that
+        # they are catching up -- the app showed a restored group as "Not
+        # encrypted" until something happened in it (device test).
+        for room in restored:
+            self._emit(GroupChanged(peer=room, change="syncing"))
         self._arm_maintenance()
 
     def _need(self):
@@ -1314,8 +1321,11 @@ class SecureGroups:
         `on_room_rejoined`: messages typed meanwhile are held."""
         with self._lock:
             rooms = [room] if room else self._room_ids()
+            fresh = [r for r in rooms if r not in self._syncing]
             for r in rooms:
                 self._syncing[r] = 0.0
+        for r in fresh:
+            self._emit(GroupChanged(peer=r, change="syncing"))
 
     def is_syncing(self, room: str) -> bool:
         self._sync_check(room)
@@ -1395,7 +1405,7 @@ class SecureGroups:
                 first = None
         if first is not None:
             if first:
-                self._emit(GroupChanged(peer=room, change="syncing"))
+                self._emit(GroupChanged(peer=room, change="held"))
             return "held"
         with self._lock:
             client = self._need()

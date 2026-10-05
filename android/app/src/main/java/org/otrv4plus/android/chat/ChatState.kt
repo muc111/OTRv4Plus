@@ -761,6 +761,11 @@ class ChatState(
 
     fun isSecureRoom(jid: String): Boolean = bare(jid) in secureRooms
 
+    /** Secure groups catching up after a sign-in or reconnect. */
+    private val syncingRooms = mutableSetOf<String>()
+
+    fun isSyncingRoom(jid: String): Boolean = bare(jid) in syncingRooms
+
     fun noteSecureRooms(jids: Collection<String>) {
         secureRooms.clear()
         jids.forEach { secureRooms.add(bare(it)) }
@@ -775,7 +780,10 @@ class ChatState(
         val room = bare(event.room)
         when (event.change) {
             "created", "joined" -> { secureRooms.add(room); rooms.add(room) }
-            "left", "removed_us" -> secureRooms.remove(room)
+            // A restored group says so as soon as the app opens it.
+            "syncing" -> { secureRooms.add(room); rooms.add(room); syncingRooms.add(room) }
+            "synced" -> { secureRooms.add(room); syncingRooms.remove(room) }
+            "left", "removed_us" -> { secureRooms.remove(room); syncingRooms.remove(room) }
         }
         GroupText.describe(event)?.let { note(it) }
     }

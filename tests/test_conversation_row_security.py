@@ -73,7 +73,7 @@ def screen():
 class TestTheRowSaysSomething:
 
     def test_the_row_renders_a_security_badge(self, screen):
-        assert "SecurityBadge(conversation)" in screen, (
+        assert "SecurityBadge(conversation" in screen, (
             "the conversation list renders neither `security` nor `smp`, so "
             "an encrypted thread and a plaintext one look identical")
 

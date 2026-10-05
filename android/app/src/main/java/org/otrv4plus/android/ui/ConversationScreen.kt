@@ -261,7 +261,9 @@ private fun RoomHeader(model: ChatViewModel, jid: String) {
                 else org.otrv4plus.android.crypto.SecurityLevel.Level.NOT_ENCRYPTED
     Surface(color = MaterialTheme.colorScheme.surfaceVariant) {
         Text(
-            "${level.mark} " + org.otrv4plus.android.chat.GroupText.header(secure),
+            "${level.mark} " + if (secure && model.isSyncingRoom(jid))
+                org.otrv4plus.android.chat.GroupText.SYNCING_HEADER
+            else org.otrv4plus.android.chat.GroupText.header(secure),
             style = MaterialTheme.typography.bodySmall,
             color = if (secure) MaterialTheme.colorScheme.onSurfaceVariant
                     else MaterialTheme.colorScheme.error,
