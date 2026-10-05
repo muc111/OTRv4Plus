@@ -162,7 +162,8 @@ Desktop Linux works the same way. macOS not tested. Windows not supported.
 - **Video** (voice is implemented — see above)
 - Voice over any transport other than I2P
 - OMEMO and Signal-protocol groups (encrypted groups are OTRv4Plus secure
-  groups over MLS on Android -- see [MLS_FEASIBILITY.md](MLS_FEASIBILITY.md);
+  groups over MLS, X448 + ML-KEM-1024 / Ed448 + ML-DSA-87, in the app and the
+  Termux XMPP client -- see [TECHNICAL.md](TECHNICAL.md#encrypted-group-chat-mls);
   file transfer is implemented -- see `/sendfile` above)
 - Mobile push notifications
 - Cross-device sync

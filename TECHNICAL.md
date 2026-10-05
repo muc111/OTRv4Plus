@@ -359,7 +359,7 @@ section keeps those apart.
 | **Encrypted file transfer** (`/sendfile`) | Implemented, XMPP only. Two-phone validation plan written; see [FILE_TRANSFER_TEST_PLAN.md](FILE_TRANSFER_TEST_PLAN.md) |
 | **Encrypted voice over I2P** | **Actively tested, still developing.** Two-way audio verified between two Android phones over I2P, with mid-call hybrid rekeys, a 4-hour soak and a network transition. One pair of devices; latency reduction is open work |
 | **Native Android app** | **Under active development.** Sign-in, the roster, contacts, presence, 1:1 conversations and rooms have been driven on a handset against the live server, and so have **OTRv4+ end to end, SMP verification and encrypted file transfer with a Termux peer**. **Voice calls from the APK have not run yet**; for calls, Termux is the reference. Open gates, item by item: [ANDROID_XMPP_MILESTONE.md](ANDROID_XMPP_MILESTONE.md) §7; root causes and history: [ANDROID_FOUNDATION_REPORT.md](ANDROID_FOUNDATION_REPORT.md) |
-| **Group messaging** | **Specification and test vectors only.** [SPEC_GROUP.md](SPEC_GROUP.md) exists, generated before any implementation; there is no group implementation. The Android app's XMPP rooms (XEP-0045) are **not** this: a room is ordinary group chat, readable by the server hosting it |
+| **Encrypted group chat (MLS)** | **Working.** Secure groups over MLS (RFC 9420) on the hybrid suite X448 + ML-KEM-1024 / Ed448 + ML-DSA-87, in the Android app and the Termux XMPP client; four clients (two apps, two Termux) on two phones have sent and read each other's messages. Group voice calls are implemented, not yet run on a phone. See [Encrypted group chat (MLS)](#encrypted-group-chat-mls). An ordinary XMPP room (XEP-0045) is **not** this: it is readable by the server hosting it. [SPEC_GROUP.md](SPEC_GROUP.md) is an earlier, unimplemented design |
 | **External security review** | **None.** This is the single largest gap |
 
 The terminal clients are the supported way to run OTRv4+ today. The native
@@ -617,6 +617,29 @@ As of v10.7.5 there are no C extensions to compile. The **chat** path is Rust-co
 The **voice** path was the exception until v10.13.2, and this paragraph used to say so. `otrv4plus_voice.py` used the Python `cryptography` library for the media AES-256-GCM, the HKDF-SHA512 voice key schedule and the X448 half of the voice key exchange — so there were two AES-256-GCM implementations in the tree and "one cryptographic surface" would have been false. All three moved into `otrv4_core` at v10.13.2: the epoch root is `SecretBytes<64>` behind a handle with no accessor, media keys are `SecretBytes<32>` with no getter, and the X448 private scalar is `SecretBytes<56>`, single-use. `_require_rust_voice()` is a hard requirement with no Python fallback, because falling back would restore exactly what was removed.
 
 So voice no longer needs `cryptography` at run time, and the library is a **test** dependency rather than a runtime one. What remains Python-side in the voice path touches no key material: the frame header, the AAD construction, the replay window, the jitter buffer and the rekey state machine.
+
+### build.sh in detail
+
+`Rust/build.sh` needs nothing else prepared. It creates the project's own
+Python environment in `OTRv4Plus/.venv` (it can still use the modules
+installed with pip), installs its pinned build tool there (on Termux it
+compiles it once, serially, and keeps the result in `~/.cache/otrv4plus`),
+runs the Rust tests and lints, installs the core with secure groups (MLS)
+into `.venv`, checks that both clients (IRC and XMPP) load against it, and
+ends with `otrv4_core imported OK`, `secure groups (MLS): yes` and
+`BUILD OK`. Both clients switch to `.venv/bin/python` by themselves if
+started with another Python.
+
+On a phone, keep Termux open until it finishes (it holds a wake lock), set
+Settings > Apps > Termux > Battery to Unrestricted, and on Android 14+ turn on
+Developer options > "Disable child process restrictions": Android otherwise
+kills long builds. Long steps print progress every minute and say plainly if
+nothing is happening. Every run is logged in full to
+`~/.cache/otrv4plus/logs/latest.log`; if a build fails, that file is what to
+send. Running `bash build.sh` again resumes from the work already done.
+
+If `git pull` refuses because of local changes, `git status` shows what they
+are; `git reset --hard origin/main` discards them.
 
 ### Building on musl
 
@@ -971,6 +994,87 @@ Two-peer testing over a Prosody server reachable via I2P SAM (`.b32.i2p` address
 A second live run measured 1m 15s end to end. That is roughly 13–14× faster than the IRC client's ~15–16 minutes over the same I2P network. The speed difference is entirely the IRC fragment rate limit: `irc.postman.i2p` enforces strict flood limits so the IRC client paces sends at 2 fragments then a 6-second pause; SMP2 alone spans ~49 fragments. The XMPP path carries multi-kilobyte stanzas directly and fragments only above ~6 KB (I2P streaming cliff), so the same crypto payload transits in far fewer round trips.
 
 XMPP support is newer than IRC and has had fewer live runs. Treat it as more experimental until it accumulates more testing.
+
+## Encrypted group chat (MLS)
+
+Secure groups use **MLS**, the IETF's group messaging protocol (RFC 9420),
+through OpenMLS, with every primitive supplied by the same Rust core as
+1:1 chat. The XMPP room only carries ciphertext: the server, and anyone
+else in the room without the group's keys, sees `?OTRv4MLS1:` blobs and
+nothing else.
+
+```
+   X448  +  ML-KEM-1024          hybrid KEM (HPKE): how keys reach each member
+   Ed448 +  ML-DSA-87            composite signature: BOTH must verify
+                  |
+                  v
+      MLS ratchet tree and key schedule (RFC 9420, HKDF-SHA-384)
+      a new epoch with fresh keys at every change of membership or rekey
+                  |
+                  v
+             AES-256-GCM
+                  |
+                  v
+      ?OTRv4MLS1: message in the XMPP room
+```
+
+The ciphersuite is `MLS_256_X448MLKEM1024_AES256GCM_SHA384_ED448MLDSA87`
+(0xF0A1). Breaking it means breaking **both** halves of the key exchange
+(X448 and ML-KEM-1024) or **both** halves of the signature (Ed448 and
+ML-DSA-87).
+
+| | Standard MLS suites (RFC 9420) | OTRv4+ groups |
+|---|---|---|
+| Key exchange | X25519, X448 or P-curves | X448 + ML-KEM-1024 |
+| Signatures | Ed25519, Ed448 or ECDSA | Ed448 + ML-DSA-87, both required |
+| Against a future quantum computer | none | ML-KEM-1024 and ML-DSA-87, NIST category 5 |
+| "Record now, decrypt later" | exposed | protected |
+
+How a group works:
+
+- **Joining goes through OTRv4+.** An invitation, the invitee's key
+  package and the Welcome that admits them all travel inside the 1:1
+  OTRv4+ session between inviter and invitee, never through the room. If
+  there is no session yet, inviting someone starts one. A member you have
+  verified with SMP is shown as verified in the group too.
+- **Keys keep moving.** Each member rekeys on its own after a number of
+  messages or some time (post-compromise security); a removed member cannot
+  read anything after the removal; a member whose device has been away for
+  72 hours is removed automatically and can be invited back. Each group has
+  its own signing key, replaced at every rekey.
+- **Nothing is lost while catching up.** After a sign-in or a reconnect a
+  group shows as syncing until its room's history has been applied; what
+  you type meanwhile waits and then goes, encrypted, in order.
+- **Never plaintext.** A secure room refuses to send anything unencrypted,
+  and never shows anything it could not decrypt.
+- **Group voice calls** derive their keys from the group's current epoch
+  (implemented; not yet tested on a phone).
+
+What the group does **not** hide: the server still sees the room's name,
+who is in it, and when and how much is sent. Caveats: 0xF0A1 is a private
+code point, so other MLS apps cannot join these groups; the hybrid KEM
+combiner and the composite signature are this project's own constructions
+(modelled on current IETF drafts), and like the rest of OTRv4+ they have not
+been independently audited. Group chat is available in the Android app and
+the Termux XMPP client, not over IRC. Design, threat model and decisions:
+[MLS_SECURITY_HARDENING.md](MLS_SECURITY_HARDENING.md) and
+[GROUP_CRYPTO_AUDIT.md](GROUP_CRYPTO_AUDIT.md).
+
+Commands (Termux XMPP client; room and user names alone are enough):
+
+```
+/group create mls3          a new secure group (room + MLS group), you in it
+/group invite mls3 bob      invite over your OTRv4+ session with bob
+/group accept mls3          answer an invitation; the group becomes your chat
+hello everyone              once you are in a group, just type
+/to mls3  /to alice         switch between a group and a contact
+/group mls3 hi              send to a group without switching
+/group members mls3         members, fingerprints, verified or not
+/group remove|rekey|leave|call|answer|hangup  ...   (/group help)
+```
+
+In the app: Rooms, enter a room name, then "Create end-to-end encrypted
+group"; invite people (a user name is enough) from the group's screen.
 
 ## Encrypted voice calls
 
