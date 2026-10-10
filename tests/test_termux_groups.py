@@ -1202,6 +1202,36 @@ class TestTheRoomOutlivesItsMembers:
         run(go())
 
 
+    def test_a_tombstone_on_rejoin_also_ends_the_group(self, world):
+        """Prosody keeps a destroyed persistent room as a tombstone and
+        refuses the join with <gone/> (device test, 2026-10-10): the group
+        ends, rather than 'could not rejoin' at every reconnect."""
+        w = world
+        from slixmpp import stanza as _st
+        from slixmpp.exceptions import PresenceError
+
+        async def go():
+            await _three_member_group(w)
+            original = w.b.muc.join_muc_wait
+
+            async def gone(room, nick, timeout=None, **kw):
+                if str(room) == ROOM:
+                    pres = _st.Presence()
+                    pres["type"] = "error"
+                    pres["error"]["type"] = "cancel"
+                    pres["error"]["condition"] = "gone"
+                    raise PresenceError(pres)
+                return await original(room, nick, timeout=timeout, **kw)
+
+            w.b.muc.join_muc_wait = gone
+            await w.b.groups.rejoin_all()
+            assert not w.b.groups.groups.is_secure(ROOM)
+            assert w.b.lines("the group was deleted")
+            assert not w.b.lines("could not rejoin")
+
+        run(go())
+
+
 class TestDeletingAGroup:
     """The group's creator deletes it for everyone (owner request,
     2026-10-05: no more cleaning up on the server by hand)."""

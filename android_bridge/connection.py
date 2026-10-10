@@ -997,6 +997,13 @@ class ConnectionController:
                         self.destroy_room(room, "secure group deleted")
                         self._on_room_destroyed(room)
                         continue
+                    if joined.get("code") == "room_gone":
+                        # Deleted while we were away, and the service keeps
+                        # its tombstone: the join is refused with <gone/>.
+                        # The group ends here too, instead of failing at
+                        # every reconnect.
+                        self._on_room_destroyed(room)
+                        continue
                     if joined.get("ok") or joined.get("code") == "already_in_room":
                         ok += 1
                         rejoined = getattr(groups, "on_room_rejoined", None)

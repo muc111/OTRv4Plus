@@ -758,6 +758,12 @@ class TermuxGroups:
             try:
                 created = await self._join(room, create=False, rejoin=True)
             except Exception as exc:
+                if _muc.classify(exc)[0] == "room_gone":
+                    # Deleted while we were away; the service keeps its
+                    # tombstone and refuses the join with <gone/>. The group
+                    # ends here too, rather than failing at every reconnect.
+                    self.groups.on_room_destroyed(room)
+                    continue
                 self._print("[group %s] could not rejoin the room (%s)"
                             % (room[:64], type(exc).__name__))
                 continue

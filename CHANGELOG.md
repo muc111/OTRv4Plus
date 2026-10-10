@@ -4,6 +4,23 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.51 — 2026-10-10 — a deleted room's tombstone ends the group (core 0.13.1)
+
+Server clean-up (Prosody 13): \`destroy()\` on the old test rooms returned
+true, yet seven still showed in \`muc:list\` -- tombstones, which Prosody
+keeps for a destroyed persistent room (31 days by default) and which refuse
+a join with \`<gone/>\`.
+
+- **A member who held one of those groups now ends it** when its rejoin is
+  refused with \`<gone/>\` (new code \`room_gone\`, "This room was
+  deleted."), in the app and in Termux, exactly as for a room deleted while
+  they were online. Before, Termux printed "could not rejoin the room" at
+  every reconnect and the app failed silently, both keeping a dead group.
+- PROSODY_USER_DISCOVERY.md §5: tombstones, how to check one, and
+  \`muc_tombstones = false\`.
+
+---
+
 ## Android 0.7.0-experimental.rc.50 — 2026-10-10 — delete any room you own, and moderation for admins (core 0.13.1)
 
 - **Delete on every room in the search, and for a typed address.** Until

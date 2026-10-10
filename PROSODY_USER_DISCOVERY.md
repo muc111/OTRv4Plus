@@ -236,6 +236,14 @@ Rooms that already exist keep their settings. From `prosodyctl shell`, an
 admin can list them with `muc:list("conference.otrv4plus.i2p")` and remove
 one with `muc:room("lmao@conference.otrv4plus.i2p"):destroy()`.
 
+**Tombstones.** Prosody keeps a destroyed *persistent* room as a tombstone
+(31 days by default): it still appears in `muc:list`, its name cannot be
+reused, and a join is refused with `<gone/>`. A client that still holds the
+group ends it on that refusal (rc.51). Check one with
+`> prosody.hosts["conference.otrv4plus.i2p"].modules.muc.get_room_from_jid("lmao@conference.otrv4plus.i2p")._data.destroyed`
+(`true` for a tombstone). To have deleted rooms go at once, set
+`muc_tombstones = false` in the component and destroy them again.
+
 ## Not validated
 
 * The live Prosody's module list, admin list and any subscription-expiry

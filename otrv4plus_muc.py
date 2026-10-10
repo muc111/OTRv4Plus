@@ -249,6 +249,7 @@ CODES = {
     "not_acceptable": "The room refused that.",
     "service_unavailable": "The room is full.",
     "item_not_found": "There is no such room.",
+    "room_gone": "This room was deleted.",
     "bad_request": "The request was not valid.",
     "unsupported": "This server does not offer rooms.",
     "timeout": "The room did not answer. Over I2P this can be slow -- try "
@@ -270,6 +271,9 @@ _CONDITIONS = {
     "not-acceptable": "not_acceptable",
     "service-unavailable": "service_unavailable",
     "item-not-found": "item_not_found",
+    # A destroyed room's tombstone (Prosody keeps one for a persistent room,
+    # 31 days by default): joining it is refused with <gone/>.
+    "gone": "room_gone",
     "bad-request": "bad_request",
     "feature-not-implemented": "unsupported",
     "remote-server-timeout": "timeout",

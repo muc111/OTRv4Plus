@@ -1155,6 +1155,56 @@ def test_the_app_ends_a_group_whose_room_was_gone_on_rejoin(monkeypatch):
     assert calls == [("destroy", ROOM), ("destroyed", ROOM)]
 
 
+def test_the_app_ends_a_group_whose_room_is_a_tombstone(monkeypatch):
+    """Prosody keeps a destroyed persistent room as a tombstone (31 days by
+    default) and refuses a join with <gone/>: the group ends, instead of the
+    rejoin failing at every reconnect (device test, 2026-10-10)."""
+    import threading as _threading
+    from android_bridge.connection import ConnectionController
+    calls = []
+
+    class Groups:
+        def rooms(self):
+            return [ROOM]
+
+        def mark_syncing(self, room=None):
+            pass
+
+        def on_room_rejoined(self, room):
+            calls.append(("rejoined", room))
+
+        def on_room_destroyed(self, room):
+            calls.append(("destroyed", room))
+
+    ctl = ConnectionController.__new__(ConnectionController)
+    ctl._app = type("App", (), {"groups": Groups()})()
+    ctl._profile = type("P", (), {"jid": "dave@x.i2p"})()
+    ctl._transport = type("T", (), {"take_recreated": lambda self, r: False})()
+    ctl.join_room = lambda room, nick: {"ok": False, "code": "room_gone"}
+
+    class Inline:
+        def __init__(self, target=None, **_kw):
+            self.target = target
+
+        def start(self):
+            self.target()
+
+    monkeypatch.setattr(_threading, "Thread", Inline)
+    ctl._rejoin_secure_rooms()
+    assert calls == [("destroyed", ROOM)]
+
+
+def test_gone_is_classified_as_a_deleted_room():
+    slixmpp = pytest.importorskip("slixmpp")
+    from slixmpp.exceptions import PresenceError
+    import otrv4plus_muc as _m
+    pres = slixmpp.stanza.Presence()
+    pres["type"] = "error"
+    pres["error"]["type"] = "cancel"
+    pres["error"]["condition"] = "gone"
+    assert _m.classify(PresenceError(pres))[0] == "room_gone"
+
+
 def test_deleting_says_who_may_and_cleans_up_a_room_already_gone():
     from android_bridge.connection import ConnectionController
     ended = []
