@@ -50,54 +50,113 @@ class BundledRouter(private val context: Context) {
     /** Whether our router is up, judged by its SAM bridge answering. */
     fun running(): Boolean = samAnswers(RouterChoice.BUILT_IN_SAM_PORT)
 
+    /** Where the router is. */
+    enum class Status {
+        /** SAM answers: sessions can be made (tunnels may still be building). */
+        READY,
+        /** The process is alive but SAM is not open yet. */
+        STARTING,
+        /** No router process: it was never started, or it exited. */
+        STOPPED,
+    }
+
+    fun status(): Status = when {
+        running() -> Status.READY
+        process?.isAlive == true || orphanPid() != null -> Status.STARTING
+        else -> Status.STOPPED
+    }
+
     /**
-     * Start the router unless it is already up, and wait for its SAM bridge.
+     * Why the router last stopped, in one line, or null. The exit code and
+     * the last thing i2pd printed: no addresses of ours, no keys.
+     */
+    @Volatile
+    var lastFailure: String? = null
+        private set
+
+    /**
+     * Make sure a router process exists; returns false if one could not be
+     * started. Does not wait for it.
      *
-     * Returns true once SAM accepts connections -- which i2pd does within
-     * seconds; the slow part, joining the network and building tunnels,
-     * happens behind SAM's SESSION CREATE, which the connection waits on.
-     * Blocking: call from an IO thread.
+     * NEVER kills a router that is still alive. i2pd opens SAM only after
+     * its first-start download of the router list (the "reseed", over HTTPS),
+     * which takes minutes on a phone; rc.45 waited 30 s, called that a
+     * failure, and on the next attempt killed the router mid-download and
+     * started another -- so it never got there.
      */
     @Synchronized
-    fun start(): Boolean {
-        if (running()) {
+    fun launch(): Boolean {
+        if (status() != Status.STOPPED) {
             if (startedAt == 0L) startedAt = System.currentTimeMillis()
             return true
         }
-        if (!available) return false
-        stopProcess()
-        dir.mkdirs()
-        fresh = !File(dir, "router.info").isFile
-        File(dir, CONF).writeText(RouterChoice.config())
-        // An empty tunnels file, so i2pd does not go looking for one.
-        File(dir, TUNNELS).writeText("")
-        installCertificates()
-        val proc = ProcessBuilder(
-            binary.absolutePath,
-            "--datadir=${dir.absolutePath}",
-            "--conf=${File(dir, CONF).absolutePath}",
-            "--tunconf=${File(dir, TUNNELS).absolutePath}",
-            "--certsdir=${File(dir, CERTS).absolutePath}",
-            "--pidfile=${File(dir, PID).absolutePath}",
-            "--logfile=${File(dir, LOG).absolutePath}",
-        ).directory(dir)
-            .redirectErrorStream(true)
-            .redirectOutput(File("/dev/null"))
-            .start()
-        process = proc
-        startedAt = System.currentTimeMillis()
-        val deadline = startedAt + SAM_WAIT_MS
-        while (System.currentTimeMillis() < deadline) {
-            if (!proc.isAlive) {
-                startedAt = 0L
-                process = null
-                return false
-            }
-            if (running()) return true
-            Thread.sleep(250)
+        if (!available) {
+            lastFailure = "this build carries no router"
+            return false
         }
-        return running()
+        process = null
+        return try {
+            dir.mkdirs()
+            fresh = !File(dir, "router.info").isFile
+            File(dir, CONF).writeText(RouterChoice.config())
+            // An empty tunnels file, so i2pd does not go looking for one.
+            File(dir, TUNNELS).writeText("")
+            installCertificates()
+            val proc = ProcessBuilder(
+                binary.absolutePath,
+                "--datadir=${dir.absolutePath}",
+                "--conf=${File(dir, CONF).absolutePath}",
+                "--tunconf=${File(dir, TUNNELS).absolutePath}",
+                "--certsdir=${File(dir, CERTS).absolutePath}",
+                "--pidfile=${File(dir, PID).absolutePath}",
+                "--logfile=${File(dir, LOG).absolutePath}",
+            ).directory(dir)
+                .redirectErrorStream(true)
+                // Kept, not discarded: an option it rejects, or a crash
+                // before its log opens, is only ever printed here.
+                .redirectOutput(File(dir, OUT))
+                .start()
+            process = proc
+            startedAt = System.currentTimeMillis()
+            lastFailure = null
+            true
+        } catch (e: Exception) {
+            lastFailure = "could not run it (${e.javaClass.simpleName})"
+            false
+        }
     }
+
+    /** Record why the process ended, once it has. */
+    fun noteExit() {
+        val proc = process ?: return
+        if (proc.isAlive) return
+        val code = runCatching { proc.exitValue() }.getOrNull()
+        lastFailure = buildString {
+            append("exited")
+            if (code != null) append(" with code ").append(code)
+            lastLine()?.let { append(": ").append(it) }
+        }
+        process = null
+        startedAt = 0L
+    }
+
+    /** The last meaningful line i2pd wrote, trimmed, or null. */
+    private fun lastLine(): String? {
+        for (name in listOf(OUT, LOG)) {
+            val line = runCatching {
+                File(dir, name).readLines().map { it.trim() }.lastOrNull { it.isNotEmpty() }
+            }.getOrNull()
+            if (!line.isNullOrBlank()) return line.take(200)
+        }
+        return null
+    }
+
+    /** A router left by an earlier run of the app, if it is still i2pd. */
+    private fun orphanPid(): Int? = runCatching {
+        val pid = File(dir, PID).readText().trim().toInt()
+        val cmd = File("/proc/$pid/cmdline").readText()
+        pid.takeIf { it > 0 && it != android.os.Process.myPid() && BINARY in cmd }
+    }.getOrNull()
 
     /** Stop the router, including one left behind by an earlier process. */
     @Synchronized
@@ -107,13 +166,7 @@ class BundledRouter(private val context: Context) {
         // killed, the child was not) is found by its pid file. Same UID, so
         // only ever our own -- and only if that pid is still i2pd: a stale
         // file's number may since belong to this very app.
-        runCatching {
-            val pid = File(dir, PID).readText().trim().toInt()
-            val cmd = File("/proc/$pid/cmdline").readText()
-            if (pid > 0 && pid != android.os.Process.myPid() && BINARY in cmd) {
-                android.os.Process.killProcess(pid)
-            }
-        }
+        orphanPid()?.let { android.os.Process.killProcess(it) }
         runCatching { File(dir, PID).delete() }
         startedAt = 0L
     }
@@ -178,10 +231,9 @@ class BundledRouter(private val context: Context) {
         private const val CERTS = "certificates"
         private const val PID = "i2pd.pid"
         private const val LOG = "i2pd.log"
+        private const val OUT = "i2pd.out"
         private const val CERT_ASSET = "i2pd-certificates.zip"
 
-        /** How long i2pd may take to open its SAM port. */
-        private const val SAM_WAIT_MS = 30_000L
         private const val STOP_WAIT_MS = 5_000L
 
         /** Whether a SAM bridge answers on loopback at [port]. Milliseconds. */

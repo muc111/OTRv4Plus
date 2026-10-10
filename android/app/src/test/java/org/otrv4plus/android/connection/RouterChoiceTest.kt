@@ -93,5 +93,15 @@ class RouterChoiceTest {
         assertTrue("2:05" in first && "first time" in first, first)
         val later = RouterChoice.label(RouterChoice.State.RUNNING, 9_000, false)!!
         assertTrue("0:09" in later, later)
+        val joining = RouterChoice.label(RouterChoice.State.JOINING, 61_000, true)!!
+        assertTrue("1:01" in joining && "list of I2P routers" in joining, joining)
+    }
+
+    @Test
+    fun `a stopped router says why`() {
+        val why = RouterChoice.label(RouterChoice.State.FAILED, 0, false,
+                                     "exited with code 1: bad option")!!
+        assertTrue("exited with code 1: bad option" in why, why)
+        assertTrue(RouterChoice.label(RouterChoice.State.FAILED, 0, false)!!.endsWith("."))
     }
 }

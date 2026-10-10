@@ -195,7 +195,8 @@ class OtrConnectionService : Service() {
 
     /** One line about the router for the connection screen, or null. */
     fun routerLabel(): String? = RouterChoice.label(
-        routerState, System.currentTimeMillis() - router.startedAt, router.fresh)
+        routerState, System.currentTimeMillis() - router.startedAt, router.fresh,
+        router.lastFailure)
 
     private var worker: Job? = null
     private var watcher: Job? = null
@@ -741,7 +742,7 @@ class OtrConnectionService : Service() {
      * The rules are [RouterChoice.decide]; this is the platform half. Blocking:
      * called on the IO dispatcher.
      */
-    private fun chooseRouter(): Int {
+    private suspend fun chooseRouter(): Int {
         if (!RouterChoice.needsI2p(jid, server)) {
             routerState = RouterChoice.State.NOT_USED
             return 0
@@ -762,10 +763,40 @@ class OtrConnectionService : Service() {
                           else RouterChoice.State.UNAVAILABLE
             return 0
         }
-        if (!router.running()) routerState = RouterChoice.State.STARTING
-        val ok = runCatching { router.start() }.getOrDefault(false)
-        routerState = if (ok) RouterChoice.State.RUNNING else RouterChoice.State.FAILED
-        if (!ok) runCatching { core.note("service", "i2p_router_failed", "error") }
+        routerState = RouterChoice.State.STARTING
+        if (!router.launch()) return routerFailed()
+        // Wait for SAM, however long the first start's download takes, as
+        // long as the router is alive. It only gives up on the router when
+        // the router itself has exited -- never on a timer, which is what
+        // made rc.45 kill it mid-download. Cancelling the attempt (Cancel,
+        // Disconnect) ends this wait at the next delay.
+        val giveUp = System.currentTimeMillis() + ROUTER_START_BUDGET_MS
+        while (true) {
+            when (router.status()) {
+                BundledRouter.Status.READY -> {
+                    routerState = RouterChoice.State.RUNNING
+                    return RouterChoice.BUILT_IN_SAM_PORT
+                }
+                BundledRouter.Status.STARTING ->
+                    routerState = RouterChoice.State.JOINING
+                BundledRouter.Status.STOPPED -> {
+                    router.noteExit()
+                    return routerFailed()
+                }
+            }
+            // Still alive after this long: let the connection try (it fails
+            // and the backoff comes back here, to the same router).
+            if (System.currentTimeMillis() > giveUp) return RouterChoice.BUILT_IN_SAM_PORT
+            delay(1_000)
+        }
+    }
+
+    private fun routerFailed(): Int {
+        routerState = RouterChoice.State.FAILED
+        runCatching {
+            core.note("service", "i2p_router_failed", "error",
+                      router.lastFailure ?: "unknown")
+        }
         return RouterChoice.BUILT_IN_SAM_PORT
     }
 
@@ -1093,6 +1124,13 @@ class OtrConnectionService : Service() {
 
         /** The route, or absent for the JID's own domain. Not a secret. */
         const val EXTRA_SERVER = "server"
+
+        /**
+         * How long one attempt waits for the built-in router's SAM bridge.
+         * Not a verdict: the router keeps running, and the next attempt
+         * waits for the same one.
+         */
+        const val ROUTER_START_BUDGET_MS = 10 * 60_000L
 
         /** How often to ask the transport whether it is still up. */
         const val WATCH_INTERVAL_MS = 5_000L

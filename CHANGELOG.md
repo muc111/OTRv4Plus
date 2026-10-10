@@ -4,6 +4,25 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.46 — 2026-10-10 — the built-in I2P router no longer gives up while it starts (core 0.13.1)
+
+- **Fix: "Built-in I2P router did not start" on a phone with no I2P app.**
+  i2pd opens its SAM bridge only after its first-start download of the
+  router list (the reseed, over HTTPS), which takes minutes. rc.45 waited
+  30 s, reported a failure while the router was still downloading, and the
+  next reconnect killed it and started another -- so it never finished.
+  Now a router that is alive is never killed: the app waits for its SAM
+  bridge for as long as it keeps running, and a router left by an earlier
+  run of the app is reused rather than duplicated.
+- The connect screen says which stage it is in: "downloading the list of
+  I2P routers for its first start (m:ss, usually 1 to 5 minutes)", then
+  "joining the I2P network", then the connection.
+- If the router does exit, the screen and the Debug log say why: its exit
+  code and the last line it printed (i2pd's own output is now kept in its
+  private directory instead of discarded).
+
+---
+
 ## Android 0.7.0-experimental.rc.45 — 2026-10-10 — an I2P router built into the app (core 0.13.1)
 
 - **No separate I2P app needed.** The APK carries i2pd 2.59.0 (with

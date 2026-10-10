@@ -126,20 +126,34 @@ object RouterChoice {
         |""".trimMargin()
 
     /** What the router is doing, for the connection screen. */
-    enum class State { NOT_USED, EXTERNAL, STARTING, RUNNING, UNAVAILABLE, FAILED }
+    enum class State {
+        NOT_USED, EXTERNAL, STARTING,
+        /** Running, SAM not open yet: fetching the router list (reseed). */
+        JOINING,
+        /** SAM open: the connection is building its tunnels. */
+        RUNNING,
+        UNAVAILABLE, FAILED,
+    }
 
     /**
      * One line for the connection screen, or null when there is nothing to
      * say. [elapsedMs] is how long the built-in router has been up; [fresh]
-     * is whether it has never joined the network on this phone before.
+     * is whether it has never joined the network on this phone before;
+     * [reason] is why it stopped, when it has.
      */
-    fun label(state: State, elapsedMs: Long, fresh: Boolean): String? {
+    fun label(state: State, elapsedMs: Long, fresh: Boolean,
+              reason: String? = null): String? {
         val elapsed = elapsedMs.coerceAtLeast(0) / 1000
         val clock = "%d:%02d".format(elapsed / 60, elapsed % 60)
         return when (state) {
             State.NOT_USED -> null
             State.EXTERNAL -> "Using the I2P router already on this phone."
             State.STARTING -> "Starting the built-in I2P router..."
+            State.JOINING -> if (fresh)
+                "Built-in I2P router: downloading the list of I2P routers for its " +
+                    "first start ($clock, usually 1 to 5 minutes)."
+            else
+                "Built-in I2P router: starting up ($clock)."
             State.RUNNING -> if (fresh)
                 "Built-in I2P router: joining the I2P network for the first time " +
                     "($clock, usually 2 to 5 minutes)."
@@ -147,7 +161,8 @@ object RouterChoice {
                 "Built-in I2P router: building tunnels ($clock, usually under a minute)."
             State.UNAVAILABLE -> "No I2P router answered. Start your I2P app with " +
                 "its SAM bridge on, or set the I2P router to Automatic."
-            State.FAILED -> "The built-in I2P router did not start."
+            State.FAILED -> "The built-in I2P router stopped" +
+                (reason?.let { ": $it" } ?: ".")
         }
     }
 }

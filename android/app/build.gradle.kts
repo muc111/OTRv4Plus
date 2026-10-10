@@ -88,7 +88,7 @@ android {
         //
         // core.10.14.0 was wrong for sixteen releases; the Rust core is read
         // from Rust/Cargo.toml so it cannot drift again.
-        versionName = "0.7.0-experimental.rc.45+core.$rustCoreVersion"
+        versionName = "0.7.0-experimental.rc.46+core.$rustCoreVersion"
 
         // Which build this is, surfaced in the diagnostic report.
         //
