@@ -188,6 +188,12 @@ class TermuxGroups:
                 self._print("[group] could not open group state (%s)" % exc.code)
             return False
         self._opened = True
+        # Listen for calls now, not on this client's first /group call: the
+        # call handler is what hears a ring, and until rc.48 it was only set
+        # up by a call command -- so a Termux client that had not made one
+        # dropped every ring (an app's call showed "in call" with nobody
+        # joining). Same as the app (group_call_bridge).
+        self._group_calls()
         rooms = self.groups.rooms()
         if rooms:
             self._print("[group] %d secure group(s) restored: %s"

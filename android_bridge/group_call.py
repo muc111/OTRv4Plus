@@ -324,7 +324,10 @@ class GroupCalls:
         with self._lock:
             call = self._calls.get(room)
             if kind == "ring":
-                if call is None:
+                # A new call replaces an old one we never joined: the record
+                # of an unanswered (or ended) ring used to stay forever, and
+                # every later ring in that room was ignored.
+                if call is None or (not call.joined and call.call_id != call_id):
                     self._calls[room] = _Call(room=room, call_id=call_id, starter=sender,
                                               rang_at=self._clock())
                     ring = True
@@ -369,6 +372,9 @@ class GroupCalls:
         elif kind == "leave":
             with self._lock:
                 call.peers.pop(sender, None)
+                # The caller hung up before we answered: stop ringing.
+                if not call.joined and sender == call.starter:
+                    self._calls.pop(room, None)
             self._emit(GroupChanged(peer=room, change="call_participant_left",
                                     detail=sender[:200]))
 

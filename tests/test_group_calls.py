@@ -189,6 +189,30 @@ class TestKeysFollowTheGroup:
             v.open(packet)
 
 
+class TestRingingAgain:
+
+    def test_a_second_ring_is_heard_after_an_unanswered_one(self):
+        w, (a, b), net, now, heard = _calling(2)
+        _pair_all(w, [a, b])
+        first = a.calls.start(ROOM)
+        a.calls.hangup(ROOM)                    # nobody answered
+        assert b.calls.ringing() == []          # the caller left: no ring
+        second = a.calls.start(ROOM)
+        assert first != second
+        assert [r["call"] for r in b.calls.ringing()] == [second]
+        b.calls.join(ROOM)
+        assert a.calls.participants(ROOM) == ["bob@x.i2p"]
+
+    def test_an_old_ring_never_answered_does_not_block_a_new_one(self):
+        w, (a, b), net, now, heard = _calling(2)
+        _pair_all(w, [a, b])
+        a.calls.start(ROOM)
+        a.calls._calls.pop(ROOM)                # Alice's app restarted: no leave
+        a.calls._active = None
+        second = a.calls.start(ROOM)
+        assert [r["call"] for r in b.calls.ringing()] == [second]
+
+
 class TestHangUp:
 
     def test_hangup_destroys_the_keys_and_tells_the_others(self):

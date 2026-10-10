@@ -4,6 +4,25 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.48 — 2026-10-10 — Termux hears a group call it did not start (core 0.13.1)
+
+Device test (rc.47): the built-in I2P router connected the app, group
+verification ran (2 of 3 verified, the third typed the wrong passphrase),
+and the app's group call showed "in call" -- but no Termux client joined.
+
+- **Fix (Termux): rings were dropped.** The call handler, which is what
+  hears a ring, was only set up the first time that Termux client itself
+  used a call command (\`/group call\`, \`/group answer\`, \`/group calls\`).
+  A client that had not typed one silently dropped every ring. It is now set
+  up when the groups open, as the app always did. Termux clients need
+  \`git pull\` for this.
+- **Fix (both): a second ring was ignored** while the record of an earlier,
+  unanswered ring in that room remained. A new call now replaces one we
+  never joined, and ringing stops when the caller hangs up before anyone
+  answers.
+
+---
+
 ## Android 0.7.0-experimental.rc.47 — 2026-10-10 — the built-in I2P router actually starts (core 0.13.1)
 
 - **Fix: "could not run it (IllegalArgumentException)"** (Pixel 7,

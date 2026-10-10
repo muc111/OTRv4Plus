@@ -1310,6 +1310,42 @@ class TestVerifyingTheGroupWithItsPassphrase:
         for node in (w.a, w.b):
             assert not node.lines("correct horse")
 
+    def test_a_client_that_never_used_a_call_command_hears_the_ring(self, world):
+        """Device report (rc.47): the app showed 'in call' and no Termux
+        client joined. The call handler -- the thing that hears a ring --
+        was only built by a Termux call command, so a client that had not
+        typed one dropped every ring. It is built when the groups open."""
+        w = world
+        short = ROOM.split("@", 1)[0]
+
+        async def go():
+            await _otr_all(w)
+            await w.a.cmd("/group create " + short)
+            assert w.a.client.dispatch_line(None, "correct horse battery") is True
+            await w.a.cmd("/group invite %s %s" % (short, w.b.jid.split("@")[0]))
+            await w.server.pump()
+            assert w.b.client.dispatch_line(None, "y") is True
+            await _settle()
+            await w.server.pump()
+            await w.a.cmd("/group verify " + short)
+            await w.server.pump()
+            assert w.b.client.dispatch_line(None, "y") is True
+            assert w.b.client.dispatch_line(None, "correct horse battery") is True
+            for _ in range(20):
+                await w.server.pump()
+            assert w.b.groups._is_verified(ROOM, w.a.jid)
+            # B has never typed a call command. A rings (the media side is
+            # not under test: no destination is needed for the ring).
+            assert w.b.groups._calls is not None
+            w.b.groups.auto_join_calls = False
+            w.a.groups._group_calls().start(ROOM)
+            for _ in range(5):
+                await w.server.pump()
+            assert w.b.lines("is calling")
+            assert [r["room"] for r in w.b.groups._calls.ringing()] == [ROOM]
+
+        run(go())
+
     def test_a_command_at_the_create_prompt_skips_it(self, world):
         w = world
 
