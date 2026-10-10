@@ -270,6 +270,7 @@ private fun RoomHeader(model: ChatViewModel, jid: String) {
             modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp),
         )
     }
+    if (secure) GroupVerifyAndCallBar(model, jid)
     if (secure) SecureGroupPanel(model, jid)
     val expanded = model.occupantsShown(jid)
     val people = model.occupants(jid)
@@ -1197,6 +1198,139 @@ private fun SecureGroupPanel(model: ChatViewModel, jid: String) {
             onClick = { model.inviteToGroup(jid, invitee); invitee = "" },
         ) { Text("Invite over OTRv4+") }
         GroupEndButtons(model, jid)
+    }
+}
+
+/**
+ * Owner design (2026-10-10): Verify the group with its passphrase; once every
+ * member is verified the button becomes Call. A call rings the group and every
+ * verified member joins by themselves (only when they have allowed the
+ * microphone; otherwise they see Join). In a call: Pause and Hang up.
+ */
+@Composable
+private fun GroupVerifyAndCallBar(model: ChatViewModel, jid: String) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    fun micGranted(): Boolean = ContextCompat.checkSelfPermission(
+        context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+    var pending by rememberSaveable { mutableStateOf<String?>(null) }   // "call" / "join"
+    val launcher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { allowed ->
+        model.setGroupCallAutoJoin(allowed)
+        if (allowed) {
+            when (pending) {
+                "call" -> model.startGroupCall(jid)
+                "join" -> model.joinGroupCall(jid)
+            }
+        }
+        pending = null
+    }
+    fun withMic(what: String) {
+        if (micGranted()) {
+            if (what == "call") model.startGroupCall(jid) else model.joinGroupCall(jid)
+        } else {
+            pending = what
+            launcher.launch(Manifest.permission.RECORD_AUDIO)
+        }
+    }
+    // Poll while this screen is up: verification and calls move by themselves.
+    LaunchedEffect(jid) {
+        model.setGroupCallAutoJoin(micGranted())
+        while (true) {
+            model.refreshGroupState(jid)
+            kotlinx.coroutines.delay(2000)
+        }
+    }
+    val verify = model.groupVerifyState(jid)
+    val callState = model.groupCallState(jid)
+    var asking by rememberSaveable { mutableStateOf(false) }
+
+    Surface(color = MaterialTheme.colorScheme.secondaryContainer) {
+        Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp)) {
+            when {
+                callState.inCall -> {
+                    Text(if (callState.paused) "In the group call (paused: nobody hears you)"
+                         else "In the group call" +
+                             if (callState.participants.isNotEmpty())
+                                 " with ${callState.participants.joinToString()}" else "",
+                         style = MaterialTheme.typography.bodyMedium)
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedButton(onClick = { model.pauseGroupCall(jid) }) {
+                            Text(if (callState.paused) "Resume" else "Pause")
+                        }
+                        Button(onClick = { model.hangupGroupCall(jid) }) { Text("Hang up") }
+                    }
+                }
+                callState.ringingFrom.isNotEmpty() -> {
+                    Text("${callState.ringingFrom} is calling the group",
+                         style = MaterialTheme.typography.bodyMedium)
+                    Button(onClick = { withMic("join") }) { Text("\uD83D\uDCDE Join") }
+                }
+                verify.allVerified -> {
+                    Button(onClick = { withMic("call") }) { Text("\uD83D\uDCDE Call the group") }
+                }
+                else -> {
+                    val waiting = verify.members.filterValues { it != "verified" }
+                    if (verify.members.isNotEmpty()) {
+                        Text("Verified: ${verify.members.count { it.value == "verified" }} of " +
+                             "${verify.members.size}" +
+                             if (waiting.isNotEmpty()) " (not yet: ${waiting.keys.joinToString()})"
+                             else "",
+                             style = MaterialTheme.typography.labelSmall)
+                    }
+                    Button(onClick = { asking = true }) {
+                        Text(if (verify.startedBy.isNotEmpty())
+                                 "Join the verification (${verify.startedBy})"
+                             else "Verify group")
+                    }
+                }
+            }
+        }
+    }
+    if (asking) GroupPassphrasePrompt(model, jid) { asking = false }
+}
+
+/**
+ * The group passphrase. Composition-local on purpose, like the SMP
+ * passphrase in [VerificationPrompt]: a secret must not outlive its dialog
+ * (not in the ViewModel, not in saved state).
+ */
+@Composable
+private fun GroupPassphrasePrompt(model: ChatViewModel, jid: String, close: () -> Unit) {
+    var passphrase by remember { mutableStateOf("") }
+    run {
+        AlertDialog(
+            onDismissRequest = { passphrase = ""; close() },
+            title = { Text("Verify the group") },
+            text = {
+                Column {
+                    Text("Type the group passphrase. Every member who types the same " +
+                         "one is verified with you; anyone else is left out of group " +
+                         "calls. If you created this group with a passphrase, you can " +
+                         "leave this empty.",
+                         style = MaterialTheme.typography.bodySmall)
+                    OutlinedTextField(
+                        value = passphrase,
+                        onValueChange = { passphrase = it },
+                        label = { Text("Group passphrase") },
+                        singleLine = true,
+                        visualTransformation = PasswordVisualTransformation(),
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    model.startGroupVerify(jid, passphrase)
+                    passphrase = ""
+                    close()
+                }) { Text("Verify") }
+            },
+            dismissButton = {
+                TextButton(onClick = { passphrase = ""; close() }) { Text("Not now") }
+            },
+        )
     }
 }
 

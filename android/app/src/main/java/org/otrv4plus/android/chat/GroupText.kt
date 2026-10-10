@@ -68,6 +68,12 @@ object GroupText {
             "with them are possible."
         "held_change" -> "A change to ${event.room} is landing: your message waits and " +
             "goes, encrypted, right after."
+        "verify_started" -> "${event.detail} started verifying ${event.room} with the " +
+            "group passphrase. Open the group and type it to join."
+        "member_verify_failed" -> "${event.detail}: the group passphrases did not " +
+            "match. Not verified, and not in group calls."
+        "group_verified" -> "Every member of ${event.room} is verified. You can call the group."
+        "call_ringing" -> "${event.detail} is calling the group ${event.room}."
         "held" -> "${event.room} is still syncing: your messages wait until the " +
             "group is back in sync (a few seconds), then go encrypted."
         "synced" -> if (event.detail.isNotEmpty()) {
@@ -118,6 +124,12 @@ object GroupText {
         "legacy_group" -> "This group was made before the hybrid (X448 + ML-KEM-1024) " +
             "suite and cannot take new members. Create a new group to add people."
         "commit_pending" -> "Waiting for the room to confirm a group change. Try again shortly."
+        "passphrase_needed" -> "Type the group passphrase to verify the group."
+        "passphrase_too_short" -> "The group passphrase must be 8 characters or more."
+        "no_verified_member" -> "Nobody in this group is verified yet: verify the group first."
+        "call_in_progress" -> "You are already in a group call."
+        "no_call" -> "Nobody is calling in this group."
+        "call_audio_unavailable" -> "The call could not use the microphone or speaker."
         "forbidden", "not_allowed" -> "Only the group's creator (the room's owner) can " +
             "delete it for everyone. Leave it instead to remove it from this phone."
         else -> "The group operation did not complete ($code)."

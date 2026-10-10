@@ -209,3 +209,25 @@ def test_the_retired_omemo_module_stays_retired():
     assert not os.path.exists("otrv4plus_omemo.py")
     assert "otrv4plus_omemo" not in _task_source()
     assert not any("omemo" in path for path in import_closure())
+
+
+
+def test_what_the_android_bridge_imports_is_packaged():
+    """android_bridge modules import terminal modules too -- inside
+    functions, where the entry-point closure does not look. The group call
+    bridge (rc.43) imports otrv4plus_groupcall that way."""
+    needed = set()
+    for name in os.listdir("android_bridge"):
+        if not name.endswith(".py"):
+            continue
+        tree = ast.parse(open(os.path.join("android_bridge", name)).read())
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                mods = [a.name for a in node.names]
+            elif isinstance(node, ast.ImportFrom) and node.module:
+                mods = [node.module]
+            else:
+                continue
+            needed.update(m + ".py" for m in mods if m.startswith("otrv4plus_"))
+    missing = sorted(needed - synced_files())
+    assert missing == [], "android_bridge imports these, the APK lacks them: %s" % missing

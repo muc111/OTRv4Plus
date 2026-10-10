@@ -5712,8 +5712,20 @@ class OTRv4PlusXMPP(ClientXMPP):
         secret_for = self.take_secret_request()
         if secret_for is not None:
             self._mask_next_input(False)
-            self._handle_smp_secret_answer(secret_for, line)
-            return True
+            groups = getattr(self, "_groups", None)
+            tag = getattr(groups, "PASSPHRASE_TAG", None)
+            if tag and isinstance(secret_for, str) and secret_for.startswith(tag):
+                # A group passphrase the user asked to type (/group verify,
+                # their own y, or /group create). At /group create's optional
+                # prompt a command means "skip it" and runs as typed.
+                creating = secret_for[len(tag):].startswith("new:")
+                if not (creating and line.lstrip().startswith("/")):
+                    groups.passphrase_entered(secret_for, line)
+                    return True
+                print("[group] no passphrase set (/group verify sets one later)")
+            else:
+                self._handle_smp_secret_answer(secret_for, line)
+                return True
 
         # An admin form THIS USER opened with /admin consumes the next line.
         # Checked here, before command parsing, for the same reason as the
@@ -5810,7 +5822,11 @@ class OTRv4PlusXMPP(ClientXMPP):
         # is missing.  `/smp start` still works and is documented as the
         # explicit form for anyone who already has a passphrase stored.
         elif lstrip == "/smp":
-            if peer:
+            groups = getattr(self, "_groups", None)
+            if peer and groups is not None and groups.owns_room(peer):
+                # In a secure group: verify the whole group with its passphrase.
+                groups.start_verify(peer)
+            elif peer:
                 self.smp_verify(peer)
             else:
                 print("no --peer set")
@@ -6008,6 +6024,17 @@ class OTRv4PlusXMPP(ClientXMPP):
         elif lstrip == "/reject":
             if peer and self._voice_manager:
                 asyncio.ensure_future(self._voice_manager.reject_call(peer))
+        elif lstrip == "/hangup" and getattr(getattr(self, "_groups", None),
+                                             "in_call", lambda: False)():
+            self._groups._hangup()
+        elif lstrip == "/pause":
+            groups = getattr(self, "_groups", None)
+            if groups is not None and groups.in_call():
+                groups.pause_call()
+            elif self._voice_manager and self._voice_manager.any_active_peer():
+                self._voice_manager.toggle_mute(self._voice_manager.any_active_peer())
+            else:
+                print("[call] no call to pause")
         elif lstrip == "/hangup":
             if self._voice_manager:
                 target = peer if self._voice_manager.has_active_call(peer) \

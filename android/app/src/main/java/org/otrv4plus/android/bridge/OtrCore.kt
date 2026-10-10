@@ -791,6 +791,24 @@ data class ProfileField(
     val multiline: Boolean,
 )
 
+/** A secure group's verification (the group passphrase), as the engine has it. */
+data class GroupVerifyState(
+    /** member -> verified / failed / running / waiting / not_verified */
+    val members: Map<String, String> = emptyMap(),
+    val allVerified: Boolean = false,
+    /** Who started a verification we have not joined yet, or "". */
+    val startedBy: String = "",
+)
+
+/** A secure group's call, as the engine has it. */
+data class GroupCallState(
+    val inCall: Boolean = false,
+    val paused: Boolean = false,
+    val participants: List<String> = emptyList(),
+    /** Who is ringing the group, or "". */
+    val ringingFrom: String = "",
+)
+
 data class RoomOutcome(
     val ok: Boolean,
     val code: String,

@@ -4,6 +4,42 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.43 — 2026-10-10 — group passphrase verification and group calls in the app (core 0.13.1)
+
+Owner design: whoever creates a secure group sets its passphrase; members
+verify with it; once verified, Call rings the group and every verified
+member joins by themselves; anyone can pause or hang up.
+
+- **The group passphrase.** Set when the group is created (app: a field
+  under "Create end-to-end encrypted group"; Termux: asked right after
+  \`/group create\`, hidden, Enter or any command skips it). Tell it to the
+  members in person or on a call -- it is never stored or sent.
+- **Verify the group.** App: "Verify group" on the group's screen; Termux:
+  \`/group verify <room>\`, or \`/smp\` while in the group. Every member is
+  asked (app: a dialog; Termux: "Join? [y/n]", then the passphrase,
+  hidden). Each pair of members who typed it runs the OTRv4+ SMP (hybrid
+  ML-KEM-1024 + ML-DSA-87 + ZKP, in the Rust core) inside the group,
+  bound to the group, this run and their two group keys: a match verifies
+  them in the group; anyone who typed it wrong fails with everyone and
+  stays out of group calls. The passphrase itself never leaves the device;
+  a pair stops after three failures. 1:1 conversations are not touched.
+- **Call the group.** Once every member is verified, the app's button
+  becomes "Call the group" (Termux: \`/group call <room>\`). Verified members
+  join by themselves -- in the app only when the microphone is allowed,
+  otherwise they get a Join button that asks for it first. In a call:
+  Pause (you still hear, nobody hears you; Termux \`/pause\`) and Hang up
+  (Termux \`/hangup\`).
+- **Group calls in the app**, for the first time: the same media as the
+  terminal client (one I2P datagram session, AAudio, the core's Opus, every
+  frame sealed in Rust with keys from the group's epoch).
+- Termux: \`/group sendkeys <room>\` keeps rc.42's key exchange over 1:1
+  sessions (verified once you have done 1:1 \`/smp\` with someone).
+
+Not yet run on phones: group verification over I2P and group calls from the
+app are new here.
+
+---
+
 ## Android 0.7.0-experimental.rc.42 — 2026-10-10 — verified members, queued messages, y/n invitations (core 0.13.1)
 
 From a device test where groups worked, and three requests.

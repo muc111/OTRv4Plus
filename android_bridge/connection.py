@@ -54,6 +54,7 @@ import otrv4plus_registration as _registration
 from . import route as _route
 from .settings import ConnectionProfile
 from .trace import TRACE as _TRACE
+from .groups import GroupError as GroupErrorAlias
 
 
 def _c2s_port() -> int:
@@ -516,6 +517,11 @@ class ConnectionController:
             # and its destruction by the owner ends the group here too.
             self._transport.persist_room = self._is_group_room
             self._transport.room_destroyed = self._on_room_destroyed
+        except Exception:
+            pass
+        try:
+            # Group calls open their own I2P datagram session on this bridge.
+            self._app.sam_endpoint = (self._profile.sam_host, int(self._profile.sam_port))
         except Exception:
             pass
 
@@ -1009,7 +1015,7 @@ class ConnectionController:
     # -- secure groups (MLS over a room; see android_bridge.groups) --------
 
     def _group_call(self, fn, *args) -> Dict[str, Any]:
-        from .groups import GroupError
+        from .groups import GroupError  # noqa: F811
         try:
             value = fn(*args)
         except GroupError as exc:
@@ -1038,7 +1044,8 @@ class ConnectionController:
 
     _creating_groups: "set" = set()
 
-    def create_secure_group(self, room: str, password: str = "") -> Dict[str, Any]:
+    def create_secure_group(self, room: str, password: str = "",
+                            passphrase: str = "") -> Dict[str, Any]:
         """A new room that is an OTRv4Plus secure group from its first message.
 
         The room is created first, then the MLS group. If the MLS step fails
@@ -1056,7 +1063,77 @@ class ConnectionController:
         result = self._group_call(self._app.groups.create, room)
         if not result["ok"]:
             self.leave_room(room, nick)
+            return result
+        if passphrase:
+            # The group passphrase (owner design, 2026-10-10): kept in memory
+            # for this group's first verification; never stored or sent.
+            secret = bytearray(passphrase.encode("utf-8"))
+            try:
+                self._app.group_verify.set_passphrase(room, secret)
+            except (ValueError, GroupErrorAlias) as exc:
+                result = dict(result, code=str(getattr(exc, "code", exc)),
+                              detail="The group was created; its passphrase was "
+                                     "not set (8 characters or more).")
         return result
+
+    # -- group verification (the group passphrase) and group calls -----------
+
+    def start_group_verify(self, room: str, passphrase: str = "") -> Dict[str, Any]:
+        """Verify every member with the group passphrase (or the one set at
+        creation when `passphrase` is empty: "passphrase_needed" if none)."""
+        secret = bytearray(passphrase.encode("utf-8")) if passphrase else None
+
+        def go():
+            try:
+                return self._app.group_verify.start(room, secret)
+            except ValueError as exc:
+                raise GroupErrorAlias(str(exc))
+        return self._group_call(go)
+
+    def group_verify_state(self, room: str) -> Dict[str, Any]:
+        """{"members": {jid: verified|failed|running|waiting|not_verified},
+        "all_verified": bool, "started_by": jid of a run we have not joined}."""
+        def go():
+            v = self._app.group_verify
+            pending = v.pending(room)
+            return {"members": v.status(room), "all_verified": v.all_verified(room),
+                    "started_by": pending["starter"] if pending else ""}
+        return self._group_call(go)
+
+    def set_group_call_auto_join(self, allowed: bool) -> Dict[str, Any]:
+        """The app sets this from the microphone permission."""
+        def go():
+            self._app.group_calls.auto_join = bool(allowed)
+            return bool(allowed)
+        return self._group_call(go)
+
+    def start_group_call(self, room: str) -> Dict[str, Any]:
+        return self._group_call_outcome(lambda: self._app.group_calls.start(room))
+
+    def join_group_call(self, room: str) -> Dict[str, Any]:
+        return self._group_call_outcome(lambda: self._app.group_calls.join(room))
+
+    def pause_group_call(self) -> Dict[str, Any]:
+        def go():
+            try:
+                return self._app.group_calls.pause()
+            except ValueError as exc:
+                raise GroupErrorAlias(str(exc))
+        return self._group_call(go)
+
+    def hangup_group_call(self) -> Dict[str, Any]:
+        return self._group_call(lambda: self._app.group_calls.hangup())
+
+    def group_call_state(self, room: str) -> Dict[str, Any]:
+        return self._group_call(lambda: self._app.group_calls.status(room))
+
+    def _group_call_outcome(self, fn) -> Dict[str, Any]:
+        def go():
+            code = fn()
+            if code != "ok":
+                raise GroupErrorAlias(code)
+            return code
+        return self._group_call(go)
 
     def invite_to_group(self, room: str, peer: str) -> Dict[str, Any]:
         """Invite over OTRv4+; if there is no session with them yet, one is

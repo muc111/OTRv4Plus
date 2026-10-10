@@ -263,6 +263,60 @@ class ChatViewModel : ViewModel() {
         }
     }
 
+    // ── group verification (the group passphrase) and group calls ───────────
+
+    fun groupVerifyState(room: String): org.otrv4plus.android.bridge.GroupVerifyState {
+        observe(); return state?.groupVerifyState(room) ?: org.otrv4plus.android.bridge.GroupVerifyState()
+    }
+
+    fun groupCallState(room: String): org.otrv4plus.android.bridge.GroupCallState {
+        observe(); return state?.groupCallState(room) ?: org.otrv4plus.android.bridge.GroupCallState()
+    }
+
+    /** Re-read verification and call state for [room] (cheap: no network). */
+    fun refreshGroupState(room: String) {
+        val c = core ?: return
+        viewModelScope.launch {
+            val (v, k) = withContext(Dispatchers.IO) {
+                runCatching { c.groupVerifyState(room) to c.groupCallState(room) }
+                    .getOrNull()
+            } ?: return@launch
+            if (state?.noteGroupState(room, v, k) == true) revision++
+        }
+    }
+
+    /** Verify every member with the group passphrase ("" = the one set at creation). */
+    fun startGroupVerify(room: String, passphrase: String) {
+        groupCall("Verifying $room", onOk = {
+            state?.note("Verifying every member of $room with the group passphrase. " +
+                "Each member is asked to type it.")
+            refreshGroupState(room)
+        }) { it.startGroupVerify(room, passphrase) }
+    }
+
+    fun setGroupCallAutoJoin(allowed: Boolean) {
+        val c = core ?: return
+        viewModelScope.launch(Dispatchers.IO) { runCatching { c.setGroupCallAutoJoin(allowed) } }
+    }
+
+    fun startGroupCall(room: String) {
+        groupCall("Calling $room", onOk = { refreshGroupState(room) }) { it.startGroupCall(room) }
+    }
+
+    fun joinGroupCall(room: String) {
+        groupCall("Joining the call in $room", onOk = { refreshGroupState(room) }) {
+            it.joinGroupCall(room)
+        }
+    }
+
+    fun pauseGroupCall(room: String) {
+        groupCall("Pausing", onOk = { refreshGroupState(room) }) { it.pauseGroupCall() }
+    }
+
+    fun hangupGroupCall(room: String) {
+        groupCall("Hanging up", onOk = { refreshGroupState(room) }) { it.hangupGroupCall() }
+    }
+
     /** Group calls need verified members: send our key to each, say who needs SMP. */
     fun verifyGroupMembers(room: String) {
         val c = core ?: return

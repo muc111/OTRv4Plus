@@ -238,16 +238,22 @@ class RoomsViewModel : ViewModel() {
      * room again if the group could not be made -- so a failure never leaves
      * a plaintext room the user believes is encrypted.
      */
-    fun createSecure(typed: String, nick: String, password: String = "") {
+    fun createSecure(typed: String, nick: String, password: String = "",
+                     passphrase: String = "") {
         if (password.isNotEmpty()) {
             RoomPassword.problem(password)?.let {
                 last = RoomOutcome(false, "bad_request", it)
                 return
             }
         }
+        if (passphrase.isNotEmpty() && passphrase.length < 8) {
+            last = RoomOutcome(false, "bad_request",
+                "The group passphrase must be 8 characters or more.")
+            return
+        }
         val jid = resolve(typed) ?: return
         enter("Creating the secure group...", jid) { c ->
-            val made = c.createSecureGroup(jid, password)
+            val made = c.createSecureGroup(jid, password, passphrase)
             val standing = if (made.ok) c.roomStanding(jid, nick).second else RoomStanding()
             made to standing
         }

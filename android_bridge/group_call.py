@@ -113,6 +113,8 @@ class GroupCalls:
         self._lock = threading.RLock()
         self._calls: Dict[str, _Call] = {}      # room -> call
         self._active: Optional[str] = None      # room of the joined call
+        #: Paused: we stay in the call and hear it, but send no audio.
+        self._paused = False
         groups.set_call_handler(self._on_control)
         groups.set_epoch_listener(self._on_epoch)
 
@@ -155,6 +157,7 @@ class GroupCalls:
             call = self._calls.pop(room, None)
             if self._active == room:
                 self._active = None
+                self._paused = False
         if call is None:
             return
         if call.joined:
@@ -165,6 +168,27 @@ class GroupCalls:
         if call.voice is not None:
             call.voice.zeroize()
         self._emit(GroupChanged(peer=room, change="call_ended", detail=call.call_id[:8]))
+
+    def active(self) -> Optional[str]:
+        """The room of the call we are in, if any."""
+        with self._lock:
+            return self._active
+
+    def pause(self, on: Optional[bool] = None) -> bool:
+        """Stop (or resume) sending our audio; we stay in the call and keep
+        hearing it. `on` None toggles. Returns whether we are paused now."""
+        with self._lock:
+            room = self._active
+            if room is None:
+                raise ValueError("no_call")
+            self._paused = (not self._paused) if on is None else bool(on)
+            paused = self._paused
+        self._emit(GroupChanged(peer=room, change="call_paused" if paused else "call_resumed"))
+        return paused
+
+    @property
+    def paused(self) -> bool:
+        return self._paused
 
     def participants(self, room: str) -> List[str]:
         with self._lock:
@@ -185,7 +209,7 @@ class GroupCalls:
         with self._lock:
             room = self._active
             call = self._calls.get(room) if room else None
-            if call is None or call.voice is None:
+            if call is None or call.voice is None or self._paused:
                 return 0
             packet = bytes(call.voice.seal(frame))
             dests = list(call.peers.values())

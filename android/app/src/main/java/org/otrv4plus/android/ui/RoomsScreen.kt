@@ -310,11 +310,33 @@ fun RoomsScreen(
         }
         // A secure group: MLS end to end, the room carries ciphertext only.
         // Members are added by invitation over an encrypted OTRv4+ session.
+        // Its passphrase (owner design, 2026-10-10) is how members verify
+        // each other later; group calls are among verified members only.
+        // `remember`, not `rememberSaveable`: never into the saved state.
+        var groupPassphrase by remember { mutableStateOf("") }
+        OutlinedTextField(
+            value = groupPassphrase,
+            onValueChange = { groupPassphrase = it },
+            label = { Text("Group passphrase (for verifying members)") },
+            supportingText = {
+                Text("8+ characters. Tell the members in person or on a call, " +
+                     "never in a chat. Members type it to verify; only verified " +
+                     "members are in group calls. Never stored or sent.",
+                     style = MaterialTheme.typography.bodySmall)
+            },
+            singleLine = true,
+            enabled = busy == null,
+            visualTransformation = PasswordVisualTransformation(),
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+            modifier = Modifier.fillMaxWidth(),
+        )
         OutlinedButton(
-            enabled = canAct && (!protect || roomPassword.isNotBlank()),
+            enabled = canAct && (!protect || roomPassword.isNotBlank()) &&
+                (groupPassphrase.isEmpty() || groupPassphrase.length >= 8),
             onClick = {
                 model.createSecure(address.trim(), nick.trim(),
-                                   if (protect) roomPassword else "")
+                                   if (protect) roomPassword else "", groupPassphrase)
+                groupPassphrase = ""
             },
         ) { Text("Create end-to-end encrypted group") }
 

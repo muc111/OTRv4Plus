@@ -67,6 +67,7 @@ on:
       - "otrv4plus_filetransfer.py"
       - "otrv4plus_fragment.py"
       - "otrv4plus_groups.py"
+      - "otrv4plus_groupcall.py"
       - "otrv4plus_identity.py"
       - "otrv4plus_log.py"
       - "otrv4plus_mediapath.py"

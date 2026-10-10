@@ -206,9 +206,10 @@ PYTHONMALLOC=malloc .venv/bin/python otrv4+.py
 /help             every command
 ```
 
-Encrypted group chat (XMPP): `/group create mls3`, `/group invite mls3 bob`,
-`/group accept mls3`, then just type; `/to <name>` switches, `/group help`
-lists the rest. In the app: Rooms, then "Create end-to-end encrypted group".
+Encrypted group chat (XMPP): `/group create mls3` (then its passphrase),
+`/group invite mls3 bob`, `y` to join, then just type; `/group verify mls3`
+checks every member with the passphrase, then `/group call mls3`. In the
+app: Rooms, then "Create end-to-end encrypted group"; Verify, then Call.
 
 Building on musl (Alpine), every option and all commands are in
 [TECHNICAL.md](TECHNICAL.md).

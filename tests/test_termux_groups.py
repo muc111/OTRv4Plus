@@ -1268,3 +1268,56 @@ class TestAnsweringAnInvitationWithYOrN:
             assert w.b.lines("declined")
 
         run(go())
+
+
+class TestVerifyingTheGroupWithItsPassphrase:
+    """Owner design (2026-10-10): the creator sets the group passphrase at
+    /group create; /group verify (or /smp in the group) asks the members,
+    who answer y and type it; matching pairs are verified (group calls)."""
+
+    def test_creator_sets_it_member_answers_y_and_types_it(self, world):
+        w = world
+        short = ROOM.split("@", 1)[0]
+
+        async def go():
+            await _otr_all(w)
+            await w.a.cmd("/group create " + short)
+            assert w.a.lines("set the group passphrase now")
+            assert w.a.client.dispatch_line(None, "correct horse battery") is True
+            assert w.a.lines("passphrase set")
+            await w.a.cmd("/group invite %s %s" % (short, w.b.jid.split("@")[0]))
+            await w.server.pump()
+            assert w.b.client.dispatch_line(None, "y") is True       # join
+            await _settle()
+            await w.server.pump()
+            assert w.b.groups.groups.is_secure(ROOM)
+            await w.a.cmd("/group verify " + short)                 # preset: no prompt
+            await w.server.pump()
+            assert w.b.lines("started verifying the group")
+            assert w.b.client.dispatch_line(None, "y") is True
+            assert w.b.lines("type the group passphrase")
+            assert w.b.client.dispatch_line(None, "correct horse battery") is True
+            await w.server.pump()
+            for _ in range(20):                                     # SMP over the room
+                await w.server.pump()
+
+        run(go())
+        assert w.a.groups._is_verified(ROOM, w.b.jid)
+        assert w.b.groups._is_verified(ROOM, w.a.jid)
+        assert w.a.lines("every member is verified")
+        # The passphrase was never in the room, nor printed.
+        assert not [b for _r, _n, b in w.server.room_log if "correct horse" in b]
+        for node in (w.a, w.b):
+            assert not node.lines("correct horse")
+
+    def test_a_command_at_the_create_prompt_skips_it(self, world):
+        w = world
+
+        async def go():
+            await _otr_all(w)
+            await w.a.cmd("/group create " + ROOM)
+            await w.a.cmd("/group list")
+            assert w.a.lines("secure groups: " + ROOM)
+            assert not w.a.groups.verify.has_passphrase(ROOM)
+
+        run(go())

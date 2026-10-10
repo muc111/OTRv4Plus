@@ -236,6 +236,8 @@ class OtrApp:
         self._recovered_at: Dict[str, float] = {}
         #: Secure groups (MLS), created on first use; see `groups`.
         self._groups: Optional[SecureGroups] = None
+        self._group_verify = None
+        self._group_calls = None
         self._connection = ConnectionState.DISCONNECTED
         #: What we know about each peer's availability, and when we know
         #: nothing. A PresenceBook rather than a dict of bools because
@@ -416,6 +418,11 @@ class OtrApp:
         after the sessions would mean the END the peer is owed can no longer
         be encrypted, and they would sit on a call nobody is on.
         """
+        if self._group_calls is not None:
+            try:
+                self._group_calls.shutdown()
+            except Exception:
+                _log.warning("group call teardown reported a problem")
         if self._calls_bridge is not None:
             try:
                 self._calls_bridge.shutdown()
@@ -564,10 +571,38 @@ class OtrApp:
         group encryption, which the UI reports rather than hiding."""
         try:
             self.groups.open(self.canonical_peer(account))
-            return True
         except GroupError as exc:
             _TRACE.record("groups", "open_failed", "warning", code=exc.code)
             return False
+        # Group verification (the group passphrase) and group calls: built
+        # now, so a verification or a ring that arrives first is not lost.
+        if self._group_verify is None:
+            from .group_verify import GroupVerify
+            self._group_verify = GroupVerify(self._groups, emit=self._emit,
+                                             clock=self._clock)
+        if self._group_calls is None:
+            try:
+                from .group_call_bridge import GroupCallBridge
+                self._group_calls = GroupCallBridge(
+                    self, sam=lambda: self.sam_endpoint, emit=self._emit)
+            except Exception:
+                _TRACE.record("groups", "group_calls_unavailable", "warning")
+        return True
+
+    #: Where the I2P SAM bridge is; set by the controller from the profile.
+    sam_endpoint = ("127.0.0.1", 7656)
+
+    @property
+    def group_verify(self):
+        if self._group_verify is None:
+            raise GroupError("not_ready")
+        return self._group_verify
+
+    @property
+    def group_calls(self):
+        if self._group_calls is None:
+            raise GroupError("group_calls_unavailable")
+        return self._group_calls
 
     def _send_room_body(self, room: str, body: str) -> None:
         sender = getattr(self._transport, "send_room_message", None)

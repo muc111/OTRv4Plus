@@ -491,9 +491,65 @@ class ChaquopyOtrCore(private val appContext: Context) : OtrCore {
     // -- secure groups (MLS; android_bridge.groups) ---------------------------
 
     /** A new room that is an OTRv4Plus secure group from its first message. */
-    fun createSecureGroup(room: String, password: String = ""): RoomOutcome {
-        val result = call("create_secure_group", room, password) ?: return notPrepared()
+    fun createSecureGroup(room: String, password: String = "",
+                          passphrase: String = ""): RoomOutcome {
+        val result = call("create_secure_group", room, password, passphrase)
+            ?: return notPrepared()
         return outcomeOf(result)
+    }
+
+    /** Verify every member with the group passphrase ("" = the one set at creation). */
+    fun startGroupVerify(room: String, passphrase: String): RoomOutcome {
+        val result = call("start_group_verify", room, passphrase) ?: return notPrepared()
+        return outcomeOf(result)
+    }
+
+    /** Who is verified in [room], and a verification someone started. */
+    fun groupVerifyState(room: String): GroupVerifyState {
+        val result = call("group_verify_state", room) ?: return GroupVerifyState()
+        val value = listValue(result) ?: return GroupVerifyState()
+        val members = mutableMapOf<String, String>()
+        runCatching {
+            value.callAttr("get", "members")?.asMap()?.forEach { (k, v) ->
+                members[k.toString()] = v.toString()
+            }
+        }
+        return GroupVerifyState(
+            members = members,
+            allVerified = flag(value, "all_verified"),
+            startedBy = entry(value, "started_by"),
+        )
+    }
+
+    /** Verified members' calls are joined by themselves only with the microphone allowed. */
+    fun setGroupCallAutoJoin(allowed: Boolean) {
+        call("set_group_call_auto_join", allowed)
+    }
+
+    fun startGroupCall(room: String): RoomOutcome =
+        call("start_group_call", room)?.let { outcomeOf(it) } ?: notPrepared()
+
+    fun joinGroupCall(room: String): RoomOutcome =
+        call("join_group_call", room)?.let { outcomeOf(it) } ?: notPrepared()
+
+    fun pauseGroupCall(): RoomOutcome =
+        call("pause_group_call")?.let { outcomeOf(it) } ?: notPrepared()
+
+    fun hangupGroupCall(): RoomOutcome =
+        call("hangup_group_call")?.let { outcomeOf(it) } ?: notPrepared()
+
+    fun groupCallState(room: String): GroupCallState {
+        val result = call("group_call_state", room) ?: return GroupCallState()
+        val value = listValue(result) ?: return GroupCallState()
+        val people = runCatching {
+            value.callAttr("get", "participants")?.asList()?.map { it.toString() }
+        }.getOrNull() ?: emptyList()
+        return GroupCallState(
+            inCall = flag(value, "in_call"),
+            paused = flag(value, "paused"),
+            participants = people,
+            ringingFrom = entry(value, "ringing_from"),
+        )
     }
 
     /** Invite [peer] over our encrypted OTRv4+ session with them. */

@@ -71,8 +71,9 @@ STALE_WARN_AFTER = 3
 JOIN_TIMEOUT = 120
 #: The `/group` verbs; any other first word is read as a room name.
 VERBS = frozenset(("help", "?", "create", "invite", "invites", "accept", "decline",
-                   "say", "members", "verify", "remove", "rekey", "leave", "delete",
-                   "call", "answer", "hangup", "calls", "list"))
+                   "say", "members", "verify", "smp", "sendkeys", "remove", "rekey",
+                   "leave", "delete", "call", "answer", "hangup", "pause", "calls",
+                   "list"))
 
 HELP = """\
   Secure groups (MLS; the room sees ciphertext only). <room> can be just its
@@ -86,8 +87,11 @@ HELP = """\
   /group <room> [text]                  switch to the group (and send text)
   /to <room or user>                    talk to a group or a contact: then just type
   /group members <room>                 members, fingerprints, verified or not
-  /group verify <room>                  verified members (needed for calls): send
-                                        your key to each; /smp with anyone unverified
+  /group verify <room>                  verify every member with the group
+                                        passphrase (also /smp in a group); only
+                                        verified members are in group calls
+  /group sendkeys <room>                send your group key to each member (verified
+                                        once you have done 1:1 /smp with them)
   /group remove <room> <jid>            remove a member (new epoch)
   /group rekey <room>                   fresh key for you (post-compromise)
   /group leave <room>                   forget the group's keys here and leave
@@ -95,7 +99,8 @@ HELP = """\
   /group list                           your secure groups
   /group call <room>                    start a group voice call (verified members)
   /group answer <room>                  join a call you were rung for
-  /group hangup                         leave the call (its keys are destroyed)
+  /group hangup  (or /hangup)           leave the call (its keys are destroyed)
+  /group pause   (or /pause)            stop/resume sending your audio, stay in it
   /group calls                          calls ringing, and who is in yours
   /wipe                                 destroy ALL local state (groups too) and exit"""
 
@@ -145,8 +150,16 @@ class TermuxGroups:
         self._media = None
         self._call_tick = None
         self._rejected_said: Dict[str, float] = {}     # room -> when we said so
-        #: The invitation a bare y/n answers: (room, when asked).
-        self._prompt: Optional[Tuple[str, float]] = None
+        #: What a bare y/n answers: (kind, room, when asked); kind is
+        #: "invite" or "verify".
+        self._prompt: Optional[Tuple[str, str, float]] = None
+        #: Group verification with the group's passphrase (group calls).
+        from android_bridge.group_verify import GroupVerify
+        self.verify = GroupVerify(self.groups, emit=self._on_event,
+                                  core=core, clock=clock)
+        #: Calls from a verified member are joined without asking (owner
+        #: design, 2026-10-10); /pause and /hangup are the way out.
+        self.auto_join_calls = True
         self._opened = False
 
     # -- lifecycle ----------------------------------------------------------
@@ -361,7 +374,7 @@ class TermuxGroups:
             # Answered with a bare y or n (owner request, 2026-10-10): the
             # same kind of question as an SMP request, and only an exact
             # y/yes/n/no answers it -- anything else is typed as usual.
-            self._prompt = (ev.room, self._clock())
+            self._prompt = ("invite", ev.room, self._clock())
             p("[group] %s invites you to the secure group %s (%s). "
               "Join? [y/n]   (or later: /group accept %s)"
               % (ev.peer, ev.room, "SMP-verified" if ev.verified else
@@ -371,7 +384,10 @@ class TermuxGroups:
             detail = (" " + ev.detail) if getattr(ev, "detail", "") else ""
             epoch = (" (epoch %s)" % ev.epoch) if getattr(ev, "epoch", None) is not None else ""
             if change not in ("syncing", "synced", "held", "reinvited", "deleted",
-                              "member_verified", "member_bound", "held_change"):
+                              "member_verified", "member_bound", "held_change",
+                              "verify_started", "verify_running",
+                              "member_verify_failed", "group_verified",
+                              "call_paused", "call_resumed"):
                 p("[group %s] %s%s%s" % (ev.peer[:64], change, detail, epoch))
             if change == "joined":
                 self._flush_prejoin(ev.peer)
@@ -407,8 +423,37 @@ class TermuxGroups:
                     ev.peer[:64], (": %s waiting message(s) sent" % ev.detail)
                     if ev.detail else ""))
             elif change == "call_ringing":
-                p("[group call %s] %s is calling. /group answer %s"
-                  % (ev.peer[:64], (ev.detail or "")[:96], ev.peer[:64]))
+                caller = (ev.detail or "")[:96]
+                if self.auto_join_calls and self._is_verified(ev.peer, caller):
+                    p("[group call %s] %s is calling: joining (you are both "
+                      "verified). /pause to mute yourself, /hangup to leave."
+                      % (ev.peer[:64], caller))
+                    asyncio.ensure_future(self._call(ev.peer, start=False))
+                else:
+                    p("[group call %s] %s is calling. /group answer %s"
+                      % (ev.peer[:64], caller, ev.peer[:64]))
+            elif change == "call_paused":
+                p("[group call %s] paused: you hear the call, nobody hears you. "
+                  "/pause again to talk" % ev.peer[:64])
+            elif change == "call_resumed":
+                p("[group call %s] talking again" % ev.peer[:64])
+            elif change == "verify_started":
+                if (ev.detail or "") != self.groups.account:
+                    self._prompt = ("verify", ev.peer, self._clock())
+                    p("[group %s] %s started verifying the group with its "
+                      "passphrase. Join? [y/n]  (or /group verify %s)"
+                      % (ev.peer[:64], (ev.detail or "")[:96],
+                         ev.peer.split("@", 1)[0]))
+            elif change == "verify_running":
+                p("[group %s] checking the passphrase with %s..."
+                  % (ev.peer[:64], (ev.detail or "")[:96]))
+            elif change == "member_verify_failed":
+                p("[group %s] %s: the passphrases did not match -- not verified, "
+                  "and not in group calls" % (ev.peer[:64], (ev.detail or "")[:96]))
+            elif change == "group_verified":
+                p("[group %s] every member is verified. /group call %s -- everyone "
+                  "verified joins automatically" % (ev.peer[:64],
+                                                    ev.peer.split("@", 1)[0]))
             elif change == "call_refused_unverified":
                 p("[group call %s] %s tried to join but is not SMP-verified by "
                   "you: not in your call" % (ev.peer[:64], (ev.detail or "")[:96]))
@@ -529,6 +574,22 @@ class TermuxGroups:
             pass
         if self._media is not None:
             self._call_tick = self.host.loop.call_later(1.0, self._tick_calls)
+
+    def _is_verified(self, room: str, who: str) -> bool:
+        try:
+            return any(m["jid"] == who and m["verified"]
+                       for m in self.groups.members(room))
+        except Exception:
+            return False
+
+    def in_call(self) -> bool:
+        return self._calls is not None and self._calls.active() is not None
+
+    def pause_call(self) -> None:
+        if not self.in_call():
+            self._print("[group call] you are not in a group call")
+            return
+        self._calls.pause()
 
     def _hangup(self) -> None:
         calls = self._calls
@@ -811,7 +872,9 @@ class TermuxGroups:
                     "hybrid X448+ML-KEM-1024 / Ed448+ML-DSA-87" if suite == "hybrid"
                     else "PQ-only ML-KEM-1024 / ML-DSA-87 (made before rc.27: "
                          "re-create it to add members)"))
-            elif verb == "verify" and arg1:
+            elif verb in ("verify", "smp") and arg1:
+                self.start_verify(arg1)
+            elif verb == "sendkeys" and arg1:
                 result = self.groups.verify_members(arg1)
                 for jid, status in sorted(result.items()):
                     p("[group %s] %s: %s" % (arg1[:64], jid, {
@@ -839,6 +902,8 @@ class TermuxGroups:
                 await self._call(arg1, start=False)
             elif verb == "hangup":
                 self._hangup()
+            elif verb == "pause":
+                self.pause_call()
             elif verb == "calls":
                 calls = self._group_calls()
                 for r in calls.ringing():
@@ -864,24 +929,114 @@ class TermuxGroups:
         """The room a bare y/n would answer now, if any."""
         if self._prompt is None or not self._opened:
             return None
-        room, at = self._prompt
-        if self._clock() - at > self.PROMPT_SECONDS or not any(
+        kind, room, at = self._prompt
+        if self._clock() - at > self.PROMPT_SECONDS:
+            self._prompt = None
+            return None
+        if kind == "invite" and not any(
                 i["room"] == room and not i["accepted"]
                 for i in self.groups.pending_invites()):
+            self._prompt = None
+            return None
+        if kind == "verify" and self.verify.pending(room) is None:
             self._prompt = None
             return None
         return room
 
     def answer_prompt(self, answer: str) -> bool:
-        """`y`/`yes`/`n`/`no` for the pending invitation. True if it was one."""
+        """`y`/`yes`/`n`/`no` for what was asked. True if it was an answer."""
         room = self.pending_prompt()
         word = answer.strip().lower()
         if room is None or word not in ("y", "yes", "n", "no"):
             return False
+        kind = self._prompt[0]
         self._prompt = None
-        verb = "accept" if word in ("y", "yes") else "decline"
-        asyncio.ensure_future(self.command("%s %s" % (verb, room)))
+        yes = word in ("y", "yes")
+        if kind == "invite":
+            asyncio.ensure_future(self.command(
+                "%s %s" % ("accept" if yes else "decline", room)))
+        elif yes:
+            self._ask_passphrase(room)       # armed by THIS user's "y"
+        else:
+            self._print("[group %s] not verifying now; /group verify %s later"
+                        % (room[:64], room.split("@", 1)[0]))
         return True
+
+    # -- the group passphrase (group verification, for calls) ---------------
+
+    #: Marks the host's hidden one-line read as a group passphrase.
+    PASSPHRASE_TAG = "\x00group-passphrase:"
+
+    def _ask_passphrase(self, room: str, *, creating: bool = False) -> None:
+        """Hide the next line and take it as the group passphrase for `room`.
+        LOCAL ONLY: called from the user's own command or their own y."""
+        host = self.host
+        host._secret_request = self.PASSPHRASE_TAG + ("new:" if creating else "") + room
+        host._secret_purpose = "group"
+        hidden = False
+        mask = getattr(host, "_mask_next_input", None)
+        if mask is not None:
+            try:
+                hidden = bool(mask(True))
+            except Exception:
+                hidden = False
+        if creating:
+            self._print("[group %s] set the group passphrase now (8+ characters; "
+                        "tell the members in person, never in a chat). Members "
+                        "type it to verify; only verified members are in group "
+                        "calls. Type it on the next line%s, or press Enter (or "
+                        "type a command) to skip." % (room[:64],
+                                                    " (hidden)" if hidden else ""))
+        else:
+            self._print("[group %s] type the group passphrase on the next line%s:"
+                        % (room[:64], " (hidden)" if hidden else ""))
+
+    def passphrase_entered(self, tag: str, line: str) -> None:
+        """The hidden line the user typed after `_ask_passphrase`."""
+        rest = tag[len(self.PASSPHRASE_TAG):]
+        creating = rest.startswith("new:")
+        room = rest[len("new:"):] if creating else rest
+        secret = bytearray(line.rstrip("\r\n").encode("utf-8"))
+        if not secret:
+            self._print("[group %s] no passphrase set%s" % (
+                room[:64], ("; /group verify %s sets one later"
+                            % room.split("@", 1)[0]) if creating else ""))
+            return
+        try:
+            if creating:
+                self.verify.set_passphrase(room, secret)
+                self._print("[group %s] passphrase set. When the members have "
+                            "joined: /group verify %s (or /smp in the group)"
+                            % (room[:64], room.split("@", 1)[0]))
+                return
+            self.verify.start(room, secret)
+        except ValueError as exc:
+            self._print("[group %s] %s" % (room[:64], {
+                "passphrase_too_short": "the passphrase must be 8 characters or more",
+                "passphrase_too_long": "the passphrase is too long",
+            }.get(str(exc), str(exc))))
+            return
+        finally:
+            for i in range(len(secret)):
+                secret[i] = 0
+        self._print("[group %s] verifying with every member who joins, using "
+                    "the passphrase..." % room[:64])
+
+    def start_verify(self, room: str) -> None:
+        """`/group verify <room>` or `/smp` in a group: with the passphrase
+        set at creation, or asked for now."""
+        if not self.groups.is_secure(room):
+            self._print("[group] %s is not one of your secure groups" % room[:64])
+            return
+        if self.verify.has_passphrase(room) and self.verify.pending(room) is None:
+            try:
+                self.verify.start(room)
+                self._print("[group %s] verifying every member with the group "
+                            "passphrase; they are asked to type it" % room[:64])
+                return
+            except ValueError:
+                pass
+        self._ask_passphrase(room)
 
     async def _create(self, room: str) -> None:
         """Room first, then the group -- and if the group step fails the room
@@ -899,6 +1054,7 @@ class TermuxGroups:
             self._leave_muc(room)
             raise
         self._activate(room)
+        self._ask_passphrase(room, creating=True)
 
     async def _accept(self, room: str) -> None:
         """Join the room, then answer the invitation over OTRv4+."""

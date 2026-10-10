@@ -1221,3 +1221,59 @@ def test_the_app_says_who_still_needs_smp():
     out = ctl.verify_group_members(ROOM)
     assert out["ok"] and "b@x" in out["detail"] and "c@x" in out["detail"]
     assert "SMP" in out["detail"] and "d@x" not in out["detail"]
+
+
+class TestGroupVerification:
+    """Owner design (2026-10-10): the creator sets a group passphrase; a
+    verification runs SMP between every pair of members with it; whoever
+    typed it wrong stays out of group calls."""
+
+    def _verifiers(self, members):
+        from android_bridge.group_verify import GroupVerify
+        return [GroupVerify(m.groups, emit=m.events.append) for m in members]
+
+    def _verified(self, m, jid):
+        return {x["jid"]: x["verified"] for x in m.groups.members(ROOM)}[jid]
+
+    def test_everyone_with_the_passphrase_is_verified_with_everyone(self):
+        w, (a, b, c) = _group(3)
+        va, vb, vc = self._verifiers([a, b, c])
+        va.set_passphrase(ROOM, bytearray(b"correct horse battery"))
+        va.start(ROOM)                                   # the creator starts
+        assert "verify_started" in b.changes()
+        assert vb.pending(ROOM) is not None
+        vb.start(ROOM, bytearray(b"correct horse battery"))
+        vc.start(ROOM, bytearray(b"correct horse battery"))
+        for m, others in ((a, (b, c)), (b, (a, c)), (c, (a, b))):
+            for o in others:
+                assert self._verified(m, o.jid), (m.jid, o.jid)
+        assert "group_verified" in a.changes()
+        assert va.all_verified(ROOM)
+        # Nothing of it was shown as chat, and the passphrase never travelled.
+        for m in (a, b, c):
+            assert not m.texts()
+        assert all("correct horse" not in body for _s, body in w.room.log)
+
+    def test_a_wrong_passphrase_fails_and_stays_out(self):
+        # Nobody verified anybody when inviting: only the run can.
+        w, (a, b, c) = _group(3, levels={"bob@x.i2p": SecurityState.ENCRYPTED,
+                                         "carol@x.i2p": SecurityState.ENCRYPTED})
+        assert not self._verified(a, c.jid)
+        va, vb, vc = self._verifiers([a, b, c])
+        va.start(ROOM, bytearray(b"correct horse battery"))
+        vb.start(ROOM, bytearray(b"correct horse battery"))
+        vc.start(ROOM, bytearray(b"wrong horse battery!"))
+        assert self._verified(a, b.jid) and self._verified(b, a.jid)
+        assert not self._verified(a, c.jid) and not self._verified(c, a.jid)
+        assert not self._verified(b, c.jid)
+        assert "member_verify_failed" in a.changes()
+        assert va.status(ROOM)[c.jid] == "failed"
+        assert not va.all_verified(ROOM)
+
+    def test_a_short_passphrase_is_refused(self):
+        w, (a, b) = _group(2)
+        (va, _vb) = self._verifiers([a, b])
+        with pytest.raises(ValueError):
+            va.start(ROOM, bytearray(b"short"))
+        with pytest.raises(ValueError):
+            va.start(ROOM)                               # none set at creation

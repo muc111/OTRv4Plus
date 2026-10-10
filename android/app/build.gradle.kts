@@ -34,7 +34,7 @@ android {
         // devices. Left at 26, with the biometric path feature-detected.
         minSdk = 26
         targetSdk = 35
-        versionCode = 52
+        versionCode = 53
         // rc.3 -> rc.4: capability-gated automatic OTRv4+ (XEP-0030/0115,
         // per resource), one People list with server discovery where
         // Prosody offers it, file phases/ETA/three-way metadata choice and
@@ -88,7 +88,7 @@ android {
         //
         // core.10.14.0 was wrong for sixteen releases; the Rust core is read
         // from Rust/Cargo.toml so it cannot drift again.
-        versionName = "0.7.0-experimental.rc.42+core.$rustCoreVersion"
+        versionName = "0.7.0-experimental.rc.43+core.$rustCoreVersion"
 
         // Which build this is, surfaced in the diagnostic report.
         //
@@ -425,6 +425,10 @@ val syncPythonSources by tasks.registering(Copy::class) {
             // guarded, so it ships to keep the import closure whole. It holds
             // no cryptography: it calls the same SecureGroups the app does.
             "otrv4plus_groups.py",
+            // Group calls' media (I2P datagrams, AAudio, the core's Opus):
+            // imported by android_bridge.group_call_bridge, the app's group
+            // calls. No key passes through it; RustGroupVoice seals frames.
+            "otrv4plus_groupcall.py",
             // What the voice diagnostics are allowed to claim. Imported by
             // otrv4plus_voice at module scope, so a missing entry here is an
             // ImportError at launch rather than a missing metric.

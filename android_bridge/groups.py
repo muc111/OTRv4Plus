@@ -515,6 +515,8 @@ class SecureGroups:
         #: re-sent until the invitee answers JOINED (or WELCOME_TTL passes).
         self._welcome_out: Dict[Tuple[str, str], List[Any]] = {}
         self._call_handler: Optional[Callable[[str, str, bool, str], None]] = None
+        #: Group verification (android_bridge.group_verify), the same way.
+        self._verify_handler: Optional[Callable[[str, str, bool, str], None]] = None
         self._epoch_listener: Optional[Callable[[str], None]] = None
         self._pacer = RoomPacer(
             send_room, burst=self.ROOM_BURST, interval=self.ROOM_INTERVAL,
@@ -921,6 +923,28 @@ class SecureGroups:
     def account(self) -> str:
         return self._account
 
+    def set_verify_handler(self, fn: Optional[Callable[[str, str, bool, str], None]]) -> None:
+        self._verify_handler = fn
+
+    def member_fingerprint(self, room: str, member: str) -> str:
+        """The group key the group holds for `member` now (hex)."""
+        with self._lock:
+            return bytes(self._need().member_fingerprint(
+                room.encode(), member.encode())).hex()
+
+    def mark_member_verified(self, room: str, member: str) -> None:
+        """A group verification (shared-passphrase SMP over the member's
+        current group key) succeeded with `member`."""
+        with self._lock:
+            client = self._need()
+            fp = bytes(client.member_fingerprint(room.encode(), member.encode())).hex()
+            before = self._bound.get(room, {}).get(member)
+            self._bound.setdefault(room, {})[member] = (fp, True)
+            if before != (fp, True):
+                self.save()
+        if before != (fp, True):
+            self._emit(GroupChanged(peer=room, change="member_verified", detail=member))
+
     def set_call_handler(self, fn: Optional[Callable[[str, str, bool, str], None]]) -> None:
         self._call_handler = fn
 
@@ -931,7 +955,8 @@ class SecureGroups:
         """A call control message: encrypted and posted like a message, and
         recognised (by its prefix) and never shown at the other end."""
         from .group_call import CALL_PREFIX
-        if not text.startswith(CALL_PREFIX):
+        from .group_verify import VERIFY_PREFIX
+        if not text.startswith((CALL_PREFIX, VERIFY_PREFIX)):
             raise GroupError("bad_control")
         self.send(room, text)
 
@@ -1817,6 +1842,7 @@ class SecureGroups:
                 return True
             kind = ev.get("kind")
             control = None
+            vcontrol = None
             if kind == "application":
                 sender = bytes(ev["sender"]).decode(errors="replace")
                 text = bytes(ev["plaintext"]).decode("utf-8", errors="replace")
@@ -1826,6 +1852,10 @@ class SecureGroups:
             if kind == "application" and text.startswith("\x00OTRv4GC1:"):
                 # A call control message: to the call manager, never shown.
                 control = (sender, verified, text[len("\x00OTRv4GC1:"):])
+                event = None
+            elif kind == "application" and text.startswith("\x00OTRv4GV1:"):
+                # Group verification: to its handler, never shown.
+                vcontrol = (sender, verified, text[len("\x00OTRv4GV1:"):])
                 event = None
             elif kind == "application":
                 self.stats.shown += 1
@@ -1843,6 +1873,11 @@ class SecureGroups:
             self._add_queued(room)
         if kind == "commit":
             self._flush_held(room)
+        if vcontrol is not None and self._verify_handler is not None:
+            try:
+                self._verify_handler(room, *vcontrol)
+            except Exception:
+                self._emit(ErrorOccurred(peer=room, code="verify_control_failed"))
         if control is not None and self._call_handler is not None:
             try:
                 self._call_handler(room, *control)

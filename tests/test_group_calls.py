@@ -239,3 +239,61 @@ class TestTermuxMedia:
         media._calls = type("C", (), {"on_datagram": lambda self, p: got.append(p) or True})()
         media._on_datagram(b"A" * 516 + b"\npayload")
         assert got == [b"payload"] and media.stats["rx"] == 1
+
+
+def test_pause_stops_our_audio_but_keeps_us_in_the_call():
+    w, (a, b), net, now, heard = _calling(2)
+    _pair_all(w, [a, b])
+    a.calls.start(ROOM)
+    b.calls.join(ROOM)
+    assert a.calls.pause() is True
+    assert a.calls.send_audio(b"\x01\x00") == 0
+    b.calls.send_audio(b"\x02\x00")                 # we still hear them
+    assert heard["alice@x.i2p"][-1] == ("bob@x.i2p", b"\x02\x00")
+    assert a.calls.pause() is False
+    assert a.calls.send_audio(b"\x03\x00") == 1
+    assert "call_paused" in [e.change for e in a.events if isinstance(e, GroupChanged)]
+
+
+def test_the_app_joins_a_verified_ring_only_with_the_microphone_allowed():
+    """Owner design (2026-10-10): verified members join a group call by
+    themselves. In the app that opens the microphone, so only when the user
+    has granted it (`auto_join`, set from the permission)."""
+    import threading as _threading
+    from android_bridge.group_call_bridge import GroupCallBridge
+    w, (a, b) = T._group(2)
+    _pair_all(w, [a, b])
+    joined = []
+    bridges = {}
+    for m in (a, b):
+        app = type("App", (), {"groups": m.groups})()
+        br = GroupCallBridge(app, sam=lambda: ("127.0.0.1", 7656),
+                             emit=m.events.append)
+        br.join = lambda room, jid=m.jid: joined.append((jid, room))
+        bridges[m.jid] = br
+
+    class Inline:
+        def __init__(self, target=None, args=(), **_kw):
+            self.target, self.args = target, args
+
+        def start(self):
+            self.target(*self.args)
+
+    import android_bridge.group_call_bridge as gcb
+    orig = gcb.threading.Thread
+    gcb.threading.Thread = Inline
+    try:
+        ring = GroupChanged(peer=ROOM, change="call_ringing", detail=a.jid)
+        bridges[b.jid]._emit(ring)                       # microphone not allowed
+        assert joined == []
+        bridges[b.jid].auto_join = True
+        bridges[b.jid]._emit(ring)
+        assert joined == [(b.jid, ROOM)]
+        # Not from someone we have not verified.
+        b.groups._bound[ROOM][a.jid] = ("00" * 48, False)
+        bridges[b.jid]._emit(ring)
+        assert joined == [(b.jid, ROOM)]
+    finally:
+        gcb.threading.Thread = orig
+    assert any(isinstance(e, GroupChanged) and e.change == "call_ringing"
+               for e in b.events)                       # still shown

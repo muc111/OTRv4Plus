@@ -367,6 +367,9 @@ class TestStateLivesInAViewModel:
         # A guard that forbids the correct handling of a passphrase in order
         # to protect a draft is guarding the wrong thing.
         composer = screen[screen.index("private fun Composer("):]
+        # The composer itself: up to the next composable in the file.
+        end = composer.find("\n@Composable", 1)
+        composer = composer[:end] if end > 0 else composer
         assert "remember { mutableStateOf" not in composer, (
             "the composer keeps its own draft, which a recomposition loses")
 
@@ -380,13 +383,16 @@ class TestStateLivesInAViewModel:
         """
         screen = _code_only(_read(ANDROID, "ui", "ConversationScreen.kt"))
         holders = screen.count("remember { mutableStateOf")
-        assert holders == 1, (
-            "%d pieces of composition-local state; only the SMP passphrase "
-            "may be one" % holders)
-        prompt = screen[screen.index("private fun VerificationPrompt("):]
-        prompt = prompt[:prompt.index("AlertDialog(")]
-        assert "remember { mutableStateOf" in prompt, (
-            "the one composition-local value is not the passphrase")
+        # The SMP passphrase and (rc.43) the group passphrase: both secrets
+        # that must not outlive their dialog. Nothing else.
+        assert holders == 2, (
+            "%d pieces of composition-local state; only the two passphrases "
+            "may be" % holders)
+        for fn in ("private fun VerificationPrompt(", "private fun GroupPassphrasePrompt("):
+            prompt = screen[screen.index(fn):]
+            prompt = prompt[:prompt.index("AlertDialog(")]
+            assert "remember { mutableStateOf" in prompt, (
+                "a composition-local value is not a passphrase (%s)" % fn)
 
 
 class TestNavigationCarriesNoObjects:

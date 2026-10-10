@@ -763,6 +763,27 @@ class ChatState(
 
     fun isSecureRoom(jid: String): Boolean = bare(jid) in secureRooms
 
+    /** Each secure group's verification and call, as last read from the engine. */
+    private val groupVerify = HashMap<String, org.otrv4plus.android.bridge.GroupVerifyState>()
+    private val groupCalls = HashMap<String, org.otrv4plus.android.bridge.GroupCallState>()
+
+    fun groupVerifyState(room: String): org.otrv4plus.android.bridge.GroupVerifyState =
+        groupVerify[bare(room)] ?: org.otrv4plus.android.bridge.GroupVerifyState()
+
+    fun groupCallState(room: String): org.otrv4plus.android.bridge.GroupCallState =
+        groupCalls[bare(room)] ?: org.otrv4plus.android.bridge.GroupCallState()
+
+    /** True when what was read differs from what is held (redraw then). */
+    fun noteGroupState(room: String,
+                       verify: org.otrv4plus.android.bridge.GroupVerifyState,
+                       call: org.otrv4plus.android.bridge.GroupCallState): Boolean {
+        val key = bare(room)
+        val changed = groupVerify[key] != verify || groupCalls[key] != call
+        groupVerify[key] = verify
+        groupCalls[key] = call
+        return changed
+    }
+
     /** Secure groups catching up after a sign-in or reconnect. */
     private val syncingRooms = mutableSetOf<String>()
 
