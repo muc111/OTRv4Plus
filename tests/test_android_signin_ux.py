@@ -198,4 +198,5 @@ class TestTheChoiceReachesTheConnection:
     def test_the_prepared_connection_gets_the_server(self):
         service = _code_only(_read(JAVA, "connection",
                                    "OtrConnectionService.kt"))
-        assert "core.prepareConnection(jid.trim(), server.trim())" in service
+        # The SAM port follows: the built-in I2P router listens on its own.
+        assert "core.prepareConnection(jid.trim(), server.trim()," in service

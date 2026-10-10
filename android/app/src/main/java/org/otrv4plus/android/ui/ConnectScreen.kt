@@ -16,6 +16,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import org.otrv4plus.android.ConnectionViewModel
+import org.otrv4plus.android.connection.RouterChoice
 import org.otrv4plus.android.connection.SignIn
 import org.otrv4plus.android.security.WipeAndExit
 
@@ -199,6 +200,19 @@ fun ConnectScreen(
             )
         }
 
+        // ── Which I2P router ──────────────────────────────────────────────
+        //
+        // Only in an APK that carries one. Automatic uses an I2P app already
+        // on the phone when its SAM bridge answers, and the built-in router
+        // otherwise -- so somebody with no I2P app still gets connected.
+        if (model.routerBundled) {
+            RouterPicker(
+                mode = model.routerMode,
+                enabled = !status.connected && busy == null && !model.connecting,
+                onChoose = { model.chooseRouter(it) },
+            )
+        }
+
         // ── Account ───────────────────────────────────────────────────────
         OutlinedTextField(
             value = account,
@@ -334,6 +348,9 @@ fun ConnectScreen(
             LinearProgressIndicator(Modifier.fillMaxWidth())
             Text(model.connectingLabel,
                  style = MaterialTheme.typography.bodySmall)
+            model.routerLabel?.let {
+                Text(it, style = MaterialTheme.typography.bodySmall)
+            }
         }
 
         busy?.let {
@@ -551,6 +568,57 @@ private fun ServerIdentityWarning(
  * is slow tells the user what to do: a stall at `building_tunnels` is normal
  * and wants patience, a stall anywhere else does not.
  */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun RouterPicker(
+    mode: RouterChoice.Mode,
+    enabled: Boolean,
+    onChoose: (RouterChoice.Mode) -> Unit,
+) {
+    var open by remember { mutableStateOf(false) }
+    fun name(m: RouterChoice.Mode) = when (m) {
+        RouterChoice.Mode.AUTOMATIC -> "Automatic"
+        RouterChoice.Mode.EXTERNAL -> "My I2P app"
+        RouterChoice.Mode.BUILT_IN -> "Built-in router"
+    }
+    ExposedDropdownMenuBox(expanded = open, onExpandedChange = { open = !open }) {
+        OutlinedTextField(
+            value = name(mode),
+            onValueChange = {},
+            readOnly = true,
+            label = { Text("I2P router") },
+            supportingText = {
+                Text(when (mode) {
+                    RouterChoice.Mode.AUTOMATIC ->
+                        "Uses an I2P app on this phone if one is running, " +
+                            "otherwise the router built into OTRv4+."
+                    RouterChoice.Mode.EXTERNAL ->
+                        "Needs an I2P app on this phone with its SAM bridge on."
+                    RouterChoice.Mode.BUILT_IN ->
+                        "Always the router built into OTRv4+. Its first start " +
+                            "takes a few minutes."
+                })
+            },
+            trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(open) },
+            enabled = enabled,
+            modifier = Modifier
+                .menuAnchor(MenuAnchorType.PrimaryNotEditable)
+                .fillMaxWidth(),
+        )
+        ExposedDropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+            for (m in RouterChoice.Mode.entries) {
+                DropdownMenuItem(
+                    text = { Text(name(m)) },
+                    onClick = {
+                        onChoose(m)
+                        open = false
+                    },
+                )
+            }
+        }
+    }
+}
+
 private fun stageLabel(stage: String): String = when (stage) {
     "idle" -> "Not connected"
     // Only .i2p servers pass through checking_router and only .onion (or an

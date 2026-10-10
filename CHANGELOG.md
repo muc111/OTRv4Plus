@@ -4,6 +4,33 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.45 — 2026-10-10 — an I2P router built into the app (core 0.13.1)
+
+- **No separate I2P app needed.** The APK carries i2pd 2.59.0 (with
+  OpenSSL 3.5.9 and Boost 1.88.0 linked in), built in CI from source pinned
+  to exact commits, for arm64-v8a and x86_64. Only its SAM bridge listens,
+  on 127.0.0.1:17656 (datagrams 17655, which voice and group calls follow);
+  the web console, HTTP and SOCKS proxies, BOB, I2CP, I2PControl and UPnP are
+  off.
+- **I2P router: Automatic / My I2P app / Built-in router**, on the connect
+  screen. Automatic (the default) uses an I2P app already on the phone when
+  its SAM bridge answers on 7656, and the built-in router otherwise. Only
+  I2P sign-ins start it; clearnet and Tor accounts never do.
+- **Limited transit**: bandwidth class L (32 KB/s), half of it for others,
+  at most 50 transit tunnels, never a floodfill. Reseed downloads are checked
+  against i2pd's bundled certificates.
+- **While it starts**, the connect screen says so and shows how long it has
+  been going ("joining the I2P network for the first time, usually 2 to 5
+  minutes"; afterwards "building tunnels, usually under a minute").
+- **Its data** (router identity, network database, peer profiles, address
+  book) lives in the app's private no_backup/i2pd. The router stops on
+  Disconnect, Sign out and Wipe & Exit, and Wipe & Exit deletes its data.
+- Licences: NOTICE §4 now attributes i2pd (BSD-3-Clause), OpenSSL
+  (Apache-2.0) and Boost (BSL-1.0, text added under LICENSES/); the APK
+  inspection checks the router and its certificates for both ABIs.
+
+---
+
 ## Android 0.7.0-experimental.rc.44 — 2026-10-10 — verification progress, ETA, who is in and who is out (core 0.13.1)
 
 - **Progress and an ETA while a group verifies.** App: a progress bar on

@@ -397,17 +397,31 @@ def main():
 
     w("")
     w("-" * 76)
-    w("4. Native components (when bundled)")
+    w("4. Native components: the bundled I2P router")
     w("-" * 76)
     w("")
-    w("i2pd")
-    w("    Licence: BSD-3-Clause")
-    w("    Copyright (c) 2013-2026, The PurpleI2P Project")
-    w("    Source:  https://github.com/PurpleI2P/i2pd")
-    w("    i2pd's own dependencies (Boost, OpenSSL 3.x) carry their own")
-    w("    notices and must be attributed by whoever bundles them; see")
-    w("    LICENSING_AUDIT.md §5.")
+    w("The APK carries i2pd as lib/<abi>/libi2pd.so, built from pinned")
+    w("source by .github/scripts/build-i2pd-android.sh, with OpenSSL and")
+    w("Boost linked statically into it. zlib is Android's own and is not")
+    w("bundled.")
     w("")
+    for name, ver, lic, holder, src in (
+        ("i2pd", "2.59.0", "BSD-3-Clause",
+         "Copyright (c) 2013-2026, The PurpleI2P Project",
+         "https://github.com/PurpleI2P/i2pd"),
+        ("OpenSSL (linked into i2pd)", "3.5.9", "Apache-2.0",
+         "Copyright (c) 1998-2026 The OpenSSL Project Authors",
+         "https://github.com/openssl/openssl"),
+        ("Boost (filesystem, program_options, atomic and headers; linked "
+         "into i2pd)", "1.88.0", "BSL-1.0",
+         "Copyright the Boost authors; see each library",
+         "https://github.com/boostorg/boost"),
+    ):
+        w("%s %s" % (name, ver))
+        w("    Licence: %s" % lic)
+        w("    %s" % holder)
+        w("    Source:  %s" % src)
+        w("")
 
     # ---- full licence texts ---------------------------------------------
     used = set()
@@ -415,7 +429,8 @@ def main():
         used.update(chosen_licence(pkg.get("license")))
     # The bundled non-Rust components, whose licences are named in the
     # sections above rather than read from a graph.
-    used.update(["MIT", "Apache-2.0", "BSD-2-Clause", "BSD-3-Clause", "PSF-2.0"])
+    used.update(["MIT", "Apache-2.0", "BSD-2-Clause", "BSD-3-Clause", "PSF-2.0",
+                 "BSL-1.0"])
 
     w("")
     w("-" * 76)

@@ -186,9 +186,8 @@ build, so it is recorded.
   reachable from both the connection screen and the contact list. The same
   screen carries the AGPL §5(d) Appropriate Legal Notices — copyright line,
   warranty disclaimer, which licence applies, and where the source is.
-  i2pd's own dependencies (Boost, OpenSSL 3.x) remain the obligation of
-  whoever bundles them; i2pd is **not** currently bundled, so `NOTICE` §4 is
-  forward-looking rather than a live obligation.
+  i2pd and the OpenSSL and Boost linked into it are bundled since
+  2026-10-10 and attributed in `NOTICE` §4; see §5 below.
 * ~~**No copyleft guard on the Android dependency graph.**~~ Done 2026-09-14.
   `:app:checkRuntimeDependencyLicences` resolves the debug and release runtime
   classpaths, reads each module's POM (following `<parent>` where licences are
@@ -423,8 +422,26 @@ distribution of the app. Keep it out of `implementation` configurations.
 
 ## 5. Bundled i2pd (decision 3)
 
-| Component | Licence | Relationship | Compatible? |
-|---|---|---|---|
+| Component | Version | Licence | Relationship | Compatible? |
+|---|---|---|---|---|
+| i2pd | 2.59.0 | **BSD-3-Clause** | separate executable in the APK (`lib/<abi>/libi2pd.so`), run as a child process | Yes |
+| OpenSSL | 3.5.9 | **Apache-2.0** | statically linked into i2pd | Yes |
+| Boost (filesystem, program_options, atomic, headers) | 1.88.0 | **BSL-1.0** | statically linked into i2pd | Yes |
+| zlib | Android's own | — | system library, not bundled | — |
+
+Bundled since 2026-10-10, built in CI from source by
+`.github/scripts/build-i2pd-android.sh`, each source checked against a pinned
+commit. The OpenSSL question this section used to leave open is settled:
+the build links OpenSSL **3.x**, which is Apache-2.0, not the 1.x
+OpenSSL/SSLeay licence. All three are permissive and attribution-only, so
+**the router does not constrain the project's licensing** in either
+direction. Their notices and full licence texts (`LICENSES/BSL-1.0.txt` is
+new) are in `NOTICE` §4, which the APK carries and the licences screen shows.
+
+i2pd runs as its own process and talks to the app only over the SAM socket on
+loopback; it is not linked into any of this project's code.
+
+---|---|---|---|
 | i2pd | **BSD 3-Clause** | to be bundled as a native library | Yes |
 
 Verified from the upstream repository. i2pd exposes `libi2pd_wrapper` for

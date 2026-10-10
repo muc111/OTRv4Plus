@@ -181,6 +181,22 @@ class OtrConnectionService : Service() {
     var failure: String? = null
         private set
 
+    /**
+     * The I2P router the APK carries. Started by [chooseRouter] when an I2P
+     * sign-in needs it; stopped with the connection, on sign-out and by
+     * Wipe & Exit.
+     */
+    val router: BundledRouter by lazy { BundledRouter(applicationContext) }
+
+    /** What the router is doing, for the connection screen. */
+    @Volatile
+    var routerState: RouterChoice.State = RouterChoice.State.NOT_USED
+        private set
+
+    /** One line about the router for the connection screen, or null. */
+    fun routerLabel(): String? = RouterChoice.label(
+        routerState, System.currentTimeMillis() - router.startedAt, router.fresh)
+
     private var worker: Job? = null
     private var watcher: Job? = null
     private var drainer: Job? = null
@@ -458,6 +474,9 @@ class OtrConnectionService : Service() {
             WipeAndExit.Step.STOP_SUBSYSTEMS to {
                 val report = core.wipe()
                 lastWipe = report
+                // The bundled router, after the engine closed its sessions
+                // and before its directory is deleted with the rest.
+                runCatching { router.stop() }
                 if (!report.ok) error("engine teardown reported ${report.errors}")
             },
             WipeAndExit.Step.WIPE_APP_DATA to {
@@ -593,6 +612,13 @@ class OtrConnectionService : Service() {
             withContext(Dispatchers.IO) {
                 runCatching { core.cancelConnect() }
                 runCatching { core.disconnect() }
+                // After the engine has closed its SAM sessions. Only on a
+                // stop the user asked for: a dropped stream reconnects, and
+                // through the same router.
+                if (explicit) {
+                    runCatching { router.stop() }
+                    routerState = RouterChoice.State.NOT_USED
+                }
             }
             enter(LinkPhase.STOPPED, "teardown finished")
         }
@@ -620,7 +646,8 @@ class OtrConnectionService : Service() {
                         if (!init.ok) throw IllegalStateException("init_failed")
                         initialised = true
                     }
-                    core.prepareConnection(jid.trim(), server.trim())
+                    val samPort = chooseRouter()
+                    core.prepareConnection(jid.trim(), server.trim(), samPort = samPort)
                     core.connect(password)
                 }
             }
@@ -705,6 +732,41 @@ class OtrConnectionService : Service() {
                 delay(DRAIN_INTERVAL_MS)
             }
         }
+    }
+
+    /**
+     * Pick the I2P router for this attempt, starting ours if it is the one,
+     * and return the SAM port to use (0: the default, a router on the phone).
+     *
+     * The rules are [RouterChoice.decide]; this is the platform half. Blocking:
+     * called on the IO dispatcher.
+     */
+    private fun chooseRouter(): Int {
+        if (!RouterChoice.needsI2p(jid, server)) {
+            routerState = RouterChoice.State.NOT_USED
+            return 0
+        }
+        val mode = RouterStore.load(applicationContext)
+        val external = mode != RouterChoice.Mode.BUILT_IN &&
+            BundledRouter.samAnswers(RouterChoice.EXTERNAL_SAM_PORT)
+        val use = RouterChoice.decide(mode, external, router.available)
+        runCatching {
+            core.note("service", "i2p_router", "info",
+                      "mode=${mode.stored} external=$external " +
+                          "bundled=${router.available} use=$use")
+        }
+        if (use == RouterChoice.Use.EXTERNAL) {
+            // Ours is not needed while the phone's own router answers.
+            router.stop()
+            routerState = if (external) RouterChoice.State.EXTERNAL
+                          else RouterChoice.State.UNAVAILABLE
+            return 0
+        }
+        if (!router.running()) routerState = RouterChoice.State.STARTING
+        val ok = runCatching { router.start() }.getOrDefault(false)
+        routerState = if (ok) RouterChoice.State.RUNNING else RouterChoice.State.FAILED
+        if (!ok) runCatching { core.note("service", "i2p_router_failed", "error") }
+        return RouterChoice.BUILT_IN_SAM_PORT
     }
 
     private suspend fun watchUntilDropped() {

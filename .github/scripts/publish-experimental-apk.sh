@@ -185,6 +185,12 @@ Asserted on every run rather than assumed:
 
 ## NOT verified, and the reason this is still experimental
 
+- **The built-in I2P router on a phone** (rc.45). It builds from pinned
+  source in CI and the APK inspection checks it is there for both ABIs, but
+  it has not yet been started on a handset: the first start (joining the I2P
+  network, usually 2 to 5 minutes), choosing it automatically when no I2P
+  app runs, voice and group calls through it, and Wipe & Exit removing its
+  data all need a phone with no other I2P app.
 - **Group verification with the group passphrase** (rc.43-rc.44: SMP between
   every pair of members, the progress bar and ETA, excluding a member whose
   passphrase did not match) has run in tests only, not over I2P on phones.
@@ -246,8 +252,13 @@ these where it can, but the server settings decide how well:
   user of the server read any user's profile; the Profile screen says so.
   Pictures (XEP-0084, PEP) are contacts-only.
 
-Also absent by design at this stage: **no in-APK I2P router** (an I2P router
-app with SAM enabled must be running on the phone). The icon is a
+**An I2P router is built in** (new in rc.45): i2pd, with only its SAM
+bridge listening, on loopback. With "I2P router: Automatic" (the default) the
+app uses an I2P app already running on the phone when its SAM bridge answers,
+and starts its own otherwise, so no separate I2P app is needed. It relays a
+little traffic for others (bandwidth class L, at most 50 transit tunnels),
+is never a floodfill, opens no ports on your home router (no UPnP), and is
+stopped on Disconnect, Sign out and Wipe & Exit. The icon is a
 **placeholder** (AI-generated, no licence asserted -- see \`ASSETS.md\`).
 
 \`ANDROID_XMPP_MILESTONE.md\` §7 is the open gate list, item by item;
@@ -270,6 +281,9 @@ an unknown source.
   variant to choose.
 - The first connection takes a while. Building an I2P tunnel is 30-120+
   seconds and the app says so while it waits; that is the network, not a hang.
+  The very first start of the built-in router takes longer (it has to join
+  the I2P network: usually 2 to 5 minutes); the connect screen shows how long
+  it has been going.
 - If something does go wrong, the **Debug** screen — "Open diagnostics" on the
   connect screen, "Debug" from the conversation list — has **Share error log**
   and **Export start-up report**. Both are designed to be shareable: JIDs,

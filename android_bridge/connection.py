@@ -41,6 +41,7 @@ result code rather than an argument.
 from __future__ import annotations
 
 import logging
+import os
 import socket
 import threading
 from typing import Any, Callable, Dict, List, Optional
@@ -1738,7 +1739,22 @@ def controller_for(app: Any, jid: str = "",
         **{k: v for k, v in (("sam_host", sam_host), ("sam_port", sam_port))
            if v}
     )
+    _follow_sam_udp_port(int(profile.sam_port))
     return ConnectionController(app, profile)
+
+
+def _follow_sam_udp_port(tcp_port: int) -> None:
+    """Point calls at the SAM datagram port of the bridge in use.
+
+    i2pd puts it one below the TCP port. On the default bridge (7656) that
+    is voice's own default, 7655; the router built into the APK listens on
+    17656, so its datagrams go to 17655. Calls read the port from the
+    environment (`otrv4plus_voice.sam_udp_port`), so this sets or clears it.
+    """
+    if tcp_port and tcp_port != _address.DEFAULT_SAM_PORT:
+        os.environ["OTRV4PLUS_SAM_UDP_PORT"] = str(tcp_port - 1)
+    else:
+        os.environ.pop("OTRV4PLUS_SAM_UDP_PORT", None)
 
 
 def probe_profile(profile: ConnectionProfile, **kw) -> SamProbe:

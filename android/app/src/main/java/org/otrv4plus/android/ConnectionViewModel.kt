@@ -27,9 +27,12 @@ import org.otrv4plus.android.bridge.RouterProbe
 import org.otrv4plus.android.bridge.ServerIdentityChange
 import org.otrv4plus.android.bridge.ServerCheck
 import org.otrv4plus.android.chat.ChatState
+import org.otrv4plus.android.connection.BundledRouter
 import org.otrv4plus.android.connection.LinkPhase
 import org.otrv4plus.android.connection.LoginProgress
 import org.otrv4plus.android.connection.OtrConnectionService
+import org.otrv4plus.android.connection.RouterChoice
+import org.otrv4plus.android.connection.RouterStore
 
 /**
  * The UI's view of the connection. It does NOT own it.
@@ -152,6 +155,25 @@ class ConnectionViewModel(app: Application) : AndroidViewModel(app) {
     /** What to say next to the progress bar while [connecting]. */
     val connectingLabel: String get() = login.label(phase)
 
+    /** The I2P router's line for the connection screen, or null. */
+    var routerLabel by mutableStateOf<String?>(null)
+        private set
+
+    /** Which I2P router to use; see [RouterChoice]. */
+    var routerMode by mutableStateOf(RouterStore.load(getApplication()))
+        private set
+
+    /** Whether this APK carries its own router (a local build may not). */
+    val routerBundled: Boolean by lazy {
+        java.io.File(getApplication<Application>().applicationInfo.nativeLibraryDir,
+                     BundledRouter.BINARY).isFile
+    }
+
+    fun chooseRouter(mode: RouterChoice.Mode) {
+        routerMode = mode
+        RouterStore.save(getApplication(), mode)
+    }
+
     /**
      * Bumped by the poll so the derived properties above recompose.
      *
@@ -247,6 +269,7 @@ class ConnectionViewModel(app: Application) : AndroidViewModel(app) {
                     }
                     connectionFailure = it.failure
                     login.observe(it.phase)
+                    routerLabel = it.routerLabel()
                 }
                 // Even with no service bound: the handover deadline in
                 // LoginProgress expires on the clock, and nothing would

@@ -30,10 +30,10 @@ newest Android build is kept there, so the one you see is the one to test.
 2. Open it and allow installs when Android asks. If Android refuses an
    update, uninstall the old build first (builds use a CI signing key).
 
-**Before you sign in** you need an I2P router on the phone with the SAM
-bridge turned on (for example the I2P app from F-Droid or Google Play, with
-"Use SAM bridge" enabled in its settings). The first connection can take one
-to two minutes while I2P builds its tunnels. Android 8.0 and newer.
+**No separate I2P app is needed.** The app has an I2P router built in
+(i2pd, SAM bridge on loopback only). With "I2P router: Automatic" it uses an
+I2P app already running on the phone, and its own router otherwise. The first
+start takes a few minutes (it joins I2P), later ones a minute or two. Android 8+.
 
 **What has been tested on a phone:** sign-in, contacts, 1:1 chat, rooms,
 OTRv4+ encryption, SMP identity verification, encrypted file transfer with a
