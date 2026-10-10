@@ -52,6 +52,8 @@ fun RoomsScreen(
 
     var nick by rememberSaveable { mutableStateOf(defaultNick) }
     var address by rememberSaveable { mutableStateOf("") }
+    // The room a Delete is waiting to be confirmed for (search row or typed).
+    var deletingRoom by rememberSaveable { mutableStateOf<String?>(null) }
 
     // Once, when the screen is first shown AND there is something to ask.
     // Discovery is two round trips over I2P, so repeating it on every
@@ -307,6 +309,34 @@ fun RoomsScreen(
                                  if (protect) roomPassword else "")
                 },
             ) { Text("Create") }
+
+            // Moderation: a room that is not listed (hidden) can still be
+            // deleted by its address, by its owner or a server admin.
+            OutlinedButton(
+                enabled = busy == null && address.isNotBlank(),
+                onClick = { deletingRoom = address.trim() },
+            ) { Text("Delete", color = MaterialTheme.colorScheme.error) }
+        }
+        deletingRoom?.let { target ->
+            AlertDialog(
+                onDismissRequest = { deletingRoom = null },
+                title = { Text("Delete this room for everyone?") },
+                text = {
+                    Text("$target will be deleted on the server: everyone in it " +
+                             "is removed and its history goes. Only its owner (who " +
+                             "created it) or a server admin can do this. It cannot " +
+                             "be undone.")
+                },
+                confirmButton = {
+                    TextButton(onClick = {
+                        model.deleteRoom(target)
+                        deletingRoom = null
+                    }) { Text("Delete") }
+                },
+                dismissButton = {
+                    TextButton(onClick = { deletingRoom = null }) { Text("Cancel") }
+                },
+            )
         }
         // A secure group: MLS end to end, the room carries ciphertext only.
         // Members are added by invitation over an encrypted OTRv4+ session.
@@ -426,13 +456,20 @@ fun RoomsScreen(
                                  style = MaterialTheme.typography.bodySmall)
                         }
                     }
-                    TextButton(
-                        enabled = busy == null && nick.isNotBlank() &&
-                            !model.joined.containsKey(room.jid),
-                        onClick = { model.join(room.jid, nick.trim()) },
-                    ) {
-                        Text(if (model.joined.containsKey(room.jid)) "In"
-                             else "Join")
+                    Column(horizontalAlignment = Alignment.End) {
+                        TextButton(
+                            enabled = busy == null && nick.isNotBlank() &&
+                                !model.joined.containsKey(room.jid),
+                            onClick = { model.join(room.jid, nick.trim()) },
+                        ) {
+                            Text(if (model.joined.containsKey(room.jid)) "In"
+                                 else "Join")
+                        }
+                        // The server decides: its owner, or a server admin.
+                        TextButton(
+                            enabled = busy == null,
+                            onClick = { deletingRoom = room.jid },
+                        ) { Text("Delete", color = MaterialTheme.colorScheme.error) }
                     }
                 }
             }

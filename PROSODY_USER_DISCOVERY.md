@@ -203,6 +203,39 @@ No such timer exists in this client, and none has been added.
 If a two-day expiry is seen on the live server, it comes from that server's
 configuration, and the operator should be asked which module sets it.
 
+## 5. Rooms and secure groups: listed, kept, deleted
+
+What the clients ask for, and what the server decides (2026-10-10):
+
+* **Listed.** A room appears in a room search only if it is *public*. Rooms
+  the app and Termux create ask to be public; a secure group's room also
+  carries the description `OTRv4+ secure group (MLS, end-to-end encrypted)`,
+  which is how the app shows it with a group icon. Rooms made before rc.49
+  were not asked and may be hidden.
+* **Kept.** A secure group's room asks to be *persistent*, so it survives
+  everybody being offline. Both clients read the room back and warn if the
+  server did not keep it.
+* **Deleted.** XEP-0045 lets a room's *owner* destroy it. In Prosody the
+  creator of a room is its owner, and the server's admins are owners of
+  every room -- so users delete what they created, and an admin can delete
+  any room as moderation, without being in it or holding its keys. The app
+  offers Delete on each listed room and for a typed address; the server
+  refuses anybody else.
+
+Server settings that match (Prosody, in the MUC component):
+
+```lua
+admins = { "alice@otrv4plus.i2p" }           -- global section: moderators
+
+Component "conference.otrv4plus.i2p" "muc"
+    muc_room_default_public = true          -- new rooms are listed
+    muc_room_default_persistent = true      -- and kept when empty
+```
+
+Rooms that already exist keep their settings. From `prosodyctl shell`, an
+admin can list them with `muc:list("conference.otrv4plus.i2p")` and remove
+one with `muc:room("lmao@conference.otrv4plus.i2p"):destroy()`.
+
 ## Not validated
 
 * The live Prosody's module list, admin list and any subscription-expiry

@@ -4,6 +4,23 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.50 — 2026-10-10 — delete any room you own, and moderation for admins (core 0.13.1)
+
+- **Delete on every room in the search, and for a typed address.** Until
+  now Delete was offered only for a group whose keys are on this phone, or a
+  room you had joined as owner -- so groups left on the server after a
+  reinstall could not be removed from the app. The SERVER decides who may:
+  a room's owner (Prosody: whoever created it) and the server's admins
+  (Prosody makes them owners of every room), which is moderation. A group
+  held on the phone still goes through the secure-group delete, which also
+  destroys its keys here.
+- PROSODY_USER_DISCOVERY.md §5: the server settings for listed, kept and
+  deletable rooms (\`muc_room_default_public\`,
+  \`muc_room_default_persistent\`, \`admins\`), and console commands for
+  rooms that already exist.
+
+---
+
 ## Android 0.7.0-experimental.rc.49 — 2026-10-10 — groups show in the room search, with icons (core 0.13.1)
 
 Device test (rc.48, with a laptop on Ubuntu 26.04 as a fourth client): an

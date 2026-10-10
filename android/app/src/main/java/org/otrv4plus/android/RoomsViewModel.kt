@@ -377,6 +377,40 @@ class RoomsViewModel : ViewModel() {
         }
     }
 
+    /**
+     * Delete any room, by name or address, for everyone -- whether or not we
+     * are in it, and whether or not this phone holds its keys.
+     *
+     * The SERVER decides who may: a room's owner (whoever created it), and
+     * the server's admins, whom Prosody treats as owners of every room --
+     * which is how an admin removes rooms as moderation, including secure
+     * groups whose keys are on nobody's phone any more. Anybody else gets the
+     * service's refusal, said plainly. A group this phone holds goes through
+     * [deleteSecureGroup] so its keys are destroyed here too.
+     */
+    fun deleteRoom(typed: String) {
+        val jid = resolve(typed.trim()) ?: return
+        if (secureGroups.any { it.equals(jid, ignoreCase = true) }) {
+            deleteSecureGroup(jid)
+            return
+        }
+        val c = core ?: return
+        if (busy != null) return
+        busy = "Deleting the room..."
+        viewModelScope.launch {
+            try {
+                val outcome = withContext(Dispatchers.IO) { c.destroyRoom(jid, "") }
+                if (outcome.ok) {
+                    joined.remove(jid)
+                    rooms.removeAll { it.jid.equals(jid, ignoreCase = true) }
+                }
+                last = outcome
+            } finally {
+                busy = null
+            }
+        }
+    }
+
     /** Dismiss the last result. */
     fun clearLast() {
         last = null
