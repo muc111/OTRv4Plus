@@ -76,7 +76,7 @@ class TestCreatingAPasswordProtectedRoom:
             "an OPEN room was left behind that the user believes is closed")
         assert "removed" in detail
 
-    def test_without_a_password_the_form_is_still_empty(self):
+    def test_without_a_password_no_password_field_is_sent(self):
         room = FakeMuc()
         t, made = build(muc=room)
         real_forms(made["client"])
@@ -84,7 +84,10 @@ class TestCreatingAPasswordProtectedRoom:
             assert t.create_room(ROOM, NICK)[0] == "ok"
         finally:
             t.close()
-        assert room.configured[0][1].get_fields() == {}
+        fields = room.configured[0][1].get_fields()
+        assert "muc#roomconfig_passwordprotectedroom" not in fields
+        assert "muc#roomconfig_roomsecret" not in fields
+        assert fields["muc#roomconfig_publicroom"]["value"] is True
 
 
 class TestEnteringAPasswordProtectedRoom:
@@ -275,3 +278,46 @@ class TestThePromptAppearsWhateverTheServiceDoes:
             t.close()
         assert code == "not_authorized"
         assert took < 10, "the refusal waited for the join timeout"
+
+
+class TestASecureGroupsRoomIsKeptAndChecked:
+    """Device report (2026-10-10): secure groups vanished once every member
+    was offline. A password-protected secure group's room was never asked to
+    be persistent (the form carried only the password), and a service that
+    did not keep a room persistent was never noticed."""
+
+    def _create(self, features, password=SECRET):
+        room = FakeMuc()
+        disco = FakeDisco(info={ROOM: ([("conference", "text", None, "")],
+                                       ["http://jabber.org/protocol/muc"] + features)})
+        t, made = build(disco=disco, muc=room)
+        real_forms(made["client"])
+        t.persist_room = lambda r: True            # a secure group's room
+        warned = []
+        t.room_not_persistent = warned.append
+        try:
+            result = t.create_room(ROOM, NICK, password)
+        finally:
+            t.close()
+        return result, room, warned
+
+    def test_a_password_protected_secure_group_asks_to_be_persistent(self):
+        (code, _d, _v), room, warned = self._create(
+            ["muc_passwordprotected", "muc_persistent"])
+        assert code == "ok"
+        fields = room.configured[0][1].get_fields()
+        assert fields["muc#roomconfig_persistentroom"]["value"] is True
+        assert fields["muc#roomconfig_roomsecret"]["value"] == SECRET
+        assert warned == []
+
+    def test_a_room_the_service_did_not_keep_is_reported(self):
+        (code, _d, _v), room, warned = self._create(["muc_passwordprotected"])
+        assert code == "ok"
+        assert warned == [ROOM.lower()]
+
+    def test_without_a_password_too(self):
+        (code, _d, _v), room, warned = self._create([], password="")
+        assert code == "ok"
+        assert room.configured[0][1].get_fields()[
+            "muc#roomconfig_persistentroom"]["value"] is True
+        assert warned == [ROOM.lower()]

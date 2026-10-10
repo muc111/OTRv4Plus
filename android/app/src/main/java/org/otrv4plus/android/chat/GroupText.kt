@@ -127,6 +127,11 @@ object GroupText {
         "state_in_use" ->
             "Another copy of the app for this account is holding its secure " +
                 "groups. Close it and sign in again."
+        "room_not_persistent" ->
+            "The server would not keep ${room ?: "this group"}'s room while " +
+                "everyone is offline: when the last member leaves, the server " +
+                "deletes it and the group has to be made again. The server's " +
+                "admin can allow it (Prosody: muc_room_default_persistent = true)."
         else -> null
     }
 

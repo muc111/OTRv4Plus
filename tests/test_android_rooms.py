@@ -140,7 +140,7 @@ class FakeMuc:
 
 class FakeForms:
     def make_form(self, ftype="form", **_kw):
-        return {"type": ftype}
+        return _Form(type=ftype)
 
 
 class FakeBoundJid:
@@ -561,14 +561,19 @@ class TestSecureGroupRooms:
         finally:
             t.close()
 
-    def test_an_ordinary_room_keeps_the_defaults(self):
+    def test_an_ordinary_room_only_asks_to_be_listed(self):
+        """Not kept when empty, not marked as a group; listed, so it shows
+        in a room search (owner request, 2026-10-10)."""
         room = FakeMuc()
         t, _ = build(muc=room)
         try:
             t._client.plugins["xep_0004"] = _Forms()
             t.persist_room = lambda r: False
             t.create_room(ROOM, NICK)
-            assert "fields" not in room.configured[0][1]
+            fields = room.configured[0][1]["fields"]
+            assert fields == {
+                "FORM_TYPE": "http://jabber.org/protocol/muc#roomconfig",
+                "muc#roomconfig_publicroom": True}
         finally:
             t.close()
 

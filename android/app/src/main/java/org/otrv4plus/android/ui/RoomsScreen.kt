@@ -411,9 +411,12 @@ fun RoomsScreen(
                     horizontalArrangement = Arrangement.SpaceBetween,
                 ) {
                     Column(Modifier.weight(1f)) {
-                        Text(room.label,
+                        // 🔐 an encrypted group, # an ordinary room, and 🔒
+                        // after the name when it needs a password.
+                        Text(room.kindIcon + " " + room.label +
+                                (if (room.password) " \uD83D\uDD12" else ""),
                             style = MaterialTheme.typography.bodyMedium)
-                        Text(room.jid,
+                        Text(room.kindText + " · " + room.jid,
                             style = MaterialTheme.typography.bodySmall)
                         // The service's own count. Absent when it gave none:
                         // "unknown" is not written as "0 users".

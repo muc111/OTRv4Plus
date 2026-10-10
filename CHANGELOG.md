@@ -4,6 +4,33 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.49 — 2026-10-10 — groups show in the room search, with icons (core 0.13.1)
+
+Device test (rc.48, with a laptop on Ubuntu 26.04 as a fourth client): an
+app group call rang the laptop, which joined automatically as a verified
+member. The secure groups were all still on the server (Prosody
+\`muc:list\`), but the app's room search did not show them.
+
+- **Groups are listed.** A service lists only rooms configured public, and
+  nothing asked for that. Rooms the app or Termux create now ask to be
+  public; the groups this account holds are listed (and marked) even when
+  their room is hidden, which covers the rooms made before this change.
+- **What each room is**, in the search: 🔐 an end-to-end encrypted group,
+  \`#\` an ordinary room (channel), and 🔒 after the name when it needs a
+  password. A secure group's room carries a fixed description that marks it;
+  the password comes from the room's own \`muc_passwordprotected\`.
+- **A room the server will not keep is said.** A password-protected secure
+  group's room was never asked to be persistent (the form carried only the
+  password). Both clients now read the room back after creating it and warn
+  if the server did not make it persistent (Prosody:
+  \`muc_room_default_persistent = true\`).
+- A refused listing or keeping field never makes a create fail: the room
+  falls back to the service's defaults (the password always goes).
+- Terminal client: no more slixmpp 1.17 DeprecationWarnings (plugins are
+  reached through \`.plugin\`).
+
+---
+
 ## Android 0.7.0-experimental.rc.48 — 2026-10-10 — Termux hears a group call it did not start (core 0.13.1)
 
 Device test (rc.47): the built-in I2P router connected the app, group

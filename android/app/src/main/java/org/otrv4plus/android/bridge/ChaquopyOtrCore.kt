@@ -457,7 +457,9 @@ class ChaquopyOtrCore(private val appContext: Context) : OtrCore {
         listValue(result)?.let { items ->
             for (item in items.asList()) {
                 rooms += RoomSummary(entry(item, "jid"), entry(item, "name"),
-                                     entry(item, "occupants").toIntOrNull())
+                                     entry(item, "occupants").toIntOrNull(),
+                                     secure = flag(item, "secure"),
+                                     password = flag(item, "password"))
             }
         }
         return outcomeOf(result) to rooms

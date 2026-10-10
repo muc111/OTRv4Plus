@@ -88,6 +88,12 @@ class _FakeClient:
         self._connected = False
         return None
 
+    @property
+    def plugin(self):
+        # slixmpp's plugin manager (client.plugin["xep_0199"]), which the
+        # client uses since slixmpp 1.17 deprecated client["xep_0199"].
+        return {"xep_0199": self["xep_0199"]}
+
     def __getitem__(self, key):
         assert key == "xep_0199"
         outer = self

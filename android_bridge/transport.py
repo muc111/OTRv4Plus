@@ -2949,7 +2949,8 @@ class XmppTransport(Transport):
     async def _discover_rooms(self, service: str):
         disco = self._client["xep_0030"]
         items = await disco.get_items(jid=service, timeout=CALL_TIMEOUT)
-        rooms = [{"jid": str(jid), "name": str(name or ""), "occupants": None}
+        rooms = [{"jid": str(jid), "name": str(name or ""), "occupants": None,
+                  "secure": False, "password": False}
                  for jid, _node, name in items["disco_items"].get_items()]
         # XEP-0045 §6.4: disco#info on a room carries a muc#roominfo form
         # with `muc#roominfo_occupants`. Optional for the service, so a room
@@ -2962,6 +2963,15 @@ class XmppTransport(Transport):
                     info = await disco.get_info(
                         jid=room["jid"], timeout=self.ROOM_INFO_TIMEOUT)
                     room["occupants"] = _room_occupant_count(info)
+                    # What kind of room it is, from the same answer: an
+                    # encrypted group (its marker), and whether it has a
+                    # password -- shown as icons in the list.
+                    try:
+                        xml = info["disco_info"].xml
+                    except Exception:
+                        xml = getattr(info, "xml", None)
+                    if xml is not None:
+                        room["secure"], room["password"] = _muc.room_kind(xml)
                 except Exception:
                     pass
 
@@ -3092,6 +3102,32 @@ class XmppTransport(Transport):
     #: §10.9). Set by the controller.
     room_destroyed = None
 
+    #: Called with a room address when a secure group's room was asked to be
+    #: persistent and the service did not make it so: it will be deleted the
+    #: moment the last member leaves. Set by the controller.
+    room_not_persistent = None
+
+    async def _check_persistent(self, room: str) -> None:
+        """Read the room back (disco#info `muc_persistent`) and report one the
+        service did not keep. Accepting the form proves nothing: a service
+        that ignores or refuses the field says nothing about it."""
+        persistent = False
+        try:
+            info = await self._client["xep_0030"].get_info(
+                jid=room, timeout=CALL_TIMEOUT)
+            persistent = "muc_persistent" in {
+                str(f) for f in info["disco_info"]["features"]}
+        except Exception:
+            persistent = False
+        if not persistent:
+            _TRACE.record("muc", "room_not_persistent", "warning")
+            hook = self.room_not_persistent
+            if hook is not None:
+                try:
+                    hook(str(room).lower())
+                except Exception:
+                    pass
+
     def _persistent_form(self, room: str):
         form = self._client["xep_0004"].make_form(ftype="submit")
         persist = self.persist_room
@@ -3099,14 +3135,21 @@ class XmppTransport(Transport):
             wanted = bool(persist is not None and persist(str(room).lower()))
         except Exception:
             wanted = False
+        form.add_field(var="FORM_TYPE", ftype="hidden", value=self.ROOMCONFIG)
+        # Listed: a room the app makes is one people are meant to find in the
+        # service's room list (owner request, 2026-10-10). A service whose
+        # policy keeps it hidden still creates it.
+        form.add_field(var="muc#roomconfig_publicroom", ftype="boolean", value=True)
         if wanted:
             # A secure group's room outlives its occupants: when everybody is
             # offline at once a non-persistent room is destroyed, with the
             # commits in its history, and the first member back re-creates
             # it empty.
-            form.add_field(var="FORM_TYPE", ftype="hidden", value=self.ROOMCONFIG)
             form.add_field(var="muc#roomconfig_persistentroom",
                            ftype="boolean", value=True)
+            # Marked, so a room list can show it as an encrypted group.
+            form.add_field(var="muc#roomconfig_roomdesc", ftype="text-single",
+                           value=_muc.SECURE_GROUP_DESC)
         return form, wanted
 
     async def _configure_new_room(self, room: str, form=None) -> None:
@@ -3121,11 +3164,14 @@ class XmppTransport(Transport):
         try:
             await muc.set_room_config(room, form, timeout=CALL_TIMEOUT)
         except Exception:
-            if not wanted:
-                raise
+            # A service that refuses a field (public, persistent, the
+            # description) still gets the plain defaults: the room is never
+            # left locked, and never fails to exist over a listing setting.
             await muc.set_room_config(
                 room, self._client["xep_0004"].make_form(ftype="submit"),
                 timeout=CALL_TIMEOUT)
+        if wanted:
+            await self._check_persistent(room)
 
     async def _unlock_new_room(self, room: str) -> None:
         """A join that CREATED the room (status 201): it stays locked, and
@@ -3184,14 +3230,29 @@ class XmppTransport(Transport):
         # the "accept the defaults" submission §10.1.2 describes. A secure
         # group's room asks to be persistent as well.
         if password:
-            form = self._client["xep_0004"].make_form(ftype="submit")
-            form.add_field(var="FORM_TYPE", ftype="hidden",
-                           value=self.ROOMCONFIG)
+            # The persistent field too, for a secure group's room: this form
+            # used to carry only the password, so a password-protected secure
+            # group was never asked to outlive its occupants.
+            form, wanted = self._persistent_form(room)
             form.add_field(var="muc#roomconfig_passwordprotectedroom",
                            ftype="boolean", value=True)
             form.add_field(var="muc#roomconfig_roomsecret",
                            ftype="text-private", value=password)
-            await muc.set_room_config(room, form, timeout=CALL_TIMEOUT)
+            try:
+                await muc.set_room_config(room, form, timeout=CALL_TIMEOUT)
+            except Exception:
+                # Refused over a listing or keeping field: the password is
+                # what must not be lost, so it goes again on its own (and is
+                # read back below either way).
+                form = self._client["xep_0004"].make_form(ftype="submit")
+                form.add_field(var="FORM_TYPE", ftype="hidden", value=self.ROOMCONFIG)
+                form.add_field(var="muc#roomconfig_passwordprotectedroom",
+                               ftype="boolean", value=True)
+                form.add_field(var="muc#roomconfig_roomsecret",
+                               ftype="text-private", value=password)
+                await muc.set_room_config(room, form, timeout=CALL_TIMEOUT)
+            if wanted:
+                await self._check_persistent(room)
         else:
             await self._configure_new_room(room)
         self._room_nicks[str(room).split("/", 1)[0].lower()] = nick

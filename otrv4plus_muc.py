@@ -347,3 +347,36 @@ def _condition_of(exc: BaseException) -> str:
         except Exception:
             continue
     return ""
+
+
+# ── What a listed room is ────────────────────────────────────────────────────
+#
+# A secure group's room carries this description, set by whichever client
+# creates it, so that anybody listing the service can tell an end-to-end
+# encrypted group from an ordinary room (a "channel") -- the server sees the
+# room's ?OTRv4MLS1: traffic anyway, so the marker tells it nothing new.
+
+ROOMCONFIG_FORM = "http://jabber.org/protocol/muc#roomconfig"
+SECURE_GROUP_DESC = "OTRv4+ secure group (MLS, end-to-end encrypted)"
+
+
+def room_kind(info_xml) -> Tuple[bool, bool]:
+    """(secure group?, password-protected?) from a room's disco#info XML.
+
+    Password: the `muc_passwordprotected` feature. Secure group: the
+    `muc#roominfo_description` field is SECURE_GROUP_DESC. Anything
+    unreadable is (False, False) -- an ordinary, open room."""
+    secure = password = False
+    try:
+        for feature in info_xml.iter("{http://jabber.org/protocol/disco#info}feature"):
+            if feature.get("var") == "muc_passwordprotected":
+                password = True
+        for field in info_xml.iter("{jabber:x:data}field"):
+            if field.get("var") != "muc#roominfo_description":
+                continue
+            value = field.find("{jabber:x:data}value")
+            if value is not None and (value.text or "").strip() == SECURE_GROUP_DESC:
+                secure = True
+    except Exception:
+        return False, False
+    return secure, password

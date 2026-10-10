@@ -1929,9 +1929,9 @@ class OTRv4PlusXMPP(ClientXMPP):
         # See otrv4plus_caps; the identifier must match on both clients.
         try:
             import otrv4plus_caps as _caps
-            self["xep_0030"].add_feature(_caps.FEATURE)
-            self["xep_0115"].caps_node = _caps.CAPS_NODE
-            await self["xep_0115"].update_caps(broadcast=False)
+            self.plugin["xep_0030"].add_feature(_caps.FEATURE)
+            self.plugin["xep_0115"].caps_node = _caps.CAPS_NODE
+            await self.plugin["xep_0115"].update_caps(broadcast=False)
         except Exception:
             print("[xmpp] could not advertise OTRv4Plus capability; peers "
                   "will not start OTRv4+ automatically")
@@ -2188,7 +2188,7 @@ class OTRv4PlusXMPP(ClientXMPP):
         """
         try:
             return await _ping.round_trip(
-                self["xep_0199"], self.boundjid.host,
+                self.plugin["xep_0199"], self.boundjid.host,
                 self.KEEPALIVE_PING_TIMEOUT_S)
         except _ping.PingUnsupported:
             return True
@@ -5287,7 +5287,7 @@ class OTRv4PlusXMPP(ClientXMPP):
         """Send an XMPP ping to a peer and print the round-trip time."""
         async def _do():
             try:
-                rtt = await self["xep_0199"].async_ping(jid, timeout=30)
+                rtt = await self.plugin["xep_0199"].async_ping(jid, timeout=30)
                 print(f"[ping] {_sanitise(jid, 128)}: {rtt * 1000:.0f}ms")
             except IqError as e:
                 print(f"[ping] {_sanitise(jid, 128)}: error ({e.condition})")

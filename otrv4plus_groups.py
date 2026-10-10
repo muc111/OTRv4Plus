@@ -51,6 +51,7 @@ import time
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import otrv4plus_fragment as _fragment
+import otrv4plus_muc as _muc
 from android_bridge.events import (ErrorOccurred, GroupChanged, GroupInvite,
                                    RoomMessageReceived, SecurityState,
                                    security_state_from_level)
@@ -706,11 +707,34 @@ class TermuxGroups:
                        value="http://jabber.org/protocol/muc#roomconfig")
         form.add_field(var="muc#roomconfig_persistentroom", ftype="boolean",
                        value=True)
+        # Listed, and marked as an encrypted group, so it shows in a room
+        # list (with a group icon in the app) rather than only by address.
+        form.add_field(var="muc#roomconfig_publicroom", ftype="boolean",
+                       value=True)
+        form.add_field(var="muc#roomconfig_roomdesc", ftype="text-single",
+                       value=_muc.SECURE_GROUP_DESC)
         try:
             await muc.set_room_config(room, form, timeout=JOIN_TIMEOUT)
         except Exception:
             await muc.set_room_config(room, forms.make_form(ftype="submit"),
                                       timeout=JOIN_TIMEOUT)
+        # Read it back: a service that ignores or refuses the field accepts
+        # the form all the same, and the room then vanishes -- with the group's
+        # history -- the first time every member is offline at once.
+        persistent = False
+        try:
+            info = await self.host.plugin["xep_0030"].get_info(
+                jid=room, timeout=JOIN_TIMEOUT)
+            persistent = "muc_persistent" in {
+                str(f) for f in info["disco_info"]["features"]}
+        except Exception:
+            persistent = False
+        if not persistent:
+            self._print("[group %s] warning: the server would not keep this room "
+                        "while everyone is offline -- when the last member leaves "
+                        "it is deleted and the group must be made again. The "
+                        "server's admin can allow it (Prosody: "
+                        "muc_room_default_persistent = true)." % room[:64])
 
     def _leave_muc(self, room: str) -> None:
         nick = self._nicks.pop(room, None)

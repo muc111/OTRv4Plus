@@ -662,9 +662,24 @@ data class DiscoveredService(
  * [occupants] is the service's own count (XEP-0045 muc#roominfo_occupants),
  * or null when it gave none -- which is not the same as zero.
  */
-data class RoomSummary(val jid: String, val name: String, val occupants: Int? = null) {
+data class RoomSummary(
+    val jid: String,
+    val name: String,
+    val occupants: Int? = null,
+    /** An end-to-end encrypted (MLS) group, not an ordinary room ("channel"). */
+    val secure: Boolean = false,
+    /** The room needs a password to enter. */
+    val password: Boolean = false,
+) {
     /** The part before the `@`, for a service that advertises no name. */
     val label: String get() = name.ifBlank { jid.substringBefore('@') }
+
+    /** The symbol in front of the name: 🔐 encrypted group, # channel. */
+    val kindIcon: String get() = if (secure) "\uD83D\uDD10" else "#"
+
+    /** What the symbols say, for a screen reader and the line under the name. */
+    val kindText: String get() = (if (secure) "Encrypted group" else "Channel") +
+        (if (password) ", password needed" else "")
 }
 
 /**

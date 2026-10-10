@@ -518,6 +518,7 @@ class ConnectionController:
             # and its destruction by the owner ends the group here too.
             self._transport.persist_room = self._is_group_room
             self._transport.room_destroyed = self._on_room_destroyed
+            self._transport.room_not_persistent = self._on_room_not_persistent
         except Exception:
             pass
         try:
@@ -926,7 +927,31 @@ class ConnectionController:
         evidence that a service has no rooms -- which is why the UI also
         offers joining a room by address.
         """
-        return self._muc_call("discover_rooms", service)
+        result = self._muc_call("discover_rooms", service)
+        return self._with_held_groups(result, service)
+
+    def _with_held_groups(self, result: Dict[str, Any], service: str) -> Dict[str, Any]:
+        """Groups this account holds are secure whatever the listing says, and
+        are listed even when the service hides their room (a room made before
+        rooms were created public). Only rooms on this service."""
+        if not result.get("ok"):
+            return result
+        groups = getattr(self._app, "groups", None)
+        try:
+            held = [str(r).lower() for r in (groups.rooms() if groups else [])]
+        except Exception:
+            held = []
+        rooms = list(result.get("value") or [])
+        listed = {str(r.get("jid", "")).lower() for r in rooms}
+        for room in rooms:
+            if str(room.get("jid", "")).lower() in held:
+                room["secure"] = True
+        suffix = "@" + str(service).lower()
+        for room in sorted(held):
+            if room.endswith(suffix) and room not in listed:
+                rooms.append({"jid": room, "name": "", "occupants": None,
+                              "secure": True, "password": False})
+        return dict(result, value=rooms)
 
     def _rejoin_secure_rooms(self) -> None:
         """Re-enter every secure group's room after a (re)connect, in the
@@ -1160,6 +1185,17 @@ class ConnectionController:
 
     def remove_group_member(self, room: str, member: str) -> Dict[str, Any]:
         return self._group_call(self._app.groups.remove, room, member)
+
+    def _on_room_not_persistent(self, room: str) -> None:
+        """The service will delete this secure group's room when the last
+        member leaves. Said on screen: the group would otherwise vanish the
+        first time everybody is offline, with no clue why."""
+        try:
+            from .events import ErrorOccurred
+            self._app._emit(ErrorOccurred(peer=room, code="room_not_persistent",
+                                          detail=""))
+        except Exception:
+            pass
 
     def _on_room_destroyed(self, room: str) -> None:
         groups = getattr(self._app, "groups", None)
