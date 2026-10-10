@@ -121,7 +121,8 @@ class BundledRouter(private val context: Context) {
             lastFailure = null
             true
         } catch (e: Exception) {
-            lastFailure = "could not run it (${e.javaClass.simpleName})"
+            lastFailure = "could not run it (${e.javaClass.simpleName}" +
+                (e.message?.let { ": " + it.take(160) } ?: "") + ")"
             false
         }
     }
@@ -208,7 +209,7 @@ class BundledRouter(private val context: Context) {
                 while (true) {
                     val entry = zip.nextEntry ?: break
                     val out = File(dir, entry.name).canonicalFile
-                    require(out.path.startsWith(File(root, CERTS).path + File.separator)) {
+                    require(RouterChoice.isInside(File(root, CERTS), out)) {
                         "certificate archive entry outside its directory"
                     }
                     if (entry.isDirectory) {

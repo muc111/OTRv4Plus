@@ -4,6 +4,18 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.47 — 2026-10-10 — the built-in I2P router actually starts (core 0.13.1)
+
+- **Fix: "could not run it (IllegalArgumentException)"** (Pixel 7,
+  Android 17, rc.46). The check that keeps i2pd's certificate archive from
+  writing outside its folder refused the archive's first entry -- the
+  `certificates/` folder itself -- so the router was never launched. The
+  folder itself is now allowed; anything outside it is still refused
+  (RouterChoiceTest).
+- A launch failure now reports the exception's message as well as its type.
+
+---
+
 ## Android 0.7.0-experimental.rc.46 — 2026-10-10 — the built-in I2P router no longer gives up while it starts (core 0.13.1)
 
 - **Fix: "Built-in I2P router did not start" on a phone with no I2P app.**

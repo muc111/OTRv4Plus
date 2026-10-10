@@ -104,4 +104,13 @@ class RouterChoiceTest {
         assertTrue("exited with code 1: bad option" in why, why)
         assertTrue(RouterChoice.label(RouterChoice.State.FAILED, 0, false)!!.endsWith("."))
     }
+
+    @Test
+    fun `the certificate directory itself may be unpacked, nothing outside it`() {
+        val base = java.io.File("/data/app/i2pd/certificates")
+        assertTrue(RouterChoice.isInside(base, base))
+        assertTrue(RouterChoice.isInside(base, java.io.File(base, "reseed/a.crt")))
+        assertFalse(RouterChoice.isInside(base, java.io.File("/data/app/i2pd/i2pd.conf")))
+        assertFalse(RouterChoice.isInside(base, java.io.File("/data/app/i2pd/certificates-x/a")))
+    }
 }

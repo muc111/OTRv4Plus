@@ -125,6 +125,15 @@ object RouterChoice {
         |enabled = true
         |""".trimMargin()
 
+    /**
+     * Whether [path] is [base] or below it (both canonical). Guards the
+     * unpacking of i2pd's certificate archive. [base] itself counts: the
+     * archive's first entry is the `certificates/` directory, and rc.46
+     * refused it, so the router never started (IllegalArgumentException).
+     */
+    fun isInside(base: java.io.File, path: java.io.File): Boolean =
+        path == base || path.path.startsWith(base.path + java.io.File.separator)
+
     /** What the router is doing, for the connection screen. */
     enum class State {
         NOT_USED, EXTERNAL, STARTING,
