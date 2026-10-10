@@ -149,19 +149,20 @@ longer -- it also compiles the build tool once, see below; later builds are
 much faster):
 
 ```bash
-git clone https://github.com/muc111/OTRv4Plus.git
+git clone -b claude/otrv4plus-android-spec-a3oq4d https://github.com/muc111/OTRv4Plus.git
 cd OTRv4Plus/Rust
 bash build.sh
 cd ..
 ```
 
-`build.sh` sets up its own Python environment in `.venv`, runs the Rust
-tests and lints, installs the core (with secure groups) and ends with
-`BUILD OK`. On a phone keep Termux open while it runs; phone settings, logs
-and what each step does are in [TECHNICAL.md](TECHNICAL.md#buildsh-in-detail).
+That branch matches the APK on the Releases page (`main` lags behind). To switch an
+existing clone: `git fetch origin && git checkout claude/otrv4plus-android-spec-a3oq4d`.
 
-**3. Update later.** Pull, then rebuild the core, because both the Python
-files and the Rust core change:
+`build.sh` sets up its own Python environment in `.venv`, runs the Rust tests and
+lints, installs the core (with secure groups) and ends with `BUILD OK`. Keep Termux
+open while it runs; details in [TECHNICAL.md](TECHNICAL.md#buildsh-in-detail).
+
+**3. Update later.** Pull, then rebuild the core (both Python and Rust change):
 
 ```bash
 cd ~/OTRv4Plus
@@ -170,8 +171,7 @@ cd Rust && bash build.sh && cd ..
 git log -1 --format='%h %ad'     # check you are on the latest commit
 ```
 
-Keys and settings live in `~/.otrv4plus`, outside the repository, and are
-not touched by an update.
+Keys and settings live in `~/.otrv4plus`, outside the repository; updates leave them.
 
 **4. Networks.** For I2P, run an I2P router with the SAM bridge on port 7656
 (for example the I2P app, with "Use SAM bridge" enabled). For Tor, run Orbot
