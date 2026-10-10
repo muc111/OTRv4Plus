@@ -39,6 +39,25 @@ object GroupText {
         "${event.peer} invited you to the secure group ${event.room}" +
             if (event.verified) "." else " (this contact is not SMP-verified)."
 
+    /** "2 of 4 verified · about 1 min 30 s left · excluded: c@x (wrong passphrase)" */
+    fun verifyProgress(done: Int, total: Int, etaSeconds: Int,
+                       members: Map<String, String>, excluded: List<String>): String {
+        val verified = members.count { it.value == "verified" }
+        val running = members.count { it.value == "running" }
+        val waiting = members.count { it.value == "waiting" || it.value == "not_verified" }
+        val parts = mutableListOf("$verified of $total verified")
+        if (running + waiting > 0) {
+            parts += if (etaSeconds >= 60) "about ${etaSeconds / 60} min ${etaSeconds % 60} s left"
+                     else "about $etaSeconds s left"
+        }
+        if (running > 0) parts += "$running checking"
+        if (waiting > 0) parts += "$waiting not joined yet"
+        if (excluded.isNotEmpty()) {
+            parts += "excluded (wrong passphrase, not in calls): ${excluded.joinToString()}"
+        }
+        return parts.joinToString(" · ")
+    }
+
     /** What leaving or deleting a group does, asked before doing it. */
     fun endConfirm(delete: Boolean, room: String): String = if (delete)
         "The room $room is deleted on the server and every member's copy of the " +
@@ -73,6 +92,8 @@ object GroupText {
         "member_verify_failed" -> "${event.detail}: the group passphrases did not " +
             "match. Not verified, and not in group calls."
         "group_verified" -> "Every member of ${event.room} is verified. You can call the group."
+        "verify_finished" -> "Verification of ${event.room} finished: " +
+            event.detail.replace("verified=", "verified ").replace(";excluded=", "; excluded ") + "."
         "call_ringing" -> "${event.detail} is calling the group ${event.room}."
         "held" -> "${event.room} is still syncing: your messages wait until the " +
             "group is back in sync (a few seconds), then go encrypted."

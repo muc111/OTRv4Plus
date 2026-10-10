@@ -798,6 +798,14 @@ data class GroupVerifyState(
     val allVerified: Boolean = false,
     /** Who started a verification we have not joined yet, or "". */
     val startedBy: String = "",
+    /** A verification is running: [done] of [total] members settled. */
+    val active: Boolean = false,
+    val done: Int = 0,
+    val total: Int = 0,
+    /** Estimated seconds left for the members who joined. */
+    val etaSeconds: Int = 0,
+    /** Members whose passphrase did not match: not in group calls. */
+    val excluded: List<String> = emptyList(),
 )
 
 /** A secure group's call, as the engine has it. */

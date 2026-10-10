@@ -26,6 +26,28 @@ What this module decides, and where each guarantee comes from:
     socket, and never uses anything but the destinations members announced
     inside the group.
 
+THE SAME STRUCTURE AS A 1:1 CALL (owner requirement, 2026-10-10):
+
+  |                     | 1:1 call (voice.rs)        | group call (group_voice.rs) |
+  |---------------------|----------------------------|-----------------------------|
+  | frame cipher        | AES-256-GCM                | AES-256-GCM                 |
+  | nonce               | epoch || counter, derived  | epoch || counter, derived   |
+  | in-call ratchet     | every 500 frames (30 s)    | every 500 frames (30 s)     |
+  | replay window       | 256 frames                 | 256 frames                  |
+  | frame size          | padded to one fixed slot   | the same padding (pad_opus) |
+  | fresh keys          | X448 + ML-KEM-1024 rekey,  | a new MLS epoch (its keys   |
+  |                     | every 120 s                | reach each member by X448 + |
+  |                     |                            | ML-KEM-1024 HPKE), forced   |
+  |                     |                            | every 120 s by the caller   |
+  | who may be in it    | an SMP-verified peer       | members SMP-verified in the |
+  |                     |                            | group (group passphrase or  |
+  |                     |                            | 1:1 SMP), nobody else       |
+  | transport           | I2P datagrams              | I2P datagrams, full mesh    |
+
+The only difference is where a fresh key comes from: a 1:1 call runs its own
+hybrid exchange; a group call takes it from the group's epoch, which every
+commit renews with the same hybrid KEM. Keys never leave Rust in either.
+
 Not done here: audio capture, Opus, mixing (`mix` is a helper) and the call
 screen -- those belong to each client.
 """

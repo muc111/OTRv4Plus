@@ -514,10 +514,20 @@ class ChaquopyOtrCore(private val appContext: Context) : OtrCore {
                 members[k.toString()] = v.toString()
             }
         }
+        fun int(key: String): Int =
+            runCatching { value.callAttr("get", key)?.toInt() }.getOrNull() ?: 0
+        val excluded = runCatching {
+            value.callAttr("get", "excluded")?.asList()?.map { it.toString() }
+        }.getOrNull() ?: emptyList()
         return GroupVerifyState(
             members = members,
             allVerified = flag(value, "all_verified"),
             startedBy = entry(value, "started_by"),
+            active = flag(value, "active"),
+            done = int("done"),
+            total = int("total"),
+            etaSeconds = int("eta"),
+            excluded = excluded,
         )
     }
 

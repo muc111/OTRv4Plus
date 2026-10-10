@@ -1269,6 +1269,13 @@ class TestGroupVerification:
         assert "member_verify_failed" in a.changes()
         assert va.status(ROOM)[c.jid] == "failed"
         assert not va.all_verified(ROOM)
+        # Progress: everyone settled, who is in and who is out (owner request).
+        pr = va.progress(ROOM)
+        assert pr["done"] == pr["total"] == 2
+        assert pr["verified"] == [b.jid] and pr["excluded"] == [c.jid]
+        assert not pr["running"] and not pr["waiting"] and pr["eta"] == 0
+        assert "verify_finished" in a.changes()
+        assert "verify_progress" in a.changes()
 
     def test_a_short_passphrase_is_refused(self):
         w, (a, b) = _group(2)
@@ -1277,3 +1284,18 @@ class TestGroupVerification:
             va.start(ROOM, bytearray(b"short"))
         with pytest.raises(ValueError):
             va.start(ROOM)                               # none set at creation
+
+
+
+def test_verification_progress_counts_who_has_not_joined_and_estimates():
+    from android_bridge.group_verify import GroupVerify, PAIR_SECONDS_GUESS
+    w, (a, b, c) = _group(3, levels={"bob@x.i2p": SecurityState.ENCRYPTED,
+                                     "carol@x.i2p": SecurityState.ENCRYPTED})
+    va = GroupVerify(a.groups, emit=a.events.append)
+    GroupVerify(b.groups, emit=b.events.append)
+    GroupVerify(c.groups, emit=c.events.append)
+    va.start(ROOM, bytearray(b"correct horse battery"))
+    pr = va.progress(ROOM)
+    assert pr["active"] and pr["total"] == 2 and pr["done"] == 0
+    assert sorted(pr["waiting"]) == sorted([b.jid, c.jid])
+    assert pr["eta"] == int(PAIR_SECONDS_GUESS * 2 / 2)

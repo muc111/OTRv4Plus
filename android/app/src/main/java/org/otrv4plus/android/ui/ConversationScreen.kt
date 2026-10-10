@@ -1266,22 +1266,41 @@ private fun GroupVerifyAndCallBar(model: ChatViewModel, jid: String) {
                          style = MaterialTheme.typography.bodyMedium)
                     Button(onClick = { withMic("join") }) { Text("\uD83D\uDCDE Join") }
                 }
-                verify.allVerified -> {
-                    Button(onClick = { withMic("call") }) { Text("\uD83D\uDCDE Call the group") }
-                }
                 else -> {
-                    val waiting = verify.members.filterValues { it != "verified" }
-                    if (verify.members.isNotEmpty()) {
+                    val running = verify.members.count { it.value == "running" }
+                    val anyVerified = verify.members.values.any { it == "verified" }
+                    if (verify.active && verify.total > 0) {
+                        // Owner request (2026-10-10): progress and an ETA until
+                        // everyone who knew the passphrase is verified.
+                        LinearProgressIndicator(
+                            progress = { verify.done.toFloat() / verify.total },
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                        Text(org.otrv4plus.android.chat.GroupText.verifyProgress(
+                                 verify.done, verify.total, verify.etaSeconds,
+                                 verify.members, verify.excluded),
+                             style = MaterialTheme.typography.labelSmall)
+                    } else if (verify.members.isNotEmpty() && !verify.allVerified) {
+                        val notYet = verify.members.filterValues { it != "verified" }
                         Text("Verified: ${verify.members.count { it.value == "verified" }} of " +
-                             "${verify.members.size}" +
-                             if (waiting.isNotEmpty()) " (not yet: ${waiting.keys.joinToString()})"
-                             else "",
+                             "${verify.members.size} (not verified: ${notYet.keys.joinToString()})",
                              style = MaterialTheme.typography.labelSmall)
                     }
-                    Button(onClick = { asking = true }) {
-                        Text(if (verify.startedBy.isNotEmpty())
-                                 "Join the verification (${verify.startedBy})"
-                             else "Verify group")
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        // Callable once the checks are done and someone is
+                        // verified: anyone not verified is simply not in it.
+                        if (anyVerified && running == 0) {
+                            Button(onClick = { withMic("call") }) {
+                                Text("\uD83D\uDCDE Call the group")
+                            }
+                        }
+                        if (!verify.allVerified) {
+                            OutlinedButton(onClick = { asking = true }) {
+                                Text(if (verify.startedBy.isNotEmpty())
+                                         "Join the verification (${verify.startedBy})"
+                                     else "Verify group")
+                            }
+                        }
                     }
                 }
             }

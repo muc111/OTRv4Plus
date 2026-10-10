@@ -54,6 +54,9 @@ VERIFY_PREFIX = "\x00OTRv4GV1:"
 RUN_SECONDS = 30 * 60.0
 #: Failed SMPs with one member, per run, before we stop trying with them.
 MAX_FAILURES = 3
+#: One pair's SMP over I2P before any has been measured: four ~6-12 KB
+#: messages through the room, each paced and relayed. Measured runs replace it.
+PAIR_SECONDS_GUESS = 90.0
 MAX_CONTROL_LEN = 64 * 1024
 MAX_PASSPHRASE = 512
 MIN_PASSPHRASE = 8
@@ -69,6 +72,10 @@ class _Run:
     smp: Dict[str, Any] = field(default_factory=dict)  # peer -> RustSMP
     result: Dict[str, str] = field(default_factory=dict)  # peer -> verified/failed
     failures: Dict[str, int] = field(default_factory=dict)
+    #: When each pair's SMP began, and how long finished ones took (ETA).
+    began: Dict[str, float] = field(default_factory=dict)
+    took: list = field(default_factory=list)
+    finished_said: bool = False
 
 
 def _b64e(b: bytes) -> str:
@@ -189,6 +196,41 @@ class GroupVerify:
                 out[jid] = "waiting"
         return out
 
+    def progress(self, room: str) -> Dict[str, Any]:
+        """Where a verification stands, from this member's side: every other
+        member is verified, excluded (the passphrase did not match), running,
+        or not joined yet; `eta` estimates the seconds left for those who
+        joined (measured per pair on this run, a fixed guess until then)."""
+        status = self.status(room)
+        with self._lock:
+            run = self._live(room)
+            took = list(run.took) if run else []
+            began = dict(run.began) if run else {}
+            active = run is not None
+            joined = run is not None and run.secret is not None
+        verified = sorted(j for j, s in status.items() if s == "verified")
+        excluded = sorted(j for j, s in status.items() if s == "failed")
+        running = sorted(j for j, s in status.items() if s == "running")
+        waiting = sorted(j for j, s in status.items()
+                         if s in ("waiting", "not_verified"))
+        total = len(status)
+        per_pair = (sum(took) / len(took)) if took else PAIR_SECONDS_GUESS
+        now = self._clock()
+        left = [max(0.0, per_pair - (now - began[j])) for j in running if j in began]
+        # Pairs run side by side, but their messages share one paced room.
+        eta = int(max(left) if left else 0) + int(per_pair * len(waiting) / 2) \
+            if (running or waiting) else 0
+        return {
+            "active": active, "joined": joined, "total": total,
+            "done": len(verified) + len(excluded),
+            "verified": verified, "excluded": excluded,
+            "running": running, "waiting": waiting, "eta": eta,
+        }
+
+    def active_rooms(self) -> list:
+        with self._lock:
+            return [r for r in list(self._runs) if self._live(r) is not None]
+
     def all_verified(self, room: str) -> bool:
         st = self.status(room)
         return bool(st) and all(v == "verified" for v in st.values())
@@ -283,6 +325,7 @@ class GroupVerify:
                 continue
             with self._lock:
                 run.smp[peer] = smp
+                run.began[peer] = self._clock()
             self._send(room, {"t": "smp", "run": run.run_id, "to": peer,
                               "step": 1, "d": _b64e(step1)})
             self._emit(GroupChanged(peer=room, change="verify_running", detail=peer))
@@ -303,6 +346,7 @@ class GroupVerify:
                 smp = self._new_smp(room, run, peer, initiator=False)
                 with self._lock:
                     run.smp[peer] = smp
+                    run.began[peer] = self._clock()
                 reply, nxt = bytes(smp.process_smp1_generate_smp2(data)), 2
             elif smp is None:
                 return
@@ -346,7 +390,9 @@ class GroupVerify:
         with self._lock:
             run.smp.pop(peer, None)
             run.result[peer] = "verified"
+            self._took(run, peer)
         self._groups.mark_member_verified(room, peer)
+        self._emit(GroupChanged(peer=room, change="verify_progress"))
         self._maybe_finish(room, run)
 
     def _fail(self, room: str, run: _Run, peer: str) -> None:
@@ -354,15 +400,32 @@ class GroupVerify:
             smp = run.smp.pop(peer, None)
             run.result[peer] = "failed"
             run.failures[peer] = run.failures.get(peer, 0) + 1
+            self._took(run, peer)
         if smp is not None:
             try:
                 smp.destroy()
             except Exception:
                 pass
         self._emit(GroupChanged(peer=room, change="member_verify_failed", detail=peer))
+        self._emit(GroupChanged(peer=room, change="verify_progress"))
         self._maybe_finish(room, run)
 
+    def _took(self, run: _Run, peer: str) -> None:
+        """Lock held."""
+        began = run.began.pop(peer, None)
+        if began is not None:
+            run.took.append(max(0.0, self._clock() - began))
+
     def _maybe_finish(self, room: str, run: _Run) -> None:
+        # Everyone who joined is settled: say who is in and who is out once.
+        prog = self.progress(room)
+        if (run.secret is not None and not prog["running"] and not run.finished_said
+                and prog["done"] and not prog["waiting"]):
+            run.finished_said = True
+            self._emit(GroupChanged(peer=room, change="verify_finished",
+                                    detail="verified=%s;excluded=%s" % (
+                                        ",".join(prog["verified"]),
+                                        ",".join(prog["excluded"]))))
         if self.all_verified(room):
             self._emit(GroupChanged(peer=room, change="group_verified"))
             with self._lock:

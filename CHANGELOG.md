@@ -4,6 +4,28 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.44 — 2026-10-10 — verification progress, ETA, who is in and who is out (core 0.13.1)
+
+- **Progress and an ETA while a group verifies.** App: a progress bar on
+  the group's screen with "2 of 4 verified · about 1 min 30 s left · 1
+  checking · 1 not joined yet", and the members excluded. Termux: a bar
+  (\`[########------------] 2/4 · ~1m30s left · ...\`) on every change and
+  every 15 s while pairs are being checked. The estimate is measured on the
+  run itself (each pair's SMP is timed), with a fixed guess until the first
+  pair finishes.
+- **The end of a verification says who is in and who is out**: verified
+  members, and those excluded because their passphrase did not match --
+  they cannot join group calls.
+- **Call once the checks are done**, not only when every member passed:
+  verified members are in the call, anyone else simply is not.
+- Group calls are documented against 1:1 calls (android_bridge/group_call):
+  the same AES-256-GCM frames, nonce rule, 30 s ratchet, replay window,
+  padding and I2P datagrams; fresh keys every 120 s from a new MLS epoch
+  (X448 + ML-KEM-1024 HPKE) instead of a per-call X448 + ML-KEM-1024 rekey.
+  Group verification is the same Rust SMP as 1:1 \`/smp\`.
+
+---
+
 ## Android 0.7.0-experimental.rc.43 — 2026-10-10 — group passphrase verification and group calls in the app (core 0.13.1)
 
 Owner design: whoever creates a secure group sets its passphrase; members

@@ -1321,3 +1321,13 @@ class TestVerifyingTheGroupWithItsPassphrase:
             assert not w.a.groups.verify.has_passphrase(ROOM)
 
         run(go())
+
+
+
+def test_the_verification_bar_says_who_is_in_out_and_how_long():
+    pr = {"total": 4, "done": 2, "verified": ["a"], "excluded": ["b"],
+          "running": ["c"], "waiting": ["d"], "eta": 95}
+    bar = OG.TermuxGroups.verify_bar(pr, width=8)
+    assert bar.startswith("[####----] 2/4")
+    assert "~1m35s left" in bar and "1 excluded (wrong passphrase)" in bar
+    assert "1 not joined yet" in bar and "1 checking" in bar

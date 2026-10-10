@@ -1096,8 +1096,11 @@ class ConnectionController:
         def go():
             v = self._app.group_verify
             pending = v.pending(room)
+            pr = v.progress(room)
             return {"members": v.status(room), "all_verified": v.all_verified(room),
-                    "started_by": pending["starter"] if pending else ""}
+                    "started_by": pending["starter"] if pending else "",
+                    "active": pr["active"], "done": pr["done"], "total": pr["total"],
+                    "eta": pr["eta"], "excluded": pr["excluded"]}
         return self._group_call(go)
 
     def set_group_call_auto_join(self, allowed: bool) -> Dict[str, Any]:

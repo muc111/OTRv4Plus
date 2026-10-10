@@ -385,9 +385,9 @@ class TermuxGroups:
             epoch = (" (epoch %s)" % ev.epoch) if getattr(ev, "epoch", None) is not None else ""
             if change not in ("syncing", "synced", "held", "reinvited", "deleted",
                               "member_verified", "member_bound", "held_change",
-                              "verify_started", "verify_running",
-                              "member_verify_failed", "group_verified",
-                              "call_paused", "call_resumed"):
+                              "verify_started", "verify_running", "verify_progress",
+                              "verify_finished", "member_verify_failed",
+                              "group_verified", "call_paused", "call_resumed"):
                 p("[group %s] %s%s%s" % (ev.peer[:64], change, detail, epoch))
             if change == "joined":
                 self._flush_prejoin(ev.peer)
@@ -447,6 +447,18 @@ class TermuxGroups:
             elif change == "verify_running":
                 p("[group %s] checking the passphrase with %s..."
                   % (ev.peer[:64], (ev.detail or "")[:96]))
+                self._print_verify_bar(ev.peer)
+                self._arm_verify_ticker()
+            elif change == "verify_progress":
+                self._print_verify_bar(ev.peer)
+            elif change == "verify_finished":
+                pr = self.verify.progress(ev.peer)
+                p("[group %s] verification finished. Verified: %s.%s%s"
+                  % (ev.peer[:64], ", ".join(pr["verified"]) or "nobody",
+                     (" Excluded -- the passphrase did not match, not in group "
+                      "calls: %s." % ", ".join(pr["excluded"])) if pr["excluded"] else "",
+                     (" /group call %s -- the verified join automatically."
+                      % ev.peer.split("@", 1)[0]) if pr["verified"] else ""))
             elif change == "member_verify_failed":
                 p("[group %s] %s: the passphrases did not match -- not verified, "
                   "and not in group calls" % (ev.peer[:64], (ev.detail or "")[:96]))
@@ -574,6 +586,58 @@ class TermuxGroups:
             pass
         if self._media is not None:
             self._call_tick = self.host.loop.call_later(1.0, self._tick_calls)
+
+    # -- verification progress ------------------------------------------------
+
+    VERIFY_TICK = 15.0
+
+    @staticmethod
+    def verify_bar(pr: Dict[str, Any], width: int = 20) -> str:
+        """`[########------------] 2/5 · ~1m30s left · 2 verified, ...`"""
+        total = pr["total"] or 1
+        filled = int(width * pr["done"] / total)
+        line = "[%s%s] %d/%d" % ("#" * filled, "-" * (width - filled),
+                                 pr["done"], pr["total"])
+        if pr["running"] or pr["waiting"]:
+            eta = int(pr["eta"])
+            line += " · ~%dm%02ds left" % (eta // 60, eta % 60)
+        parts = ["%d verified" % len(pr["verified"])]
+        if pr["excluded"]:
+            parts.append("%d excluded (wrong passphrase)" % len(pr["excluded"]))
+        if pr["running"]:
+            parts.append("%d checking" % len(pr["running"]))
+        if pr["waiting"]:
+            parts.append("%d not joined yet" % len(pr["waiting"]))
+        return line + " · " + ", ".join(parts)
+
+    def _print_verify_bar(self, room: str) -> None:
+        try:
+            pr = self.verify.progress(room)
+        except Exception:
+            return
+        if pr["total"]:
+            self._print("[group %s] verify %s" % (room[:64], self.verify_bar(pr)))
+
+    def _arm_verify_ticker(self) -> None:
+        loop = getattr(self.host, "loop", None)
+        if loop is None or getattr(self, "_verify_tick", None) is not None:
+            return
+
+        def tick():
+            self._verify_tick = None
+            busy = False
+            for room in self.verify.active_rooms():
+                pr = self.verify.progress(room)
+                if pr["running"]:
+                    busy = True
+                    self._print_verify_bar(room)
+            if busy:
+                self._verify_tick = loop.call_later(self.VERIFY_TICK, tick)
+
+        try:
+            self._verify_tick = loop.call_later(self.VERIFY_TICK, tick)
+        except Exception:
+            self._verify_tick = None
 
     def _is_verified(self, room: str, who: str) -> bool:
         try:
