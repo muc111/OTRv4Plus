@@ -393,6 +393,38 @@ class TestTheTransport:
         assert plugin.published == [("data", len(good)), ("meta", "image/png")]
         assert "me@x.i2p" in t.avatar_ids()
 
+    def test_a_server_without_pep_is_named_as_the_cause(self):
+        """Device test (2026-10-10): the picture was fine (13 KB, 96x96 PNG
+        after the app's conversion) but Prosody had no "pep" module, and the
+        app only said it 'could not be published'."""
+        slixmpp = pytest.importorskip("slixmpp")
+        from slixmpp.exceptions import IqError
+        from android_bridge import transport as T
+        from android_bridge.connection import ConnectionController
+        t, plugin, asyncio = self._transport("")
+
+        async def refuse(png, timeout=None):
+            iq = slixmpp.stanza.Iq()
+            iq["type"] = "error"
+            iq["error"]["type"] = "cancel"
+            iq["error"]["condition"] = "feature-not-implemented"
+            raise IqError(iq)
+
+        plugin.publish_avatar = refuse
+        import threading
+        t._connected = threading.Event()
+        t._connected.set()
+        t._profile = type("P", (), {"jid": "me@x.i2p"})()
+        t._run = lambda coro, timeout: asyncio.run(coro)
+        with pytest.raises(T.TransportError) as exc:
+            t.publish_avatar(png(96, 96, 6))
+        assert exc.value.code == "pep_unavailable"
+        ctl = ConnectionController.__new__(ConnectionController)
+        ctl._transport = t
+        out = ctl.set_avatar(png(96, 96, 6))
+        assert not out["ok"] and out["code"] == "pep_unavailable"
+        assert "pep" in out["detail"] and "modules_enabled" in out["detail"]
+
     def test_the_controller_hands_raw_pixels_not_the_file(self):
         from android_bridge.connection import ConnectionController
         data = png(5, 4, 6)

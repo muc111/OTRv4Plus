@@ -1338,10 +1338,16 @@ class ConnectionController:
             # named by its type only.
             code = getattr(exc, "code", None) or type(exc).__name__
             _TRACE.record("avatar", "publish_failed", "warning", code=code)
-            return {"ok": False, "code": code,
-                    "detail": "The picture could not be used (%s)."
-                    % getattr(exc, "detail", "") if code == "avatar_refused"
-                    else "The picture could not be published.", "value": None}
+            if code == "pep_unavailable":
+                detail = ("This server does not store profile pictures (it has "
+                          "no PEP service). Its admin can turn it on -- "
+                          "Prosody: add \"pep\" to modules_enabled.")
+            elif code == "avatar_refused":
+                detail = ("The picture could not be used (%s)."
+                          % getattr(exc, "detail", ""))
+            else:
+                detail = "The picture could not be published."
+            return {"ok": False, "code": code, "detail": detail, "value": None}
         _TRACE.record("avatar", "published", "info")
         return {"ok": True, "code": "ok", "detail": "", "value": None}
 

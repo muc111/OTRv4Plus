@@ -244,6 +244,24 @@ group ends it on that refusal (rc.51). Check one with
 (`true` for a tombstone). To have deleted rooms go at once, set
 `muc_tombstones = false` in the component and destroy them again.
 
+## 6. Profile pictures need PEP
+
+The app publishes an avatar with XEP-0084, which stores it in the account's
+PEP service (XEP-0163). A Prosody without the `pep` module refuses the
+publish; the app then says so ("This server does not store profile
+pictures") rather than blaming the picture. Add it to the global
+`modules_enabled`:
+
+```lua
+modules_enabled = {
+    -- ...
+    "pep";      -- avatars (XEP-0084) and other per-account published data
+}
+```
+
+The picture itself is made on the phone: cropped to a square, scaled to
+96 x 96 and re-encoded as PNG, so its size and format do not matter.
+
 ## Not validated
 
 * The live Prosody's module list, admin list and any subscription-expiry

@@ -544,6 +544,12 @@ class _StreamWatch:
 
 
 
+#: Error conditions with which a server that has no PEP (XEP-0163) refuses
+#: an avatar publish -- Prosody without "pep" in modules_enabled.
+PEP_MISSING = frozenset({"feature-not-implemented", "service-unavailable",
+                         "item-not-found"})
+
+
 def _room_was_created(join_result) -> bool:
     """Whether `join_muc_wait`'s answer says the join created the room
     (XEP-0045 status 201)."""
@@ -3799,7 +3805,19 @@ class XmppTransport(Transport):
             w, h, _rgba = _avatar.decode_png(png)
         except _avatar.AvatarError as exc:
             raise TransportError("avatar_refused", exc.code)
-        self._run(self._publish_avatar(png, w, h), CALL_TIMEOUT)
+        try:
+            self._run(self._publish_avatar(png, w, h), CALL_TIMEOUT)
+        except TransportError:
+            raise
+        except Exception as exc:
+            # A server without PEP (XEP-0163) has nowhere to keep an avatar
+            # and refuses the publish. Said as such, not as a vague failure:
+            # it is a server setting, not the picture (device test,
+            # 2026-10-10: Prosody without "pep" in modules_enabled).
+            cond = _muc._condition_of(exc)
+            if cond in PEP_MISSING:
+                raise TransportError("pep_unavailable", cond)
+            raise
         self._avatars.set_own(self._profile.jid, png)
 
     async def _publish_avatar(self, png: bytes, w: int, h: int) -> None:

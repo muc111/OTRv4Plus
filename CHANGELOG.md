@@ -4,6 +4,18 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.52 — 2026-10-10 — a server without PEP is named when a picture will not publish (core 0.13.1)
+
+- Device report: a profile picture would not upload. The picture was fine
+  -- run through the app's conversion it is a 13 KB, 96 x 96 PNG that passes
+  every check -- but the server's Prosody had no \`pep\` module, which is
+  where XEP-0084 keeps avatars, and the app only said "could not be
+  published". A refusal for lack of PEP is now \`pep_unavailable\`:
+  "This server does not store profile pictures ... Prosody: add "pep" to
+  modules_enabled." PROSODY_USER_DISCOVERY.md §6.
+
+---
+
 ## Android 0.7.0-experimental.rc.51 — 2026-10-10 — a deleted room's tombstone ends the group (core 0.13.1)
 
 Server clean-up (Prosody 13): \`destroy()\` on the old test rooms returned
