@@ -93,9 +93,11 @@ secrets the terminal clients keep at rest are held by the Rust core, the
 dependency audit is clean, the documentation licence is decided, the icon's
 origin is recorded, and the release variant is built and its contents
 inspected on this run. It is still **not a release** and it is still
-EXPERIMENTAL: encrypted chat, identity verification, file transfer and
-two-way voice calls (app to app, and app to Termux) have been proved on
-handsets, and the smaller items below are still open.
+EXPERIMENTAL: encrypted chat, identity verification, file transfer,
+two-way voice calls (app to app, and app to Termux) and post-quantum secure
+groups of four members across the app and Termux have been proved on
+handsets; group verification and group calls are not yet, and the items
+below are still open.
 
 ---
 
@@ -140,6 +142,19 @@ Reported on 2026-10-02/03, on the project's new server \`otrv4plus.i2p\`:
   app, invited a Termux user over OTRv4+, the Termux user joined at epoch 1
   and read Alice's group messages, decrypted by MLS.
 
+Reported on 2026-10-05/10, on \`otrv4plus.i2p\`, two phones, each running the
+app and a Termux client (four accounts):
+
+- **secure groups of three and four members**, on the **hybrid post-quantum
+  suite** (X448 + ML-KEM-1024 / Ed448 + ML-DSA-87): all four clients sent and
+  read each other's group messages, **app to Termux, Termux to app, Termux to
+  Termux and app to app**, through the stock-limited room (adaptive pacing);
+- **typing straight into a group** in Termux, short names (\`/group create
+  mls3\`, \`/group invite mls3 bob\`), and **messages typed while a group
+  resyncs or changes** waiting and then going, instead of being lost;
+- **re-inviting a member whose copy of the group had fallen behind**
+  (rc.39): the invitation shows, and the member reads the group again.
+
 No cryptography runs in Kotlin or Python: every session, SMP and file key is
 held by the Rust core.
 
@@ -170,28 +185,32 @@ Asserted on every run rather than assumed:
 
 ## NOT verified, and the reason this is still experimental
 
-- **Secure groups beyond two members**, and **Termux to app** group text
-  (only app to Termux has been seen). A three- and four-member test across
-  two phones (app and Termux on each) is next; PHYSICAL_TEST_PLAN.md §7a.
-- **Added since the last handset test**, not yet run on one: the Profile
-  screen (vcard-temp), avatars, automatic MLS rekey, the automatic re-send
-  of a lost group change, the auto-created Welcome room (rc.20-rc.25); the
-  **hybrid post-quantum groups** (X448+ML-KEM-1024 / Ed448+ML-DSA-87),
-  **adaptive room pacing**, **per-group MLS signing keys rotated at every
-  rekey**, verification that survives a rekey and a restart, and **removal
-  of members away for 72 hours** (rc.27). Groups made before rc.27 keep
-  working but must be re-created to add members. **Group voice calls**
-  (rc.28) work in the Termux client only so far, and have not been tried on
-  phones; the app has no group call screen yet. See CHANGELOG.md.
-- **What earlier versions added**, not yet run on a handset: automatic
+- **Group verification with the group passphrase** (rc.43-rc.44: SMP between
+  every pair of members, the progress bar and ETA, excluding a member whose
+  passphrase did not match) has run in tests only, not over I2P on phones.
+- **Group voice calls on phones**, from the app (new in rc.43) or Termux:
+  ringing, automatic joining of verified members, pause and hang up. Tested
+  in-process only. The call uses the 1:1 call's frame encryption, ratchet,
+  replay window and padding, with fresh keys from the group every 120 s.
+- **Since rc.25, in use but not checked one by one**: automatic MLS rekeys
+  and per-group signing keys rotated at each, the re-send of a lost group
+  change, removal of members away for 72 hours, verification that survives
+  a rekey and a restart. Groups made before rc.27 must be re-created to add
+  members.
+- **Recent fixes awaiting a handset re-run**: signing out and in again
+  (rc.38), deleting a group for everyone and its end on members who were
+  away (rc.40-rc.41), encrypted groups listed on the Rooms screen (rc.41),
+  y/n invitations in Termux and member verification by 1:1 SMP (rc.42).
+- **Earlier additions not yet run on a handset**: the Profile screen
+  (vcard-temp) and avatars, the auto-created Welcome room, automatic
   OTRv4+ only toward clients that advertise OTRv4Plus, the People list, file
   progress with ETA, the in-app viewer, Wipe & Exit from the conversation
   list, and the theme.
 - **Background survival, and reconnect** after a transient failure.
 - **The subscription banner**: what the app shows when somebody else asks to
   see your presence.
-- **A room shared with a second account.** Rooms have been created and
-  entered from one handset; the locked-room path needs two.
+- **A plain room shared with a second account.** The locked-room path needs
+  two.
 - **Metadata stripping of a handset camera photo**, and a re-run of Wipe &
   Exit: \`ANDROID_CALL_AND_FILE_DEVICE_TEST.md\` lists every step, separating
   what CI has verified from what needs hardware.
