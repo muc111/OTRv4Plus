@@ -927,11 +927,10 @@ class TestALostCommitIsSentAgain:
     def test_trying_to_send_sends_it_again(self, world):
         w = world
         self._setup(w)
-        from android_bridge.groups import GroupError
-        with pytest.raises(GroupError) as exc:
-            w.c.app.groups.send(ROOM, "blocked")
-        assert exc.value.code == "commit_pending"
+        # Held, not refused (rc.42), and the try sends the change again.
+        assert w.c.app.groups.send(ROOM, "blocked") == "held"
         self._finish(w)
+        assert w.b.lines("blocked")
 
     def test_rejoining_the_room_sends_it_again(self, world):
         w = world
@@ -1228,5 +1227,44 @@ class TestDeletingAGroup:
             c._on_presence_unavailable(pres)
             assert not w.b.groups.groups.is_secure(ROOM)
             assert w.b.lines("the group was deleted")
+
+        run(go())
+
+
+class TestAnsweringAnInvitationWithYOrN:
+    """Owner request (2026-10-10): y/n instead of typing /group accept."""
+
+    def test_y_accepts_and_other_text_is_not_an_answer(self, world):
+        w = world
+
+        async def go():
+            await _otr_all(w)
+            await w.a.cmd("/group create " + ROOM)
+            await w.a.cmd("/group invite %s %s" % (ROOM, w.b.jid))
+            await w.server.pump()
+            assert w.b.lines("Join? [y/n]")
+            assert w.b.groups.pending_prompt() == ROOM
+            assert w.b.groups.answer_prompt("yes please") is False   # not an answer
+            assert w.b.client.dispatch_line(None, "y") is True
+            await _settle()
+            await w.server.pump()
+            assert w.b.groups.groups.is_secure(ROOM)
+            assert w.b.groups.pending_prompt() is None
+
+        run(go())
+
+    def test_n_declines(self, world):
+        w = world
+
+        async def go():
+            await _otr_all(w)
+            await w.a.cmd("/group create " + ROOM)
+            await w.a.cmd("/group invite %s %s" % (ROOM, w.b.jid))
+            await w.server.pump()
+            assert w.b.client.dispatch_line(None, "n") is True
+            await _settle()
+            await w.server.pump()
+            assert not w.b.groups.groups.is_secure(ROOM)
+            assert w.b.lines("declined")
 
         run(go())

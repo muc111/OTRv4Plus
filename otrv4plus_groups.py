@@ -71,8 +71,8 @@ STALE_WARN_AFTER = 3
 JOIN_TIMEOUT = 120
 #: The `/group` verbs; any other first word is read as a room name.
 VERBS = frozenset(("help", "?", "create", "invite", "invites", "accept", "decline",
-                   "say", "members", "remove", "rekey", "leave", "delete", "call",
-                   "answer", "hangup", "calls", "list"))
+                   "say", "members", "verify", "remove", "rekey", "leave", "delete",
+                   "call", "answer", "hangup", "calls", "list"))
 
 HELP = """\
   Secure groups (MLS; the room sees ciphertext only). <room> can be just its
@@ -86,6 +86,8 @@ HELP = """\
   /group <room> [text]                  switch to the group (and send text)
   /to <room or user>                    talk to a group or a contact: then just type
   /group members <room>                 members, fingerprints, verified or not
+  /group verify <room>                  verified members (needed for calls): send
+                                        your key to each; /smp with anyone unverified
   /group remove <room> <jid>            remove a member (new epoch)
   /group rekey <room>                   fresh key for you (post-compromise)
   /group leave <room>                   forget the group's keys here and leave
@@ -143,6 +145,8 @@ class TermuxGroups:
         self._media = None
         self._call_tick = None
         self._rejected_said: Dict[str, float] = {}     # room -> when we said so
+        #: The invitation a bare y/n answers: (room, when asked).
+        self._prompt: Optional[Tuple[str, float]] = None
         self._opened = False
 
     # -- lifecycle ----------------------------------------------------------
@@ -354,15 +358,20 @@ class TermuxGroups:
                  mark, ev.body))
             self._activate(ev.peer, only_if_idle=True)
         elif isinstance(ev, GroupInvite):
+            # Answered with a bare y or n (owner request, 2026-10-10): the
+            # same kind of question as an SMP request, and only an exact
+            # y/yes/n/no answers it -- anything else is typed as usual.
+            self._prompt = (ev.room, self._clock())
             p("[group] %s invites you to the secure group %s (%s). "
-              "/group accept %s  or  /group decline %s"
+              "Join? [y/n]   (or later: /group accept %s)"
               % (ev.peer, ev.room, "SMP-verified" if ev.verified else
-                 "NOT SMP-verified", ev.room, ev.room))
+                 "NOT SMP-verified", ev.room.split("@", 1)[0]))
         elif isinstance(ev, GroupChanged):
             change = ev.change
             detail = (" " + ev.detail) if getattr(ev, "detail", "") else ""
             epoch = (" (epoch %s)" % ev.epoch) if getattr(ev, "epoch", None) is not None else ""
-            if change not in ("syncing", "synced", "held", "reinvited", "deleted"):
+            if change not in ("syncing", "synced", "held", "reinvited", "deleted",
+                              "member_verified", "member_bound", "held_change"):
                 p("[group %s] %s%s%s" % (ev.peer[:64], change, detail, epoch))
             if change == "joined":
                 self._flush_prejoin(ev.peer)
@@ -379,6 +388,16 @@ class TermuxGroups:
                   "/group accept %s replaces this device's copy with the "
                   "current one; otherwise ignore it."
                   % (ev.peer[:64], (ev.detail or "")[:96], ev.peer[:64]))
+            elif change == "member_verified":
+                p("[group %s] %s is verified in this group (group calls with "
+                  "them are possible)" % (ev.peer[:64], (ev.detail or "")[:96]))
+            elif change == "member_bound":
+                p("[group %s] %s's group key received over OTRv4+, not yet "
+                  "SMP-verified: /smp with them to verify"
+                  % (ev.peer[:64], (ev.detail or "")[:96]))
+            elif change == "held_change":
+                p("[group %s] a group change is landing: what you type waits "
+                  "and goes encrypted right after" % ev.peer[:64])
             elif change == "held":
                 p("[group %s] the group is still syncing: what you type waits "
                   "and goes encrypted once it is in sync (a few seconds)"
@@ -727,8 +746,8 @@ class TermuxGroups:
                         "clear" % (room[:64], exc.code))
             return
         if outcome == "held":
-            self._print("[group %s] me (waiting -- the group is syncing; "
-                        "sent once it is): %s" % (room[:64], text))
+            self._print("[group %s] me (waiting -- sent as soon as the group is "
+                        "ready): %s" % (room[:64], text))
             return
         self._print("[group %s] me: %s" % (room[:64], text))
 
@@ -792,6 +811,18 @@ class TermuxGroups:
                     "hybrid X448+ML-KEM-1024 / Ed448+ML-DSA-87" if suite == "hybrid"
                     else "PQ-only ML-KEM-1024 / ML-DSA-87 (made before rc.27: "
                          "re-create it to add members)"))
+            elif verb == "verify" and arg1:
+                result = self.groups.verify_members(arg1)
+                for jid, status in sorted(result.items()):
+                    p("[group %s] %s: %s" % (arg1[:64], jid, {
+                        "verified": "verified",
+                        "sent": "key sent; verified once you and they have done "
+                                "/smp (do it now if you have not)",
+                        "no_session": "no OTRv4+ session: /otr %s, then /smp"
+                                      % jid.split("@", 1)[0],
+                    }[status]))
+                if not result:
+                    p("[group %s] nobody else is in the group" % arg1[:64])
             elif verb == "remove" and arg1 and arg2:
                 self.groups.remove(arg1, self.contact(arg2))
                 p("[group %s] removal of %s committed" % (arg1, self.contact(arg2)))
@@ -825,6 +856,32 @@ class TermuxGroups:
         except GroupError as exc:
             p("[group] %s failed: %s%s" % (verb, exc.code,
                                           (" (%s)" % exc.detail) if exc.detail else ""))
+
+    #: How long a y/n stays the answer to an invitation.
+    PROMPT_SECONDS = 600.0
+
+    def pending_prompt(self) -> Optional[str]:
+        """The room a bare y/n would answer now, if any."""
+        if self._prompt is None or not self._opened:
+            return None
+        room, at = self._prompt
+        if self._clock() - at > self.PROMPT_SECONDS or not any(
+                i["room"] == room and not i["accepted"]
+                for i in self.groups.pending_invites()):
+            self._prompt = None
+            return None
+        return room
+
+    def answer_prompt(self, answer: str) -> bool:
+        """`y`/`yes`/`n`/`no` for the pending invitation. True if it was one."""
+        room = self.pending_prompt()
+        word = answer.strip().lower()
+        if room is None or word not in ("y", "yes", "n", "no"):
+            return False
+        self._prompt = None
+        verb = "accept" if word in ("y", "yes") else "decline"
+        asyncio.ensure_future(self.command("%s %s" % (verb, room)))
+        return True
 
     async def _create(self, room: str) -> None:
         """Room first, then the group -- and if the group step fails the room

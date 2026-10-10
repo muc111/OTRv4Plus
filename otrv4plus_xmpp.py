@@ -3967,6 +3967,14 @@ class OTRv4PlusXMPP(ClientXMPP):
                         "\n" + _SMP + f" *** IDENTITY VERIFIED with {peer} - "
                         "shared secret matched (SMP complete). ***\n"
                     )
+                    # The secure groups we share with them: verified there
+                    # too (group calls need it), keys sent both ways.
+                    groups = getattr(self, "_groups", None)
+                    if groups is not None and getattr(groups, "_opened", False):
+                        try:
+                            groups.groups.on_peer_verified(peer)
+                        except Exception:
+                            pass
                 return
             if not name:
                 return
@@ -5727,6 +5735,11 @@ class OTRv4PlusXMPP(ClientXMPP):
                 "y", "yes", "n", "no"):
             self._handle_smp_consent(consent_for, line.strip().lower())
             return True
+        # A group invitation asks the same way: only an exact y/n answers it.
+        groups = getattr(self, "_groups", None)
+        if groups is not None and getattr(groups, "answer_prompt", None) is not None:
+            if groups.answer_prompt(line):
+                return True
 
         if not line:
             return True

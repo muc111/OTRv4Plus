@@ -78,6 +78,8 @@ def _rooms_settle_at_once(monkeypatch):
     from android_bridge.groups import SecureGroups as _SG
     monkeypatch.setattr(_SG, "SYNC_SETTLE_SECONDS", 0.0)
 
+from android_bridge.groups import SIGNAL_PREFIX as T_SIGNAL  # noqa: E402
+
 class World:
     def __init__(self, state_root=None):
         self.room = Room()
@@ -313,9 +315,13 @@ def test_sending_never_falls_back_to_plaintext():
     w.room.post = lambda s, body: None          # our commit is lost in transit
     a.groups.rekey(ROOM)
     w.room.post = orig
-    with pytest.raises(GroupError) as e:
-        a.groups.send(ROOM, "must not leak")
-    assert e.value.code == "commit_pending"
+    # Our change has not landed: the line waits (rc.42), never goes plain.
+    assert a.groups.send(ROOM, "must not leak") == "held"
+    assert "held_change" in a.changes()
+    assert all("must not leak" not in body for _, body in w.room.log)
+    # The change goes out again and lands; the line follows, encrypted.
+    a.groups.on_room_rejoined(ROOM)
+    assert any(body == "must not leak" for _s, body, _v in b.texts())
     assert all("must not leak" not in body for _, body in w.room.log)
     with pytest.raises(GroupError):
         a.groups.send("not-a-group@conference.x.i2p", "plain")
@@ -1163,3 +1169,55 @@ def test_deleting_says_who_may_and_cleans_up_a_room_already_gone():
     ctl.destroy_room = lambda room, reason="": {
         "ok": False, "code": "item_not_found", "detail": "", "value": None}
     assert ctl.delete_secure_group(ROOM)["ok"] and ended == [ROOM]
+
+
+class TestVerifyingMembersForCalls:
+    """Owner question (2026-10-10): group calls need verified members; how?
+    SMP between two members, at any time, now verifies them in every group
+    they share -- not only inviter and invitee at invitation time."""
+
+    def _verified(self, m, jid):
+        return {x["jid"]: x["verified"] for x in m.groups.members(ROOM)}[jid]
+
+    def test_smp_between_two_members_verifies_them_in_the_group(self):
+        w, (a, b, c) = _group(3)
+        assert not self._verified(b, c.jid) and not self._verified(c, b.jid)
+        # They have an OTRv4+ session but have not run SMP yet.
+        w.pair(b.jid, c.jid, SecurityState.ENCRYPTED)
+        assert b.groups.verify_members(ROOM)[c.jid] == "sent"
+        assert "member_bound" in c.changes()
+        assert not self._verified(c, b.jid)
+        # SMP succeeds (both sides hear it): verified both ways.
+        w.pair(b.jid, c.jid, SecurityState.SMP_VERIFIED)
+        b.groups.on_peer_verified(c.jid)
+        c.groups.on_peer_verified(b.jid)
+        assert self._verified(b, c.jid) and self._verified(c, b.jid)
+        assert "member_verified" in b.changes() and "member_verified" in c.changes()
+
+    def test_without_an_encrypted_session_nothing_is_bound(self):
+        # (The real clients refuse to send without a session; the simulated
+        # side channel delivers anyway, so the receiving side's own check is
+        # what this shows.)
+        w, (a, b, c) = _group(3)
+        b.groups.verify_members(ROOM)
+        assert "group_signal_unencrypted" in c.errors()
+        assert not self._verified(c, b.jid)
+        assert "member_bound" not in c.changes()
+
+    def test_a_key_the_group_does_not_hold_is_refused(self):
+        w, (a, b, c) = _group(3)
+        w.pair(b.jid, c.jid, SecurityState.SMP_VERIFIED)
+        c.groups.on_signal(b.jid, "%sFP:%s|%s" % (T_SIGNAL, ROOM, "ab" * 48))
+        assert not self._verified(c, b.jid)
+        assert "refused" in c.changes()
+
+
+def test_the_app_says_who_still_needs_smp():
+    from android_bridge.connection import ConnectionController
+    ctl = ConnectionController.__new__(ConnectionController)
+    status = {"b@x": "sent", "c@x": "no_session", "d@x": "verified"}
+    ctl._app = type("App", (), {"groups": type("G", (), {
+        "verify_members": staticmethod(lambda room: status)})()})()
+    out = ctl.verify_group_members(ROOM)
+    assert out["ok"] and "b@x" in out["detail"] and "c@x" in out["detail"]
+    assert "SMP" in out["detail"] and "d@x" not in out["detail"]

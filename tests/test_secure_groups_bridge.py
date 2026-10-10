@@ -126,13 +126,13 @@ def test_a_secure_room_shows_no_plaintext_and_sends_none(pair):
     b.receive_room_message(ROOM, "mallory", "plain text in a secure room", 0.0)
     after = [e for e in bsink.events if isinstance(e, RoomMessageReceived)]
     assert len(after) == before
-    # A commit lost in transit leaves Alice's group waiting: sending fails
-    # rather than posting text.
+    # A commit lost in transit leaves Alice's group waiting: the line waits
+    # for it (QUEUED, rc.42) rather than posting text.
     muc.members.pop("alice")
     muc.members.pop("bob")
     a.groups.rekey(ROOM)
     n = len(muc.bodies)
-    assert a.send_user_text(ROOM, "must not leak") == OtrApp.SEND_FAILED
+    assert a.send_user_text(ROOM, "must not leak") == OtrApp.SEND_QUEUED
     assert all("must not leak" not in body for body in muc.bodies[n:])
 
 

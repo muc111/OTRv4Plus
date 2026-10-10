@@ -263,6 +263,20 @@ class ChatViewModel : ViewModel() {
         }
     }
 
+    /** Group calls need verified members: send our key to each, say who needs SMP. */
+    fun verifyGroupMembers(room: String) {
+        val c = core ?: return
+        val state = this.state ?: return
+        viewModelScope.launch {
+            val outcome = withContext(Dispatchers.IO) {
+                runCatching { c.verifyGroupMembers(room) }.getOrNull()
+            } ?: return@launch
+            state.note(if (outcome.ok) outcome.detail
+                       else GroupText.outcome(outcome.code) ?: outcome.detail)
+            refreshGroupMembers(room)
+        }
+    }
+
     /** Forget the group's keys on this phone and leave its room. */
     fun leaveSecureGroup(room: String) {
         groupCall("Leaving $room") { it.leaveSecureGroup(room) }

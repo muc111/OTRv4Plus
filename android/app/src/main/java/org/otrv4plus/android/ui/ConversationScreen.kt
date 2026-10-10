@@ -1210,6 +1210,9 @@ private fun GroupEndButtons(model: ChatViewModel, jid: String) {
     var asking by androidx.compose.runtime.saveable.rememberSaveable(jid) {
         androidx.compose.runtime.mutableStateOf("")
     }
+    // Group calls are among verified members only: this sends our key to each
+    // member over OTRv4+; SMP with a member (in their chat) completes it.
+    TextButton(onClick = { model.verifyGroupMembers(jid) }) { Text("Verify members (for calls)") }
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         TextButton(onClick = { asking = "leave" }) { Text("Leave group") }
         TextButton(onClick = { asking = "delete" }) {

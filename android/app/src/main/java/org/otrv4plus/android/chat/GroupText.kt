@@ -64,6 +64,10 @@ object GroupText {
         "reinvited" -> "${event.detail} invited you again to ${event.room}, which this " +
             "phone is already in. Accept only if the group stopped working here: " +
             "this phone's copy is replaced with the current one."
+        "member_verified" -> "${event.detail} is verified in ${event.room}: group calls " +
+            "with them are possible."
+        "held_change" -> "A change to ${event.room} is landing: your message waits and " +
+            "goes, encrypted, right after."
         "held" -> "${event.room} is still syncing: your messages wait until the " +
             "group is back in sync (a few seconds), then go encrypted."
         "synced" -> if (event.detail.isNotEmpty()) {

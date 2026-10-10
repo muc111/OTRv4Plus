@@ -1114,6 +1114,29 @@ class ConnectionController:
         self.leave_room(room, self._profile.jid.split("@", 1)[0])
         return result
 
+    def verify_group_members(self, room: str) -> Dict[str, Any]:
+        """Send our group key to each member over OTRv4+ (see
+        SecureGroups.verify_members). `detail` says who still needs SMP."""
+        result = self._group_call(self._app.groups.verify_members, room)
+        if not result.get("ok"):
+            return result
+        status = result.get("value") or {}
+        need_smp = sorted(j for j, s in status.items() if s == "sent")
+        no_session = sorted(j for j, s in status.items() if s == "no_session")
+        parts = []
+        if need_smp:
+            parts.append("Your key went to %s; you are verified with each of them "
+                         "once you have done SMP together (Verify in their chat)."
+                         % ", ".join(need_smp))
+        if no_session:
+            parts.append("No encrypted session yet with %s: open their chat, then "
+                         "verify with SMP." % ", ".join(no_session))
+        if not parts:
+            parts.append("Every member is verified: group calls are possible.")
+        result["detail"] = " ".join(parts)
+        result["value"] = None
+        return result
+
     def group_members(self, room: str) -> Dict[str, Any]:
         return self._group_call(self._app.groups.members, room)
 

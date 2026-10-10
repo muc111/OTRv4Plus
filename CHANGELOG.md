@@ -4,6 +4,33 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.42 — 2026-10-10 — verified members, queued messages, y/n invitations (core 0.13.1)
+
+From a device test where groups worked, and three requests.
+
+- **Group calls: verifying members now works at any time.** A call is
+  among members you have SMP-verified, but a member counted as verified
+  in a group only if they were SMP-verified when one invited the other.
+  SMP done later -- or with a member someone else invited -- never reached
+  the group. Now, when SMP between two members succeeds, each sends the
+  other its group key for every group they share, over that verified
+  OTRv4+ session, and each group marks them verified (the key must match
+  the one the group holds; anything else is refused). For members verified
+  before this version: app, the group's screen, "Verify members (for
+  calls)"; Termux, \`/group verify <room>\` -- it sends your key and says who
+  still needs SMP (or an OTRv4+ session first).
+- **Messages typed while a group change lands wait instead of failing.**
+  Adding or removing a member (or a rekey) holds the group until the change
+  comes back from the room; a message sent then said "not sent". It is now
+  queued, shown as such, and sent, in order and encrypted, as soon as the
+  change lands.
+- **Termux: answer an invitation with y or n.** The invitation asks
+  "Join? [y/n]"; only an exact y/yes/n/no answers it (anything else is
+  typed as usual), as with an SMP request. \`/group accept <name>\` still
+  works, with the room's name alone.
+
+---
+
 ## Android 0.7.0-experimental.rc.41 — 2026-10-05 — encrypted groups on the Rooms screen (core 0.13.1)
 
 - **Rooms now lists your encrypted groups**, from this account's keys (so

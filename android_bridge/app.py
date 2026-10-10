@@ -1904,6 +1904,13 @@ class OtrApp:
             return
         if after in (SmpState.VERIFIED, SmpState.FAILED, SmpState.CANCELLED):
             self._emit(SmpResult(peer=peer, state=after))
+            if after is SmpState.VERIFIED and self._groups is not None:
+                # Verified now: the groups we share with them learn it, and
+                # each side sends its group key (calls need verified members).
+                try:
+                    self._groups.on_peer_verified(peer)
+                except Exception:
+                    _log.warning("group verification update failed")
         else:
             self._emit(self.smp_progress(peer))
 

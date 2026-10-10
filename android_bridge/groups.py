@@ -1087,11 +1087,120 @@ class SecureGroups:
                 self._on_joined(peer, arg)
             elif kind == "DECLINE":
                 self._on_decline(peer, arg)
+            elif kind == "FP":
+                self._on_fingerprint(peer, arg, verified)
             else:
                 self.stats.malformed += 1
         except GroupError as exc:
             self._emit(GroupChanged(peer=arg.partition("|")[0][:MAX_ROOM_LEN],
                                     change="refused", detail=exc.code))
+
+    # -- verifying members (for group calls) -------------------------------
+    #
+    # A member is "verified" in a group when we hold their group key as they
+    # sent it to us over an SMP-verified OTRv4+ session. That used to happen
+    # only between inviter and invitee, at invitation time: SMP done later,
+    # or with any other member, never reached the group, so a call (verified
+    # members only) was impossible for most pairs (owner question,
+    # 2026-10-10). Now each side sends its group key for every group the two
+    # share, over their 1:1 session, when SMP between them succeeds, or on
+    # `verify_members`; the key must match the one the group holds for them.
+
+    def share_fingerprint(self, peer: str) -> List[str]:
+        """Send our group key, for every group `peer` and we are both in,
+        over our OTRv4+ session with them. Returns those rooms."""
+        peer = str(peer or "").strip().split("/", 1)[0].lower()
+        with self._lock:
+            client = self._client
+            if client is None or self._wiped:
+                return []
+            shared = []
+            for g in client.group_ids():
+                room = bytes(g).decode(errors="replace")
+                try:
+                    idents = [bytes(m).decode(errors="replace")
+                              for m in client.members(g)]
+                except Exception:
+                    continue
+                if peer in idents and peer != self._account:
+                    shared.append((room, bytes(client.own_fingerprint(g)).hex()))
+        sent = []
+        for room, fp in shared:
+            try:
+                self._send_private(peer, "%sFP:%s|%s" % (SIGNAL_PREFIX, room, fp))
+                sent.append(room)
+            except GroupError:
+                break                       # no OTRv4+ session: nothing goes
+        return sent
+
+    def on_peer_verified(self, peer: str) -> None:
+        """SMP with `peer` succeeded: a key of theirs we already hold (from
+        their invitation) counts as verified now, and we send ours."""
+        peer = str(peer or "").strip().split("/", 1)[0].lower()
+        changed = []
+        with self._lock:
+            client = self._client
+            if client is None or self._wiped:
+                return
+            for room, book in self._bound.items():
+                known = book.get(peer)
+                if not known or known[1]:
+                    continue
+                try:
+                    now = bytes(client.member_fingerprint(room.encode(), peer.encode())).hex()
+                except ValueError:
+                    continue
+                if now == known[0]:
+                    book[peer] = (known[0], True)
+                    changed.append(room)
+            if changed:
+                self.save()
+        for room in changed:
+            self._emit(GroupChanged(peer=room, change="member_verified", detail=peer))
+        self.share_fingerprint(peer)
+
+    def verify_members(self, room: str) -> Dict[str, str]:
+        """Send our key for `room` to each member over OTRv4+. Returns
+        member -> "verified" (already) / "sent" / "no_session"."""
+        out: Dict[str, str] = {}
+        for m in self.members(room):
+            if m["me"]:
+                continue
+            if m["verified"]:
+                out[m["jid"]] = "verified"
+            elif room in self.share_fingerprint(m["jid"]):
+                out[m["jid"]] = "sent"
+            else:
+                out[m["jid"]] = "no_session"
+        return out
+
+    def _on_fingerprint(self, peer: str, arg: str, verified: bool) -> None:
+        room, _, fp = arg.partition("|")
+        if not _room_ok(room) or not _FP_RE.match(fp):
+            self.stats.malformed += 1
+            return
+        with self._lock:
+            client = self._need()
+            if not client.has_group(room.encode()):
+                return                      # not ours (or not yet): ignored
+            try:
+                held = bytes(client.member_fingerprint(room.encode(), peer.encode())).hex()
+            except ValueError:
+                raise GroupError("not_a_member")
+            if held != fp:
+                # The group holds another key for them than the one they sent
+                # over OTRv4+: never bound. (A rekey in flight resolves itself;
+                # they send again on their next verification.)
+                raise GroupError("member_fingerprint_mismatch")
+            before = self._bound.get(room, {}).get(peer)
+            self._bound.setdefault(room, {})[peer] = (fp, bool(verified))
+            if before != (fp, bool(verified)):
+                self.save()
+            new = before != (fp, bool(verified))
+        if new:
+            self._emit(GroupChanged(peer=room,
+                                    change="member_verified" if verified else "member_bound",
+                                    detail=peer))
 
     def _on_invite(self, peer: str, arg: str, verified: bool) -> None:
         room, _, fp = arg.partition("|")
@@ -1378,8 +1487,8 @@ class SecureGroups:
         sent = 0
         for text in held:
             try:
-                self.send(room, text)
-                sent += 1
+                if self.send(room, text) == "sent":
+                    sent += 1
             except GroupError:
                 self._emit(ErrorOccurred(peer=room, code="group_send_failed"))
         self._emit(GroupChanged(peer=room, change="synced",
@@ -1421,7 +1530,8 @@ class SecureGroups:
             client = self._need()
             if not client.has_group(room.encode()):
                 raise GroupError("not_a_group")
-            if room in self._syncing:
+            # Out of sync, or earlier lines still waiting (order is kept).
+            if room in self._syncing or self._held.get(room):
                 held = self._held.setdefault(room, [])
                 if len(held) >= self.MAX_HELD:
                     raise GroupError("too_many_held")
@@ -1450,11 +1560,49 @@ class SecureGroups:
                 err = None
         if err is not None:
             if resend:
+                # A change of ours (a member added or removed, a rekey) is on
+                # its way through the room; MLS sends nothing until it lands.
+                # The line waits and goes then -- it was "not sent" (device
+                # test, 2026-10-10).
+                with self._lock:
+                    held = self._held.setdefault(room, [])
+                    if len(held) >= self.MAX_HELD:
+                        raise GroupError("too_many_held")
+                    held.append(text)
+                    first = len(held) == 1
+                if first:
+                    self._emit(GroupChanged(peer=room, change="held_change"))
                 self.resend_pending_commit(room, "send_blocked")
+                return "held"
             raise err
         self._post(room, ct)
         self._maybe_rekey(room)
         return "sent"
+
+    def _flush_held(self, room: str) -> None:
+        """Send what waited for a group change to land (not while syncing:
+        `_sync_check` does that)."""
+        with self._lock:
+            client = self._client
+            if (room in self._syncing or not self._held.get(room) or client is None
+                    or client.has_pending_commit(room.encode())):
+                return
+            held = self._held.pop(room, [])
+        sent = 0
+        for i, text in enumerate(held):
+            try:
+                outcome = self.send(room, text)
+            except GroupError:
+                self._emit(ErrorOccurred(peer=room, code="group_send_failed"))
+                continue
+            if outcome == "held":
+                # Another change got in first: the rest wait behind it.
+                with self._lock:
+                    self._held.setdefault(room, []).extend(held[i + 1:])
+                break
+            sent += 1
+        if sent:
+            self._emit(QueuedSent(peer=room, count=sent, encrypted=True))
 
     def _maybe_rekey(self, room: str, count: bool = True) -> bool:
         """Self-update once enough messages or time have passed (see
@@ -1535,6 +1683,7 @@ class SecureGroups:
             self._sync_check(room)
             if room in self._syncing:
                 continue                    # no commit from an old epoch
+            self._flush_held(room)
             # A removal commit refreshes our path too, so it goes first.
             if self._remove_idle(room):
                 done.append("removed:" + room)
@@ -1692,6 +1841,8 @@ class SecureGroups:
             self._emit(event)
         if kind == "commit" and settled and self._queued_kps.get(room):
             self._add_queued(room)
+        if kind == "commit":
+            self._flush_held(room)
         if control is not None and self._call_handler is not None:
             try:
                 self._call_handler(room, *control)
