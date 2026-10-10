@@ -62,6 +62,11 @@ FORBIDDEN_ANYWHERE = re.compile(
 PUBLIC_PEM = {"assets/chaquopy/cacert.pem"}
 PRIVATE_KEY = re.compile(rb"-----BEGIN [A-Z ]*PRIVATE KEY-----")
 
+#: The ABIs the APK ships, and the i2pd release it carries for each
+#: (.github/scripts/build-i2pd-android.sh pins the source).
+ABIS = ("arm64-v8a", "x86_64")
+I2PD_VERSION = b"2.59.0"
+
 #: PyO3 names that exist only when the core is built with a test/legacy
 #: feature. Their presence in the shipped .so means a gated API shipped.
 GATED_CORE_SYMBOLS = (b"get_session_keys", b"load_by_handle", b"expose_seed",
@@ -165,6 +170,29 @@ def main():
                 "%s exposes the Android Opus codec (OpusEncoder/OpusDecoder)" % n)
         r.check(b"libopus 1.5" in blob,
                 "%s has libopus 1.5 statically linked" % n)
+
+    print("i2p router:")
+    # The bundled i2pd (.github/scripts/build-i2pd-android.sh): an executable
+    # per ABI, named lib*.so so Android extracts it, plus the certificates it
+    # checks reseed downloads against. Public certificates only.
+    for abi in ABIS:
+        name = "lib/%s/libi2pd.so" % abi
+        blob = apk.read(name) if name in names else b""
+        r.check(blob[:4] == b"\x7fELF" and I2PD_VERSION in blob,
+                "%s is i2pd %s" % (name, I2PD_VERSION.decode()))
+        r.check(b"/system/bin/linker64" in blob,
+                "%s is an Android executable (has the system linker)" % name)
+    certs = "assets/i2pd-certificates.zip"
+    if certs in names:
+        z = zipfile.ZipFile(io.BytesIO(apk.read(certs)))
+        members = [n for n in z.namelist() if not n.endswith("/")]
+        r.check(any(n.startswith("certificates/reseed/") for n in members),
+                "%s carries the reseed certificates (%d files)" % (certs, len(members)))
+        r.check(all(n.endswith(".crt") and not PRIVATE_KEY.search(z.read(n))
+                    for n in members),
+                "%s holds public certificates only" % certs)
+    else:
+        r.check(False, "%s is present" % certs)
 
     print("kotlin:")
     dex = b"".join(apk.read(n) for n in names if re.match(r"classes\d*\.dex$", n))

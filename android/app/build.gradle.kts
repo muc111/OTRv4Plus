@@ -214,6 +214,13 @@ android {
         // licences screen (ui/AboutScreen.kt). Removing a real notice would be
         // a distribution defect; removing a duplicate empty marker is not.
         resources.excludes += setOf("/META-INF/{AL2.0,LGPL2.1}")
+
+        // The bundled I2P router (lib/<abi>/libi2pd.so) is an EXECUTABLE,
+        // started by connection/BundledRouter.kt. Android only lets an app run
+        // a file from its native library directory, and only puts it there
+        // when native libraries are extracted at install -- which modern AGP
+        // turns off by default.
+        jniLibs.useLegacyPackaging = true
     }
 
     sourceSets {
@@ -222,6 +229,12 @@ android {
             // committed under src/, for the same reason the Python sources
             // are: a second copy in the tree goes stale and nothing fails.
             assets.srcDir(noticeAssetDir)
+            // i2pd and its reseed certificates: built from pinned source by
+            // .github/scripts/build-i2pd-android.sh (the `i2pd` CI job). A
+            // local build without them still works; the app then needs an
+            // I2P router app on the phone, as it did before.
+            jniLibs.srcDir("i2pd/jniLibs")
+            assets.srcDir("i2pd/assets")
         }
     }
 }

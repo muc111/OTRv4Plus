@@ -26,6 +26,10 @@ Rust/target/
 # Built per ABI from Rust/ by maturin, or downloaded from the `rust` CI job.
 /android/app/wheels/
 
+# The bundled I2P router, built by .github/scripts/build-i2pd-android.sh
+# or downloaded from the `i2pd` CI job.
+/android/app/i2pd/
+
 # ── Test / tooling cache ──────────────────────────────────────────────────────
 .pytest_cache/
 .hypothesis/

@@ -341,13 +341,55 @@ jobs:
           if-no-files-found: error
 
   # ---------------------------------------------------------------------------
+  # Proves: the I2P router the APK carries builds from pinned source.
+  #
+  # i2pd with its SAM bridge, so a phone with no I2P app still connects: the
+  # app uses a router already on the phone when one answers, and starts this
+  # one otherwise. i2pd, OpenSSL and Boost are fetched by tag and checked
+  # against the commit hashes in the script; the result is cached on the
+  # script's own hash, so it rebuilds exactly when what ships changes.
+  # ---------------------------------------------------------------------------
+  i2pd:
+    name: Build the bundled I2P router (${{ matrix.abi }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        abi: [arm64-v8a, x86_64]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/cache@v4
+        id: cache
+        with:
+          path: i2pd-out
+          key: i2pd-${{ matrix.abi }}-${{ hashFiles('.github/scripts/build-i2pd-android.sh') }}
+
+      - name: Build i2pd, OpenSSL and Boost with the NDK
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: .github/scripts/build-i2pd-android.sh ${{ matrix.abi }} i2pd-out
+
+      - name: Show what will be packaged
+        run: |
+          set -euo pipefail
+          cat i2pd-out/i2pd-sources.txt
+          ls -l i2pd-out/jniLibs/${{ matrix.abi }}/libi2pd.so i2pd-out/assets/i2pd-certificates.zip
+          sha256sum i2pd-out/jniLibs/${{ matrix.abi }}/libi2pd.so
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: i2pd-${{ matrix.abi }}
+          path: i2pd-out/
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------------------
   # Proves: an APK exists. The Phase 2 exit gate.
   # Debug only -- release signing needs keys that do not belong in CI.
   # ---------------------------------------------------------------------------
   apk:
     name: Assemble a debug APK
     runs-on: ubuntu-latest
-    needs: [configure, rust]
+    needs: [configure, rust, i2pd]
     steps:
       - uses: actions/checkout@v4
 
@@ -364,6 +406,12 @@ jobs:
         with:
           pattern: otrv4_core-*
           path: android/app/wheels
+          merge-multiple: true
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: i2pd-*
+          path: android/app/i2pd
           merge-multiple: true
 
       - name: The wheels must be here, or pip says something unhelpful
@@ -496,7 +544,7 @@ jobs:
   apk-release:
     name: Assemble and inspect the release APK
     runs-on: ubuntu-latest
-    needs: [configure, rust]
+    needs: [configure, rust, i2pd]
     steps:
       - uses: actions/checkout@v4
 
@@ -513,6 +561,12 @@ jobs:
         with:
           pattern: otrv4_core-*
           path: android/app/wheels
+          merge-multiple: true
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: i2pd-*
+          path: android/app/i2pd
           merge-multiple: true
 
       - uses: gradle/actions/setup-gradle@v4
@@ -650,7 +704,7 @@ jobs:
     # EVERY job, not just `apk`. A build whose tests failed must not be
     # published, and `apk` alone would not notice: it does not depend on
     # kotlin-tests or python-deps.
-    needs: [configure, python-deps, rust, apk, apk-release, kotlin-tests]
+    needs: [configure, python-deps, rust, i2pd, apk, apk-release, kotlin-tests]
     if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/claude/otrv4plus-android-spec-a3oq4d'
     permissions:
       # Narrower than it looks: this replaces the workflow-level `contents:
