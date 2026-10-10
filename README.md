@@ -124,8 +124,6 @@ Details: [TECHNICAL.md](TECHNICAL.md#encrypted-group-chat-mls),
 
 ### Termux, Ubuntu and other Linux (terminal clients)
 
-Termux on Android is the reference client; desktop Linux uses the same steps.
-
 **1. Install the tools.** Python 3.12 or newer is required.
 
 On **Termux**:
@@ -138,7 +136,8 @@ On **Ubuntu 24.04+ / Debian 13+** (Rust from rustup; the distribution's rustc is
 
 ```bash
 sudo apt install git python3 python3-venv build-essential curl
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh   # then open a new terminal
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+. "$HOME/.cargo/env"     # puts Rust on this terminal's PATH (new terminals have it)
 ```
 
 Do not `pip install` anything: `build.sh` puts the Python modules in the project's own

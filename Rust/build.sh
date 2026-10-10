@@ -668,6 +668,13 @@ else
     PKG_HINT_CC="Debian/Ubuntu: apt install build-essential"
     PKG_HINT_PY="Debian/Ubuntu: apt install python3 python3-venv"
 fi
+# rustup puts cargo in ~/.cargo/bin and adds that to PATH only for shells
+# started afterwards, so the terminal that just ran the installer cannot see
+# it. Use it from there rather than fail.
+if ! command -v cargo >/dev/null && [ -x "${CARGO_HOME:-$HOME/.cargo}/bin/cargo" ]; then
+    export PATH="${CARGO_HOME:-$HOME/.cargo}/bin:$PATH"
+    info "using Rust from ${CARGO_HOME:-$HOME/.cargo}/bin (rustup; not yet on this shell's PATH)"
+fi
 command -v cargo >/dev/null || die "cargo not found. Install Rust: $PKG_HINT_RUST"
 command -v rustc >/dev/null || die "rustc not found. Install Rust: $PKG_HINT_RUST"
 rustc_at_least "$RUST_MIN" \
