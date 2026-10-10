@@ -546,8 +546,20 @@ For someone who wants to try it in about ten minutes on Termux (Android, aarch64
 ### 1. Install dependencies
 
 ```bash
+# Termux
 pkg install python rust openssl clang git
+# Ubuntu 24.04+ / Debian 13+ (Rust from rustup: the distribution's rustc is
+# older than the core's minimum, 1.85)
+sudo apt install git python3 python3-venv build-essential curl
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 ```
+
+No `pip install` step: `Rust/build.sh` creates the project virtualenv `.venv`
+and installs the clients' Python modules (PySocks, slixmpp and its aiodns)
+into it when they are missing. That also avoids Ubuntu's and Debian's
+"externally-managed-environment" refusal (PEP 668), which blocks
+`pip install` into the system Python. The clients are run with
+`.venv/bin/python`.
 
 `argon2-cffi` is no longer needed. Stored SMP auto-respond passphrases and the
 XMPP identity key file are read, sealed and held by the Rust core
@@ -563,8 +575,9 @@ inside an import rather than a clear message.
 For **voice calls**, two more:
 
 ```bash
-pkg install libopus termux-api       # the Opus codec, and Termux:API for the ringer
-pip install opuslib                  # the Python binding to libopus
+pkg install libopus termux-api       # Termux: the Opus codec, and Termux:API for the ringer
+sudo apt install libopus0 pulseaudio-utils   # Linux (parec/pacat; PipeWire works too; untested on a desktop)
+.venv/bin/pip install opuslib        # after step 2: the Python binding to libopus
 ```
 
 The Termux package is `libopus`, not `opus` — `pkg install opus` fails with
@@ -580,7 +593,7 @@ derivation to check the Rust one against.
 
 For **clearnet/TLS** (fastest, no extra setup):
 ```bash
-python otrv4+.py -s irc.libera.chat
+.venv/bin/python otrv4+.py -s irc.libera.chat
 ```
 
 For **I2P** (strongest anonymity): you need I2P running with the SAM bridge enabled on port 7656. The I2P Android app from F-Droid or Google Play handles this; enable "Use SAM bridge" in its settings.
@@ -591,16 +604,15 @@ For **Tor**: Orbot must be running with SOCKS5 on port 9050.
 
 ```bash
 git clone -b claude/otrv4plus-android-spec-a3oq4d https://github.com/muc111/OTRv4Plus.git
-cd OTRv4Plus
-
-# Build the Rust crypto core (about 3 minutes on a modern phone)
-cd Rust
-cargo build --release --features extension-module,pq-rust
-cp target/release/libotrv4_core.so ../otrv4_core.so
+cd OTRv4Plus/Rust
+bash build.sh        # tests, lints, builds the core with secure groups into ../.venv
 cd ..
 ```
 
-**Run cargo from inside `Rust/`**, as above. `Rust/.cargo/config.toml`
+`build.sh` ends with `BUILD OK`; what each of its steps does is in
+[build.sh in detail](#buildsh-in-detail).
+
+**If you run cargo yourself, run it from inside `Rust/`**, as `build.sh` does. `Rust/.cargo/config.toml`
 supplies a build fix for musl targets (Alpine and similar), and cargo only
 finds that file by walking up from the directory it is invoked in — so
 `cargo build --manifest-path Rust/Cargo.toml` from the repository root will
@@ -744,7 +756,7 @@ What these tests do and do not tell you: a pass confirms the **primitives** (Ed4
 ### 4. Run it
 
 ```bash
-PYTHONMALLOC=malloc python otrv4+.py --debug
+PYTHONMALLOC=malloc .venv/bin/python otrv4+.py --debug
 ```
 
 You should see the banner, the I2P SAM bridge handshake, the IRC connection to `irc.postman.i2p`, an auto-join of `#otr`, and a prompt. Other users in `#otr` running the same client are available for an OTR session.
@@ -775,7 +787,7 @@ From that point, messages typed in the peer tab are end-to-end encrypted with th
 ### Running it
 
 ```bash
-python otrv4plus_xmpp.py \
+.venv/bin/python otrv4plus_xmpp.py \
   --jid alice@<vhost>.b32.i2p \
   --server <c2s-tunnel>.b32.i2p \
   --peer bob@<vhost>.b32.i2p \
@@ -826,7 +838,7 @@ ships with the source, so a fresh clone connects with the short name and never
 sees a b32:
 
 ```bash
-python otrv4plus_xmpp.py --jid alice@otrv4plus.i2p \
+.venv/bin/python otrv4plus_xmpp.py --jid alice@otrv4plus.i2p \
                          --peer bob@otrv4plus.i2p
 ```
 
@@ -866,7 +878,7 @@ Then the address is the JID's own domain and **`--server` is no longer
 needed**:
 
 ```bash
-python otrv4plus_xmpp.py \
+.venv/bin/python otrv4plus_xmpp.py \
   --jid alice@otrv4plus.i2p \
   --peer bob@otrv4plus.i2p
 ```

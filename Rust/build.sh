@@ -745,6 +745,19 @@ if ! "$PY" -m pip --version >/dev/null 2>&1; then
 fi
 info "interpreter: $PY ($("$PY" -c 'import sys; print(sys.version.split()[0])'))"
 
+# The clients' own Python modules, into the virtualenv when they are not
+# already importable from it. Installed HERE because Debian and Ubuntu (and
+# others following PEP 668) refuse `pip install` into the system Python
+# ("externally-managed-environment"), while a virtualenv is always allowed.
+# On Termux a global install is seen through --system-site-packages and
+# nothing is fetched. The versions are the ones the APK ships.
+if ! "$PY" -c 'import socks, slixmpp' 2>/dev/null; then
+    info "installing the clients' Python modules into the virtualenv: PySocks, slixmpp (with aiodns)"
+    "$PY" -m pip install --disable-pip-version-check -q "PySocks==1.7.1" "slixmpp==1.17.0" \
+        || die "could not install PySocks and slixmpp into $VENV (network?). By hand: $PY -m pip install PySocks slixmpp"
+fi
+info "client modules: PySocks and slixmpp importable"
+
 # Every later step -- cargo's PyO3 build scripts, maturin, the checks -- uses
 # this interpreter and this environment.
 export VIRTUAL_ENV="$VENV"

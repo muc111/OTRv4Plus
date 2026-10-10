@@ -131,22 +131,23 @@ Details: [TECHNICAL.md](TECHNICAL.md#encrypted-group-chat-mls),
 
 Termux on Android is the reference client. The same steps work on Linux.
 
-**1. Install the tools.** Python 3.12 or newer is required.
+**1. Install the tools.** Python 3.12 or newer (Ubuntu 24.04+, Debian 13+).
 
 ```bash
 # Termux
 pkg install python rust openssl clang git
-# Debian / Ubuntu: install python3, python3-pip, git, clang and Rust (rustup.rs)
-
-pip install PySocks slixmpp aiodns
+# Ubuntu / Debian (Rust from rustup: the distribution's rustc is too old)
+sudo apt install git python3 python3-venv build-essential curl
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh   # then open a new terminal
 ```
 
-For voice calls in Termux, also run `pkg install libopus termux-api` and
-`pip install opuslib`.
+No `pip install` here: `build.sh` puts the Python modules in the project's own `.venv`
+(Ubuntu refuses a system-wide pip install: "externally-managed-environment"). Voice
+calls also need `pkg install libopus termux-api` (Termux) or `sudo apt install libopus0
+pulseaudio-utils` (Linux, untested on a desktop), then `.venv/bin/pip install opuslib`.
 
-**2. Download and build the Rust core** (the first run on a phone takes
-longer -- it also compiles the build tool once, see below; later builds are
-much faster):
+**2. Download and build the Rust core** (the first run on a phone also compiles
+the build tool once, so it takes longer; later builds are much faster):
 
 ```bash
 git clone -b claude/otrv4plus-android-spec-a3oq4d https://github.com/muc111/OTRv4Plus.git
@@ -186,8 +187,7 @@ PYTHONMALLOC=malloc .venv/bin/python otrv4plus_xmpp.py \
   --jid you@yourserver.i2p --peer friend@yourserver.i2p
 ```
 
-Add `--server <address>.b32.i2p` if your server name does not resolve, and
-`--voice-debug` for call diagnostics every 5 seconds.
+Add `--server <address>.b32.i2p` if the server name does not resolve; `--voice-debug` for call stats.
 
 IRC (defaults to `irc.postman.i2p` over I2P; `-s irc.libera.chat` for TLS):
 
