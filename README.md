@@ -61,22 +61,17 @@ is [ANDROID_CALL_AND_FILE_DEVICE_TEST.md](ANDROID_CALL_AND_FILE_DEVICE_TEST.md).
 
 ## Security assessment and audit status
 
-OTRv4+ has had extensive developer-led security review and hardening:
-Rust unit and integration tests for the protocol and cryptography,
-ML-KEM-1024 known-answer tests and a cross-implementation check against
-Go's `crypto/mlkem`, differential tests for X448/Ed448, cargo-fuzz
-harnesses on every Rust parser of untrusted input, attack and property
-tests, Python and Kotlin suites, `cargo audit` in CI, threat-model and
-Rust-authority reviews, AI-assisted review, and physical tests on
-Android. Findings were fixed, each with a regression test.
+OTRv4+ has had extensive developer-led security review and hardening: Rust unit and
+integration tests, ML-KEM-1024 known-answer tests and a cross-check against Go's
+`crypto/mlkem`, X448/Ed448 differential tests, cargo-fuzz on every Rust parser of
+untrusted input, attack and property tests, Python and Kotlin suites, `cargo audit`
+in CI, threat-model and Rust-authority reviews, AI-assisted review, and physical tests
+on Android. Findings were fixed, each with a regression test.
 
-It has **not** had a paid independent third-party audit or a formal
-external cryptographic assessment, and that work is not equivalent to one.
-Known limitations are recorded in [SECURITY_ISSUES.md](SECURITY_ISSUES.md);
-some (A1, A2) need a future protocol version.
-
-The evidence, layer by layer, is in
-[SECURITY.md](SECURITY.md#security-assessment-and-audit-status).
+It has **not** had a paid independent third-party audit or a formal external
+cryptographic assessment, and that work is not equivalent to one. Known limitations:
+[SECURITY_ISSUES.md](SECURITY_ISSUES.md) (some, A1 and A2, need a future protocol
+version). The evidence, layer by layer: [SECURITY.md](SECURITY.md#security-assessment-and-audit-status).
 
 ## Cryptography
 
@@ -127,24 +122,29 @@ Details: [TECHNICAL.md](TECHNICAL.md#encrypted-group-chat-mls),
 
 ## Quick start
 
-### Termux and Linux (terminal clients)
+### Termux, Ubuntu and other Linux (terminal clients)
 
-Termux on Android is the reference client. The same steps work on Linux.
+Termux on Android is the reference client; desktop Linux uses the same steps.
 
-**1. Install the tools.** Python 3.12 or newer (Ubuntu 24.04+, Debian 13+).
+**1. Install the tools.** Python 3.12 or newer is required.
+
+On **Termux**:
 
 ```bash
-# Termux
 pkg install python rust openssl clang git
-# Ubuntu / Debian (Rust from rustup: the distribution's rustc is too old)
+```
+
+On **Ubuntu 24.04+ / Debian 13+** (Rust from rustup; the distribution's rustc is too old):
+
+```bash
 sudo apt install git python3 python3-venv build-essential curl
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh   # then open a new terminal
 ```
 
-No `pip install` here: `build.sh` puts the Python modules in the project's own `.venv`
-(Ubuntu refuses a system-wide pip install: "externally-managed-environment"). Voice
-calls also need `pkg install libopus termux-api` (Termux) or `sudo apt install libopus0
-pulseaudio-utils` (Linux, untested on a desktop), then `.venv/bin/pip install opuslib`.
+Do not `pip install` anything: `build.sh` puts the Python modules in the project's own
+`.venv` (Ubuntu refuses a system-wide pip install: "externally-managed-environment").
+Voice calls also need `pkg install libopus termux-api` (Termux) or `sudo apt install
+libopus0 pulseaudio-utils` (Linux, untested on a desktop), then `.venv/bin/pip install opuslib`.
 
 **2. Download and build the Rust core** (the first run on a phone also compiles
 the build tool once, so it takes longer; later builds are much faster):
@@ -174,9 +174,9 @@ git log -1 --format='%h %ad'     # check you are on the latest commit
 
 Keys and settings live in `~/.otrv4plus`, outside the repository; updates leave them.
 
-**4. Networks.** For I2P, run an I2P router with the SAM bridge on port 7656
-(for example the I2P app, with "Use SAM bridge" enabled). For Tor, run Orbot
-with SOCKS on port 9050. Plain TLS needs nothing extra.
+**4. Networks.** For I2P, run an I2P router with the SAM bridge on port 7656: on a
+phone the I2P app ("Use SAM bridge" on); on Ubuntu/Debian `sudo apt install i2pd`
+(SAM is on by default). For Tor, Orbot or `tor` with SOCKS on port 9050.
 
 **5. Run it.**
 
