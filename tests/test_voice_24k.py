@@ -118,3 +118,100 @@ class TestGroupCallsUseTheSameSettings:
         m.start_audio(calls=object())
         m.close()
         assert seen and seen[0] is m._encoder
+
+
+class TestGroupPlayout:
+    """rc.62: group calls receive like 1:1 calls -- a jitter buffer and a
+    decoder per member, FEC for one lost frame, concealment for more."""
+
+    def _setup(self):
+        import otrv4plus_groupcall as G
+        opus = _opus()
+        enc = opus.Encoder(24000, 1, opus.APPLICATION_VOIP)
+        V.configure_encoder(enc, opus)
+        frames = [bytes(enc.encode(_speech(1440, 24000, k * 1440), 1440))
+                  for k in range(30)]
+        p = G.Playout(V.VOICE_FRAME_BYTES, lambda: opus.Decoder(24000, 1))
+        return G, p, frames
+
+    def _drain(self, p, n):
+        silence = b"\x00" * V.VOICE_FRAME_BYTES
+        return [f for f in (p.next_frame() for _ in range(n)) if f != silence]
+
+    def _live(self, p, who, sends, frames, extra=6):
+        """As a call runs: one packet arrives (or not) per playback tick."""
+        silence = b"\x00" * V.VOICE_FRAME_BYTES
+        heard = 0
+        for item in sends:
+            if item is not None:
+                n, idx = item
+                p.push(who, frames[idx], n)
+            heard += p.next_frame() != silence
+        for _ in range(extra):
+            heard += p.next_frame() != silence
+        return heard
+
+    def test_out_of_order_frames_are_played_in_order(self):
+        G, p, frames = self._setup()
+        order = [0, 2, 1, 3, 5, 4, 6, 7, 8, 9]
+        heard = self._live(p, "bob", [(n, n) for n in order], frames)
+        assert heard == 10
+        assert p.stats["concealed"] == 0 and p.stats["fec"] == 0
+
+    def test_one_lost_frame_is_rebuilt_from_fec(self):
+        G, p, frames = self._setup()
+        sends = [None if n == 5 else (n, n) for n in range(12)]
+        heard = self._live(p, "bob", sends, frames)
+        assert p.stats["fec"] == 1
+        assert heard == 12, "the lost frame was not filled in"
+
+    def test_a_longer_gap_is_concealed_not_left_silent(self):
+        G, p, frames = self._setup()
+        sends = [None if 6 <= n <= 8 else (n, n) for n in range(15)]
+        self._live(p, "bob", sends, frames)
+        assert p.stats["concealed"] >= 2
+
+    def test_a_member_who_rejoins_is_heard_again(self):
+        G, p, frames = self._setup()
+        self._live(p, "bob", [(200 + n, n) for n in range(10)], frames)
+        # They hung up and joined again: their frame numbers start at 0.
+        heard = self._live(p, "bob", [(n, n) for n in range(8)], frames)
+        assert heard == 8
+        assert p.stats["restarts"] == 1
+
+    def test_frame_numbers_from_timestamps(self):
+        import otrv4plus_groupcall as G
+        assert [G.frame_number(n * 60) for n in range(4)] == [0, 1, 2, 3]
+        # A sender before rc.62 sent milliseconds, not exact multiples.
+        assert [G.frame_number(t) for t in (0, 58, 123, 179, 241)] == [0, 1, 2, 3, 4]
+
+
+class TestLinuxEchoCancellation:
+    """A laptop on speakers sent the far end's voice back to them: parec and
+    pacat ran with no echo cancellation. The echo-cancelled source and sink
+    are used when PulseAudio/PipeWire has them."""
+
+    LISTING = ("0\talsa_input.pci\tmodule-alsa-card.c\ts16le 2ch 48000Hz\tRUNNING\n"
+               "3\techo-cancel-source\tmodule-echo-cancel.c\tfloat32le 1ch 32000Hz\tIDLE\n")
+
+    def test_the_echo_cancelled_source_is_picked(self, monkeypatch):
+        monkeypatch.delenv("OTRV4PLUS_PULSE_SOURCE", raising=False)
+        got = A.pulse_device("source", which=lambda b: "/usr/bin/" + b,
+                             runner=lambda argv: self.LISTING)
+        assert got == "echo-cancel-source"
+
+    def test_none_loaded_means_the_default(self, monkeypatch):
+        monkeypatch.delenv("OTRV4PLUS_PULSE_SINK", raising=False)
+        assert A.pulse_device("sink", which=lambda b: "/usr/bin/" + b,
+                              runner=lambda argv: "0\talsa_output.pci\tx\n") == ""
+        assert A.pulse_device("sink", which=lambda b: None) == ""
+
+    def test_a_monitor_is_never_the_microphone(self, monkeypatch):
+        monkeypatch.delenv("OTRV4PLUS_PULSE_SOURCE", raising=False)
+        listing = "5\techo-cancel-sink.monitor\tx\n"
+        assert A.pulse_device("source", which=lambda b: "/usr/bin/" + b,
+                              runner=lambda argv: listing) == ""
+
+    def test_the_user_can_name_one(self, monkeypatch):
+        monkeypatch.setenv("OTRV4PLUS_PULSE_SOURCE", "my-mic")
+        assert A.pulse_device("source", which=lambda b: None) == "my-mic"

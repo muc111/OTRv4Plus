@@ -236,18 +236,25 @@ class TestHangUp:
 class TestTermuxMedia:
     """The terminal client's media side, without a router or a microphone."""
 
-    def test_playout_mixes_one_frame_per_sender_and_bounds_queues(self):
+    def test_playout_mixes_one_frame_per_sender(self):
+        """Per member: their own jitter buffer and decoder (rc.62), mixed."""
         import otrv4plus_groupcall as gc
-        p = gc.Playout(4)
+
+        class Dec:
+            def __init__(self, value):
+                self.value = value
+
+            def decode(self, data, n, decode_fec=False):
+                return self.value.to_bytes(2, "little", signed=True) * 2
+
+        values = iter([1, 2])
+        p = gc.Playout(4, lambda: Dec(next(values)))
         assert p.next_frame() == b"\x00" * 4             # silence when idle
-        for i in range(gc.PER_SENDER_QUEUE + 3):
-            p.push("bob", b"\x01\x00\x01\x00")
-        p.push("carol", b"\x02\x00\x02\x00")
-        assert p.next_frame() == b"\x03\x00\x03\x00"
-        frames = 1
-        while p.next_frame() != b"\x00" * 4:
-            frames += 1
-        assert frames == gc.PER_SENDER_QUEUE              # oldest were dropped
+        for n in range(4):
+            p.push("bob", b"opus", n)
+            p.push("carol", b"opus", n)
+        heard = [p.next_frame() for _ in range(4)]
+        assert b"\x03\x00\x03\x00" in heard                # 1 + 2, mixed
 
     def test_datagrams_go_through_the_sam_udp_header(self):
         import otrv4plus_groupcall as gc

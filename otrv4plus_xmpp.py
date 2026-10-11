@@ -7733,6 +7733,19 @@ async def _audio_selftest_async():
           % (total, backend, peak))
     voice_ok, reason = voice_available()
     print("[audio] voice subsystem: %s" % ("ready" if voice_ok else reason))
+    if not IS_TERMUX and backend == "pulseaudio":
+        import otrv4plus_audio as _aud
+        try:
+            ec = _aud.pulse_device("source", which=_which, env=_termux_env())
+        except Exception:
+            ec = ""
+        if "echo-cancel" in ec:
+            print("[audio] echo cancellation: ON (%s)" % ec)
+        else:
+            print("[audio] echo cancellation: OFF -- on speakers the other "
+                  "side hears themselves. Turn it on (until next login):\n"
+                  "        %s\n        then restart this client, or use "
+                  "headphones." % _aud.ECHO_CANCEL_COMMAND)
 
 def main():
     # Device provisioning deliberately runs AFTER argument parsing, so that

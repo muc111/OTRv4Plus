@@ -4,6 +4,33 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.62 — 2026-10-11 — group calls get the 1:1 audio chain; echo cancellation on Linux (core 0.13.1)
+
+- **Group calls receive like 1:1 calls.** They had a bare path: decoded on
+  arrival into a 5-frame queue per member, silence for anything late or
+  lost, no levelling. Now, per member:
+  - the 1:1 **adaptive jitter buffer**: reorders, sizes itself to the I2P
+    path's measured jitter, and sheds latency after a burst;
+  - **loss repair**: one lost frame rebuilt from the next frame's FEC
+    copy, a longer gap concealed (bounded), as in 1:1 -- where it used to
+    be silence;
+  - their own Opus decoder, used by the playback thread only.
+  Then the mix goes through the 1:1 **speech clarity, compressor and
+  gain** before the speaker, and the microphone through the 1:1
+  **compressor and gain** before Opus.
+- **Frames carry their number.** Each group frame's timestamp field now
+  holds frame number x 60 ms, so receivers order it exactly; frames from an
+  older sender (milliseconds) round to the same number. A member who hangs
+  up and rejoins starts a fresh buffer.
+- **Echo cancellation on Linux.** parec/pacat ran without any, so a laptop
+  on speakers sent the other side's voice back to them. The echo-cancelled
+  source and sink of PulseAudio/PipeWire's \`module-echo-cancel\` (webrtc)
+  are used whenever loaded; \`/audiotest\` says whether it is on and the one
+  command that turns it on. \`OTRV4PLUS_PULSE_SOURCE\` / \`_SINK\` pick a
+  device by name.
+- Group call diagnostics add the jitter-buffer state (depth, gaps,
+  underruns, FEC and concealed frames).
+
 ## Android 0.7.0-experimental.rc.61 — 2026-10-11 — clearer call audio: 24 kHz super-wideband (core 0.13.1)
 
 - **Calls carry twice the audio bandwidth**, app, Termux and Linux, 1:1 and

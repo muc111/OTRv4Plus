@@ -10,10 +10,18 @@
   * Inbound datagrams are forwarded by the router to a local UDP socket;
     each is handed to `GroupCalls.on_datagram`, which decrypts in Rust and
     drops anything not from a verified participant.
-  * Audio: the 1:1 backends (`otrv4plus_audio`), Opus via the host's
-    loader, the 1:1 padding (`pad_opus`: every frame the same size, so
-    length says nothing about speech). One Opus decoder per sender, a small
-    per-sender queue, mixed and played every frame.
+  * Audio: the SAME chain as a 1:1 call (rc.62; group calls had a bare
+    one -- no jitter buffer, no loss repair, no levelling):
+      - send: microphone compressor and gain, Opus at the 1:1 settings
+        (`configure_encoder`), the 1:1 padding (every frame the same size);
+        the padded frame carries our frame number (as `send_ts_ms`, a
+        multiple of the frame length) so receivers can order it;
+      - receive, per member: the 1:1 adaptive JitterBuffer (reorders, sizes
+        itself to the path's measured jitter, sheds latency after a burst),
+        their own Opus decoder, in-band FEC for one lost frame and packet
+        loss concealment for longer gaps;
+      - mix, then the 1:1 speech clarity, speaker compressor and gain, and
+        the device (paced by it).
 
 Nothing here touches a key. Keys, nonces and the replay window are in
 `RustGroupVoice`.
@@ -33,41 +41,140 @@ import otrv4plus_audio as _audio
 import otrv4plus_mediapath as _mediapath
 from android_bridge.group_call import mix
 
-__all__ = ["GroupCallMedia", "PER_SENDER_QUEUE"]
+__all__ = ["GroupCallMedia", "Playout", "frame_number"]
 
-#: Frames buffered per sender before the oldest is dropped (~300 ms).
-PER_SENDER_QUEUE = 5
-#: Senders whose decoders are kept (one per participant).
+#: Senders whose decoders and buffers are kept (one per participant).
 MAX_DECODERS = 8
+#: A sender's frame number jumping BACK this far means their stream started
+#: again (they hung up and rejoined): their buffer and decoder start afresh.
+RESTART_FRAMES = 100
+#: Concealment for a gap: at most this many synthesised frames (as 1:1).
+MAX_CONCEAL = 3
+
+
+def frame_number(send_ts_ms: int) -> int:
+    """The sender's frame number. Ours send exactly n * FRAME_MS; a sender
+    before rc.62 sent milliseconds since it started, which rounds to the same
+    thing within a frame of capture jitter."""
+    return int(round(int(send_ts_ms) / float(_voice.VOICE_FRAME_MS)))
+
+
+class _Sender:
+    """One member's receive side: their buffer and their decoder. The
+    decoder is touched only by the playback thread (Opus state is not
+    thread-safe); the buffer is locked internally."""
+
+    __slots__ = ("jitter", "decoder", "pending", "highest")
+
+    def __init__(self, decoder):
+        self.jitter = _voice.JitterBuffer()
+        self.decoder = decoder
+        self.pending: Deque[bytes] = collections.deque()
+        self.highest = -1
 
 
 class Playout:
-    """Per-sender queues of decoded PCM, mixed one frame at a time."""
+    """Per-sender jitter buffers and decoders, mixed one frame at a time."""
 
-    def __init__(self, frame_bytes: int):
+    def __init__(self, frame_bytes: int, make_decoder: Optional[Callable[[], Any]] = None):
         self.frame_bytes = frame_bytes
-        self._queues: Dict[str, Deque[bytes]] = {}
+        self._make_decoder = make_decoder
+        self._senders: Dict[str, _Sender] = {}
         self._lock = threading.Lock()
+        self.stats = {"queued": 0, "late": 0, "fec": 0, "concealed": 0,
+                      "decoded": 0, "restarts": 0, "dropped_senders": 0}
 
-    def push(self, who: str, pcm: bytes) -> None:
+    def push(self, who: str, opus_frame: bytes, number: int) -> bool:
+        """An Opus frame from `who` (network thread). False if refused."""
         with self._lock:
-            q = self._queues.get(who)
-            if q is None:
-                if len(self._queues) >= MAX_DECODERS:
-                    return
-                q = self._queues[who] = collections.deque(maxlen=PER_SENDER_QUEUE)
-            q.append(pcm)
+            st = self._senders.get(who)
+            if st is not None and st.highest - number > RESTART_FRAMES:
+                st = None                       # their stream restarted
+                self.stats["restarts"] += 1
+            if st is None:
+                if who not in self._senders and len(self._senders) >= MAX_DECODERS:
+                    self.stats["dropped_senders"] += 1
+                    return False
+                if self._make_decoder is None:
+                    return False
+                try:
+                    st = _Sender(self._make_decoder())
+                except Exception:
+                    return False
+                self._senders[who] = st
+            st.highest = max(st.highest, number)
+        ok = st.jitter.push(0, number, bytes(opus_frame))
+        self.stats["queued" if ok else "late"] += 1
+        return ok
+
+    def _decode(self, st: _Sender, opus_frame, fec: bool = False):
+        try:
+            if opus_frame is None:
+                pcm = st.decoder.decode(None, _voice.VOICE_FRAME_SAMPLES)
+            elif fec:
+                pcm = st.decoder.decode(bytes(opus_frame), _voice.VOICE_FRAME_SAMPLES,
+                                        decode_fec=True)
+            else:
+                pcm = st.decoder.decode(bytes(opus_frame), _voice.VOICE_FRAME_SAMPLES)
+        except Exception:
+            return None
+        return bytes(pcm)
+
+    def _refill(self, st: _Sender) -> None:
+        """Next frame(s) for one sender, as the 1:1 playback worker does: a
+        single lost frame is rebuilt from the next frame's FEC copy, a longer
+        gap is concealed (bounded)."""
+        item = st.jitter.pop()
+        if item is None:
+            return
+        opus_frame, gap = item
+        if gap == 1:
+            pcm = self._decode(st, opus_frame, fec=True)
+            if pcm is not None:
+                st.pending.append(pcm)
+                self.stats["fec"] += 1
+                gap = 0
+        for _ in range(min(gap, MAX_CONCEAL)):
+            pcm = self._decode(st, None)
+            if pcm is None:
+                break
+            st.pending.append(pcm)
+            self.stats["concealed"] += 1
+        pcm = self._decode(st, opus_frame)
+        if pcm is not None:
+            st.pending.append(pcm)
+            self.stats["decoded"] += 1
 
     def next_frame(self) -> bytes:
+        """One frame of the mix (playback thread). Silence when idle."""
         with self._lock:
-            frames = [q.popleft() for q in self._queues.values() if q]
+            senders = list(self._senders.values())
+        frames = []
+        for st in senders:
+            if not st.pending:
+                self._refill(st)
+            if st.pending:
+                frames.append(st.pending.popleft())
         if not frames:
             return b"\x00" * self.frame_bytes
         return mix(frames)[: self.frame_bytes].ljust(self.frame_bytes, b"\x00")
 
     def forget(self, who: str) -> None:
         with self._lock:
-            self._queues.pop(who, None)
+            st = self._senders.pop(who, None)
+        if st is not None:
+            st.jitter.clear()
+
+    def describe(self) -> Dict[str, Any]:
+        """Jitter-buffer state per sender, summed (diagnostics)."""
+        with self._lock:
+            senders = list(self._senders.values())
+        out = dict(self.stats)
+        out["senders"] = len(senders)
+        out["depth"] = sum(st.jitter.depth() for st in senders)
+        out["gaps"] = sum(st.jitter.stats.get("gaps", 0) for st in senders)
+        out["underrun"] = sum(st.jitter.stats.get("underrun", 0) for st in senders)
+        return out
 
 
 class GroupCallMedia:
@@ -90,8 +197,18 @@ class GroupCallMedia:
         self._capture = None
         self._playback = None
         self._encoder = None
-        self._decoders: Dict[str, Any] = {}
-        self._playout = Playout(_voice.VOICE_FRAME_BYTES)
+        self._playout = Playout(_voice.VOICE_FRAME_BYTES, self._new_decoder)
+        #: Our frame number: sent in place of a timestamp so receivers can
+        #: order our frames exactly (see `frame_number`).
+        self._seq = 0
+        # The 1:1 levelling, both ways (otrv4plus_audio): compression and
+        # gain on the microphone before Opus; speech clarity, compression
+        # and gain on the mix before the speaker.
+        self._mic_comp = _audio.make_mic_compressor()
+        self._mic_gain = _audio.make_mic_gain()
+        self._clarity = _audio.make_speech_clarity()
+        self._speaker_comp = _audio.make_speaker_compressor()
+        self._speaker_gain = _audio.make_speaker_gain()
         #: tx/rx: datagrams sent and accepted; rx_bad: received but refused
         #: (not a participant, failed authentication, replay); decoded: Opus
         #: frames decoded; heard: frames played that had someone's audio in
@@ -103,6 +220,12 @@ class GroupCallMedia:
     def describe(self) -> Dict[str, Any]:
         """Counters and the audio devices, for diagnostics (no addresses)."""
         out = dict(self.stats)
+        out["decoded"] = self._playout.stats.get("decoded", 0)
+        try:
+            for key, value in self._playout.describe().items():
+                out["jb_" + key] = value
+        except Exception:
+            pass
         out["playback"] = getattr(self._playback, "name", "") or ""
         out["capture"] = getattr(self._capture, "name", "") or ""
         out["usage"] = getattr(self._playback, "usage", "")
@@ -196,40 +319,44 @@ class GroupCallMedia:
             t.start()
             self._threads.append(t)
 
+    def _new_decoder(self):
+        opus = getattr(self, "_opus", None) or _voice._HOST["opus"]
+        return opus.Decoder(_voice.VOICE_SAMPLE_RATE, _voice.VOICE_CHANNELS)
+
     def on_audio(self, room: str, who: str, frame: bytes) -> None:
-        """A decrypted frame from `who` (called by GroupCalls)."""
+        """A decrypted frame from `who` (called by GroupCalls, network
+        thread): into their jitter buffer. Decoded on the playback thread."""
         try:
-            opus_frame = _voice.unpad_opus(frame)
+            opus_frame, ts = _voice.unpad_frame(frame)
         except Exception:
             return
-        dec = self._decoders.get(who)
-        if dec is None:
-            if len(self._decoders) >= MAX_DECODERS or self._encoder is None:
-                return
-            dec = self._decoders[who] = self._opus.Decoder(
-                _voice.VOICE_SAMPLE_RATE, _voice.VOICE_CHANNELS)
-        try:
-            pcm = dec.decode(opus_frame, _voice.VOICE_FRAME_SAMPLES)
-        except Exception:
+        if not opus_frame:
             return
-        self.stats["decoded"] += 1
-        self._playout.push(who, bytes(pcm))
+        self._playout.push(who, opus_frame, frame_number(ts))
 
     def _capture_loop(self) -> None:
         while self._running:
             try:
-                pcm = self._capture.read_frame(200)
+                raw = self._capture.read_frame(200)
             except Exception:
                 self.stats["cap_err"] += 1
                 break
-            if not pcm or self._calls is None:
+            if not raw or self._calls is None:
                 continue
             self.stats["captured"] += 1
+            # Levelled before Opus, as in a 1:1 call: the encoder spends its
+            # bits on what it is given, so a quiet microphone amplified at
+            # the far end amplifies the coding noise with it.
+            try:
+                pcm = self._mic_gain.process(self._mic_comp.process(raw))
+            except Exception:
+                pcm = raw
             try:
                 encoded = self._encoder.encode(bytes(pcm), _voice.VOICE_FRAME_SAMPLES)
             except Exception:
                 continue
-            padded = _voice.pad_opus(encoded, int((time.monotonic() - self._started) * 1000))
+            seq, self._seq = self._seq, self._seq + 1
+            padded = _voice.pad_opus(encoded, seq * _voice.VOICE_FRAME_MS)
             if padded is None:
                 self.stats["oversize"] = self.stats.get("oversize", 0) + 1
                 continue
@@ -244,6 +371,11 @@ class GroupCallMedia:
             frame = self._playout.next_frame()
             if frame != silence:
                 self.stats["heard"] += 1
+                try:
+                    frame = bytes(self._speaker_gain.process(
+                        self._speaker_comp.process(self._clarity.process(frame))))
+                except Exception:
+                    pass
             try:
                 self._playback.write_frame(frame)
             except Exception:
@@ -269,5 +401,6 @@ class GroupCallMedia:
             except Exception:
                 pass
             self._control = None
-        self._decoders.clear()
+        for who in list(getattr(self._playout, "_senders", {})):
+            self._playout.forget(who)
         self._calls = None

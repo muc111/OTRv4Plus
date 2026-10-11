@@ -1552,6 +1552,48 @@ class AAudioPlayback(AAudioStreamBase):
 # the bootstrap installs the package, so removing it would break paths the
 # brief says to leave alone.  It is simply no longer the default for calls.
 
+#: The command that turns echo cancellation on for PulseAudio or PipeWire
+#: (webrtc AEC, the same family as a phone's). Not run by us: it changes the
+#: user's audio system, so /audiotest says it and the user decides.
+ECHO_CANCEL_COMMAND = ("pactl load-module module-echo-cancel aec_method=webrtc "
+                       "source_name=echo-cancel-source sink_name=echo-cancel-sink")
+
+
+def pulse_device(kind: str, which=None, env=None, runner=None) -> str:
+    """The PulseAudio source or sink to use: the echo-cancelled one if it is
+    loaded, else the default ("").
+
+    Linux has no system echo cancellation for a plain parec/pacat, so a
+    laptop on speakers sends the far end's own voice back to them -- the
+    phones get theirs from Android's VOICE_COMMUNICATION path. With
+    module-echo-cancel loaded (ECHO_CANCEL_COMMAND) its source and sink are
+    picked up by themselves. OTRV4PLUS_PULSE_SOURCE / _SINK choose by name."""
+    override = os.environ.get(
+        "OTRV4PLUS_PULSE_SOURCE" if kind == "source" else "OTRV4PLUS_PULSE_SINK", "").strip()
+    if override:
+        return override
+    which = which or _default_which
+    pactl = which("pactl")
+    if pactl is None:
+        return ""
+    try:
+        if runner is None:
+            import subprocess
+            out = subprocess.run([pactl, "list", "short", kind + "s"],
+                                 capture_output=True, text=True, timeout=2,
+                                 env=env or dict(os.environ)).stdout
+        else:
+            out = runner([pactl, "list", "short", kind + "s"])
+    except Exception:
+        return ""
+    for line in (out or "").splitlines():
+        fields = line.split("\t")
+        name = fields[1] if len(fields) > 1 else ""
+        if "echo-cancel" in name and not name.endswith(".monitor"):
+            return name
+    return ""
+
+
 class PulseCapture(AudioStream):
     """parec -> pipe.  The legacy path, kept as an explicit opt-in."""
 
@@ -1566,10 +1608,14 @@ class PulseCapture(AudioStream):
             raise AudioError(AUDIO_BACKEND_UNAVAILABLE, "parec not found")
         self._read_exact = read_exact
         self._closed = False
+        #: The echo-cancelled source when one is loaded (see pulse_device).
+        self.device = pulse_device("source", which, env)
+        self.echo_cancelled = "echo-cancel" in self.device
         self._proc = subprocess.Popen(
             [parec, "--client-name=otrv4plus-mic", "--channels=%d" % CHANNELS,
              "--rate=%d" % SAMPLE_RATE, "--format=s16le",
-             "--latency-msec=%d" % FRAME_MS],
+             "--latency-msec=%d" % FRAME_MS]
+            + (["--device=%s" % self.device] if self.device else []),
             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
             stdin=subprocess.DEVNULL, bufsize=0, env=env or dict(os.environ))
         time.sleep(0.25)
@@ -1621,10 +1667,14 @@ class PulsePlayback(AudioStream):
             raise AudioError(AUDIO_BACKEND_UNAVAILABLE, "pacat not found")
         self._write_all = write_all
         self._closed = False
+        # Playback must go through the echo canceller's sink too, or it has
+        # nothing to subtract.
+        self.device = pulse_device("sink", which, env)
         self._proc = subprocess.Popen(
             [pacat, "--playback", "--client-name=otrv4plus-spk",
              "--channels=%d" % CHANNELS, "--rate=%d" % SAMPLE_RATE,
-             "--format=s16le", "--latency-msec=%d" % FRAME_MS],
+             "--format=s16le", "--latency-msec=%d" % FRAME_MS]
+            + (["--device=%s" % self.device] if self.device else []),
             stdin=subprocess.PIPE, stderr=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL, bufsize=0, env=env or dict(os.environ))
         time.sleep(0.25)
