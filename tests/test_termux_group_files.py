@@ -254,3 +254,55 @@ class TestAudiotestOnLinux:
         assert "speaker: tone sent via pulseaudio" in out
         assert "OK" in out and "peak amplitude 300" in out
         assert written and all(n == A.FRAME_SAMPLES * 2 for n in written)
+
+
+class TestARoomThatTimesOutIsTriedAgain:
+    """"could not rejoin the room (TimeoutError)" used to be the end of it:
+    the group stayed syncing, holding what was typed, until a restart."""
+
+    def test_retried_then_back(self):
+        import asyncio
+
+        g, printed = _termux()
+        later = []
+
+        class Loop:
+            def call_later(self, delay, fn):
+                later.append((delay, fn))
+
+        g.host.loop = Loop()
+        g.groups.rooms = lambda: [ROOM]
+        tries = []
+
+        async def join(room, create, rejoin):
+            tries.append(room)
+            if len(tries) == 1:
+                raise asyncio.TimeoutError()
+            return False
+
+        rejoined = []
+        g._join = join
+        g.groups.on_room_rejoined = rejoined.append
+
+        async def go():
+            await g._rejoin_one(ROOM, attempt=0)
+            assert later and later[0][0] == g.REJOIN_RETRY_SECONDS[0]
+            assert any("trying again in 30 s" in l for l in printed)
+            await g._rejoin_one(ROOM, attempt=1)       # what the timer runs
+        asyncio.run(go())
+        assert rejoined == [ROOM]
+        assert any("back in the room" in l for l in printed)
+
+    def test_gives_up_after_the_last_try_and_says_so(self):
+        import asyncio
+
+        g, printed = _termux()
+        g.host.loop = None
+        g.groups.rooms = lambda: [ROOM]
+
+        async def join(room, create, rejoin):
+            raise asyncio.TimeoutError()
+        g._join = join
+        asyncio.run(g._rejoin_one(ROOM, attempt=len(g.REJOIN_RETRY_SECONDS)))
+        assert any("after %d tries" % (len(g.REJOIN_RETRY_SECONDS) + 1) in l
+                   for l in printed)

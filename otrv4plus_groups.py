@@ -882,28 +882,57 @@ class TermuxGroups:
         # SecureGroups.mark_syncing).
         self.groups.mark_syncing()
         for room in self.groups.rooms():
-            try:
-                created = await self._join(room, create=False, rejoin=True)
-            except Exception as exc:
-                if _muc.classify(exc)[0] == "room_gone":
-                    # Deleted while we were away; the service keeps its
-                    # tombstone and refuses the join with <gone/>. The group
-                    # ends here too, rather than failing at every reconnect.
-                    self.groups.on_room_destroyed(room)
-                    continue
-                self._print("[group %s] could not rejoin the room (%s)"
-                            % (room[:64], type(exc).__name__))
-                continue
-            if created:
-                # The room is gone: secure groups' rooms are persistent
-                # (rc.33), so it was deleted -- by its owner while we were
-                # away. Our join just made an empty one; it is taken down
-                # again and the group ends here too.
-                await self._destroy_quietly(room)
+            await self._rejoin_one(room, attempt=0)
+
+    #: Seconds before each further try at a room that did not rejoin (a join
+    #: over I2P can time out on a slow tunnel or a long history replay).
+    #: Until it is back the group holds what is typed, so it is not left at
+    #: one try: found on a laptop, 2026-10-11, "could not rejoin the room
+    #: (TimeoutError)" and the group stuck syncing until a restart.
+    REJOIN_RETRY_SECONDS = (30, 60, 120, 240, 300, 300)
+
+    async def _rejoin_one(self, room: str, attempt: int) -> None:
+        if not self._opened or room not in self.groups.rooms():
+            return
+        try:
+            created = await self._join(room, create=False, rejoin=True)
+        except Exception as exc:
+            if _muc.classify(exc)[0] == "room_gone":
+                # Deleted while we were away; the service keeps its
+                # tombstone and refuses the join with <gone/>. The group
+                # ends here too, rather than failing at every reconnect.
                 self.groups.on_room_destroyed(room)
-                continue
-            # A commit of ours lost with the old stream goes out again.
-            self.groups.on_room_rejoined(room)
+                return
+            if attempt < len(self.REJOIN_RETRY_SECONDS):
+                delay = self.REJOIN_RETRY_SECONDS[attempt]
+                self._print("[group %s] could not rejoin the room (%s); trying "
+                            "again in %d s -- what you type waits until then"
+                            % (room[:64], type(exc).__name__, delay))
+                self._schedule_rejoin(room, attempt + 1, delay)
+            else:
+                self._print("[group %s] could not rejoin the room (%s) after %d "
+                            "tries; reconnect (or restart) to try again"
+                            % (room[:64], type(exc).__name__, attempt + 1))
+            return
+        if attempt:
+            self._print("[group %s] back in the room" % room[:64])
+        if created:
+            # The room is gone: secure groups' rooms are persistent
+            # (rc.33), so it was deleted -- by its owner while we were
+            # away. Our join just made an empty one; it is taken down
+            # again and the group ends here too.
+            await self._destroy_quietly(room)
+            self.groups.on_room_destroyed(room)
+            return
+        # A commit of ours lost with the old stream goes out again.
+        self.groups.on_room_rejoined(room)
+
+    def _schedule_rejoin(self, room: str, attempt: int, delay: float) -> None:
+        loop = getattr(self.host, "loop", None)
+        if loop is None:
+            return
+        loop.call_later(delay, lambda: asyncio.ensure_future(
+            self._rejoin_one(room, attempt)))
 
     def on_room_rejected(self, room: str) -> bool:
         """The server bounced our message to `room`. True when it is one of

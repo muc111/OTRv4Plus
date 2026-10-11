@@ -4,6 +4,13 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.58 — 2026-10-11 — Termux retries a group room that did not rejoin (core 0.13.1)
+
+- **Termux: a secure group whose room did not rejoin is tried again**
+  (30 s, 1, 2, 4, 5, 5 min), then says it gave up. It used to print "could
+  not rejoin the room (TimeoutError)" once and leave the group syncing --
+  holding everything typed -- until a restart (laptop, 2026-10-11).
+
 ## Android 0.7.0-experimental.rc.57 — 2026-10-11 — /audiotest on Linux (core 0.13.1)
 
 - **\`/audiotest\` works on Linux** (it said "self-test is Termux-only"). It
