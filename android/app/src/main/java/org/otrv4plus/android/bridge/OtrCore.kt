@@ -666,20 +666,32 @@ data class RoomSummary(
     val jid: String,
     val name: String,
     val occupants: Int? = null,
-    /** An end-to-end encrypted (MLS) group, not an ordinary room ("channel"). */
+    /**
+     * An end-to-end encrypted (MLS) group whose keys are ON THIS PHONE. Only
+     * this earns the group icon: it is the one thing a room cannot fake.
+     */
     val secure: Boolean = false,
+    /**
+     * The room's own description says it is an encrypted group. Anybody can
+     * write that, so it is shown as a claim, never with the group icon
+     * (security audit, 2026-10-11).
+     */
+    val claimsSecure: Boolean = false,
     /** The room needs a password to enter. */
     val password: Boolean = false,
 ) {
     /** The part before the `@`, for a service that advertises no name. */
     val label: String get() = name.ifBlank { jid.substringBefore('@') }
 
-    /** The symbol in front of the name: 🔐 encrypted group, # channel. */
+    /** The symbol in front of the name: 🔐 your encrypted group, # anything else. */
     val kindIcon: String get() = if (secure) "\uD83D\uDD10" else "#"
 
     /** What the symbols say, for a screen reader and the line under the name. */
-    val kindText: String get() = (if (secure) "Encrypted group" else "Channel") +
-        (if (password) ", password needed" else "")
+    val kindText: String get() = when {
+        secure -> "Encrypted group"
+        claimsSecure -> "Says it is an encrypted group (you hold no keys for it)"
+        else -> "Channel"
+    } + (if (password) ", password needed" else "")
 }
 
 /**

@@ -20,4 +20,12 @@ class RoomSummaryTest {
         assertEquals("Channel, password needed", locked.kindText)
         assertEquals("lmao", group.label)
     }
+
+    @Test
+    fun `a room that only claims to be a group gets no group icon`() {
+        val claimed = RoomSummary("fake@conference.x.i2p", "", claimsSecure = true)
+        assertEquals("#", claimed.kindIcon)
+        assertEquals("Says it is an encrypted group (you hold no keys for it)",
+                     claimed.kindText)
+    }
 }

@@ -65,7 +65,7 @@ PRIVATE_KEY = re.compile(rb"-----BEGIN [A-Z ]*PRIVATE KEY-----")
 #: The ABIs the APK ships, and the i2pd release it carries for each
 #: (.github/scripts/build-i2pd-android.sh pins the source).
 ABIS = ("arm64-v8a", "x86_64")
-I2PD_VERSION = b"2.59.0"
+I2PD_VERSION = b"2.61.0"
 
 #: PyO3 names that exist only when the core is built with a test/legacy
 #: feature. Their presence in the shipped .so means a gated API shipped.

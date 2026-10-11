@@ -75,7 +75,7 @@ base64ct 1.8.3
     Copyright (c) 2014 Steve "Sc00bz" Thomas (steve at tobtu dot com)
     Copyright (c) 2021-2025 The RustCrypto Project Developers
 
-bitvec 1.0.1
+bitvec 1.1.1
     Licence: MIT
     Source:  https://github.com/bitvecto-rs/bitvec
     Copyright (c) 2018 myrrlyn (Alexander Payne)
@@ -97,7 +97,7 @@ block-buffer 0.10.4
     copyright license to reproduce, prepare Derivative Works of,
     Copyright (c) 2018-2019 The RustCrypto Project Developers
 
-cfg-if 1.0.4
+cfg-if 1.0.5
     Offered: MIT OR Apache-2.0
     Taken:   MIT
     Source:  https://github.com/rust-lang/cfg-if
@@ -179,7 +179,7 @@ crypto-bigint 0.5.5
     copyright license to reproduce, prepare Derivative Works of,
     Copyright (c) 2021 The RustCrypto Project Developers
 
-crypto-common 0.1.6
+crypto-common 0.1.7
     Offered: MIT OR Apache-2.0
     Taken:   MIT
     Source:  https://github.com/RustCrypto/traits
@@ -227,7 +227,7 @@ ed448-goldilocks-plus 0.16.0
     Source:  https://github.com/mikelodder7/Ed448-Goldilocks
     Copyright (c) Kevaundray Wedderburn <kevtheappdev@gmail.com>; Michael Lodder <redmike7@gmail.com>   [from Cargo.toml authors: the crate ships no licence file to read a holder from]
 
-either 1.18.0
+either 1.19.0
     Offered: MIT OR Apache-2.0
     Taken:   MIT
     Source:  https://github.com/rayon-rs/either
@@ -264,7 +264,7 @@ funty 2.0.0
     Source:  https://github.com/myrrlyn/funty
     Copyright (c) 2020 myrrlyn (Alexander Payne)
 
-generic-array 0.14.9
+generic-array 0.14.7
     Licence: MIT
     Source:  https://github.com/fizyk20/generic-array.git
     Copyright (c) 2015 Bartłomiej Kamiński
@@ -376,7 +376,7 @@ keccak 0.1.6
     copyright license to reproduce, prepare Derivative Works of,
     Copyright (c) 2018-2022 RustCrypto Developers
 
-libc 0.2.186
+libc 0.2.190
     Offered: MIT OR Apache-2.0
     Taken:   MIT
     Source:  https://github.com/rust-lang/libc
@@ -400,13 +400,13 @@ log 0.4.34
     copyright license to reproduce, prepare Derivative Works of,
     Copyright (c) 2014 The Rust Project Developers
 
-memchr 2.8.0
+memchr 2.8.3
     Offered: Unlicense OR MIT
     Taken:   MIT
     Source:  https://github.com/BurntSushi/memchr
     Copyright (c) 2015 Andrew Gallant
 
-num-bigint 0.4.6
+num-bigint 0.4.8
     Offered: MIT OR Apache-2.0
     Taken:   MIT
     Source:  https://github.com/rust-num/num-bigint
@@ -414,7 +414,7 @@ num-bigint 0.4.6
     copyright license to reproduce, prepare Derivative Works of,
     Copyright (c) 2014 The Rust Project Developers
 
-num-integer 0.1.46
+num-integer 0.1.47
     Offered: MIT OR Apache-2.0
     Taken:   MIT
     Source:  https://github.com/rust-num/num-integer
@@ -445,7 +445,7 @@ opaque-debug 0.3.1
     copyright license to reproduce, prepare Derivative Works of,
     Copyright (c) 2018-2024 The RustCrypto Project Developers
 
-openmls 0.9.0
+openmls 0.9.1
     Licence: MIT
     Source:  https://github.com/openmls/openmls/
     Copyright (c) OpenMLS Authors   [from Cargo.toml authors: the crate ships no licence file to read a holder from]
@@ -544,14 +544,14 @@ pqcrypto-traits 0.3.5
     Source:  https://github.com/rustpq/pqclean/
     Copyright (c) Thom Wiggers <thom@thomwiggers.nl>   [from Cargo.toml authors: the crate ships no licence file to read a holder from]
 
-proc-macro2 1.0.106
+proc-macro2 1.0.107
     Offered: MIT OR Apache-2.0
     Taken:   MIT
     Source:  https://github.com/dtolnay/proc-macro2
     copyright notice that is included in or attached to the work
     copyright license to reproduce, prepare Derivative Works of,
 
-pyo3 0.29.2
+pyo3 0.29.3
     Offered: MIT OR Apache-2.0
     Taken:   MIT
     Source:  https://github.com/pyo3/pyo3
@@ -560,7 +560,7 @@ pyo3 0.29.2
     copyright license to reproduce, prepare Derivative Works of,
     Copyright (c) 2023-present PyO3 Project and Contributors. https://github.com/PyO3
 
-pyo3-ffi 0.29.2
+pyo3-ffi 0.29.3
     Offered: MIT OR Apache-2.0
     Taken:   MIT
     Source:  https://github.com/pyo3/pyo3
@@ -569,7 +569,7 @@ pyo3-ffi 0.29.2
     copyright license to reproduce, prepare Derivative Works of,
     Copyright (c) 2023-present PyO3 Project and Contributors. https://github.com/PyO3
 
-pyo3-macros 0.29.2
+pyo3-macros 0.29.3
     Offered: MIT OR Apache-2.0
     Taken:   MIT
     Source:  https://github.com/pyo3/pyo3
@@ -578,7 +578,7 @@ pyo3-macros 0.29.2
     copyright license to reproduce, prepare Derivative Works of,
     Copyright (c) 2023-present PyO3 Project and Contributors. https://github.com/PyO3
 
-pyo3-macros-backend 0.29.2
+pyo3-macros-backend 0.29.3
     Offered: MIT OR Apache-2.0
     Taken:   MIT
     Source:  https://github.com/pyo3/pyo3
@@ -587,7 +587,7 @@ pyo3-macros-backend 0.29.2
     copyright license to reproduce, prepare Derivative Works of,
     Copyright (c) 2023-present PyO3 Project and Contributors. https://github.com/PyO3
 
-quote 1.0.45
+quote 1.0.47
     Offered: MIT OR Apache-2.0
     Taken:   MIT
     Source:  https://github.com/dtolnay/quote
@@ -599,7 +599,7 @@ radium 0.7.0
     Source:  https://github.com/bitvecto-rs/radium
     Copyright (c) 2019 kneecaw (Nika Layzell)
 
-rand 0.8.6
+rand 0.8.8
     Offered: MIT OR Apache-2.0
     Taken:   MIT
     Source:  https://github.com/rust-random/rand
@@ -667,7 +667,7 @@ sec1 0.7.3
     copyright license to reproduce, prepare Derivative Works of,
     Copyright (c) 2021-2022 The RustCrypto Project Developers
 
-serde 1.0.228
+serde 1.0.229
     Offered: MIT OR Apache-2.0
     Taken:   MIT
     Source:  https://github.com/serde-rs/serde
@@ -681,21 +681,21 @@ serde_bytes 0.11.19
     copyright notice that is included in or attached to the work
     copyright license to reproduce, prepare Derivative Works of,
 
-serde_core 1.0.228
+serde_core 1.0.229
     Offered: MIT OR Apache-2.0
     Taken:   MIT
     Source:  https://github.com/serde-rs/serde
     copyright notice that is included in or attached to the work
     copyright license to reproduce, prepare Derivative Works of,
 
-serde_derive 1.0.228
+serde_derive 1.0.229
     Offered: MIT OR Apache-2.0
     Taken:   MIT
     Source:  https://github.com/serde-rs/serde
     copyright notice that is included in or attached to the work
     copyright license to reproduce, prepare Derivative Works of,
 
-serde_json 1.0.149
+serde_json 1.0.152
     Offered: MIT OR Apache-2.0
     Taken:   MIT
     Source:  https://github.com/serde-rs/json
@@ -747,7 +747,7 @@ signature 2.2.0
     copyright license to reproduce, prepare Derivative Works of,
     Copyright (c) 2018-2023 RustCrypto Developers
 
-smallvec 1.15.1
+smallvec 1.16.3
     Offered: MIT OR Apache-2.0
     Taken:   MIT
     Source:  https://github.com/servo/rust-smallvec
@@ -769,14 +769,14 @@ subtle 2.6.1
     Copyright (c) 2016-2017 Isis Agora Lovecruft, Henry de Valence. All rights reserved.
     Copyright (c) 2016-2024 Isis Agora Lovecruft. All rights reserved.
 
-syn 2.0.117
+syn 2.0.119
     Offered: MIT OR Apache-2.0
     Taken:   MIT
     Source:  https://github.com/dtolnay/syn
     copyright notice that is included in or attached to the work
     copyright license to reproduce, prepare Derivative Works of,
 
-syn 3.0.6
+syn 3.0.7
     Offered: MIT OR Apache-2.0
     Taken:   MIT
     Source:  https://github.com/dtolnay/syn
@@ -832,7 +832,7 @@ tls_codec_derive 0.5.0
     copyright license to reproduce, prepare Derivative Works of,
     Copyright (c) 2020-2025 The RustCrypto Project Developers
 
-typenum 1.20.0
+typenum 1.20.1
     Offered: MIT OR Apache-2.0
     Taken:   MIT
     Source:  https://github.com/paholg/typenum
@@ -841,7 +841,7 @@ typenum 1.20.0
     Copyright 2014 Paho Lurie-Gregg
     Copyright (c) 2014 Paho Lurie-Gregg
 
-unicode-ident 1.0.24
+unicode-ident 1.0.26
     Offered: (MIT OR Apache-2.0) AND Unicode-3.0
     Taken:   MIT WITH Unicode-3.0
     Source:  https://github.com/dtolnay/unicode-ident
@@ -868,7 +868,7 @@ x448 0.6.0
     Source:  https://github.com/crate-crypto/x448
     Copyright (c) Kevaundray Wedderburn <kevtheappdev@gmail.com>   [from Cargo.toml authors: the crate ships no licence file to read a holder from]
 
-zerocopy 0.8.48
+zerocopy 0.8.62
     Offered: BSD-2-Clause OR Apache-2.0 OR MIT
     Taken:   MIT
     Source:  https://github.com/google/zerocopy
@@ -878,7 +878,7 @@ zerocopy 0.8.48
     Copyright 2019 The Fuchsia Authors.
     copyright notice, this list of conditions and the following disclaimer
 
-zerocopy-derive 0.8.48
+zerocopy-derive 0.8.62
     Offered: BSD-2-Clause OR Apache-2.0 OR MIT
     Taken:   MIT
     Source:  https://github.com/google/zerocopy
@@ -888,7 +888,7 @@ zerocopy-derive 0.8.48
     Copyright 2019 The Fuchsia Authors.
     copyright notice, this list of conditions and the following disclaimer
 
-zeroize 1.9.0
+zeroize 1.9.1
     Offered: Apache-2.0 OR MIT
     Taken:   MIT
     Source:  https://github.com/RustCrypto/utils
@@ -904,7 +904,7 @@ zeroize_derive 1.5.0
     copyright license to reproduce, prepare Derivative Works of,
     Copyright (c) 2019-2026 The RustCrypto Project Developers
 
-zmij 1.0.21
+zmij 1.0.23
     Licence: MIT
     Source:  https://github.com/dtolnay/zmij
     Copyright (c) David Tolnay <dtolnay@gmail.com>   [from Cargo.toml authors: the crate ships no licence file to read a holder from]
@@ -1205,7 +1205,7 @@ source by .github/scripts/build-i2pd-android.sh, with OpenSSL and
 Boost linked statically into it. zlib is Android's own and is not
 bundled.
 
-i2pd 2.59.0
+i2pd 2.61.0
     Licence: BSD-3-Clause
     Copyright (c) 2013-2026, The PurpleI2P Project
     Source:  https://github.com/PurpleI2P/i2pd

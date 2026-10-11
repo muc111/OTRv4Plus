@@ -459,6 +459,7 @@ class ChaquopyOtrCore(private val appContext: Context) : OtrCore {
                 rooms += RoomSummary(entry(item, "jid"), entry(item, "name"),
                                      entry(item, "occupants").toIntOrNull(),
                                      secure = flag(item, "secure"),
+                                     claimsSecure = flag(item, "claims_secure"),
                                      password = flag(item, "password"))
             }
         }

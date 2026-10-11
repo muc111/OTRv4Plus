@@ -406,7 +406,7 @@ def main():
     w("bundled.")
     w("")
     for name, ver, lic, holder, src in (
-        ("i2pd", "2.59.0", "BSD-3-Clause",
+        ("i2pd", "2.61.0", "BSD-3-Clause",
          "Copyright (c) 2013-2026, The PurpleI2P Project",
          "https://github.com/PurpleI2P/i2pd"),
         ("OpenSSL (linked into i2pd)", "3.5.9", "Apache-2.0",

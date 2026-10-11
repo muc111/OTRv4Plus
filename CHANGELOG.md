@@ -4,6 +4,33 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.53 — 2026-10-11 — security audit: dependencies updated, three fixes (core 0.13.1)
+
+Full record: SECURITY_AUDIT_2026-10-11.md (developer-led with AI assistance;
+not an independent audit).
+
+- **Dependencies.** All Rust lockfiles updated to the latest compatible
+  crates (61 in the core, 26 in the MLS crate, PyO3 0.29.3); **openmls
+  0.9.1**, which validates MLS extensions from the wire more strictly
+  (minimum Rust now 1.91). **i2pd 2.61.0** in the built-in router (reseed,
+  memory-leak and race fixes; bounded streaming queue; post-quantum SSU2).
+  Python packages already at their latest, with no known vulnerabilities;
+  OpenSSL 3.5.9 is the newest LTS release. \`cargo audit --deny warnings\` is
+  clean; three new libcrux advisories are in code that is locked but never
+  built, recorded in \`Rust/.cargo/audit.toml\`.
+- **Fix: the built-in router's SAM port could be taken by another app** on
+  the phone (loopback is shared). It is now random at each start, kept in
+  private storage, and only counts as ours while our own router process is
+  alive; a failed router never falls back to 7656.
+- **Fix: a room could fake the encrypted-group icon** in the room list by
+  its description. 🔐 is now only for groups whose keys are on this phone; a
+  description is shown as a claim.
+- **Fix: router error lines could name peers** on screen and in
+  diagnostics; addresses and identities are now replaced first.
+- Avatar SHA-1 ids (XEP-0084) marked as non-security hashing.
+
+---
+
 ## Android 0.7.0-experimental.rc.52 — 2026-10-10 — a server without PEP is named when a picture will not publish (core 0.13.1)
 
 - Device report: a profile picture would not upload. The picture was fine

@@ -25,8 +25,8 @@ OUT="$(mkdir -p "${2:?usage: build-i2pd-android.sh <abi> <out-dir>}" && cd "$2" 
 API=26
 
 # What ships. Changing a version means changing its hash in the same edit.
-I2PD_TAG=2.59.0
-I2PD_COMMIT=896f548175aa605efd15ecbfb744588e0c14f64f
+I2PD_TAG=2.61.0
+I2PD_COMMIT=635b013a612ff47278ef02acf8580a28e10e26c5
 OPENSSL_TAG=openssl-3.5.9
 OPENSSL_COMMIT=45e844fa2a14ec92d146bd8f5778ac130b6625fb
 BOOST_TAG=boost-1.88.0

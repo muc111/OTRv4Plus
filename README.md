@@ -57,7 +57,7 @@ is [ANDROID_CALL_AND_FILE_DEVICE_TEST.md](ANDROID_CALL_AND_FILE_DEVICE_TEST.md).
 | Voice over I2P | Working between two phones, in Termux and in the app; still being tuned |
 | Android app | Chat, OTRv4+, SMP, files and calls (to the app and to Termux) tested on phones |
 | Encrypted group chat (MLS) | Working: four clients (two Android, two Termux) on two phones send and read each other's messages, on the hybrid post-quantum suite. Group voice calls are implemented but **not yet tested on a phone**. Ordinary rooms (and the Welcome room) are plain XMPP rooms that the server can read. See [Encrypted group chat](#encrypted-group-chat-mls) |
-| Security review | Extensive developer-led and AI-assisted review, fuzzing, and known-answer and cross-implementation testing; **no paid independent audit yet**. See below and [CRYPTO_AUDIT_2026-09.md](CRYPTO_AUDIT_2026-09.md) |
+| Security review | Extensive developer-led and AI-assisted review, fuzzing, and known-answer and cross-implementation testing; **no paid independent audit yet**. See below, [CRYPTO_AUDIT_2026-09.md](CRYPTO_AUDIT_2026-09.md) and [SECURITY_AUDIT_2026-10-11.md](SECURITY_AUDIT_2026-10-11.md) |
 
 ## Security assessment and audit status
 

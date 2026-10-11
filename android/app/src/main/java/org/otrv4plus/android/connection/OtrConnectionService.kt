@@ -775,7 +775,7 @@ class OtrConnectionService : Service() {
             when (router.status()) {
                 BundledRouter.Status.READY -> {
                     routerState = RouterChoice.State.RUNNING
-                    return RouterChoice.BUILT_IN_SAM_PORT
+                    return router.samPort
                 }
                 BundledRouter.Status.STARTING ->
                     routerState = RouterChoice.State.JOINING
@@ -786,7 +786,7 @@ class OtrConnectionService : Service() {
             }
             // Still alive after this long: let the connection try (it fails
             // and the backoff comes back here, to the same router).
-            if (System.currentTimeMillis() > giveUp) return RouterChoice.BUILT_IN_SAM_PORT
+            if (System.currentTimeMillis() > giveUp) return router.samPort
             delay(1_000)
         }
     }
@@ -797,7 +797,9 @@ class OtrConnectionService : Service() {
             core.note("service", "i2p_router_failed", "error",
                       router.lastFailure ?: "unknown")
         }
-        return RouterChoice.BUILT_IN_SAM_PORT
+        // Never 0 (the default, 7656): with our router down, the attempt must
+        // fail, not reach whatever listens there.
+        return router.samPort.takeIf { it != 0 } ?: RouterChoice.NO_SAM_PORT
     }
 
     private suspend fun watchUntilDropped() {

@@ -95,8 +95,10 @@ class TestDiscovery:
         finally:
             t.close()
         assert code == "ok"
-        kind = {r["jid"]: (r["secure"], r["password"], r["occupants"]) for r in rooms}
+        kind = {r["jid"]: (r["claims_secure"], r["password"], r["occupants"]) for r in rooms}
         assert kind == {g: (True, False, 2), c: (False, False, 2), p: (False, True, 2)}
+        # A description is only a claim: nothing is "secure" until held here.
+        assert not any(r["secure"] for r in rooms)
 
 
 class TestHeldGroupsAreListed:
@@ -123,12 +125,18 @@ class TestHeldGroupsAreListed:
                              "secure": False, "password": False},
                             {"jid": "chat@" + SERVICE, "name": "", "occupants": 0,
                              "secure": False, "password": False}]}
+        listed["value"].append({"jid": "fake@" + SERVICE, "name": "", "occupants": 0,
+                                "secure": False, "claims_secure": True,
+                                "password": False})
         out = ctl._with_held_groups(listed, SERVICE)["value"]
         by = {r["jid"]: r for r in out}
         assert by["lmao@" + SERVICE]["secure"] is True
         assert by["chat@" + SERVICE]["secure"] is False
         assert by["mls2@" + SERVICE]["secure"] is True        # hidden, but ours
         assert "other@conference.elsewhere.i2p" not in by     # another service
+        # A room that only SAYS it is an encrypted group is not one of ours.
+        assert by["fake@" + SERVICE]["secure"] is False
+        assert by["fake@" + SERVICE]["claims_secure"] is True
 
     def test_a_failed_listing_is_passed_through(self):
         ctl = self._controller(["mls2@" + SERVICE])

@@ -26,7 +26,7 @@ validation, each of which runs on every change:
 | Python integration and protocol suites | Handshake, ratchet, SMP, file transfer, transports, the Android bridge, wipe | `tests/` (6,300+ tests) |
 | Android/Kotlin tests | Security state, gating of calls and files on SMP, reconnect and wipe policy | `android/app/src/test` (800+ tests) |
 | Dependency and lint checks | `cargo audit --deny warnings` in CI; Clippy; dependency-licence checks on the APK | `.github/workflows` |
-| Security-focused review | Threat model, a Rust-authority audit (secrets never leave the Rust core), a cryptographic audit with its findings tracked to closure, a transport audit | [SECURITY.md](SECURITY.md), [CRYPTO_AUDIT_2026-09.md](CRYPTO_AUDIT_2026-09.md), [RUST_AUTHORITY_AUDIT.md](RUST_AUTHORITY_AUDIT.md), [SECURITY_ISSUES.md](SECURITY_ISSUES.md) |
+| Security-focused review | Threat model, a Rust-authority audit (secrets never leave the Rust core), a cryptographic audit with its findings tracked to closure, a transport audit | [SECURITY.md](SECURITY.md), [CRYPTO_AUDIT_2026-09.md](CRYPTO_AUDIT_2026-09.md), [SECURITY_AUDIT_2026-10-11.md](SECURITY_AUDIT_2026-10-11.md) (dependencies and recent code), [RUST_AUTHORITY_AUDIT.md](RUST_AUTHORITY_AUDIT.md), [SECURITY_ISSUES.md](SECURITY_ISSUES.md) |
 | AI-assisted review | Used throughout to look for implementation weaknesses and to write adversarial tests; every finding it produced is a test or a tracked issue, not a claim | -- |
 | Physical testing | OTRv4+ handshake, SMP, encrypted files and voice between handsets and Termux; clearnet and I2P sign-in; Wipe & Exit | [PHYSICAL_TEST_PLAN.md](PHYSICAL_TEST_PLAN.md) |
 

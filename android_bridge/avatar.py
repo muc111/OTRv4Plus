@@ -332,7 +332,9 @@ class AvatarBook:
             data = base64.b64decode("".join(text.split()), validate=True)
         except (binascii.Error, ValueError):
             return False
-        if hashlib.sha1(data).hexdigest() != avatar_id:
+        # XEP-0084 defines the avatar id as SHA-1 of the image: a name, not
+        # a security property (the image itself is checked by decode_png).
+        if hashlib.sha1(data, usedforsecurity=False).hexdigest() != avatar_id:
             return False
         try:
             w, h, rgba = decode_png(data)
@@ -344,7 +346,8 @@ class AvatarBook:
     def set_own(self, jid: str, png: bytes) -> Avatar:
         """Our own avatar, after the same checks as anybody's."""
         w, h, rgba = decode_png(png)
-        avatar = Avatar(hashlib.sha1(bytes(png)).hexdigest(), w, h, rgba)
+        avatar = Avatar(hashlib.sha1(bytes(png), usedforsecurity=False).hexdigest(),
+                        w, h, rgba)
         self._store(self._key(jid), avatar)
         return avatar
 

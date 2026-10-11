@@ -2956,7 +2956,7 @@ class XmppTransport(Transport):
         disco = self._client["xep_0030"]
         items = await disco.get_items(jid=service, timeout=CALL_TIMEOUT)
         rooms = [{"jid": str(jid), "name": str(name or ""), "occupants": None,
-                  "secure": False, "password": False}
+                  "secure": False, "claims_secure": False, "password": False}
                  for jid, _node, name in items["disco_items"].get_items()]
         # XEP-0045 §6.4: disco#info on a room carries a muc#roominfo form
         # with `muc#roominfo_occupants`. Optional for the service, so a room
@@ -2977,7 +2977,12 @@ class XmppTransport(Transport):
                     except Exception:
                         xml = getattr(info, "xml", None)
                     if xml is not None:
-                        room["secure"], room["password"] = _muc.room_kind(xml)
+                        # The description is the room's own CLAIM: anybody
+                        # can create a room that says it is an encrypted
+                        # group. Only a group this account holds is "secure"
+                        # (connection._with_held_groups); the claim is shown
+                        # as a claim.
+                        room["claims_secure"], room["password"] = _muc.room_kind(xml)
                 except Exception:
                     pass
 
@@ -3823,7 +3828,8 @@ class XmppTransport(Transport):
     async def _publish_avatar(self, png: bytes, w: int, h: int) -> None:
         import hashlib
         plugin = self._client["xep_0084"]
-        avatar_id = hashlib.sha1(png).hexdigest()
+        # XEP-0084: the id IS the SHA-1 of the image -- a name, not security.
+        avatar_id = hashlib.sha1(png, usedforsecurity=False).hexdigest()
         await plugin.publish_avatar(png, timeout=CALL_TIMEOUT)
         await plugin.publish_avatar_metadata(
             [{"id": avatar_id, "type": _avatar.PNG_TYPE, "bytes": len(png),

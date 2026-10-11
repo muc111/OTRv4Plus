@@ -9,6 +9,9 @@
 # Re-audited 2026-09-28 after linking otrv4-mls (1273 advisories, 333 locked
 # crates across all targets): 0 vulnerabilities; one new unmaintained
 # compile-time crate, below.
+# Re-audited 2026-10-11 after `cargo update` and openmls 0.9.1: three new
+# advisories, all in libcrux crates that are locked but never compiled
+# (below).
 #
 # The two pyo3 entries that used to be here (RUSTSEC-2025-0020,
 # RUSTSEC-2026-0177) were removed: neither matches the locked pyo3 0.29.2, and a
@@ -39,4 +42,17 @@ ignore = [
   # enables them; `cargo tree -e normal --features mls --target all` shows
   # none of these crates. otrv4-mls implements HPKE itself (src/hpke.rs).
   "RUSTSEC-2026-0173",  # proc-macro-error2 2.0.1
+  # PANICS ON SHORT INPUT, in code that is NOT BUILT (audited 2026-10-11).
+  # libcrux-kem 0.0.9 and libcrux-hmac-drbg 0.0.1 are locked only because
+  # openmls 0.9.1 lists its optional libcrux provider (openmls_libcrux_crypto
+  # -> hpke-rs-libcrux, which pins libcrux-kem =0.0.9, so `cargo update`
+  # cannot move it). The provider is never enabled: otrv4-mls depends on
+  # openmls with default-features = false and implements HPKE and its
+  # provider itself (mls/src/hpke.rs, mls/src/provider.rs). `cargo tree
+  # -e all --target all -i libcrux-kem` prints nothing, for the shipped
+  # build and for tests alike. Remove these when openmls moves to a fixed
+  # libcrux (0.0.10 / 0.0.2).
+  "RUSTSEC-2026-0329",  # libcrux-hmac-drbg 0.0.1
+  "RUSTSEC-2026-0330",  # libcrux-kem 0.0.9
+  "RUSTSEC-2026-0331",  # libcrux-kem 0.0.9
 ]

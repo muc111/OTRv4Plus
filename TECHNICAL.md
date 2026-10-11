@@ -549,7 +549,7 @@ For someone who wants to try it in about ten minutes on Termux (Android, aarch64
 # Termux
 pkg install python rust openssl clang git
 # Ubuntu 24.04+ / Debian 13+ (Rust from rustup: the distribution's rustc is
-# older than the core's minimum, 1.85)
+# older than the core's minimum, 1.91)
 sudo apt install git python3 python3-venv build-essential curl
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
 . "$HOME/.cargo/env"     # Rust on this terminal's PATH (build.sh also finds ~/.cargo/bin)

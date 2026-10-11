@@ -47,8 +47,37 @@ class BundledRouter(private val context: Context) {
     /** Whether this APK carries a router at all (a local build may not). */
     val available: Boolean get() = binary.isFile
 
-    /** Whether our router is up, judged by its SAM bridge answering. */
-    fun running(): Boolean = samAnswers(RouterChoice.BUILT_IN_SAM_PORT)
+    /**
+     * The SAM port of OUR router, or 0 while there is none.
+     *
+     * Random, chosen at each start and kept only in the app's private
+     * storage. Loopback is shared by every app on the phone, so a FIXED port
+     * could be taken by another app before ours binds it -- during the
+     * minutes of a first start, for instance -- and the app would talk SAM to
+     * it. Other apps cannot read our files or see our processes' command
+     * lines, so they cannot learn this one (security audit, 2026-10-11).
+     */
+    @Volatile
+    var samPort: Int = 0
+        private set
+
+    /** Our router's process, spawned now or left by an earlier run, is alive. */
+    private fun ours(): Boolean {
+        if (process?.isAlive == true) return true
+        if (orphanPid() == null) return false
+        if (samPort == 0) {
+            samPort = runCatching { File(dir, PORT).readText().trim().toInt() }
+                .getOrDefault(0)
+        }
+        return samPort != 0
+    }
+
+    /**
+     * Whether OUR router is up: our process is alive AND its SAM port
+     * answers. A listener with no process of ours behind it is not ours, and
+     * is never used.
+     */
+    fun running(): Boolean = ours() && samPort != 0 && samAnswers(samPort)
 
     /** Where the router is. */
     enum class Status {
@@ -61,9 +90,9 @@ class BundledRouter(private val context: Context) {
     }
 
     fun status(): Status = when {
-        running() -> Status.READY
-        process?.isAlive == true || orphanPid() != null -> Status.STARTING
-        else -> Status.STOPPED
+        !ours() -> Status.STOPPED
+        samAnswers(samPort) -> Status.READY
+        else -> Status.STARTING
     }
 
     /**
@@ -95,10 +124,16 @@ class BundledRouter(private val context: Context) {
             return false
         }
         process = null
+        // An earlier router of ours whose port we no longer know: stopped,
+        // so the new one does not share its data directory.
+        orphanPid()?.let { android.os.Process.killProcess(it) }
         return try {
             dir.mkdirs()
             fresh = !File(dir, "router.info").isFile
-            File(dir, CONF).writeText(RouterChoice.config())
+            val port = freePort()
+            samPort = port
+            File(dir, PORT).writeText(port.toString())
+            File(dir, CONF).writeText(RouterChoice.config(port))
             // An empty tunnels file, so i2pd does not go looking for one.
             File(dir, TUNNELS).writeText("")
             installCertificates()
@@ -127,6 +162,16 @@ class BundledRouter(private val context: Context) {
         }
     }
 
+    /** A random SAM port nothing answers on yet (TCP, and the datagram one below). */
+    private fun freePort(): Int {
+        val random = java.security.SecureRandom()
+        repeat(32) {
+            val port = RouterChoice.pickSamPort { bound -> random.nextInt(bound) }
+            if (!samAnswers(port) && !samAnswers(port - 1)) return port
+        }
+        error("no free port for the router's SAM bridge")
+    }
+
     /** Record why the process ended, once it has. */
     fun noteExit() {
         val proc = process ?: return
@@ -147,7 +192,7 @@ class BundledRouter(private val context: Context) {
             val line = runCatching {
                 File(dir, name).readLines().map { it.trim() }.lastOrNull { it.isNotEmpty() }
             }.getOrNull()
-            if (!line.isNullOrBlank()) return line.take(200)
+            if (!line.isNullOrBlank()) return RouterChoice.scrub(line)
         }
         return null
     }
@@ -169,6 +214,8 @@ class BundledRouter(private val context: Context) {
         // file's number may since belong to this very app.
         orphanPid()?.let { android.os.Process.killProcess(it) }
         runCatching { File(dir, PID).delete() }
+        runCatching { File(dir, PORT).delete() }
+        samPort = 0
         startedAt = 0L
     }
 
@@ -231,6 +278,7 @@ class BundledRouter(private val context: Context) {
         private const val TUNNELS = "tunnels.conf"
         private const val CERTS = "certificates"
         private const val PID = "i2pd.pid"
+        private const val PORT = "sam.port"
         private const val LOG = "i2pd.log"
         private const val OUT = "i2pd.out"
         private const val CERT_ASSET = "i2pd-certificates.zip"

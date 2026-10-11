@@ -18,7 +18,9 @@ license     = "AGPL-3.0-only OR LicenseRef-OTRv4Plus-Commercial"
 # Measured, not guessed: cargo 1.75 cannot even resolve the graph.  Declaring
 # 1.80 here would let a 1.80-1.84 toolchain start a build that fails much
 # later with an unrelated-looking error.
-rust-version = "1.85"
+#   * openmls 0.9.1 (secure groups; stricter parsing of MLS extensions from
+#     the wire) declares rust-version 1.91.
+rust-version = "1.91"
 
 [lib]
 name = "otrv4_core"

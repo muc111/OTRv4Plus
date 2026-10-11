@@ -37,11 +37,24 @@ object RouterChoice {
     const val EXTERNAL_SAM_PORT = 7656
 
     /**
-     * Our router's SAM bridge. Not 7656, so an I2P app the user starts later
-     * finds its own port free and the two are never confused. i2pd puts the
-     * SAM datagram port one below this (17655), which is what voice uses.
+     * Our router's SAM bridge port: random, from this range, chosen at each
+     * start (see [BundledRouter.samPort]). Never 7656, so an I2P app the user
+     * starts later finds its own port free. i2pd puts the SAM datagram port
+     * one below it, which is what voice uses.
      */
-    const val BUILT_IN_SAM_PORT = 17656
+    const val BUILT_IN_SAM_PORT_MIN = 20000
+    const val BUILT_IN_SAM_PORT_MAX = 60000      // exclusive
+
+    /** A port for our SAM bridge; [nextInt] is a CSPRNG's nextInt(bound). */
+    fun pickSamPort(nextInt: (Int) -> Int): Int =
+        BUILT_IN_SAM_PORT_MIN + nextInt(BUILT_IN_SAM_PORT_MAX - BUILT_IN_SAM_PORT_MIN)
+
+    /**
+     * A port nothing listens on: what a connection attempt gets when our
+     * router did not start, so it fails ("refused") rather than reaching
+     * whatever happens to be on the default 7656.
+     */
+    const val NO_SAM_PORT = 1
 
     /** The rule. [bundled] is whether this APK carries a router at all. */
     fun decide(mode: Mode, externalAnswers: Boolean, bundled: Boolean): Use = when {
@@ -69,7 +82,7 @@ object RouterChoice {
      * Owner's choices (2026-10-10): limited transit, so the phone helps the
      * network a little without becoming a relay that drains the battery.
      *
-     *  - SAM on loopback only, on [BUILT_IN_SAM_PORT]. Nothing else listens:
+     *  - SAM on loopback only, on a random port. Nothing else listens:
      *    no web console, no HTTP or SOCKS proxy, no BOB, I2CP or I2PControl.
      *  - Transit allowed but small: bandwidth class L (32 KB/s), half of it
      *    for others, at most 50 transit tunnels. Never floodfill.
@@ -78,7 +91,7 @@ object RouterChoice {
      *  - The address book stays on, so names like otrv4plus.i2p resolve.
      *  - Logs only errors, to a file in the router's private directory.
      */
-    fun config(samPort: Int = BUILT_IN_SAM_PORT): String = """
+    fun config(samPort: Int): String = """
         |# Written by OTRv4+ on every start; edits are overwritten.
         |log = file
         |loglevel = error
@@ -133,6 +146,21 @@ object RouterChoice {
      */
     fun isInside(base: java.io.File, path: java.io.File): Boolean =
         path == base || path.path.startsWith(base.path + java.io.File.separator)
+
+    /**
+     * A line i2pd printed, made safe to show and record: IPv4 and IPv6
+     * addresses, I2P addresses (.b32.i2p, base32/base64 identities) and
+     * ports after an address become placeholders, and it is cut to 200
+     * characters. The line goes on screen and into diagnostics when the
+     * router stops, and i2pd's errors can name peers (security audit,
+     * 2026-10-11).
+     */
+    fun scrub(line: String): String = line
+        .replace(Regex("""[A-Za-z0-9]{52}\.b32\.i2p"""), "<i2p-address>")
+        .replace(Regex("""\b(?:\d{1,3}\.){3}\d{1,3}(?::\d{1,5})?\b"""), "<ip>")
+        .replace(Regex("""\[?(?:[0-9A-Fa-f]{0,4}:){2,7}[0-9A-Fa-f]{0,4}\]?(?::\d{1,5})?"""), "<ip>")
+        .replace(Regex("""[A-Za-z0-9~+/=-]{32,}"""), "<id>")
+        .take(200)
 
     /** What the router is doing, for the connection screen. */
     enum class State {

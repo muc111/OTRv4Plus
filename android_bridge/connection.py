@@ -933,7 +933,11 @@ class ConnectionController:
     def _with_held_groups(self, result: Dict[str, Any], service: str) -> Dict[str, Any]:
         """Groups this account holds are secure whatever the listing says, and
         are listed even when the service hides their room (a room made before
-        rooms were created public). Only rooms on this service."""
+        rooms were created public). Only rooms on this service.
+
+        "secure" means HELD here -- keys on this device. A room's own
+        description saying it is a group is only "claims_secure": anybody can
+        write that description (security audit, 2026-10-11)."""
         if not result.get("ok"):
             return result
         groups = getattr(self._app, "groups", None)
@@ -950,7 +954,8 @@ class ConnectionController:
         for room in sorted(held):
             if room.endswith(suffix) and room not in listed:
                 rooms.append({"jid": room, "name": "", "occupants": None,
-                              "secure": True, "password": False})
+                              "secure": True, "claims_secure": True,
+                              "password": False})
         return dict(result, value=rooms)
 
     def _rejoin_secure_rooms(self) -> None:
@@ -1797,10 +1802,10 @@ def _follow_sam_udp_port(tcp_port: int) -> None:
 
     i2pd puts it one below the TCP port. On the default bridge (7656) that
     is voice's own default, 7655; the router built into the APK listens on
-    17656, so its datagrams go to 17655. Calls read the port from the
+    a random port (say 23456), so its datagrams go to 23455. Calls read the port from the
     environment (`otrv4plus_voice.sam_udp_port`), so this sets or clears it.
     """
-    if tcp_port and tcp_port != _address.DEFAULT_SAM_PORT:
+    if tcp_port > 1 and tcp_port != _address.DEFAULT_SAM_PORT:
         os.environ["OTRV4PLUS_SAM_UDP_PORT"] = str(tcp_port - 1)
     else:
         os.environ.pop("OTRV4PLUS_SAM_UDP_PORT", None)

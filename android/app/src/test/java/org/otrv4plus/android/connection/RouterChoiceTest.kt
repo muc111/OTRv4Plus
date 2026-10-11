@@ -56,18 +56,35 @@ class RouterChoiceTest {
     }
 
     @Test
-    fun `ours never takes the default SAM port`() {
-        assertTrue(RouterChoice.BUILT_IN_SAM_PORT != RouterChoice.EXTERNAL_SAM_PORT)
-        // i2pd's datagram port is one below; it must not land on 7656 either.
-        assertTrue(RouterChoice.BUILT_IN_SAM_PORT - 1 != RouterChoice.EXTERNAL_SAM_PORT)
+    fun `ours is a random port, never the default one`() {
+        // The ends of the range, and a spread in between.
+        for (pick in listOf(0, 1, 19_999, 39_999)) {
+            val port = RouterChoice.pickSamPort { bound -> minOf(pick, bound - 1) }
+            assertTrue(port in RouterChoice.BUILT_IN_SAM_PORT_MIN until
+                           RouterChoice.BUILT_IN_SAM_PORT_MAX, "$port")
+            // i2pd's datagram port is one below; neither may be 7656/7655.
+            assertTrue(port != RouterChoice.EXTERNAL_SAM_PORT &&
+                           port - 1 != RouterChoice.EXTERNAL_SAM_PORT &&
+                           port - 1 != RouterChoice.EXTERNAL_SAM_PORT - 1, "$port")
+        }
+        val seen = (1..200).map {
+            RouterChoice.pickSamPort { bound -> java.security.SecureRandom().nextInt(bound) }
+        }.toSet()
+        assertTrue(seen.size > 150, "the port is not predictable: ${seen.size} distinct")
+    }
+
+    @Test
+    fun `a failed router never falls back to the default port`() {
+        assertTrue(RouterChoice.NO_SAM_PORT != 0)
+        assertTrue(RouterChoice.NO_SAM_PORT != RouterChoice.EXTERNAL_SAM_PORT)
     }
 
     @Test
     fun `the configuration listens on loopback only and limits transit`() {
-        val conf = RouterChoice.config()
+        val conf = RouterChoice.config(23_456)
         val lines = conf.lines().map { it.trim() }
         assertTrue("address = 127.0.0.1" in lines)
-        assertTrue("port = ${RouterChoice.BUILT_IN_SAM_PORT}" in lines)
+        assertTrue("port = 23456" in lines)
         assertTrue("floodfill = false" in lines)
         assertTrue("bandwidth = L" in lines)
         assertTrue("transittunnels = 50" in lines)
@@ -112,5 +129,23 @@ class RouterChoiceTest {
         assertTrue(RouterChoice.isInside(base, java.io.File(base, "reseed/a.crt")))
         assertFalse(RouterChoice.isInside(base, java.io.File("/data/app/i2pd/i2pd.conf")))
         assertFalse(RouterChoice.isInside(base, java.io.File("/data/app/i2pd/certificates-x/a")))
+    }
+
+    @Test
+    fun `a router line shown on screen names no address`() {
+        val line = "12:00:01@123/error - SSU2: peer 203.0.113.7:12345 and " +
+            "[2001:db8::1]:4567 and fe80::1 failed for " +
+            "ukeu3k5oycgaauneqgtnvselmt4yemvoilkln7jpvamvfx7dnkdq.b32.i2p " +
+            "ident a2KmX0lP-9qRsTuVwXyZ01234567890abcdefGHIJ~kl"
+        val clean = RouterChoice.scrub(line)
+        for (leak in listOf("203.0.113.7", "12345", "2001:db8", "fe80::1",
+                            "ukeu3k5o", "a2KmX0lP")) {
+            assertFalse(leak in clean, "$leak in $clean")
+        }
+        assertTrue("SSU2" in clean && "failed" in clean, clean)
+        assertTrue(RouterChoice.scrub("x".repeat(500)).length <= 200)
+        // Ordinary text and times survive.
+        assertEquals("exited with code 1: bad option", RouterChoice.scrub(
+            "exited with code 1: bad option"))
     }
 }
