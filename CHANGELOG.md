@@ -4,6 +4,24 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.60 — 2026-10-11 — group verification reaches late members (core 0.13.1)
+
+Device test: the phones had verified each other; the laptop, invited back,
+was never asked to verify, and its own \`/smp\` reached nobody.
+
+- **Any word of a verification we have not heard of asks us to join it.**
+  A run's "start" is sent before a newly added member can read the group,
+  and a "ready" for an unknown run used to be ignored. Now either one
+  prompts the user (Termux: y/n; app: the Verify dialog).
+- **Joining a run always announces it again**, not only starting one, so a
+  member who missed it hears of it.
+- **A member added while a run is going is told on the commit that adds
+  them.**
+- **Two runs at once become one:** the lower run id wins everywhere; a
+  member who already typed the passphrase moves over with it, and the other
+  run is ended (its passphrase zeroed). The laptop's leftover run from its
+  old copy of the group was the second run here.
+
 ## Android 0.7.0-experimental.rc.59 — 2026-10-11 — an invitation back no longer says "you were removed" (core 0.13.1)
 
 - **Accepting an invitation to a group you are already in no longer reports

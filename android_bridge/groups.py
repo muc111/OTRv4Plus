@@ -535,6 +535,8 @@ class SecureGroups:
         #: Group files (android_bridge.group_files), the same way.
         self._file_handler: Optional[Callable[[str, str, bool, str], None]] = None
         self._epoch_listener: Optional[Callable[[str], None]] = None
+        #: Further listeners for every commit (group verification).
+        self._epoch_listeners: List[Callable[[str], None]] = []
         self._pacer = RoomPacer(
             send_room, burst=self.ROOM_BURST, interval=self.ROOM_INTERVAL,
             send_volatile=send_room_volatile,
@@ -971,6 +973,11 @@ class SecureGroups:
 
     def set_epoch_listener(self, fn: Optional[Callable[[str], None]]) -> None:
         self._epoch_listener = fn
+
+    def add_epoch_listener(self, fn: Callable[[str], None]) -> None:
+        """Another listener for every commit (the calls keep the first)."""
+        if fn not in self._epoch_listeners:
+            self._epoch_listeners.append(fn)
 
     def send_control(self, room: str, text: str) -> None:
         """A call control message: encrypted and posted like a message, and
@@ -1956,6 +1963,12 @@ class SecureGroups:
                 self._epoch_listener(room)
             except Exception:
                 self._emit(ErrorOccurred(peer=room, code="call_rekey_failed"))
+        if kind == "commit":
+            for listener in list(self._epoch_listeners):
+                try:
+                    listener(room)
+                except Exception:
+                    self._emit(ErrorOccurred(peer=room, code="epoch_listener_failed"))
         return True
 
     def _on_commit(self, room: str, ev: Dict[str, Any]) -> Optional[Any]:

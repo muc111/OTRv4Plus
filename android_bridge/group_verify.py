@@ -76,6 +76,10 @@ class _Run:
     began: Dict[str, float] = field(default_factory=dict)
     took: list = field(default_factory=list)
     finished_said: bool = False
+    #: Members this run has been announced to (members of the group when it
+    #: was started or re-announced). Someone added later has not heard of it.
+    announced: set = field(default_factory=set)
+    reannounced_at: float = -1e18
 
 
 def _b64e(b: bytes) -> str:
@@ -103,6 +107,13 @@ class GroupVerify:
         #: Set at creation by the group's creator: room -> passphrase.
         self._preset: Dict[str, bytearray] = {}
         groups.set_verify_handler(self._on_control)
+        # A member added while a run is going did not hear its "start" (it
+        # was sent before they could read the group): told again on the
+        # commit that adds them. Device test, 2026-10-11: a laptop invited
+        # back was never asked, and its own /smp reached nobody.
+        adder = getattr(groups, "add_epoch_listener", None)
+        if adder is not None:
+            adder(self._on_epoch)
 
     # -- what the user does ---------------------------------------------------
 
@@ -155,7 +166,8 @@ class GroupVerify:
             fresh = run is None
             if fresh:
                 run = _Run(run_id=os.urandom(16).hex(), starter=self._me(),
-                           started_at=self._clock())
+                           started_at=self._clock(),
+                           announced=set(self._member_ids(room)))
                 self._runs[room] = run
             if run.secret is not None:
                 _zero(run.secret)
@@ -164,9 +176,12 @@ class GroupVerify:
             run.ready.add(self._me())
             run_id = run.run_id
         if fresh:
-            self._send(room, {"t": "start", "run": run_id})
             self._emit(GroupChanged(peer=room, change="verify_started",
                                     detail=self._me()))
+        # "start" every time, not only for a new run: a member who missed it
+        # (added since, or whose copy was replaced) learns of it here, and
+        # one who knows it ignores it.
+        self._send(room, {"t": "start", "run": run_id})
         self._send(room, {"t": "ready", "run": run_id})
         self._pair_up(room)
         return run_id
@@ -272,21 +287,15 @@ class GroupVerify:
         if not isinstance(run_id, str) or len(run_id) != 32 or not all(
                 c in "0123456789abcdef" for c in run_id):
             return
-        if kind == "start":
+        if kind in ("start", "ready"):
+            run = self._reconcile(room, sender, run_id)
+            if run is None or kind == "start":
+                return
+        else:
             with self._lock:
                 run = self._live(room)
-                if run is not None and run.run_id == run_id:
+                if run is None or run.run_id != run_id:
                     return
-                if run is not None:
-                    self._end(run)
-                self._runs[room] = _Run(run_id=run_id, starter=sender,
-                                        started_at=self._clock())
-            self._emit(GroupChanged(peer=room, change="verify_started", detail=sender))
-            return
-        with self._lock:
-            run = self._live(room)
-            if run is None or run.run_id != run_id:
-                return
         if kind == "ready":
             with self._lock:
                 run.ready.add(sender)
@@ -301,6 +310,78 @@ class GroupVerify:
             self._pair_up(room)
         elif kind == "smp" and msg.get("to") == self._me():
             self._on_step(room, run, sender, msg)
+
+    #: At most one re-announcement of our run per room in this many seconds.
+    REANNOUNCE_SECONDS = 10.0
+
+    def _reconcile(self, room: str, sender: str, run_id: str) -> Optional[_Run]:
+        """Settle which run the room is in, given `sender` speaks of
+        `run_id` ("start" or "ready"). Returns the run when it is that one.
+
+        Two runs at once (one started before a member could read the group,
+        another started by that member) used to talk past each other: each
+        side ignored the other's run, and nobody was asked or verified. Now
+        the run with the LOWER id wins everywhere: a member in the higher
+        one moves to the lower (keeping the passphrase its user typed for
+        this group, so it joins at once), and a member in the lower one says
+        so again. A run we had not heard of is one we were not told about:
+        we are asked to join it."""
+        reannounce = adopt_with = None
+        emit_started = False
+        with self._lock:
+            run = self._live(room)
+            if run is not None and run.run_id == run_id:
+                return run
+            if run is not None and run.run_id < run_id:
+                now = self._clock()
+                if now - run.reannounced_at >= self.REANNOUNCE_SECONDS:
+                    run.reannounced_at = now
+                    reannounce = run
+                run = None
+                result = None
+            else:
+                secret = bytearray(run.secret) if run is not None and run.secret is not None else None
+                if run is not None:
+                    self._end(run)
+                new = _Run(run_id=run_id, starter=sender, started_at=self._clock(),
+                           announced=set(self._member_ids(room)))
+                self._runs[room] = new
+                result = new
+                if secret is not None:
+                    adopt_with = secret
+                else:
+                    emit_started = True
+        if reannounce is not None:
+            self._send(room, {"t": "start", "run": reannounce.run_id})
+            if reannounce.secret is not None:
+                self._send(room, {"t": "ready", "run": reannounce.run_id})
+            return None
+        if emit_started:
+            self._emit(GroupChanged(peer=room, change="verify_started", detail=sender))
+        if adopt_with is not None:
+            # Our user already gave this group's passphrase: join it.
+            self.start(room, adopt_with)
+        return result
+
+    def _on_epoch(self, room: str) -> None:
+        """A commit: anyone added since our run was announced is told now."""
+        with self._lock:
+            run = self._live(room)
+            if run is None or run.secret is None:
+                return
+            members = set(self._member_ids(room))
+            new = members - run.announced - {self._me()}
+            run.announced |= members
+            if not new:
+                return
+        self._send(room, {"t": "start", "run": run.run_id})
+        self._send(room, {"t": "ready", "run": run.run_id})
+
+    def _member_ids(self, room: str) -> list:
+        try:
+            return [m["jid"] for m in self._groups.members(room)]
+        except Exception:
+            return []
 
     # -- the pairs ----------------------------------------------------------
 

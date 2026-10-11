@@ -1362,6 +1362,76 @@ class TestGroupVerification:
         assert "verify_finished" in a.changes()
         assert "verify_progress" in a.changes()
 
+    def test_a_member_added_during_a_run_is_asked_and_verified(self):
+        """A member added while a run is still going did not hear its
+        "start" (sent before they could read the group): told again on the
+        commit that adds them."""
+        from android_bridge.group_verify import GroupVerify
+        w, (a, b) = _group(2)
+        va, vb = self._verifiers([a, b])
+        va.start(ROOM, bytearray(b"correct horse battery"))   # Bob not yet
+        c = w.add("carol@x.i2p")
+        vc = GroupVerify(c.groups, emit=c.events.append)
+        w.pair(a.jid, c.jid)
+        _invite(w, a.jid, c.jid)
+        assert vc.pending(ROOM) is not None, "the newcomer was never asked"
+        assert "verify_started" in c.changes()
+        vc.start(ROOM, bytearray(b"correct horse battery"))
+        vb.start(ROOM, bytearray(b"correct horse battery"))
+        for m, others in ((a, (b, c)), (b, (a, c)), (c, (a, b))):
+            for o in others:
+                assert self._verified(m, o.jid), (m.jid, o.jid)
+
+    def test_a_newcomer_after_the_run_ended_starts_one_and_is_heard(self):
+        """Device test (2026-10-11): the phones had verified each other (their
+        run had ended); the laptop, invited back, typed /smp and nobody was
+        asked -- it had joined a leftover run from its old copy and announced
+        only "ready" for it, which the phones ignored as unknown. Any word of
+        a run we do not know now asks our user to join it."""
+        from android_bridge.group_verify import GroupVerify
+        w, (a, b) = _group(2)
+        va, vb = self._verifiers([a, b])
+        va.start(ROOM, bytearray(b"correct horse battery"))
+        vb.start(ROOM, bytearray(b"correct horse battery"))
+        assert ROOM not in va._runs                  # verified: the run ended
+        c = w.add("carol@x.i2p")
+        vc = GroupVerify(c.groups, emit=c.events.append)
+        w.pair(a.jid, c.jid)
+        _invite(w, a.jid, c.jid)
+        # A leftover run on the laptop that nobody else knows of.
+        w.room.drop_next = 10**6
+        vc.start(ROOM, bytearray(b"correct horse battery"))
+        w.room.drop_next = 0
+        a.events.clear()
+        b.events.clear()
+        vc.start(ROOM, bytearray(b"correct horse battery"))   # /smp again
+        assert va.pending(ROOM) is not None and vb.pending(ROOM) is not None
+        assert "verify_started" in a.changes() and "verify_started" in b.changes()
+        va.start(ROOM, bytearray(b"correct horse battery"))
+        vb.start(ROOM, bytearray(b"correct horse battery"))
+        for m, others in ((a, (b, c)), (b, (a, c)), (c, (a, b))):
+            for o in others:
+                assert self._verified(m, o.jid), (m.jid, o.jid)
+
+    def test_two_runs_at_once_become_one(self):
+        """Two runs nobody else had heard of: the lower id wins everywhere, a
+        member who already typed the passphrase moves over with it, and
+        everyone ends verified."""
+        w, (a, b, c) = _group(3, levels={"bob@x.i2p": SecurityState.ENCRYPTED,
+                                         "carol@x.i2p": SecurityState.ENCRYPTED})
+        va, vb, vc = self._verifiers([a, b, c])
+        w.room.drop_next = 10**6
+        va.start(ROOM, bytearray(b"correct horse battery"))
+        vc.start(ROOM, bytearray(b"correct horse battery"))
+        w.room.drop_next = 0
+        assert va._runs[ROOM].run_id != vc._runs[ROOM].run_id
+        vc.start(ROOM, bytearray(b"correct horse battery"))   # announces again
+        va.start(ROOM, bytearray(b"correct horse battery"))
+        vb.start(ROOM, bytearray(b"correct horse battery"))
+        for m, others in ((a, (b, c)), (b, (a, c)), (c, (a, b))):
+            for o in others:
+                assert self._verified(m, o.jid), (m.jid, o.jid)
+
     def test_a_short_passphrase_is_refused(self):
         w, (a, b) = _group(2)
         (va, _vb) = self._verifiers([a, b])
