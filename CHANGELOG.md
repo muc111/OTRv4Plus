@@ -4,6 +4,29 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.63 — 2026-10-11 — the Connect screen says "failed" only when something is (core 0.13.1)
+
+Owner report: with the built-in router a red failure showed at the bottom
+while the app was still starting the router and building tunnels.
+
+- **While the app is still trying, it says so quietly:** "Still connecting:
+  the I2P network is still building the tunnels ... Trying again by itself
+  (attempt 2)". Timeouts, a router still starting, the server's I2P address
+  not found yet and dropped streams are what I2P does on its way up, not
+  errors.
+- **An error when there is one:**
+  - the same trouble three times in a row: "Can't reach the server: its I2P
+    service seems to be offline", "The I2P tunnels to the server keep timing
+    out", "The server answers over I2P, but its chat service is not
+    responding" -- still retrying;
+  - at once, and retrying stops: a **wrong password** ("The server refused
+    the sign-in: check the address and password"), the server's I2P key
+    changed, no safe sign-in method, an invalid address.
+- **A wrong password is no longer retried in the background** every few
+  minutes; it waits for you.
+- One list decides both what stops the retries and what is shown as needing
+  you (\`ConnectProblem\`, unit-tested).
+
 ## Android 0.7.0-experimental.rc.62 — 2026-10-11 — group calls get the 1:1 audio chain; echo cancellation on Linux (core 0.13.1)
 
 - **Group calls receive like 1:1 calls.** They had a bare path: decoded on

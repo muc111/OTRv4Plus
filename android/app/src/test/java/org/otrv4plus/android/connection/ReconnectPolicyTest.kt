@@ -162,7 +162,10 @@ class ReconnectPolicyTest {
     fun `TLS and SASL refusals also wait for the user`() {
         for (code in listOf("tls_required", "no_safe_auth_mechanism",
                             "route_refused", "malformed_server",
-                            "certificate_failure")) {
+                            "certificate_failure",
+                            // rc.63: a wrong password is the user's to fix;
+                            // retrying it only repeats the refusal.
+                            "auth_failed")) {
             val p = policy()
             assertTrue(p.onFailure(code), code)
             assertNull(p.nextDelayMs(), code)
@@ -172,7 +175,7 @@ class ReconnectPolicyTest {
     @Test
     fun `ordinary network failures still back off and retry`() {
         for (code in listOf("timeout", "refused", "stream_failed",
-                            "auth_failed", "tor_unavailable", "dns_failure",
+                            "tor_unavailable", "dns_failure",
                             "tcp_failure", "server_closed_connection", null)) {
             val p = policy()
             assertFalse(p.onFailure(code), code.toString())

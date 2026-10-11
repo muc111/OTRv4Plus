@@ -202,8 +202,10 @@ class TestNothingTechnicalOnTheLoginScreen:
         assert "stageLabel(status.stage)" in connect
 
     def test_a_connection_failure_still_says_something(self, connect):
-        """Removing the technical text must not leave a failure silent."""
-        assert "Could not connect" in connect
+        """Removing the technical text must not leave a failure silent: the
+        line comes from ConnectProblem (rc.63), and an error still shows the
+        transport's own sentence."""
+        assert "ConnectProblem.line(" in connect
         assert "status.detail" in connect
 
     def test_debug_is_reachable_from_here(self, connect):

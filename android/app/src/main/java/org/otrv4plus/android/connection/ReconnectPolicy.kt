@@ -135,13 +135,12 @@ class ReconnectPolicy(
          * Nothing is sent on any of these attempts, but the decision to go on
          * belongs to the person looking at the warning.
          */
-        val NEEDS_THE_USER: Set<String> = setOf(
-            "i2p_destination_changed", // X1: explicit re-approval required
-            "tls_required",            // clearnet server without TLS
-            "certificate_failure",     // clearnet certificate rejected
-            "no_safe_auth_mechanism",  // over I2P/Tor: no SCRAM offered
-            "route_refused", "malformed_server", "bad_transport", "no_server",
-        )
+        //
+        // Since rc.63 also a wrong password ("auth_failed"): retrying it in the
+        // background only repeats the refusal (and a server may lock the
+        // account for it). One list, shared with the screen's wording:
+        // ConnectProblem.NEEDS_YOU.
+        val NEEDS_THE_USER: Set<String> = ConnectProblem.NEEDS_YOU
 
         /** In the order of an I2P tunnel build, not of a clearnet retry. */
         const val DEFAULT_FIRST_DELAY_MS = 30_000L

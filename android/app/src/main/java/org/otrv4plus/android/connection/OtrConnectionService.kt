@@ -181,6 +181,9 @@ class OtrConnectionService : Service() {
     var failure: String? = null
         private set
 
+    /** Failed attempts in a row since the last success or the user's tap. */
+    val failuresInARow: Int get() = reconnect.attempts
+
     /**
      * The I2P router the APK carries. Started by [chooseRouter] when an I2P
      * sign-in needs it; stopped with the connection, on sign-out and by

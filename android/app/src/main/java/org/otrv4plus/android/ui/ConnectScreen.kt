@@ -416,12 +416,33 @@ fun ConnectScreen(
             }
         }
 
-        if (status.detail.isNotBlank() && status.stage == "failed") {
+        // What went wrong, if anything did -- and NOT while the app is still
+        // doing its job (owner report, 2026-10-11: with the built-in router a
+        // red "failed" showed while it was starting and building tunnels).
+        // ConnectProblem decides: expected I2P start-up trouble is a quiet
+        // "still connecting" line until it has repeated, a wrong password or
+        // a security stop is an error at once.
+        val problem = org.otrv4plus.android.connection.ConnectProblem.line(
+            failure = model.failureCode,
+            connected = status.connected,
+            retrying = model.connecting,
+            failuresInARow = model.failuresInARow,
+        )
+        problem?.let { line ->
+            val error = line.tone == org.otrv4plus.android.connection.ConnectProblem.Tone.ERROR
             Spacer(Modifier.height(4.dp))
-            Text("Could not connect",
-                style = MaterialTheme.typography.titleSmall)
-            SelectionContainer {
-                Text(status.detail, style = MaterialTheme.typography.bodySmall)
+            Text(
+                line.text,
+                style = MaterialTheme.typography.bodySmall,
+                color = if (error) MaterialTheme.colorScheme.error
+                        else MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            // The transport's own sentence, for an error only: the details of
+            // a step that is still being retried are noise.
+            if (error && status.detail.isNotBlank() && status.stage == "failed") {
+                SelectionContainer {
+                    Text(status.detail, style = MaterialTheme.typography.bodySmall)
+                }
             }
         }
 
@@ -452,15 +473,6 @@ fun ConnectScreen(
         // fix is about. Not while connecting either: an attempt in progress
         // has not failed yet, and the previous attempt's code next to a
         // running progress bar reads as the current one having failed.
-        if (!status.connected && !model.connecting) {
-            model.connectionFailure?.let {
-                Text(
-                    "The last connection attempt failed ($it).",
-                    color = MaterialTheme.colorScheme.error,
-                    style = MaterialTheme.typography.bodySmall,
-                )
-            }
-        }
 
         if (status.connected) {
             Spacer(Modifier.height(8.dp))

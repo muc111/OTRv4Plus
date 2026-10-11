@@ -126,6 +126,18 @@ class ConnectionViewModel(app: Application) : AndroidViewModel(app) {
         private set
 
     /**
+     * The code ConnectProblem classifies: the service's last failure, or the
+     * transport's when it reported "failed" itself. Never shown as such.
+     */
+    val failureCode: String?
+        get() = connectionFailure
+            ?: status.code.takeIf { status.stage == "failed" && it.isNotBlank() }
+
+    /** Failed attempts in a row (the service's backoff count). */
+    var failuresInARow by mutableStateOf(0)
+        private set
+
+    /**
      * Whether a login the user asked for is still running.
      *
      * Held here rather than computed from [phase] alone because the service
@@ -268,6 +280,7 @@ class ConnectionViewModel(app: Application) : AndroidViewModel(app) {
                         loadIdentityChange()
                     }
                     connectionFailure = it.failure
+                    failuresInARow = it.failuresInARow
                     login.observe(it.phase)
                     routerLabel = it.routerLabel()
                 }
