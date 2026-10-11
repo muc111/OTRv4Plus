@@ -704,6 +704,51 @@ if VOICE_OPUS_PEAK_BYTES > VOICE_OPUS_SLOT:
         % (VOICE_BITRATE, VOICE_FRAME_MS, VOICE_OPUS_PEAK_BYTES,
            VOICE_OPUS_SLOT))
 
+#: OPUS_BANDWIDTH_* by sample rate (fixed by the Opus spec, RFC 6716): the
+#: widest band the rate carries. Numeric fallbacks so a codec binding that
+#: names only WIDEBAND (the APK's core before rc.61) still gets the right
+#: band -- the encoder CTL takes the number either way.
+_OPUS_BANDWIDTH = {16000: ("BANDWIDTH_WIDEBAND", 1103),
+                   24000: ("BANDWIDTH_SUPERWIDEBAND", 1104),
+                   48000: ("BANDWIDTH_FULLBAND", 1105)}
+
+
+def opus_bandwidth(opus) -> int:
+    name, number = _OPUS_BANDWIDTH.get(VOICE_SAMPLE_RATE, ("BANDWIDTH_WIDEBAND", 1103))
+    return int(getattr(opus, name, number))
+
+
+def configure_encoder(enc, opus):
+    """The ONE encoder configuration, for 1:1 and group calls alike.
+
+    Constant bitrate (VOICE_BITRATE): every frame is the same size (180
+    bytes at 24 kbit/s, 60 ms), fits the fixed padding slot, and says
+    nothing about when someone speaks. Group calls used to create a bare
+    encoder -- libopus defaults: VARIABLE rate, so frame sizes followed
+    speech (measured 152-185 bytes; under the slot, but nothing guaranteed
+    that), and none of the speech tuning below.
+
+    Each CTL is applied on its own, so a build lacking one still gets the
+    rest. Returns (applied, failed) names."""
+    applied, failed = [], []
+    for name, value in (
+        ("bitrate", VOICE_BITRATE),
+        ("vbr", 0),
+        ("dtx", 0),
+        ("inband_fec", 1),
+        ("packet_loss_perc", VOICE_LOSS_PCT),
+        ("complexity", VOICE_COMPLEXITY),
+        ("signal", getattr(opus, "SIGNAL_VOICE", 3001)),
+        ("bandwidth", opus_bandwidth(opus)),
+    ):
+        try:
+            setattr(enc, name, value)
+            applied.append(name)
+        except Exception:
+            failed.append(name)
+    return applied, failed
+
+
 VOICE_SYNC = 0xA7
 FRAME_TYPE_AUDIO = 0x01
 FRAME_TYPE_PING = 0x02          # latency probe, echoed as PONG
@@ -3716,22 +3761,7 @@ class VoiceCallSession:
                                       opus.APPLICATION_VOIP)
         self._opus_dec = opus.Decoder(VOICE_SAMPLE_RATE, VOICE_CHANNELS)
 
-        applied, failed = [], []
-        for name, value in (
-            ("bitrate", VOICE_BITRATE),
-            ("vbr", 0),
-            ("dtx", 0),
-            ("inband_fec", 1),
-            ("packet_loss_perc", VOICE_LOSS_PCT),
-            ("complexity", VOICE_COMPLEXITY),
-            ("signal", opus.SIGNAL_VOICE),
-            ("bandwidth", opus.BANDWIDTH_WIDEBAND),
-        ):
-            try:
-                setattr(self._opus_enc, name, value)
-                applied.append(name)
-            except Exception:
-                failed.append(name)
+        applied, failed = configure_encoder(self._opus_enc, opus)
 
         # VBR and DTX are the two settings that leak conversation rhythm.  If
         # either could not be disabled the constant-rate property does not

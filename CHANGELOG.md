@@ -4,6 +4,26 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.61 — 2026-10-11 — clearer call audio: 24 kHz super-wideband (core 0.13.1)
+
+- **Calls carry twice the audio bandwidth**, app, Termux and Linux, 1:1 and
+  group: the pipeline runs at 24 kHz (was 16 kHz) and Opus codes
+  super-wideband speech -- up to 12 kHz of audio instead of 8, the
+  consonants and "air" that make a voice sound present rather than like a
+  telephone.
+  - **No added delay:** frames stay 60 ms; the delay comes from the frame
+    length and buffering, not the sample rate.
+  - **No more data and no wire change:** still a constant 24 kbit/s, every
+    frame the same 180 bytes in the same padded packet. A peer on an older
+    version still hears us (limited to 8 kHz), and we hear them.
+  - \`OTRV4PLUS_SAMPLE_RATE=16000\` goes back to the old rate on a device that
+    misbehaves (Termux/Linux).
+- **Group calls use the 1:1 encoder settings.** They created a bare Opus
+  encoder (libopus defaults): a variable bitrate, so packet sizes followed
+  speech, and none of the voice tuning. Now the same constant-rate,
+  voice-tuned settings; the diagnostics count any frame too big for its
+  packet ("oversize").
+
 ## Android 0.7.0-experimental.rc.60 — 2026-10-11 — group verification reaches late members (core 0.13.1)
 
 Device test: the phones had verified each other; the laptop, invited back,

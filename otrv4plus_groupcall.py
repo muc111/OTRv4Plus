@@ -98,7 +98,7 @@ class GroupCallMedia:
         #: them; play_err/cap_err: the speaker or microphone failing. Read by
         #: the app's diagnostics to tell which leg of a call is silent.
         self.stats = {"tx": 0, "rx": 0, "rx_bad": 0, "decoded": 0, "heard": 0,
-                      "captured": 0, "play_err": 0, "cap_err": 0}
+                      "captured": 0, "play_err": 0, "cap_err": 0, "oversize": 0}
 
     def describe(self) -> Dict[str, Any]:
         """Counters and the audio devices, for diagnostics (no addresses)."""
@@ -179,6 +179,10 @@ class GroupCallMedia:
         self._opus = opus
         self._encoder = opus.Encoder(_voice.VOICE_SAMPLE_RATE, _voice.VOICE_CHANNELS,
                                      opus.APPLICATION_VOIP)
+        # The 1:1 settings: constant 24 kbit/s (frame sizes no longer follow
+        # speech), voice tuning, the band the sample rate carries. It used to
+        # be left at libopus defaults (variable rate).
+        _voice.configure_encoder(self._encoder, opus)
         self._capture, notes = _audio.open_capture()
         for n in notes:
             self._print("[group call] %s" % n)
@@ -227,6 +231,7 @@ class GroupCallMedia:
                 continue
             padded = _voice.pad_opus(encoded, int((time.monotonic() - self._started) * 1000))
             if padded is None:
+                self.stats["oversize"] = self.stats.get("oversize", 0) + 1
                 continue
             try:
                 self._loop.call_soon_threadsafe(self._calls.send_audio, padded)

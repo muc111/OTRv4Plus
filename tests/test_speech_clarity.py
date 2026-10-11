@@ -34,7 +34,11 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 audio = pytest.importorskip("otrv4plus_audio")
 
 
-def _tone(hz, n=16000, amp_dbfs=-12.0, rate=16000):
+def _tone(hz, n=None, amp_dbfs=-12.0, rate=None):
+    # At the pipeline's own rate (24 kHz since rc.61): a tone built at another
+    # rate is a different frequency to the filter.
+    rate = rate or audio.SAMPLE_RATE
+    n = n or rate
     a = (10 ** (amp_dbfs / 20.0)) * 32767
     return struct.pack("<%dh" % n,
                        *[int(a * math.sin(2 * math.pi * hz * i / rate))

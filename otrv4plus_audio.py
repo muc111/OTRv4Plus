@@ -82,8 +82,8 @@ transport. `probe()` reports this rather than pretending otherwise.
 FORMAT
 ======
 
-The voice pipeline is fixed at PCM signed 16-bit, mono, 16 kHz,
-little-endian, in 60 ms frames (960 samples, 1920 bytes).  AAudio is asked
+The voice pipeline is fixed at PCM signed 16-bit, mono, 24 kHz,
+little-endian, in 60 ms frames (1440 samples, 2880 bytes).  AAudio is asked
 for exactly that.  When the device refuses and grants another rate — 48 kHz
 is the common case — the stream is resampled here so the pipeline above
 always sees the canonical format.  The negotiated values are reported by
@@ -101,7 +101,17 @@ import time
 
 # Canonical pipeline format.  These mirror otrv4plus_voice and are asserted
 # against it by the test suite so the two cannot drift apart.
-SAMPLE_RATE = 16000
+#
+# 24 kHz (rc.61; was 16 kHz). Opus then codes "super-wideband" speech, up to
+# 12 kHz of audio instead of 8 -- the sibilants and air that make a voice
+# sound present rather than telephone-like -- at the SAME bitrate and packet
+# size, and with no added delay (delay comes from FRAME_MS and buffering,
+# not the rate). NOT wire format: an Opus packet decodes at any rate, so a
+# peer still at 16 kHz plays ours (band-limited to 8 kHz) and we play
+# theirs. OTRV4PLUS_SAMPLE_RATE=16000 goes back, for a device that misbehaves.
+_RATE_RAW = os.environ.get("OTRV4PLUS_SAMPLE_RATE", "").strip()
+SAMPLE_RATE = (int(_RATE_RAW) if _RATE_RAW in ("16000", "24000", "48000")
+               else 24000)
 CHANNELS = 1
 SAMPLE_WIDTH = 2                      # PCM_16BIT
 def _env_choice(name: str, default: int, allowed) -> int:
@@ -146,7 +156,7 @@ def _env_int(name: str, default: int, lo: int, hi: int) -> int:
 #
 # WIRE FORMAT: both peers must use the same value.
 FRAME_MS = _env_choice("OTRV4PLUS_OPUS_FRAME_MS", 60, (10, 20, 40, 60))
-FRAME_SAMPLES = SAMPLE_RATE * FRAME_MS // 1000        # 960
+FRAME_SAMPLES = SAMPLE_RATE * FRAME_MS // 1000        # 1440 at 24 kHz
 
 #: Align playback writes to the device's burst.  On by default because the
 #: alternative is measured: a device with framesPerBurst=1920 at 16 kHz took a
