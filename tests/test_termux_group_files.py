@@ -211,3 +211,46 @@ class TestGroupFilesInTheTerminal:
         g.host = Host()
         g._send_room_volatile(ROOM, "piece")
         assert sent == [["{urn:xmpp:hints}no-store"]]
+
+
+class TestAudiotestOnLinux:
+    """/audiotest used to refuse anywhere but Termux ("self-test is
+    Termux-only"), so a laptop with no call audio had no way to check
+    itself. It now plays a tone and records 3 s on Linux too."""
+
+    def test_it_runs_off_termux_and_tests_both_directions(self, monkeypatch, capsys):
+        import asyncio
+        import otrv4plus_audio as A
+
+        written = []
+
+        class Out:
+            name = "pulseaudio"
+
+            def write_frame(self, pcm, timeout_ms=200):
+                written.append(len(pcm))
+                return True
+
+            def stop(self):
+                pass
+
+        class In:
+            name = "pulseaudio"
+
+            def read_frame(self, timeout_ms=200):
+                return struct.pack("<4h", 0, 300, -300, 5)
+
+            def stop(self):
+                pass
+
+        monkeypatch.setattr(X, "IS_TERMUX", False)
+        monkeypatch.setattr(A, "open_playback", lambda **k: (Out(), []))
+        monkeypatch.setattr(A, "open_capture", lambda **k: (In(), []))
+        monkeypatch.setattr(X, "_capture_selftest",
+                            lambda seconds=3.0: (True, 8, 300, "pulseaudio"))
+        asyncio.run(X._audio_selftest_async())
+        out = capsys.readouterr().out
+        assert "Termux-only" not in out
+        assert "speaker: tone sent via pulseaudio" in out
+        assert "OK" in out and "peak amplitude 300" in out
+        assert written and all(n == A.FRAME_SAMPLES * 2 for n in written)

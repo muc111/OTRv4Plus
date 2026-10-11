@@ -4,6 +4,14 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.57 — 2026-10-11 — /audiotest on Linux (core 0.13.1)
+
+- **\`/audiotest\` works on Linux** (it said "self-test is Termux-only"). It
+  plays a 1 s tone through the speaker, then records 3 s from the
+  microphone, through the same backend calls use (parec/pacat on Linux),
+  and says which failed and what to install or check (pavucontrol, pactl).
+  App unchanged in behaviour; version bumped with the shared Python.
+
 ## Android 0.7.0-experimental.rc.56 — 2026-10-11 — Linux/Termux: voice installed by build.sh (core 0.13.1)
 
 - **A laptop in a group call heard nothing and sent nothing** ("audio

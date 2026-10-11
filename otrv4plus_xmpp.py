@@ -5500,7 +5500,7 @@ class OTRv4PlusXMPP(ClientXMPP):
             "  /hangup              end active call\n"
             "  /mute                toggle microphone mute\n"
             "  /calls               show voice call state and frame counters\n"
-            "  /audiotest           verify the microphone captures audio\n"
+            "  /audiotest           test the speaker (a tone) and the microphone\n"
             "  /audioprobe          test each audio backend on this device\n"
             "  /sendfile [path]     send a file (encrypted, verified peer; in a\n"
             "                       group, to the group). Asks y/n to remove\n"
@@ -7664,23 +7664,70 @@ def _bootstrap_termux(skip=False, force=False, sam_host="127.0.0.1",
     return issues
 
 
+def _playback_selftest(seconds=1.0):
+    """Play a quiet 440 Hz tone through the backend calls will use.
+
+    Returns (ok, backend_name, error). Linux and Termux alike: the backends
+    (AAudio, parec/pacat) are the ones voice and group calls open."""
+    try:
+        import math
+        import otrv4plus_audio as _aud
+    except Exception as exc:
+        return False, "none", type(exc).__name__
+    stream, backend = None, "none"
+    try:
+        stream, _notes = _aud.open_playback(which=_which, env=_termux_env())
+        backend = stream.name
+        rate, frame = _aud.SAMPLE_RATE, _aud.FRAME_SAMPLES
+        n = 0
+        for _ in range(int(seconds * rate / frame)):
+            samples = [int(6000 * math.sin(2 * math.pi * 440 * (n + i) / rate))
+                       for i in range(frame)]
+            n += frame
+            stream.write_frame(struct.pack("<%dh" % frame, *samples))
+        return True, backend, ""
+    except Exception as exc:
+        return False, backend, str(exc)[:160]
+    finally:
+        if stream is not None:
+            try:
+                stream.stop()
+            except Exception:
+                pass
+
+
 async def _audio_selftest_async():
-    """/audiotest — re-run the capture probe from inside a live session."""
+    """/audiotest — the microphone (3 s) and the speaker (a 1 s tone), through
+    the same audio backend calls use. Termux and Linux (parec/pacat)."""
     loop = asyncio.get_event_loop()
-    if not IS_TERMUX:
-        print("[audio] self-test is Termux-only")
-        return
+    print("[audio] playing a 1 s tone through the speaker…")
+    played, out_backend, err = await loop.run_in_executor(None, _playback_selftest)
+    if played:
+        print("[audio] speaker: tone sent via %s — if you heard nothing, check "
+              "the output device and volume%s"
+              % (out_backend, "" if IS_TERMUX else " (pavucontrol, or: pactl info)"))
+    else:
+        print("[audio] speaker FAILED via %s: %s%s"
+              % (out_backend, err or "no playback backend",
+                 "" if IS_TERMUX else
+                 "  (Linux: sudo apt install pulseaudio-utils)"))
     print("[audio] capturing ~3 s from the microphone…")
     ok, total, peak, backend = await loop.run_in_executor(
         None, _capture_selftest)
     if not ok or total == 0:
-        print("[audio] FAILED — no samples via %s. Run /audioprobe for the "
-              "per-backend error." % backend)
+        print("[audio] microphone FAILED — no samples via %s. Run /audioprobe "
+              "for the per-backend error.%s" % (backend, "" if IS_TERMUX else
+              "  (Linux: sudo apt install pulseaudio-utils)"))
         return
     if peak == 0:
-        print("[audio] captured %d bytes via %s but pure silence — check "
-              "Settings > Apps > Termux > Permissions > Microphone (the "
-              "Termux app itself, not Termux:API)" % (total, backend))
+        if IS_TERMUX:
+            print("[audio] captured %d bytes via %s but pure silence — check "
+                  "Settings > Apps > Termux > Permissions > Microphone (the "
+                  "Termux app itself, not Termux:API)" % (total, backend))
+        else:
+            print("[audio] captured %d bytes via %s but pure silence — the "
+                  "input may be muted or the wrong one (pavucontrol > Input "
+                  "Devices, or: pactl list short sources)" % (total, backend))
         return
     print("[audio] OK — %d bytes via %s, peak amplitude %d"
           % (total, backend, peak))
