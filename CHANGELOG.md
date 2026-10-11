@@ -4,6 +4,21 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## 0.7.0-experimental.rc.56 — 2026-10-11 — Linux/Termux: voice installed by build.sh (core 0.13.1)
+
+- **A laptop in a group call heard nothing and sent nothing** ("audio
+  unavailable: opuslib unavailable"): the Linux install never set up voice --
+  the Opus binding and the audio tools were a README footnote. Now:
+  - \`Rust/build.sh\` installs \`opuslib==3.0.1\` into \`.venv\`, checks that
+    libopus loads and that parec/pacat exist, and prints a \`!!!\` notice
+    naming the package to install when not.
+  - The Ubuntu/Debian apt line in README and TECHNICAL.md includes
+    \`libopus0 pulseaudio-utils\`.
+  - In a call without audio, Termux now says NO AUDIO in plain words, that
+    you cannot hear or be heard, and the exact fix -- instead of a one-line
+    "audio unavailable" while showing you as in the call.
+- No app change (the APK carries its own codec).
+
 ## Android 0.7.0-experimental.rc.55 — 2026-10-11 — group call diagnostics (core 0.13.1)
 
 - **Group calls now show in the diagnostics report**: when a call starts or

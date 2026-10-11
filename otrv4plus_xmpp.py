@@ -225,7 +225,9 @@ def voice_available() -> "tuple[bool, str]":
     without a restart.
     """
     if not _load_opus():
-        return False, "opuslib not installed  (pip install opuslib --break-system-packages)"
+        return False, ("opuslib or libopus missing  (Linux: sudo apt install libopus0, "
+                       "Termux: pkg install libopus; then .venv/bin/pip install "
+                       "opuslib==3.0.1, or run Rust/build.sh again)")
     # Voice no longer requires PulseAudio: otrv4plus_audio prefers AAudio,
     # which talks to Android's audio framework directly. parec/pacat remain
     # a selectable fallback and back the /audiotest self-test, so their

@@ -765,6 +765,31 @@ if ! "$PY" -c 'import socks, slixmpp' 2>/dev/null; then
 fi
 info "client modules: PySocks and slixmpp importable"
 
+# Voice (1:1 and group calls): the Python binding to libopus, and on Linux
+# PulseAudio's parec/pacat (PipeWire provides them too). Installed and
+# checked here because a client without them joins a call and is silent
+# both ways -- found on a laptop in a group call, 2026-10-11, where these
+# were a README footnote. Never fatal: chat needs none of it.
+if ! "$PY" -c 'import importlib.util, sys; sys.exit(importlib.util.find_spec("opuslib") is None)' 2>/dev/null; then
+    info "installing the voice codec binding into the virtualenv: opuslib"
+    "$PY" -m pip install --disable-pip-version-check -q "opuslib==3.0.1" \
+        || notice "could not install opuslib (network?): calls will have no audio." \
+                  "By hand: $PY -m pip install opuslib==3.0.1"
+fi
+if "$PY" -c 'import opuslib' 2>/dev/null; then
+    info "voice codec: opuslib and libopus load"
+elif is_termux; then
+    notice "voice: libopus is missing, so calls will have no audio." \
+           "Install it:  pkg install libopus   (the package is libopus, not opus)"
+else
+    notice "voice: libopus is missing, so calls will have no audio." \
+           "Debian/Ubuntu:  sudo apt install libopus0   Fedora: sudo dnf install opus"
+fi
+if ! is_termux && ! { command -v parec >/dev/null 2>&1 && command -v pacat >/dev/null 2>&1; }; then
+    notice "voice: parec/pacat not found, so calls cannot use the microphone or speaker." \
+           "Debian/Ubuntu:  sudo apt install pulseaudio-utils   (works with PipeWire too)"
+fi
+
 # Every later step -- cargo's PyO3 build scripts, maturin, the checks -- uses
 # this interpreter and this environment.
 export VIRTUAL_ENV="$VENV"

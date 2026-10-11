@@ -550,7 +550,7 @@ For someone who wants to try it in about ten minutes on Termux (Android, aarch64
 pkg install python rust openssl clang git
 # Ubuntu 24.04+ / Debian 13+ (Rust from rustup: the distribution's rustc is
 # older than the core's minimum, 1.91)
-sudo apt install git python3 python3-venv build-essential curl
+sudo apt install git python3 python3-venv build-essential curl libopus0 pulseaudio-utils
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
 . "$HOME/.cargo/env"     # Rust on this terminal's PATH (build.sh also finds ~/.cargo/bin)
 ```
@@ -573,13 +573,18 @@ Python **3.12 or newer** is required — `otrv4+.py` uses PEP 701 f-string synta
 that does not parse on 3.11, so an older interpreter fails with a `SyntaxError`
 inside an import rather than a clear message.
 
-For **voice calls**, two more:
+For **voice calls** (1:1 and group): on Linux, `libopus0` and
+`pulseaudio-utils` are in the apt line above (parec/pacat; PipeWire provides
+the same). On Termux:
 
 ```bash
 pkg install libopus termux-api       # Termux: the Opus codec, and Termux:API for the ringer
-sudo apt install libopus0 pulseaudio-utils   # Linux (parec/pacat; PipeWire works too; untested on a desktop)
-.venv/bin/pip install opuslib        # after step 2: the Python binding to libopus
 ```
+
+`Rust/build.sh` installs the Python binding (`opuslib==3.0.1`) into `.venv`
+and checks that libopus loads and that parec/pacat exist, with a `!!!` notice
+naming the package if not. A client without them still joins a call, but
+can neither hear nor be heard -- and says so in the call.
 
 The Termux package is `libopus`, not `opus` — `pkg install opus` fails with
 *Unable to locate package*.

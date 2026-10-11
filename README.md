@@ -135,15 +135,15 @@ pkg install python rust openssl clang git
 On **Ubuntu 24.04+ / Debian 13+** (Rust from rustup; the distribution's rustc is too old):
 
 ```bash
-sudo apt install git python3 python3-venv build-essential curl
+sudo apt install git python3 python3-venv build-essential curl libopus0 pulseaudio-utils
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
 . "$HOME/.cargo/env"     # puts Rust on this terminal's PATH (new terminals have it)
 ```
 
 Do not `pip install` anything: `build.sh` puts the Python modules in the project's own
 `.venv` (Ubuntu refuses a system-wide pip install: "externally-managed-environment").
-Voice calls also need `pkg install libopus termux-api` (Termux) or `sudo apt install
-libopus0 pulseaudio-utils` (Linux, untested on a desktop), then `.venv/bin/pip install opuslib`.
+`libopus0 pulseaudio-utils` are for calls (Termux: `pkg install libopus termux-api`);
+`build.sh` installs the opuslib binding and says if voice is missing anything.
 
 **2. Download and build the Rust core** (the first run on a phone also compiles
 the build tool once, so it takes longer; later builds are much faster):

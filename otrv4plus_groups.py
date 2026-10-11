@@ -694,7 +694,19 @@ class TermuxGroups:
         try:
             self._media.start_audio(calls)
         except Exception as exc:
-            self._print("[group call] audio unavailable: %s" % str(exc)[:120])
+            # In the call, but deaf and mute: say so, and how to fix it.
+            why = str(exc)[:120]
+            self._print("[group call] NO AUDIO in this call: %s. You stay in it "
+                        "but cannot hear or be heard." % why)
+            if "opuslib" in why:
+                self._print("[group call] fix: sudo apt install libopus0 "
+                            "pulseaudio-utils (Termux: pkg install libopus), "
+                            "then .venv/bin/pip install opuslib==3.0.1 -- or run "
+                            "Rust/build.sh again, which installs and checks them. "
+                            "/hangup, then call again.")
+            elif "capture" in why or "playback" in why or "backend" in why:
+                self._print("[group call] fix: sudo apt install pulseaudio-utils "
+                            "(parec/pacat; PipeWire works too), then /audiotest")
         if self._call_tick is None:
             self._call_tick = self.host.loop.call_later(1.0, self._tick_calls)
 
