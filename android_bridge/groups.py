@@ -1983,6 +1983,19 @@ class SecureGroups:
             # Our leaf key is fresh as of this epoch.
             self._since_rekey[room] = [0, self._clock()]
         if ev.get("removed_us"):
+            inv = self._invites.get(room)
+            if inv is not None and inv.rejoin and inv.accepted:
+                # Invited back and accepted: the inviter's add replaces our
+                # old leaf in the same commit (Rust add_members), so our OLD
+                # copy sees itself removed -- that is the replacement, not
+                # somebody removing us. The Welcome brings the new copy.
+                # Bindings are kept: the other members' keys do not change,
+                # so whom we verified stays verified (device test,
+                # 2026-10-11: "you were removed" on a laptop nobody removed).
+                self._queued_kps.pop(room, None)
+                self.save()
+                return GroupChanged(peer=room, change="replaced", epoch=epoch,
+                                    detail=inv.peer)
             self._bound.pop(room, None)
             self._activity.pop(room, None)
             self._queued_kps.pop(room, None)

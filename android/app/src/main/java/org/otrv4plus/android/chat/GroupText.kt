@@ -69,6 +69,10 @@ object GroupText {
     /** A notice for a change worth telling the user about, or null. */
     fun describe(event: OtrEvent.GroupChanged): String? = when (event.change) {
         "removed_us" -> "You were removed from ${event.room}. You can no longer read it."
+        // Accepting an invitation back replaces this device's old copy of
+        // the group; the old copy sees that as its removal. Nobody removed us.
+        "replaced" -> "Your old copy of ${event.room} was replaced because you " +
+            "accepted the new invitation. The new copy arrives in a moment."
         "commit_lost" -> "A group change in ${event.room} crossed with another " +
             "member's and was dropped. Try it again."
         "invite_declined" -> "${event.detail} declined the invitation to ${event.room}."

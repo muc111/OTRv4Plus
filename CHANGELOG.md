@@ -4,6 +4,15 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.59 — 2026-10-11 — an invitation back no longer says "you were removed" (core 0.13.1)
+
+- **Accepting an invitation to a group you are already in no longer reports
+  "you were removed".** The inviter's add replaces your old copy in the
+  same commit, and the old copy saw that as its own removal (laptop,
+  2026-10-11: nobody had removed it). It is now reported as a replacement,
+  in Termux and the app, and the members you had verified stay verified.
+  A real removal is still reported as one.
+
 ## Android 0.7.0-experimental.rc.58 — 2026-10-11 — Termux retries a group room that did not rejoin (core 0.13.1)
 
 - **Termux: a secure group whose room did not rejoin is tried again**

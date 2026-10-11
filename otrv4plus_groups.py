@@ -429,7 +429,8 @@ class TermuxGroups:
                               "member_verified", "member_bound", "held_change",
                               "verify_started", "verify_running", "verify_progress",
                               "verify_finished", "member_verify_failed",
-                              "group_verified", "call_paused", "call_resumed"):
+                              "group_verified", "call_paused", "call_resumed",
+                              "replaced"):
                 p("[group %s] %s%s%s" % (ev.peer[:64], change, detail, epoch))
             if change == "joined":
                 self._flush_prejoin(ev.peer)
@@ -519,6 +520,11 @@ class TermuxGroups:
             elif change == "removed_us":
                 p("[group %s] you were removed: new messages in this group can "
                   "no longer be read here." % ev.peer[:64])
+            elif change == "replaced":
+                p("[group %s] your old copy of the group was replaced, because "
+                  "you accepted %s's new invitation -- nobody removed you. "
+                  "The new copy arrives with the Welcome."
+                  % (ev.peer[:64], (ev.detail or "the inviter")[:96]))
         elif isinstance(ev, FileTransferChanged):
             self._on_file(ev)
         elif isinstance(ev, ErrorOccurred):

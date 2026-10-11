@@ -1105,6 +1105,41 @@ def test_a_member_whose_copy_fell_behind_is_invited_back():
 
 
 
+def test_accepting_an_invitation_back_is_not_reported_as_being_removed():
+    """Device test (2026-10-11): a laptop already in the group was invited
+    again, accepted, and printed "you were removed" -- nobody had removed it.
+    The inviter's add replaces the old leaf in the same commit, and the old
+    copy sees that as its removal. It is reported as a replacement, and the
+    members verified before stay verified."""
+    w, (a, b, c) = _group(3)
+    b.groups._bound.setdefault(ROOM, {})[c.jid] = (c.groups.own_fingerprint(ROOM), True)
+    b.events.clear()
+    a.groups.invite(ROOM, b.jid)
+    # As on the device: the commit reaches Bob through the room before the
+    # Welcome reaches him over OTRv4+ (12 fragments over I2P).
+    held, real = [], w.private
+    w.private = lambda frm, to, body: (held.append((frm, to, body))
+                                       if "WELCOME:" in body else real(frm, to, body))
+    b.groups.accept(ROOM)
+    w.private = real
+    assert held, "the Welcome should have been held back"
+    for frm, to, body in held:
+        real(frm, to, body)
+    assert "removed_us" not in b.changes()
+    assert "replaced" in b.changes() and "joined" in b.changes()
+    assert b.changes().index("replaced") < b.changes().index("joined")
+    by = {m["jid"]: m for m in b.groups.members(ROOM)}
+    assert by[c.jid]["verified"] is True
+    c.groups.send(ROOM, "still here")
+    assert any(body == "still here" for _s, body, _v in b.texts())
+
+
+def test_a_real_removal_is_still_reported():
+    w, (a, b, c) = _group(3)
+    a.groups.remove(ROOM, b.jid)
+    assert "removed_us" in b.changes() and "replaced" not in b.changes()
+
+
 def test_a_deleted_group_ends_for_every_member():
     w, (a, b, c) = _group(3)
     assert b.groups.on_room_destroyed(ROOM) is True
