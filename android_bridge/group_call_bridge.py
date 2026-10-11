@@ -25,6 +25,7 @@ import time
 from typing import Any, Callable, Dict, Optional, Tuple
 
 from .events import ErrorOccurred, GroupChanged
+from .trace import TRACE as _TRACE
 
 __all__ = ["GroupCallBridge"]
 
@@ -46,6 +47,7 @@ class GroupCallBridge:
         self._media = None
         self._tick = None
         self._loop = None
+        self._traced_at = 0.0
         #: Set by the app from the microphone permission.
         self.auto_join = False
         from .group_call import GroupCalls
@@ -83,10 +85,27 @@ class GroupCallBridge:
             except Exception:
                 pass
         if media is not None:
+            self._trace_media(media, "call_ended", force=True)
             try:
                 media.close()
             except Exception:
                 pass
+
+    def _trace_media(self, media, event: str = "media", force: bool = False) -> None:
+        """Every 10 s while in a call, and at its end: which leg is silent.
+        Counters and device names only -- no destination, no identity."""
+        now = time.monotonic()
+        if not force and now - self._traced_at < 10.0:
+            return
+        self._traced_at = now
+        try:
+            info = media.describe()
+            room = self.calls.active()
+            info["peers"] = len(self.calls.participants(room)) if room else 0
+            info["paused"] = bool(self.calls.paused)
+            _TRACE.record("group_call", event, "info", **info)
+        except Exception:
+            pass
 
     def status(self, room: str) -> Dict[str, Any]:
         active = self.calls.active()
@@ -137,8 +156,13 @@ class GroupCallBridge:
         try:
             self._media.start_audio(self.calls)
         except Exception as exc:
+            _TRACE.record("group_call", "audio_failed", "warning",
+                          error=type(exc).__name__)
             self._emit_out(ErrorOccurred(peer=room, code="call_audio_unavailable",
                                          detail=type(exc).__name__))
+        else:
+            self._trace_media(self._media, "joined" if not start else "started",
+                              force=True)
         self._schedule_tick()
         return "ok"
 
@@ -175,6 +199,9 @@ class GroupCallBridge:
                 self.calls.tick()
             except Exception:
                 pass
+            media = self._media
+            if media is not None:
+                self._trace_media(media)
             if self.calls.active() is not None:
                 with self._lock:
                     self._tick = loop.call_later(1.0, tick)

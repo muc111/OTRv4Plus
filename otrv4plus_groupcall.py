@@ -92,7 +92,21 @@ class GroupCallMedia:
         self._encoder = None
         self._decoders: Dict[str, Any] = {}
         self._playout = Playout(_voice.VOICE_FRAME_BYTES)
-        self.stats = {"tx": 0, "rx": 0, "rx_bad": 0}
+        #: tx/rx: datagrams sent and accepted; rx_bad: received but refused
+        #: (not a participant, failed authentication, replay); decoded: Opus
+        #: frames decoded; heard: frames played that had someone's audio in
+        #: them; play_err/cap_err: the speaker or microphone failing. Read by
+        #: the app's diagnostics to tell which leg of a call is silent.
+        self.stats = {"tx": 0, "rx": 0, "rx_bad": 0, "decoded": 0, "heard": 0,
+                      "captured": 0, "play_err": 0, "cap_err": 0}
+
+    def describe(self) -> Dict[str, Any]:
+        """Counters and the audio devices, for diagnostics (no addresses)."""
+        out = dict(self.stats)
+        out["playback"] = getattr(self._playback, "name", "") or ""
+        out["capture"] = getattr(self._capture, "name", "") or ""
+        out["usage"] = getattr(self._playback, "usage", "")
+        return out
 
     @property
     def destination(self) -> str:
@@ -194,6 +208,7 @@ class GroupCallMedia:
             pcm = dec.decode(opus_frame, _voice.VOICE_FRAME_SAMPLES)
         except Exception:
             return
+        self.stats["decoded"] += 1
         self._playout.push(who, bytes(pcm))
 
     def _capture_loop(self) -> None:
@@ -201,9 +216,11 @@ class GroupCallMedia:
             try:
                 pcm = self._capture.read_frame(200)
             except Exception:
+                self.stats["cap_err"] += 1
                 break
             if not pcm or self._calls is None:
                 continue
+            self.stats["captured"] += 1
             try:
                 encoded = self._encoder.encode(bytes(pcm), _voice.VOICE_FRAME_SAMPLES)
             except Exception:
@@ -217,10 +234,15 @@ class GroupCallMedia:
                 break
 
     def _playback_loop(self) -> None:
+        silence = b"\x00" * _voice.VOICE_FRAME_BYTES
         while self._running:
+            frame = self._playout.next_frame()
+            if frame != silence:
+                self.stats["heard"] += 1
             try:
-                self._playback.write_frame(self._playout.next_frame())
+                self._playback.write_frame(frame)
             except Exception:
+                self.stats["play_err"] += 1
                 break
 
     # -- the end ------------------------------------------------------------------

@@ -4,6 +4,17 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.55 — 2026-10-11 — group call diagnostics (core 0.13.1)
+
+- **Group calls now show in the diagnostics report**: when a call starts or
+  is joined, every 10 s during it, and when it ends -- datagrams sent and
+  accepted, refused ones, Opus frames decoded, frames played with audio in
+  them, microphone frames captured, speaker or microphone errors, the audio
+  devices, and how many members are in the call. Counters and device names
+  only: no destination, no identity. Asked for by a one-way call (Pixel
+  heard by the Redmi, nothing heard on the Pixel): these say which leg is
+  silent.
+
 ## Android 0.7.0-experimental.rc.54 — 2026-10-11 — files in secure groups; remove-metadata y/n in Termux (core 0.13.1)
 
 - **Send files in a secure group**, app and Termux alike: the same protocol
