@@ -2428,14 +2428,22 @@ class XmppTransport(Transport):
             return
         self._deliver_room_message(*args, **kwargs)
 
-    def send_room_message(self, room: str, body: str) -> None:
-        """Send plaintext to a room we are in. Raises TransportError."""
+    def send_room_message(self, room: str, body: str, volatile: bool = False) -> None:
+        """Send plaintext to a room we are in. Raises TransportError.
+
+        `volatile`: with a no-store hint (XEP-0334), so the room keeps it out
+        of its history (a secure group's file pieces)."""
         if not self.is_connected:
             raise TransportError("not_connected", "not connected")
-        self._send_now(self._send_room(room, body), CALL_TIMEOUT)
+        self._send_now(self._send_room(room, body, volatile), CALL_TIMEOUT)
 
-    async def _send_room(self, room: str, body: str) -> None:
-        self._client.send_message(mto=room, mbody=body, mtype="groupchat")
+    async def _send_room(self, room: str, body: str, volatile: bool = False) -> None:
+        if not volatile:
+            self._client.send_message(mto=room, mbody=body, mtype="groupchat")
+            return
+        msg = self._client.make_message(mto=room, mbody=body, mtype="groupchat")
+        msg.append(_muc.no_store_hint())
+        msg.send()
 
     def room_occupants(self, room: str) -> "tuple[str, str, list]":
         """Who is in a room: `[{nick, role, affiliation}]`, moderators first."""

@@ -52,7 +52,8 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import otrv4plus_fragment as _fragment
 import otrv4plus_muc as _muc
-from android_bridge.events import (ErrorOccurred, GroupChanged, GroupInvite,
+from android_bridge.events import (ErrorOccurred, FileTransferChanged,
+                                   GroupChanged, GroupInvite,
                                    RoomMessageReceived, SecurityState,
                                    security_state_from_level)
 from android_bridge.groups import (ROOM_PREFIX, SIGNAL_PREFIX, GroupError,
@@ -74,7 +75,7 @@ JOIN_TIMEOUT = 120
 VERBS = frozenset(("help", "?", "create", "invite", "invites", "accept", "decline",
                    "say", "members", "verify", "smp", "sendkeys", "remove", "rekey",
                    "leave", "delete", "call", "answer", "hangup", "pause", "calls",
-                   "list"))
+                   "list", "sendfile", "files"))
 
 HELP = """\
   Secure groups (MLS; the room sees ciphertext only). <room> can be just its
@@ -103,6 +104,12 @@ HELP = """\
   /group hangup  (or /hangup)           leave the call (its keys are destroyed)
   /group pause   (or /pause)            stop/resume sending your audio, stay in it
   /group calls                          calls ringing, and who is in yours
+  /group sendfile <room> [path]         send a file to the group (every member
+                                        verified); asks y/n to remove hidden
+                                        information (location, camera) first.
+                                        Also /sendfile while talking to a group
+  /group files                          group files: offered, moving, received
+                                        (accept with y/n, or /transfer accept <id>)
   /wipe                                 destroy ALL local state (groups too) and exit"""
 
 
@@ -114,6 +121,14 @@ def _room_was_created(join_result: Any) -> bool:
         return 201 in {int(c) for c in own["muc"]["status_codes"]}
     except Exception:
         return False
+
+
+def _human(size: int) -> str:
+    for unit in ("B", "KB", "MB"):
+        if size < 1024 or unit == "MB":
+            return ("%d %s" if unit == "B" else "%.1f %s") % (size, unit)
+        size /= 1024.0
+    return "%d B" % size
 
 
 def _canon(jid: str) -> str:
@@ -137,10 +152,17 @@ class TermuxGroups:
         self._print = printer
         self._clock = clock
         self.groups = SecureGroups(send_room=self._send_room,
+                                   send_room_volatile=self._send_room_volatile,
                                    send_private=self._send_private,
                                    emit=self._on_event,
                                    peer_security=self._peer_security,
                                    state_dir=state_dir, core=core, clock=clock)
+        #: Files to the whole group, over MLS (android_bridge.group_files):
+        #: the same protocol as the app, so a file crosses between them.
+        from android_bridge.group_files import GroupFiles
+        self.files = GroupFiles(self.groups, emit=self._on_event, clock=clock)
+        #: The incoming group file a bare y/n answers (with _prompt "file").
+        self._prompt_file = ""
         self._nicks: Dict[str, str] = {}               # room -> our nick in it
         self._prejoin: Dict[str, List[Tuple[float, str, str, float, bool]]] = {}
         self._stale_run: Dict[str, int] = {}
@@ -208,6 +230,7 @@ class TermuxGroups:
     def close(self) -> None:
         """/quit: seal to disk, zeroize in memory, keep the files."""
         self._hangup()
+        self.files.close()
         try:
             self.groups.close()
         except Exception:
@@ -216,6 +239,7 @@ class TermuxGroups:
     def wipe(self) -> None:
         """/wipe: every group secret destroyed and the state files removed."""
         self._hangup()
+        self.files.close()
         try:
             self.groups.wipe()
         except Exception:
@@ -248,12 +272,23 @@ class TermuxGroups:
         self.host.send_otr_fragmented(
             peer, frame if isinstance(frame, str) else frame.decode("utf-8"))
 
-    def _send_room(self, room: str, body: str) -> None:
+    def _send_room_volatile(self, room: str, body: str) -> None:
+        """A group file's piece: with the no-store hint (XEP-0334), so the
+        room keeps it out of the history a returning member catches up from."""
+        self._send_room(room, body, volatile=True)
+
+    def _send_room(self, room: str, body: str, volatile: bool = False) -> None:
         # Paced fragments (RoomPacer) are sent from a timer thread, and
         # slixmpp's send queue is not thread-safe: hand those to the loop.
         loop = getattr(self.host, "loop", None)
-        send = lambda: self.host.send_message(mto=room, mbody=body,  # noqa: E731
-                                              mtype="groupchat")
+
+        def send():
+            if not volatile:
+                self.host.send_message(mto=room, mbody=body, mtype="groupchat")
+                return
+            msg = self.host.make_message(mto=room, mbody=body, mtype="groupchat")
+            msg.append(_muc.no_store_hint())
+            msg.send()
         if loop is not None and loop.is_running():
             try:
                 running = asyncio.get_running_loop()
@@ -484,13 +519,93 @@ class TermuxGroups:
             elif change == "removed_us":
                 p("[group %s] you were removed: new messages in this group can "
                   "no longer be read here." % ev.peer[:64])
+        elif isinstance(ev, FileTransferChanged):
+            self._on_file(ev)
         elif isinstance(ev, ErrorOccurred):
+            if ev.code == "group_file_unverified":
+                p("[group %s] a member who is not verified offered a file: refused. "
+                  "Verify the group (/group verify) to share files"
+                  % ev.peer[:64])
+                return
             if ev.code == "groups_state_unreadable":
                 p("[group] a saved group state on this device did not open for "
                   "this account and was kept aside (%s). Groups held in it "
                   "need a new invitation." % (getattr(ev, "detail", "") or "no detail")[:300])
                 return
             p("[group] warning: %s%s" % (ev.code, (" (%s)" % ev.peer[:64]) if ev.peer else ""))
+
+    # -- files to the group ---------------------------------------------------
+
+    #: What `GroupFiles.send` refusals mean, for the terminal.
+    FILE_REFUSALS = {
+        "unverified": "every other member must be verified first "
+                      "(/group verify, or /smp with each of them)",
+        "no_members": "nobody else is in the group yet",
+        "bad_file": "that file could not be read, is empty, or is over the "
+                    "16 MB group limit",
+        "cannot_scrub": "this kind of file cannot be checked for hidden "
+                        "information, so nothing was sent (answer n to send "
+                        "the original)",
+        "not_a_group": "not a secure group of yours",
+        "unavailable": "it could not be offered (the group is not ready)",
+    }
+
+    def send_file(self, room: str, path: str, strip_metadata: bool) -> str:
+        """Offer a file to the group, having asked about its metadata."""
+        outcome = self.files.send(room, path, strip_metadata)
+        if outcome == "started":
+            self._print("[group %s] offered %s to the group%s -- it goes to "
+                        "each member that accepts"
+                        % (room[:64], os.path.basename(path)[:120],
+                           " (hidden information removed)" if strip_metadata else ""))
+        else:
+            self._print("[group %s] file not sent: %s"
+                        % (room[:64], self.FILE_REFUSALS.get(outcome, outcome)))
+        return outcome
+
+    def print_files(self) -> None:
+        rows = self.files.transfers()
+        if not rows:
+            self._print("[group] no group files")
+            return
+        for r in rows:
+            self._print("[group %s] %s  %s  %s  %s%s  %s%s"
+                        % (r["peer"][:64], r["id"][:8],
+                           "out" if r["outgoing"] else "in ",
+                           r["filename"], _human(r["size"]),
+                           "" if r["outgoing"] else "  from " + r["from"],
+                           r["state"],
+                           ("  %d%%" % int(100 * r["progress"]))
+                           if r["state"] == "accepted" else ""))
+
+    def _on_file(self, ev: FileTransferChanged) -> None:
+        p = self._print
+        room, name, state = ev.peer[:64], ev.filename, ev.state
+        row = next((r for r in self.files.transfers()
+                    if r["id"] == ev.transfer_id), {})
+        if not ev.outgoing and state == "offered":
+            self._prompt = ("file", ev.peer, self._clock())
+            self._prompt_file = ev.transfer_id
+            p("[group %s] %s offers %s (%s). Accept? [y/n]   (or later: "
+              "/transfer accept %s)" % (room, row.get("from", "a member"),
+                                        name, _human(ev.size), ev.transfer_id[:8]))
+        elif state == "accepted" and ev.outgoing:
+            p("[group %s] sending %s to the group" % (room, name))
+        elif state == "accepted":
+            p("[group %s] receiving %s..." % (room, name))
+        elif state == "sent":
+            p("[group %s] %s is out; kept for 30 minutes for members who "
+              "accept late (/transfer cancel %s stops it)"
+              % (room, name, ev.transfer_id[:8]))
+        elif state == "received":
+            p("[group %s] received %s from %s -- size and SHA-256 verified: %s"
+              % (room, name, row.get("from", "a member"), row.get("path", "")))
+        elif state == "delivered":
+            p("[group %s] %s: %d member(s) received it" %
+              (room, name, row.get("delivered_to", 0)))
+        elif state in ("failed", "cancelled", "declined"):
+            p("[group %s] %s: %s%s" % (room, name, state,
+                                        (" (%s)" % ev.reason) if ev.reason else ""))
 
     # -- invitations: OTRv4+ first, by itself ------------------------------------
 
@@ -1016,6 +1131,16 @@ class TermuxGroups:
             elif verb == "list":
                 p("[group] secure groups: %s"
                   % (", ".join(self.groups.rooms()) or "none"))
+            elif verb == "sendfile" and arg1:
+                # The host asks the metadata question and runs the picker
+                # when no path is given -- the same flow as a 1:1 /sendfile.
+                send = getattr(self.host, "_cmd_sendfile", None)
+                if send is None:
+                    p("[group] file sending needs the XMPP client")
+                else:
+                    send(arg1, arg2)
+            elif verb == "files":
+                self.print_files()
             else:
                 p(HELP)
         except GroupError as exc:
@@ -1041,6 +1166,11 @@ class TermuxGroups:
         if kind == "verify" and self.verify.pending(room) is None:
             self._prompt = None
             return None
+        if kind == "file" and not any(
+                r["id"] == self._prompt_file and r["state"] == "offered"
+                for r in self.files.transfers()):
+            self._prompt = None
+            return None
         return room
 
     def answer_prompt(self, answer: str) -> bool:
@@ -1052,7 +1182,12 @@ class TermuxGroups:
         kind = self._prompt[0]
         self._prompt = None
         yes = word in ("y", "yes")
-        if kind == "invite":
+        if kind == "file":
+            if yes:
+                self.files.accept(self._prompt_file)
+            else:
+                self.files.decline(self._prompt_file)
+        elif kind == "invite":
             asyncio.ensure_future(self.command(
                 "%s %s" % ("accept" if yes else "decline", room)))
         elif yes:

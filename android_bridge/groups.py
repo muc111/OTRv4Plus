@@ -156,7 +156,7 @@ class _PacedRoom:
     """One room's pacing state (RoomPacer's, under its lock)."""
 
     __slots__ = ("queue", "tokens", "at", "slow_until", "strikes",
-                 "requeued_at", "inflight", "armed", "check_armed")
+                 "requeued_at", "inflight", "armed", "check_armed", "volatile")
 
     def __init__(self, now: float, burst: int):
         #: [part, attempts] still to send, oldest first.
@@ -173,6 +173,8 @@ class _PacedRoom:
             collections.OrderedDict()
         self.armed = False
         self.check_armed = False
+        #: Pieces the room must not keep in its history (file data).
+        self.volatile: set = set()
 
 
 class RoomPacer:
@@ -212,12 +214,16 @@ class RoomPacer:
 
     def __init__(self, send: Callable[[str, str], None], *, burst: int,
                  interval: float, on_error: Callable[[str], None],
+                 send_volatile: Optional[Callable[[str, str], None]] = None,
                  slow_burst: int = 3, slow_interval: float = 2.2,
                  slow_for: float = 300.0, max_slow_for: float = 3600.0,
                  echo_timeout: float = 20.0, max_attempts: int = 3,
                  clock: Callable[[], float] = time.monotonic,
                  schedule: Optional[Callable[[float, Callable[[], None]], Any]] = None):
         self._send = send
+        #: Sends a piece with a no-store hint (XEP-0334), so the room keeps it
+        #: out of its history: see SecureGroups.send_bulk.
+        self._send_volatile = send_volatile or send
         self._burst = max(1, int(burst))
         self._interval = float(interval)
         self._slow_burst = max(1, int(slow_burst))
@@ -248,15 +254,19 @@ class RoomPacer:
 
     # -- what callers see -----------------------------------------------------
 
-    def post(self, room: str, parts: List[str]) -> None:
+    def post(self, room: str, parts: List[str], volatile: bool = False) -> None:
         if self._interval <= 0:
+            send = self._send_volatile if volatile else self._send
             for part in parts:
-                self._send(room, part)
+                send(room, part)
             return
         with self._lock:
             if self._closed:
                 return
-            self._room(room).queue.extend([part, 0] for part in parts)
+            state = self._room(room)
+            state.queue.extend([part, 0] for part in parts)
+            if volatile:
+                state.volatile.update(parts)
         self._pump(room)
 
     def pending(self, room: str) -> int:
@@ -281,6 +291,7 @@ class RoomPacer:
             state = self._rooms.get(room)
             if state is None:
                 return False
+            state.volatile.discard(part)
             return state.inflight.pop(part, None) is not None
 
     def rejected(self, room: str) -> None:
@@ -324,6 +335,7 @@ class RoomPacer:
             _sent, attempts = state.inflight.pop(part)
             if attempts >= self._max_attempts:
                 failed = True
+                state.volatile.discard(part)
                 continue
             again.append([part, attempts])
         state.queue.extendleft(reversed(again))
@@ -364,14 +376,16 @@ class RoomPacer:
                 if not state.check_armed:
                     state.check_armed = True
                     self._schedule(self._echo_timeout, lambda: self._expire(room))
+                send = self._send_volatile if part in state.volatile else self._send
             try:
-                self._send(room, part)
+                send(room, part)
             except Exception:
                 with self._lock:
                     # The stream is gone: the rest of a set is useless, and a
                     # commit is posted again by its owner after a rejoin.
                     state.queue.clear()
                     state.inflight.clear()
+                    state.volatile.clear()
                 self._on_error(room)
                 return
 
@@ -459,7 +473,8 @@ class SecureGroups:
                  peer_security: Callable[[str], SecurityState],
                  state_dir: Optional[str] = None,
                  core: Any = None,
-                 clock: Callable[[], float] = time.time):
+                 clock: Callable[[], float] = time.time,
+                 send_room_volatile: Optional[Callable[[str, str], None]] = None):
         self._send_room = send_room
         self._send_private = send_private
         self._emit = emit
@@ -517,9 +532,12 @@ class SecureGroups:
         self._call_handler: Optional[Callable[[str, str, bool, str], None]] = None
         #: Group verification (android_bridge.group_verify), the same way.
         self._verify_handler: Optional[Callable[[str, str, bool, str], None]] = None
+        #: Group files (android_bridge.group_files), the same way.
+        self._file_handler: Optional[Callable[[str, str, bool, str], None]] = None
         self._epoch_listener: Optional[Callable[[str], None]] = None
         self._pacer = RoomPacer(
             send_room, burst=self.ROOM_BURST, interval=self.ROOM_INTERVAL,
+            send_volatile=send_room_volatile,
             slow_burst=self.ROOM_SLOW_BURST,
             slow_interval=self.ROOM_SLOW_INTERVAL,
             slow_for=self.ROOM_SLOW_FOR, echo_timeout=self.ROOM_ECHO_TIMEOUT,
@@ -945,6 +963,9 @@ class SecureGroups:
         if before != (fp, True):
             self._emit(GroupChanged(peer=room, change="member_verified", detail=member))
 
+    def set_file_handler(self, fn: Optional[Callable[[str, str, bool, str], None]]) -> None:
+        self._file_handler = fn
+
     def set_call_handler(self, fn: Optional[Callable[[str, str, bool, str], None]]) -> None:
         self._call_handler = fn
 
@@ -955,10 +976,47 @@ class SecureGroups:
         """A call control message: encrypted and posted like a message, and
         recognised (by its prefix) and never shown at the other end."""
         from .group_call import CALL_PREFIX
+        from .group_files import FILE_PREFIX
         from .group_verify import VERIFY_PREFIX
-        if not text.startswith((CALL_PREFIX, VERIFY_PREFIX)):
+        if not text.startswith((CALL_PREFIX, VERIFY_PREFIX, FILE_PREFIX)):
             raise GroupError("bad_control")
         self.send(room, text)
+
+    #: `send_bulk` refuses (the caller tries again later) while this many
+    #: room pieces are still waiting to go out, so a file never queues ahead
+    #: of more than a few seconds of chat, commits and call control.
+    BULK_BACKLOG = 24
+
+    def send_bulk(self, room: str, text: str) -> bool:
+        """Bulk data (a group file's pieces): encrypted like a message, but
+        sent only when the group can take it at once, and posted with a
+        no-store hint so the room keeps it out of its history -- which holds
+        the commits a returning member needs to catch up, and must not be
+        pushed out by a file. Never held: False means "not now", and the
+        caller sends the same piece again later."""
+        from .group_files import FILE_PREFIX
+        if not text.startswith(FILE_PREFIX):
+            raise GroupError("bad_control")
+        self._sync_check(room)
+        with self._lock:
+            client = self._need()
+            if not client.has_group(room.encode()):
+                raise GroupError("not_a_group")
+            if (room in self._syncing or self._held.get(room)
+                    or self._pacer.pending(room) >= self.BULK_BACKLOG):
+                return False
+            try:
+                if client.has_pending_commit(room.encode()):
+                    return False
+                ct = bytes(client.encrypt(room.encode(), text.encode("utf-8")))
+            except ValueError:
+                return False
+        payload = ROOM_PREFIX + _b64e(ct)
+        parts, self._frag_seq = _fragment.fragment(
+            payload, self._frag_seq, _fragment.ROOM_FRAGMENT)
+        self._pacer.post(room, parts, volatile=True)
+        self._maybe_rekey(room)
+        return True
 
     def group_voice(self, room: str, call_id: bytes):
         """Media keys for a call, from this epoch's MLS exporter (Rust)."""
@@ -1843,6 +1901,7 @@ class SecureGroups:
             kind = ev.get("kind")
             control = None
             vcontrol = None
+            fcontrol = None
             if kind == "application":
                 sender = bytes(ev["sender"]).decode(errors="replace")
                 text = bytes(ev["plaintext"]).decode("utf-8", errors="replace")
@@ -1856,6 +1915,10 @@ class SecureGroups:
             elif kind == "application" and text.startswith("\x00OTRv4GV1:"):
                 # Group verification: to its handler, never shown.
                 vcontrol = (sender, verified, text[len("\x00OTRv4GV1:"):])
+                event = None
+            elif kind == "application" and text.startswith("\x00OTRv4GF1:"):
+                # A group file's offer or piece: to its handler, never shown.
+                fcontrol = (sender, verified, text[len("\x00OTRv4GF1:"):])
                 event = None
             elif kind == "application":
                 self.stats.shown += 1
@@ -1878,6 +1941,11 @@ class SecureGroups:
                 self._verify_handler(room, *vcontrol)
             except Exception:
                 self._emit(ErrorOccurred(peer=room, code="verify_control_failed"))
+        if fcontrol is not None and self._file_handler is not None:
+            try:
+                self._file_handler(room, *fcontrol)
+            except Exception:
+                self._emit(ErrorOccurred(peer=room, code="file_control_failed"))
         if control is not None and self._call_handler is not None:
             try:
                 self._call_handler(room, *control)

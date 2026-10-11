@@ -1325,6 +1325,13 @@ class ChatViewModel : ViewModel() {
     /** What the attach control should be for [jid]. Never a security claim. */
     fun transferOffer(jid: String): TransferUi.Offer {
         observe()
+        // A secure group: every other member verified (the bridge decides;
+        // this only mirrors it). An ordinary room has no files at all.
+        if (isRoom(jid)) {
+            return if (isSecureRoom(jid))
+                TransferUi.groupOffer(groupMembers(jid)) ?: TransferUi.Offer.NeedsEncryption
+            else TransferUi.Offer.NeedsEncryption
+        }
         return TransferUi.offer(conversation(jid).security)
     }
 
@@ -1476,7 +1483,9 @@ class ChatViewModel : ViewModel() {
                 discardStaged(path)
                 result
             }
-            TransferUi.refusal(outcome)?.let(state::note)
+            val refusal = if (isRoom(jid)) TransferUi.groupRefusal(outcome)
+                          else TransferUi.refusal(outcome)
+            refusal?.let(state::note)
             revision++
         }
     }

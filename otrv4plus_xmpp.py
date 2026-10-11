@@ -1905,6 +1905,8 @@ class OTRv4PlusXMPP(ClientXMPP):
         # OpenMLS, driven from this terminal (otrv4plus_groups). None when
         # the android_bridge package is not beside this file.
         self._groups = _make_groups(self)
+        #: A pending "remove hidden information?" question (confirm_metadata).
+        self._metadata_question = None
         #: /wipe sets this: the exit then destroys group state too.
         self._wipe_on_exit = False
 
@@ -4418,44 +4420,28 @@ class OTRv4PlusXMPP(ClientXMPP):
             return None
 
     def _cmd_sendfile(self, peer, path: str) -> None:
-        """/sendfile [path] — a path, or nothing to open the Android picker."""
-        if self._file_manager is None:
+        """/sendfile [path] — a path, or nothing to open the Android picker.
+
+        To a contact over OTRv4+, or -- while talking to a secure group -- to
+        the whole group over MLS (android_bridge.group_files). Either way the
+        file is examined first and, if it carries hidden information (where
+        and when a photo was taken, the camera), the user answers y/n: remove
+        it, or send the original (owner request, 2026-10-11)."""
+        groups = getattr(self, "_groups", None)
+        group = bool(peer and groups is not None and groups.owns_room(peer))
+        if not group and self._file_manager is None:
             print("[file] the transfer subsystem is not ready yet")
             return
         if not peer:
             print("[file] open a chat with a peer first")
             return
-        ratchet = self._file_transfer_ratchet(peer)
-        if ratchet is None:
+        if not group and self._file_transfer_ratchet(peer) is None:
             print("[file] no OTR session with %s that can key a transfer — "
                   "run /otr first" % _sanitise(peer, 128))
             return
         if not path and not IS_TERMUX:
             print("usage: /sendfile <path>")
             return
-
-        def _pick_and_seal():
-            # Both halves are blocking and both belong off the event loop.
-            # The picker waits for a human scrolling a gallery, which is far
-            # longer than anything else in this client is allowed to block
-            # for, and sealing reads the whole file through the AEAD.
-            staged = None
-            chosen = path
-            if not chosen:
-                staged = _filetransfer.pick_file(which=_which,
-                                                 on_wait=_waiting)
-                chosen = staged
-            try:
-                return self._file_manager.offer_file(peer, chosen, ratchet)
-            finally:
-                # The staged copy is PLAINTEXT.  It has served its purpose the
-                # moment offer_file returns, whether that was by sealing the
-                # file or by raising, so it goes either way.
-                if staged:
-                    try:
-                        os.unlink(staged)
-                    except OSError:
-                        pass
 
         def _waiting():
             # termux-storage-get returns the moment it has handed the intent
@@ -4468,40 +4454,180 @@ class OTRv4PlusXMPP(ClientXMPP):
 
         async def _run():
             loop = asyncio.get_event_loop()
+            staged = None
+            chosen = os.path.expanduser(path) if path else ""
             if not path:
                 print("[file] opening the Android file picker — choose a file "
                       "on the phone")
-            try:
-                transfer = await loop.run_in_executor(None, _pick_and_seal)
-            except TransferError as exc:
-                print("[file] %s" % exc)
-                return
-            except Exception as exc:
-                print("[file] could not send: %s" % _sanitise(str(exc), 160))
-                return
-            note = ""
-            if not path:
-                # The picker cannot report the original name, so say what the
-                # peer will actually see rather than letting them find out.
-                note = "  (the picker does not report the original name)"
-            print("[file] offered %s (%s) to %s — waiting for them to accept%s"
-                  % (transfer.offer.filename, transfer.offer.human_size(),
-                     _sanitise(peer, 128), note))
+                # Blocking, and it waits for a human scrolling a gallery:
+                # off the event loop.
+                try:
+                    staged = await loop.run_in_executor(
+                        None, lambda: _filetransfer.pick_file(which=_which,
+                                                              on_wait=_waiting))
+                except TransferError as exc:
+                    print("[file] %s" % exc)
+                    return
+                except Exception as exc:
+                    print("[file] could not pick a file: %s"
+                          % _sanitise(str(exc), 160))
+                    return
+                chosen = staged
+
+            def discard():
+                # The staged copy is PLAINTEXT.  It goes as soon as it has
+                # been sealed, refused, or the user said cancel.
+                if staged:
+                    try:
+                        os.unlink(staged)
+                    except OSError:
+                        pass
+
+            def go(strip: bool):
+                asyncio.ensure_future(self._offer_file(
+                    peer, chosen, strip, group=group, picked=not path,
+                    discard=discard))
+
+            self.confirm_metadata(chosen, go, on_cancel=discard)
 
         asyncio.ensure_future(_run())
 
+    async def _offer_file(self, peer, chosen: str, strip: bool, *, group: bool,
+                          picked: bool, discard) -> None:
+        """Seal and offer, off the event loop (sealing reads the whole file
+        through the AEAD; a scrubbed copy is written to the private staging
+        directory and removed straight after)."""
+        loop = asyncio.get_event_loop()
+        if group:
+            try:
+                await loop.run_in_executor(
+                    None, lambda: self._groups.send_file(peer, chosen, strip))
+            finally:
+                discard()
+            return
+        ratchet = self._file_transfer_ratchet(peer)
+        if ratchet is None:
+            print("[file] the OTR session with %s is gone; nothing was sent"
+                  % _sanitise(peer, 128))
+            discard()
+            return
+
+        def seal():
+            sent = chosen
+            if strip:
+                from android_bridge import metadata as _metadata
+                sent = _metadata.scrub_file(chosen, _filetransfer.staging_dir())
+            try:
+                return self._file_manager.offer_file(peer, sent, ratchet)
+            finally:
+                if sent != chosen:
+                    try:
+                        os.unlink(sent)
+                        os.rmdir(os.path.dirname(sent))
+                    except OSError:
+                        pass
+                discard()
+
+        try:
+            transfer = await loop.run_in_executor(None, seal)
+        except TransferError as exc:
+            print("[file] %s" % exc)
+            return
+        except Exception as exc:
+            print("[file] could not send: %s" % _sanitise(str(exc), 160))
+            return
+        note = ""
+        if picked:
+            # The picker cannot report the original name, so say what the
+            # peer will actually see rather than letting them find out.
+            note = "  (the picker does not report the original name)"
+        print("[file] offered %s (%s) to %s%s — waiting for them to accept%s"
+              % (transfer.offer.filename, transfer.offer.human_size(),
+                 _sanitise(peer, 128),
+                 " (hidden information removed)" if strip else "", note))
+
+    #: How long a "remove hidden information?" question stays answerable.
+    METADATA_QUESTION_SECONDS = 600.0
+
+    def confirm_metadata(self, path: str, on_choice, on_cancel=None) -> None:
+        """Ask whether to remove a file's hidden information, then call
+        `on_choice(strip)`. Asked only when there is something to remove --
+        the app's rule (MetadataChoice.kt), word for word in effect:
+
+          * nothing found: sent as it is, nothing asked;
+          * a kind of file that cannot be checked: sent as it is, and said;
+          * metadata found: y = remove it and send, n = keep it and send the
+            original (the user may want it kept), c = cancel.
+
+        Armed only by the user's own /sendfile, so a peer can never put this
+        question on screen to catch a y meant for something else."""
+        from android_bridge import metadata as _metadata
+        finding = _metadata.examine_file(path)
+        if not finding.can_scrub:
+            print("[file] this kind of file cannot be checked for hidden "
+                  "information; it is sent exactly as it is")
+            on_choice(False)
+            return
+        if not finding.carries_metadata:
+            on_choice(False)
+            return
+        self._metadata_question = (on_choice, on_cancel, time.monotonic())
+        print("[file] %s carries %d bytes of hidden information -- typically "
+              "where and when it was taken, and on what device."
+              % (_sanitise(os.path.basename(path), 120), finding.metadata_bytes))
+        print("[file] Remove it before sending? [y/n/c]   y = remove and send,  "
+              "n = keep it and send the original,  c = cancel")
+
+    def _answer_metadata(self, line: str) -> bool:
+        """A bare y/n/c answers a pending metadata question. True if it did."""
+        pending = getattr(self, "_metadata_question", None)
+        if pending is None:
+            return False
+        on_choice, on_cancel, at = pending
+        if time.monotonic() - at > self.METADATA_QUESTION_SECONDS:
+            self._metadata_question = None
+            if on_cancel is not None:
+                on_cancel()
+            return False
+        word = line.strip().lower()
+        if word not in ("y", "yes", "n", "no", "c", "cancel"):
+            return False
+        self._metadata_question = None
+        if word in ("c", "cancel"):
+            print("[file] not sent")
+            if on_cancel is not None:
+                on_cancel()
+            return True
+        on_choice(word in ("y", "yes"))
+        return True
+
     def _cmd_transfer(self, rest: str) -> None:
+        parts = rest.split(None, 1)
+        action = parts[0].lower() if parts else ""
+        argument = parts[1].strip() if len(parts) > 1 else ""
+        # Group files (android_bridge.group_files) answer to the same verbs.
+        group_files = getattr(getattr(self, "_groups", None), "files", None)
+        if group_files is not None:
+            rows = group_files.transfers()
+            if not action and rows:
+                self._groups.print_files()
+            if action in ("accept", "decline", "cancel") and argument:
+                hit = [r["id"] for r in rows if r["id"].startswith(argument.lower())]
+                if len(hit) == 1:
+                    done = getattr(group_files, action)(hit[0])
+                    if not done:
+                        print("[file] that group file can no longer be %sed"
+                              % action.rstrip("e"))
+                    return
         if self._file_manager is None:
             print("[file] the transfer subsystem is not ready yet")
             return
         mgr = self._file_manager
-        parts = rest.split(None, 1)
-        action = parts[0].lower() if parts else ""
-        argument = parts[1].strip() if len(parts) > 1 else ""
 
         if not action:
             if not mgr.incoming and not mgr.outgoing:
-                print("[file] no transfers")
+                if not (group_files is not None and group_files.transfers()):
+                    print("[file] no transfers")
                 return
             for key, t in mgr.incoming.items():
                 state = "receiving" if t.accepted else "offered to you"
@@ -5374,8 +5500,10 @@ class OTRv4PlusXMPP(ClientXMPP):
             "  /calls               show voice call state and frame counters\n"
             "  /audiotest           verify the microphone captures audio\n"
             "  /audioprobe          test each audio backend on this device\n"
-            "  /sendfile [path]     send a file (encrypted, verified peer)\n"
-            "  /transfer            show file transfer state\n"
+            "  /sendfile [path]     send a file (encrypted, verified peer; in a\n"
+            "                       group, to the group). Asks y/n to remove\n"
+            "                       hidden information (location, camera) first\n"
+            "  /transfer            show file transfer state (group files too)\n"
             "  /trade               list open trades\n"
             "  /trade init <terms>  propose a trade to the verified peer\n"
             "  /trade accept        agree to a proposal\n"
@@ -5742,6 +5870,11 @@ class OTRv4PlusXMPP(ClientXMPP):
         # a command, or a message that gets sent.  That asymmetry is the
         # point.  A remote peer can put a question on the screen; it cannot
         # make the answer to some other question become a passphrase.
+        # Remove a file's hidden information? Asked only by the user's own
+        # /sendfile, so it is answered first.
+        answer_metadata = getattr(self, "_answer_metadata", None)
+        if answer_metadata is not None and answer_metadata(line):
+            return True
         consent_for = self._pending_consent_peer()
         if consent_for is not None and line.strip().lower() in (
                 "y", "yes", "n", "no"):

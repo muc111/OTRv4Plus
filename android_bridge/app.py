@@ -238,6 +238,7 @@ class OtrApp:
         self._groups: Optional[SecureGroups] = None
         self._group_verify = None
         self._group_calls = None
+        self._group_files = None
         self._connection = ConnectionState.DISCONNECTED
         #: What we know about each peer's availability, and when we know
         #: nothing. A PresenceBook rather than a dict of bools because
@@ -423,6 +424,9 @@ class OtrApp:
                 self._group_calls.shutdown()
             except Exception:
                 _log.warning("group call teardown reported a problem")
+        if self._group_files is not None:
+            self._group_files.close()
+            self._group_files = None
         if self._calls_bridge is not None:
             try:
                 self._calls_bridge.shutdown()
@@ -559,6 +563,7 @@ class OtrApp:
         if self._groups is None:
             self._groups = SecureGroups(
                 send_room=self._send_room_body,
+                send_room_volatile=self._send_room_body_volatile,
                 send_private=self._send_group_signal,
                 emit=self._emit,
                 peer_security=self.security_state,
@@ -587,6 +592,11 @@ class OtrApp:
                     self, sam=lambda: self.sam_endpoint, emit=self._emit)
             except Exception:
                 _TRACE.record("groups", "group_calls_unavailable", "warning")
+        if self._group_files is None:
+            from .group_files import GroupFiles
+            # Sealed at rest like a 1:1 file: the same viewer opens both.
+            self._group_files = GroupFiles(self._groups, emit=self._emit,
+                                           seal_at_rest=True, clock=self._clock)
         return True
 
     #: Where the I2P SAM bridge is; set by the controller from the profile.
@@ -609,6 +619,13 @@ class OtrApp:
         if sender is None:
             raise GroupError("no_transport")
         sender(room, body)
+
+    def _send_room_body_volatile(self, room: str, body: str) -> None:
+        """A group file's piece: with the room's no-store hint (XEP-0334)."""
+        sender = getattr(self._transport, "send_room_message", None)
+        if sender is None:
+            raise GroupError("no_transport")
+        sender(room, body, volatile=True)
 
     def _send_group_signal(self, peer: str, text: str) -> None:
         """Group setup goes inside an encrypted OTRv4+ session or not at all:
@@ -772,6 +789,12 @@ class OtrApp:
                 files.shutdown()
             except Exception:
                 report["errors"].append("transfers")
+        group_files, self._group_files = self._group_files, None
+        if group_files is not None:
+            try:
+                group_files.close()
+            except Exception:
+                report["errors"].append("group_transfers")
         # Every MLS group secret, pending commit and the signing key, in
         # Rust, and the sealed state file. Constructed here if it was never
         # used, so a state file from a previous run is removed too.
@@ -2376,8 +2399,15 @@ class OtrApp:
         before it arrives. The engine takes a path and does not care who
         chose it, which is why the Termux picker is never reached here.
         """
-        if self._wiped or self.is_room(peer):
+        if self._wiped:
             return FileOutcome.UNAVAILABLE
+        if self.is_room(peer):
+            # A secure group's file goes to the whole group, over MLS
+            # (android_bridge.group_files); an ordinary room has none.
+            room = self.canonical_peer(peer)
+            if self._group_files is None or not self.groups.is_secure(room):
+                return FileOutcome.UNAVAILABLE
+            return self._group_files.send(room, path, bool(strip_metadata))
         return self.files.send_file(self.canonical_peer(peer), path,
                                     bool(strip_metadata))
 
@@ -2393,25 +2423,35 @@ class OtrApp:
         """Accept an offered transfer. Returns a `FileOutcome` code."""
         if self._wiped:
             return FileOutcome.UNAVAILABLE
+        if self._group_files is not None and self._group_files.knows(transfer_id):
+            return (FileOutcome.STARTED if self._group_files.accept(transfer_id)
+                    else FileOutcome.NO_TRANSFER)
         return self.files.accept(transfer_id)
 
     def decline_file(self, transfer_id: str) -> str:
         """Decline an offered transfer. Returns a `FileOutcome` code."""
         if self._wiped:
             return FileOutcome.NO_TRANSFER
+        if self._group_files is not None and self._group_files.knows(transfer_id):
+            return (FileOutcome.STARTED if self._group_files.decline(transfer_id)
+                    else FileOutcome.NO_TRANSFER)
         return self.files.decline(transfer_id)
 
     def cancel_file(self, transfer_id: str) -> str:
         """Stop a transfer that is under way, either direction. A `FileOutcome`."""
         if self._wiped:
             return FileOutcome.NO_TRANSFER
+        if self._group_files is not None and self._group_files.knows(transfer_id):
+            return (FileOutcome.STARTED if self._group_files.cancel(transfer_id)
+                    else FileOutcome.NO_TRANSFER)
         return self.files.cancel(transfer_id)
 
     def transfers(self) -> List[Dict[str, Any]]:
         """Every live transfer, structured. Never the engine's own sentences."""
         if self._wiped:
             return []
-        return self.files.transfers()
+        group = self._group_files.transfers() if self._group_files is not None else []
+        return self.files.transfers() + group
 
     def received_file_dir(self) -> str:
         """Where a FINISHED file lands, as the engine decides it.

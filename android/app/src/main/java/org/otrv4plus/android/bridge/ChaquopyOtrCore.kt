@@ -1357,6 +1357,9 @@ class ChaquopyOtrCore(private val appContext: Context) : OtrCore {
                     state = row.callAttr("get", "state")?.toString().orEmpty(),
                     reason = row.callAttr("get", "reason")?.toString().orEmpty(),
                     path = row.callAttr("get", "path")?.toString().orEmpty(),
+                    group = row.callAttr("get", "group")?.toBoolean() ?: false,
+                    sender = row.callAttr("get", "from")?.toString().orEmpty(),
+                    deliveredTo = row.callAttr("get", "delivered_to")?.toInt() ?: 0,
                 )
             }
         }.getOrDefault(emptyList())

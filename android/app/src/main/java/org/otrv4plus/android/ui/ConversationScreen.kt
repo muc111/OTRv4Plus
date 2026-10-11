@@ -271,6 +271,9 @@ private fun RoomHeader(model: ChatViewModel, jid: String) {
         )
     }
     if (secure) GroupVerifyAndCallBar(model, jid)
+    // Files to the whole group, over MLS; the same picker, metadata
+    // question, rows and viewer as a 1:1 conversation.
+    if (secure) TransferBar(model, jid, group = true)
     if (secure) SecureGroupPanel(model, jid)
     val expanded = model.occupantsShown(jid)
     val people = model.occupants(jid)
@@ -566,7 +569,7 @@ private fun VerificationPrompt(
  * `TransferUiTest`.
  */
 @Composable
-private fun TransferBar(model: ChatViewModel, jid: String) {
+private fun TransferBar(model: ChatViewModel, jid: String, group: Boolean = false) {
     val context = LocalContext.current
     val transfers = model.transfers(jid)
     val offer = model.transferOffer(jid)
@@ -684,11 +687,12 @@ private fun TransferBar(model: ChatViewModel, jid: String) {
     when (offer) {
         is TransferUi.Offer.Available ->
             TextButton(onClick = { picker.launch(arrayOf("*/*")) }) {
-                Text("Send a file")
+                Text(if (group) "Send a file to the group" else "Send a file")
             }
         is TransferUi.Offer.NeedsVerification ->
             TextButton(enabled = false, onClick = {}) {
-                Text("Send a file — SMP verification required")
+                Text(if (group) "Send a file — every member must be verified first"
+                     else "Send a file — SMP verification required")
             }
         // The plaintext banner above already offers the handshake; a second
         // disabled control would be noise.

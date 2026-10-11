@@ -4,6 +4,38 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.54 — 2026-10-11 — files in secure groups; remove-metadata y/n in Termux (core 0.13.1)
+
+- **Send files in a secure group**, app and Termux alike: the same protocol
+  (\`android_bridge/group_files.py\`), so a file goes between them. In the
+  app, an encrypted group's screen has "Send a file to the group"; in
+  Termux, \`/sendfile\` while talking to a group, or \`/group sendfile
+  <room> [path]\`. Each member accepts or declines (Termux: a bare y/n, or
+  \`/transfer accept <id>\`), and a received file opens like a 1:1 one.
+  - Encrypted and signed as MLS application messages (the group's hybrid
+    X448 + ML-KEM-1024 / Ed448 + ML-DSA-87 suite); no new cryptography. Kept
+    only if its SHA-256 and size match, read back from disk.
+  - Sent only when every other member is verified (group passphrase or 1:1
+    SMP) -- the 1:1 rule, for everyone the group delivers to. An offer from
+    an unverified member is refused; an unverified member joining stops a
+    file still going out.
+  - Pieces carry the room's no-store hint (XEP-0334), so the room's history
+    keeps the commits a returning member needs instead of file data; they
+    queue behind chat and group changes rather than ahead of them.
+  - A member that misses pieces (a commit by somebody else mid-transfer) or
+    accepts late asks for them again; the sender keeps the file 30 minutes.
+    Up to 16 MB.
+- **Remove hidden information? y/n in Termux** (1:1 and groups), like the
+  app's dialog: a photo that carries metadata (location, time, camera) is
+  not sent until the user answers -- y removes it, n keeps it and sends the
+  original, c cancels. Nothing to remove: no question; a kind that cannot be
+  checked: sent as it is, and said. The cleaned copy is written to the
+  private staging directory, never beside a file picked from shared storage.
+- The app now explains a "cannot check this file" refusal instead of a
+  generic one.
+- CI: SECURITY_AUDIT_2026-10-11.md declared in REUSE.toml (the rc.53
+  licensing check).
+
 ## Android 0.7.0-experimental.rc.53 — 2026-10-11 — security audit: dependencies updated, three fixes (core 0.13.1)
 
 Full record: SECURITY_AUDIT_2026-10-11.md (developer-led with AI assistance;

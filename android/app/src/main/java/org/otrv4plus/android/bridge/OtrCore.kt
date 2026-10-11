@@ -318,6 +318,12 @@ data class FileTransferView(
      * empty for a file this device sent.
      */
     val path: String = "",
+    /** A secure group's file (android_bridge.group_files): [peer] is the room. */
+    val group: Boolean = false,
+    /** The member who sent a group file to us; empty for ours and for 1:1. */
+    val sender: String = "",
+    /** Ours, to a group: how many members said they have it, verified. */
+    val deliveredTo: Int = 0,
 )
 
 data class SmpProgress(val step: Int, val total: Int, val state: SmpState)

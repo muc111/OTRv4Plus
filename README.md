@@ -200,15 +200,15 @@ PYTHONMALLOC=malloc .venv/bin/python otrv4+.py
 /otr              start an encrypted session
 /smp              verify identity with a passphrase agreed in person
 /call             encrypted voice call (after SMP); /answer, /hangup
-/sendfile <path>  encrypted file transfer (after SMP)
+/sendfile <path>  encrypted file (after SMP; asks y/n to strip metadata)
 /status           session, trust and verification state
 /help             every command
 ```
 
 Encrypted group chat (XMPP): `/group create mls3` (then its passphrase),
 `/group invite mls3 bob`, `y` to join, then just type; `/group verify mls3`
-checks every member with the passphrase, then `/group call mls3`. In the
-app: Rooms, then "Create end-to-end encrypted group"; Verify, then Call.
+checks every member, then `/group call mls3` or `/sendfile` (to the group).
+App: Rooms, "Create end-to-end encrypted group"; Verify, Call, Send a file.
 
 Building on musl (Alpine), every option and all commands are in
 [TECHNICAL.md](TECHNICAL.md).

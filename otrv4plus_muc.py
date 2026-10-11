@@ -384,3 +384,15 @@ def room_kind(info_xml) -> Tuple[bool, bool]:
     except Exception:
         return False, False
     return secure, password
+
+
+#: XEP-0334 message processing hints.
+HINTS_NS = "urn:xmpp:hints"
+
+
+def no_store_hint():
+    """`<no-store xmlns="urn:xmpp:hints"/>`: a room (Prosody: history and
+    MAM) does not keep the message. Used for a secure group's file pieces,
+    so they never push the group's commits out of the room's history."""
+    import xml.etree.ElementTree as _ET
+    return _ET.Element("{%s}no-store" % HINTS_NS)
