@@ -20,6 +20,11 @@ on:
       - "android/app/src/main/java/org/otrv4plus/android/theme/**"
       - ".github/workflows/desktop.yml"
   workflow_dispatch:
+    inputs:
+      dump:
+        description: "Also publish the screens and checksums as annotations (readable through the API where artifact downloads are not)"
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -68,6 +73,27 @@ jobs:
           name: desktop-screens
           path: desktop/build/screens/*.png
           if-no-files-found: warn
+
+      # For environments that reach api.github.com but not artifact storage:
+      # each file, gzip + base64, in annotation-sized chunks
+      # ("dump:<file>:<part>/<parts>").
+      - name: Dump screens and checksums as annotations
+        if: inputs.dump
+        run: |
+          set -eu
+          dump() {
+            f="$1"; name="$(basename "$f")"
+            gzip -9c "$f" | base64 -w0 > /tmp/b64
+            parts=$(( ($(stat -c%s /tmp/b64) + 59999) / 60000 ))
+            for i in $(seq 1 "$parts"); do
+              echo "::notice title=dump:$name:$i/$parts::$(cut -c$(( (i-1)*60000+1 ))-$(( i*60000 )) /tmp/b64)"
+            done
+          }
+          for f in desktop/build/screens/*.png; do
+            convert "$f" -quality 82 "${f%.png}.jpg"
+            dump "${f%.png}.jpg"
+          done
+          [ -f desktop/gradle/verification-metadata.xml ] && dump desktop/gradle/verification-metadata.xml || true
 
       - name: Test report
         if: failure()
