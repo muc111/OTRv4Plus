@@ -89,10 +89,7 @@ jobs:
               echo "::notice title=dump:$name:$i/$parts::$(cut -c$(( (i-1)*60000+1 ))-$(( i*60000 )) /tmp/b64)"
             done
           }
-          for f in desktop/build/screens/*.png; do
-            convert "$f" -quality 82 "${f%.png}.jpg"
-            dump "${f%.png}.jpg"
-          done
+          for f in desktop/build/screens/*.jpg; do dump "$f"; done
           [ -f desktop/gradle/verification-metadata.xml ] && dump desktop/gradle/verification-metadata.xml || true
 
       - name: Test report

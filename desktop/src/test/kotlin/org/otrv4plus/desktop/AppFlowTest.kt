@@ -78,6 +78,7 @@ class AppFlowTest {
             val data = image.encodeToData(EncodedImageFormat.PNG) ?: return
             val dir = File("build/screens").apply { mkdirs() }
             File(dir, "$name.png").writeBytes(data.bytes)
+            image.encodeToData(EncodedImageFormat.JPEG, 82)?.let { File(dir, "$name.jpg").writeBytes(it.bytes) }
         } finally {
             scene.close()
         }
