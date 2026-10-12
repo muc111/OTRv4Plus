@@ -2,14 +2,13 @@
 // Copyright (C) 2025-2026 muc111
 package org.otrv4plus.desktop
 
-import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -49,7 +48,9 @@ fun main() = application {
 @Composable
 fun App(model: AppModel, onWipe: () -> Unit) {
     OtrTheme(model.theme) {
-        Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
+        // A Surface, not a background: it also sets the content colour, so
+        // text outside a Material component is onBackground, not black.
+        Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
             when (model.screen) {
                 AppModel.Screen.STARTING -> Centered {
                     CircularProgressIndicator()
