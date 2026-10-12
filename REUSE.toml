@@ -100,6 +100,9 @@ path = [
     "example.png",
     "xmpp-verify.png",
     "xmpp-call-sendfile.png",
+    "desktop/docs/chat.jpg",
+    "desktop/docs/connect.jpg",
+    "desktop/docs/unverified.jpg",
 ]
 precedence = "override"
 SPDX-FileCopyrightText = "2025-2026 muc111"

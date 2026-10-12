@@ -5,6 +5,11 @@ qube with no network. It uses Compose for Desktop with Material 3, the Android
 app's dark purple theme, and a two-pane layout: a list on the left and the
 conversation on the right.
 
+![A verified conversation](docs/chat.jpg)
+
+The screenshots come from `gradle test`, which renders the app driven by
+a scripted engine (CI uploads them on every change).
+
 ```
 ┌──────────── this window (JVM, Compose) ────────────┐  JSON lines   ┌──── engine process (Python + Rust) ────┐
 │ screens, dialogs, the Android chat rules           │ ───────────▶  │ desktop_bridge.host                    │
@@ -99,7 +104,10 @@ Two repositories are used:
   `androidx.lifecycle` are published only there).
 
 The offline Qubes build takes every jar from the cache the fetch step built.
-Each jar is checked against `gradle/verification-metadata.xml`.
+Each jar is checked against `gradle/verification-metadata.xml`, which holds
+the SHA-256 of 125 components. CI wrote it. A strict build in a second
+environment, which fetched its Maven Central jars over a different path,
+matched every one of them.
 
 On Qubes, `qubes/packaging/build-desktop.sh` builds the
 `otrv4plus-desktop` package offline. `qubes/README.md` covers the rest of
