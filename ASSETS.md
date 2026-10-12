@@ -85,6 +85,17 @@ and system chrome visible in them belong to their respective owners.
 | `xmpp-verify.png` | XMPP client session through `/otr` and `/smp` (`b3341c9`, 2026-09-05) | `172a4d5f65fd3e60a85500f82c60c0e6378a4dacb0117e8ff8ff410590401bc4` |
 | `xmpp-call-sendfile.png` | The same session through `/call` and `/sendfile` (`b3341c9`) | `84fdff3bfb4b9e28d7916ca5dc0734662cd85be820b4556c4bd0dac6074c36a0` |
 
+## Desktop screenshots
+
+Rendered by this project's own test, used in `desktop/README.md`. They are
+not shipped in any package and are covered by the documentation licence.
+
+| File | Origin | SHA-256 |
+|---|---|---|
+| `desktop/docs/chat.jpg` | A verified conversation. Rendered by `desktop/` `gradle test` (AppFlowTest, a scripted engine with made-up contacts), in CI; no device, no real data. Skia JPEG, no EXIF. | `301e5067e1d34c9e30ff1f8943bfad988fbd65f2ba5f54514632146ab9e6abc5` |
+| `desktop/docs/connect.jpg` | The sign-in screen. Rendered by `desktop/` `gradle test` (AppFlowTest, a scripted engine with made-up contacts), in CI; no device, no real data. Skia JPEG, no EXIF. | `5cd772dae6e4982ee076f473c7736bf72a5827c104511f2817879366caca05b1` |
+| `desktop/docs/unverified.jpg` | An encrypted, unverified conversation, with Verify offered. Rendered by `desktop/` `gradle test` (AppFlowTest, a scripted engine with made-up contacts), in CI; no device, no real data. Skia JPEG, no EXIF. | `c55ee7cda09c680cec08511f1474783106d6c7ff3cb2e989649af74b8ee8adff` |
+
 ## Test fixtures
 
 `tests/data/photo_with_gps.jpg`, `tests/data/image_with_text.png` and
