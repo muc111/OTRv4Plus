@@ -1,0 +1,33 @@
+# SPDX-License-Identifier: AGPL-3.0-only OR LicenseRef-OTRv4Plus-Commercial
+# Copyright (C) 2025-2026 muc111
+#
+# The chat qube's end of the qrexec SAM relay: 127.0.0.1:7656/tcp and
+# 127.0.0.1:7655/udp, carried to the I2P router in sys-i2p.
+# Installed in the template; runs only in a qube where dom0 ran
+#   qvm-service otr-chat otrv4plus-sam-proxy on
+[Unit]
+Description=OTRv4Plus: the I2P SAM bridge of sys-i2p, over qrexec
+ConditionPathExists=/run/qubes-service/otrv4plus-sam-proxy
+After=qubes-qrexec-agent.service
+
+[Service]
+User=user
+ExecStart=@PY@ -I /usr/lib/otrv4plus/otrv4plus-qubes-relay proxy
+Restart=always
+RestartSec=2
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_UNIX
+RestrictNamespaces=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+CapabilityBoundingSet=
+
+[Install]
+WantedBy=multi-user.target

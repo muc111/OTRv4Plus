@@ -10,7 +10,7 @@ version = 1
 [[annotations]]
 path = ["**/*.py", "**/*.rs", "**/*.kt", "**/*.kts", "**/*.toml", "**/*.yml",
         "**/*.sh", "**/*.xml", "**/*.json", "**/*.cfg", "**/*.ini",
-        "**/*.pro", "**/*.properties", "tests/data/**"]
+        "**/*.pro", "**/*.properties", "tests/data/**", "qubes/**"]
 precedence = "closest"
 SPDX-FileCopyrightText = "2025-2026 muc111"
 SPDX-License-Identifier = "AGPL-3.0-only OR LicenseRef-OTRv4Plus-Commercial"
@@ -31,6 +31,8 @@ path = [
     "ANDROID_CHAT_DELETION.md",
     "OTRV4PLUS_CAPABILITY.md",
     "PROSODY_USER_DISCOVERY.md",
+    "qubes/README.md",
+    "qubes/salt/otrv4plus/files/README.md",
     "MLS_FEASIBILITY.md",
     "MLS_SECURITY_HARDENING.md",
     "Rust/vendor/VENDORED.md",
@@ -50,6 +52,7 @@ path = [
     "PHYSICAL_TEST_PLAN.md",
     "CRYPTO_SOURCE_OF_TRUTH.md",
     "DEVELOPMENT.md",
+    "FEASIBILITY_REPORT.md",
     "FEATURES.md",
     "FILE_TRANSFER_TEST_PLAN.md",
     "GROUP_CRYPTO_AUDIT.md",
