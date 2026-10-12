@@ -18,6 +18,7 @@ build-tools:
       - gnupg
       - xz-utils
       - unzip
+      - openjdk-21-jdk-headless   # the desktop GUI's build (Gradle)
       - dpkg-dev
       - qubes-gpg-split
     - install_recommends: false

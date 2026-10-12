@@ -92,10 +92,12 @@ mkdir -p "$APP/android_bridge" "$LIB" "$ROOT/usr/bin" "$ROOT/DEBIAN" \
 # 2. The client.
 cp "$REPO"/otrv4_.py "$REPO"/otrv4plus.py "$REPO"/otrv4plus_*.py "$APP/"
 rm -f "$APP/otrv4plus_tui.py.orig"
-for m in __init__ events group_call group_files group_verify groups identity \
-         metadata secure_store; do
-    cp "$REPO/android_bridge/$m.py" "$APP/android_bridge/"
-done
+# The whole engine package: the terminal client uses nine of these modules;
+# the desktop GUI's engine process (desktop_bridge) drives OtrApp and the
+# connection controller exactly as the Android app does, and needs them all.
+cp "$REPO"/android_bridge/*.py "$APP/android_bridge/"
+mkdir -p "$APP/desktop_bridge"
+cp "$REPO"/desktop_bridge/*.py "$APP/desktop_bridge/"
 cp "$REPO/i2p_hosts.defaults" "$APP/" 2>/dev/null || true
 
 # 3. Its libraries, from the checked files only (no index, no dependencies
@@ -127,8 +129,9 @@ EOF
 import importlib, os, sys
 app = sys.argv[1]
 names = sorted(f[:-3] for f in os.listdir(app) if f.endswith(".py") and f != "otrv4plus_tui.py")
-names += ["android_bridge." + f[:-3] for f in sorted(os.listdir(os.path.join(app, "android_bridge")))
-          if f.endswith(".py") and f != "__init__.py"]
+for pkg in ("android_bridge", "desktop_bridge"):
+    names += [pkg + "." + f[:-3] for f in sorted(os.listdir(os.path.join(app, pkg)))
+              if f.endswith(".py") and f != "__init__.py"]
 for n in names:
     importlib.import_module(n)
 import otrv4_core
@@ -180,6 +183,22 @@ exec "$PY" -s /opt/otrv4plus/app/otrv4plus_xmpp.py "$@"
 EOF
 sed -i "s|@PY@|/usr/bin/$PY|" "$ROOT/usr/bin/otrv4plus"
 chmod 0755 "$ROOT/usr/bin/otrv4plus"
+
+# The desktop GUI's engine: the same Python and Rust, as a process the GUI
+# (package otrv4plus-desktop, a separate JVM) speaks JSON lines to. No key
+# ever reaches the GUI's process.
+mkdir -p "$ROOT/usr/lib/otrv4plus"
+cat > "$ROOT/usr/lib/otrv4plus/otrv4plus-engine" <<'EOF'
+#!/bin/sh
+# OTRv4Plus engine for the desktop GUI: JSON lines on stdin/stdout.
+export PYTHONPATH=/opt/otrv4plus/lib
+export PYTHONMALLOC=malloc
+export PYTHONDONTWRITEBYTECODE=1
+export OTRV4PLUS_NO_VENV=1
+cd /opt/otrv4plus/app || exit 1
+exec @PY@ -s -m desktop_bridge.host
+EOF
+sed -i "s|@PY@|/usr/bin/$PY|" "$ROOT/usr/lib/otrv4plus/otrv4plus-engine"
 
 cat > "$ROOT/usr/share/applications/otrv4plus.desktop" <<'EOF'
 [Desktop Entry]

@@ -26,6 +26,7 @@ operator's guide.
 | `packaging/fetch-sources.sh` | Step 1. Runs in a **disposable** networked qube and collects the source, pinned wheels, vendored crates and the signed Rust toolchain into one bundle. |
 | `packaging/build-core.sh` | Step 2. Runs **offline**. Builds the Rust core reproducibly at a fixed path. |
 | `packaging/build-deb.sh` | Step 3. Runs **offline**. Builds `otrv4plus_*.deb` (for the chat template) and `otrv4plus-i2p-relay_*.deb` (for the I2P template). With `--stage`, it lays out the files for the RPM instead. |
+| `packaging/build-desktop.sh` | Step 3b. Runs **offline**. Builds `otrv4plus-desktop_*.deb`, the Compose GUI, from a dependency cache the fetch step checked against `desktop/gradle/verification-metadata.xml`. |
 | `packaging/otrv4plus.spec` | RPM for a Fedora template; ships the same files. Not yet built on Fedora. |
 | `packaging/lock-cp313.sha256` | SHA-256 of every Python input. A file that is not in this list stops the build. |
 | `relay/otrv4plus-qubes-relay` | Carries SAM over qrexec, both streams and the UDP datagrams calls use. Tests are in `tests/test_qubes_relay.py`. |
@@ -69,6 +70,7 @@ $B/OTRv4Plus/qubes/packaging/build-core.sh --bundle $B
 cd /build/OTRv4Plus
 qubes/packaging/build-deb.sh --wheels $B/wheels \
     --core-wheel /build/wheel/otrv4_core-*.whl --out /build/dist
+qubes/packaging/build-desktop.sh --gradle-cache $B/gradle-cache --out /build/dist   # the GUI
 ```
 
 Run the build twice, in two fresh `otr-build` qubes or once in each of two
@@ -81,7 +83,7 @@ approve each signature.
 # otr-build:
 export QUBES_GPG_DOMAIN=otr-sign
 for f in /build/dist/*.deb; do qubes-gpg-client-wrapper --detach-sign --armor < "$f" > "$f.asc"; done
-qvm-copy /build/dist/otrv4plus_*.deb*              # target: otr-chat-tpl
+qvm-copy /build/dist/otrv4plus_*.deb* /build/dist/otrv4plus-desktop_*.deb*   # target: otr-chat-tpl
 qvm-copy /build/dist/otrv4plus-i2p-relay_*.deb*    # target: otr-i2p-tpl
 ```
 
@@ -96,7 +98,17 @@ qvm-appmenus --update --force otr-chat
 qvm-start sys-i2p
 ```
 
-**5. Use it.** Start **OTRv4Plus** from the otr-chat menu. If you prefer not
+**5. Use it.** Start **OTRv4Plus** from the otr-chat menu. Two entries
+are installed:
+
+* the desktop app (`otrv4plus-desktop`), which looks like the Android app
+  (see [`../desktop/README.md`](../desktop/README.md));
+* the terminal client (`otrv4plus`), the same as on Termux and Ubuntu.
+
+The desktop window holds no keys. It starts the engine as a separate
+process, and the engine's Rust core keeps every key.
+
+For the terminal client, if you prefer not
 to type the arguments each time, put one per line in
 `~/.config/otrv4plus/args` inside `otr-chat`:
 

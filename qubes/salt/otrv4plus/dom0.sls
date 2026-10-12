@@ -47,14 +47,14 @@ otr-chat:
       - netvm: ""
       - default_dispvm: ""
       - memory: 400
-      - maxmem: 1200
+      - maxmem: 2000     # the GUI is a JVM (-Xmx512m) beside the engine
       - vcpus: 2
       - include_in_backups: true
     - features:
       - enable:
         - service.otrv4plus-sam-proxy
       - set:
-        - menu-items: otrv4plus.desktop
+        - menu-items: otrv4plus-desktop.desktop otrv4plus.desktop
     - require:
       - qvm: otr-chat-tpl
 

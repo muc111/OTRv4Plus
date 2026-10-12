@@ -65,3 +65,7 @@ Rust/fuzz/corpus/
 Rust/fuzz/artifacts/
 Rust/fuzz/coverage/
 Rust/audit/target/
+
+# ── Desktop GUI (desktop/, Gradle) ──
+/desktop/.gradle/
+/desktop/.kotlin/

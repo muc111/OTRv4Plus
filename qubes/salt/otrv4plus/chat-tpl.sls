@@ -2,8 +2,8 @@
 # Copyright (C) 2025-2026 muc111
 #
 # Template of otr-chat: the client and what it needs to run, nothing else.
-# First: in otr-build, `qvm-copy` the signed otrv4plus_*.deb (+ .asc,
-# .sha256) to otr-chat-tpl. Then, in dom0:
+# First: in otr-build, `qvm-copy` the signed otrv4plus_*.deb and
+# otrv4plus-desktop_*.deb (+ .asc, .sha256) to otr-chat-tpl. Then, in dom0:
 #
 #   sudo qubesctl --skip-dom0 --targets=otr-chat-tpl state.sls otrv4plus.chat-tpl
 {% from 'otrv4plus/install-signed.jinja' import install_signed %}
@@ -16,10 +16,13 @@ chat-runtime:
       - pulseaudio-utils      # parec/pacat; PipeWire's pulse server answers them
       - pulseaudio-qubes      # VM audio; use pipewire-qubes on a PipeWire template
       - xterm
+      - openjdk-21-jre            # the desktop GUI (otrv4plus-desktop)
       - gpgv
     - install_recommends: false
 
 {{ install_signed('otrv4plus') }}
+
+{{ install_signed('otrv4plus-desktop', key=False) }}
 
 otrv4plus-sam-proxy:
   service.enabled:

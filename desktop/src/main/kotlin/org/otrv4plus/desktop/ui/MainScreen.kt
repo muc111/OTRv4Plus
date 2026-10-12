@@ -1,0 +1,222 @@
+// SPDX-License-Identifier: AGPL-3.0-only OR LicenseRef-OTRv4Plus-Commercial
+// Copyright (C) 2025-2026 muc111
+package org.otrv4plus.desktop.ui
+
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.Chat
+import androidx.compose.material.icons.filled.Groups
+import androidx.compose.material.icons.filled.People
+import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.NavigationRail
+import androidx.compose.material3.NavigationRailItem
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.VerticalDivider
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
+import org.otrv4plus.android.chat.Conversation
+import org.otrv4plus.android.chat.Presence
+import org.otrv4plus.android.chat.RowSecurity
+import org.otrv4plus.android.connection.LinkPhase
+import org.otrv4plus.desktop.AppModel
+
+@Composable
+fun MainScreen(model: AppModel, onWipe: () -> Unit) {
+    @Suppress("UNUSED_VARIABLE") val r = model.revision
+    Row(Modifier.fillMaxSize()) {
+        NavigationRail(containerColor = MaterialTheme.colorScheme.surface) {
+            Spacer(Modifier.padding(top = 8.dp))
+            RailItem(model, AppModel.Tab.CHATS, Icons.AutoMirrored.Filled.Chat, "Chats",
+                     badge = model.conversations().sumOf { it.unread })
+            RailItem(model, AppModel.Tab.PEOPLE, Icons.Filled.People, "People",
+                     badge = model.chat.pendingSubscriptions.size)
+            RailItem(model, AppModel.Tab.ROOMS, Icons.Filled.Groups, "Rooms",
+                     badge = model.chat.pendingGroupInvites.size)
+            RailItem(model, AppModel.Tab.SETTINGS, Icons.Filled.Settings, "Settings")
+        }
+        VerticalDivider()
+        Column(Modifier.fillMaxSize()) {
+            LinkBanner(model)
+            model.chat.notice?.let { Notice(it) { model.dismissNotice() } }
+            model.chat.fingerprintAlert?.let { alert ->
+                Notice("The identity key of ${alert.peer} has CHANGED. Do not trust this " +
+                       "conversation until you have verified them again.",
+                       alarm = true) { model.dismissFingerprintAlert() }
+            }
+            when (model.tab) {
+                AppModel.Tab.CHATS -> ChatsPane(model)
+                AppModel.Tab.PEOPLE -> PeoplePane(model)
+                AppModel.Tab.ROOMS -> RoomsPane(model)
+                AppModel.Tab.SETTINGS -> SettingsPane(model, onWipe)
+            }
+        }
+    }
+}
+
+@Composable
+private fun RailItem(model: AppModel, tab: AppModel.Tab, icon: androidx.compose.ui.graphics.vector.ImageVector,
+                     label: String, badge: Int = 0) {
+    NavigationRailItem(
+        selected = model.tab == tab,
+        onClick = { model.tab = tab },
+        icon = {
+            Box {
+                Icon(icon, label)
+                if (badge > 0) Box(Modifier.align(Alignment.TopEnd).size(8.dp).clip(CircleShape)
+                    .background(MaterialTheme.colorScheme.error))
+            }
+        },
+        label = { Text(label) },
+    )
+}
+
+/** Connection state, said quietly while I2P is still working. */
+@Composable
+private fun LinkBanner(model: AppModel) {
+    val phase = model.phase
+    if (phase == LinkPhase.CONNECTED) return
+    val text = when (phase) {
+        LinkPhase.FAILED -> model.problemLine()?.text ?: "The connection failed."
+        LinkPhase.STOPPED -> "Not connected."
+        else -> "Reconnecting over I2P… messages you type are kept until it is back."
+    }
+    Surface(color = MaterialTheme.colorScheme.secondaryContainer, modifier = Modifier.fillMaxWidth()) {
+        Text(text, Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+             style = MaterialTheme.typography.bodySmall)
+    }
+}
+
+@Composable
+fun Notice(text: String, alarm: Boolean = false, onDismiss: () -> Unit) {
+    Surface(color = if (alarm) MaterialTheme.colorScheme.errorContainer
+                    else MaterialTheme.colorScheme.primaryContainer,
+            modifier = Modifier.fillMaxWidth()) {
+        Row(Modifier.padding(start = 16.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text(text, Modifier.weight(1f).padding(vertical = 8.dp), style = MaterialTheme.typography.bodySmall,
+                 color = if (alarm) MaterialTheme.colorScheme.onErrorContainer
+                         else MaterialTheme.colorScheme.onPrimaryContainer)
+            TextButton(onClick = onDismiss) { Text("Dismiss") }
+        }
+    }
+}
+
+@Composable
+private fun ChatsPane(model: AppModel) {
+    Row(Modifier.fillMaxSize()) {
+        Column(Modifier.width(320.dp).fillMaxHeight()) {
+            Text("Chats", Modifier.padding(16.dp), style = MaterialTheme.typography.titleLarge,
+                 fontWeight = FontWeight.SemiBold)
+            val list = model.conversations()
+            if (list.isEmpty()) {
+                Text("No conversations yet. Open People to start one.",
+                     Modifier.padding(16.dp), color = MaterialTheme.colorScheme.onSurfaceVariant,
+                     style = MaterialTheme.typography.bodyMedium)
+            }
+            LazyColumn(Modifier.fillMaxSize()) {
+                items(list, key = { it.jid }) { c ->
+                    ConversationRow(model, c, selected = model.openConversation == c.jid)
+                }
+            }
+        }
+        VerticalDivider()
+        Box(Modifier.fillMaxSize()) {
+            val open = model.openConversation
+            if (open == null) EmptyPane() else ConversationPane(model, open)
+        }
+    }
+}
+
+@Composable
+private fun EmptyPane() {
+    Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.Center,
+           horizontalAlignment = Alignment.CenterHorizontally) {
+        Icon(Icons.AutoMirrored.Filled.Chat, null, Modifier.size(56.dp),
+             tint = MaterialTheme.colorScheme.outline)
+        Spacer(Modifier.padding(6.dp))
+        Text("Select a conversation", color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text("Keys never leave the engine; this window only shows what it is told.",
+             style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.outline)
+    }
+}
+
+@Composable
+fun Avatar(name: String, presence: Presence = Presence.UNKNOWN, size: Int = 40) {
+    Box {
+        Box(Modifier.size(size.dp).clip(CircleShape).background(MaterialTheme.colorScheme.primaryContainer),
+            contentAlignment = Alignment.Center) {
+            Text(name.trim().take(1).uppercase().ifBlank { "?" },
+                 color = MaterialTheme.colorScheme.onPrimaryContainer, fontWeight = FontWeight.Bold)
+        }
+        if (presence == Presence.ONLINE) {
+            Box(Modifier.align(Alignment.BottomEnd).size(12.dp).clip(CircleShape)
+                .background(MaterialTheme.colorScheme.surface).padding(2.dp)) {
+                Box(Modifier.fillMaxSize().clip(CircleShape).background(Color(0xFF4CAF50)))
+            }
+        }
+    }
+}
+
+@Composable
+private fun ConversationRow(model: AppModel, c: Conversation, selected: Boolean) {
+    val bg = if (selected) MaterialTheme.colorScheme.secondaryContainer else Color.Transparent
+    Row(Modifier.fillMaxWidth().background(bg).clickable { model.open(c.jid) }
+            .padding(horizontal = 16.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically) {
+        Avatar(c.displayName.ifBlank { c.jid }, c.presence)
+        Spacer(Modifier.width(12.dp))
+        Column(Modifier.weight(1f)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(c.displayName.ifBlank { c.jid }, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                     fontWeight = if (c.unread > 0) FontWeight.Bold else FontWeight.Medium,
+                     modifier = Modifier.weight(1f))
+                if (model.chat.isRoom(c.jid)) {
+                    Icon(Icons.Filled.Groups, "Room", Modifier.size(16.dp),
+                         tint = MaterialTheme.colorScheme.outline)
+                } else {
+                    Icon(securityIcon(c.security), null, Modifier.size(16.dp), tint = securityColour(c.security))
+                }
+            }
+            val badge = if (model.chat.isRoom(c.jid)) {
+                if (model.chat.isSecureRoom(c.jid)) RowSecurity.group(model.chat.isSyncingRoom(c.jid)) else null
+            } else RowSecurity.badge(c.security, c.smp, c.lastMessage != null)
+            Text(c.preview.ifBlank { badge?.text ?: "" }, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                 style = MaterialTheme.typography.bodySmall,
+                 color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        if (c.unread > 0) {
+            Spacer(Modifier.width(8.dp))
+            Box(Modifier.clip(CircleShape).background(MaterialTheme.colorScheme.primary)
+                    .padding(horizontal = 7.dp, vertical = 2.dp)) {
+                Text("${c.unread}", color = MaterialTheme.colorScheme.onPrimary,
+                     style = MaterialTheme.typography.labelSmall)
+            }
+        }
+    }
+    HorizontalDivider(Modifier.padding(start = 68.dp), color = MaterialTheme.colorScheme.surfaceVariant)
+}

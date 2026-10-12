@@ -90,6 +90,26 @@ python3 -m pip download --quiet --disable-pip-version-check --no-deps \
     --only-binary=:all: --python-version 3.13 --implementation cp \
     --platform manylinux2014_x86_64 --platform manylinux_2_17_x86_64 \
     --dest "$OUT/wheels-build" "maturin==1.13.3"
+# 6. The desktop GUI (desktop/): Gradle, and every jar its build needs, each
+#    checked against desktop/gradle/verification-metadata.xml (committed
+#    SHA-256s) as it is downloaded. The result is a read-only dependency
+#    cache that build-desktop.sh uses offline (GRADLE_RO_DEP_CACHE).
+GRADLE_VERSION="8.14.3"
+gz="gradle-$GRADLE_VERSION-bin.zip"
+curl --proto '=https' --tlsv1.2 -fsSLo "$OUT/$gz" "https://services.gradle.org/distributions/$gz"
+curl --proto '=https' --tlsv1.2 -fsSL "https://services.gradle.org/distributions/$gz.sha256" \
+    | awk -v f="$gz" '{print $1"  "f}' > "$OUT/$gz.sha256"
+( cd "$OUT" && sha256sum --strict --check "$gz.sha256" ) || die "Gradle does not match its checksum"
+gtmp="$(mktemp -d)"
+unzip -q "$OUT/$gz" -d "$gtmp"
+GRADLE_USER_HOME="$OUT/gradle-home" "$gtmp/gradle-$GRADLE_VERSION/bin/gradle" --no-daemon -q \
+    --dependency-verification strict -p "$OUT/OTRv4Plus/desktop" desktopLib \
+    || die "the desktop GUI's dependencies did not verify"
+mkdir -p "$OUT/gradle-cache"
+mv "$OUT/gradle-home/caches/modules-2" "$OUT/gradle-cache/"
+rm -rf "$OUT/gradle-home" "$OUT/OTRv4Plus/desktop/build" "$OUT/OTRv4Plus/desktop/.gradle"
+rm -f "$OUT/gradle-cache/modules-2/"*.lock "$OUT/gradle-cache/modules-2/gc.properties"
+
 # The manifest catches damage in transit. It is made in this (untrusted,
 # networked) qube, so it is NOT a trust anchor: the build qube re-checks the
 # lock, the Rust signature and the crate checksums itself, offline.

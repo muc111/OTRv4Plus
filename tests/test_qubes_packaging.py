@@ -35,7 +35,8 @@ def test_the_package_gate_uses_the_release_guards_list():
     assert _literal(deb, "RAW_KEY_METHODS") == _literal(guard, "RAW_KEY_CLASS_METHODS")
 
 
-@pytest.mark.parametrize("script", ["build-deb.sh", "build-core.sh", "fetch-sources.sh"])
+@pytest.mark.parametrize("script", ["build-deb.sh", "build-core.sh", "fetch-sources.sh",
+                                    "build-desktop.sh"])
 def test_scripts_parse(script):
     subprocess.run(["bash", "-n", os.path.join(QUBES, "packaging", script)], check=True)
 
