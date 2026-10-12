@@ -74,23 +74,23 @@ jobs:
           path: desktop/build/screens/*.png
           if-no-files-found: warn
 
-      # For environments that reach api.github.com but not artifact storage:
-      # each file, gzip + base64, in annotation-sized chunks
-      # ("dump:<file>:<part>/<parts>").
-      - name: Dump screens and checksums as annotations
-        if: inputs.dump
-        run: |
-          set -eu
-          dump() {
-            f="$1"; name="$(basename "$f")"
-            gzip -9c "$f" | base64 -w0 > /tmp/b64
-            parts=$(( ($(stat -c%s /tmp/b64) + 59999) / 60000 ))
-            for i in $(seq 1 "$parts"); do
-              echo "::notice title=dump:$name:$i/$parts::$(cut -c$(( (i-1)*60000+1 ))-$(( i*60000 )) /tmp/b64)"
-            done
-          }
-          for f in desktop/build/screens/*.jpg; do dump "$f"; done
-          [ -f desktop/gradle/verification-metadata.xml ] && dump desktop/gradle/verification-metadata.xml || true
+      # For environments that reach api.github.com but not artifact storage
+      # (.github/scripts/dump-annotations.sh): one file per step.
+      - name: Dump 2-chat.jpg
+        if: inputs.dump && !cancelled()
+        run: .github/scripts/dump-annotations.sh desktop/build/screens/2-chat.jpg
+      - name: Dump 1-connect.jpg
+        if: inputs.dump && !cancelled()
+        run: .github/scripts/dump-annotations.sh desktop/build/screens/1-connect.jpg
+      - name: Dump 3-unverified.jpg
+        if: inputs.dump && !cancelled()
+        run: .github/scripts/dump-annotations.sh desktop/build/screens/3-unverified.jpg
+      - name: Dump 4-people.jpg
+        if: inputs.dump && !cancelled()
+        run: .github/scripts/dump-annotations.sh desktop/build/screens/4-people.jpg
+      - name: Dump verification-metadata.xml
+        if: inputs.dump && !cancelled()
+        run: .github/scripts/dump-annotations.sh desktop/gradle/verification-metadata.xml
 
       - name: Test report
         if: failure()
