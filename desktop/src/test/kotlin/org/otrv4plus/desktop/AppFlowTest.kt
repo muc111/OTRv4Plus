@@ -157,6 +157,7 @@ class AppFlowTest {
         model.tab = AppModel.Tab.PEOPLE
         render(model, "4-people")
         model.tab = AppModel.Tab.SETTINGS
+        model.loadProfile()   // the Settings screen does this when first drawn
         waitFor("own profile") { model.profile["FN"] == "Alice" }
         Thread.sleep(300)
         render(model, "5-settings", h = 1100)
